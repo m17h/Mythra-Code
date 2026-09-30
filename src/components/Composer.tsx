@@ -16,6 +16,11 @@ import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
 import type { ChatFont, Provider } from "../types";
 import type { QueuedTurn } from "../lib/taskStore";
 import type { AttachmentRecord } from "./StudioDock";
+import { skillMentionRanges } from "../lib/skillMentions";
+import { useSkillDependencyPreview, type AnalyzeSkillDependencies } from "../hooks/useSkillDependencyPreview";
+import { blockedSkillNames, SkillDependencyDetails } from "./SkillDependencyDetails";
+import { SkillDependencyNotice } from "./SkillDependencyNotice";
+import { useSkillReferenceInspector } from "./SkillReferenceInspector";
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
@@ -86,10 +91,10 @@ export function resetDraftStoreForTests(): void {
 // skill instead of sending the message.
 const MENTION_PATTERN = /(^|\s)@([\w./-]*)$/;
 const WORKFLOW_PATTERN = /(^|\s)!([\w-]*)$/;
-const SKILL_TOKEN_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]*)/gi;
 
 export interface ComposerSkill {
   name: string;
+  path?: string;
   description?: string;
 }
 
@@ -227,6 +232,8 @@ export const Composer = forwardRef<ComposerHandle, {
   controls: ReactNode;
   searchFiles?: (query: string) => Promise<string[]>;
   skills?: ComposerSkill[];
+  /** The caller includes effective system instructions, even for an empty draft. */
+  onAnalyzeSkillDependencies?: AnalyzeSkillDependencies;
   workflows?: ComposerWorkflow[];
   onWorkflow?: (id: string, prompt: string) => Promise<boolean>;
   onRemoveAttachment: (path: string) => void;
@@ -242,6 +249,8 @@ export const Composer = forwardRef<ComposerHandle, {
 }>(function Composer(props, ref) {
   const willQueue = props.queueing || Boolean(props.queuedTurns?.length);
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
+  const dependencyPreview = useSkillDependencyPreview(draft, props.onAnalyzeSkillDependencies, props.threadKey);
+  const blockedNames = useMemo(() => blockedSkillNames(dependencyPreview.report), [dependencyPreview.report]);
   const submittingRef = useRef(new Set<string>());
   const [submittingKeys, setSubmittingKeys] = useState<ReadonlySet<string>>(new Set());
   const submitting = submittingKeys.has(props.threadKey);
@@ -417,19 +426,25 @@ export const Composer = forwardRef<ComposerHandle, {
   // textarea remains visible. Editing and caret placement therefore never
   // depend on the overlay being pixel-perfect.
   const skills = props.skills;
+  const skillRanges = useMemo(() => skillMentionRanges(draft, [...(skills ?? []),
+    ...[...blockedNames].filter((name) => !skills?.some((skill) => skill.name.toLowerCase() === name)).map((name) => ({ name }))]),
+  [draft, skills, blockedNames]);
+  const inspector = useSkillReferenceInspector({
+    textareaRef, highlightRef, ranges: skillRanges, report: dependencyPreview.report, error: dependencyPreview.error,
+    pending: Boolean(props.onAnalyzeSkillDependencies) && !dependencyPreview.report && !dependencyPreview.error,
+    channel: "user", suppressed: mentions.open || workflowMenu.open,
+  });
+  const { flaggedNames, activeStart } = inspector;
   const { highlightedDraft, hasSkillMentions } = useMemo(() => {
-    const skillNames = new Set((skills ?? []).map((skill) => skill.name.toLowerCase()));
     const parts: ReactNode[] = [];
     let offset = 0;
-    if (skillNames.size) {
-      for (const match of draft.matchAll(SKILL_TOKEN_PATTERN)) {
-        const index = (match.index ?? 0) + match[1].length;
-        const token = `@${match[2]}`;
-        if (!skillNames.has(match[2].toLowerCase())) continue;
-        parts.push(draft.slice(offset, index));
-        parts.push(<span className="composer-skill-token" key={`${index}:${token}`}>{token}</span>);
-        offset = index + token.length;
-      }
+    for (const range of skillRanges) {
+      const token = draft.slice(range.start, range.end);
+      parts.push(draft.slice(offset, range.start));
+      const blocked = flaggedNames.has(range.skill.name.toLowerCase());
+      parts.push(<span key={`${range.start}:${token}`} data-skill-start={range.start}
+        className={`composer-skill-token${blocked ? " is-blocked" : ""}${activeStart === range.start ? " is-inspected" : ""}`}>{token}</span>);
+      offset = range.end;
     }
     parts.push(draft.slice(offset));
     // A block with pre-wrap otherwise omits the empty visual line after a
@@ -437,7 +452,7 @@ export const Composer = forwardRef<ComposerHandle, {
     // in the aria-hidden overlay and is never added to the submitted draft.
     parts.push("\u200b");
     return { highlightedDraft: parts, hasSkillMentions: offset > 0 };
-  }, [draft, skills]);
+  }, [draft, skillRanges, flaggedNames, activeStart]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -671,8 +686,14 @@ export const Composer = forwardRef<ComposerHandle, {
           aria-activedescendant={workflowMenu.open
             ? workflowMenu.index >= 0 ? `${mentionMenuId}-workflow-${workflowMenu.index}` : undefined
             : mentions.open ? `${mentionMenuId}-${mentions.index}` : undefined}
+          aria-describedby={inspector.describedBy}
+          data-skill-inspector-open={inspector.open || undefined}
           value={draft}
           disabled={workflowSubmitting}
+          onSelect={(event) => inspector.handlers.onSelect(event.currentTarget)}
+          onFocus={(event) => inspector.handlers.onFocus(event.currentTarget)}
+          onPointerMove={inspector.handlers.onPointerMove}
+          onPointerLeave={inspector.handlers.onPointerLeave}
           onChange={(event) => {
             if (props.performanceProvider) recordComposerInputToFrame(props.performanceProvider);
             setDraft(event.target.value);
@@ -687,6 +708,7 @@ export const Composer = forwardRef<ComposerHandle, {
           }}
           onScroll={(event) => {
             syncComposerHighlight(event.currentTarget, highlightRef.current);
+            inspector.handlers.onScroll();
           }}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
@@ -732,16 +754,24 @@ export const Composer = forwardRef<ComposerHandle, {
                 return;
               }
             }
+            if (inspector.handlers.onKeyDown(event)) {
+              closeMentions();
+              closeWorkflows();
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void send("default");
             }
           }}
-          onBlur={() => { closeMentions(); closeWorkflows(); }}
+          onBlur={(event) => { closeMentions(); closeWorkflows(); inspector.handlers.onBlur(event); }}
           placeholder={props.placeholder}
           rows={1}
         />
+        {inspector.inspector}
       </div>
+      <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
+      <SkillDependencyDetails report={dependencyPreview.report} />
       {props.modelControls}
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>

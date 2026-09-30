@@ -1,0 +1,18 @@
+.skill-prompt-editor { position: relative; width: 100%; min-width: 0; }
+.skill-prompt-editor > textarea.skill-prompt-input { display: block; box-sizing: border-box; width: 100%; }
+.skill-prompt-highlight { position: absolute; z-index: 2; box-sizing: border-box; overflow: hidden; border-style: solid; border-color: transparent; color: transparent; background: transparent; pointer-events: none; user-select: none; }
+.skill-prompt-token { color: var(--info); font-weight: inherit; }
+.skill-prompt-suggestions { position: absolute; z-index: 30; left: 0; right: 0; bottom: calc(100% + 6px); max-height: 190px; overflow-y: auto; padding: var(--s-1, 4px); border: 1px solid var(--line-strong); border-radius: var(--r-md, 8px); background: var(--panel-2); box-shadow: var(--shadow); }
+.skill-prompt-suggestions[popover], .skill-prompt-suggestions.is-portaled { position: fixed; right: auto; bottom: auto; margin: 0; visibility: hidden; }
+.skill-prompt-suggestions.is-portaled { z-index: 140; }
+.skill-prompt-suggestions > button { width: 100%; min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 0; border-radius: var(--r-xs, 4px); color: var(--muted); background: transparent; text-align: left; cursor: pointer; }
+.skill-prompt-suggestions > button[aria-selected="true"], .skill-prompt-suggestions > button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.skill-prompt-suggestions svg { flex: 0 0 auto; color: var(--info); }
+.skill-prompt-suggestions > button > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.skill-prompt-suggestions strong, .skill-prompt-suggestions small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--fs-meta, 12px); }
+.skill-prompt-suggestions strong { font-weight: 560; }
+.skill-prompt-suggestions small { color: var(--muted-2); font-size: var(--fs-micro, 11px); }
+.skill-prompt-suggestions em { color: var(--muted-2); font-style: normal; font-size: 9px; text-transform: uppercase; }
+@media (forced-colors: active) {
+  .skill-prompt-suggestions > button[aria-selected="true"] { outline: 1px solid Highlight; }
+}

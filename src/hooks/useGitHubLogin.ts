@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { getGitHubStatus, type GitHubAccountStatus } from "../lib/github";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 
 export function useGitHubLogin(options: {
   pending: boolean;
@@ -47,7 +47,7 @@ export function useGitHubLogin(options: {
         }
       } catch (reason) {
         failures += 1;
-        lastError = `Could not verify GitHub sign-in: ${friendlyError(reason)}`;
+        lastError = `Could not verify GitHub sign-in: ${formatGitError(reason)}`;
       } finally {
         inFlight.current = false;
         if (!disposed) timer = setTimeout(() => void check(), Math.min(15_000, 2_000 * 2 ** Math.min(failures, 3)));

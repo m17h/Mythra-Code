@@ -95,6 +95,26 @@ describe("ChatTimeline flow scroll state", () => {
     expect(expanded[0]).toHaveAttribute("data-entry-index", "21");
   });
 
+  it.each([false, true])("preserves the prepend anchor when native anchoring is %s", (nativeAnchoring) => {
+    renderTimeline(transcript(100));
+    const { scroller, setScrollTop } = configureScroller();
+    const first = document.querySelector<HTMLElement>("[data-entry-index]")!;
+    let reads = 0;
+    vi.spyOn(first, "getBoundingClientRect").mockImplementation(() => {
+      reads += 1;
+      // Layout may apply a browser scroll correction before returning the
+      // post-prepend rectangle. The observed delta already includes it.
+      if (reads > 1) {
+        Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 5400 });
+        if (nativeAnchoring) setScrollTop(4800);
+      }
+      return { top: reads > 1 && !nativeAnchoring ? 2500 : 100 } as DOMRect;
+    });
+    fireEvent.click(screen.getByTestId("reveal-earlier"));
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(scroller.scrollTop).toBe(4800);
+  });
+
   it("keeps the live suffix mounted while searching an older hidden row", () => {
     render(
       <ChatTimeline

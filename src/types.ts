@@ -2,11 +2,22 @@ import type { ReasoningEffort } from "./components/ModelPowerControl";
 import type { JsonObject } from "./lib/codex";
 
 export type Provider = "openai" | "openrouter" | "lmstudio" | "claude" | "cursor";
+/** Numeric counters remain additive; availability is independent of zero. */
+export interface UsageEvidence {
+  tokenAvailability?: "reported" | "partial" | "unavailable";
+  cacheReadReported?: boolean;
+  cacheWriteReported?: boolean;
+  cacheReadUnknownTokens?: number;
+  cacheWriteUnknownTokens?: number;
+  serviceTier?: string;
+  serviceTierSource?: "reported" | "requested" | "unknown";
+  requestedServiceTier?: string;
+}
 export type OpenAILogoStyle = "openai" | "codex";
 export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
-export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave";
+export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave" | "atari" | "monochrome";
 export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "astra" | "ink" | "reactor" | "dart" | "coil";
 /** Typeface family used for chat prose and the composer. Built-in stacks only. */
 export type ChatFont = "system" | "humanist" | "serif" | "mono";
@@ -127,6 +138,50 @@ export interface MessageAttachment {
   kind: "image";
 }
 
+export interface SkillReference {
+  start: number;
+  end: number;
+  name: string;
+  path: string;
+}
+
+/** Native resolution provenance. Instructions stay in the provider prompt,
+ * while history retains only identities, dependencies, and load outcomes. */
+export interface SkillDependencyReport {
+  version: 1;
+  limits: {
+    maxDepth: 4;
+    maxSkills: 8;
+    maxFiles: 24;
+    maxCharacters: 120000;
+    maxFileBytes: 1048576;
+  };
+  roots: Array<{ nodeId: string; channel: "system" | "user"; name: string }>;
+  nodes: Array<{
+    id: string;
+    kind: "skill" | "document";
+    name: string;
+    path: string;
+    status: "loaded" | "blocked";
+    characterCount: number;
+    depth: number;
+    contentHash?: string;
+  }>;
+  edges: Array<{ from: string; to: string; reference: string }>;
+  issues: Array<{
+    code: string;
+    message: string;
+    rootName?: string;
+    chain: string[];
+    sourcePath?: string;
+    reference?: string;
+    /** Existing report node responsible for this failure; omitted for report-level limits. */
+    targetNodeId?: string;
+    /** Existing parent node that referenced the blocked target, when known. */
+    sourceNodeId?: string;
+  }>;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -138,6 +193,11 @@ export interface ChatMessage {
   clientMessageId?: string;
   /** Images submitted with this user turn, retained for the transcript UI. */
   attachments?: MessageAttachment[];
+  /** Exact skill sources captured when this authored prompt was prepared. An
+   * empty array records that none resolved and forbids later name retargeting. */
+  skillReferences?: SkillReference[];
+  skillsFolder?: string;
+  skillDependencies?: SkillDependencyReport;
   streaming?: boolean;
   timelineOrder?: number;
   /** Runtime turn identity keeps steering inside the turn it belongs to. */

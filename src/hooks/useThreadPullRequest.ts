@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 import { normalizedProjectPath } from "../lib/paths";
 import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 import {
@@ -18,6 +18,7 @@ import {
   type ThreadPullRequestLink,
 } from "../lib/pullRequests";
 import { usePersistedStateRef } from "./usePersistedState";
+import { createPullRequestCreationDraftStore } from "../lib/pullRequestCreationDrafts";
 
 const REFRESH_MS = 60_000;
 const CACHE_LIMIT = 64;
@@ -122,6 +123,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   const [busyState, setBusyState] = useState<Scoped<boolean> | null>(null);
   const [errorState, setErrorState] = useState<Scoped<string | null> | null>(null);
   const [noticeState, setNoticeState] = useState<Scoped<string | null> | null>(null);
+  const [creationDraftStore] = useState(createPullRequestCreationDraftStore);
   const readRevisionsRef = useRef(new Map<string, number>());
   const mutationRevisionsRef = useRef(new Map<string, number>());
   const readSequenceRef = useRef(0);
@@ -139,7 +141,11 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   const currentScope = threadId ? stateScope(threadId, options.cwd) : "";
   const link = threadId ? links[threadId] ?? null : null;
   const linked = Boolean(link);
-  const scopedContext = threadId && contextState?.scope === currentScope ? contextState.value : contextCacheRef.current.get(currentScope) ?? null;
+  // A recent checkout may be served from the cache after thread navigation.
+  // Both its visible controls and their actions must consume that same scope.
+  const contextForScope = useCallback((scope: string) => contextState?.scope === scope
+    ? contextState.value : contextCacheRef.current.get(scope) ?? null, [contextState]);
+  const scopedContext = threadId ? contextForScope(currentScope) : null;
   const scopedCandidate = threadId && candidateState?.scope === currentScope ? candidateState.value : candidateCacheRef.current.get(currentScope) ?? null;
   const pullRequest = link?.snapshot ?? scopedCandidate;
 
@@ -227,12 +233,15 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       const context = await getPullRequestContext(snapshot.cwd);
       if (readRevisionsRef.current.get(snapshot.threadId) !== readRevision) return;
       rememberContext(uiScope, context);
+      const previousCandidate = candidateCacheRef.current.get(uiScope);
+      if (previousCandidate && (previousCandidate.repository.toLowerCase() !== context.repository.toLowerCase()
+        || previousCandidate.headRefName !== context.branch)) rememberCandidate(uiScope, null);
       const candidate = await findPullRequest(snapshot.cwd, context.repository, context.branch);
       if (readRevisionsRef.current.get(snapshot.threadId) !== readRevision || linksRef.current[snapshot.threadId]) return;
       rememberCandidate(uiScope, candidate);
     } catch (error) {
       if (optionsRef.current.threadId && stateScope(optionsRef.current.threadId, optionsRef.current.cwd) === uiScope && readRevisionsRef.current.get(snapshot.threadId) === readRevision) {
-        setErrorState({ scope: uiScope, value: friendlyError(error) });
+        setErrorState({ scope: uiScope, value: formatGitError(error) });
       }
     } finally {
       if (optionsRef.current.threadId && stateScope(optionsRef.current.threadId, optionsRef.current.cwd) === uiScope && readRevisionsRef.current.get(snapshot.threadId) === readRevision) {
@@ -312,11 +321,13 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
   }, [bumpReadRevision]);
 
   const runMutation = useCallback(async <T,>(id: string, cwd: string, operation: (revision: number) => Promise<T>) => {
+    const projectPath = optionsRef.current.projectPath;
+    const originalLink = linksRef.current[id];
     let lock: { key: string; revision: number; readRevision: number };
     try {
       lock = beginMutation(cwd, id);
     } catch (error) {
-      setErrorState({ scope: stateScope(id, cwd), value: friendlyError(error) });
+      setErrorState({ scope: stateScope(id, cwd), value: formatGitError(error) });
       throw error;
     }
     try {
@@ -324,11 +335,19 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       if (latestBlock) throw new Error(latestBlock);
       return await operation(lock.revision);
     } catch (error) {
-      setErrorState({ scope: stateScope(id, cwd), value: friendlyError(error) });
+      setErrorState({ scope: stateScope(id, cwd), value: formatGitError(error) });
       throw error;
     } finally {
       releasePullRequestMutation(lock.key);
-      if (readRevisionsRef.current.get(id) === lock.readRevision) readRevisionsRef.current.delete(id);
+      // A refresh may have started after beginMutation. None of those reads
+      // can replace the authoritative write result, even if they finish later.
+      bumpReadRevision(id);
+      readRevisionsRef.current.delete(id);
+      for (const target of [originalLink, linksRef.current[id]]) {
+        if (!target) continue;
+        invalidatePullRequest(cwd, target.repository, target.number);
+        if (projectPath && projectPath !== cwd) invalidatePullRequest(projectPath, target.repository, target.number);
+      }
       const remaining = (operationCountsRef.current.get(id) ?? 1) - 1;
       if (remaining > 0) operationCountsRef.current.set(id, remaining);
       else {
@@ -336,15 +355,18 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         mutationRevisionsRef.current.delete(id);
       }
       const uiScope = stateScope(id, cwd);
-      setBusyState((current) => current?.scope === uiScope ? { scope: uiScope, value: false } : current);
+      const activeScope = optionsRef.current.threadId === id ? stateScope(id, optionsRef.current.cwd) : uiScope;
+      setBusyState((current) => current?.scope.startsWith(`${id}\0`) || optionsRef.current.threadId === id
+        ? { scope: activeScope, value: false } : current);
+      setLoadingState((current) => current?.scope.startsWith(`${id}\0`) ? { ...current, value: false } : current);
     }
-  }, [beginMutation]);
+  }, [beginMutation, bumpReadRevision, linksRef]);
 
   const onAttach = useCallback(async (reference: string) => {
     const snapshot = optionsRef.current;
     if (!snapshot.threadId) throw new Error("No thread is selected.");
     const uiScope = stateScope(snapshot.threadId, snapshot.cwd);
-    const currentContext = contextState?.scope === uiScope ? contextState.value : null;
+    const currentContext = contextForScope(uiScope);
     const parsed = parsePullRequestReference(reference, currentContext?.repository);
     if (!parsed) {
       const error = new Error("Enter a GitHub pull request URL or a number for this repository.");
@@ -370,7 +392,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         snapshot.onChanged?.();
       }
     } catch (error) {
-      setErrorState({ scope: uiScope, value: friendlyError(error) });
+      setErrorState({ scope: uiScope, value: formatGitError(error) });
       throw error;
     } finally {
       attachLocksRef.current.delete(lockKey);
@@ -381,9 +403,12 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         operationCountsRef.current.delete(snapshot.threadId);
         mutationRevisionsRef.current.delete(snapshot.threadId);
       }
-      setBusyState((current) => current?.scope === uiScope ? { scope: uiScope, value: false } : current);
+      const activeScope = optionsRef.current.threadId === snapshot.threadId ? stateScope(snapshot.threadId, optionsRef.current.cwd) : uiScope;
+      setBusyState((current) => current?.scope.startsWith(`${snapshot.threadId}\0`) || optionsRef.current.threadId === snapshot.threadId
+        ? { scope: activeScope, value: false } : current);
+      setLoadingState((current) => current?.scope.startsWith(`${snapshot.threadId}\0`) ? { ...current, value: false } : current);
     }
-  }, [bumpReadRevision, contextState, persistLink]);
+  }, [bumpReadRevision, contextForScope, persistLink]);
 
   const onDetach = useCallback(() => {
     const id = optionsRef.current.threadId;
@@ -398,6 +423,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       return next;
     });
     const uiScope = stateScope(id, optionsRef.current.cwd);
+    setLoadingState((current) => current?.scope.startsWith(`${id}\0`) ? { ...current, value: false } : current);
     rememberCandidate(uiScope, null);
     setNoticeState({ scope: uiScope, value: "Pull request detached." });
     optionsRef.current.onChanged?.();
@@ -408,7 +434,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     const snapshot = optionsRef.current;
     if (!snapshot.threadId || !snapshot.cwd) throw new Error("This thread has no working directory.");
     const uiScope = stateScope(snapshot.threadId, snapshot.cwd);
-    const repository = contextState?.scope === uiScope ? contextState.value?.repository : null;
+    const repository = contextForScope(uiScope)?.repository;
     if (!repository) throw new Error("Refresh pull request status before creating a pull request.");
     const id = snapshot.threadId;
     const cwd = snapshot.cwd;
@@ -433,7 +459,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       }
     });
     requestRefresh({ threadId: id, cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
-  }, [contextState, persistLink, requestRefresh, runMutation]);
+  }, [contextForScope, persistLink, requestRefresh, runMutation]);
 
   const archiveMerged = useCallback(async (id: string) => {
     const current = optionsRef.current;
@@ -519,17 +545,21 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     if (!snapshot.threadId || !snapshot.cwd) throw new Error("This thread has no working directory.");
     if (snapshot.isolated) throw new Error("Branch creation is only available for shared project threads.");
     const uiScope = stateScope(snapshot.threadId, snapshot.cwd);
-    const currentContext = contextState?.scope === uiScope ? contextState.value : null;
+    const currentContext = contextForScope(uiScope);
     if (!currentContext) throw new Error("Refresh pull request status before creating a branch.");
     await runMutation(snapshot.threadId, snapshot.cwd, async () => {
       await createPullRequestBranch(snapshot.cwd!, name, currentContext.headOid);
       setNoticeState({ scope: uiScope, value: `Created branch ${name}.` });
       snapshot.onChanged?.();
-      requestRefresh({ threadId: snapshot.threadId!, cwd: snapshot.cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
     });
-  }, [contextState, requestRefresh, runMutation]);
+    // Mutation completion invalidates every read begun while the write was
+    // running. Start the branch owner's follow-up only after that boundary,
+    // so a slow native context read can settle into its originating checkout.
+    requestRefresh({ threadId: snapshot.threadId, cwd: snapshot.cwd, projectPath: snapshot.projectPath, enabled: snapshot.enabled, visible: snapshot.visible }, true);
+  }, [contextForScope, requestRefresh, runMutation]);
 
   const forgetThread = useCallback((id: string) => {
+    creationDraftStore.forgetThread(id);
     bumpReadRevision(id);
     readRevisionsRef.current.delete(id);
     mutationRevisionsRef.current.set(id, mutationSequenceRef.current += 1);
@@ -542,17 +572,21 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     for (const scope of contextCacheRef.current.keys()) if (scope.startsWith(`${id}\0`)) contextCacheRef.current.delete(scope);
     for (const scope of candidateCacheRef.current.keys()) if (scope.startsWith(`${id}\0`)) candidateCacheRef.current.delete(scope);
     if (!operationCountsRef.current.has(id)) mutationRevisionsRef.current.delete(id);
-  }, [bumpReadRevision, setLinks]);
+  }, [bumpReadRevision, creationDraftStore, setLinks]);
 
   return {
     links,
     context: scopedContext,
     pullRequest,
     linked,
-    loading: Boolean(threadId && loadingState?.scope === currentScope && loadingState.value),
-    busy: Boolean(threadId && busyState?.scope === currentScope && busyState.value),
+    loading: Boolean(threadId && (loadingState?.scope === currentScope
+      ? loadingState.value
+      : options.enabled && options.visible && !lastRefreshesRef.current.has(currentScope))),
+    busy: Boolean(threadId && (operationCountsRef.current.has(threadId) || busyState?.scope === currentScope && busyState.value)),
     error: threadId && errorState?.scope === currentScope ? errorState.value : null,
     notice: threadId && noticeState?.scope === currentScope ? noticeState.value : null,
+    creationDraftStore,
+    creationDraftScope: currentScope,
     onRefresh: refreshCurrent,
     onAttach,
     onDetach,

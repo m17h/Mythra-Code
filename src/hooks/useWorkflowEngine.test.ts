@@ -4,6 +4,13 @@ import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
+import type { SkillDependencyReport } from "../types";
+import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
+
+const DEPENDENCIES: SkillDependencyReport = {
+  version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
+  nodes: [{ id: "policy", kind: "skill", name: "policy", path: "/skills/policy.md", status: "loaded", characterCount: 12, depth: 0 }], edges: [], issues: [],
+};
 
 const codex = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -437,6 +444,131 @@ describe("workflow turn waiting", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       input: [{ type: "text", text: "resolved workflow skill context", text_elements: [] }],
     }));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio"] as const)("delivers a %s workflow system skill snapshot once through per-turn instructions", async (provider) => {
+    const workflow = testWorkflow({
+      run: scheduleRunSnapshot({ ...DEFAULT_SETTINGS, provider, systemPrompt: "Always use @careful" }),
+      steps: [{ id: "step-1", type: "agent", name: "Review", prompt: "@review it", continueOnError: false }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    const resolveSkillPrompts = vi.fn(async () => ({ prompt: "resolved user skill", systemPrompt: "resolved system skill", skillDependencies: DEPENDENCIES }));
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      if (method === "turn/start") {
+        queueMicrotask(() => useTaskStore.getState().completeTurn("thread-1", "turn-1", "completed"));
+        return Promise.resolve({ turn: { id: "turn-1" } });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs, {
+      resolveSkillPrompts, openRouterReady: true, lmStudioReady: true,
+    })));
+    await act(async () => { await result.current.runWorkflow("workflow-1"); });
+    expect(resolveSkillPrompts).toHaveBeenCalledWith("", "Always use @careful");
+    expect(resolveSkillPrompts).toHaveBeenCalledWith(expect.stringContaining("@review it"), "Always use @careful", "@review it");
+    expect(codex.rpc).toHaveBeenCalledWith("thread/start", expect.objectContaining({ baseInstructions: "" }));
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ input: [{ type: "text", text: "resolved user skill", text_elements: [] }] }));
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ collaborationMode: expect.objectContaining({ settings: expect.objectContaining({ developer_instructions: expect.stringContaining("resolved system skill") }) }) }));
+    expect(workflow.run.systemPrompt).toBe("Always use @careful");
+    expect(useTaskStore.getState().tasks["thread-1"].messages[0].text).not.toContain("resolved");
+    expect(useTaskStore.getState().tasks["thread-1"].messages[0].skillDependencies).toEqual(DEPENDENCIES);
+  });
+
+  it("uses the actual started workflow model for system transport when the saved recipe selects the runtime default", async () => {
+    const workflow = testWorkflow({
+      run: scheduleRunSnapshot({ ...DEFAULT_SETTINGS, model: "", systemPrompt: "Always use @careful" }),
+      steps: [{ id: "step-1", type: "agent", name: "Review", prompt: "Review it", continueOnError: false }],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" }, model: "runtime-actual-model" });
+      if (method === "turn/start") {
+        queueMicrotask(() => useTaskStore.getState().completeTurn("thread-1", "turn-1", "completed"));
+        return Promise.resolve({ turn: { id: "turn-1" } });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs, {
+      resolveSkillPrompts: async (message) => ({ prompt: message, systemPrompt: "resolved system skill" }),
+    })));
+    await act(async () => { await result.current.runWorkflow("workflow-1"); });
+    expect(runs.at(-1)?.status).toBe("completed");
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ collaborationMode: expect.objectContaining({ settings: expect.objectContaining({ model: "runtime-actual-model" }) }) }));
+    expect(workflow.run.model).toBe("");
+  });
+
+  it("invokes skills only from authored step text, selected skill names, and the run note, while preserving quoted output", async () => {
+    const workflow = testWorkflow({
+      skillNames: ["selected"],
+      steps: [
+        { id: "command", type: "command", name: "Evidence", command: "report", continueOnError: false },
+        { id: "agent", type: "agent", name: "Review", prompt: "Review ${previousStepOutput} with @review", continueOnError: false },
+      ],
+    });
+    const runs: WorkflowRunRecord[] = [];
+    const resolveSkillPrompts = vi.fn(async (message: string, systemPrompt: string, mentionSource?: string) => {
+      if (message) {
+        expect(mentionSource).toBe("Review ${previousStepOutput} with @review\n@careful\n@selected");
+        expect(mentionSource).not.toContain("@untrusted");
+      }
+      return { prompt: message, systemPrompt };
+    });
+    codex.rpc.mockImplementation((method: string) => {
+      if (method === "thread/start") return Promise.resolve({ thread: { id: "thread-1" } });
+      if (method === "command/exec") return Promise.resolve({ exitCode: 0, stdout: "Quoted @untrusted", stderr: "" });
+      if (method === "turn/start") {
+        queueMicrotask(() => useTaskStore.getState().completeTurn("thread-1", "turn-1", "completed"));
+        return Promise.resolve({ turn: { id: "turn-1" } });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs, { resolveSkillPrompts })));
+    await act(async () => { await result.current.runWorkflow("workflow-1", "manual", {}, undefined, { userPrompt: "@careful" }); });
+    expect(runs.at(-1)?.status).toBe("completed");
+    expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ input: [expect.objectContaining({ text: expect.stringContaining("Quoted @untrusted") })] }));
+  });
+
+  it("preflights known user dependency failures before a workflow thread or preceding command starts", async () => {
+    const workflow = testWorkflow({ steps: [
+      { id: "command", type: "command", name: "Command", command: "edit", continueOnError: false },
+      { id: "agent", type: "agent", name: "Review", prompt: "Use @policy", continueOnError: false },
+    ] });
+    const runs: WorkflowRunRecord[] = [];
+    const deps = testEngineDeps(workflow, runs, { resolveSkillPrompts: async (message, systemPrompt) => {
+      if (message) throw new SkillDependencyError({ ...DEPENDENCIES, issues: [{ code: "missing-document", message: "Missing guide", chain: ["policy", "guide.md"] }] });
+      return { prompt: message, systemPrompt, skillDependencies: DEPENDENCIES };
+    } });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("workflow-1"); });
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(deps.ensureSkillRoots).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+    expect(runs.at(-1)).toMatchObject({ status: "failed", error: expect.stringContaining("policy → guide.md: Missing guide") });
+  });
+
+  it("reanalyzes dependencies after a workflow command changes files and blocks the next model turn", async () => {
+    const workflow = testWorkflow({ steps: [
+      { id: "command", type: "command", name: "Command", command: "edit", continueOnError: false },
+      { id: "agent", type: "agent", name: "Review", prompt: "Use @policy", continueOnError: false },
+    ] });
+    const runs: WorkflowRunRecord[] = [];
+    let changed = false;
+    const deps = testEngineDeps(workflow, runs, { resolveSkillPrompts: async (message, systemPrompt) => {
+      if (changed) throw new SkillDependencyError({ ...DEPENDENCIES, issues: [{ code: "missing-document", message: "Guide removed by command", chain: ["policy", "guide.md"] }] });
+      return { prompt: message, systemPrompt, skillDependencies: DEPENDENCIES };
+    } });
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/start") return { thread: { id: "thread-1" } };
+      if (method === "command/exec") { changed = true; return { exitCode: 0, stdout: "", stderr: "" }; }
+      return {};
+    });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("workflow-1"); });
+    expect(codex.rpc).toHaveBeenCalledWith("command/exec", expect.anything());
+    expect(codex.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    expect(runs.at(-1)).toMatchObject({ status: "failed", error: expect.stringContaining("Guide removed by command") });
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
   });
 
   it("interrupts the exact outstanding turn before a timed-out step fails", async () => {

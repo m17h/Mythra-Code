@@ -184,6 +184,155 @@ fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
 }
 
 #[test]
+fn claude_system_prompt_snapshot_support_is_version_compatible() {
+    for version in [
+        "2.1.257 (Claude Code)",
+        "2.1.283 (Claude Code)",
+        "v2.1.257",
+        "3.0.0",
+    ] {
+        assert_eq!(
+            claude_prompt_snapshot_version_support(Some(version)),
+            Some(true),
+            "{version}"
+        );
+    }
+    for version in ["2.1.256 (Claude Code)", "2.0.0", "2.1.257-beta.1"] {
+        assert_eq!(
+            claude_prompt_snapshot_version_support(Some(version)),
+            Some(false),
+            "{version}"
+        );
+    }
+    for version in [
+        None,
+        Some(""),
+        Some("unknown"),
+        Some("2.1"),
+        Some("2.1.283garbage"),
+        Some("<html>2.1.283</html>"),
+    ] {
+        assert_eq!(claude_prompt_snapshot_version_support(version), None);
+        assert!(claude_prompt_snapshot_version_warning(version).is_some());
+    }
+    assert!(claude_prompt_snapshot_version_warning(Some("2.1.256 (Claude Code)")).is_none());
+    assert!(claude_prompt_snapshot_version_warning(Some("2.1.283 (Claude Code)")).is_none());
+}
+
+#[test]
+fn claude_system_prompt_arguments_refresh_first_resumed_changed_and_cleared_prompts() {
+    let nested = r#"<mythra_code_invoked_skills>{"systemPrompt":"Use @policy","skills":[{"kind":"skill","name":"policy","instructions":"New policy"},{"kind":"document","name":"guide","instructions":"Fresh reference"}]}</mythra_code_invoked_skills>"#;
+    // The same arguments are used for first turns and --resume. Neither a
+    // changed prompt nor clearing it may restore an older recorded snapshot.
+    for prompt in ["Initial policy", "Changed policy", nested] {
+        assert_eq!(
+            claude_system_prompt_arguments(prompt, true),
+            vec![
+                "--system-prompt-snapshot",
+                "off",
+                "--append-system-prompt",
+                prompt
+            ]
+        );
+    }
+    for prompt in ["", " \n\t"] {
+        assert_eq!(
+            claude_system_prompt_arguments(prompt, true),
+            vec!["--system-prompt-snapshot", "off"]
+        );
+    }
+    assert_eq!(
+        claude_system_prompt_arguments(nested, false),
+        vec!["--append-system-prompt", nested]
+    );
+    assert!(claude_system_prompt_arguments("", false).is_empty());
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_caches_known_versions_and_rechecks_replaced_cli() {
+    let path = env::temp_dir().join(format!("mythra-claude-capability-{}", uuid::Uuid::new_v4()));
+    fs::write(&path, "first executable").unwrap();
+    let cache = Mutex::new(None);
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            panic!("unchanged CLI must not be probed every turn")
+        })
+        .await
+    );
+    fs::write(&path, "replaced older executable with different metadata").unwrap();
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.256 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            panic!("known old CLI must remain runnable without repeated probes")
+        })
+        .await
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_retries_unknown_versions_without_probing_every_turn() {
+    let path = env::temp_dir().join(format!("mythra-claude-capability-{}", uuid::Uuid::new_v4()));
+    let cache = Mutex::new(None);
+    assert!(!cached_claude_prompt_snapshot_support(&cache, &path, || async { None }).await);
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            panic!("unknown version gets a bounded negative cache")
+        })
+        .await
+    );
+    cache.lock().await.as_mut().unwrap().checked_at =
+        Instant::now() - CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER;
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("malformed".into())
+        })
+        .await
+    );
+    cache.lock().await.as_mut().unwrap().checked_at =
+        Instant::now() - CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER;
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_does_not_cache_a_version_from_a_replaced_probe_target() {
+    let path = env::temp_dir().join(format!("mythra-claude-capability-{}", uuid::Uuid::new_v4()));
+    fs::write(&path, "before").unwrap();
+    let cache = Mutex::new(None);
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            fs::write(&path, "changed during version probe").unwrap();
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(cache.lock().await.is_none());
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.256 (Claude Code)".into())
+        })
+        .await
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
     let asking = claude_allowed_builtin_tools("ask");
     for tool in [
@@ -2839,6 +2988,166 @@ fn skill_test_directory(label: &str) -> PathBuf {
         std::process::id(),
         unix_timestamp_ms()
     ))
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn local_skill_creation_does_not_follow_a_dangling_destination_symlink() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
+    let root = skill_test_directory("skill-create-symlink");
+    let outside = skill_test_directory("skill-create-outside");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("new.md");
+    symlink(&target, root.join("new.md")).unwrap();
+    let result = local_skills_create(
+        root.to_string_lossy().into_owned(),
+        "new".into(),
+        "Selected folder instructions".into(),
+    )
+    .await;
+    assert!(
+        !target.exists(),
+        "skill creation escaped the selected folder"
+    );
+    let created = PathBuf::from(result.unwrap());
+    assert!(created.starts_with(root.canonicalize().unwrap()));
+    assert_eq!(fs::read_link(root.join("new.md")).unwrap(), target);
+    assert!(!fs::symlink_metadata(&created)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(fs::read_to_string(created)
+        .unwrap()
+        .contains("Selected folder instructions"));
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn local_skill_import_does_not_follow_a_dangling_destination_symlink() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
+    let root = skill_test_directory("skill-import-symlink");
+    let outside = skill_test_directory("skill-import-outside");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let source = outside.join("source.md");
+    let target = outside.join("must-not-create.md");
+    fs::write(&source, "Imported instructions").unwrap();
+    symlink(&target, root.join("source.md")).unwrap();
+    let imported = local_skills_import(
+        root.to_string_lossy().into_owned(),
+        vec![source.to_string_lossy().into_owned()],
+    )
+    .await
+    .unwrap();
+    assert!(!target.exists());
+    assert_eq!(fs::read_link(root.join("source.md")).unwrap(), target);
+    assert_eq!(
+        fs::read_to_string(&imported[0]).unwrap(),
+        "Imported instructions"
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[tokio::test]
+async fn local_skill_concurrent_creations_preserve_existing_files_and_reserved_leaves() {
+    let root = skill_test_directory("skill-create-collisions");
+    fs::create_dir_all(root.join("new-2.md")).unwrap();
+    fs::write(root.join("new.md"), "Existing instructions").unwrap();
+    let mut tasks = Vec::new();
+    for index in 0..16 {
+        let folder = root.to_string_lossy().into_owned();
+        tasks.push(tokio::spawn(local_skills_create(
+            folder,
+            "new".into(),
+            format!("Creator {index}"),
+        )));
+    }
+    let mut paths = HashSet::new();
+    for (index, task) in tasks.into_iter().enumerate() {
+        let path = task.await.unwrap().unwrap();
+        assert!(paths.insert(path.clone()));
+        assert!(fs::read_to_string(path)
+            .unwrap()
+            .contains(&format!("Creator {index}")));
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("new.md")).unwrap(),
+        "Existing instructions"
+    );
+    assert!(root.join("new-2.md").is_dir());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_skill_import_preserves_private_source_permissions() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let root = skill_test_directory("skill-import-permissions");
+    let outside = skill_test_directory("skill-import-private-source");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let source = outside.join("private.md");
+    fs::write(&source, "Private instructions").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
+    let imported = local_skills_import(
+        root.to_string_lossy().into_owned(),
+        vec![source.to_string_lossy().into_owned()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(fs::metadata(&imported[0]).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::read_to_string(&imported[0]).unwrap(),
+        "Private instructions"
+    );
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+}
+
+#[tokio::test]
+async fn claude_system_prompt_capability_rechecks_same_metadata_atomic_replacement() {
+    let root = skill_test_directory("claude-capability-identity");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("cli");
+    let replacement = root.join("replacement");
+    fs::write(&path, "new").unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let cache = Mutex::new(None);
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.283 (Claude Code)".into())
+        })
+        .await
+    );
+    fs::write(&replacement, "old").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().len(), 3);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    assert!(
+        !cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.256 (Claude Code)".into())
+        })
+        .await,
+        "atomic replacement retained the old runtime capability"
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

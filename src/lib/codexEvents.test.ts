@@ -28,6 +28,20 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
 describe("routeCodexEvent", () => {
   beforeEach(() => { localStorage.clear(); resetTaskStore(); });
 
+  it("keeps cache counters omitted by the runtime unknown, not verified zero", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "thread/tokenUsage/updated", params: { threadId: "missing", tokenUsage: {
+      total: { totalTokens: 110, inputTokens: 100, outputTokens: 10 }, last: { totalTokens: 110 },
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.missing.usage).toMatchObject({ cacheReadReported: false, cacheWriteReported: false,
+      cachedInputTokens: 0, cacheWriteInputTokens: 0, cacheReadUnknownTokens: 100, cacheWriteUnknownTokens: 100 });
+    routeCodexEvent({ method: "thread/tokenUsage/updated", params: { threadId: "zero", tokenUsage: {
+      total: { totalTokens: 110, inputTokens: 100, outputTokens: 10, cachedInputTokens: 0, cacheWriteInputTokens: 0 },
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.zero.usage).toMatchObject({ cacheReadReported: true, cacheWriteReported: true,
+      cacheReadUnknownTokens: 0, cacheWriteUnknownTokens: 0 });
+  });
+
   it("reconciles live user echoes and retains nonblocking questions after request cleanup", () => {
     const ctx = makeContext();
     const store = useTaskStore.getState();

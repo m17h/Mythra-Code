@@ -1,0 +1,30 @@
+.skill-dependency-notice { display: flex; align-items: flex-start; gap: 8px; max-height: min(30vh, 220px); overflow: auto; overscroll-behavior: contain; margin-top: 8px; padding: 9px 11px; color: var(--red); border: 1px solid color-mix(in srgb, var(--red) 38%, transparent); border-radius: var(--r-md, 8px); background: color-mix(in srgb, var(--red) 6%, var(--panel)); font-size: var(--fs-meta, 12px); line-height: 1.45; overflow-wrap: anywhere; }
+.skill-dependency-notice > svg { flex: 0 0 auto; margin-top: 2px; }
+.skill-dependency-notice > div { min-width: 0; }
+.skill-dependency-notice strong { font-weight: 650; }
+.skill-dependency-notice p { margin: 3px 0 0; }
+.skill-dependency-issue { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.skill-dependency-issue code, .skill-dependency-detail-body code { color: inherit; font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.skill-dependency-issue small { font-size: inherit; }
+.skill-dependency-announcement { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.skill-dependency-details { min-width: 0; margin-top: 8px; color: var(--muted); font-size: var(--fs-meta, 12px); line-height: 1.45; }
+.skill-dependency-details > summary { width: fit-content; max-width: 100%; padding: 3px 0; cursor: pointer; overflow-wrap: anywhere; }
+.skill-dependency-details > summary:focus-visible, .skill-dependency-details a:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 3px; }
+.skill-dependency-notice:focus-visible, .skill-dependency-detail-body:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.skill-dependency-details.is-blocked > summary, .skill-dependency-details .is-blocked, .skill-dependency-issues { color: var(--red); }
+.skill-dependency-detail-body { max-height: min(32vh, 280px); overflow: auto; overscroll-behavior: contain; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm, 6px); background: color-mix(in srgb, var(--panel-2) 45%, transparent); overflow-wrap: anywhere; }
+.skill-dependency-roots { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 0 0 8px; }
+.skill-dependency-nodes, .skill-dependency-edges, .skill-dependency-issues { padding: 0; margin: 0; list-style: none; }
+.skill-dependency-nodes > li { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 8px; }
+.skill-dependency-nodes svg { flex: 0 0 auto; margin-top: 2px; }
+.skill-dependency-nodes > li > div, .skill-dependency-edges > li, .skill-dependency-issues > li { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skill-dependency-nodes strong { font-weight: 550; }
+.skill-dependency-nodes a { width: fit-content; color: var(--info); text-decoration: none; font-weight: 550; }
+.skill-dependency-nodes .is-blocked a { color: var(--red); }
+.skill-dependency-nodes a:hover { text-decoration: underline; }
+.skill-dependency-nodes small, .skill-dependency-issues small { color: inherit; font-size: var(--fs-micro, 11px); }
+.skill-dependency-edges, .skill-dependency-issues { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+.skill-dependency-edges > li, .skill-dependency-issues > li { margin-bottom: 8px; }
+.composer > .skill-dependency-notice, .composer > .skill-dependency-details { margin: 0 var(--s-4, 16px) var(--s-2, 8px); }
+.composer-skill-token.is-blocked, .skill-prompt-token.is-blocked { color: var(--red); text-decoration: underline wavy; text-underline-offset: 3px; }
+@media (forced-colors: active) { .skill-dependency-notice { border: 1px solid CanvasText; } .skill-dependency-details .is-blocked { text-decoration: underline; } }

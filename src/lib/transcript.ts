@@ -1,4 +1,5 @@
 import { reconcileUserMessages } from "./userMessageEcho";
+import { sanitizeMessageSkillDependencies } from "./skillDependencies";
 import type { Activity, ChatMessage } from "../types";
 
 function mergeById<T extends { id: string; timelineOrder?: number }>(
@@ -21,7 +22,7 @@ export function mergeTranscriptHistory(
 ): { messages: ChatMessage[]; activities: Activity[] } {
   const reconciled = reconcileUserMessages(durableMessages, liveMessages);
   return {
-    messages: mergeById(reconciled.messages, liveMessages.filter((message) => !reconciled.matchedIds.has(message.id))),
+    messages: mergeById(reconciled.messages, liveMessages.filter((message) => !reconciled.matchedIds.has(message.id)).map(sanitizeMessageSkillDependencies)),
     activities: mergeById(durableActivities, liveActivities),
   };
 }

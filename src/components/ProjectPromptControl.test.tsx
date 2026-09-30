@@ -1,8 +1,43 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ProjectPromptControl } from "./ProjectPromptControl";
+import { emptySkillDependencyReport } from "../lib/skillDependencies";
 
 describe("ProjectPromptControl", () => {
+  it.each(["append", "replace"] as const)("previews the effective project skill graph in %s mode", async (promptMode) => {
+    const analyze = vi.fn(async () => emptySkillDependencyReport());
+    render(<ProjectPromptControl projectName="Mythra Code" projectPrompt="Project @review instructions" appPrompt="Global @security instructions"
+      promptMode={promptMode} provider="openai" threadStarted={false} skills={[{ name: "review" }, { name: "security" }]}
+      onAnalyzeSkillDependencies={analyze} onSave={vi.fn()} onAppPromptSettings={vi.fn()} />);
+    expect(analyze).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /Project instructions:/ }));
+    await waitFor(() => expect(analyze).toHaveBeenCalledWith("", promptMode === "append" ? "Global @security instructions\n\nProject @review instructions" : "Project @review instructions"));
+  });
+
+  it("highlights only exact available skills in a project prompt", () => {
+    const view = render(<ProjectPromptControl projectName="Mythra Code" projectPrompt="Use @review. Ignore @review.md and @unknown."
+      appPrompt="" promptMode="replace" provider="openai" threadStarted={false}
+      skills={[{ name: "review" }]} onSave={vi.fn()} onAppPromptSettings={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Project instructions: Custom" }));
+    expect(view.container.querySelectorAll(".skill-prompt-token")).toHaveLength(1);
+    expect(view.container.querySelector(".skill-prompt-token")).toHaveTextContent("@review");
+  });
+
+  it("uses the first Escape to dismiss skills and the second to close the prompt popover", () => {
+    render(<ProjectPromptControl projectName="Mythra Code" projectPrompt="Use @review"
+      appPrompt="" promptMode="replace" provider="openai" threadStarted={false}
+      skills={[{ name: "review" }]} onSave={vi.fn()} onAppPromptSettings={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Project instructions: Custom" }));
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "@rev" } });
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("makes inherited app instructions explicit and saves a project override", () => {
     const onSave = vi.fn();
     render(
@@ -42,7 +77,7 @@ describe("ProjectPromptControl", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Project instructions: Custom" }));
-    expect(screen.getByText(/current conversation is unchanged/)).toBeInTheDocument();
+    expect(screen.getByText(/applies starting with your next message in this thread/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /Inherit app prompt/ }));
     fireEvent.click(screen.getByRole("button", { name: "Use app prompt" }));
 
@@ -65,7 +100,7 @@ describe("ProjectPromptControl", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Project instructions: Custom" }));
 
-    expect(screen.getByText(/Claude will use this update starting with your next message/)).toBeInTheDocument();
+    expect(screen.getByText(/applies starting with your next message/)).toBeInTheDocument();
   });
 
   it("can layer the app-wide prompt before the project prompt", () => {

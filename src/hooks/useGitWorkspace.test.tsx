@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitWorkspaceSnapshot } from "../lib/gitWorkspace";
 import { useGitWorkspace } from "./useGitWorkspace";
+import { useProjectGitChanges } from "./useProjectGitChanges";
+import type { ProjectGitInspection } from "../lib/projectGit";
 
 const native = vi.hoisted(() => ({
   get: vi.fn(),
@@ -57,6 +59,43 @@ beforeEach(() => {
 });
 
 describe("useGitWorkspace", () => {
+  it("refreshes a selected preview after a successful read with identical summary counts", async () => {
+    const summary = { ...snapshot("/same-count-preview"), unstagedFiles: 1, changedFiles: 1 };
+    native.get.mockResolvedValue(summary);
+    let contents = "first contents";
+    const api: ProjectGitInspection = {
+      cwd: "/same-count-preview",
+      getChanges: vi.fn().mockResolvedValue({ rootPath: "/same-count-preview", rows: [{ path: "a.ts", area: "unstaged", status: "M", originalPath: null }], stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false }),
+      getFileDiff: vi.fn(async (_cwd, path, area) => ({ path, area, text: contents, binary: false, truncated: false })),
+      getHistory: vi.fn(),
+    };
+    const view = renderHook(() => {
+      const owner = useGitWorkspace(options({ cwd: api.cwd, projectPath: api.cwd }));
+      const changes = useProjectGitChanges(api, true, String(owner.readRevision));
+      return { owner, changes };
+    });
+    await waitFor(() => expect(view.result.current.owner.snapshot).toEqual(summary));
+    await waitFor(() => expect(view.result.current.changes.loading).toBe(false));
+    act(() => view.result.current.changes.select({ path: "a.ts", area: "unstaged" }));
+    await waitFor(() => expect(view.result.current.changes.diff?.text).toBe("first contents"));
+    contents = "newer contents, same Git summary";
+    await act(async () => { await view.result.current.owner.refresh(); });
+    await waitFor(() => expect(view.result.current.changes.diff?.text).toBe(contents));
+    expect(view.result.current.owner.snapshot).toEqual(summary);
+  });
+
+  it("advances the successful read revision even for identical results, but not failed reads", async () => {
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    const revision = () => view.result.current.readRevision;
+    expect(revision()).toBe(1);
+    await act(async () => { await view.result.current.refresh(); });
+    expect(revision()).toBe(2);
+    native.get.mockRejectedValueOnce(new Error("read failed"));
+    await act(async () => { await view.result.current.refresh(); });
+    expect(revision()).toBe(2);
+  });
+
   it("starts a new-folder read immediately while the previous folder read is pending", async () => {
     const pending = new Map<string, (value: GitWorkspaceSnapshot) => void>();
     native.get.mockImplementation((cwd: string) => new Promise((resolve) => pending.set(cwd, resolve)));
@@ -147,6 +186,42 @@ describe("useGitWorkspace", () => {
     expect(view.result.current.error).toContain("An agent started working");
   });
 
+  it.each(["before", "during"])("cancels a local update when the checkout changes %s confirmation", async (timing) => {
+    let finishRead!: (value: GitWorkspaceSnapshot) => void;
+    let finishConfirm!: (value: boolean) => void;
+    const confirmUpdate = vi.fn(() => new Promise<boolean>((resolve) => { finishConfirm = resolve; }));
+    const view = renderHook((props: Options) => useGitWorkspace(props), { initialProps: options({ confirmUpdate }) });
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    if (timing === "before") native.get.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    let update!: Promise<void>;
+    act(() => { update = view.result.current.updateBase("owner/repo", "main"); });
+    if (timing === "during") await waitFor(() => expect(confirmUpdate).toHaveBeenCalled());
+    view.rerender(options({ cwd: "/project/b", projectPath: "/project/b", confirmUpdate }));
+    await act(async () => {
+      if (timing === "before") finishRead(snapshot("/project/a"));
+      else finishConfirm(true);
+      await update;
+    });
+    if (timing === "before") expect(confirmUpdate).not.toHaveBeenCalled();
+    expect(native.update).not.toHaveBeenCalled();
+    expect(locks.release).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a pending mutation busy when returning to its checkout", async () => {
+    let finish!: (value: GitWorkspaceSnapshot) => void;
+    const view = renderHook((props: Options) => useGitWorkspace(props), { initialProps: options() });
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    native.branch.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    let update!: Promise<boolean>;
+    act(() => { update = view.result.current.onBranch("feature/pending", true); });
+    view.rerender(options({ cwd: "/project/b", projectPath: "/project/b" }));
+    await waitFor(() => expect(view.result.current.snapshot?.rootPath).toBe("/project/b"));
+    view.rerender(options());
+    expect(view.result.current.busy).toBe(true);
+    await act(async () => { finish(snapshot("/project/a", "feature/pending")); await update; });
+    expect(view.result.current.busy).toBe(false);
+  });
+
   it("rechecks both isolated and shared folders after update confirmation", async () => {
     let finishConfirm!: (value: boolean) => void;
     const confirmUpdate = vi.fn(() => new Promise<boolean>((resolve) => { finishConfirm = resolve; }));
@@ -190,5 +265,14 @@ describe("useGitWorkspace", () => {
     expect(result).toBe(false);
     expect(view.result.current.error).toContain("branch is occupied");
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("retains native Git timeout guidance rather than suggesting a Codex restart", async () => {
+    const warning = "Git fetch timed out. Your working files were not changed; inspect remote status before retrying.";
+    native.fetch.mockRejectedValueOnce(new Error(warning));
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    await act(async () => view.result.current.fetch());
+    expect(view.result.current.error).toBe(warning);
   });
 });

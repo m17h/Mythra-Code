@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyError } from "../lib/errors";
+import { formatGitError } from "../lib/errors";
 import { normalizedProjectPath } from "../lib/paths";
 import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/pullRequestOperations";
 import { changeGitBranch, fetchGitWorkspace, getGitWorkspace, updateLocalGitBase, type GitWorkspaceSnapshot } from "../lib/gitWorkspace";
@@ -20,20 +20,29 @@ interface State {
   error: string;
   notice: string;
   branchNotice: string;
+  /** Successful reads, including reads whose summary did not change. */
+  readRevision: number;
   lastFetchedAt?: number;
 }
-const empty = (cwd: string | null): State => ({ cwd, snapshot: null, busy: false, error: "", notice: "", branchNotice: "" });
+const empty = (cwd: string | null): State => ({ cwd, snapshot: null, busy: false, error: "", notice: "", branchNotice: "", readRevision: 0 });
 
 /** The checkout is the scope: thread navigation must never retarget a Git action. */
 export function useGitWorkspace(options: Options) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const viewerRef = useRef({ cwd: options.cwd, projectPath: options.projectPath, enabled: options.enabled, isolated: options.isolated, generation: 0 });
+  const viewer = viewerRef.current;
+  if (viewer.cwd !== options.cwd || viewer.projectPath !== options.projectPath
+    || viewer.enabled !== options.enabled || viewer.isolated !== options.isolated) {
+    viewerRef.current = { cwd: options.cwd, projectPath: options.projectPath, enabled: options.enabled, isolated: options.isolated, generation: viewer.generation + 1 };
+  }
   const [state, setState] = useState<State>(() => empty(options.cwd));
   const stateRef = useRef(state);
   stateRef.current = state;
   const generation = useRef(0);
   const mounted = useRef(true);
   const readSequence = useRef(0);
+  const successfulReads = useRef(0);
   const readsPending = useRef(new Map<string, number>());
   const mutationsPending = useRef(new Set<string>());
   const update = useCallback((cwd: string, value: Partial<State>) => {
@@ -44,12 +53,15 @@ export function useGitWorkspace(options: Options) {
     });
   }, []);
   const accept = useCallback((cwd: string, snapshot: GitWorkspaceSnapshot, value: Partial<State> = {}) => {
-    if (!snapshot) return;
+    if (!snapshot || !mounted.current || optionsRef.current.cwd !== cwd) return;
     const previous = stateRef.current.cwd === cwd ? stateRef.current.snapshot : null;
     const branchNotice = previous?.branch && previous.branch !== snapshot.branch
       ? `${optionsRef.current.isolated ? "This folder" : "The shared project"} moved from ${previous.branch} to ${snapshot.branch ?? "a detached commit"}.${optionsRef.current.isolated ? "" : " All shared threads use this branch."}`
       : stateRef.current.cwd === cwd ? stateRef.current.branchNotice : "";
-    update(cwd, { snapshot, branchNotice, ...value });
+    // Counts, HEAD and staging paths cannot reveal same-count content edits.
+    // Consumers may lazily reread their selected preview after this signal.
+    successfulReads.current += 1;
+    update(cwd, { snapshot, branchNotice, ...value, readRevision: successfulReads.current });
   }, [update]);
 
   const refresh = useCallback(async () => {
@@ -63,7 +75,7 @@ export function useGitWorkspace(options: Options) {
       const snapshot = await getGitWorkspace(cwd);
       if (revision === generation.current) accept(cwd, snapshot, { error: "" });
     } catch (error) {
-      if (revision === generation.current) update(cwd, { error: friendlyError(error) });
+      if (revision === generation.current) update(cwd, { error: formatGitError(error) });
     } finally {
       if (readsPending.current.get(scope) === request) {
         readsPending.current.delete(scope);
@@ -112,7 +124,7 @@ export function useGitWorkspace(options: Options) {
     let changed = false;
     let failed = false;
     try { changed = await operation(captured); }
-    catch (error) { failed = true; update(captured.cwd, { error: friendlyError(error) }); }
+    catch (error) { failed = true; update(captured.cwd, { error: formatGitError(error) }); }
     finally {
       leases.forEach(releasePullRequestMutation);
       mutationsPending.current.delete(scope);
@@ -142,11 +154,16 @@ export function useGitWorkspace(options: Options) {
   }, [accept, mutate]);
 
   const updateBase = useCallback(async (repository: string, base: string) => {
+    const intent = viewerRef.current.generation;
+    const stillSelected = () => mounted.current && optionsRef.current.enabled && viewerRef.current.generation === intent;
+    if (!stillSelected()) return;
     await mutate(async (captured) => {
       const path = captured.projectPath || captured.cwd!;
       const before = await getGitWorkspace(path);
+      if (!stillSelected()) return false;
       if (!before.headOid || !before.branch) throw new Error("The local project needs a named branch and an initial commit before updating.");
       if (!await captured.confirmUpdate(before, base)) return false;
+      if (!stillSelected()) return false;
       const reason = optionsRef.current.blocked([...new Set(
         [captured.cwd, captured.projectPath]
           .filter((value): value is string => Boolean(value))
@@ -160,5 +177,7 @@ export function useGitWorkspace(options: Options) {
     });
   }, [accept, mutate, update]);
 
-  return { ...(state.cwd === options.cwd ? state : empty(options.cwd)), refresh, onBranch, fetch, updateBase };
+  return { ...(state.cwd === options.cwd ? state : empty(options.cwd)),
+    busy: Boolean(options.cwd && mutationsPending.current.has(normalizedProjectPath(options.cwd))),
+    refresh, onBranch, fetch, updateBase };
 }

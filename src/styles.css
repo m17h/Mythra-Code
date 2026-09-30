@@ -112,8 +112,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-chat-font="serif"] { --chat-font: var(--chat-font-serif); }
 .app-shell[data-chat-font="mono"] { --chat-font: var(--chat-font-mono); }
 .app-shell[data-color-scheme="light"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
-/* The two light palettes share component treatment; their semantic accent
-   blocks below keep Mythra cyan and Kiwi green. */
+/* Light palettes share component treatment; their palette blocks below
+   provide each theme's surfaces and semantic accent. */
 .app-shell[data-color-scheme="light"] {
   --ink-2: #3c443c; --line-quiet: rgba(25,35,20,.06); --green-line: rgba(62,142,34,.3); --info: #14639f;
   --elev-1: 0 1px 2px rgba(52,62,44,.09);
@@ -268,6 +268,49 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="light-mythra"] .reasoning-ticks i, .app-shell[data-theme="light-mythra"] .openrouter-reasoning-ticks i { border-color: #becacd; background: #ebf1f2; }
 .app-shell[data-theme="light-mythra"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), #d3dddf var(--reasoning-fill), #d3dddf 100%); }
 .app-shell[data-theme="light-mythra"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), #d3dddf var(--router-fill), #d3dddf 100%); }
+
+/* Atari: warm console-era parchment and oxblood, not bright white with a red
+   button. The shared light treatment still owns provider marks and diff status. */
+.app-shell[data-theme="atari"] {
+  --bg: #eee5d2; --sidebar: #e4d7bd; --panel: #f7efdf; --panel-2: #eee1cc; --panel-3: #dfcdb0;
+  --field: #fff8ec; --menu-surface: #fff7e9; --topbar: rgba(238,229,210,.88);
+  --line: rgba(76,52,31,.13); --line-strong: rgba(76,52,31,.23); --line-quiet: rgba(76,52,31,.07);
+  --text: #342a20; --ink-2: #574738; --muted: #5d4734; --muted-2: #604936;
+  --green: #8e3b32; --green-soft: rgba(142,59,50,.09); --green-line: rgba(142,59,50,.3);
+  --info: #864039; --orange: #885813; --red: #a02e29;
+  --shadow: 0 22px 70px rgba(76,52,31,.2); --elev-1: 0 1px 2px rgba(76,52,31,.1);
+  --elev-2: 0 6px 18px rgba(76,52,31,.12); --elev-3: 0 16px 40px rgba(76,52,31,.16);
+}
+.app-shell[data-theme="atari"] :is(.permission-menu, .approval-modal, .model-menu, .openrouter-menu, .mention-menu, .subagent-panel, .app-select-menu, .row-menu-list) { background: var(--menu-surface); }
+.app-shell[data-theme="atari"] :is(.file-search, .number-stepper) { background: var(--field); }
+/* Compact forms render unboxed provider glyphs, unlike the branded tiles. */
+.app-shell[data-theme="atari"] :is(.app-select, .sa-add-row) .claude-logo-option { fill: #a34d37; }
+.app-shell[data-theme="atari"] :is(.app-select, .sa-add-row) .openai-logo-option { fill: #1a1d18; }
+.app-shell[data-theme="atari"] .message.user .message-body { background: var(--panel-2); }
+.app-shell[data-theme="atari"] .message-body { color: var(--text); }
+.app-shell[data-theme="atari"] .message.user .message-avatar { background: var(--panel-3); }
+.app-shell[data-theme="atari"] :is(.code-block pre, .approval-command, .file-preview, .diff-view, .git-screen) { background: var(--field); color: var(--ink-2); }
+.app-shell[data-theme="atari"] .code-copy { background: var(--panel-2); }
+.app-shell[data-theme="atari"] .rich-markdown code:not(pre code) { color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme="atari"] .rich-markdown a { color: var(--green); }
+.app-shell[data-theme="atari"] .studio-dock { background: var(--panel-2); }
+.app-shell[data-theme="atari"] .studio-tabs { background: var(--sidebar); }
+.app-shell[data-theme="atari"] .studio-header { background: color-mix(in srgb, var(--panel-2) 94%, transparent); }
+.app-shell[data-theme="atari"] .activity-icon { background: var(--panel-3); color: var(--muted); }
+/* The warm sidebar and selected rows need full-strength directory ink. */
+.app-shell[data-theme="atari"] .thread-card-directory { opacity: 1; }
+.app-shell[data-theme="atari"] :is(.secondary-button, .new-thread-button, .workspace-row, .thread-row, .provider-card, .openrouter-options strong, .studio-list-row strong) { color: var(--ink-2); }
+.app-shell[data-theme="atari"] :is(.studio-tabs button, .studio-actions button, .toolbar-button, .reasoning-text, .activity-copy > span, .activity-toggle span, .permission-menu button, .model-menu-option, .model-menu-option small, .model-menu-heading, .composer-caption, .file-preview pre) { color: var(--muted); }
+.app-shell[data-theme="atari"] :is(.composer textarea, .prompt-editor)::placeholder { color: var(--muted-2); }
+.app-shell[data-theme="atari"] :is(.toggle-switch, .mini-toggle, .sa-tile-switch):not(.on) { background: var(--panel-3); }
+.app-shell[data-theme="atari"] :is(.reasoning-ticks i, .openrouter-reasoning-ticks i) { border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme="atari"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), var(--panel-3) var(--reasoning-fill), var(--panel-3) 100%); }
+.app-shell[data-theme="atari"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), var(--panel-3) var(--router-fill), var(--panel-3) 100%); }
+
+/* Monochrome keeps Mythra's elevations and semantic warning/error colours.
+   Only decorative model effects are desaturated; branding and status stay clear. */
+.app-shell[data-theme="monochrome"] { --green: #eceeeb; --green-soft: rgba(236,238,235,.09); --green-line: rgba(236,238,235,.26); --info: #c3c7c4; --muted: #959ba3; }
+.app-shell[data-theme="monochrome"] :is(.reasoning-rail, .reasoning-heading, .reasoning-labels, .openrouter-reasoning-rail, .openrouter-reasoning-heading, .openrouter-reasoning-labels) { filter: grayscale(1); }
 .sidebar { position: relative; z-index: 2; display: flex; flex-direction: column; flex: 0 0 var(--sidebar-width, var(--sidebar-width-fallback, 264px)); width: var(--sidebar-width, var(--sidebar-width-fallback, 264px)); background: var(--sidebar); border-right: 1px solid var(--line); transition: width var(--t-mid) var(--ease), flex-basis var(--t-mid) var(--ease), opacity var(--t-fast) ease; overflow: hidden; }
 .sidebar.closed { width: 0; flex-basis: 0; opacity: 0; border-right: 0; }
 .sidebar-brand { display: flex; align-items: center; height: var(--topbar-h); padding: 0 var(--s-3) 0 var(--s-4); gap: var(--s-2); font-size: var(--fs-body); font-weight: 650; letter-spacing: var(--track-display); white-space: nowrap; }
@@ -1060,6 +1103,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-select-search input { min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-micro); }
 .app-select-search input::placeholder { color: var(--muted-2); }
 .app-select-options { max-height: 210px; overflow-y: auto; }
+.app-select-menu[popover] .app-select-search { flex-shrink: 0; }
+.app-select-menu[popover] .app-select-options { min-height: 0; }
 .app-select-options > button, .app-select-options .model-row > button:not(.model-star) { width: 100%; min-height: 34px; display: grid; grid-template-columns: minmax(0, 1fr) 14px; align-items: center; gap: 6px; padding: 5px 7px; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; text-align: left; cursor: pointer; }
 .app-select-options > button:hover:not(:disabled), .app-select-options > button:focus-visible:not(:disabled), .app-select-options .model-row > button:not(.model-star):hover:not(:disabled), .app-select-options .model-row > button:not(.model-star):focus-visible:not(:disabled) { color: var(--text); background: rgba(255,255,255,.05); }
 .app-select-options .model-row > button:not(.model-star):is(:disabled, [aria-disabled="true"]) { color: var(--muted-2); cursor: not-allowed; }
@@ -1173,24 +1218,33 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 .context-meter { color: var(--muted-2); font-variant-numeric: tabular-nums; }
 .context-meter.warn { color: var(--orange); }
-.error-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 10%, transparent); color: color-mix(in srgb, var(--red) 78%, var(--text)); font-size: var(--fs-meta); }
+.error-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid color-mix(in srgb, var(--red) 24%, transparent); border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 10%, transparent); color: color-mix(in srgb, var(--red) 78%, var(--text)); font-size: var(--fs-meta); }
 .error-banner button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
-.error-banner span { flex: 1; }
+.error-banner > span { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; white-space: pre-line; }
 .error-banner button.error-settings { min-height: 25px; display: flex; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--red) 20%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--red) 6%, transparent); font-size: var(--fs-meta); white-space: nowrap; }
+.error-banner-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; max-width: 100%; }
 .error-banner button:hover { color: color-mix(in srgb, var(--red) 55%, var(--text)); }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(2,3,4,.68); backdrop-filter: blur(7px); }
 .settings-backdrop { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 300ms, backdrop-filter 260ms ease; }
 .settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; animation: settings-backdrop-enter 210ms ease both; transition-delay: 0s; }
-.settings-modal { position: relative; width: min(920px, 100%); height: min(720px, calc(100vh - 60px)); max-height: calc(100vh - 40px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
-/* The usage dashboard's charts and tables get a wider sheet; other sections keep the reading width. */
-.settings-modal.settings-modal-wide { width: min(1200px, 100%); height: min(880px, calc(100vh - 40px)); }
-.settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); animation: settings-modal-enter 300ms cubic-bezier(.2,.86,.24,1) both; }
+.settings-modal { position: relative; width: min(920px, 100%); height: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease, width 320ms cubic-bezier(.2,.86,.24,1), height 320ms cubic-bezier(.2,.86,.24,1); }
+/* The usage dashboard's charts and tables get a wider sheet; other sections keep the reading width.
+   The real box resizes (the backdrop grid keeps it centred) so text never scales. Keep resizing
+   through the exit too, so closing midway doesn't snap. Sizes are percentages of the backdrop's padded
+   grid area rather than vh, so they stay inside the window under the shell's UI-scale zoom. */
+.settings-modal.settings-modal-wide { width: min(1200px, 100%); height: min(880px, 100%); }
+/* The entrance only fills backwards: its last frame equals the open style, so once it ends it
+   releases the sheet instead of holding transform and filter over every later resize. */
+.settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); animation: settings-modal-enter 300ms cubic-bezier(.2,.86,.24,1) backwards; }
 .settings-backdrop.closed { animation: settings-backdrop-exit 240ms ease both; transition: none; }
-.settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); animation: settings-modal-exit 240ms cubic-bezier(.4,0,.8,.2) both; transition: background 260ms ease; }
+.settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); animation: settings-modal-exit 240ms cubic-bezier(.4,0,.8,.2) both; transition: background 260ms ease, width 320ms cubic-bezier(.2,.86,.24,1), height 320ms cubic-bezier(.2,.86,.24,1); }
 @keyframes settings-backdrop-exit { from { opacity: 1; visibility: visible; backdrop-filter: blur(7px); } to { opacity: 0; visibility: hidden; backdrop-filter: blur(0); } }
 @keyframes settings-modal-exit { from { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); } to { opacity: 0; transform: translateY(14px) scale(.975); filter: saturate(.72); } }
-@media (prefers-reduced-motion: reduce) { .settings-backdrop.open, .settings-backdrop.closed, .settings-backdrop.open .settings-modal, .settings-backdrop.closed .settings-modal { animation: none; transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .settings-backdrop.open, .settings-backdrop.closed, .settings-backdrop.open .settings-modal, .settings-backdrop.closed .settings-modal { animation: none; transition: none; }
+  .settings-modal .spin { animation: none; }
+}
 @keyframes settings-backdrop-enter { from { opacity: 0; backdrop-filter: blur(0); } to { opacity: 1; backdrop-filter: blur(7px); } }
 @keyframes settings-modal-enter { from { opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); } to { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); } }
 .runtime-setup-backdrop { z-index: 70; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 280ms; }
@@ -1238,7 +1292,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .settings-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: 224px minmax(0,1fr); overflow: hidden; }
 
 /* -- Sidebar -- */
-.settings-nav { min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--sidebar) 76%, var(--panel)); }
+.settings-nav { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--sidebar) 76%, var(--panel)); }
 .settings-nav-head { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-4) var(--s-3) var(--s-3); }
 .settings-nav-head h2 { margin: 0; padding: 0 var(--s-1); color: var(--text); font-size: var(--fs-lede); font-weight: 660; letter-spacing: var(--track-display); }
 .settings-search { position: relative; display: grid; grid-template-columns: 26px minmax(0,1fr) auto; align-items: center; height: var(--ctl-md); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease; }
@@ -1750,14 +1804,15 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .command-palette-trigger:hover { color: var(--text); border-color: var(--line-strong); background: rgba(255,255,255,.04); }
 .command-palette-trigger kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted-2); background: rgba(0,0,0,.22); font: 10.5px var(--font-mono); }
 /* ---- Command palette ---- */
-.palette-backdrop { z-index: 100; place-items: start center; padding-top: min(15vh, 130px); }
-.command-palette { width: min(620px, calc(100vw - 40px)); overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: color-mix(in srgb, var(--panel) 97%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); animation: palette-in 180ms var(--ease); }
+.palette-backdrop { z-index: 100; place-items: start center; grid-template-rows: minmax(0,1fr); padding-top: min(15vh, 130px); }
+.command-palette { width: min(620px, calc(100vw - 40px)); max-width: 100%; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: color-mix(in srgb, var(--panel) 97%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); animation: palette-in 180ms var(--ease); }
+.palette-search, .palette-footer { flex: 0 0 auto; }
 .palette-search { height: 54px; display: grid; grid-template-columns: 22px minmax(0,1fr) 28px; align-items: center; gap: var(--s-2); padding: 0 var(--s-3) 0 var(--s-4); border-bottom: 1px solid var(--line); color: var(--muted); }
 .palette-search input { height: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--fs-lede); letter-spacing: var(--track-tight); }
 .palette-search input::placeholder { color: var(--muted-2); }
 .palette-search button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; cursor: pointer; }
 .palette-search button:hover { color: var(--text); background: rgba(255,255,255,.06); }
-.palette-results { max-height: min(460px, 56vh); overflow: auto; padding: var(--s-1); scroll-padding: var(--s-2) 0; }
+.palette-results { min-height: 0; max-height: min(460px, 56vh); overflow: auto; padding: var(--s-1); scroll-padding: var(--s-2) 0; }
 /* Result groups: a sticky label keeps the category visible while scrolling. */
 .palette-group-label { position: sticky; top: 0; z-index: 1; display: block; padding: var(--s-2) var(--s-2) var(--s-1); color: var(--muted-2); background: linear-gradient(to bottom, color-mix(in srgb, var(--panel) 97%, transparent) 72%, transparent); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
 .palette-group + .palette-group { margin-top: var(--s-1); }
@@ -2529,7 +2584,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
   .model-power-control { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .reasoning-control { grid-column: 1 / -1; }
   .model-picker-copy em { display: none; }
-  .settings-modal { height: calc(100vh - 24px); }
+  .settings-modal, .settings-modal.settings-modal-wide { height: 100%; }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
   /* The rail becomes a scrolling tab strip above the pane. The window title
      goes with it — the pane header already says where you are — but the search

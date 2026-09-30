@@ -227,6 +227,19 @@
 
 /* ---- Motion ---- */
 
+/* ---- Checks, by name ---- */
+
+.thread-pr-checks { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: start; gap: 4px; }
+.thread-pr-checks ul { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0; padding: 0; list-style: none; }
+.thread-pr-checks li { min-width: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; min-height: 24px; color: var(--ink-2); font-size: var(--fs-meta); }
+.thread-pr-checks li > svg { color: var(--muted-2); }
+.thread-pr-checks li.bad > svg { color: var(--red); }
+.thread-pr-checks li.wait > svg { color: var(--orange); }
+.thread-pr-checks li.good > svg { color: var(--green); }
+.thread-pr-check-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.thread-pr-check-state { color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; }
+.thread-pr-checks li.bad .thread-pr-check-state { color: color-mix(in srgb, var(--red) 66%, var(--text)); }
+
 @keyframes thread-pr-pop { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @keyframes thread-pr-expand { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: none; } }
 @keyframes thread-pr-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }

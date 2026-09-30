@@ -32,7 +32,9 @@ import {
   type PullRequestContext,
   type PullRequestMergeMethod,
   type PullRequestPanelProps,
+  type PullRequestCreationDraft,
 } from "../lib/pullRequests";
+import { emptyPullRequestCreationDraft } from "../lib/pullRequestCreationDrafts";
 import "./thread-pull-requests.css";
 
 const MERGE_METHOD_LABELS: Record<PullRequestMergeMethod, string> = {
@@ -73,7 +75,7 @@ const LIST_CEILING = 200;
  * Reading GitHub's vocabulary back out in plain words
  * ------------------------------------------------------------------ */
 
-function stateOf(pullRequest: PullRequest) {
+export function stateOf(pullRequest: Pick<PullRequest, "state" | "isDraft">) {
   if (pullRequest.state === "MERGED") return { key: "merged", label: "Merged", icon: GitMerge };
   if (pullRequest.state === "CLOSED") return { key: "closed", label: "Closed", icon: GitPullRequestClosed };
   if (pullRequest.isDraft) return { key: "draft", label: "Draft", icon: GitPullRequestDraft };
@@ -90,7 +92,7 @@ const RUNNING_CHECKS = new Set(["PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "
  */
 const PASSING_CHECKS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
-function summarizeChecks(checks: PullRequest["checks"]) {
+export function summarizeChecks(checks: PullRequest["checks"]) {
   let failing = 0;
   let running = 0;
   let unknown = 0;
@@ -105,7 +107,7 @@ function summarizeChecks(checks: PullRequest["checks"]) {
   return { failing, running, unknown, passed, total: checks.length };
 }
 
-function checksLine(checks: PullRequest["checks"]): { tone: string; text: string } {
+export function checksLine(checks: PullRequest["checks"]): { tone: string; text: string } {
   const { failing, running, unknown, passed, total } = summarizeChecks(checks);
   if (!total) return { tone: "quiet", text: "No checks reported" };
   if (failing) return { tone: "bad", text: `${failing} of ${total} check${total === 1 ? "" : "s"} failing` };
@@ -114,7 +116,7 @@ function checksLine(checks: PullRequest["checks"]): { tone: string; text: string
   return { tone: "good", text: `${passed} check${passed === 1 ? "" : "s"} passed` };
 }
 
-function reviewLine(decision: string): { tone: string; text: string } {
+export function reviewLine(decision: string): { tone: string; text: string } {
   switch ((decision || "").toUpperCase()) {
     case "APPROVED": return { tone: "good", text: "Approved" };
     case "CHANGES_REQUESTED": return { tone: "bad", text: "Changes requested" };
@@ -124,7 +126,7 @@ function reviewLine(decision: string): { tone: string; text: string } {
 }
 
 /** A branch name turned into a first-draft title the person can edit. */
-function titleFromBranch(branch: string): string {
+export function titleFromBranch(branch: string): string {
   const tail = branch.split("/").pop() ?? branch;
   const words = tail.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "";
@@ -180,17 +182,17 @@ function mergeBlockers(pullRequest: PullRequest, mutationBlockedReason: string |
  * always the revision sent.
  * ------------------------------------------------------------------ */
 
-interface CreateSnapshot { repository: string; branch: string; headOid: string }
-interface PullRequestSnapshot { repository: string; number: number; headOid: string }
+export interface CreateSnapshot { repository: string; branch: string; headOid: string }
+export interface PullRequestSnapshot { repository: string; number: number; headOid: string }
 
-const createSnapshotOf = (context: PullRequestContext): CreateSnapshot =>
+export const createSnapshotOf = (context: PullRequestContext): CreateSnapshot =>
   ({ repository: context.repository, branch: context.branch, headOid: context.headOid });
 
-const pullRequestSnapshotOf = (pullRequest: PullRequest): PullRequestSnapshot =>
+export const pullRequestSnapshotOf = (pullRequest: PullRequest): PullRequestSnapshot =>
   ({ repository: pullRequest.repository, number: pullRequest.number, headOid: pullRequest.headOid });
 
 /** What moved, said specifically enough to be worth reading. */
-function createDrift(snapshot: CreateSnapshot, context: PullRequestContext | null): string | null {
+export function createDrift(snapshot: CreateSnapshot, context: PullRequestContext | null): string | null {
   if (!context) return "Mythra Code can no longer read this folder's Git repository.";
   if (context.repository !== snapshot.repository) return `This folder now points at ${context.repository}.`;
   if (context.branch !== snapshot.branch) return `This folder moved from ${snapshot.branch} to ${context.branch}.`;
@@ -198,13 +200,76 @@ function createDrift(snapshot: CreateSnapshot, context: PullRequestContext | nul
   return null;
 }
 
-function pullRequestDrift(snapshot: PullRequestSnapshot, pullRequest: PullRequest | null): string | null {
-  if (!pullRequest) return "This pull request is no longer attached to the thread.";
+export function pullRequestDrift(snapshot: PullRequestSnapshot, pullRequest: PullRequest | null, missing = "This pull request is no longer attached to the thread."): string | null {
+  if (!pullRequest) return missing;
   if (pullRequest.repository !== snapshot.repository || pullRequest.number !== snapshot.number) {
     return `The attached pull request changed to ${pullRequest.repository} #${pullRequest.number}.`;
   }
   if (pullRequest.headOid !== snapshot.headOid) return "New commits were pushed to this pull request since you opened this.";
   return null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Checks, by name
+ *
+ * A count says something is wrong; a name and a log link say what. Failing
+ * and unfinished checks are listed first and in full; passing ones fold into
+ * a count that expands on request.
+ * ------------------------------------------------------------------ */
+
+const CHECK_ROW_LIMIT = 24;
+
+function checkTone(state: string): "bad" | "wait" | "good" | "unknown" {
+  const value = (state || "").toUpperCase();
+  if (FAILING_CHECKS.has(value)) return "bad";
+  if (RUNNING_CHECKS.has(value)) return "wait";
+  if (PASSING_CHECKS.has(value)) return "good";
+  return "unknown";
+}
+
+const CHECK_TONE_LABEL = { bad: "Failing", wait: "Pending", good: "Passed", unknown: "No result" } as const;
+const CHECK_ORDER = { bad: 0, wait: 1, unknown: 2, good: 3 } as const;
+
+export function PullRequestChecks({ checks, label = "Checks" }: { checks: PullRequest["checks"]; label?: string }) {
+  const [showPassed, setShowPassed] = useState(false);
+  const listId = useId();
+  if (!checks.length) return null;
+  const rows = checks
+    .map((check, index) => ({ ...check, tone: checkTone(check.state), index }))
+    .sort((left, right) => CHECK_ORDER[left.tone] - CHECK_ORDER[right.tone] || left.index - right.index);
+  const attention = rows.filter((row) => row.tone !== "good");
+  const passed = rows.length - attention.length;
+  const shown = [
+    ...attention.slice(0, CHECK_ROW_LIMIT),
+    ...(showPassed ? rows.filter((row) => row.tone === "good").slice(0, CHECK_ROW_LIMIT) : []),
+  ];
+  const hidden = (showPassed ? rows.length : attention.length) - shown.length;
+  return (
+    <div className="thread-pr-checks">
+      {shown.length > 0 && (
+        <ul id={listId} aria-label={label}>
+          {shown.map((check) => (
+            <li key={`${check.index}-${check.name}`} className={check.tone}>
+              {check.tone === "bad" ? <CircleAlert size={12} aria-hidden="true" /> : check.tone === "wait" ? <Clock size={12} aria-hidden="true" /> : check.tone === "good" ? <CircleCheck size={12} aria-hidden="true" /> : <CircleDot size={12} aria-hidden="true" />}
+              <span className="thread-pr-check-name" title={check.name}>{check.name || "Unnamed check"}</span>
+              <span className="thread-pr-check-state">{CHECK_TONE_LABEL[check.tone]}</span>
+              {check.url && (
+                <button type="button" className="thread-pr-inline-button" onClick={() => { void openUrl(check.url).catch(() => undefined); }} aria-label={`Open ${check.name || "check"} details on GitHub`}>
+                  <ExternalLink size={11} aria-hidden="true" /> Log
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {hidden > 0 && <p className="thread-pr-fineprint">and {hidden} more on GitHub</p>}
+      {passed > 0 && (
+        <button type="button" className="thread-pr-inline-button" aria-expanded={showPassed} aria-controls={shown.length ? listId : undefined} onClick={() => setShowPassed(!showPassed)}>
+          {showPassed ? "Hide passed checks" : `Show ${passed} passed check${passed === 1 ? "" : "s"}`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -245,13 +310,9 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
   const [card, setCard] = useState<OpenCard>("none");
   const [reference, setReference] = useState("");
   const [branchName, setBranchName] = useState("");
-  const [title, setTitle] = useState("");
-  const [titleSource, setTitleSource] = useState<"commit" | "branch" | null>(null);
-  const [body, setBody] = useState("");
-  const [base, setBase] = useState("");
-  const [draft, setDraft] = useState(false);
-  const [commitAll, setCommitAll] = useState(false);
-  const [commitMessage, setCommitMessage] = useState("");
+  const [creationDraft, setCreationDraft] = useState(emptyPullRequestCreationDraft);
+  const [creationScope, setCreationScope] = useState("");
+  const { title, titleSource, body, base, draft, commitAll, commitMessage } = creationDraft;
   const [createSnapshot, setCreateSnapshot] = useState<CreateSnapshot | null>(null);
   const [actionSnapshot, setActionSnapshot] = useState<PullRequestSnapshot | null>(null);
   const [method, setMethod] = useState<PullRequestMergeMethod | null>(null);
@@ -267,13 +328,8 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
   useEffect(() => {
     setCard("none");
     setReference("");
-    setTitle("");
-    setTitleSource(null);
-    setBody("");
-    setBase("");
-    setDraft(false);
-    setCommitAll(false);
-    setCommitMessage("");
+    setCreationDraft(emptyPullRequestCreationDraft());
+    setCreationScope("");
     setCreateSnapshot(null);
     setActionSnapshot(null);
     setAuto(false);
@@ -301,7 +357,18 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
   const canAttach = !busy;
   const canChange = !blocked && !busy;
 
+  const draftScopeOf = (current: PullRequestContext) => `${props.creationDraftScope ?? props.threadId ?? ""}\0${JSON.stringify([current.repository.toLowerCase(), current.branch, current.headOid])}`;
+  function rememberCreationDraft(scope: string, value: PullRequestCreationDraft) {
+    props.creationDraftStore?.write(scope, value);
+    setCreationDraft(value);
+    setCreationScope(scope);
+  }
+  function patchCreationDraft(patch: Partial<PullRequestCreationDraft>) {
+    rememberCreationDraft(creationScope, { ...creationDraft, ...patch });
+  }
+
   async function run(kind: OpenCard | "attach", action: () => Promise<void>) {
+    const submittedDraft = kind === "create" ? props.creationDraftStore?.read(creationScope) : undefined;
     setPending(kind);
     try {
       await action();
@@ -309,6 +376,13 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
       // person typed exactly where it was, next to the error the hook reports.
       setCard("none");
       if (kind === "attach") setReference("");
+      // A later editor may have been mounted while this request was pending.
+      // Clear only the submitted draft, never text typed after navigation.
+      if (kind === "create") {
+        if (submittedDraft && props.creationDraftStore?.read(creationScope) === submittedDraft) props.creationDraftStore.clear(creationScope);
+        setCreationDraft(emptyPullRequestCreationDraft());
+        setCreationScope("");
+      }
     } catch {
       /* The parent hook owns error reporting; the card stays open. */
     } finally {
@@ -318,14 +392,19 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
 
   function openCreate() {
     if (card === "create" || !context) { setCard("none"); return; }
+    const scope = draftScopeOf(context);
+    const saved = props.creationDraftStore?.read(scope)
+      ?? (creationScope === scope ? creationDraft : emptyPullRequestCreationDraft());
+    const next = { ...saved };
     const firstCommit = context.commits?.[0]?.trim();
-    if (!title) {
+    if (!next.title) {
       // Straight from the branch or the first commit subject the person wrote.
       // Nothing here is generated, and the form says which one it used.
-      if (firstCommit) { setTitle(firstCommit); setTitleSource("commit"); }
-      else { setTitle(titleFromBranch(context.branch)); setTitleSource("branch"); }
+      if (firstCommit) { next.title = firstCommit; next.titleSource = "commit"; }
+      else { next.title = titleFromBranch(context.branch); next.titleSource = "branch"; }
     }
-    if (!base) setBase(context.defaultBranch);
+    if (!next.base) next.base = context.defaultBranch;
+    rememberCreationDraft(scope, next);
     setCreateSnapshot(createSnapshotOf(context));
     setCard("create");
   }
@@ -371,7 +450,7 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
               only repeated here when there are no chips to carry it. */}
           <small>{linked && pullRequest
             ? (context ? "Attached to this thread" : `Attached to this thread · ${pullRequest.repository}`)
-            : context ? "No pull request yet" : "This thread has no pull request yet"}</small>
+            : loading ? "Checking pull request status…" : context ? "No pull request yet" : "This thread has no pull request yet"}</small>
         </div>
         <button
           type="button"
@@ -405,6 +484,11 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
               ].filter(Boolean).join(" · ")} of {context.defaultBranch}
             </span>
           )}
+        </div>
+      ) : loading ? (
+        <div className="thread-pr-note" role="status">
+          <LoaderCircle className="spin" size={13} aria-hidden="true" />
+          <span>Checking this checkout and GitHub pull request status…</span>
         </div>
       ) : (
         <div className="thread-pr-note" role="status">
@@ -461,6 +545,7 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
               <dt>Review</dt><dd>{review.text}</dd>
             </div>
           </dl>
+          <PullRequestChecks checks={pullRequest.checks} label={`Checks for #${pullRequest.number}`} />
 
           {headElsewhere && (
             <div className="thread-pr-note" role="status">
@@ -487,9 +572,9 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
                   type="button"
                   className="thread-pr-inline-button"
                   onClick={() => { void props.onUpdateLocal?.().catch(() => undefined); }}
-                  disabled={busy || props.updateLocalBusy}
+                  disabled={busy || props.updateLocalBusy || !!blocked}
                   aria-busy={props.updateLocalBusy}
-                  title={`Check out ${pullRequest.baseRefName} and fast-forward it from GitHub. Refused if this folder has uncommitted changes or has moved on.`}
+                  title={blocked ?? `Check out ${pullRequest.baseRefName} and fast-forward it from GitHub. Refused if this folder has uncommitted changes or has moved on.`}
                 >
                   {props.updateLocalBusy
                     ? <><LoaderCircle className="spin" size={12} /> Updating…</>
@@ -715,18 +800,21 @@ function ThreadPullRequestPanelInner(props: ThreadPullRequestPanelProps) {
                   isolated={isolated}
                   title={title}
                   titleSource={titleSource}
-                  onTitle={(value) => { setTitle(value); setTitleSource(null); }}
-                  body={body} onBody={setBody}
-                  base={base} onBase={setBase}
-                  draft={draft} onDraft={setDraft}
-                  commitAll={commitAll} onCommitAll={setCommitAll}
-                  commitMessage={commitMessage} onCommitMessage={setCommitMessage}
+                  onTitle={(value) => patchCreationDraft({ title: value, titleSource: null })}
+                  body={body} onBody={(value) => patchCreationDraft({ body: value })}
+                  base={base} onBase={(value) => patchCreationDraft({ base: value })}
+                  draft={draft} onDraft={(value) => patchCreationDraft({ draft: value })}
+                  commitAll={commitAll} onCommitAll={(value) => patchCreationDraft({ commitAll: value })}
+                  commitMessage={commitMessage} onCommitMessage={(value) => patchCreationDraft({ commitMessage: value })}
                   busy={busy || pending === "create"}
                   loading={loading}
                   disabled={!canChange}
                   disabledReason={blocked}
                   onRefresh={props.onRefresh}
-                  onReview={() => setCreateSnapshot(createSnapshotOf(context))}
+                  onReview={() => {
+                    rememberCreationDraft(draftScopeOf(context), creationDraft);
+                    setCreateSnapshot(createSnapshotOf(context));
+                  }}
                   onCancel={() => setCard("none")}
                   onSubmit={() => void run("create", () => props.onCreate({
                     // Head and expected revision come from the pinned
@@ -899,7 +987,7 @@ function AttachByReference({ repository, value, onChange, busy, disabled, onAtta
  * Create
  * ------------------------------------------------------------------ */
 
-function CreateEditor(props: {
+export function CreateEditor(props: {
   context: PullRequestContext;
   snapshot: CreateSnapshot;
   drift: string | null;
@@ -1032,7 +1120,7 @@ function CreateEditor(props: {
  * Mark ready for review
  * ------------------------------------------------------------------ */
 
-function ReadyConfirmation(props: {
+export function ReadyConfirmation(props: {
   pullRequest: PullRequest;
   drift: string | null;
   busy: boolean;
@@ -1078,7 +1166,7 @@ function ReadyConfirmation(props: {
  * Merge
  * ------------------------------------------------------------------ */
 
-function MergeConfirmation(props: {
+export function MergeConfirmation(props: {
   pullRequest: PullRequest;
   /** The branch this folder is on, when the app can read it. */
   localBranch?: string | null;
@@ -1113,6 +1201,9 @@ function MergeConfirmation(props: {
    */
   const [help, setHelp] = useState<PullRequestMergeMethod | null>(null);
   const [helpPinned, setHelpPinned] = useState(false);
+  // The thread and project panels can both have a merge open; their radio
+  // groups must never join into one.
+  const methodGroup = useId();
   const closeHelp = () => { setHelp(null); setHelpPinned(false); };
 
   // Dismissible without moving the pointer, which hover alone cannot offer.
@@ -1195,6 +1286,7 @@ function MergeConfirmation(props: {
               <MergeMethodChoice
                 key={option}
                 option={option}
+                group={methodGroup}
                 baseRefName={pullRequest.baseRefName}
                 checked={method === option}
                 open={help === option}
@@ -1329,6 +1421,7 @@ function MergeConfirmation(props: {
  */
 function MergeMethodChoice(props: {
   option: PullRequestMergeMethod;
+  group: string;
   /** Named in the copy, because "the base branch" needs explaining too. */
   baseRefName: string;
   checked: boolean;
@@ -1357,7 +1450,7 @@ function MergeMethodChoice(props: {
     >
       <div className="thread-pr-method-row">
         <label className="thread-pr-check">
-          <input type="radio" name="thread-pr-merge-method" value={option} checked={props.checked} onChange={props.onChoose} />
+          <input type="radio" name={props.group} value={option} checked={props.checked} onChange={props.onChoose} />
           <span><strong>{label}</strong></span>
         </label>
         {/* Deliberately a sibling of the label, not a child of it: a button

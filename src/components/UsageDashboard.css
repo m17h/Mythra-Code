@@ -1,8 +1,11 @@
-/* Two-series colors validated for color-vision deficiency and 3:1 contrast
-   against the dark and light panel surfaces (blue / orange). Theme accents
-   are not used for data: several themes set them close to each other. */
+/* Data palettes are independent from general UI accents and keep 3:1 contrast
+   against their surfaces. The subdued themes also distinguish series two by
+   texture so the comparison never relies on hue alone. */
 .usage-dashboard { container-type: inline-size; --usage-series-1: #3987e5; --usage-series-2: #d95926; }
 .app-shell[data-color-scheme="light"] .usage-dashboard { --usage-series-1: #2a78d6; --usage-series-2: #eb6834; }
+.app-shell[data-theme="atari"] .usage-dashboard { --usage-series-1: #8e3b32; --usage-series-2: #977030; }
+.app-shell[data-theme="monochrome"] .usage-dashboard { --usage-series-1: #eceeeb; --usage-series-2: #8d9299; }
+.app-shell:is([data-theme="atari"], [data-theme="monochrome"]) .usage-dashboard :is(.usage-chart-bar, .usage-swatch).series-2 { background: repeating-linear-gradient(135deg, var(--usage-series-2) 0 3px, var(--field) 3px 5px); }
 
 .usage-dashboard-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--s-2) var(--s-4); }
 .usage-dashboard-head > div:first-child > p { margin: var(--s-1) 0 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; max-width: 62ch; }
@@ -58,6 +61,16 @@
 .usage-dashboard-stats span, .usage-dashboard-stats small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
 .usage-dashboard-stats strong { font-size: clamp(18px, 2.4cqi, 24px); font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; }
 .usage-dashboard-caption, .usage-card-note { margin: var(--s-2) 0 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
+.usage-evidence { margin-top: var(--s-3); min-width: 0; }
+.usage-evidence > summary { display: flex; align-items: center; gap: 6px; width: fit-content; color: var(--muted); font-size: var(--fs-meta); border-radius: var(--r-xs); }
+.usage-evidence-body { margin-top: var(--s-2); padding: var(--s-3); max-height: min(40vh, 340px); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
+.usage-evidence-body:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-evidence-body p { margin: 0 0 var(--s-2); }
+.usage-evidence-body p:last-child { margin-bottom: 0; }
+.usage-evidence-body ul { margin: var(--s-2) 0; padding: 0; list-style: none; }
+.usage-evidence-body li { display: flex; flex-direction: column; gap: 2px; padding: var(--s-2) 0; border-top: 1px solid var(--line); }
+.usage-evidence-body strong { color: var(--text); font-weight: 500; }
+.usage-evidence-body small { font-size: var(--fs-micro); }
 
 .usage-panel { min-width: 0; }
 .usage-overview-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--s-3); margin-top: var(--s-3); align-items: start; }
@@ -85,6 +98,7 @@
 .usage-dashboard .usage-none { color: var(--muted); }
 .usage-component-table th[scope="row"] { width: 40%; }
 .usage-component-table td small { white-space: nowrap; }
+.usage-component-table .usage-metric-note { white-space: normal; overflow-wrap: anywhere; }
 .usage-earlier-row th { font-weight: 500 !important; }
 .usage-table-scroll { overflow-x: auto; }
 .usage-table-toggle { margin-top: var(--s-2); }
@@ -162,6 +176,85 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
 .usage-compare-rates thead td { color: var(--muted); font-weight: 500; }
 .usage-compare-whatif { margin: var(--s-3) 0 0; padding-left: 18px; font-size: var(--fs-meta); line-height: 1.6; color: var(--muted); }
 .usage-compare-whatif strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Token activity calendar: a year of squares, darker (or, on dark themes,
+   brighter) toward the theme accent as a day's tokens rise. Tracked days
+   without tokens are filled quietly; untracked days are hollow. */
+.usage-heat {
+  --heat-empty: color-mix(in srgb, var(--text) 9%, var(--field));
+  --heat-1: color-mix(in srgb, var(--green) 32%, var(--field));
+  --heat-2: color-mix(in srgb, var(--green) 54%, var(--field));
+  --heat-3: color-mix(in srgb, var(--green) 77%, var(--field));
+  --heat-4: var(--green);
+  --heat-edge: color-mix(in srgb, var(--text) 10%, transparent);
+  --heat-hollow: color-mix(in srgb, var(--text) 26%, transparent);
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+}
+.usage-heat-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s-2) var(--s-4); }
+.usage-heat-summary { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.usage-heat-scope { margin: var(--s-1) 0 var(--s-2); color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; max-width: 90ch; }
+.usage-heat-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; color: var(--muted); font-size: var(--fs-micro); }
+.usage-heat-legend > span:first-child { margin-right: 2px; }
+.usage-heat-legend > span:nth-child(7) { margin-left: 2px; }
+.usage-heat-legend-item { display: inline-flex; align-items: center; gap: 4px; margin-left: var(--s-3); }
+.usage-heat-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+
+/* The squares size to the panel between 10 and 14px; below that the year
+   scrolls sideways, starting at today. */
+.usage-heat-scroll { container-type: inline-size; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.usage-dashboard .usage-heat-table {
+  --cell: clamp(10px, calc((100cqi - 34px) / 53 - 3px), 14px);
+  width: auto; border-collapse: separate; border-spacing: 3px; font-size: var(--fs-micro); table-layout: auto;
+}
+.usage-dashboard .usage-heat-table :is(th, td) { padding: 0; border: 0; text-align: left; vertical-align: middle; line-height: 1; white-space: nowrap; }
+.usage-dashboard .usage-heat-table td { width: var(--cell); min-width: var(--cell); height: var(--cell); }
+.usage-dashboard .usage-heat-month { position: relative; height: 12px; color: var(--muted); font-weight: 400; }
+.usage-heat-month > span { position: absolute; left: 0; bottom: 1px; }
+.usage-dashboard .usage-heat-weekday { width: 26px; min-width: 26px; padding-right: 3px; color: var(--muted); font-weight: 400; }
+.usage-dashboard .usage-heat-table thead td { width: 26px; height: 12px; }
+
+.usage-heat-day, .usage-heat-swatch { border-radius: 2px; background: var(--heat-empty); box-shadow: inset 0 0 0 1px var(--heat-edge); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="1"] { background: var(--heat-1); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="2"] { background: var(--heat-2); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="3"] { background: var(--heat-3); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-level="4"] { background: var(--heat-4); }
+:is(.usage-heat-day, .usage-heat-swatch)[data-state="unavailable"] { background: transparent; box-shadow: inset 0 0 0 1px var(--heat-hollow); }
+.usage-dashboard .usage-heat-day { cursor: pointer; }
+.usage-heat-day.outside { opacity: .38; }
+.usage-heat-day:hover { outline: 1px solid color-mix(in srgb, var(--text) 55%, transparent); outline-offset: 1px; }
+.usage-heat-day[aria-selected="true"] { outline: 2px solid var(--text); outline-offset: 1px; opacity: 1; }
+.usage-dashboard .usage-heat-day:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; opacity: 1; }
+
+/* The day card sits in the top layer, so Settings' scrolling can't clip it.
+   Placement, width and height caps are set in visual pixels by script. */
+.usage-heat-card {
+  position: fixed; inset: auto; margin: 0; z-index: 260;
+  display: flex; flex-direction: column; width: 300px; box-sizing: border-box; overflow: hidden;
+  padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--elev-3, var(--shadow));
+  font-size: var(--fs-meta); line-height: 1.4; font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .usage-heat-card { animation: usage-heat-card-in 120ms var(--ease, ease-out); }
+}
+@keyframes usage-heat-card-in { from { opacity: 0; } }
+.usage-heat-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); }
+.usage-heat-card-head small { color: var(--muted); font-size: var(--fs-micro); white-space: nowrap; }
+.usage-heat-card-total { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2); margin: var(--s-2) 0 0; padding-bottom: var(--s-2); border-bottom: 1px solid var(--line); color: var(--muted); }
+.usage-heat-card-total strong { color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
+.usage-heat-card-note { margin: var(--s-2) 0 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; }
+.usage-heat-card-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-right: calc(-1 * var(--s-2)); padding-right: var(--s-2); border-radius: var(--r-xs); }
+.usage-heat-card-list:focus-visible { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 2px; }
+.usage-heat-provider { padding-top: var(--s-2); }
+.usage-heat-provider + .usage-heat-provider { margin-top: var(--s-1); border-top: 1px solid var(--line); }
+.usage-heat-provider :is(h6, li) { display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5ch; gap: var(--s-2); align-items: baseline; }
+.usage-heat-provider h6 { margin: 0; font-size: var(--fs-meta); font-weight: 600; }
+.usage-heat-provider ul { margin: 2px 0 0; padding: 0; list-style: none; }
+.usage-heat-provider li { padding: 2px 0 2px var(--s-2); color: var(--ink-2, var(--text)); }
+.usage-heat-provider :is(h6, li) > span:first-child { overflow-wrap: anywhere; }
+.usage-heat-provider :is(h6, li) > span:not(:first-child) { text-align: right; white-space: nowrap; }
+.usage-heat-provider li > span:last-child { color: var(--muted); }
 
 .usage-receipts { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); margin: var(--s-4) 0 0; padding-top: var(--s-3); border-top: 1px solid var(--line); font-size: var(--fs-meta); }
 .usage-receipts small { display: block; margin-top: 2px; color: var(--muted); }

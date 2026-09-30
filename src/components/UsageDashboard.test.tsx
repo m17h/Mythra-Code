@@ -4,8 +4,8 @@ import { UsageDashboard, modelLabel } from "./UsageDashboard";
 import { previewUsageSource } from "./usageDashboardPreview";
 import { legacyLedgerRecords, seedUsageDashboard } from "../test/usageFixture";
 import {
-  annotateThreadUsage, recordOpenRouterCharge, flushUsageLedger, formatEstimatedCost, resetUsageLedgerCache,
-  recordUsageDelta, updateCursorModelNames, usageTotals, USAGE_LEDGER_KEY,
+  annotateThreadUsage as annotateLedgerThreadUsage, recordOpenRouterCharge, flushUsageLedger, formatEstimatedCost, resetUsageLedgerCache,
+  recordUsageDelta as recordLedgerUsageDelta, recordAuxiliaryUsage, updateCursorModelNames, usageTotals, USAGE_LEDGER_KEY,
 } from "../lib/usageLedger";
 import { recordOfficialPricingResult } from "../lib/officialPricing";
 import { localDayKey, shiftDayKey, USAGE_HISTORY_KEY } from "../lib/usageHistory";
@@ -18,8 +18,97 @@ const openView = (name: string) => fireEvent.click(screen.getByRole("tab", { nam
 const cells = (table: HTMLElement, row: string) => [...within(table).getByRole("rowheader", { name: new RegExp(`^${row}(?![a-z ])`) }).closest("tr")!.querySelectorAll("td")].map((cell) => cell.textContent);
 const typeTable = () => screen.getByRole("table", { name: "Tokens and estimated cost by type, all models" });
 
+// Existing arithmetic fixtures describe fully observed synthetic requests.
+// Unknown cases below explicitly omit tier evidence or set reporting false.
+const annotateThreadUsage = (threadId: string, metadata: Parameters<typeof annotateLedgerThreadUsage>[1]) => annotateLedgerThreadUsage(threadId, {
+  ...(metadata.provider === "openai" ? { requestedServiceTier: "standard" } : {}), ...metadata,
+});
+const recordUsageDelta = (...args: Parameters<typeof recordLedgerUsageDelta>) => {
+  args[1] = { cacheReadReported: true, cacheWriteReported: true, cacheWriteInputTokens: 0, ...args[1] };
+  return recordLedgerUsageDelta(...args);
+};
+
 describe("local usage dashboard", () => {
   beforeEach(() => { resetUsageLedgerCache(); localStorage.clear(); });
+
+  const evidence = () => {
+    const guide = screen.getByText("Cache and service-tier evidence").closest("details")!;
+    fireEvent.click(guide.querySelector("summary")!);
+    return within(guide);
+  };
+  const observed = (inputTokens = 1_000) => ({ inputTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, totalTokens: inputTokens + 10, reasoningOutputTokens: 0, contextWindow: null, cacheReadReported: true, cacheWriteReported: true });
+
+  it("keeps omitted cache metrics Unknown through ledger reload rather than showing zero", () => {
+    annotateThreadUsage("unknown-cache", { provider: "openai", model: "gpt-6-sol", requestedServiceTier: "standard" });
+    recordUsageDelta("unknown-cache", { ...observed(), cacheReadReported: false, cacheWriteReported: false }, "unknown", "turn-unknown");
+    flushUsageLedger();
+    resetUsageLedgerCache();
+    render(<UsageDashboard />);
+    expect(stat("Cache reads")).toHaveTextContent("Unknown");
+    expect(stat("Cache reads")).not.toHaveTextContent("0% of input");
+    expect(stat("Cache reads")).toHaveTextContent("1,000 input tokens lack cache-read metrics");
+    openView("Models");
+    expect(cells(typeTable(), "Cache read")).toEqual(["UnknownNot reported", "Unknown", "—"]);
+    expect(cells(typeTable(), "Cache write")).toEqual(["UnknownNot reported", "Unknown", "—"]);
+    expect(evidence().getByText(/Unknown cache metrics are not zero/)).toBeInTheDocument();
+  });
+
+  it("distinguishes a reported zero from partial cache coverage", () => {
+    annotateThreadUsage("known-cache", { provider: "claude", model: "claude-opus-5-5" });
+    recordUsageDelta("known-cache", observed(), "zero", "turn-zero");
+    flushUsageLedger();
+    const view = render(<UsageDashboard />);
+    expect(stat("Cache reads")).toHaveTextContent("0% of input");
+    act(() => {
+      recordUsageDelta("known-cache", { ...observed(), cachedInputTokens: 250 }, "some", "turn-some");
+      recordUsageDelta("known-cache", { ...observed(), cacheReadReported: false }, "omitted", "turn-omitted");
+      flushUsageLedger();
+    });
+    expect(stat("Cache reads")).toHaveTextContent("Partly reported");
+    expect(stat("Cache reads")).toHaveTextContent("250 reported");
+    openView("Models");
+    expect(cells(typeTable(), "Cache read")[0]).toBe("250Reported portion only");
+    expect(cells(typeTable(), "Cache read")[2]).toBe("Partial metrics");
+    view.unmount();
+  });
+
+  it("separates requested, reported, supported and unknown service tiers", () => {
+    recordOfficialPricingResult("openai", { ok: true, models: { "gpt-6-sol@fast": { input: 8, output: 40, asOf: "2026-09-28", serviceTier: "fast" } } });
+    annotateThreadUsage("requested", { provider: "openai", model: "gpt-6-sol", requestedServiceTier: "fast" });
+    recordUsageDelta("requested", observed(), "request", "turn-request");
+    annotateThreadUsage("reported", { provider: "openai", model: "gpt-6-sol", requestedServiceTier: "flex" });
+    recordUsageDelta("reported", { ...observed(), serviceTier: "priority", serviceTierSource: "reported" }, "actual", "turn-actual");
+    annotateLedgerThreadUsage("unknown-tier", { provider: "openai", model: "gpt-6-sol" });
+    recordUsageDelta("unknown-tier", observed(), "unknown-tier", "turn-no-tier");
+    flushUsageLedger();
+    render(<UsageDashboard />);
+    const details = evidence();
+    expect(details.getByText("Requested tier: Fast / Priority. Actual tier: Unknown — not reported.")).toBeInTheDocument();
+    expect(details.getByText("Requested tier: Flex. Actual tier: Fast / Priority.")).toBeInTheDocument();
+    expect(details.getByText("Requested tier: Unknown. Actual tier: Unknown — not reported.")).toBeInTheDocument();
+    expect(details.getAllByText(/Supported current tier rate: \$8\.00 input \/ \$40\.00 output/)).toHaveLength(2);
+    expect(details.getByText(/Requested-tier estimate, not runtime confirmation/)).toBeInTheDocument();
+    expect(usageTotals().unpricedTokens).toBe(1_010);
+  });
+
+  it("includes supplied local helper usage without inventing chat prompts or threads", () => {
+    recordAuxiliaryUsage({ executionId: "helper-title-1", provider: "openai", model: "gpt-6-luna", purpose: "thread-title", requestedServiceTier: "standard", usage: observed() });
+    flushUsageLedger();
+    render(<UsageDashboard />);
+    expect(stat("Tokens")).toHaveTextContent("1,010");
+    expect(stat("Per prompt")).toHaveTextContent("No prompts with dated detail");
+    expect(usageTotals().threads).toBe(0);
+    expect(evidence().getByText(/1 local helper request included in this range/)).toBeInTheDocument();
+  });
+
+  it("does not present an unavailable helper report as a free zero-token request", () => {
+    recordAuxiliaryUsage({ executionId: "helper-unavailable", provider: "openai", model: "gpt-6-luna", purpose: "thread-title", requestedServiceTier: "standard", usage: null });
+    flushUsageLedger();
+    render(<UsageDashboard />);
+    expect(screen.queryByText("Your usage story starts here")).toBeNull();
+    expect(evidence().getByText("1 all-time helper request had no token report. Their cost is unknown, not zero.")).toBeInTheDocument();
+    expect(usageTotals().threads).toBe(0);
+  });
 
   it("distinguishes no data from zero-dollar receipts", () => {
     render(<UsageDashboard />);
@@ -81,8 +170,7 @@ describe("local usage dashboard", () => {
     // Earlier usage's cost is shown in total only, and the per-type cost
     // coverage says so rather than implying every token is in the type's cost.
     expect(cells(table, "Earlier usage")).toEqual(["1,960,000included above", approx(10.75), "—"]);
-    const coverage = Math.round(dated.cacheReadTokens * 1 / (dated.cacheReadTokens + 700_000) * 100);
-    expect(Number(cells(table, "Cache read")[2]!.replace("%", ""))).toBeLessThanOrEqual(coverage);
+    expect(cells(table, "Cache read")[2]).toBe("Partial metrics");
   });
 
   it("labels a cost-only ledger gap as a pricing adjustment, with no earlier tokens", () => {
@@ -242,7 +330,7 @@ describe("local usage dashboard", () => {
     expect(cells(table, "Cache read")).toEqual(["300,000100,000/prompt per prompt", "≈ $0.30≈ $0.10/prompt per prompt", "100%"]);
     expect(cells(table, "Cache write")).toEqual(["150,00050,000/prompt per prompt", "≈ $1.88≈ $0.63/prompt per prompt", "100%"]);
     expect(cells(table, "Output")).toEqual(["210,00070,000/prompt per prompt", "≈ $10.50≈ $3.50/prompt per prompt", "100%"]);
-    expect(panel).toHaveTextContent("Current rate per 1M: $10.00 input, $1.00 cache read, $12.50 cache write, $50.00 output (bundled rate, verified 2026-09-25)");
+    expect(panel).toHaveTextContent("Current Standard rate per 1M: $10.00 input, $1.00 cache read, $12.50 cache write, $50.00 output (bundled rate, verified 2026-09-25)");
     const byDay = within(panel).getByRole("table", { name: "GPT-6 Astra tokens and estimated cost by day" });
     expect(within(byDay).getAllByRole("row")).toHaveLength(2);
     expect(cells(byDay, ".+")).toEqual(["750,000≈ $7.50", "300,000≈ $0.30", "150,000≈ $1.88", "210,000≈ $10.50", "1,410,000≈ $20.18"]);
@@ -251,7 +339,7 @@ describe("local usage dashboard", () => {
     expect(screen.getByText(/Auto doesn’t report which model served each request, so it isn’t priced\./)).toBeInTheDocument();
     const auto = screen.getByRole("table", { name: "Auto tokens and estimated cost by type" });
     // Cursor never reports cache writes: unknown, not zero.
-    expect(cells(auto, "Cache write")).toEqual(["Not reported", "Not reported", "—"]);
+    expect(cells(auto, "Cache write")).toEqual(["UnknownNot reported", "Unknown", "—"]);
     expect(cells(auto, "Output")[1]).toBe("Unpriced");
   });
 
@@ -259,16 +347,17 @@ describe("local usage dashboard", () => {
     recordOfficialPricingResult("cursor", { ok: true, models: { "grok 4.5": { input: 2, cacheRead: 0.5, output: 6, asOf: "2026-09-25", name: "Grok 4.5" } } }, Date.parse("2026-09-25T12:00:00Z"));
     updateCursorModelNames([{ id: "cursor-grok-4.5", name: "Grok 4.5" }]);
     annotateThreadUsage("grok", { provider: "cursor", model: "cursor-grok-4.5" });
-    recordUsageDelta("grok", { inputTokens: 1_000_000, cachedInputTokens: 500_000, cacheWriteInputTokens: 0, outputTokens: 100_000, totalTokens: 1_100_000, reasoningOutputTokens: 0, contextWindow: null }, "g1", "t1");
+    recordUsageDelta("grok", { inputTokens: 1_000_000, cachedInputTokens: 500_000, cacheWriteInputTokens: 0, cacheReadReported: true, cacheWriteReported: false, outputTokens: 100_000, totalTokens: 1_100_000, reasoningOutputTokens: 0, contextWindow: null }, "g1", "t1");
     flushUsageLedger();
     render(<UsageDashboard />);
     openView("Models");
     const models = screen.getByRole("table", { name: "Estimated cost, tokens and prompts by model" });
-    // $1.00 uncached + $0.25 cache read + $0.60 output.
-    expect(cells(models, "cursor-grok-4.5")[0]).toBe("≈ $1.85");
+    // A matching rate is not enough for a complete estimate when cache-write
+    // metrics are absent; retain known counts without inventing the missing use.
+    expect(cells(models, "cursor-grok-4.5")[0]).toBe("Unpriced");
     fireEvent.click(screen.getByRole("button", { name: /cursor-grok-4\.5/ }));
-    expect(screen.getByText(/Current rate per 1M: \$2\.00 input, \$0\.50 cache read, cache writes at the input rate, \$6\.00 output \(Cursor pricing page, verified 2026-09-25\)\. Cursor doesn’t report cache writes, so this estimate may be low\./)).toBeInTheDocument();
-    expect(cells(screen.getByRole("table", { name: /cursor-grok-4\.5 tokens and estimated cost by type/ }), "Cache write")).toEqual(["Not reported", "Not reported", "—"]);
+    expect(screen.getByText(/Current rate per 1M: \$2\.00 input, \$0\.50 cache read, cache writes at the input rate, \$6\.00 output \(Cursor pricing page, verified 2026-09-25\)\. Cache metrics are incomplete/)).toBeInTheDocument();
+    expect(cells(screen.getByRole("table", { name: /cursor-grok-4\.5 tokens and estimated cost by type/ }), "Cache write")).toEqual(["UnknownNot reported", "Unknown", "—"]);
   });
 
   it("shows Claude's 1-hour cache writes and rate in a model's detail", () => {
@@ -303,7 +392,7 @@ describe("local usage dashboard", () => {
     expect(screen.queryByRole("region", { name: /Daily|Weekly/ })).not.toBeInTheDocument();
     openView("Models");
     // Token types are known; their cost split is not.
-    expect(cells(typeTable(), "Cache read")).toEqual(["700,000", "Unpriced", "0%"]);
+    expect(cells(typeTable(), "Cache read")).toEqual(["700,000Reported portion only", "Unpriced", "Partial metrics"]);
     expect(cells(typeTable(), "Earlier usage")).toEqual(["1,960,000included above", approx(10.75), "—"]);
     expect(screen.queryByRole("table", { name: "Estimated cost, tokens and prompts by model" })).not.toBeInTheDocument();
   });

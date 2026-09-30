@@ -5,6 +5,7 @@ import { ThreadPullRequestPanel } from "./ThreadPullRequestPanel";
 import { ThreadPullRequestChip } from "./ThreadPullRequestChip";
 import type { PullRequest, PullRequestContext, PullRequestPanelProps } from "../lib/pullRequests";
 import "../styles.css";
+import { useThreadPullRequest } from "../hooks/useThreadPullRequest";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
 
@@ -100,6 +101,57 @@ beforeEach(async () => { await commands.setStreamTestReducedMotion(true); });
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
 const DOCK_WIDTHS = [360, 400, 430, 500];
+
+function DraftOwner({ visible, currentContext }: { visible: boolean; currentContext: PullRequestContext }) {
+  const owner = useThreadPullRequest({
+    threadId: "creation-draft-browser", cwd: "/project", projectPath: "/project", isolated: false,
+    enabled: false, visible, mutationBlockedReason: null, checkMutationAllowed: () => null,
+  });
+  return visible ? dock(360, "dark", <ThreadPullRequestPanel {...panelProps({
+    threadId: "creation-draft-browser", context: currentContext,
+    creationDraftStore: owner.creationDraftStore, creationDraftScope: owner.creationDraftScope,
+  })} />) : <div>Another studio tab</div>;
+}
+
+describe("thread pull request panel — owner lifecycle", () => {
+  it("keeps a handwritten PR draft when tab navigation unmounts the editor", async () => {
+    const currentContext = context();
+    const view = render(<DraftOwner visible currentContext={currentContext} />);
+    await page.getByRole("button", { name: "Create a pull request", exact: true }).click();
+    await page.getByRole("textbox", { name: "Title", exact: true }).fill("Handwritten browser title");
+    await page.getByRole("textbox", { name: /^Description/ }).fill("Handwritten browser description");
+    await page.getByRole("textbox", { name: "Merge into", exact: true }).fill("release");
+    await page.getByRole("checkbox", { name: /Open as a draft/ }).click();
+    view.rerender(<DraftOwner visible={false} currentContext={currentContext} />);
+    view.rerender(<DraftOwner visible currentContext={currentContext} />);
+    await page.getByRole("button", { name: "Create a pull request", exact: true }).click();
+    await expect.element(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Handwritten browser title");
+    await expect.element(page.getByRole("textbox", { name: /^Description/ })).toHaveValue("Handwritten browser description");
+    await expect.element(page.getByRole("textbox", { name: "Merge into", exact: true })).toHaveValue("release");
+    await expect.element(page.getByRole("checkbox", { name: /Open as a draft/ })).toBeChecked();
+    view.rerender(<DraftOwner visible={false} currentContext={currentContext} />);
+    view.rerender(<DraftOwner visible currentContext={context({ headOid: "a-new-head" })} />);
+    await page.getByRole("button", { name: "Create a pull request", exact: true }).click();
+    await expect.element(page.getByRole("textbox", { name: /^Description/ })).toHaveValue("");
+    view.rerender(<DraftOwner visible={false} currentContext={currentContext} />);
+    view.rerender(<DraftOwner visible currentContext={currentContext} />);
+    await page.getByRole("button", { name: "Create a pull request", exact: true }).click();
+    await expect.element(page.getByRole("textbox", { name: /^Description/ })).toHaveValue("Handwritten browser description");
+  });
+
+  it("shows pending lookup rather than a false unreadable-repository error", async () => {
+    render(dock(360, "dark", <ThreadPullRequestPanel {...panelProps({ context: null, loading: true })} />));
+    await expect.element(page.getByRole("status")).toHaveTextContent("Checking this checkout");
+    expect(screen.queryByText(/cannot read this folder's Git repository/)).toBeNull();
+  });
+
+  it("does not invite a read-only local base update", async () => {
+    const onUpdateLocal = vi.fn().mockResolvedValue(undefined);
+    render(dock(360, "dark", <ThreadPullRequestPanel {...panelProps({ pullRequest: pullRequest({ state: "MERGED" }), linked: true, mutationBlockedReason: "Switch this thread to Ask or Full access first.", onUpdateLocal })} />));
+    await expect.element(page.getByRole("button", { name: "Update local main" })).toBeDisabled();
+    expect(onUpdateLocal).not.toHaveBeenCalled();
+  });
+});
 
 describe("thread pull request panel — narrow dock", () => {
   it.each(["dark", "light"])("never overflows the dock at any draggable width in %s mode", (scheme) => {

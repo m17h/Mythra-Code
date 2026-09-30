@@ -39,6 +39,26 @@ export interface PullRequest {
 }
 export type CreatePullRequestResult = PullRequest & { creationOutcome: "created" | "existing" | "updated" };
 
+/** One row of the project's pull request list; open details for checks and merge state. */
+export interface PullRequestSummary {
+  repository: string;
+  number: number;
+  url: string;
+  title: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+  updatedAt: string;
+  authorLogin: string | null;
+}
+export type PullRequestListState = "open" | "closed" | "merged" | "all";
+export interface PullRequestListQuery {
+  search?: string;
+  state?: PullRequestListState;
+  limit?: number;
+}
+
 export interface ThreadPullRequestLink {
   repository: string;
   number: number;
@@ -56,6 +76,21 @@ export interface CreatePullRequestInput {
   commitMessage?: string;
   expectedHeadOid: string;
 }
+export interface PullRequestCreationDraft {
+  title: string;
+  titleSource: "commit" | "branch" | null;
+  body: string;
+  base: string;
+  draft: boolean;
+  commitAll: boolean;
+  commitMessage: string;
+}
+export interface PullRequestCreationDraftStore {
+  read: (scope: string) => PullRequestCreationDraft | undefined;
+  write: (scope: string, draft: PullRequestCreationDraft) => void;
+  clear: (scope: string) => void;
+  forgetThread: (threadId: string) => void;
+}
 export interface PullRequestPanelProps {
   threadId: string | null;
   context: PullRequestContext | null;
@@ -67,6 +102,10 @@ export interface PullRequestPanelProps {
   error: string | null;
   notice: string | null;
   mutationBlockedReason: string | null;
+  /** Session-only owner storage: creation text survives dock unmounts, not merge consent. */
+  creationDraftStore?: PullRequestCreationDraftStore;
+  /** The owner identifies the thread and checkout; the editor adds repository/branch/head. */
+  creationDraftScope?: string;
   onRefresh: () => void;
   onAttach: (reference: string) => Promise<void>;
   onDetach: () => void;
@@ -96,6 +135,9 @@ export function parsePullRequestReference(input: string, repository?: string): {
 }
 
 export const getPullRequestContext = (cwd: string) => invoke<PullRequestContext>("github_pr_context", { cwd });
+/** Read-only and origin-bound: listing never attaches a pull request to a thread. */
+export const listPullRequests = (cwd: string, repository: string, query: PullRequestListQuery = {}) =>
+  invoke<PullRequestSummary[]>("github_pr_list", { cwd, repository, search: query.search, state: query.state, limit: query.limit });
 export const getPullRequest = (cwd: string, repository: string, number: number) => invoke<PullRequest>("github_pr_view", { cwd, repository, number });
 export const findPullRequest = (cwd: string, repository: string, branch: string) => invoke<PullRequest | null>("github_pr_find", { cwd, repository, branch });
 export const createPullRequest = (cwd: string, repository: string, input: CreatePullRequestInput) => invoke<CreatePullRequestResult>("github_pr_create", { cwd, repository, ...input });

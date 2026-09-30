@@ -10,6 +10,7 @@ import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import { shellCommandWithWindowsQuotes } from "../lib/shellCommand";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
+import type { ResolvedSkillPrompts } from "../lib/skills";
 import {
   interpolateWorkflowText,
   nextWorkflowFailureAt,
@@ -209,6 +210,7 @@ interface WorkflowEngineDeps {
   customAgents: CustomAgentProfile[];
   ensureSkillRoots: () => Promise<void>;
   resolveSkillPrompt: (message: string) => Promise<string>;
+  resolveSkillPrompts?: (message: string, systemPrompt: string, mentionSource?: string) => Promise<ResolvedSkillPrompts>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   /** Automatic per-step file snapshots, same lifecycle user turns get. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
@@ -372,6 +374,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     const active: ActiveWorkflowRun = { runId, provider: workflow.run.provider, stopRequested: false, publish };
     const localProvider = workflow.run.provider === "claude" || workflow.run.provider === "cursor";
     let localThread: Thread | undefined;
+    let appServerModel: string | undefined;
     let cursorSessionId: string | undefined;
     let claudeSessionStarted = false;
     const persistLocalThread = async () => {
@@ -387,6 +390,23 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     runningRef.current.set(workflowId, active);
     publish({});
     try {
+      const resolvedSystemPrompt = current.resolveSkillPrompts && workflow.steps.some((step) => step.type === "agent")
+        ? (await current.resolveSkillPrompts("", workflow.run.systemPrompt)).systemPrompt
+        : workflow.run.systemPrompt;
+      // Validate every authored agent configuration before establishing a
+      // provider thread or running commands. Future prior-step output is not
+      // an invocation source. Each actual agent delivery reanalyzes its files.
+      if (current.resolveSkillPrompts) {
+        for (const [index, step] of workflow.steps.entries()) {
+          if (step.type !== "agent") continue;
+          const prompt = workflowPrompt(workflow, step, index, variables)
+            + (userPrompt ? `\n\nAdditional instructions for this run:\n${userPrompt}` : "");
+          const mentionSource = [step.prompt.trim(), userPrompt, ...workflow.skillNames.map((name) => `@${name}`)]
+            .filter(Boolean).join("\n");
+          await current.resolveSkillPrompts(prompt, workflow.run.systemPrompt, mentionSource);
+        }
+      }
+      const providerRun = { ...workflow.run, systemPrompt: resolvedSystemPrompt };
       if (!localProvider) await current.ensureSkillRoots();
       if (active.stopRequested) throw new WorkflowStoppedError();
       if (localProvider) {
@@ -394,8 +414,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
           updatedAt: Math.floor(Date.now() / 1000), modelProvider: workflow.run.provider };
         threadId = localThread.id;
       } else {
-        const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(workflow.run, project.path, {
+        const started = await rpc<{ thread: Thread; model?: string }>("thread/start", threadStartParams(providerRun, project.path, {
           serviceName: `Mythra Code Workflow: ${workflow.name}`,
+          perTurnSystemPrompt: true,
           customAgents: current.customAgents,
           modelContextWindow: workflow.run.provider === "lmstudio"
             ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength
@@ -403,6 +424,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
           interactive: source === "manual",
         }));
         threadId = started.thread.id;
+        appServerModel = started.model;
       }
       active.threadId = threadId;
       if (active.stopRequested) throw new WorkflowStoppedError();
@@ -500,24 +522,38 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             } else {
               const prompt = workflowPrompt(workflow, step, index, stepInputVariables)
                 + (userPrompt ? `\n\nAdditional instructions for this run:\n${userPrompt}` : "");
-              const providerPrompt = await current.resolveSkillPrompt(prompt);
+              // Headers and interpolated prior-step output are evidence, not
+              // authored invocations. The selected skill list and run note are
+              // explicit user choices, so include them with the saved step text.
+              const mentionSource = [step.prompt.trim(), userPrompt, ...workflow.skillNames.map((name) => `@${name}`)]
+                .filter(Boolean).join("\n");
+              const resolved: ResolvedSkillPrompts = current.resolveSkillPrompts
+                ? await current.resolveSkillPrompts(prompt, workflow.run.systemPrompt, mentionSource)
+                : { prompt: await current.resolveSkillPrompt(prompt), systemPrompt: resolvedSystemPrompt };
+              const providerPrompt = resolved.prompt;
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
-              useTaskStore.getState().appendUserMessage(threadId, {
+              const promptThreadId = threadId;
+              const appendPrompt = () => useTaskStore.getState().appendUserMessage(promptThreadId, {
                 id: `workflow-${runId}-${step.id}-${attempt}`,
                 role: "user",
                 text: prompt,
+                skillReferences: resolved.skillReferences,
+                skillsFolder: resolved.skillsFolder,
+                skillDependencies: resolved.skillDependencies,
               });
               useTaskStore.getState().setTaskStatus(threadId, "starting");
               // Snapshot before the model edits anything. Provider event
               // routers finalize completed turns; explicitly await local
               // finalization before the next step can start a new snapshot.
-              await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
               let result: { turn: Pick<Turn, "id"> };
               try {
+                await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
                 if (active.stopRequested) throw new WorkflowStoppedError();
                 if (localProvider) {
+                  // Save only prior history while preparation can still fail
+                  // or be stopped. The optimistic prompt belongs to dispatch.
                   await persistLocalThread();
                   if (active.stopRequested) throw new WorkflowStoppedError();
                   const options = {
@@ -525,31 +561,43 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                     model: workflow.run.model || (workflow.run.provider === "claude" ? DEFAULT_CLAUDE_MODEL : DEFAULT_CURSOR_MODEL),
                     effort: workflow.run.ultra ? "ultra" as const : workflow.run.reasoningEffort,
                     permission: workflow.run.permission,
-                    systemPrompt: withMythraCodeCompletionInstructions(workflow.run.systemPrompt, false),
+                    systemPrompt: withMythraCodeCompletionInstructions(resolved.systemPrompt, false),
                     attachments: [], interactive: source === "manual",
                   };
                   if (workflow.run.provider === "claude") {
-                    const started = await startClaudeTurn({ ...options, resume: claudeSessionStarted,
+                    const claudeOptions = { ...options, resume: claudeSessionStarted,
                       subagentMax: workflow.run.subagentsEnabled ? workflow.run.subagentMax : 0,
                       customAgents: workflow.run.subagentsEnabled ? current.customAgents : [],
-                      skillsPluginPath: current.getSkillsPluginPath?.() });
+                      skillsPluginPath: current.getSkillsPluginPath?.() };
+                    if (active.stopRequested) throw new WorkflowStoppedError();
+                    appendPrompt();
+                    const started = await startClaudeTurn(claudeOptions);
                     claudeSessionStarted = true;
                     result = { turn: { id: started.turnId } };
                   } else {
-                    const started = await startCursorTurn({ ...options, resumeSessionId: cursorSessionId });
+                    const cursorOptions = { ...options, resumeSessionId: cursorSessionId };
+                    if (active.stopRequested) throw new WorkflowStoppedError();
+                    appendPrompt();
+                    const started = await startCursorTurn(cursorOptions);
                     cursorSessionId = started.cursorSessionId;
                     localThread = depsRef.current.onLocalThreadUpdated?.(localThread!, cursorSessionId, workflow.run) ?? localThread;
                     result = { turn: { id: started.turnId } };
                   }
                 } else {
-                  result = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
-                    workflow.run,
+                  const params = turnStartParams(
+                    { ...providerRun, systemPrompt: resolved.systemPrompt },
                     threadId,
                     project.path,
                     [{ type: "text", text: providerPrompt, text_elements: [] }],
                     [],
                     source === "manual",
-                  ));
+                    { systemPrompt: resolved.systemPrompt, model: appServerModel },
+                  );
+                  if (active.stopRequested) throw new WorkflowStoppedError();
+                  // Validate parameters before append; no await separates the
+                  // last cancellation check, optimistic history and dispatch.
+                  appendPrompt();
+                  result = await rpc<{ turn: Turn }>("turn/start", params);
                 }
               } catch (reason) {
                 // No turn ever started, so no completion event will finalize

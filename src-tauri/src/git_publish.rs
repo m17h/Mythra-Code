@@ -9,26 +9,23 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    env,
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::Command,
-};
 
 #[cfg(test)]
 use crate::process_launch::background_std_command;
 use crate::{
-    git_workspace::{repository_lock, worktree_branch_paths},
+    git_workspace::{
+        bounded_git_output_with_prompt_policy, repository_lock, worktree_branch_paths,
+    },
     github::parse_github_repository,
-    process_launch::background_command,
-    project_git::{git_common_dir, git_runtime_path, git_stdout, optional_git_stdout},
+    project_git::{git_common_dir, git_stdout, optional_git_stdout},
 };
+#[cfg(test)]
+use std::env;
 
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ERROR_CHARS: usize = 4_000;
@@ -205,7 +202,7 @@ fn snapshot_sync(cwd: &str) -> Result<GitPublishSnapshot, String> {
         &repo,
         &[
             "for-each-ref",
-            "--format=%(refname:short)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)",
+            "--format=%(refname:strip=2)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)",
             "refs/heads",
         ],
         None,
@@ -386,44 +383,74 @@ fn establish_upstream(
     head_oid: &str,
     remote_branch: &str,
 ) -> Result<(), String> {
-    if configured_upstream(repo, branch).is_some() {
+    if configured_upstream(repo, branch).is_none() {
+        git_stdout(
+            repo,
+            &[
+                "config",
+                "--local",
+                &format!("branch.{branch}.remote"),
+                &binding.remote,
+            ],
+            None,
+        )
+        .map_err(|error| {
+            paused(format!(
+                "The commit was published, but its branch upstream could not be recorded: {error}"
+            ))
+        })?;
+        git_stdout(
+            repo,
+            &[
+                "config",
+                "--local",
+                &format!("branch.{branch}.merge"),
+                &format!("refs/heads/{remote_branch}"),
+            ],
+            None,
+        )
+        .map_err(|error| {
+            paused(format!(
+                "The commit was published, but its branch upstream could not be completed: {error}"
+            ))
+        })?;
+    }
+    // Explicit-URL pushes do not update a named remote's tracking refs. Ask
+    // Git for its effective fetch mapping, including custom namespaces, and
+    // record the exact published object after *every* successful publication.
+    let tracking_ref = git_stdout(repo, &["for-each-ref", "--format=%(upstream)", &format!("refs/heads/{branch}")], None)
+        .map_err(|error| paused(format!("The commit was published, but its local tracking mapping could not be inspected: {error}")))?;
+    if tracking_ref.is_empty() {
+        return Err(paused("The commit was published, but this remote has no local fetch mapping for the branch. Configure its tracking mapping and fetch before continuing automatic publication."));
+    }
+    git_stdout(repo, &["check-ref-format", &tracking_ref], None).map_err(|error| {
+        paused(format!(
+            "The commit was published, but its tracking ref is invalid: {error}"
+        ))
+    })?;
+    if tracking_ref.starts_with("refs/heads/") {
+        return Err(paused("The commit was published, but its fetch mapping targets a local branch. That branch was not rewritten; inspect the mapping before continuing automatic publication."));
+    }
+    if optional_git_stdout(repo, &["symbolic-ref", "--quiet", &tracking_ref]).is_some() {
+        return Err(paused("The commit was published, but its remote tracking ref is symbolic. It was not rewritten; inspect the mapping before continuing automatic publication."));
+    }
+    let old = optional_git_stdout(repo, &["rev-parse", "--verify", &tracking_ref]);
+    if old.as_deref() == Some(head_oid) {
         return Ok(());
     }
-    // The immutable object was just accepted by the remote. Record precisely
-    // that known value as the remote-tracking ref before installing branch
-    // tracking, so status/ahead/behind remain coherent without a fetch.
-    git_stdout(repo, &["update-ref", &format!("refs/remotes/{}/{remote_branch}", binding.remote), head_oid], None)
+    // Another Git client may have fetched since the push. Never replace a
+    // newer or divergent observation with the older commit we just sent.
+    if let Some(current) = old.as_deref() {
+        if !git_is_ancestor(repo, current, head_oid)? {
+            return Err(paused("The commit was published, but the local remote-tracking ref advanced or changed. Refresh before continuing automatic publication."));
+        }
+    }
+    let expected_old = old.unwrap_or_else(|| "0".repeat(head_oid.len()));
+    // A symbolic ref introduced after the precheck must never redirect this
+    // transaction into a local branch. The expected old value also protects
+    // a direct ref changed by another Git client during the inspection.
+    git_stdout(repo, &["update-ref", "--no-deref", &tracking_ref, head_oid, &expected_old], None)
         .map_err(|error| paused(format!("The commit was published, but its local remote-tracking ref could not be recorded: {error}")))?;
-    git_stdout(
-        repo,
-        &[
-            "config",
-            "--local",
-            &format!("branch.{branch}.remote"),
-            &binding.remote,
-        ],
-        None,
-    )
-    .map_err(|error| {
-        paused(format!(
-            "The commit was published, but its branch upstream could not be recorded: {error}"
-        ))
-    })?;
-    git_stdout(
-        repo,
-        &[
-            "config",
-            "--local",
-            &format!("branch.{branch}.merge"),
-            &format!("refs/heads/{remote_branch}"),
-        ],
-        None,
-    )
-    .map_err(|error| {
-        paused(format!(
-            "The commit was published, but its branch upstream could not be completed: {error}"
-        ))
-    })?;
     Ok(())
 }
 
@@ -450,77 +477,43 @@ fn classify_push_failure(detail: &str) -> String {
     }
 }
 
-fn async_git(repo: &Path) -> Command {
-    let mut command = background_command("git");
-    command
-        .current_dir(repo)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "Never")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let home = env::var_os("HOME").map(PathBuf::from);
-    if let Some(path) = git_runtime_path(env::var_os("PATH").as_deref(), home.as_deref()) {
-        command.env("PATH", path);
-    }
-    command
-}
-
-async fn drain_bounded<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>, std::io::Error> {
-    let mut kept = Vec::new();
-    let mut chunk = [0_u8; 1024];
-    loop {
-        let count = reader.read(&mut chunk).await?;
-        if count == 0 {
-            break;
-        }
-        if kept.len() < MAX_ERROR_CHARS {
-            let remaining = MAX_ERROR_CHARS - kept.len();
-            kept.extend_from_slice(&chunk[..count.min(remaining)]);
-        }
-    }
-    Ok(kept)
-}
-
-async fn bounded_network_git(
+fn bounded_network_git(
     repo: &Path,
     args: &[String],
     action: &str,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let mut command = async_git(repo);
-    command.args(args);
-    let mut child = command
-        .spawn()
-        .map_err(|error| retry(format!("Could not start {action}: {error}")))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| retry(format!("Could not capture {action} output.")))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| retry(format!("Could not capture {action} errors.")))?;
-    let (status, stdout, stderr) = tokio::time::timeout(PUBLISH_TIMEOUT, async {
-        let (stdout, stderr, status) =
-            tokio::join!(drain_bounded(stdout), drain_bounded(stderr), child.wait());
-        Ok::<_, std::io::Error>((status?, stdout?, stderr?))
-    })
-    .await
-    .map_err(|_| {
-        retry(format!(
-            "{action} timed out; the remote outcome may be unknown, so refresh before retrying."
-        ))
-    })?
-    .map_err(|error| retry(format!("Could not finish {action}: {error}")))?;
-    if status.success() {
-        Ok((stdout, stderr))
+    bounded_network_git_with_timeout(repo, args, action, PUBLISH_TIMEOUT)
+}
+
+fn bounded_network_git_with_timeout(
+    repo: &Path,
+    args: &[String],
+    action: &str,
+    timeout: Duration,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+    // The same bounded process-group executor used for workspace commands
+    // stops Git and hook/credential descendants on timeout. Preserve the
+    // publication command's existing askpass policy and configured hooks.
+    let (output, truncated) = bounded_git_output_with_prompt_policy(repo, &args, timeout, MAX_ERROR_CHARS, true, false)
+        .map_err(|error| {
+            if error.contains("timed out") {
+                retry(format!("{action} timed out; the remote outcome may be unknown, so refresh before retrying."))
+            } else {
+                retry(format!("Could not finish {action}: {error}"))
+            }
+        })?;
+    if truncated && args.first() == Some(&"ls-remote") {
+        return Err(paused("Git returned too much remote identity output. Refresh before continuing automatic publication."));
+    }
+    if output.status.success() {
+        Ok((output.stdout, output.stderr))
     } else {
-        let detail = one_line(if stderr.is_empty() { &stdout } else { &stderr });
+        let detail = one_line(if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        });
         Err(classify_push_failure(if detail.is_empty() {
             "Git rejected the network operation."
         } else {
@@ -529,7 +522,7 @@ async fn bounded_network_git(
     }
 }
 
-async fn remote_oid(
+fn remote_oid(
     repo: &Path,
     remote_url: &str,
     remote_branch: &str,
@@ -542,7 +535,7 @@ async fn remote_oid(
         remote_url.into(),
         reference,
     ];
-    let (stdout, _) = bounded_network_git(repo, &args, "Git remote inspection").await?;
+    let (stdout, _) = bounded_network_git(repo, &args, "Git remote inspection")?;
     let text = String::from_utf8_lossy(&stdout);
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let first = lines.next();
@@ -576,64 +569,57 @@ pub(super) async fn git_publish_commit(
     expected_remote_oid: Option<String>,
 ) -> Result<GitPublishResult, String> {
     let repo = blocking_local(move || selected_repository(&cwd)).await?;
-    let lock_repo = repo.clone();
-    let lock = tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(repository_lock(&lock_repo))
-    })
-    .await
-    .map_err(|error| paused(format!("Repository lock task failed: {error}")))?
-    .map_err(paused)?;
-    let _guard = lock.lock().await;
-    if expected_remote_oid
-        .as_deref()
-        .is_some_and(|oid| !valid_oid(oid))
-    {
-        return Err(paused("The expected remote commit identity is invalid."));
-    }
-    let verify_repo = repo.clone();
-    let verify_binding = binding.clone();
-    let verify_branch = branch.clone();
-    let verify_head = head_oid.clone();
-    let verify_remote_branch = remote_branch.clone();
-    let verify_floor = last_published_oid.clone();
+    let lock = repository_lock(&repo).await.map_err(paused)?;
+    let guard = lock.lock_owned().await;
     blocking_local(move || {
-        verify_publish(
-            &verify_repo,
-            &verify_binding,
-            &verify_branch,
-            &verify_head,
-            &verify_remote_branch,
-            verify_floor.as_deref(),
+        // The worker, not the awaiting renderer call, owns the lock. An
+        // aborted caller cannot allow another mutation while Git is running.
+        let _guard = guard;
+        publish_sync(
+            &repo,
+            &binding,
+            &branch,
+            &head_oid,
+            &remote_branch,
+            last_published_oid.as_deref(),
+            expected_remote_oid.as_deref(),
         )
     })
-    .await?;
-    if let Some(expected) = expected_remote_oid.as_deref() {
-        let ancestry_repo = repo.clone();
-        let ancestry_expected = expected.to_string();
-        let ancestry_head = head_oid.clone();
-        if !blocking_local(move || {
-            git_is_ancestor(&ancestry_repo, &ancestry_expected, &ancestry_head)
-        })
-        .await?
-        {
+    .await
+}
+
+fn publish_sync(
+    repo: &Path,
+    binding: &GitPublishBinding,
+    branch: &str,
+    head_oid: &str,
+    remote_branch: &str,
+    last_published_oid: Option<&str>,
+    expected_remote_oid: Option<&str>,
+) -> Result<GitPublishResult, String> {
+    if expected_remote_oid.is_some_and(|oid| !valid_oid(oid)) {
+        return Err(paused("The expected remote commit identity is invalid."));
+    }
+    verify_publish(
+        repo,
+        binding,
+        branch,
+        head_oid,
+        remote_branch,
+        last_published_oid,
+    )?;
+    if let Some(expected) = expected_remote_oid {
+        if !git_is_ancestor(repo, expected, head_oid)? {
             return Err(paused("The queued commit does not descend from the exact commit last published to this remote branch."));
         }
-        match remote_oid(&repo, &binding.remote_url, &remote_branch).await? {
+        match remote_oid(repo, &binding.remote_url, remote_branch)? {
             Some(actual) if actual == head_oid => {
                 // A prior attempt may have reached GitHub before its local
                 // process timed out. Treat the exact intended object as an
                 // idempotent success and repair only the guarded local mapping.
-                let repair_repo = repo.clone();
-                let repair_binding = binding.clone();
-                let repair_branch = branch.clone();
-                let repair_head = head_oid.clone();
-                let repair_remote_branch = remote_branch.clone();
-                let repair_floor = last_published_oid.clone();
-                blocking_local(move || {
-                    verify_publish(&repair_repo, &repair_binding, &repair_branch, &repair_head, &repair_remote_branch, repair_floor.as_deref())?;
-                    establish_upstream(&repair_repo, &repair_binding, &repair_branch, &repair_head, &repair_remote_branch)
-                }).await?;
-                return Ok(GitPublishResult { published_oid: head_oid });
+                verify_publish(repo, binding, branch, head_oid, remote_branch, last_published_oid)?;
+                establish_upstream(repo, binding, branch, head_oid, remote_branch)?;
+                return Ok(GitPublishResult { published_oid: head_oid.to_string() });
             }
             Some(actual) if actual == expected => {}
             Some(_) => return Err(paused("The remote branch changed since the last successful publication.")),
@@ -646,7 +632,7 @@ pub(super) async fn git_publish_commit(
         "--porcelain".into(),
         "--no-follow-tags".into(),
     ];
-    if let Some(expected) = expected_remote_oid.as_deref() {
+    if let Some(expected) = expected_remote_oid {
         // This exact lease is a compare-and-swap guard, never authorization to
         // rewrite history: verify_publish already proved head_oid descends from
         // expected. Bare --force and unqualified leases are never used.
@@ -655,33 +641,12 @@ pub(super) async fn git_publish_commit(
         ));
     }
     args.extend(["--".into(), binding.remote_url.clone(), refspec]);
-    bounded_network_git(&repo, &args, "Git push").await?;
-    let finish_repo = repo.clone();
-    let finish_binding = binding.clone();
-    let finish_branch = branch.clone();
-    let finish_head = head_oid.clone();
-    let finish_remote_branch = remote_branch.clone();
-    let finish_floor = last_published_oid.clone();
-    blocking_local(move || {
-        verify_publish(
-            &finish_repo,
-            &finish_binding,
-            &finish_branch,
-            &finish_head,
-            &finish_remote_branch,
-            finish_floor.as_deref(),
-        )?;
-        establish_upstream(
-            &finish_repo,
-            &finish_binding,
-            &finish_branch,
-            &finish_head,
-            &finish_remote_branch,
-        )
-    })
-    .await?;
+    bounded_network_git(repo, &args, "Git push")?;
+    verify_publish(repo, binding, branch, head_oid, remote_branch, last_published_oid)
+        .map_err(|error| paused(format!("The commit was pushed, but local verification could not finish: {error}. Refresh and inspect the remote before retrying.")))?;
+    establish_upstream(repo, binding, branch, head_oid, remote_branch)?;
     Ok(GitPublishResult {
-        published_oid: head_oid,
+        published_oid: head_oid.to_string(),
     })
 }
 
@@ -691,6 +656,96 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn timed_out_publication_stops_its_hook_descendants() {
+        let (root, repo) = fixture();
+        let remote = root.join("remote.git");
+        let hook = repo.join(".git/hooks/pre-push");
+        let marker = repo.join("late-hook-marker");
+        fs::write(
+            &hook,
+            "#!/bin/sh\nprintf started > timeout-hook-started\nsleep 2\nprintf survived > late-hook-marker\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let args = vec![
+            "push".into(),
+            "--".into(),
+            remote.to_string_lossy().into_owned(),
+            "refs/heads/main:refs/heads/main".into(),
+        ];
+        let result =
+            bounded_network_git_with_timeout(&repo, &args, "Git push", Duration::from_millis(750));
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(
+            repo.join("timeout-hook-started").exists(),
+            "the timeout did not exercise a running hook"
+        );
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        assert!(
+            !marker.exists(),
+            "a pre-push descendant survived the publication timeout"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_timeout_after_parent_exit_stops_pipe_holding_hook_descendants() {
+        let (root, repo) = fixture();
+        let remote = root.join("remote.git");
+        let head = run(&repo, &["rev-parse", "refs/heads/main"]);
+        let hook = repo.join(".git/hooks/pre-push");
+        let marker = repo.join("late-pipe-hook-marker");
+        fs::write(&hook, "#!/bin/sh\nprintf started > pipe-hook-started\n(sleep 2; printf survived > late-pipe-hook-marker) &\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let args = vec![
+            "push".into(),
+            "--".into(),
+            remote.to_string_lossy().into_owned(),
+            "refs/heads/main:refs/heads/main".into(),
+        ];
+        let error =
+            bounded_network_git_with_timeout(&repo, &args, "Git push", Duration::from_millis(750))
+                .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(repo.join("pipe-hook-started").exists());
+        assert!(
+            run(&repo, &["ls-remote", "origin", "refs/heads/main"]).starts_with(&head),
+            "this fixture must reach successful publication before its inherited pipes time out"
+        );
+        std::thread::sleep(Duration::from_millis(2200));
+        let survived = marker.exists();
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            !survived,
+            "a pipe-holding hook descendant survived after parent Git exited"
+        );
+    }
+
+    #[test]
+    fn successful_publication_preserves_a_hooks_intended_background_work() {
+        let (root, repo) = fixture();
+        let hook = repo.join(".git/hooks/pre-push");
+        fs::write(&hook, "#!/bin/sh\n(sleep 1; printf completed > intended-hook-marker) </dev/null >/dev/null 2>&1 &\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let args = vec![
+            "push".into(),
+            "--".into(),
+            root.join("remote.git").to_string_lossy().into_owned(),
+            "refs/heads/main:refs/heads/main".into(),
+        ];
+        bounded_network_git_with_timeout(&repo, &args, "Git push", Duration::from_secs(3)).unwrap();
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(
+            repo.join("intended-hook-marker").exists(),
+            "normal successful hooks must not be killed when their job scope is closed"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn run(cwd: &Path, args: &[&str]) -> String {
         let output = background_std_command("git")
@@ -738,6 +793,81 @@ mod tests {
     }
 
     #[test]
+    fn publication_tracking_refuses_symbolic_local_branch_targets() {
+        let (root, repo) = fixture();
+        let before = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["branch", "victim"]);
+        fs::write(repo.join("file.txt"), "published change\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-m", "next"]);
+        let next = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["config", "branch.main.remote", "origin"]);
+        run(&repo, &["config", "branch.main.merge", "refs/heads/main"]);
+        run(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/main",
+                "refs/heads/victim",
+            ],
+        );
+        let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
+        let result = establish_upstream(&repo, &binding, "main", &next, "main");
+        assert!(
+            result.is_err(),
+            "symbolic tracking target was rewritten: {result:?}"
+        );
+        assert_eq!(run(&repo, &["rev-parse", "victim"]), before);
+        assert_eq!(
+            run(&repo, &["symbolic-ref", "refs/remotes/origin/main"]),
+            "refs/heads/victim"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_tracking_does_not_rewind_a_newer_fetched_commit() {
+        let (root, repo) = fixture();
+        let published = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["config", "branch.main.remote", "origin"]);
+        run(&repo, &["config", "branch.main.merge", "refs/heads/main"]);
+        fs::write(repo.join("file.txt"), "newer remote change\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-m", "newer"]);
+        let newer = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["update-ref", "refs/remotes/origin/main", &newer]);
+        let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
+        let result = establish_upstream(&repo, &binding, "main", &published, "main");
+        assert!(result.unwrap_err().contains("advanced or changed"));
+        assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), newer);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_tracking_records_normal_and_missing_refs() {
+        for existing in [false, true] {
+            let (root, repo) = fixture();
+            let before = run(&repo, &["rev-parse", "HEAD"]);
+            if existing {
+                run(&repo, &["update-ref", "refs/remotes/origin/main", &before]);
+            }
+            fs::write(repo.join("file.txt"), "published change\n").unwrap();
+            run(&repo, &["add", "-A"]);
+            run(&repo, &["commit", "-m", "next"]);
+            let next = run(&repo, &["rev-parse", "HEAD"]);
+            let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
+            establish_upstream(&repo, &binding, "main", &next, "main").unwrap();
+            assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), next);
+            assert_eq!(run(&repo, &["config", "branch.main.remote"]), "origin");
+            assert_eq!(
+                run(&repo, &["config", "branch.main.merge"]),
+                "refs/heads/main"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn validates_refs_and_oids_without_accepting_refspec_syntax() {
         assert!(valid_ref_component("topic/safe-name"));
         for bad in [
@@ -767,6 +897,133 @@ mod tests {
         );
         assert!(classify_push_failure("rejected (non-fast-forward)").starts_with("PAUSED:"));
         assert!(classify_push_failure("protected branch hook declined").starts_with("PAUSED:"));
+    }
+
+    #[test]
+    fn snapshot_keeps_branch_names_unambiguous_when_a_tag_has_the_same_name() {
+        let (root, repo) = fixture();
+        run(&repo, &["tag", "main"]);
+        let snapshot = snapshot_sync(repo.to_str().unwrap()).unwrap();
+        assert_eq!(snapshot.branches[0].name, "main");
+        assert!(snapshot.branches[0].checked_out);
+        let oid = snapshot.branches[0].head_oid.clone();
+        publish_sync(
+            &repo,
+            &snapshot.binding,
+            "main",
+            &oid,
+            "main",
+            Some(&oid),
+            None,
+        )
+        .unwrap();
+        assert!(run(&repo, &["ls-remote", "origin", "refs/heads/main"]).starts_with(&oid));
+        assert!(run(&repo, &["ls-remote", "origin", "refs/tags/main"]).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_keeps_the_repository_locked_until_publication_finishes() {
+        let (root, repo) = fixture();
+        let snapshot = snapshot_sync(repo.to_str().unwrap()).unwrap();
+        let oid = snapshot.branches[0].head_oid.clone();
+        let hook = repo.join(".git/hooks/pre-push");
+        fs::write(
+            &hook,
+            "#!/bin/sh\nprintf started > publication-started\nattempt=0\nwhile [ ! -f publication-release ] && [ \"$attempt\" -lt 100 ]; do\n  sleep 0.1\n  attempt=$((attempt + 1))\ndone\ntest -f publication-release\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let lock = repository_lock(&repo).await.unwrap();
+        let cwd = repo.to_string_lossy().into_owned();
+        let worker_oid = oid.clone();
+        let task = tokio::spawn(async move {
+            git_publish_commit(
+                cwd,
+                snapshot.binding,
+                "main".into(),
+                worker_oid.clone(),
+                "main".into(),
+                Some(worker_oid),
+                None,
+            )
+            .await
+        });
+        // Windows starts several Git processes before reaching the hook. Wait
+        // for the hook itself, then hold it open until after the lock check.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !repo.join("publication-started").exists() {
+            if task.is_finished() {
+                panic!(
+                    "publication finished before its pre-push hook: {:?}",
+                    task.await
+                );
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "publication did not reach its pre-push hook"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        task.abort();
+        let _ = task.await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), lock.lock())
+                .await
+                .is_err(),
+            "caller cancellation released the mutation lock while Git was running"
+        );
+        fs::write(repo.join("publication-release"), "released\n").unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(15), lock.lock())
+            .await
+            .unwrap();
+        assert!(run(&repo, &["ls-remote", "origin", "refs/heads/main"]).starts_with(&oid));
+        drop(guard);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn later_publication_updates_an_existing_upstream_and_custom_fetch_mapping() {
+        for namespace in ["origin", "custom"] {
+            let (root, repo) = fixture();
+            let mapping = format!("+refs/heads/*:refs/remotes/{namespace}/*");
+            run(&repo, &["config", "remote.origin.fetch", &mapping]);
+            run(&repo, &["push", "-u", "origin", "main"]);
+            run(&repo, &["fetch", "origin"]);
+            let original = run(&repo, &["rev-parse", "refs/heads/main"]);
+            fs::write(repo.join("file.txt"), "second\n").unwrap();
+            run(&repo, &["add", "file.txt"]);
+            run(&repo, &["commit", "-m", "second"]);
+            let next = run(&repo, &["rev-parse", "refs/heads/main"]);
+            let snapshot = snapshot_sync(repo.to_str().unwrap()).unwrap();
+            git_publish_commit(
+                repo.to_string_lossy().into_owned(),
+                snapshot.binding,
+                "main".into(),
+                next.clone(),
+                "main".into(),
+                Some(original.clone()),
+                Some(original),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                run(
+                    &repo,
+                    &["rev-parse", &format!("refs/remotes/{namespace}/main")]
+                ),
+                next
+            );
+            assert_eq!(
+                run(
+                    &repo,
+                    &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]
+                ),
+                "0\t0"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test]

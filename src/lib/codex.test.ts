@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 import { onCodexEvent, respond, rpc } from "./codex";
-import { resetUsageLedgerCache, recordCumulativeUsage, providerUsageTotals, usageForThread } from "./usageLedger";
+import { resetUsageLedgerCache, recordCumulativeUsage, providerUsageTotals, usageForThread, reportThreadServiceTier } from "./usageLedger";
 
 describe("Codex event subscriptions", () => {
   beforeEach(() => {
@@ -41,6 +41,16 @@ describe("Codex event subscriptions", () => {
     try {
       await expect(rpc("thread/start", { modelProvider: "openrouter", model: "vendor/model" })).resolves.toMatchObject({ thread: { id: "background" } });
     } finally { getItem.mockRestore(); }
+  });
+
+  it("records requested tiers without asserting an actual served tier and clears the previous turn", async () => {
+    invoke.mockResolvedValue({ thread: { id: "thread", modelProvider: "openai" } });
+    await rpc("thread/start", { model: "gpt-6-sol", modelProvider: "openai" });
+    await rpc("turn/start", { threadId: "thread", model: "gpt-6-sol", serviceTier: "priority" });
+    expect(usageForThread("thread")).toMatchObject({ requestedServiceTier: "fast", reportedServiceTier: undefined });
+    reportThreadServiceTier("thread", "fast");
+    await rpc("turn/start", { threadId: "thread", model: "gpt-6-sol", serviceTier: null });
+    expect(usageForThread("thread")).toMatchObject({ requestedServiceTier: "standard", reportedServiceTier: undefined });
   });
 
   it("cleans up the first listener when the batched listener cannot subscribe", async () => {

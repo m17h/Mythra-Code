@@ -18,6 +18,10 @@ export interface ThreadWorktreeRecord {
   mergedHeadOid?: string;
   removedAt?: number;
   recreatedFromMissing?: boolean;
+  /** Branch kept when folder removal completed but safe branch deletion was refused. */
+  retainedBranch?: string;
+  retainedBranchOid?: string;
+  branchDeleteError?: string;
 }
 
 export interface WorkspaceGitInfo {
@@ -74,6 +78,14 @@ export interface WorktreeMergeResult {
   isolatedHeadOid: string;
   sourceCommit: string;
   isolatedTree: string;
+}
+
+export interface WorktreeRemoveResult {
+  folderRemoved: boolean;
+  branchDeleted: boolean;
+  retainedBranch: string | null;
+  retainedBranchOid: string | null;
+  branchDeleteError: string | null;
 }
 
 export function executionPathForThread(
@@ -166,14 +178,16 @@ export async function removeThreadWorktree(
   branch: string,
   force: boolean,
   deleteBranch: boolean,
-): Promise<void> {
-  await invoke("worktree_remove", {
+  expectedRetainedBranchOid?: string,
+): Promise<WorktreeRemoveResult> {
+  return invoke<WorktreeRemoveResult>("worktree_remove", {
     threadId,
     projectPath,
     worktreePath,
     branch,
     force,
     deleteBranch,
+    expectedRetainedBranchOid,
   });
 }
 

@@ -1,0 +1,18 @@
+.rich-markdown .message-skill-mention {
+  color: var(--info);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 3px;
+}
+
+.rich-markdown .message-skill-mention.unavailable { cursor: help; }
+
+.rich-markdown a.message-skill-mention:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.rich-markdown a.message-skill-mention:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 3px;
+}

@@ -56,3 +56,14 @@ it("honors reduced motion and still saves and dismisses on outside click", async
   fireEvent.pointerDown(document.body);
   expect(view.container.querySelector(".project-prompt-popover")).toBeNull();
 });
+
+it("opens the saved project prompt for a repair request and focuses its editor", async () => {
+  await commands.setStreamTestReducedMotion(true);
+  const view = render(<ProjectPromptControl {...props} projectPrompt="Use @review here." openRequest={null} />);
+  expect(view.queryByRole("dialog")).toBeNull();
+  view.rerender(<ProjectPromptControl {...props} projectPrompt="Use @review here." openRequest={{ name: "review", nonce: 1 }} />);
+  const editor = await view.findByRole("textbox", { name: "Prompt for Mythra" });
+  expect(view.getByRole("dialog", { name: "Project instructions for Mythra" })).toBeVisible();
+  expect(editor).toBe(document.activeElement);
+  expect(editor).toHaveValue("Use @review here.");
+});

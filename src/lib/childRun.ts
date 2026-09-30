@@ -1,6 +1,7 @@
 import { rpc } from "./codex";
-import { saveClaudeTranscript, startClaudeTurn } from "./claude";
-import { saveCursorTranscript, startCursorTurn } from "./cursor";
+import { deleteClaudeTranscript, saveClaudeTranscript, startClaudeTurn } from "./claude";
+import { deleteCursorTranscript, saveCursorTranscript, startCursorTurn } from "./cursor";
+import { friendlyError } from "./errors";
 import { childAgentModel } from "./childAgents";
 import { withMythraCodeCompletionInstructions } from "./completionPrompt";
 import { threadStartParams, turnStartParams } from "./turnConfig";
@@ -8,7 +9,8 @@ import { optimisticStartedThread } from "./threadList";
 import { buildTurnInput } from "./turnInput";
 import type { ChildAgentPolicy } from "./childAgents";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
-import type { ChildAgentTarget, ScheduleRunSettings, Thread, Turn } from "../types";
+import type { ChildAgentTarget, ScheduleRunSettings, SkillDependencyReport, SkillReference, Thread, Turn } from "../types";
+import type { ResolvedSkillPrompts } from "./skills";
 
 /**
  * Starting a cross-provider child.
@@ -37,6 +39,10 @@ export interface ChildRunContext {
   lmStudioBaseUrl?: string;
   /** Resolve exact enabled Mythra Code skill mentions before provider delivery. */
   resolveSkillPrompt: (message: string) => Promise<string>;
+  /** Paired resolution keeps inherited skill instructions in the system channel. */
+  resolveSkillPrompts?: (message: string, systemPrompt: string) => Promise<ResolvedSkillPrompts>;
+  /** Stop/deletion can land while skill preparation or checkpoints await. */
+  isStartCancelled?: () => boolean;
   /**
    * Snapshot the execution folder just before the child's first turn starts,
    * keyed by the child's thread id so the provider's turn-completion handler
@@ -53,6 +59,9 @@ export interface ChildRunResult {
   provider: ChildAgentTarget["provider"];
   model: string;
   cursorSessionId?: string;
+  skillReferences?: SkillReference[];
+  skillsFolder?: string;
+  skillDependencies?: SkillDependencyReport;
 }
 
 /**
@@ -88,22 +97,52 @@ export function childThreadRecord(threadId: string, target: ChildAgentTarget, pr
   };
 }
 
+async function removeUnusedChild(reason: unknown, childId: string, cleanup: () => Promise<unknown>): Promise<never> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      cleanup(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Cleanup did not finish within five seconds; it may still complete.")), 5000); }),
+    ]);
+  } catch (cleanupReason) {
+    throw new Error(`${friendlyError(reason)}\nThe unused sub-agent thread ${childId} could not be cleaned up: ${friendlyError(cleanupReason)}`);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  throw reason;
+}
+
 export async function startChildAgentTurn(
   target: ChildAgentTarget,
   prompt: string,
   context: ChildRunContext,
 ): Promise<ChildRunResult> {
-  const run = childRunSettings(target, context);
-  const systemPrompt = withMythraCodeCompletionInstructions(context.systemPrompt);
-  const providerPrompt = await context.resolveSkillPrompt(prompt);
+  const assertCanStart = () => {
+    if (context.isStartCancelled?.()) throw new Error("The sub-agent start was cancelled before its model turn began.");
+  };
+  assertCanStart();
+  const resolved: ResolvedSkillPrompts = context.resolveSkillPrompts
+    ? await context.resolveSkillPrompts(prompt, context.systemPrompt)
+    : { prompt: await context.resolveSkillPrompt(prompt), systemPrompt: context.systemPrompt };
+  // Resolution is asynchronous disk work, not permission to start after Stop
+  // or root deletion. Check before creating any transcript/provider thread.
+  assertCanStart();
+  const run = { ...childRunSettings(target, context), systemPrompt: resolved.systemPrompt };
+  const systemPrompt = withMythraCodeCompletionInstructions(resolved.systemPrompt);
+  const providerPrompt = resolved.prompt;
+  const provenance = { skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
 
   if (target.provider === "claude") {
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
     const threadId = thread.id;
-    await saveClaudeTranscript({ thread, messages: [], activities: [] });
-    await context.beginCheckpoint?.(threadId);
     let result;
+    let modelTurnRequested = false;
     try {
+      await saveClaudeTranscript({ thread, messages: [], activities: [] });
+      assertCanStart();
+      await context.beginCheckpoint?.(threadId);
+      assertCanStart();
+      modelTurnRequested = true;
       result = await startClaudeTurn({
         threadId,
         cwd: context.executionPath,
@@ -119,18 +158,23 @@ export async function startChildAgentTurn(
       });
     } catch (reason) {
       context.discardCheckpoint?.(threadId);
+      if (!modelTurnRequested) return removeUnusedChild(reason, threadId, () => deleteClaudeTranscript(threadId));
       throw reason;
     }
-    return { thread, turnId: result.turnId, provider: "claude", model: run.model };
+    return { thread, turnId: result.turnId, provider: "claude", model: run.model, ...provenance };
   }
 
   if (target.provider === "cursor") {
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
     const threadId = thread.id;
-    await saveCursorTranscript({ thread, cursorSessionId: "", messages: [], activities: [] });
-    await context.beginCheckpoint?.(threadId);
     let result;
+    let modelTurnRequested = false;
     try {
+      await saveCursorTranscript({ thread, cursorSessionId: "", messages: [], activities: [] });
+      assertCanStart();
+      await context.beginCheckpoint?.(threadId);
+      assertCanStart();
+      modelTurnRequested = true;
       result = await startCursorTurn({
         threadId,
         cwd: context.executionPath,
@@ -143,6 +187,7 @@ export async function startChildAgentTurn(
       });
     } catch (reason) {
       context.discardCheckpoint?.(threadId);
+      if (!modelTurnRequested) return removeUnusedChild(reason, threadId, () => deleteCursorTranscript(threadId));
       throw reason;
     }
     return {
@@ -151,30 +196,45 @@ export async function startChildAgentTurn(
       provider: "cursor",
       model: run.model,
       cursorSessionId: result.cursorSessionId,
+      ...provenance,
     };
   }
 
-  const started = await rpc<{ thread: Thread }>("thread/start", threadStartParams(run, context.executionPath, {
+  const started = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(run, context.executionPath, {
     serviceName: context.serviceName,
+    perTurnSystemPrompt: true,
     customAgents: [],
     modelContextWindow: context.modelContextWindow,
     interactive: true,
     additionalWorkspaceRoots: context.additionalWorkspaceRoots,
   }));
   const thread = optimisticStartedThread(started.thread, prompt);
-  await context.beginCheckpoint?.(thread.id);
+  const runtimeModel = typeof started.model === "string" ? started.model.trim() : undefined;
   let turn: { turn: Turn };
+  let modelTurnRequested = false;
   try {
-    turn = await rpc<{ turn: Turn }>("turn/start", turnStartParams(
+    assertCanStart();
+    await context.beginCheckpoint?.(thread.id);
+    assertCanStart();
+    // Validate locally before claiming an RPC was sent; a parameter failure
+    // still leaves an unused thread that this caller alone owns.
+    const params = turnStartParams(
       run,
       thread.id,
       context.executionPath,
       buildTurnInput(providerPrompt, []),
       context.additionalWorkspaceRoots,
-    ));
+      true,
+      { systemPrompt: resolved.systemPrompt, model: runtimeModel },
+    );
+    modelTurnRequested = true;
+    turn = await rpc<{ turn: Turn }>("turn/start", params);
   } catch (reason) {
     context.discardCheckpoint?.(thread.id);
+    // The thread is newly owned and no turn request was sent. Archive exactly
+    // that unused record; an ambiguous start RPC failure is not proof of this.
+    if (!modelTurnRequested) return removeUnusedChild(reason, thread.id, () => rpc("thread/archive", { threadId: thread.id }));
     throw reason;
   }
-  return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model };
+  return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model || runtimeModel || "", ...provenance };
 }

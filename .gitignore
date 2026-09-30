@@ -11,3 +11,6 @@ src-tauri/target/
 !.env.example
 /build.md
 test-results/
+
+# Browser verification diagnostics
+.test-artifacts/

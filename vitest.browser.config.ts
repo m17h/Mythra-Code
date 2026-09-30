@@ -25,10 +25,18 @@ export default defineConfig({
     browser: {
       enabled: true,
       provider: playwright(),
+      // The larger hosted WebKit suite stalled with concurrent file workers.
+      // Keep every spec, but isolate WebKit files while retaining Chromium's
+      // parallel run; this also bounds the scope of any browser-session stall.
+      fileParallelism: process.env.MYTHRA_BROWSER_TEST_ENGINE !== "webkit",
       commands: {
         async setStreamTestReducedMotion({ page }, reduced: boolean) {
           await page.emulateMedia({ reducedMotion: reduced ? "reduce" : "no-preference" });
           // WebKit dispatches MediaQueryList changes on a later rendering step.
+          await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        },
+        async setForcedColors({ page }, active: boolean) {
+          await page.emulateMedia({ forcedColors: active ? "active" : "none" });
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         },
       },

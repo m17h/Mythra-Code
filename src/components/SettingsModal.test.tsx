@@ -6,6 +6,9 @@ import { SettingsModal } from "./SettingsModal";
 import type { RuntimeModel } from "./ModelPowerControl";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { resetUsageLedgerCache, USAGE_LEDGER_KEY } from "../lib/usageLedger";
+import type { LocalSkill } from "../lib/skills";
+import { emptySkillDependencyReport } from "../lib/skillDependencies";
+import type { SkillDependencyReport } from "../types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
@@ -116,6 +119,11 @@ function modalProps(overrides: Partial<Parameters<typeof SettingsModal>[0]> = {}
     ...overrides,
   };
 }
+
+const promptSkills: LocalSkill[] = [
+  { path: "/selected/review/SKILL.md", relativePath: "review/SKILL.md", fileName: "SKILL.md", defaultName: "review", name: "review", description: "Review carefully", supportingMarkdownCount: 0, enabled: true },
+  { path: "/selected/disabled/SKILL.md", relativePath: "disabled/SKILL.md", fileName: "SKILL.md", defaultName: "disabled", name: "disabled", description: "Unavailable skill", supportingMarkdownCount: 0, enabled: false },
+];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -787,6 +795,18 @@ describe("SettingsModal", () => {
     ]);
   });
 
+  it.each([["atari", "Atari"], ["monochrome", "Monochrome"]] as const)("previews and saves the %s theme", (theme, name) => {
+    const onSave = vi.fn();
+    const onThemePreview = vi.fn();
+    render(<SettingsModal {...modalProps({ onSave, onThemePreview })} />);
+    const card = screen.getByRole("button", { name: new RegExp(`^${name}`) });
+    fireEvent.click(card);
+    expect(card).toHaveAttribute("aria-pressed", "true");
+    expect(onThemePreview).toHaveBeenLastCalledWith(theme);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ theme }));
+  });
+
   it("saves the chosen logo for OpenAI models", () => {
     const onSave = vi.fn();
     render(<SettingsModal {...modalProps({ initialSection: "general", onSave })} />);
@@ -837,6 +857,65 @@ describe("SettingsModal", () => {
     expect(screen.getByText("@morgan")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Clone a repository" })).toBeInTheDocument();
     expect(onGitHubRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a busy refresh indicator while discovering GitHub CLI", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "github", githubBusy: true })} />);
+    const refresh = screen.getByRole("button", { name: "Refresh GitHub status" });
+    expect(refresh).toBeDisabled();
+    expect(refresh).toHaveAttribute("aria-busy", "true");
+    expect(refresh.querySelector("svg")).toHaveClass("spin");
+  });
+
+  it("shows rejected GitHub sign-in inside Settings with a copyable terminal command and refresh recovery", async () => {
+    const failure = "Run `gh auth login` in a terminal, then refresh GitHub settings.";
+    const onGitHubSignIn = vi.fn().mockRejectedValue(new Error(failure));
+    const onGitHubRefresh = vi.fn(async () => undefined);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<SettingsModal {...modalProps({ initialSection: "github", githubStatus: { available: true, authenticated: false }, onGitHubSignIn, onGitHubRefresh })} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Repository URL" }), { target: { value: "https://github.com/owner/my-repo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    const settings = screen.getByRole("dialog", { name: "Settings" });
+    expect(await within(settings).findByRole("alert")).toHaveTextContent(failure);
+    expect(within(settings).getByText("gh auth login --hostname github.com")).toBeInTheDocument();
+    fireEvent.click(within(settings).getByRole("button", { name: "Copy GitHub login command" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("gh auth login --hostname github.com"));
+    expect(await within(settings).findByText("Command copied")).toBeInTheDocument();
+    const previousRefreshes = onGitHubRefresh.mock.calls.length;
+    fireEvent.click(within(settings).getByRole("button", { name: "Refresh GitHub status" }));
+    expect(onGitHubRefresh).toHaveBeenCalledTimes(previousRefreshes + 1);
+    expect(within(settings).getByRole("textbox", { name: "Repository URL" })).toHaveValue("https://github.com/owner/my-repo");
+  });
+
+  it("keeps Refresh available while awaiting terminal sign-in and removes instructions once GitHub is connected", async () => {
+    const onGitHubRefresh = vi.fn(async () => undefined);
+    const props = modalProps({ initialSection: "github", githubStatus: { available: true, authenticated: false }, githubLoginPending: true, onGitHubRefresh });
+    const view = render(<SettingsModal {...props} />);
+    expect(screen.getByRole("button", { name: "Awaiting sign-in" })).toBeDisabled();
+    expect(screen.getByText(/Finish GitHub sign-in in your terminal/)).toBeInTheDocument();
+    const refresh = screen.getByRole("button", { name: "Refresh GitHub status" });
+    expect(refresh).toBeEnabled();
+    fireEvent.click(refresh);
+    expect(onGitHubRefresh).toHaveBeenCalledTimes(2);
+    view.rerender(<SettingsModal {...props} githubLoginPending={false} githubStatus={{ available: true, authenticated: true, login: "morgan" }} />);
+    expect(screen.getByText("@morgan")).toBeInTheDocument();
+    expect(screen.queryByText("gh auth login --hostname github.com")).not.toBeInTheDocument();
+  });
+
+  it("retains terminal recovery after a verification error or clipboard rejection", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("Clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const verificationError = "GitHub account could not be verified: network unavailable.";
+    render(<SettingsModal {...modalProps({ initialSection: "github", githubStatus: { available: true, authenticated: false, error: verificationError }, githubSignInError: "GitHub sign-in was not detected. Finish gh auth login, then refresh." })} />);
+    expect(screen.getByText("GitHub account needs attention")).toBeInTheDocument();
+    expect(screen.getByText(verificationError)).toHaveAttribute("role", "alert");
+    fireEvent.click(screen.getByRole("button", { name: "Copy GitHub login command" }));
+    expect(await screen.findByText("Could not copy the command. Select it above and copy it manually.")).toBeInTheDocument();
+    expect(screen.queryByText("Command copied")).not.toBeInTheDocument();
+    expect(screen.getByText("gh auth login --hostname github.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh GitHub status" })).toBeEnabled();
   });
 
   it("selects a parent with the native chooser, previews the repository subfolder, and keeps the parent after success", async () => {
@@ -1309,6 +1388,98 @@ describe("SettingsModal", () => {
       codexSystemPrompt: "Codex rules",
       claudeSystemPrompt: "Claude rules",
     }));
+  });
+
+  it.each([
+    { label: "Global Mythra Code prompt", field: "systemPrompt" },
+    { label: "Codex subscription prompt", field: "codexSystemPrompt" },
+    { label: "Claude Code subscription prompt", field: "claudeSystemPrompt" },
+  ])("highlights and completes selected-folder skills in the actual $label field", ({ label, field }) => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "prompts", skillsFolder: "/selected", skills: promptSkills, onSave })} />);
+    const input = screen.getByRole("textbox", { name: label });
+    fireEvent.change(input, { target: { value: "Use @review. Keep @disabled, @unknown and @review.md literal." } });
+    const editor = input.closest(".skill-prompt-editor")!;
+    expect(editor.querySelectorAll(".skill-prompt-token")).toHaveLength(1);
+    expect(editor.querySelector(".skill-prompt-token")).toHaveTextContent("@review");
+    fireEvent.change(input, { target: { value: "Use @rev" } });
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent("review");
+    expect(input).toHaveAttribute("aria-activedescendant", options[0].id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveValue("Use @review ");
+    expect(screen.queryByRole("listbox", { name: "Skill suggestions" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ [field]: "Use @review " }));
+  });
+
+  it.each([
+    { label: "Global Mythra Code prompt", field: "systemPrompt", expected: "Use @review." },
+    { label: "Codex subscription prompt", field: "codexSystemPrompt", expected: "Global rules\n\nUse @review." },
+    { label: "Claude Code subscription prompt", field: "claudeSystemPrompt", expected: "Global rules\n\nUse @review." },
+  ])("previews nested dependency problems in the real $label field", async ({ label, expected }) => {
+    const report: SkillDependencyReport = { ...emptySkillDependencyReport(),
+      roots: [{ nodeId: "review", channel: "system", name: "review" }],
+      nodes: [
+        { id: "review", kind: "skill", name: "review", path: "/selected/review.md", status: "loaded", characterCount: 40, depth: 0 },
+        { id: "blocked", kind: "document", name: "checklist.txt", path: "/selected/checklist.txt", status: "blocked", characterCount: 0, depth: 5 },
+      ], edges: [{ from: "review", to: "blocked", reference: "checklist.txt" }],
+      issues: [{ code: "depth-limit", rootName: "review", chain: ["@review", "@security", "checklist.txt"], reference: "checklist.txt", message: "This chain exceeds 4 dependency hops." }],
+    };
+    const analyze = vi.fn(async (_message: string, system: string) => system.includes("@review") ? report : emptySkillDependencyReport());
+    render(<SettingsModal {...modalProps({ initialSection: "prompts", settings: { ...DEFAULT_SETTINGS, systemPrompt: "Global rules" }, skills: promptSkills, onAnalyzeSkillDependencies: analyze })} />);
+    const input = screen.getByRole("textbox", { name: label });
+    fireEvent.change(input, { target: { value: "Use @review." } });
+    await waitFor(() => expect(analyze).toHaveBeenCalledWith("", expected));
+    const editor = input.closest(".skill-prompt-editor")!;
+    await waitFor(() => expect(editor.querySelector(".skill-prompt-token.is-blocked")).toHaveTextContent("@review"));
+    expect(within(editor as HTMLElement).getByText("Turn blocked by skill dependencies")).toBeInTheDocument();
+    expect(within(editor as HTMLElement).getByText("This chain exceeds 4 dependency hops.")).toBeInTheDocument();
+  });
+
+  it("does not analyze prompt dependencies while Settings is closed", async () => {
+    const analyze = vi.fn(async () => emptySkillDependencyReport());
+    render(<SettingsModal {...modalProps({ open: false, initialSection: "prompts", settings: { ...DEFAULT_SETTINGS, systemPrompt: "Use @review." }, skills: promptSkills, onAnalyzeSkillDependencies: analyze })} />);
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    expect(analyze).not.toHaveBeenCalled();
+  });
+
+  it("preserves all prompt drafts while the selected skill library refreshes and persists literal mentions", () => {
+    const onSave = vi.fn();
+    const props = modalProps({ initialSection: "prompts", skillsFolder: "/selected", skills: promptSkills, onSave });
+    const view = render(<SettingsModal {...props} />);
+    const drafts = [
+      ["Global Mythra Code prompt", "Global @review instructions"],
+      ["Codex subscription prompt", "Codex @review instructions"],
+      ["Claude Code subscription prompt", "Claude @review instructions"],
+    ];
+    for (const [label, draft] of drafts) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value: draft } });
+    expect(view.container.querySelectorAll(".skill-prompt-token")).toHaveLength(3);
+    view.rerender(<SettingsModal {...props} skills={promptSkills.map((skill) => ({ ...skill, enabled: false }))} skillsBusy />);
+    for (const [label, draft] of drafts) expect(screen.getByRole("textbox", { name: label })).toHaveValue(draft);
+    expect(view.container.querySelectorAll(".skill-prompt-token")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: drafts[0][1], codexSystemPrompt: drafts[1][1], claudeSystemPrompt: drafts[2][1],
+    }));
+  });
+
+  it("dismisses prompt suggestions with the first Escape and closes Settings with the second", async () => {
+    const onClose = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<SettingsModal {...modalProps({ initialSection: "prompts", skillsFolder: "/selected", skills: promptSkills, onClose })} />);
+    const input = screen.getByRole("textbox", { name: "Global Mythra Code prompt" });
+    fireEvent.change(input, { target: { value: "@rev" } });
+    expect(screen.getByRole("listbox", { name: "Skill suggestions" })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "Skill suggestions" })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(input).toHaveValue("@rev");
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(confirm).toHaveBeenCalledOnce();
   });
 
   it("explains that global provider instruction files are not inherited", () => {

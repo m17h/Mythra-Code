@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PullRequest, PullRequestContext, ThreadPullRequestLink } from "../lib/pullRequests";
 import { useThreadPullRequest, type UseThreadPullRequestOptions } from "./useThreadPullRequest";
+import { emptyPullRequestCreationDraft } from "../lib/pullRequestCreationDrafts";
 
 const native = vi.hoisted(() => ({
   context: vi.fn(),
@@ -95,6 +96,40 @@ beforeEach(() => {
 });
 
 describe("useThreadPullRequest", () => {
+  it("retains a partial create failure's URL and retry guidance", async () => {
+    const warning = "GitHub creation timed out after creating https://github.com/owner/repo/pull/19. Refresh before retrying; your commit may already have been saved.";
+    const view = renderHook(() => useThreadPullRequest(options()));
+    await waitFor(() => expect(view.result.current.context).not.toBeNull());
+    native.create.mockRejectedValueOnce(new Error(warning));
+    await act(async () => { await expect(view.result.current.onCreate({ head: "feature", base: "main", title: "PR", body: "", draft: true, commitAll: false, expectedHeadOid: "feature-oid" })).rejects.toThrow(warning); });
+    expect(view.result.current.error).toBe(warning);
+  });
+
+  it("owns creation drafts across navigation and forgets them with their thread", () => {
+    const view = renderHook((input: UseThreadPullRequestOptions) => useThreadPullRequest(input), { initialProps: options({ enabled: false }) });
+    const owner = view.result.current.creationDraftStore;
+    const scope = `${view.result.current.creationDraftScope}\0repository/branch/head`;
+    owner.write(scope, { ...emptyPullRequestCreationDraft(), title: "Retained title" });
+    view.rerender(options({ threadId: "beta", cwd: "/project/beta", enabled: false }));
+    expect(view.result.current.creationDraftStore).toBe(owner);
+    expect(view.result.current.creationDraftScope).not.toBe("alpha\0/project/alpha");
+    view.rerender(options({ enabled: false }));
+    expect(view.result.current.creationDraftStore.read(scope)?.title).toBe("Retained title");
+    act(() => view.result.current.forgetThread("alpha"));
+    expect(owner.read(scope)).toBeUndefined();
+  });
+
+  it("reports the initial visible lookup as loading before any repository result", async () => {
+    let finish!: (value: PullRequestContext) => void;
+    native.context.mockImplementation(() => new Promise<PullRequestContext>((resolve) => { finish = resolve; }));
+    const view = renderHook(() => useThreadPullRequest(options()));
+    expect(view.result.current.loading).toBe(true);
+    expect(view.result.current.context).toBeNull();
+    await act(async () => { finish(context()); });
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    expect(view.result.current.context?.repository).toBe("m17h/Mythra-Code");
+  });
+
   it("persists a created PR to the thread that started the action after navigation", async () => {
     let finish!: (value: PullRequest) => void;
     native.create.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -292,6 +327,56 @@ describe("useThreadPullRequest", () => {
     await waitFor(() => expect(native.view).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(view.result.current.pullRequest?.title).toBe("fresh merged"));
     expect(view.result.current.pullRequest?.state).toBe("MERGED");
+  });
+
+  it("does not let a refresh started during a merge restore its stale open status", async () => {
+    seed("alpha", pullRequest(32));
+    let finishRead!: (value: PullRequest) => void;
+    let finishMerge!: (value: PullRequest) => void;
+    const view = renderHook(() => useThreadPullRequest(options()));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    native.view.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    native.merge.mockImplementationOnce(() => new Promise((resolve) => { finishMerge = resolve; }));
+    let action!: Promise<void>;
+    act(() => { action = view.result.current.onMerge("squash", false); });
+    act(() => view.result.current.onRefresh());
+    await waitFor(() => expect(native.view).toHaveBeenCalledTimes(2));
+    await act(async () => { finishMerge(pullRequest(32, { state: "MERGED" })); await action; });
+    await act(async () => finishRead(pullRequest(32, { title: "stale during merge" })));
+    expect(view.result.current.pullRequest?.state).toBe("MERGED");
+    expect(view.result.current.loading).toBe(false);
+  });
+
+  it("settles a refresh in the same thread's replacement checkout after its earlier merge finishes", async () => {
+    seed("alpha", pullRequest(34));
+    let finishRead!: (value: PullRequest) => void;
+    let finishMerge!: (value: PullRequest) => void;
+    const view = renderHook((input: UseThreadPullRequestOptions) => useThreadPullRequest(input), { initialProps: options() });
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    native.merge.mockImplementationOnce(() => new Promise((resolve) => { finishMerge = resolve; }));
+    native.view.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    let action!: Promise<void>;
+    act(() => { action = view.result.current.onMerge("squash", false); });
+    view.rerender(options({ cwd: "/project/replacement-checkout" }));
+    await waitFor(() => expect(native.view).toHaveBeenCalledTimes(2));
+    expect(view.result.current.busy).toBe(true);
+    await act(async () => { finishMerge(pullRequest(34, { state: "MERGED" })); await action; });
+    await act(async () => finishRead(pullRequest(34)));
+    expect(view.result.current.loading).toBe(false);
+    expect(view.result.current.busy).toBe(false);
+    expect(view.result.current.pullRequest?.state).toBe("MERGED");
+  });
+
+  it("drops a discovered candidate when the same thread's branch changes before discovery finishes", async () => {
+    let finish!: (value: PullRequest | null) => void;
+    native.find.mockResolvedValueOnce(pullRequest(33)).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = renderHook(() => useThreadPullRequest(options()));
+    await waitFor(() => expect(view.result.current.pullRequest?.number).toBe(33));
+    native.context.mockResolvedValueOnce(context("m17h/Mythra-Code", "other-branch"));
+    act(() => view.result.current.onRefresh());
+    await waitFor(() => expect(view.result.current.context?.branch).toBe("other-branch"));
+    expect(view.result.current.pullRequest).toBeNull();
+    await act(async () => finish(null));
   });
 
   it("rate-limits focus bursts across context and PR status reads", async () => {

@@ -49,6 +49,29 @@ describe("model control browser layout", () => {
     }));
   });
 
+  it("renders family artwork for future version and snapshot IDs in the menu and prompt bar", async () => {
+    const runtimeModels = ["gpt-6.1-sol", "gpt-8.1-luna-20290115"].map((model) => ({
+      id: model, model, displayName: model, description: model,
+      supportedReasoningEfforts: [], defaultReasoningEffort: "high", isDefault: false,
+    }));
+    const props = { effort: "high" as const, fast: false, runtimeModels, onModel: vi.fn(), onEffort: vi.fn(), onFast: vi.fn() };
+    const view = render(<div className="app-shell" data-theme="kiwi"><ModelPowerControl {...props} model="gpt-6.1-sol" /></div>);
+
+    fireEvent.click(view.getByRole("button", { name: /OpenAI model: gpt-6\.1-sol/i }));
+    const sol = view.getByRole("menuitemradio", { name: /gpt-6\.1-sol/i }).querySelector<HTMLImageElement>(".named-model-art img");
+    const luna = view.getByRole("menuitemradio", { name: /gpt-8\.1-luna-20290115/i }).querySelector<HTMLImageElement>(".named-model-art img");
+    expect(sol?.getAttribute("src")).toBe("/model-icons/sol.png");
+    expect(luna?.getAttribute("src")).toBe("/model-icons/luna.png");
+
+    view.rerender(<div className="app-shell" data-theme="kiwi"><ModelPowerControl {...props} model="gpt-8.1-luna-20290115" /></div>);
+    const trigger = view.container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img");
+    expect(trigger?.getAttribute("src")).toBe("/model-icons/luna.png");
+    await waitFor(() => [sol, luna, trigger].forEach((image) => {
+      expect(image?.complete).toBe(true);
+      expect(image?.naturalWidth).toBeGreaterThan(0);
+    }));
+  });
+
   it.each(["dark", "light"])("reserves header refresh spacing at small widths and UI scales in %s mode", (scheme) => {
     const view = render(<div className="app-shell" data-color-scheme={scheme} style={{ display: "block" }}>
       <ModelCatalogHeader provider="OpenAI" heading="Choose your model" description="A deliberately long provider catalog description that needs truncation" onRefresh={vi.fn()} />

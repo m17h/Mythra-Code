@@ -33,3 +33,11 @@ it("backs off failures and stops polling once sign-in succeeds", async () => {
   expect(view.onError).not.toHaveBeenCalled();
   view.unmount();
 });
+it("preserves GitHub authentication probe timeout recovery advice", async () => {
+  const warning = "GitHub authentication check timed out. Finish gh auth login, then refresh GitHub settings.";
+  getGitHubStatus.mockRejectedValue(new Error(warning));
+  const view = setup();
+  await act(() => vi.advanceTimersByTimeAsync(90_000));
+  expect(view.onError).toHaveBeenCalledWith(`Could not verify GitHub sign-in: ${warning}`);
+  view.unmount();
+});

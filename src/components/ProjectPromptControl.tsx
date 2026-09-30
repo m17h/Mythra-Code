@@ -1,17 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, NotebookPen, Settings } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
-import type { ProjectPromptMode, Provider } from "../types";
+import type { ProjectPromptMode, Provider, SkillDependencyReport } from "../types";
+import { resolveSystemPrompt } from "../lib/systemPrompt";
+import type { SkillMentionSkill } from "../lib/skillMentions";
+import { SkillPromptEditor } from "./SkillPromptEditor";
+import { skillEditorOwnsEscape } from "./SkillReferenceInspector";
 
 export function ProjectPromptControl({
   projectName,
   projectPrompt,
   promptMode,
   appPrompt,
-  provider,
   threadStarted,
   onSave,
   onAppPromptSettings,
+  openRequest,
+  skills,
+  onAnalyzeSkillDependencies,
 }: {
   projectName: string;
   projectPrompt?: string;
@@ -21,6 +27,9 @@ export function ProjectPromptControl({
   threadStarted: boolean;
   onSave: (prompt: string | undefined, mode: ProjectPromptMode) => void;
   onAppPromptSettings: () => void;
+  openRequest?: { name: string; nonce: number } | null;
+  skills?: readonly SkillMentionSkill[];
+  onAnalyzeSkillDependencies?: (message: string, systemPrompt: string) => Promise<SkillDependencyReport>;
 }) {
   const [open, setOpen] = useState(false);
   const { ref: panelRef, present } = usePopoverFade(open);
@@ -28,7 +37,15 @@ export function ProjectPromptControl({
   const [draft, setDraft] = useState(projectPrompt ?? "");
   const [mode, setMode] = useState<ProjectPromptMode>(promptMode);
   const rootRef = useRef<HTMLDivElement>(null);
+  const seenOpenRequest = useRef(openRequest?.nonce);
   const hasProjectPrompt = Boolean(projectPrompt?.trim());
+  const analyzeDraft = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveSystemPrompt(appPrompt, text, mode)), [appPrompt, mode, onAnalyzeSkillDependencies]);
+
+  useEffect(() => {
+    if (!openRequest || openRequest.nonce === seenOpenRequest.current) return;
+    seenOpenRequest.current = openRequest.nonce;
+    setOpen(true);
+  }, [openRequest]);
 
   useEffect(() => {
     if (!open) return;
@@ -44,6 +61,8 @@ export function ProjectPromptControl({
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // The editor's completion list or dependency map closes first.
+        if (skillEditorOwnsEscape(event.target)) return;
         // Escape closes only this popover — never the app-level stop-turn handler.
         event.stopPropagation();
         setOpen(false);
@@ -83,7 +102,7 @@ export function ProjectPromptControl({
             <span className="project-prompt-icon"><NotebookPen size={16} /></span>
             <div>
               <strong>Project instructions</strong>
-              <small>Instructions used by new threads in {projectName}.</small>
+              <small>Instructions used by threads in {projectName}.</small>
             </div>
           </div>
 
@@ -107,8 +126,10 @@ export function ProjectPromptControl({
           {custom && (
             <div className="project-prompt-editor">
               <span>Prompt for {projectName}</span>
-              <textarea
+              <SkillPromptEditor
                 value={draft}
+                skills={skills}
+                onAnalyze={open && onAnalyzeSkillDependencies ? analyzeDraft : undefined}
                 onChange={(event) => setDraft(event.target.value)}
                 aria-label={`Prompt for ${projectName}`}
                 placeholder="Describe how the model should work in this project"
@@ -137,10 +158,8 @@ export function ProjectPromptControl({
               </button>
               <small>
                 {threadStarted
-                  ? provider === "claude" || provider === "cursor"
-                    ? `${provider === "cursor" ? "Cursor" : "Claude"} will use this update starting with your next message in this thread.`
-                    : "This applies when you start the next thread; the current conversation is unchanged."
-                  : "This will be the complete base instruction for the next thread."}
+                  ? "This update applies starting with your next message in this thread."
+                  : "This will be the complete instruction for the next thread."}
               </small>
             </div>
           )}

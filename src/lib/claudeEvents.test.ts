@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetClaudeEventUsageState, routeClaudeEvent, type ClaudeEventContext } from "./claudeEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
 import { markProviderStopIntent } from "./providerStopIntent";
+import { usageTotals } from "./usageLedger";
 
 const context: ClaudeEventContext = {
   bindingFor: () => "/tmp/project",
@@ -25,6 +26,16 @@ describe("Claude event routing", () => {
     resetClaudeEventUsageState();
     resetTaskStore();
     vi.clearAllMocks();
+  });
+
+  it("keeps a partial result remainder unpriced even when modelUsage has complete-looking cache zeros", () => {
+    send({ type: "assistant", message: { id: "complete", model: "claude-sonnet-5", content: [], usage: {
+      input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+    } } });
+    send({ type: "result", subtype: "success", usage: { output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      modelUsage: { "claude-sonnet-5": { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } } });
+    expect(usageTotals()).toMatchObject({ totalTokens: 30, pricedTokens: 20, unpricedTokens: 10 });
+    expect(useTaskStore.getState().tasks["thread-1"].usage?.tokenAvailability).toBe("partial");
   });
 
   it("forwards structured subscription usage without putting it in the timeline", () => {

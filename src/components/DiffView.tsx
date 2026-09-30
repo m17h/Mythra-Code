@@ -25,11 +25,13 @@ function diffLineClass(line: string): string | undefined {
  * full text stays reachable — nothing is truncated away, it is just not in the
  * document until asked for.
  */
-export function DiffText({ text, initialLines = DIFF_INITIAL_LINES, feedback }: {
+export function DiffText({ text, initialLines = DIFF_INITIAL_LINES, feedback, scrollLabel }: {
   text: string;
   initialLines?: number;
   /** Review working-diff files only; lines stay plain spans either way. */
   feedback?: FeedbackDiffSource;
+  /** Opt-in keyboard access for a capped, independently scrolling preview. */
+  scrollLabel?: string;
 }) {
   const feedbackRef = useFeedbackDiffSource(feedback);
   const lines = useMemo(() => text.split("\n"), [text]);
@@ -44,7 +46,7 @@ export function DiffText({ text, initialLines = DIFF_INITIAL_LINES, feedback }: 
   const hidden = lines.length - visible;
   return (
     <div className="diff-body">
-      <pre className="diff-view" ref={feedbackRef} data-feedback-diff={feedbackRef ? "" : undefined}>
+      <pre className="diff-view" ref={feedbackRef} data-feedback-diff={feedbackRef ? "" : undefined} tabIndex={scrollLabel ? 0 : undefined} role={scrollLabel ? "region" : undefined} aria-label={scrollLabel}>
         {lines.slice(0, visible).map((line, index) => (
           <span key={index} className={diffLineClass(line)}>{`${line}\n`}</span>
         ))}

@@ -9,6 +9,18 @@ const POPOVER_VIEWPORT_MARGIN = 8;
 const POPOVER_GAP = 4;
 const POPOVER_WIDTH = 320;
 
+function effectiveZoom(element: HTMLElement): number {
+  const current = (element as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom;
+  if (typeof current === "number" && Number.isFinite(current) && current > 0) return current;
+  let zoom = 1;
+  for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+    const value = getComputedStyle(node).zoom;
+    const factor = value.endsWith("%") ? Number.parseFloat(value) / 100 : Number.parseFloat(value);
+    if (Number.isFinite(factor) && factor > 0) zoom *= factor;
+  }
+  return zoom;
+}
+
 export interface AppSelectOption {
   value: string;
   label: string;
@@ -118,9 +130,18 @@ export function AppSelectMenu({
     const triggerRect = trigger.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
+    // The top-layer menu still inherits app zoom. Rectangles are visual
+    // pixels; its fixed offsets and offsetHeight are unscaled layout pixels.
+    const zoom = effectiveZoom(menu);
     const maxWidth = Math.max(1, viewportWidth - POPOVER_VIEWPORT_MARGIN * 2);
-    const width = Math.min(POPOVER_WIDTH, maxWidth);
-    const height = menu.offsetHeight;
+    const width = Math.min(POPOVER_WIDTH * zoom, maxWidth);
+    const layoutWidth = width / zoom;
+    const maxHeight = Math.max(1, viewportHeight - POPOVER_VIEWPORT_MARGIN * 2) / zoom;
+    // Clamp both dimensions before measuring. The options scroll inside the
+    // remaining height, including in short windows at enlarged UI scales.
+    menu.style.width = `${layoutWidth}px`;
+    menu.style.maxHeight = `${maxHeight}px`;
+    const height = menu.offsetHeight * zoom;
     const above = triggerRect.top - POPOVER_GAP - height;
     const below = triggerRect.bottom + POPOVER_GAP;
     const openAbove = menuPlacement === "top"
@@ -133,13 +154,16 @@ export function AppSelectMenu({
       POPOVER_VIEWPORT_MARGIN,
       Math.min(triggerRect.left, viewportWidth - width - POPOVER_VIEWPORT_MARGIN),
     );
+    const layoutTop = top / zoom;
+    const layoutLeft = left / zoom;
     setPopoverStyle((current) => (
-      current.top === top
-      && current.left === left
-      && current.width === width
+      current.top === layoutTop
+      && current.left === layoutLeft
+      && current.width === layoutWidth
+      && current.maxHeight === maxHeight
       && current.visibility === "visible"
         ? current
-        : { top, left, width, visibility: "visible" }
+        : { top: layoutTop, left: layoutLeft, width: layoutWidth, maxHeight, visibility: "visible" }
     ));
   }, [open, topLayer, menuPlacement]);
 
@@ -235,6 +259,8 @@ export function AppSelectMenu({
       popover={topLayer ? "manual" : undefined}
       style={topLayer ? {
         position: "fixed",
+        display: "flex",
+        flexDirection: "column",
         inset: "auto",
         width: `min(${POPOVER_WIDTH}px, calc(100vw - ${POPOVER_VIEWPORT_MARGIN * 2}px))`,
         right: "auto",

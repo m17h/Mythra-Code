@@ -1,7 +1,8 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
+import { skillMentionRanges } from "../lib/skillMentions";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Boxes,
@@ -9,6 +10,7 @@ import {
   CalendarClock,
   Check,
   ChevronRight,
+  Copy,
   Download,
   ExternalLink,
   FolderCog,
@@ -36,7 +38,8 @@ import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus 
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
-import { friendlyError } from "../lib/errors";
+import { formatGitError, friendlyError } from "../lib/errors";
+import { resolveProviderSystemPrompt } from "../lib/systemPrompt";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
 import type { LMStudioModel } from "../lib/lmStudio";
@@ -56,6 +59,7 @@ import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { HarnessSettings } from "./HarnessSettings";
 import { SkillLibrary } from "./SkillLibrary";
+import { SkillPromptEditor } from "./SkillPromptEditor";
 import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
@@ -76,6 +80,7 @@ import type {
   ScheduleRunRecord,
   ThemeName,
   SettingsSection,
+  SkillDependencyReport,
   UsageDisplayMode,
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
@@ -328,6 +333,8 @@ export function useDeveloperRuntimeUpdater(
 export function SettingsModal({
   open,
   initialSection,
+  promptFocusRequest,
+  onPromptFocusHandled,
   initialDraft,
   appUpdater,
   developerRuntimeUpdater: injectedDeveloperRuntimeUpdater,
@@ -354,6 +361,8 @@ export function SettingsModal({
   childAgentReadiness,
   githubStatus,
   githubBusy = false,
+  githubLoginPending = false,
+  githubSignInError = "",
   onRefreshUsagePricing,
   openRouterPricingError,
   onClose,
@@ -389,6 +398,10 @@ export function SettingsModal({
   activeProjectId = null,
   skillsFolder,
   skills,
+  onAnalyzeSkillDependencies,
+  onAnalyzeSkill,
+  openSkillRequest,
+  onOpenSkillRequestConsumed,
   removedSkills,
   skillsBusy,
   skillsError,
@@ -419,6 +432,8 @@ export function SettingsModal({
 }: {
   open: boolean;
   initialSection: SettingsSection;
+  promptFocusRequest?: { target: "global" | "codex" | "claude"; name: string; nonce: number } | null;
+  onPromptFocusHandled?: (nonce: number) => void;
   initialDraft?: OnboardingSettingsDraft;
   appUpdater: AppUpdater;
   developerRuntimeUpdater?: DeveloperRuntimeUpdater;
@@ -449,6 +464,8 @@ export function SettingsModal({
   childAgentReadiness: ChildAgentReadiness;
   githubStatus: GitHubAccountStatus | null;
   githubBusy?: boolean;
+  githubLoginPending?: boolean;
+  githubSignInError?: string;
   onRefreshUsagePricing?: () => Promise<void>;
   openRouterPricingError?: string;
   onClose: () => void;
@@ -484,6 +501,10 @@ export function SettingsModal({
   activeProjectId?: string | null;
   skillsFolder: string;
   skills: LocalSkill[];
+  onAnalyzeSkillDependencies?: (message: string, systemPrompt: string) => Promise<SkillDependencyReport>;
+  onAnalyzeSkill?: (path: string, content: string) => Promise<SkillDependencyReport>;
+  openSkillRequest?: { path: string; nonce: number } | null;
+  onOpenSkillRequestConsumed?: (nonce: number) => void;
   removedSkills: LocalSkill[];
   skillsBusy: boolean;
   skillsError: string;
@@ -515,6 +536,9 @@ export function SettingsModal({
   const managedDeveloperRuntimeUpdater = useDeveloperRuntimeUpdater(onClaudeRefresh, !injectedDeveloperRuntimeUpdater);
   const developerRuntimeUpdater = injectedDeveloperRuntimeUpdater ?? managedDeveloperRuntimeUpdater;
   const [local, setLocal] = useState(settings);
+  const analyzeGlobalPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", text), [onAnalyzeSkillDependencies]);
+  const analyzeCodexPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "openai", text, "")), [local.systemPrompt, onAnalyzeSkillDependencies]);
+  const analyzeClaudePrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "claude", "", text)), [local.systemPrompt, onAnalyzeSkillDependencies]);
   const [localProjects, setLocalProjects] = useState(projects);
   const [expandedPresetId, setExpandedPresetId] = useState<string | null>(null);
   const [renamingPresetId, setRenamingPresetId] = useState<string | null>(null);
@@ -527,6 +551,9 @@ export function SettingsModal({
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
+  const globalPromptRef = useRef<HTMLTextAreaElement>(null);
+  const codexPromptRef = useRef<HTMLTextAreaElement>(null);
+  const claudePromptRef = useRef<HTMLTextAreaElement>(null);
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
@@ -712,12 +739,25 @@ export function SettingsModal({
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);
 
+  // The modal's generic initial focus runs first; a repair link then brings
+  // the exact authored prompt into view and selects the failed @reference.
+  useEffect(() => {
+    if (!open || settingsSection !== "prompts" || !promptFocusRequest) return;
+    const field = { global: globalPromptRef, codex: codexPromptRef, claude: claudePromptRef }[promptFocusRequest.target].current;
+    if (!field) return;
+    field.focus();
+    field.scrollIntoView?.({ block: "center" });
+    const mention = skillMentionRanges(field.value, [{ name: promptFocusRequest.name }])[0];
+    if (mention) field.setSelectionRange(mention.start, mention.end);
+    onPromptFocusHandled?.(promptFocusRequest.nonce);
+  }, [onPromptFocusHandled, open, promptFocusRequest, settingsSection]);
+
   const requestCloseRef = useRef(requestClose);
   requestCloseRef.current = requestClose;
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       // An approval modal stacked above Settings owns Escape while present.
       if (document.querySelector("[data-approval-modal], [data-skill-remove-modal]")) return;
       requestCloseRef.current();
@@ -1220,10 +1260,14 @@ export function SettingsModal({
             <div className="set-group">
               <div className="set-group-head"><h4>Prompt layers</h4><span className="set-group-note">sent in this order, every thread</span></div>
               <div className="set-card">
-                <label className="set-row stack">
+                <div className="set-row stack">
                   <div className="set-copy"><strong>Global Mythra Code prompt</strong><small>Used by every provider.</small></div>
                   <div className="set-control">
-                    <textarea
+                    <SkillPromptEditor
+                      ref={globalPromptRef}
+                      skills={skills}
+                      aria-label="Global Mythra Code prompt"
+                      onAnalyze={open && onAnalyzeSkillDependencies ? analyzeGlobalPrompt : undefined}
                       className="prompt-editor"
                       value={local.systemPrompt}
                       onChange={(event) => setLocal({ ...local, systemPrompt: event.target.value })}
@@ -1231,11 +1275,15 @@ export function SettingsModal({
                       rows={5}
                     />
                   </div>
-                </label>
-                <label className="set-row stack">
+                </div>
+                <div className="set-row stack">
                   <div className="set-copy"><strong>Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads.</small></div>
                   <div className="set-control">
-                    <textarea
+                    <SkillPromptEditor
+                      ref={codexPromptRef}
+                      skills={skills}
+                      aria-label="Codex subscription prompt"
+                      onAnalyze={open && onAnalyzeSkillDependencies ? analyzeCodexPrompt : undefined}
                       className="prompt-editor"
                       value={local.codexSystemPrompt}
                       onChange={(event) => setLocal({ ...local, codexSystemPrompt: event.target.value })}
@@ -1243,11 +1291,15 @@ export function SettingsModal({
                       rows={4}
                     />
                   </div>
-                </label>
-                <label className="set-row stack">
+                </div>
+                <div className="set-row stack">
                   <div className="set-copy"><strong>Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads.</small></div>
                   <div className="set-control">
-                    <textarea
+                    <SkillPromptEditor
+                      ref={claudePromptRef}
+                      skills={skills}
+                      aria-label="Claude Code subscription prompt"
+                      onAnalyze={open && onAnalyzeSkillDependencies ? analyzeClaudePrompt : undefined}
                       className="prompt-editor"
                       value={local.claudeSystemPrompt}
                       onChange={(event) => setLocal({ ...local, claudeSystemPrompt: event.target.value })}
@@ -1255,8 +1307,9 @@ export function SettingsModal({
                       rows={4}
                     />
                   </div>
-                </label>
+                </div>
                 <div className="set-body">
+                  <p>Type @ to reference enabled skills from your selected Skills folder.</p>
                   <div className="prompt-audit-row">
                     <span><Check size={13} /> Global layer first</span>
                     <span><Check size={13} /> Subscription layer second</span>
@@ -1360,6 +1413,8 @@ export function SettingsModal({
           <GitHubSettings
             status={githubStatus}
             busy={githubBusy}
+            loginPending={githubLoginPending}
+            signInError={githubSignInError}
             cloneUrl={cloneUrl}
             cloneParent={cloneParent}
             onCloneUrl={setCloneUrl}
@@ -1379,6 +1434,9 @@ export function SettingsModal({
           </>}
 
           {settingsSection === "skills" && <SkillLibrary
+            openSkillRequest={openSkillRequest}
+            onOpenSkillRequestConsumed={onOpenSkillRequestConsumed}
+            onAnalyzeSkill={open ? onAnalyzeSkill : undefined}
             folder={skillsFolder}
             skills={skills}
             removedSkills={removedSkills}
@@ -1817,6 +1875,8 @@ export function SettingsModal({
 function GitHubSettings({
   status,
   busy,
+  loginPending,
+  signInError,
   cloneUrl,
   cloneParent,
   onCloneUrl,
@@ -1827,6 +1887,8 @@ function GitHubSettings({
 }: {
   status: GitHubAccountStatus | null;
   busy: boolean;
+  loginPending: boolean;
+  signInError: string;
   cloneUrl: string;
   cloneParent: string;
   onCloneUrl: (value: string) => void;
@@ -1838,6 +1900,56 @@ function GitHubSettings({
   const [choosing, setChoosing] = useState(false);
   const choosingRef = useRef(false);
   const [folderError, setFolderError] = useState("");
+  const [startingSignIn, setStartingSignIn] = useState(false);
+  const startingSignInRef = useRef(false);
+  const [signInRequested, setSignInRequested] = useState(false);
+  const [localSignInError, setLocalSignInError] = useState("");
+  const [commandCopied, setCommandCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
+  const loginCommand = "gh auth login --hostname github.com";
+  const loginError = signInError || localSignInError;
+  const accountBusy = busy || startingSignIn;
+  const showLoginHelp = !status?.authenticated && (signInRequested || loginPending || Boolean(loginError));
+  useEffect(() => {
+    if (!status?.authenticated) return;
+    setSignInRequested(false);
+    setLocalSignInError("");
+    setCommandCopied(false);
+    setCopyError("");
+  }, [status?.authenticated]);
+  const signIn = async () => {
+    if (accountBusy || loginPending || startingSignInRef.current) return;
+    startingSignInRef.current = true;
+    setStartingSignIn(true);
+    setSignInRequested(true);
+    setLocalSignInError("");
+    setCommandCopied(false);
+    setCopyError("");
+    try {
+      await onSignIn();
+    } catch (error) {
+      // These are GitHub/terminal errors, not model-runtime failures.
+      setLocalSignInError(formatGitError(error));
+    } finally {
+      startingSignInRef.current = false;
+      setStartingSignIn(false);
+    }
+  };
+  const copyLoginCommand = async () => {
+    setCommandCopied(false);
+    setCopyError("");
+    try {
+      await navigator.clipboard.writeText(loginCommand);
+      setCommandCopied(true);
+    } catch {
+      setCopyError("Could not copy the command. Select it above and copy it manually.");
+    }
+  };
+  const refresh = async () => {
+    try { await onRefresh(); } catch (error) {
+      setLocalSignInError(formatGitError(error));
+    }
+  };
   const target = parseGitHubCloneTarget(cloneUrl);
   const chooseParent = async () => {
     if (choosingRef.current || busy) return;
@@ -1856,7 +1968,7 @@ function GitHubSettings({
   };
   const clone = async () => {
     setFolderError("");
-    try { await onClone(); } catch (error) { setFolderError(friendlyError(error)); }
+    try { await onClone(); } catch (error) { setFolderError(formatGitError(error)); }
   };
   return <>
     <section className="set-group">
@@ -1865,20 +1977,29 @@ function GitHubSettings({
       <div className="credential-panel github-account-panel">
         <span className="github-avatar-placeholder"><GitFork size={18} /></span>
         <div>
-          <strong>{status?.authenticated ? status.name || status.login || "GitHub account" : status?.available ? "GitHub is ready to connect" : "GitHub CLI is required"}</strong>
-          <small>{status?.authenticated ? `@${status.login}${status.email ? ` · ${status.email}` : ""}` : status?.error || "Install GitHub CLI to connect repositories."}</small>
+          <strong>{status?.authenticated ? status.name || status.login || "GitHub account" : status?.available ? status.error ? "GitHub account needs attention" : "GitHub is ready to connect" : "GitHub CLI is required"}</strong>
+          <small role={!status?.authenticated && status?.error ? "alert" : undefined}>{status?.authenticated ? `@${status.login}${status.email ? ` · ${status.email}` : ""}` : status?.error || (status?.available ? "Sign in to GitHub to connect Mythra Code." : "Install GitHub CLI to connect repositories.")}</small>
         </div>
         {status?.authenticated ? (
           <span className="connected-badge"><Check size={12} /> Connected</span>
         ) : status?.available ? (
-          <button className="secondary-button" onClick={() => void onSignIn()} disabled={busy}>
-            {busy ? <LoaderCircle className="spin" size={14} /> : <GitFork size={14} />} Sign in
+          <button className="secondary-button" onClick={() => void signIn()} disabled={accountBusy || loginPending}>
+            {accountBusy ? <LoaderCircle className="spin" size={14} /> : <GitFork size={14} />} {loginPending ? "Awaiting sign-in" : loginError ? "Retry sign-in" : "Sign in"}
           </button>
         ) : (
           <button className="secondary-button" onClick={() => void openUrl("https://cli.github.com/")}><ExternalLink size={13} /> Install GitHub CLI</button>
         )}
-        <button className="icon-button" onClick={() => void onRefresh()} disabled={busy} title="Refresh GitHub status" aria-label="Refresh GitHub status"><RotateCcw size={14} /></button>
+        <button className="icon-button" onClick={() => void refresh()} disabled={accountBusy} aria-busy={accountBusy} title="Refresh GitHub status" aria-label="Refresh GitHub status"><RotateCcw size={14} className={accountBusy ? "spin" : undefined} /></button>
       </div>
+      {showLoginHelp && <div className="set-card"><div className="set-body">
+        {loginError && <p className="github-clone-error" role="alert">{loginError}</p>}
+        <p>{loginPending || (signInRequested && !loginError) ? "Finish GitHub sign-in in your terminal. If it did not open, run this command in a terminal or PowerShell:" : "Run this command in a terminal or PowerShell and follow GitHub’s sign-in prompts:"}</p>
+        <p><code>{loginCommand}</code></p>
+        <button type="button" className="secondary-button" onClick={() => void copyLoginCommand()} aria-label="Copy GitHub login command"><Copy size={13} /> Copy command</button>
+        {commandCopied && <p role="status">Command copied</p>}
+        {copyError && <p className="github-clone-error" role="alert">{copyError}</p>}
+        <p>After signing in, choose Refresh GitHub status above to connect Mythra Code.</p>
+      </div></div>}
     </section>
     <section className="set-group">
       <h4>Clone a repository</h4>

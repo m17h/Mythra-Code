@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { GitPanel, type GitPanelProps } from "./GitPanel";
 import type { GitWorkflowControls } from "../lib/gitWorkspace";
+import { THEMES, themeColorScheme } from "../lib/appConfig";
 import "../styles.css";
 
 const controls = (): GitWorkflowControls => ({
@@ -22,14 +23,97 @@ function props(workflow: GitWorkflowControls, connected = false): GitPanelProps 
     workflow, onAction: vi.fn(), onInitializeGit: vi.fn(), onGitHubAttach: vi.fn(), onGitHubCreate: vi.fn(), onOpenGitHubSettings: vi.fn(),
   };
 }
-function mount(input: GitPanelProps, width: number, scheme = "dark") {
-  return render(<div className="app-shell" data-color-scheme={scheme} data-theme="mythra" style={{ display: "block", padding: 16 }}>
+function mount(input: GitPanelProps, width: number, scheme = "dark", theme = "mythra", zoom = 1) {
+  return render(<div className="app-shell" data-color-scheme={scheme} data-theme={theme} style={{ display: "block", padding: 16, zoom }}>
     <aside className="studio-dock" style={{ width, height: 850 }}>
       <nav className="studio-tabs" aria-label="Workspace tools"><button className="active" type="button">Git</button></nav>
       <div className="studio-panel"><GitPanel {...input} /></div>
     </aside>
   </div>);
 }
+
+it("submits an existing remote from the URL field with Enter and preserves it after failure", async () => {
+  const input = props(controls());
+  input.githubAuthenticated = true;
+  const view = mount(input, 360);
+  await page.getByRole("button", { name: /Connect a GitHub repository/ }).click();
+  await page.getByRole("textbox", { name: "Existing repository URL" }).fill("https://github.com/m17h/remote.git");
+  await userEvent.keyboard("{Enter}");
+  expect(input.onGitHubAttach).toHaveBeenCalledWith("https://github.com/m17h/remote.git");
+  expect(screen.getByLabelText("Existing repository URL")).toHaveValue("https://github.com/m17h/remote.git");
+  await page.screenshot({ path: "../../test-results/pr-screenshots/git-publish-narrow.png" });
+  const row = view.container.querySelector(".github-create-row")!.getBoundingClientRect();
+  const name = screen.getByRole("textbox", { name: "New GitHub repository name" }).getBoundingClientRect();
+  expect(name.width).toBeGreaterThan(row.width * .75);
+});
+
+it("keeps the GitHub synchronization summary and counts readable beside a very long branch", async () => {
+  const workflow = controls();
+  const longBranch = "feature/an-extremely-long-branch-name-that-would-otherwise-hide-its-sync-counts";
+  workflow.snapshot = { ...workflow.snapshot!, branch: longBranch };
+  const input = props(workflow, true);
+  input.githubRepoStatus = { ...input.githubRepoStatus!, branch: longBranch, upstream: `origin/${longBranch}`, ahead: 12, behind: 3 };
+  const view = mount(input, 360);
+  const summary = view.container.querySelector<HTMLElement>(".git-sync-line")!;
+  await page.screenshot({ path: "../../test-results/pr-screenshots/git-connected-narrow.png" });
+  expect(summary.scrollWidth).toBeLessThanOrEqual(summary.clientWidth + 1);
+  const header = view.container.querySelector<HTMLElement>(".git-checkout")!.getBoundingClientRect();
+  for (const label of ["12 to push", "3 to pull"]) {
+    const count = screen.getByLabelText(label).getBoundingClientRect();
+    expect(count.width).toBeGreaterThan(0);
+    expect(count.right).toBeLessThanOrEqual(header.right + 1);
+  }
+  const trigger = screen.getByRole("button", { name: "Switch or create a branch" });
+  expect(trigger.getBoundingClientRect().right).toBeLessThanOrEqual(screen.getByLabelText("12 to push").getBoundingClientRect().left);
+});
+
+it("attaches an existing repository while signed out and offers account connection for creation", async () => {
+  const input = props(controls());
+  mount(input, 360);
+  await page.getByRole("button", { name: /Connect a GitHub repository/ }).click();
+  await page.getByRole("textbox", { name: "Existing repository URL" }).fill("https://github.com/m17h/existing.git");
+  await userEvent.keyboard("{Enter}");
+  expect(input.onGitHubAttach).toHaveBeenCalledWith("https://github.com/m17h/existing.git");
+  expect(screen.queryByRole("textbox", { name: "New GitHub repository name" })).toBeNull();
+  await page.getByRole("button", { name: "Connect GitHub account" }).click();
+  expect(input.onOpenGitHubSettings).toHaveBeenCalledOnce();
+});
+
+it("keeps a later commit draft while the submitted commit finishes", async () => {
+  const input = props(controls());
+  const view = mount(input, 360);
+  await page.getByRole("textbox", { name: /Commit message/ }).fill("Staged change");
+  await userEvent.keyboard("{Enter}");
+  expect(input.onAction).toHaveBeenCalledWith("commitStaged", "Staged change");
+  // Preserve the same shell while changing only the owner's operation state.
+  const rerender = (next: GitPanelProps) => view.rerender(<div className="app-shell" data-color-scheme="dark" data-theme="mythra" style={{ display: "block", padding: 16 }}><aside className="studio-dock" style={{ width: 360, height: 850 }}><nav className="studio-tabs"><button className="active" type="button">Git</button></nav><div className="studio-panel"><GitPanel {...next} /></div></aside></div>);
+  rerender({ ...input, gitCommitBusy: true });
+  expect(screen.getByRole("button", { name: "Committing…" })).toBeDisabled();
+  await page.getByRole("textbox", { name: /Commit message/ }).fill("Next staged change");
+  rerender({ ...input, gitCommitSuccess: "Staged change was saved." });
+  expect(screen.getByLabelText(/Commit message/)).toHaveValue("Next staged change");
+});
+
+it.each(THEMES)("supports creation and visibility at 150% in the narrow $name dock", async ({ id }) => {
+  const input = props(controls());
+  input.githubAuthenticated = true;
+  const view = mount(input, 360, themeColorScheme(id), id, 1.5);
+  await page.getByRole("button", { name: /Connect a GitHub repository/ }).click();
+  await page.getByRole("textbox", { name: "New GitHub repository name" }).fill("a-readable-repository-name");
+  await userEvent.keyboard("{Enter}");
+  expect(input.onGitHubCreate).toHaveBeenCalledWith("a-readable-repository-name", "private");
+  await page.getByRole("button", { name: "Repository visibility" }).click();
+  const menu = screen.getByRole("menu", { name: "Repository visibility choices" }).getBoundingClientRect();
+  expect(menu.top).toBeGreaterThanOrEqual(0);
+  expect(menu.bottom).toBeLessThanOrEqual(window.innerHeight + 1);
+  await page.getByRole("menuitemradio", { name: "Public" }).click();
+  await page.getByRole("textbox", { name: "New GitHub repository name" }).click();
+  await userEvent.keyboard("{Enter}");
+  expect(input.onGitHubCreate).toHaveBeenLastCalledWith("a-readable-repository-name", "public");
+  const panel = view.container.querySelector<HTMLElement>(".studio-panel")!;
+  expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth + 1);
+  if (id === "atari" || id === "monochrome") await page.screenshot({ path: `../../test-results/pr-screenshots/git-publish-${id}-150.png` });
+});
 
 for (const width of [360, 520]) {
   it(`supports an offline branch and staged commit at ${width}px`, async () => {

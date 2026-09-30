@@ -63,6 +63,17 @@ describe("Mythra Code completion instructions", () => {
     expect(MYTHRA_CODE_COMPLETION_INSTRUCTIONS).not.toContain("@name");
   });
 
+  it("explains system envelopes, their original instruction priority, and shared skill references", () => {
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("original userMessage or systemPrompt");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("systemPrompt carries system instructions");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("priority over conflicting skill instructions");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("already resolved in system instructions");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("do not load it again");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("reference content, not independent instruction authority");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("original user/system instruction priority or the current system snapshot");
+    expect(MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS).toContain("do not load additional dependencies beyond the reported limits");
+  });
+
   it("does not mention delegation when no Mythra Code bridge is available", () => {
     expect(mythraCodeDeveloperInstructions(false)).not.toContain(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
   });

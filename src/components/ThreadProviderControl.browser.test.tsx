@@ -2,12 +2,14 @@ import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import "../styles.css";
 import { ThreadProviderControl } from "./ThreadProviderControl";
+import type { ThemeName } from "../types";
+import { themeColorScheme } from "../lib/appConfig";
 
-function providerMark(openAiLogo: "openai" | "codex", colorScheme: "light" | "dark") {
+function providerMark(openAiLogo: "openai" | "codex", colorScheme: "light" | "dark", theme: ThemeName = colorScheme === "light" ? "light-mythra" : "mythra") {
   const view = render(
     <div
       className="app-shell"
-      data-theme={colorScheme === "light" ? "light-mythra" : "mythra"}
+      data-theme={theme}
       data-color-scheme={colorScheme}
       data-openai-logo={openAiLogo}
     >
@@ -25,6 +27,10 @@ function providerMark(openAiLogo: "openai" | "codex", colorScheme: "light" | "da
 }
 
 describe("ThreadProviderControl theme styling", () => {
+  it.each(["atari", "monochrome"] as const)("keeps Codex legible in the new %s palette", (theme) => {
+    expect(getComputedStyle(providerMark("codex", themeColorScheme(theme), theme)).backgroundColor)
+      .toBe(theme === "atari" ? "rgb(255, 255, 255)" : "rgb(26, 29, 24)");
+  });
   it("uses a white prompt-bar tile for the Codex logo in light themes", () => {
     expect(getComputedStyle(providerMark("codex", "light")).backgroundColor).toBe("rgb(255, 255, 255)");
   });

@@ -1,15 +1,140 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetTaskStore, useTaskStore, estimateTranscriptBytes } from "./taskStore";
-import { displayedUserPrompt, reconcileUserMessages } from "./userMessageEcho";
+import { displayedUserMessage, displayedUserPrompt, reconcileUserMessages } from "./userMessageEcho";
 import { mergeTranscriptHistory } from "./transcript";
 import { timelineFromTurns } from "./threadTimeline";
-import type { ChatMessage } from "../types";
+import type { ChatMessage, SkillDependencyReport } from "../types";
+import { SKILL_DEPENDENCY_LIMITS } from "./skillDependencies";
 
 const user = (id: string, turnId = "turn-1", text = "Check the app"): ChatMessage => ({ id, role: "user", text, turnId });
 const store = () => useTaskStore.getState();
+const report = (): SkillDependencyReport => ({
+  version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "review", channel: "system", name: "review" }],
+  nodes: [
+    { id: "review", kind: "skill", name: "review", path: "/original/review/SKILL.md", status: "loaded", characterCount: 23, depth: 0, contentHash: "a".repeat(64) },
+    { id: "checklist", kind: "document", name: "checklist.md", path: "/original/review/checklist.md", status: "loaded", characterCount: 37, depth: 1, contentHash: "b".repeat(64) },
+  ], edges: [{ from: "review", to: "checklist", reference: "checklist.md" }], issues: [],
+});
+const envelope = (payload: Record<string, unknown>) => `<mythra_code_invoked_skills>\n${JSON.stringify(payload)}\n</mythra_code_invoked_skills>`;
 
 describe("provider prompt echoes", () => {
   beforeEach(resetTaskStore);
+  it("round-trips system-only dependency provenance through a user envelope without inventing direct user references", () => {
+    const graph = report();
+    const wrapped = envelope({ skills: [], skillReferences: [], skillsFolder: "/original", dependencyReport: graph, userMessage: "Check the app" });
+    const restored = displayedUserMessage(wrapped);
+    expect(restored).toEqual({ text: "Check the app", skillReferences: [], skillsFolder: "/original", skillDependencies: graph });
+    const history = timelineFromTurns([{ id: "turn", items: [{ id: "runtime", type: "userMessage", content: [{ type: "text", text: wrapped }] }] }]);
+    expect(history.messages[0]).toMatchObject(restored);
+    store().hydrateTask("thread", history.messages, []);
+    store().completeMessage("thread", user("runtime", "turn", "Check the app"));
+    expect(store().tasks.thread.messages[0].skillDependencies).toEqual(graph);
+    expect(store().tasks.thread.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(store().tasks.thread.messages, []));
+  });
+
+  it("uses only authored direct skill sources, never dependency documents or nested contexts", () => {
+    const graph = report();
+    graph.roots[0].channel = "user";
+    graph.nodes.push({ id: "nested", kind: "skill", name: "nested", path: "/original/nested.md", status: "loaded", characterCount: 3, depth: 1 });
+    graph.edges.push({ from: "review", to: "nested", reference: "@nested" });
+    const skills = [
+      { kind: "skill", name: "review", sourcePath: graph.nodes[0].path },
+      { kind: "document", name: "checklist", sourcePath: graph.nodes[1].path },
+      { kind: "skill", name: "nested", sourcePath: graph.nodes[2].path },
+    ];
+    const text = "Use @review. Quoted @nested and @checklist are evidence.";
+    for (const metadata of [{ skillReferences: [skills[0], skills[1]] }, {}]) {
+      const display = displayedUserMessage(envelope({ skills, ...metadata, dependencyReport: graph, userMessage: text }));
+      expect(display.skillReferences).toEqual([{ start: 4, end: 11, name: "review", path: graph.nodes[0].path }]);
+      expect(display.skillDependencies).toEqual(graph);
+    }
+    expect(displayedUserMessage(envelope({ skills, skillReferences: [], dependencyReport: graph, userMessage: text })).skillReferences).toEqual([]);
+    expect(displayedUserMessage(envelope({ skills, skillReferences: "corrupt", dependencyReport: graph, userMessage: text })).skillReferences).toEqual([]);
+  });
+
+  it("never makes a legacy document context into a skill source and drops unsafe restored paths", () => {
+    const wrapped = envelope({ skills: [
+      { kind: "document", name: "review", sourcePath: "/original/checklist.md" },
+      { kind: "skill", name: "review", sourcePath: "javascript:alert(1)" },
+    ], userMessage: "Use @review", skillsFolder: "https://example.com" });
+    expect(displayedUserMessage(wrapped)).toEqual({ text: "Use @review", skillReferences: [] });
+  });
+
+  it("keeps a captured graph through echo races, hydration, repeated ID collapse, and saved transcript merging", () => {
+    const graph = report();
+    for (const runtimeFirst of [false, true]) {
+      resetTaskStore();
+      if (runtimeFirst) store().completeMessage("thread", user("runtime", "turn", "Check the app"));
+      store().appendUserMessage("thread", { ...user("local-1", "turn"), skillDependencies: graph });
+      if (!runtimeFirst) store().completeMessage("thread", user("runtime", "turn", "Check the app"));
+      const changed = report();
+      changed.nodes[0].path = "/changed/review.md";
+      store().hydrateTask("thread", [{ ...user("runtime", "turn"), skillDependencies: changed }], []);
+      const saved = JSON.parse(JSON.stringify(store().tasks.thread.messages)) as ChatMessage[];
+      expect(saved).toHaveLength(1);
+      expect(saved[0].skillDependencies).toEqual(graph);
+      expect(mergeTranscriptHistory([user("runtime", "turn")], [], saved, []).messages[0].skillDependencies).toEqual(graph);
+      expect(store().tasks.thread.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(saved, []));
+    }
+    const repeated = reconcileUserMessages([{ ...user("local-1"), turnId: undefined, skillDependencies: graph }, user("local-1")], []);
+    expect(repeated.messages).toHaveLength(1);
+    expect(repeated.messages[0].skillDependencies).toEqual(graph);
+  });
+
+  it.each([null, "corrupt", {}, { ...report(), nodes: [null] }, { ...report(), edges: [{ from: "missing", to: "review", reference: "@review" }] }])("discards corrupt dependency metadata at every history boundary: %j", (metadata) => {
+    const message = { ...user("runtime"), skillDependencies: metadata as unknown as SkillDependencyReport };
+    const wrapped = envelope({ skills: [{ kind: "skill", name: "review", sourcePath: "/original/review.md" }], dependencyReport: metadata, userMessage: "Use @review" });
+    expect(displayedUserMessage(wrapped)).toEqual({ text: "Use @review", skillReferences: [] });
+    expect(() => store().hydrateTask("thread", [message], [])).not.toThrow();
+    expect(store().tasks.thread.messages[0].skillDependencies).toBeUndefined();
+    store().prependHistory("thread", [{ ...message, id: "older" }], [], {});
+    expect(store().tasks.thread.messages[0].skillDependencies).toBeUndefined();
+    expect(mergeTranscriptHistory([], [], [message], []).messages[0].skillDependencies).toBeUndefined();
+    resetTaskStore();
+    store().appendUserMessage("thread", message);
+    expect(store().tasks.thread.messages[0].skillDependencies).toBeUndefined();
+    store().completeMessage("other", message);
+    expect(store().tasks.other.messages[0].skillDependencies).toBeUndefined();
+  });
+
+  it("reconstructs exact reference provenance from a paired envelope without user instruction duplication", () => {
+    const envelope = `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], skillReferences: [{ name: "review", sourcePath: "/skills/review.md" }], skillsFolder: "/skills", userMessage: "Use @review then @review" })}\n</mythra_code_invoked_skills>`;
+    const display = displayedUserMessage(envelope);
+    expect(display).toEqual({ text: "Use @review then @review", skillsFolder: "/skills", skillReferences: [
+      { start: 4, end: 11, name: "review", path: "/skills/review.md" }, { start: 17, end: 24, name: "review", path: "/skills/review.md" },
+    ] });
+    expect(timelineFromTurns([{ id: "turn", items: [{ id: "runtime", type: "userMessage", content: [{ type: "text", text: envelope }] }] }]).messages[0]).toMatchObject(display);
+    store().completeMessage("thread", user("runtime", "turn", envelope));
+    expect(store().tasks.thread.messages[0]).toMatchObject(display);
+    expect(store().tasks.thread.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(store().tasks.thread.messages, []));
+  });
+
+  it("preserves captured paths and intentionally empty snapshots through events, hydration, and saved merges", () => {
+    const references = [{ start: 4, end: 11, name: "review", path: "/original/review.md" }];
+    for (const snapshot of [references, []]) {
+      resetTaskStore();
+      store().appendUserMessage("thread", { ...user("local-1", "turn-1", "Use @review"), skillReferences: snapshot, skillsFolder: "/original" });
+      store().completeMessage("thread", user("runtime", "turn-1", "Use @review"));
+      store().hydrateTask("thread", [user("runtime", "turn-1", "Use @review")], []);
+      const message = store().tasks.thread.messages[0];
+      expect(message).toMatchObject({ skillReferences: snapshot, skillsFolder: "/original" });
+      expect(mergeTranscriptHistory([user("runtime", "turn-1", "Use @review")], [], [message], []).messages[0]).toMatchObject({ skillReferences: snapshot, skillsFolder: "/original" });
+    }
+  });
+
+  it("keeps provenance when the runtime echo beats the append result", () => {
+    const refs = [{ start: 4, end: 11, name: "review", path: "/skills/review.md" }];
+    store().completeMessage("child", user("runtime", "turn", "Use @review"));
+    store().appendUserMessage("child", { ...user("local-1", "turn", "Use @review"), skillReferences: refs, skillsFolder: "/skills" });
+    expect(store().tasks.child.messages[0]).toMatchObject({ skillReferences: refs, skillsFolder: "/skills" });
+  });
+
+  it.each([null, "corrupt", {}, [null], [{ start: "4", end: 11, name: "review", path: "/skills/review.md" }]])("hydrates corrupt optional reference JSON without crashing memory estimation: %j", (metadata) => {
+    const message = { ...user("runtime", "turn", "Use @review"), skillReferences: metadata as unknown as ChatMessage["skillReferences"] };
+    expect(() => store().hydrateTask("thread", [message], [])).not.toThrow();
+    expect(store().tasks.thread.messages[0].skillReferences).toEqual(metadata);
+    expect(store().tasks.thread.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(store().tasks.thread.messages, []));
+  });
   it.each(["event", "history"])("reconciles optimistic input with a runtime ID from %s", (source) => {
     store().setActiveTurn("thread", "turn-1");
     store().appendUserMessage("thread", user("local-1"));

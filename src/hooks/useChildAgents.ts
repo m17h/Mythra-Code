@@ -24,6 +24,7 @@ import { auditEvent, rpc, type JsonObject } from "../lib/codex";
 import { isClaudeTurnActive, killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
 import { isCursorTurnActive, killCursorTurn, loadCursorTranscript } from "../lib/cursor";
 import { friendlyError } from "../lib/errors";
+import type { ResolvedSkillPrompts } from "../lib/skills";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { decodeHtmlEntities } from "../lib/text";
 import { upsertThread } from "../lib/threadList";
@@ -96,6 +97,7 @@ export interface ChildAgentContext {
   discardRunCheckpoint: (threadId: string) => void;
   /** Materialize enabled selected-folder skills for any child-provider prompt. */
   resolveSkillPrompt: (message: string) => Promise<string>;
+  resolveSkillPrompts?: (message: string, systemPrompt: string, mentionSource?: string) => Promise<ResolvedSkillPrompts>;
 }
 
 export interface ProjectRunOutcome {
@@ -410,6 +412,9 @@ export function useChildAgents(context: ChildAgentContext): {
             : undefined,
         lmStudioBaseUrl: ctx.lmStudioBaseUrl,
         resolveSkillPrompt: ctx.resolveSkillPrompt,
+        resolveSkillPrompts: ctx.resolveSkillPrompts,
+        isStartCancelled: () => (stopGenerationRef.current.get(rootThreadId) ?? 0) !== stopGeneration
+          || !childAgentPolicyForSession(contextRef.current.policies, request.sessionId),
         beginCheckpoint: async (childThreadId) => {
           await ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
         },
@@ -440,7 +445,7 @@ export function useChildAgents(context: ChildAgentContext): {
 
     const taskStore = useTaskStore.getState();
     taskStore.ensureTask(childThreadId, executionPath);
-    taskStore.appendUserMessage(childThreadId, { id: `local-${crypto.randomUUID()}`, role: "user", text: prompt, turnId: result.turnId });
+    taskStore.appendUserMessage(childThreadId, { id: `local-${crypto.randomUUID()}`, role: "user", text: prompt, turnId: result.turnId, skillReferences: result.skillReferences, skillsFolder: result.skillsFolder, skillDependencies: result.skillDependencies });
     const completedBeforeStartReturned = Boolean(
       result.turnId && taskStore.tasks[childThreadId]?.lastCompletedTurnId === result.turnId,
     );

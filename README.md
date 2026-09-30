@@ -89,6 +89,14 @@ This means **Mythra Code adds no secret instruction text**. It does not mean the
 
 The relevant OpenAI Codex source path treats `baseInstructions` as the highest-priority override and sends the empty value through to the Responses request. This behavior should be covered by an integration test whenever the bundled/pinned runtime work lands.
 
+## Local skills
+
+Select a folder in **Settings → Skills**, enable a skill, then mention its displayed alias (such as `@review`) in a message or system instructions. Skills can invoke other enabled skills and link local `.md`, `.markdown`, or `.txt` reference documents using inline or reference-style Markdown links. Mythra Code resolves those dependencies recursively before a turn, deduplicates shared files, and records a compact **Skill context** graph on the sent message.
+
+A missing, disabled, cyclic, unreadable, unsupported, out-of-folder, or over-limit dependency blocks the entire turn. Local Markdown text links inside loaded skills/reference documents require UTF-8 `.md`, `.markdown`, or `.txt` targets; PDF, Word, CSV, JSON, directory, and extensionless targets are diagnosed, not extracted or silently skipped. Ordinary attachments are separate. Bare filenames do not load documents. Editors show the broken reference and full chain in red, including system-only failures in the composer. A bad direct `@alias` in a system prompt is also flagged, and hovering or focusing a flagged reference reveals a dependency map; a direct unknown alias in an ordinary message stays plain text. Limits are shared across system and user context: 4 dependency hops along the shortest chain from any direct root, 8 skills, 24 unique files, 120,000 Unicode characters, and 1 MiB per file. Sending checks current files again. [See skill syntax, limits, and history behavior](docs/skills.md).
+
+Supported provider runtimes manage prompt caching. Mythra Code prepares fresh, stable context where possible and excludes user-only tracking data from system-skill instructions. The user-turn envelope retains the dependency report for history reload. Cache hits and savings are not guaranteed, and no artificial keepalive requests are sent.
+
 ## Permissions
 
 | Mythra Code mode | Sandbox | Approval policy | Intended use |
@@ -178,9 +186,9 @@ Checkpoint snapshots are stored as hidden local Git refs without moving the proj
 
 ## Privacy and telemetry
 
-Mythra Code contains **no telemetry, analytics, or crash reporting**. Network connections are limited to the selected model provider, update and model-pricing catalog checks against the Mythra Code GitHub repository, and user-initiated GitHub account or repository actions through the official GitHub CLI. Mythra Code never injects GitHub credentials into model prompts or project files. Agents with command access can still invoke credential-aware tools such as `git` or `gh`, just as they could in a terminal. Prompts, transcripts, settings, local usage totals, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
+Mythra Code contains **no telemetry, analytics, or crash reporting**. Network connections include the selected model provider, update and model-pricing catalog checks against the Mythra Code GitHub repository, official provider pricing-page checks, and user-initiated GitHub account or repository actions through the official GitHub CLI. Pricing checks send no prompts or usage records. Mythra Code never injects GitHub credentials into model prompts or project files. Agents with command access can still invoke credential-aware tools such as `git` or `gh`, just as they could in a terminal. Prompts, transcripts, settings, local usage totals, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
 
-The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on app launch and validated before it is cached. The request is an unauthenticated `GET` that carries no request body, account, or device identifier, and the last validated snapshot keeps working offline. Updating that file on `main` refreshes future API-equivalent usage estimates without requiring an app release. Mythra Code accumulates estimated cost at the price active when each token increment is recorded, so a later price change never rewrites historical usage.
+The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on app launch and validated before it is cached. The request is an unauthenticated `GET` that carries no request body, account, or device identifier, and the last validated snapshot keeps working offline. Updating that file on `main` refreshes future API-equivalent usage estimates without requiring an app release. Mythra Code normally preserves the estimate recorded with each token increment: a later price reduction is never applied universally to earlier usage. Automatic corrections require evidence that a rate applied during the recorded usage period, with enough reported metrics to support the estimate; see [Repricing past usage](docs/usage-dashboard.md#repricing-past-usage).
 
 ## Security boundaries
 

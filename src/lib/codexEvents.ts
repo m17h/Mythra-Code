@@ -8,7 +8,7 @@ import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 import { codexCompactionStatus, compactionActivity, compactionState } from "./contextCompaction";
-import { recordOpenRouterCharge } from "./usageLedger";
+import { recordOpenRouterCharge, reportThreadServiceTier } from "./usageLedger";
 
 /**
  * Events that arrive without a threadId are routed to this bucket instead of
@@ -353,6 +353,12 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
         inputTokens: Number(usage.total.inputTokens ?? 0),
         cachedInputTokens: Number(usage.total.cachedInputTokens ?? 0),
         cacheWriteInputTokens: Number(usage.total.cacheWriteInputTokens ?? 0),
+        cacheReadReported: Number.isSafeInteger(usage.total.cachedInputTokens) && Number(usage.total.cachedInputTokens) >= 0,
+        cacheWriteReported: Number.isSafeInteger(usage.total.cacheWriteInputTokens) && Number(usage.total.cacheWriteInputTokens) >= 0,
+        serviceTier: typeof usage.total.serviceTier === "string" ? usage.total.serviceTier : undefined,
+        serviceTierSource: typeof usage.total.serviceTier === "string" ? "reported" : "unknown",
+        tokenAvailability: Number.isSafeInteger(usage.total.inputTokens) && Number.isSafeInteger(usage.total.outputTokens)
+          && Number(usage.total.inputTokens) >= 0 && Number(usage.total.outputTokens) >= 0 ? "reported" : "partial",
         outputTokens: Number(usage.total.outputTokens ?? 0),
         reasoningOutputTokens: Number(usage.total.reasoningOutputTokens ?? 0),
         contextWindow: usage.modelContextWindow,
@@ -379,6 +385,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   if (method === "turn/started") {
     const taskStore = useTaskStore.getState();
     const turn = params.turn && typeof params.turn === "object" ? (params.turn as unknown as Turn) : null;
+    reportThreadServiceTier(eventThreadId, (params.turn as { serviceTier?: unknown } | undefined)?.serviceTier);
     if (turn?.id) taskStore.setActiveTurn(eventThreadId, turn.id);
     taskStore.setTaskStatus(eventThreadId, "running");
     ctx.audit("turn.started", {}, eventThreadId);
@@ -388,6 +395,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   if (method === "turn/completed") {
     const taskStore = useTaskStore.getState();
     const turn = params.turn && typeof params.turn === "object" ? (params.turn as unknown as Turn) : null;
+    reportThreadServiceTier(eventThreadId, (params.turn as { serviceTier?: unknown } | undefined)?.serviceTier);
     const nextStatus = turn?.status === "interrupted" ? "interrupted" : turn?.status === "failed" ? "error" : "completed";
     taskStore.completeTurn(eventThreadId, turn?.id, nextStatus);
     ctx.audit("turn.completed", {}, eventThreadId);

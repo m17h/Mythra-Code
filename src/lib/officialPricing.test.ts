@@ -15,6 +15,7 @@ const DAY = "2026-10-02";
 const NOW = Date.parse("2026-10-02T12:00:00Z");
 const usage = (inputTokens: number, outputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) => ({
   totalTokens: inputTokens + outputTokens, inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoningOutputTokens: 0, contextWindow: null,
+  cacheReadReported: true, cacheWriteReported: true, serviceTier: "standard", serviceTierSource: "requested" as const,
 });
 const pages: Record<string, string> = { openai: OPENAI_PRICING_PAGE, anthropic: ANTHROPIC_PRICING_PAGE, cursor: CURSOR_PRICING_PAGE };
 const serving = (overrides: Partial<Record<string, string | Error>> = {}): PricingDocumentFetcher & ReturnType<typeof vi.fn> =>
@@ -50,12 +51,14 @@ describe("official price observations", () => {
 });
 
 describe("OpenAI pricing page", () => {
-  it("reads only Standard short-context rates, never Batch or Flex", () => {
+  it("keeps tier tables separate and reads only their short-context rates", () => {
     const { models } = expectOk(parseOpenAIPricing(OPENAI_PRICING_PAGE, DAY));
     expect(models["gpt-6-sol"]).toEqual({ input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 10, asOf: DAY });
     expect(models["gpt-6-astra"]).toMatchObject({ input: 10, output: 50 });
     // Only the Standard table: the Specialized table's Codex row is not read.
-    expect(Object.keys(models).sort()).toEqual(["gpt-4o-2024-05-13", "gpt-5.5", "gpt-5.5-pro", "gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol"]);
+    expect(Object.keys(models).filter((key) => !key.includes("@")).sort()).toEqual(["gpt-4o-2024-05-13", "gpt-5.5", "gpt-5.5-pro", "gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol"]);
+    expect(models["gpt-6-sol@batch"]).toMatchObject({ serviceTier: "batch" });
+    expect(models["gpt-6-sol@flex"]).toMatchObject({ serviceTier: "flex" });
   });
 
   it("strips the short-context annotation and never invents a missing component", () => {
