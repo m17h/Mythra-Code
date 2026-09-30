@@ -67,6 +67,16 @@ function fillComposer(name = "release check", instructions = "Check the release 
 }
 
 describe("SkillLibrary", () => {
+  it("preserves unsaved source text when a rescan loses the file", async () => {
+    const view = renderLibrary();
+    fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const field = await screen.findByRole("textbox", { name: "Markdown for review" });
+    await waitFor(() => expect(field).toHaveValue("# Review\n\nReview code for correctness.\n"));
+    fireEvent.change(field, { target: { value: "Keep this unsaved work" } });
+    view.rerender(<SkillLibrary {...view.props} skills={[]} />);
+    expect(screen.getByRole("textbox", { name: "Markdown for review" })).toHaveValue("Keep this unsaved work");
+  });
+
   it("checks unsaved Markdown and shows the failing nested reference in red diagnostics", async () => {
     const onAnalyzeSkill = vi.fn(async () => skillDependencyFixture(true));
     const view = renderLibrary({ onAnalyzeSkill, onRead: vi.fn(async () => "Use @tests") });

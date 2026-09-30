@@ -44,6 +44,19 @@ function access(cwd: string, overrides: Partial<ProjectPullRequestAccess> = {}):
 describe("useProjectPullRequests", () => {
   beforeEach(() => projectPullRequestStore.clear());
 
+  it("rejects context from a changed origin instead of discovering PRs under the old scope", async () => {
+    const api = access("/prs/changed-origin");
+    const view = renderHook(() => useProjectPullRequests(api, true));
+    await waitFor(() => expect(view.result.current.context?.repository).toBe("owner/repo"));
+    vi.mocked(api.context).mockResolvedValueOnce({ ...view.result.current.context!, repository: "other/repo" });
+    vi.mocked(api.find).mockClear();
+    act(() => view.result.current.refreshContext());
+    await waitFor(() => expect(view.result.current.contextError).toMatch(/repository changed/i));
+    expect(view.result.current.context).toBeNull();
+    expect(view.result.current.branchPullRequest).toBeNull();
+    expect(api.find).not.toHaveBeenCalled();
+  });
+
   it("preserves a possibly completed merge's timeout and retry warning", async () => {
     const warning = "GitHub merge timed out. The pull request may already be merged; refresh its status before retrying.";
     const api = access("/prs/merge-warning", { merge: vi.fn().mockRejectedValue(new Error(warning)) });

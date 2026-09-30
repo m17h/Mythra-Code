@@ -160,6 +160,10 @@ async function readContext(access: ProjectPullRequestAccess, scope: string) {
     const context = await access.context(access.cwd);
     if (!current(`${scope}\0context`, sequence)) return;
     if (!context || typeof context.branch !== "string") throw new Error("Mythra Code could not read this checkout's pull request context.");
+    if (!access.repository || context.repository.toLowerCase() !== access.repository.toLowerCase()) {
+      projectPullRequestStore.update(scope, { context: null, branchPullRequest: null, contextAt: null });
+      throw new Error("This project's GitHub repository changed. Refresh the workspace before continuing.");
+    }
     projectPullRequestStore.update(scope, (saved) => ({
       context,
       // Discovery belongs to the branch/repository that produced it, not a

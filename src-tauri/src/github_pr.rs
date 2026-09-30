@@ -1307,6 +1307,10 @@ fn create_preflight(
     if branch == default_branch {
         return Err("Create a topic branch before opening a pull request; the current branch is the repository default branch.".into());
     }
+    let origin = github_remote_url(cwd, "origin").and_then(|url| parse_github_repository(&url));
+    if !origin.as_deref().is_some_and(|current| current.eq_ignore_ascii_case(repository)) {
+        return Err("This project's GitHub repository changed. Refresh before creating a pull request.".into());
+    }
     Ok(oid)
 }
 
@@ -1480,6 +1484,15 @@ async fn create_with(
     })
     .await?;
     if let Some(existing) = find_with(&gh, &repository, &head, Some(&base)).await? {
+        let selected = selected.clone();
+        let repository = repository.clone();
+        let head = head.clone();
+        let base = base.clone();
+        let expected = expected_head_oid.clone();
+        let default_branch = info.default_branch.clone();
+        blocking_mutation(lease.clone(), move || {
+            create_preflight(&selected, &repository, &head, &base, &expected, &default_branch).map(|_| ())
+        }).await?;
         return Ok(GitHubPrCreateResult::existing(existing));
     }
     // Network reads above may take long enough for an external Git client to
@@ -2715,6 +2728,7 @@ fi
         .unwrap_err()
         .contains("HEAD changed"));
         git(&root, &["switch", "-c", "topic"]).unwrap();
+        git(&root, &["remote", "add", "origin", "https://github.com/owner/repo.git"]).unwrap();
         assert_eq!(
             create_preflight(&root, "owner/repo", "topic", "release", &oid, "main").unwrap(),
             oid
@@ -2725,6 +2739,11 @@ fi
                 .contains("different")
         );
         assert!(create_preflight(&root, "owner/repo", "topic", "--invalid", &oid, "main").is_err());
+        git(&root, &["remote", "add", "backup", "https://github.com/owner/repo.git"]).unwrap();
+        git(&root, &["remote", "set-url", "origin", "https://github.com/other/repo.git"]).unwrap();
+        assert!(create_preflight(&root, "owner/repo", "topic", "main", &oid, "main")
+            .unwrap_err().contains("repository changed"));
+        git(&root, &["remote", "set-url", "origin", "https://github.com/owner/repo.git"]).unwrap();
         background_std_command("git")
             .args(["checkout", "--detach"])
             .current_dir(&root)

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { SkillPromptEditor } from "./SkillPromptEditor";
 import { SkillLibrary } from "./SkillLibrary";
+import { PullRequestChecks } from "./ThreadPullRequestPanel";
 import { ConfirmDialogModal } from "./ConfirmDialogModal";
 import { settleConfirm, useConfirmStore } from "../lib/confirmDialog";
 import type { LocalSkill } from "../lib/skills";
@@ -30,6 +31,37 @@ afterEach(async () => {
 });
 
 describe("frontend branch review regressions", () => {
+  it("keeps an unsaved skill draft through a missing-file rescan and recovery", async () => {
+    const onUpdate = vi.fn(async () => {});
+    const props: Parameters<typeof SkillLibrary>[0] = {
+      folder: "/review-fixture", skills, removedSkills: [], busy: false, error: "",
+      onChooseFolder: () => {}, onRefresh: () => {}, onImport: () => {}, onCreate: async () => true,
+      onRead: async () => "Original", onUpdate, onRename: () => true, onToggle: () => {},
+      onRemove: async () => true, onRestore: async () => true,
+    };
+    const view = render(<div className="app-shell"><SkillLibrary {...props} /></div>);
+    await userEvent.click(screen.getByRole("button", { name: "Edit review skill" }));
+    const field = await screen.findByRole("textbox", { name: "Markdown for review" });
+    await waitFor(() => expect(field).toHaveValue("Original"));
+    await userEvent.fill(field, "Unsaved instructions");
+    view.rerender(<div className="app-shell"><SkillLibrary {...props} skills={[]} /></div>);
+    expect(field).toHaveValue("Unsaved instructions");
+    expect(screen.getByRole("button", { name: "Save skill" })).toBeDisabled();
+    expect(screen.getByText(/Your draft is still here/)).toBeVisible();
+    view.rerender(<div className="app-shell"><SkillLibrary {...props} /></div>);
+    await userEvent.click(screen.getByRole("button", { name: "Save skill" }));
+    expect(onUpdate).toHaveBeenCalledWith(skills[0].path, "Unsaved instructions", "Original");
+  });
+
+  it("expands passed checks even with a full page of pending checks", async () => {
+    render(<div className="app-shell"><PullRequestChecks checks={[
+      ...Array.from({ length: 24 }, (_, i) => ({ name: `Pending ${i}`, state: "PENDING", url: "" })),
+      { name: "Successful build", state: "SUCCESS", url: "" },
+    ]} /></div>);
+    await userEvent.click(screen.getByRole("button", { name: "Show 1 passed check" }));
+    expect(screen.getByText("Successful build")).toBeVisible();
+  });
+
   it.each(["native", "fallback"] as const)("preserves suffix, caret and a single React input update during %s completion", async (editing) => {
     const changed = vi.fn();
     render(<PromptFixture changed={changed} />);

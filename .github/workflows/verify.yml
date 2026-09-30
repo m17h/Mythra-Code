@@ -48,27 +48,6 @@ jobs:
       - name: Lint, typecheck, test, and build
         run: npm run verify
 
-      # The full browser suite already ran in Chromium as part of `verify`.
-      # Repeat every configured browser spec in WebKit rather than a hand-kept
-      # subset, so a new spec is covered on the macOS engine automatically.
-      - name: Verify the browser suite in WebKit
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          npx playwright install webkit
-          # Fresh browser processes keep the larger suite from accumulating
-          # stalled WebKit sessions across unrelated spec files. Vitest shards
-          # partition the entire discovered suite; no spec is excluded.
-          file_count="$(find src -type f \( -name '*.browser.test.ts' -o -name '*.browser.test.tsx' \) | wc -l | tr -d '[:space:]')"
-          test "$file_count" -gt 0
-          shard_count=$(( (file_count + 2) / 3 ))
-          for (( shard=1; shard<=shard_count; shard++ )); do
-            echo "WebKit shard $shard/$shard_count ($file_count spec files total)"
-            npm run test:browser -- --shard "$shard/$shard_count"
-          done
-        env:
-          MYTHRA_BROWSER_TEST_ENGINE: webkit
-
       - name: Verify Windows renderer performance profile
         if: runner.os == 'Windows'
         run: npm run build && npm run verify:performance
@@ -83,4 +62,29 @@ jobs:
         with:
           name: performance-scorecard-${{ matrix.os }}
           path: dist/performance-scorecard.json
+          if-no-files-found: ignore
+
+  webkit:
+    name: WebKit (macOS 15)
+    # Pin the browser test OS independently of the native macos-latest build.
+    # macOS 26/27 WebKit runtimes have exhibited browser-process hangs even
+    # before application code loads. This remains a blocking, complete suite.
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install webkit
+      - name: Verify every browser spec in WebKit
+        run: node scripts/verify-webkit.mjs
+      - name: Upload WebKit diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-diagnostics
+          path: .test-artifacts/webkit.log
           if-no-files-found: ignore

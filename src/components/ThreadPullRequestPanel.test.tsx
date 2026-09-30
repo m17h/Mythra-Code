@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ThreadPullRequestPanel, type ThreadPullRequestPanelProps } from "./ThreadPullRequestPanel";
+import { PullRequestChecks, ThreadPullRequestPanel, type ThreadPullRequestPanelProps } from "./ThreadPullRequestPanel";
 import type { PullRequest, PullRequestContext, PullRequestPanelProps } from "../lib/pullRequests";
 import { createPullRequestCreationDraftStore } from "../lib/pullRequestCreationDrafts";
 
@@ -1246,4 +1246,10 @@ describe("merge method explanations", () => {
     fireEvent.mouseLeave(rebase.closest(".thread-pr-method")!);
     expect(rebase).toHaveAttribute("aria-expanded", "false");
   });
+});
+
+it("shows passed checks even when the attention list fills its limit", () => {
+  render(<PullRequestChecks checks={[...Array.from({ length: 24 }, (_, index) => ({ name: `pending-${index}`, state: "PENDING", url: "" })), { name: "passed-check", state: "SUCCESS", url: "" }]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Show 1 passed check" }));
+  expect(screen.getByText("passed-check")).toBeVisible();
 });

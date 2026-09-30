@@ -1625,6 +1625,13 @@ pub(super) fn worktree_merge_branch_sync(
         });
     }
     let source_commit = git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None)?;
+    if optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]) != source_branch
+        || !run_git(&source, &["merge-base", "--is-ancestor", &source_head_oid, &source_commit], None)?.status.success()
+        || !run_git(&source, &["merge-base", "--is-ancestor", &isolated_head_oid, &source_commit], None)?.status.success()
+    {
+        return Err("The checkout changed after the merge, possibly from a Git hook. The merge may already be complete; refresh and inspect the branches before continuing.".into());
+    }
+
     Ok(WorktreeMergeResult {
         isolated_head_oid,
         source_commit,
@@ -3269,6 +3276,24 @@ mod worktree_lifecycle_tests {
                     .is_none()
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_merge_reports_a_branch_switch_by_post_merge_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = RemovalFixture::new();
+        git_stdout(&fixture.source, &["branch", "other"], None).unwrap();
+        fs::write(fixture.isolated.join("file.txt"), "isolated change\n").unwrap();
+        git_stdout(&fixture.isolated, &["commit", "-am", "isolated change"], None).unwrap();
+        capture_checkpoint_snapshot("hook-merge-safety", fixture.source.to_str().unwrap(), "after", "safety").unwrap();
+        let hook = fixture.source.join(".git/hooks/post-merge");
+        fs::write(&hook, "#!/bin/sh\ngit checkout other\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = worktree_merge_branch_sync(fixture.source.to_str().unwrap(), fixture.isolated.to_str().unwrap(),
+            "mythra/isolated", "hook-merge-safety", None);
+        assert!(result.unwrap_err().contains("changed after the merge"));
+        assert_eq!(git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(), "other");
     }
 
     #[test]

@@ -130,10 +130,9 @@ export function SkillLibrary({
   useEffect(() => {
     if (!sourceEditorSkill) return;
     const current = skills.find((candidate) => candidate.path === sourceEditorSkill.path);
-    if (!current) {
-      sourceRequestRef.current += 1;
-      setSourceEditorSkill(null);
-    } else if (current !== sourceEditorSkill) {
+    // A watcher can lose a source while the user is editing it. Keep the
+    // editor and its draft available for copying instead of discarding work.
+    if (current && current !== sourceEditorSkill) {
       setSourceEditorSkill(current);
     }
   }, [skills, sourceEditorSkill]);
@@ -300,7 +299,7 @@ export function SkillLibrary({
   };
 
   const saveSourceEditor = async () => {
-    if (!sourceEditorSkill || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal) return;
+    if (!sourceEditorSkill || !skills.some((skill) => skill.path === sourceEditorSkill.path) || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal) return;
     setSourceSaving(true);
     setSourceError("");
     try {
@@ -597,13 +596,14 @@ export function SkillLibrary({
               <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
               <SkillDependencyDetails report={dependencyPreview.report} label="Skill dependencies" />
 
+              {!skills.some((skill) => skill.path === sourceEditorSkill.path) && <p className="skill-create-error" role="alert">This source is no longer in the Skills library. Your draft is still here; copy it before closing, or restore the source and refresh.</p>}
               {sourceError && <p className="skill-create-error" role="alert">{sourceError}</p>}
 
               <div className="skill-editor-actions">
                 {!sourceLoading && !sourceLoaded && <button type="button" className="secondary-button" onClick={() => void loadSourceEditor(sourceEditorSkill)}>Retry</button>}
                 <span>{sourceLoaded ? `${sourceDraft.length.toLocaleString()} characters · ${primaryModifierLabel()}+Enter to save` : ""}</span>
                 <button type="button" className="secondary-button" onClick={() => closeSourceEditor()} disabled={sourceSaving}>Cancel</button>
-                <button type="button" className="primary-button" onClick={() => void saveSourceEditor()} disabled={!sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal}>
+                <button type="button" className="primary-button" onClick={() => void saveSourceEditor()} disabled={!skills.some((skill) => skill.path === sourceEditorSkill.path) || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal}>
                   {sourceSaving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} Save skill
                 </button>
               </div>

@@ -2654,6 +2654,7 @@ export default function App() {
     if (skillRuntimeClearFailedRef.current) throw new Error("Mythra Code could not clear the previous skills runtime. Refresh the Skills library and try again.");
     const selected = selectedSkillsRef.current;
     let available = selected.skills;
+    let requiresPreparedLibrary = false;
     const userSource = mentionSource ?? message;
     if (selected.folder && (systemPrompt.includes("@") || userSource.includes("@"))) {
       const [systemNames, userNames] = await Promise.all([
@@ -2674,6 +2675,7 @@ export default function App() {
       }
       const needsFreshLibrary = systemNames.length > 0 || userNames.some((name) => available.some((skill) => skill.enabled && skill.name === name));
       if (needsFreshLibrary) {
+        requiresPreparedLibrary = true;
         available = await refreshSkillsForInvocationRef.current?.(selected.folder) ?? [];
         if (selectedSkillsRef.current.folder !== selected.folder) {
           throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
@@ -2685,6 +2687,7 @@ export default function App() {
         return resolveSelectedSkillPrompts(message, systemPrompt, "", [], mentionSource);
       }
     }
+    const librarySignature = skillRuntimeSignature(selected.folder, available);
     let resolved;
     try {
       resolved = await resolveSelectedSkillPrompts(message, systemPrompt, selected.folder, available, mentionSource);
@@ -2696,6 +2699,12 @@ export default function App() {
     }
     if (selectedSkillsRef.current.folder !== selected.folder) {
       throw new Error("The selected skills folder changed while preparing this prompt. Please send it again.");
+    }
+    if (skillRuntimeClearFailedRef.current
+      || (requiresPreparedLibrary && (skillRuntimeSignature(selected.folder, selectedSkillsRef.current.skills) !== librarySignature
+        || preparedSkillsFolderRef.current !== selected.folder
+        || preparedSkillsSignatureRef.current !== librarySignature))) {
+      throw new Error("The skills library changed while preparing this prompt. Please send it again.");
     }
     const names = new Set(skillMentionRanges(mentionSource ?? message, available).map((range) => range.skill.name));
     return {

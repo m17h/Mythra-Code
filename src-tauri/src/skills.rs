@@ -191,19 +191,34 @@ fn is_windows_reparse_point(_path: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
+// Bound every visited directory entry, including irrelevant and hidden files.
+// Depth and Markdown limits alone do not bound a broad source/dependency tree.
+const MAX_SKILL_SCAN_ENTRIES: usize = 20_000;
+
+fn bounded_skill_entries(directory: &Path, remaining: &mut usize) -> Result<Vec<fs::DirEntry>, String> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("Could not scan {}: {error}", directory.display()))? {
+        if *remaining == 0 {
+            return Err("The skills folder contains too many entries to scan safely. Select a smaller skills folder.".into());
+        }
+        *remaining -= 1;
+        entries.push(entry.map_err(|error| format!("Could not scan {}: {error}", directory.display()))?);
+    }
+    Ok(entries)
+}
+
 pub(super) fn collect_skill_candidates(
     root: &Path,
     directory: &Path,
     depth: usize,
     output: &mut Vec<PathBuf>,
+    remaining: &mut usize,
 ) -> Result<(), String> {
     if depth > MAX_SKILL_SCAN_DEPTH {
         return Ok(());
     }
-    let mut entries = fs::read_dir(directory)
-        .map_err(|error| format!("Could not scan {}: {error}", directory.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not scan {}: {error}", directory.display()))?;
+    let mut entries = bounded_skill_entries(directory, remaining)?;
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
@@ -228,7 +243,7 @@ pub(super) fn collect_skill_candidates(
                 output.push(path);
             }
         } else if file_type.is_dir() {
-            collect_skill_candidates(root, &path, depth + 1, output)?;
+            collect_skill_candidates(root, &path, depth + 1, output, remaining)?;
         }
     }
     Ok(())
@@ -500,6 +515,7 @@ fn collect_supported_skill_metadata(
     depth: usize,
     package_roots: &HashSet<PathBuf>,
     output: &mut BTreeMap<PathBuf, Option<SkillFileMetadata>>,
+    remaining: &mut usize,
 ) -> Result<(), String> {
     if depth > MAX_SKILL_SCAN_SUPPORT_DEPTH {
         return Ok(());
@@ -516,11 +532,7 @@ fn collect_supported_skill_metadata(
     {
         return Ok(());
     }
-    for entry in fs::read_dir(directory)
-        .map_err(|error| format!("Could not scan {}: {error}", directory.display()))?
-    {
-        let entry =
-            entry.map_err(|error| format!("Could not scan {}: {error}", directory.display()))?;
+    for entry in bounded_skill_entries(directory, remaining)? {
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
@@ -537,6 +549,7 @@ fn collect_supported_skill_metadata(
                 depth + 1,
                 package_roots,
                 output,
+                remaining,
             )?;
         } else if kind.is_file() && is_supported_skill_text(&entry.path()) {
             let metadata = entry
@@ -619,7 +632,8 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
         .canonicalize()
         .map_err(|error| format!("Could not open the skills folder: {error}"))?;
     let mut candidates = Vec::new();
-    collect_skill_candidates(&folder, &folder, 0, &mut candidates)?;
+    let mut candidate_budget = MAX_SKILL_SCAN_ENTRIES;
+    collect_skill_candidates(&folder, &folder, 0, &mut candidates, &mut candidate_budget)?;
     let package_roots = candidates
         .iter()
         .take(MAX_SKILL_MARKDOWN_FILES)
@@ -630,7 +644,8 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
         .filter_map(|path| path.parent().map(Path::to_path_buf))
         .collect::<HashSet<_>>();
     let mut inventory = BTreeMap::new();
-    collect_supported_skill_metadata(&folder, &folder, 0, &package_roots, &mut inventory)?;
+    let mut support_entry_budget = MAX_SKILL_SCAN_ENTRIES;
+    collect_supported_skill_metadata(&folder, &folder, 0, &package_roots, &mut inventory, &mut support_entry_budget)?;
     let mut support_cache = SupportFingerprintCache::new();
     let mut support_budget = SupportFingerprintBudget::default();
     let mut skills = Vec::new();
@@ -2184,6 +2199,19 @@ mod invocation_tests {
     use super::*;
 
     #[test]
+    fn scan_entry_budget_counts_unrelated_files_across_directories() {
+        let root = std::env::temp_dir().join(format!("mythra-scan-budget-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/a.bin"), "a").unwrap();
+        fs::write(root.join("nested/b.bin"), "b").unwrap();
+        let error = collect_skill_candidates(&root, &root, 0, &mut Vec::new(), &mut 2).unwrap_err();
+        assert!(error.contains("too many entries"));
+        let error = collect_supported_skill_metadata(&root, &root, 0, &HashSet::new(), &mut BTreeMap::new(), &mut 2).unwrap_err();
+        assert!(error.contains("too many entries"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn flat_external_import_names_its_unpreserved_local_document() {
         let root = std::env::temp_dir().join(format!("mythra-flat-links-{}", uuid::Uuid::new_v4()));
         let external = root.join("external");
@@ -2467,6 +2495,27 @@ mod invocation_tests {
             .err()
             .unwrap();
         assert!(error.contains("guide.txt"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hidden_dependency_does_not_prevent_healthy_runtime_bridges() {
+        let root = std::env::temp_dir().join(format!("mythra-hidden-runtime-{}", uuid::Uuid::new_v4()));
+        let library = root.join("library");
+        let runtime = root.join("runtime");
+        fs::create_dir_all(library.join(".hidden")).unwrap();
+        fs::write(library.join("healthy.md"), "Healthy instructions").unwrap();
+        fs::write(library.join("broken.md"), "[Guide](.hidden/guide.txt)").unwrap();
+        fs::write(library.join(".hidden/guide.txt"), "Guide").unwrap();
+        let configs = ["healthy", "broken"].map(|name| SkillBridgeConfig {
+            source_path: library.join(format!("{name}.md")).to_string_lossy().into_owned(),
+            name: name.into(), enabled: true,
+        }).to_vec();
+        sync_skill_runtime_at(&runtime, &library, configs).unwrap();
+        for mirror in [runtime.clone(), runtime.join("skills")] {
+            assert!(mirror.join("healthy/SKILL.md").exists());
+            assert!(!mirror.join("broken").exists());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

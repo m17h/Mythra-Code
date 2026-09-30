@@ -239,7 +239,10 @@ export function PullRequestChecks({ checks, label = "Checks" }: { checks: PullRe
     .sort((left, right) => CHECK_ORDER[left.tone] - CHECK_ORDER[right.tone] || left.index - right.index);
   const attention = rows.filter((row) => row.tone !== "good");
   const passed = rows.length - attention.length;
-  const shown = (showPassed ? rows : attention).slice(0, CHECK_ROW_LIMIT);
+  const shown = [
+    ...attention.slice(0, CHECK_ROW_LIMIT),
+    ...(showPassed ? rows.filter((row) => row.tone === "good").slice(0, CHECK_ROW_LIMIT) : []),
+  ];
   const hidden = (showPassed ? rows.length : attention.length) - shown.length;
   return (
     <div className="thread-pr-checks">

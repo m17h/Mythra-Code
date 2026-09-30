@@ -438,6 +438,13 @@ fn establish_upstream(
     if old.as_deref() == Some(head_oid) {
         return Ok(());
     }
+    // Another Git client may have fetched since the push. Never replace a
+    // newer or divergent observation with the older commit we just sent.
+    if let Some(current) = old.as_deref() {
+        if !git_is_ancestor(repo, current, head_oid)? {
+            return Err(paused("The commit was published, but the local remote-tracking ref advanced or changed. Refresh before continuing automatic publication."));
+        }
+    }
     let expected_old = old.unwrap_or_else(|| "0".repeat(head_oid.len()));
     // A symbolic ref introduced after the precheck must never redirect this
     // transaction into a local branch. The expected old value also protects
@@ -815,6 +822,24 @@ mod tests {
             run(&repo, &["symbolic-ref", "refs/remotes/origin/main"]),
             "refs/heads/victim"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn publication_tracking_does_not_rewind_a_newer_fetched_commit() {
+        let (root, repo) = fixture();
+        let published = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["config", "branch.main.remote", "origin"]);
+        run(&repo, &["config", "branch.main.merge", "refs/heads/main"]);
+        fs::write(repo.join("file.txt"), "newer remote change\n").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-m", "newer"]);
+        let newer = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["update-ref", "refs/remotes/origin/main", &newer]);
+        let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
+        let result = establish_upstream(&repo, &binding, "main", &published, "main");
+        assert!(result.is_err(), "newer tracking ref was overwritten: {result:?}");
+        assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), newer);
         fs::remove_dir_all(root).unwrap();
     }
 

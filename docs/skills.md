@@ -25,6 +25,8 @@ Read [the checklist][checklist].
 
 Document targets must be UTF-8 text files ending in `.md`, `.markdown`, or `.txt`. They resolve relative to the containing file, including percent-encoded UTF-8 filenames. A path using `../` is allowed only if its canonical destination remains inside the selected skills folder. A link that reaches a detected skill source requires that skill to be enabled and present in the app's library; linking a removed or disabled skill file does not bypass its state. Put supporting Markdown documents in a reference subfolder rather than using a detected skill source as an ordinary document.
 
+Hidden files and symbolic-link paths are unsupported, matching the files available to provider runtimes. Library scans also stop with a clear error after 20,000 directory entries per traversal, including unrelated files; choose a dedicated skills folder instead of a broad project folder.
+
 A local Markdown text link inside a loaded skill or reference document is a required dependency. Unsupported targets—including `.pdf`, `.docx`, `.csv`, `.json`, directory links such as `references/`, and extensionless paths—block the turn with an `unsupported-document` diagnostic and the complete reference chain. This resolver does not extract PDF or Word content, and this restriction does not change ordinary attachment workflows. Convert required material to a supported UTF-8 text file and update the link; merely naming `checklist.txt` in prose does not load it.
 
 Web URLs, anchors, images, links in code examples, and bare filenames do not load reference documents. This process does not fetch websites. Write a Markdown text link when you intend to include a local reference document; an ordinary website link remains an ordinary link.

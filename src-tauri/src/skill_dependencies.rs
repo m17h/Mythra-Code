@@ -612,6 +612,28 @@ impl Analyzer {
                 );
             }
         };
+        // Runtime mirrors cannot carry hidden entries or symlink aliases.
+        // Reject the authored path as well as its canonical target so preview
+        // and provider delivery agree about which documents are available.
+        let mut cursor = self.folder.clone();
+        let unsupported_path = raw.strip_prefix(&self.folder).is_ok_and(|relative| {
+            relative.components().any(|component| {
+                match component {
+                    std::path::Component::Normal(part) => {
+                        cursor.push(part);
+                        part.to_string_lossy().starts_with('.')
+                            || std::fs::symlink_metadata(&cursor).is_ok_and(|meta| meta.file_type().is_symlink())
+                            || super::is_windows_reparse_point(&cursor).unwrap_or(false)
+                    }
+                    std::path::Component::ParentDir => { cursor.pop(); false }
+                    _ => false,
+                }
+            })
+        });
+        if source.starts_with(&self.folder) && unsupported_path {
+            self.issue("unsupported-document", "Hidden files and symbolic-link paths cannot be included in provider skill libraries. Use a visible, regular file inside the skills folder.", &chain, stack.last().map(PathBuf::as_path), Some(reference));
+            return self.blocked(requested_name, requested_kind, raw, depth, parent, reference);
+        }
         if diagnostic_path(&source).is_none() {
             self.issue("invalid-path", "Skill source paths must be bounded absolute local paths without control characters.", &chain, stack.last().map(PathBuf::as_path), Some(reference));
             return self.blocked(
@@ -2290,6 +2312,26 @@ mod tests {
         );
         lib.skill("deep", &path, "x", true);
         assert!(has_issue(&lib.analyze("@deep", ""), "outside-folder"));
+    }
+
+    #[test]
+    fn hidden_documents_are_blocked_consistently_with_runtime_mirrors() {
+        let mut lib = Library::new();
+        lib.skill("a", "a.md", "[Private](.hidden/secret.txt)", true);
+        lib.document(".hidden/secret.txt", "must not be loaded");
+        let result = lib.analyze("@a", "");
+        assert!(has_issue(&result, "unsupported-document"));
+        assert_eq!(result.loaded.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_symlink_documents_are_blocked_consistently_with_runtime_mirrors() {
+        let mut lib = Library::new();
+        lib.skill("a", "a.md", "[Alias](alias.txt)", true);
+        lib.document("docs/real.txt", "private instructions");
+        std::os::unix::fs::symlink(lib.root.join("docs/real.txt"), lib.root.join("alias.txt")).unwrap();
+        assert!(has_issue(&lib.analyze("@a", ""), "unsupported-document"));
     }
 
     #[test]

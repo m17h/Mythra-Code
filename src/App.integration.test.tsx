@@ -1590,6 +1590,35 @@ describe("overlapping refresh ordering", () => {
     })));
   });
 
+  it.each(["review", "unknown"] as const)("revalidates @%s when a skill is disabled during resolution", async (mention) => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localSkillsScanImpl = () => [selectedReviewSkill];
+    const pending = deferred<{ prompt: string; systemPrompt: string }>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_resolve_prompts") return pending.promise;
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_sync", expect.anything()));
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), `@${mention} inspect{Enter}`);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_resolve_prompts", expect.anything()));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Settings" })).getByRole("button", { name: "Skills" }));
+    await user.click(await screen.findByRole("switch", { name: "Disable review" }));
+    await screen.findByRole("switch", { name: "Enable review" });
+    await act(async () => pending.resolve({ prompt: mention === "review" ? "stale review instructions" : "@unknown inspect", systemPrompt: "" }));
+    if (mention === "review") {
+      await waitFor(() => expect(screen.getByText(/skills library changed while preparing/i)).toBeInTheDocument());
+      expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toBe(false);
+    } else {
+      await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+        method: "turn/start", params: expect.objectContaining({ input: [expect.objectContaining({ text: "@unknown inspect" })] }),
+      })));
+    }
+  });
+
   it.each(["user", "system"] as const)("refreshes an edited supporting document before a %s skill send", async (channel) => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     if (channel === "system") localStorage.setItem("kiwi.settings", JSON.stringify({ ...DEFAULT_SETTINGS, systemPrompt: "Use @review." }));
