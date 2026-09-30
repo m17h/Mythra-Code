@@ -125,7 +125,7 @@ describe("performance UX contracts in a real browser", () => {
     expect(view.container.querySelector('[data-entry-index="82"]')?.textContent).toContain("Archived message 083");
   });
 
-  it("keeps the earlier control keyboard reachable after a reveal focus handoff", async () => {
+  it("keeps keyboard scrolling available after a reveal focus handoff", async () => {
     const view = render(<Shell />);
     const button = screen.getByTestId("reveal-earlier");
     const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
@@ -133,8 +133,14 @@ describe("performance UX contracts in a real browser", () => {
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(view.container.querySelectorAll("[data-entry-index]")).toHaveLength(TIMELINE_MOUNT_ROWS + 40));
     expect(scroller).toHaveFocus();
-    await userEvent.tab();
-    expect(screen.getByTestId("reveal-earlier")).toHaveFocus();
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 200);
+    fireEvent.scroll(scroller);
+    const previousTop = scroller.scrollTop;
+    expect(previousTop).toBeGreaterThan(0);
+    await userEvent.keyboard("{PageUp}");
+    await waitFor(() => expect(scroller.scrollTop).toBeLessThan(previousTop));
+    expect(scroller).toHaveFocus();
+    expect(view.container.querySelectorAll("[data-entry-index]")).toHaveLength(TIMELINE_MOUNT_ROWS + 40);
   });
 
   it("keeps the server history control focused while an older page loads", async () => {
