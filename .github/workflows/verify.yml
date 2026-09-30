@@ -87,4 +87,5 @@ jobs:
         with:
           name: webkit-diagnostics
           path: .test-artifacts/webkit.log
+          include-hidden-files: true
           if-no-files-found: ignore
