@@ -36,11 +36,19 @@ Useful checks:
 
 ```bash
 npm run build
+npx playwright install chromium
+npm run verify:startup
 cargo check --manifest-path src-tauri/Cargo.toml
 npm run desktop:build
 ```
 
 `desktop:build` is the contributor/local build and deliberately skips update artifacts. Published releases use the signed release workflow described below.
+
+Native builds also check the emitted production renderer before packaging.
+Install Playwright Chromium once with `npx playwright install chromium` on each
+build machine. `verify:startup` opens the built app shell and Settings, then
+reloads it; development-server tests alone cannot detect production chunk-loading
+failures. CI repeats this check in WebKit and with the Windows build target.
 
 ## Provider setup
 

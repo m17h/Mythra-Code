@@ -70,7 +70,11 @@ export default defineConfig({
           }, {
             name: "shared",
             minShareCount: 2,
-            includeDependenciesRecursively: false,
+            // Keep shared modules with their dependencies. Without this,
+            // React's initializer can land in the entry while its caller is
+            // in shared: entry -> shared -> entry crashes before React mounts.
+            // The higher-priority groups above preserve deferred pricing data.
+            includeDependenciesRecursively: true,
           }],
         },
       },

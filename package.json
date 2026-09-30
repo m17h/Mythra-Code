@@ -33,8 +33,9 @@
     "verify:performance": "node scripts/performance-scorecard.mjs --check --output dist/performance-scorecard.json",
     "lint": "eslint src --max-warnings 0",
     "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
-    "verify": "npm run verify:release-config && npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:browser && npm run test:rust && npm run build && npm run verify:performance",
-    "release:finalize": "node scripts/finalize-release.mjs"
+    "verify": "npm run verify:release-config && npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:browser && npm run test:rust && npm run build && npm run verify:startup && npm run verify:performance",
+    "release:finalize": "node scripts/finalize-release.mjs",
+    "verify:startup": "node scripts/verify-production-startup.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

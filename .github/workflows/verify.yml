@@ -50,7 +50,7 @@ jobs:
 
       - name: Verify Windows renderer performance profile
         if: runner.os == 'Windows'
-        run: npm run build && npm run verify:performance
+        run: npm run build && npm run verify:startup && npm run verify:performance
         env:
           TAURI_ENV_PLATFORM: windows
 
@@ -80,6 +80,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install webkit
+      - name: Verify production renderer startup in WebKit
+        run: npm run build && npm run verify:startup
+        env:
+          MYTHRA_BROWSER_TEST_ENGINE: webkit
       - name: Verify every browser spec in WebKit
         run: node scripts/verify-webkit.mjs
       - name: Upload WebKit diagnostics
