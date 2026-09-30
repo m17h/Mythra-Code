@@ -4857,8 +4857,9 @@ fn title_script_matches_request(request: &str, title: &str) -> bool {
     }
     let title_letters: Vec<char> = title.chars().filter(|c| c.is_alphabetic()).collect();
     let cyrillic_letters = title_letters.iter().filter(|c| is_cyrillic(**c)).count();
-    // Allow mixed titles and proper nouns; reject only a clear script switch.
-    cyrillic_letters * 100 < title_letters.len() * 80 || title_letters.is_empty()
+    // Preserve mixed titles and proper nouns, regardless of their length.
+    // Reject only a complete, unsupported switch to Cyrillic.
+    cyrillic_letters != title_letters.len() || title_letters.is_empty()
 }
 
 fn parse_thread_title(bytes: &[u8]) -> Result<String, String> {
@@ -4981,6 +4982,7 @@ mod title_tests {
         assert!(title_script_matches_request("Corrige el diseño de la interfaz", "Mejorar el diseño de interfaz"));
         assert!(title_script_matches_request("Fix the parser for Russian names", "Fix parser for Иван"));
         assert!(title_script_matches_request("Fix the city display for Moscow", "Fix Москва"));
+        assert!(title_script_matches_request("Fix the theatre project layout", "Fix Большой театр"));
         assert!(title_script_matches_request(
             &format!("Исправь эту функцию: ```ts\n{}\n```", "const example = true;".repeat(100)),
             "Исправление функции",
