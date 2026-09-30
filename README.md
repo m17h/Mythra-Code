@@ -1,269 +1,209 @@
 # Mythra Code
 
-> [!IMPORTANT]
-> This is the canonical Mythra Code source repository for both macOS and Windows.
+A local-first desktop app for working with coding agents across OpenAI, Claude, Cursor, OpenRouter, and LM Studio. Bring your own accounts, choose your models, and keep conversations, project tools, and Git work in one place.
 
-Mythra Code is a fast, local-first desktop coding harness with a user-owned instruction prompt. It supports OpenAI through an official ChatGPT subscription sign-in flow, Claude through the locally installed Claude Code CLI, Cursor subscription models (including Grok when entitled) through Cursor Agent, OpenRouter through a user-supplied API key, and local models served by LM Studio.
+**[Download the latest release](https://github.com/m17h/Mythra-Code/releases/latest)** · **[Website](https://www.morgangermani.com/projects/mythra-code)** · **[Report an issue](https://github.com/m17h/Mythra-Code/issues)**
 
-**Platform support:** packaged releases target **macOS on Apple silicon** and **Windows x64**. Both platforms are published under the same version and GitHub release. Intel Macs and Linux are not supported.
+Packaged releases support **Apple silicon Macs** and **Windows x64**. Intel Macs and Linux are not currently supported. This is the canonical source repository for both platforms; each release includes both platform builds.
 
-This repository contains a runnable desktop coding environment: normal chats, folder-bound project threads, concurrent background tasks, steering and interruption, three permission modes, typed approvals and user-input requests, an explicit empty-by-default instruction prompt, opt-in harness-level sub-agents, prompt/agent profiles, multi-step agent workflows, animated model controls, and an integrated workspace studio.
+## Get started
 
-Download it here: https://www.morgangermani.com/projects/mythra-code
+1. Install the macOS DMG or Windows installer from the latest release. On macOS, copy the app into Applications. The Windows installer is not Authenticode-signed, so Windows may show an **Unknown publisher** warning; download only from the official release page.
+2. Open **Settings → Models & accounts** and connect a provider. Install that provider's required runtime if prompted; the table below explains which one you need.
+3. Add a project folder to work on code, or start a normal chat without choosing a project. GitHub is optional.
+4. Choose a model and a permission mode below the composer, then describe what you want to do.
 
-## Why this architecture
+The onboarding introduces projects, permissions, sub-agents, and appearance settings. You can reopen it from **Settings → Runtime**. Existing installations can check for app updates in **Settings → Updates**.
 
-- **Tauri 2** keeps the native shell small and puts filesystem/process access behind Rust.
-- **React + TypeScript** makes a polished, responsive thread UI straightforward.
-- **Codex App Server** is the official open-source protocol for rich Codex clients. It provides ChatGPT sign-in, thread persistence, streaming, approvals, sandboxing, and model-provider support.
-- **OpenRouter and LM Studio** are configured as Responses-compatible model providers, so local and hosted routes use one event and tool model.
+## Providers and accounts
 
-## Run it
+Configure each provider in **Settings → Models & accounts**. You only need to set up the providers you want to use.
+
+| Provider | What you need | How Mythra Code connects |
+| --- | --- | --- |
+| **OpenAI** | A ChatGPT account with Codex access and a supported Codex runtime | Official Codex browser sign-in through App Server. Mythra Code uses an isolated Codex home, separate from your normal `~/.codex` state. |
+| **Claude** | Claude Code CLI and an eligible signed-in account | The local Claude Code runtime, with API-key and alternate cloud-provider overrides removed from subscription turns. |
+| **Cursor** | Cursor Agent and an eligible signed-in account | Cursor's ACP interface and the model catalog available to your account. |
+| **OpenRouter** | An OpenRouter API key **and the Codex runtime** | OpenRouter's Responses-compatible endpoint through Codex App Server. Model and tool compatibility depend on the route. |
+| **LM Studio** | A running LM Studio server **and the Codex runtime** | A Responses-compatible local model through Codex App Server. The default server address is `http://127.0.0.1:1234/v1`; a trusted remote server and optional token are also supported. |
+
+Mythra Code does not bundle Codex. It looks for the Codex CLI and can also recognize the runtime included with ChatGPT for macOS. Claude and Cursor use their own runtimes for ordinary chats and agent-only workflows. Explicit shell-command workflow steps use Codex.
+
+Model pickers use the available provider catalogs rather than a fixed generation of models. Sol, Luna, and Astra have distinct artwork and animated controls; supported reasoning levels and Fast/priority availability depend on the selected model and account. Selecting a model or effort changes the actual request, not just the label.
+
+Subscriptions and API charges remain with the selected provider. Sub-agents and optional background features use the account configured for them, which can differ from the main conversation's account.
+
+## Everyday work
+
+### Chats and project threads
+
+- **Chats** are conversations without a user project folder. They use a private working directory for persistence; project workspace tools are unavailable there.
+- **Projects** are folders you choose. Each thread stays associated with its project, with its own messages, drafts, attachments, and running state.
+- **Shared project** threads work in the same folder. For parallel work, choose an **Isolated worktree** before the first message to give a thread its own folder and branch. This requires a Git repository root with at least one commit.
+
+Threads can keep working in the background while you view another conversation. While a turn is running, **Send** queues a follow-up; queued prompts can be edited or removed before delivery. **Steer** sends a correction into the current turn, and **Stop** interrupts it.
+
+Agents can ask structured questions. Claude pauses for an answer; supported Codex questions can stay open while work continues. Answering can steer an active turn or start a follow-up when the turn has finished. Exact support depends on the provider runtime.
+
+To give precise feedback, select text in a completed reply or a file's diff in Review, then add a feedback note. Send one or more notes on their own or alongside a normal prompt.
+
+### Permissions
+
+| Mode | Use it for |
+| --- | --- |
+| **Read only** | Inspecting and explaining without granting file-write access. |
+| **Ask to act** | Coding with the runtime's workspace protections and approval requests for actions that need permission. |
+| **Full access** | Trusted work where the agent may edit files and run commands without those approval prompts. |
+
+Enforcement uses each provider runtime's capabilities; the modes are not an identical OS sandbox across all providers. Read only is not a guarantee that every third-party tool is side-effect free. Review the permissions of any tools or MCP servers you enable in **Settings → Tools & MCP**, and use Full access only where you intend to grant it.
+
+### Sub-agents
+
+Enable **Sub-agents** in the composer and configure the models allowed to help. You can use models from the same provider or mix any of the supported providers, provided their accounts and runtimes are ready. Save reusable setups in **Settings → Sub-agents**.
+
+- Choose a concurrency limit of up to **24**, subject to the configured enabled sub-agents. This counts children, not the main agent.
+- The main agent decides when to delegate within that setup. Each child's work is visible in the app, and children cannot spawn another layer of sub-agents.
+- Children use the parent's permission policy through their own provider runtime.
+- For an existing idle thread, changes to its configured sub-agents take effect together on its next message. They do not silently replace the setup of work already running.
+
+Delegation uses Mythra Code's managed bridge rather than giving the model an unrestricted second set of native sub-agent tools. Parallel work consumes usage on each selected provider and can use subscription limits faster.
+
+## Workspace tools
+
+Open the right-side Workspace with **⌘B** on macOS or **Ctrl+B** on Windows. Use **⌘K / Ctrl+K** for the command palette.
+
+| Tab | What it does |
+| --- | --- |
+| **Files** | Search project files, preview text, and attach context. |
+| **Review** | Inspect changes, add feedback, request an AI review, and run project checks. |
+| **Agents** | Follow sub-agent status, inspect their work, and interrupt them. |
+| **Terminal** | Run commands in a terminal scoped to the project or isolated worktree. |
+| **Checkpoints** | Inspect source snapshots, restore or reapply changes, and access conversation recovery actions. |
+| **Worktrees** | Review isolated work, copy changes to the shared project, merge locally, or clean up a finished worktree. |
+| **Context** | Manage files and images attached to the next message. |
+| **Usage** | Inspect thread usage and request information. |
+| **Tools** | Use project actions, skills, and MCP controls. |
+| **Git** | Work with local branches and commits, connect GitHub, and manage a thread's pull request. |
+
+**Run your project.** From the top-bar **Run** control, save a Run command once, or use **Find run command** to have your chosen provider/model inspect the project and save a command. Discovery does not launch the app or install dependencies. Review the saved command, then press Run. An optional **Before each run** command handles repeatable setup; setup failure prevents launch. Commands run from the thread's working folder, including its worktree.
+
+**Run checks.** Review has a separate **Run checks** action for a saved test or validation command. Agents can save that command when working on tests, and **Find checks** can discover an existing check setup. It does not create missing tests. Checks run on demand, independently of the development server, and failures can be added as feedback for the agent.
+
+**Recover source changes.** Git-project checkpoints capture tracked and untracked non-ignored files without moving your branch or staging index. Restoring creates a safety snapshot first. Ignored files and build output are excluded; checkpoints are not a replacement for backups. Rolling back conversation history is a separate action from restoring files.
+
+## Local Git and GitHub
+
+You can work entirely locally: initialize Git, create a branch, stage files, commit, and merge an isolated branch into the shared project without a GitHub account.
+
+Connecting **Settings → GitHub** adds cloning, publishing, and pull requests through the official GitHub CLI. A branch does **not** automatically create a PR. Each thread can attach one primary PR, either an existing PR or one you create with your own title, description, and target branch. Its number and state appear on the thread's inbox card.
+
+- **Push** publishes committed work. Uncommitted changes remain local.
+- **Automatically publish branches and commits** is an optional project setting, off by default. It pushes new branches and committed changes while the app observes the project; it does not automatically commit files, pull changes, or create PRs.
+- **Merge on GitHub** merges the PR on GitHub. It does **not** update your local folder. Use the separate **Update local _branch_** action (for example, **Update local main**) to bring the merged result into a clean shared project.
+- The merge confirmation can also **archive the thread after a successful merge**. Archiving keeps the conversation recoverable and does not delete the local checkout.
+- **Merge into local project** is a separate worktree action that changes local Git history without merging a GitHub PR.
+
+PR availability and merge methods depend on repository permissions and branch rules. The integration supports github.com. See the [Git and pull-request guide](docs/thread-pull-requests.md) for details and safeguards.
+
+## Skills, workflows, and scheduled work
+
+### Skills: reusable instructions
+
+Choose a folder in **Settings → Skills**, enable a skill, and mention its displayed alias, such as `@review`, in a prompt. Skills can reference other enabled skills and local Markdown/text documents. Mythra Code checks those dependencies before sending and shows what was included under **Skill context**.
+
+Missing, disabled, unsafe, or unsupported nested references block delivery instead of silently sending incomplete context. Local references support UTF-8 `.md`, `.markdown`, and `.txt` files, not arbitrary document extraction. See the [skills guide](docs/skills.md) for syntax, limits, and examples.
+
+### Workflows: reusable multi-step recipes
+
+Create a recipe in **Settings → Workflows** from ordered agent prompts and optional shell commands. For example: inspect a change, run the project's checks, then summarize the results. Each run creates an inspectable project thread with step status and history.
+
+- Run a recipe on any project; its saved project is only a default for manual runs and the destination for automatic runs.
+- Use any supported provider for agent steps. Workflows save their model, permissions, and other run settings, so review that snapshot when changing providers.
+- Supply inputs, use the previous step's output, and configure conditions, retries, and failure handling.
+- Export/import `.mythra-workflow.json` recipes. Imports open for review and use the recipient's current model and permissions; project bindings, schedules, and run history are not shared. Referenced skills must be installed separately. Check prompts, commands, and input defaults for private information before sharing.
+- Type **`!`** in the composer to search enabled recipes. Click a result, or select one with an arrow key and Enter, to add its chip. Bare Enter does not select the first result, and `!` followed by a space stays ordinary punctuation. Add an optional prompt, then review the destination and inputs before running.
+
+Recipes can also run on an interval or once when Mythra Code starts, with a default project selected. **Settings → Scheduled tasks** offers simpler recurring prompts. Automatic work requires the app to be running; it is not a cloud scheduler. Unattended runs cannot rely on you answering approval dialogs or questions and do not gain extra permissions to bypass them.
+
+Mythra Code workflows are app-managed recipes, not an import of every Claude Code or Cursor hook, command, or automation feature. Claude's personal CLI settings and hooks are not automatically inherited by Mythra Code turns.
+
+## Make it yours
+
+**Settings → Interface** controls themes, chat fonts, UI size, effort-slider styles, and provider marks. **Settings → Projects** provides project-specific defaults and optional **Automatic thread titles**.
+
+Automatic titles use a separate request to your chosen provider/model; the default OpenAI selection follows an available Luna model. A soft animated placeholder covers the title while it is generated, and manually chosen names take precedence. This feature shares part of the first prompt with the title provider even when the main conversation uses a different provider.
+
+**Settings → Prompts** holds your global and provider-specific instructions. The user-defined prompt starts empty. Project-instruction loading is opt-in for Codex-backed providers. Mythra Code also supplies operational guidance for its tools, delegation, completion, and project commands; an empty user prompt does **not** mean an instruction-free request. Provider policies and runtime tool instructions still apply.
+
+## Usage and privacy
+
+**Settings → Usage** shows this device's recorded tokens, daily activity, model/provider breakdowns, and estimated API-equivalent cost. These estimates are **not a subscription bill** and do not measure what every other app or computer has used. Account quota indicators use provider-reported information where available; unavailable information is not zero usage. See the [usage guide](docs/usage-dashboard.md) for coverage and pricing details.
+
+Mythra Code has no app telemetry, analytics, or crash reporting. Conversations, settings, and usage records are stored locally, but **local-first does not mean offline**: prompts, supplied context, and tool results are sent to the selected provider. Optional title generation and command discovery use their separately selected provider. LM Studio can keep inference local when configured on your own machine.
+
+Other network activity includes runtime authentication, app/runtime update checks, model and pricing catalogs, GitHub operations, and any network tools or MCP servers you choose to use. Pricing checks do not upload your prompts or usage records. Provider runtimes have their own storage, network behavior, and policies.
+
+OpenRouter and LM Studio tokens use the operating system credential store. GitHub authentication is managed by `gh`; OpenAI uses Mythra Code's isolated Codex home, while Claude and Cursor manage their own sign-ins. Model text is rendered without raw HTML. Agents with command access can still use credential-aware tools available on the computer, so permissions matter.
+
+## Build and contribute
+
+The desktop shell is **Tauri 2 / Rust**, with a **React / TypeScript** UI. Codex App Server powers OpenAI, OpenRouter, and LM Studio; Claude Code and Cursor have dedicated runtime adapters. See [Architecture](docs/ARCHITECTURE.md) for the component and state model.
 
 Requirements:
 
-- macOS on Apple silicon or Windows x64
-- Node.js 20.19 or newer
-- Rust stable
-- A recent Codex runtime (the Codex CLI or ChatGPT for macOS), Claude Code CLI, Cursor Agent, and/or LM Studio — each provider needs only its own runtime
+- Apple silicon macOS or Windows x64.
+- Node.js **20.19+** (CI uses Node 22), npm, and stable Rust/Cargo.
+- Native Tauri prerequisites: Xcode Command Line Tools on macOS; C++ Build Tools and WebView2 on Windows. See [Tauri's setup guide](https://v2.tauri.app/start/prerequisites/).
+- The runtime/account for whichever provider you want to exercise. GitHub CLI is needed for GitHub integration.
 
 ```bash
-npm install
+git clone https://github.com/m17h/Mythra-Code.git
+cd Mythra-Code
+npm ci
 npm run desktop
 ```
 
-Useful checks:
+`desktop` opens **Mythra Code Local Dev** with a separate app-data identity. It is not the packaged release. `npm run dev` starts only the web frontend and does not provide the native desktop bridge.
+
+When changing user-facing behavior, update this README or the relevant linked guide in the same PR. Describe what users can do in the current app, and keep version-specific changes in the release notes.
+
+Before opening or merging a PR:
 
 ```bash
-npm run build
 npx playwright install chromium
-npm run verify:startup
-cargo check --manifest-path src-tauri/Cargo.toml
-npm run desktop:build
+npm run verify
 ```
 
-`desktop:build` is the contributor/local build and deliberately skips update artifacts. Published releases use the signed release workflow described below.
+Use `npm.cmd` and `npx.cmd` in PowerShell if script execution policy blocks the default wrappers. Install the Playwright browser initially and when a dependency update requires a new browser version.
 
-Native builds also check the emitted production renderer before packaging.
-Install Playwright Chromium once with `npx playwright install chromium` on each
-build machine. `verify:startup` opens the built app shell and Settings, then
-reloads it; development-server tests alone cannot detect production chunk-loading
-failures. CI repeats this check in WebKit and with the Windows build target.
+`verify` runs release-configuration checks, lint/Clippy, type checks, TypeScript and Rust tests, Chromium interaction tests, the production renderer build/startup check, and performance budgets. GitHub CI verifies macOS and Windows and runs the browser suite and production startup check in WebKit.
 
-## Provider setup
+| Command | Purpose |
+| --- | --- |
+| `npm run build` | Compile the production web frontend. |
+| `npm run verify:startup` | Open the already-built frontend, check the shell and Settings, then reload. Run `build` first. |
+| `npm run test:browser` | Run Chromium UI interaction tests. |
+| `npm run desktop:build` | Build a local macOS `.app` or unbundled Windows executable without updater artifacts. |
 
-### OpenAI subscription
+Local packaging does not have the development command's separate app-data identity; avoid launching it alongside an installed app doing active work. Passing a dev build or browser test does not prove that an installed release renders correctly.
 
-Open **Settings → OpenAI → Sign in**. Mythra Code starts the official Codex browser login through App Server. The resulting login is stored inside Mythra Code's isolated Codex home rather than modifying the user's normal `~/.codex` state.
+### Releases
 
-Mythra Code blocks OpenAI turns until that sign-in completes. Attempting to send while signed out preserves the draft and opens a dedicated authentication dialog rather than issuing an unauthorized request.
+Use [GitHub Releases](https://github.com/m17h/Mythra-Code/releases) for downloads and version-specific changes. This README describes the current source; features on a newer source branch may not yet be in your installed release.
 
-Mythra Code checks for the Codex CLI first and also recognizes the runtime included with ChatGPT for macOS. If neither is available, it opens a guided setup dialog with the official installation guide and a retry action. Only one of the two installations is needed.
+Publishing is a maintainer operation using private signing credentials. Both native builds must come from the same clean, verified commit and version, with their assets attached to one draft and both entries in `latest.json`. Each platform keeps its own updater signing key. The installed packages must be checked before finalization, including visible UI, reopening, and upgrade/data preservation—not merely a process staying alive.
 
-### Claude
+Maintainers follow their release runbook and use `release:build`, `release:publish`, then `release:finalize` only after the combined artifact audit and native checks pass. The finalizer checks CI and release metadata; it does not perform the installed-app visual checks. Do not publish a one-platform manifest or replace an already published version with different binaries.
 
-Mythra Code drives the locally installed [Claude Code CLI](https://claude.com/claude-code) directly. Open **Settings → Models & accounts**, pick Claude, and sign in through the CLI's own browser flow — Mythra Code never sees or stores Anthropic credentials. To keep usage on the signed-in subscription, Mythra Code launches each turn with API-key/Bedrock/Vertex environment overrides scrubbed and warns when such overrides are present.
+## More documentation
 
-Each Claude thread runs one CLI process per turn with `--session-id`/`--resume`, so conversations persist and resume across app restarts. Mythra Code's permission modes map to the CLI's permission system: *Ask to act* routes every tool request through Mythra Code's approval UI over stdio; *Read only* disables editing and shell tools; *Full access* passes `bypassPermissions`. Every Claude turn also receives an explicit built-in coding-tool allowlist, so Claude Code's native agent, workflow, peer-messaging, scheduling, and remote-trigger surfaces cannot bypass Mythra Code's configured crew. The CLI runs with `--setting-sources ""`, so a user's personal Claude Code settings, hooks, and allowlists do not silently apply inside Mythra Code, and the project-instructions toggle governs Codex-based OpenAI, OpenRouter, and LM Studio `AGENTS.md` loading.
-
-Selected Mythra Code skills are exposed to Claude through a generated local plugin directory. Configured sub-agents are exposed only through Mythra Code's per-thread MCP bridge; child threads do not receive that bridge and therefore cannot re-delegate. Model and reasoning-effort choices are sent as real CLI flags per turn.
-
-### Cursor
-
-Open **Settings → Models & accounts**, pick Cursor, and sign in with Cursor Agent. Mythra Code talks to the official `cursor-agent acp` interface, fetches the live model catalog attached to that Cursor account, and exposes Grok 4.5 whenever Cursor advertises it for the subscription. Cursor threads persist locally with their ACP session ID, stream messages and tool activity into the normal timeline, and use Mythra Code's permission and structured-question UI. The app uses Cursor's official 2D cube mark from its public brand kit.
-
-### OpenRouter
-
-Open **Settings → OpenRouter** and save an API key. The composer then exposes a searchable picker backed by OpenRouter's live tool-capable model catalog, plus direct `provider/model` entry for new or private slugs. Mythra Code stores the key in the operating system credential store and exposes it only to the local App Server child process.
-
-OpenRouter's Responses API is currently beta, so compatibility can change upstream.
-
-### LM Studio
-
-Start LM Studio's local server, then open **Settings → Models & accounts**, choose LM Studio, and test the default `http://127.0.0.1:1234/v1` connection. Mythra Code discovers language models from LM Studio's live catalog, excludes embedding-only models when the native catalog is available, and carries each model's reported context window and tool-use capability into the composer and thread runtime. You can also enter a different HTTP(S) server URL for LM Studio on another trusted machine.
-
-Authentication is optional for the default localhost server. If LM Studio authentication is enabled, store its token in Settings; Mythra Code keeps it in the operating system credential store and exposes it only to the local App Server child process. LM Studio turns still use Mythra Code's normal permissions, tools, MCP servers, workflows, schedules, and managed cross-provider sub-agents.
-
-## Prompt transparency
-
-For each new thread, Mythra Code:
-
-1. Sends the visible Settings prompt as App Server's explicit `baseInstructions` override. The default is the empty string.
-2. Sends an empty app developer-instruction override.
-3. Disables `AGENTS.md`/project-document instruction loading by default. Users can explicitly enable it in Settings; the request audit shows its state.
-4. Renders Markdown through a safe React renderer with no raw-HTML plugin. Code blocks are copyable but never executable by the renderer.
-
-This means **Mythra Code adds no secret instruction text**. It does not mean the entire inference stack is literally prompt-free: model providers can enforce platform policies, and a coding engine must still provide tool schemas and runtime metadata. A future wire-audit view should make those non-instruction request fields inspectable too.
-
-The relevant OpenAI Codex source path treats `baseInstructions` as the highest-priority override and sends the empty value through to the Responses request. This behavior should be covered by an integration test whenever the bundled/pinned runtime work lands.
-
-## Local skills
-
-Select a folder in **Settings → Skills**, enable a skill, then mention its displayed alias (such as `@review`) in a message or system instructions. Skills can invoke other enabled skills and link local `.md`, `.markdown`, or `.txt` reference documents using inline or reference-style Markdown links. Mythra Code resolves those dependencies recursively before a turn, deduplicates shared files, and records a compact **Skill context** graph on the sent message.
-
-A missing, disabled, cyclic, unreadable, unsupported, out-of-folder, or over-limit dependency blocks the entire turn. Local Markdown text links inside loaded skills/reference documents require UTF-8 `.md`, `.markdown`, or `.txt` targets; PDF, Word, CSV, JSON, directory, and extensionless targets are diagnosed, not extracted or silently skipped. Ordinary attachments are separate. Bare filenames do not load documents. Editors show the broken reference and full chain in red, including system-only failures in the composer. A bad direct `@alias` in a system prompt is also flagged, and hovering or focusing a flagged reference reveals a dependency map; a direct unknown alias in an ordinary message stays plain text. Limits are shared across system and user context: 4 dependency hops along the shortest chain from any direct root, 8 skills, 24 unique files, 120,000 Unicode characters, and 1 MiB per file. Sending checks current files again. [See skill syntax, limits, and history behavior](docs/skills.md).
-
-Supported provider runtimes manage prompt caching. Mythra Code prepares fresh, stable context where possible and excludes user-only tracking data from system-skill instructions. The user-turn envelope retains the dependency report for history reload. Cache hits and savings are not guaranteed, and no artificial keepalive requests are sent.
-
-## Permissions
-
-| Mythra Code mode | Sandbox | Approval policy | Intended use |
-| --- | --- | --- | --- |
-| Read only | `read-only` | `never` | Inspect and explain without edits |
-| Ask to act | `workspace-write` | `on-request` | Normal coding with approval for elevated actions |
-| Full access | `danger-full-access` | `never` | Trusted projects where speed is preferred over isolation |
-
-Approval requests are delivered as App Server server-initiated RPC calls and must be answered in Mythra Code's modal before work continues.
-
-## Chats, projects, and threads
-
-The sidebar separates the two working modes explicitly:
-
-- **Chats** creates normal conversations that are not attached to a user project folder. App Server still receives a stable private working directory inside Mythra Code's application data so those conversations can persist safely, but it is never presented as a project and project workspace tools stay disabled.
-- **Projects** contains folders chosen by the user. Every project thread is bound to the folder where it was created. Mythra Code filters thread history by that exact working directory, records a local binding for new and forked threads, rejects cross-project resumes, and reapplies the project `cwd`, workspace root, and selected sandbox on every turn.
-
-The new-thread button, thread-list heading, top bar, empty state, and composer all show the current scope, making it clear whether the next turn is a normal chat or will work inside a selected folder.
-
-Before the first message in a Git project, the user can choose **Shared project** or **Isolated worktree**. Isolation gives the thread its own app-managed linked worktree and private `mythra/*` branch while keeping it grouped under the original project. Every model turn, terminal command, file search, diff, Git action, and checkpoint for that thread runs against the isolated path; the shared folder is not added as a writable model root.
-
-The Studio exposes the worktree's status and actions to apply its complete non-ignored delta into the shared folder, merge a clean committed branch, reveal it in Finder, recreate a missing worktree from its branch, or clean it up. Apply first creates a shared-folder safety checkpoint and preserves the user's branch, `HEAD`, staging index, and ignored files. Cleanup identifies untracked and ignored worktree-only files before requiring destructive confirmation. Mythra Code also warns before two active shared-folder threads are allowed to edit the same project concurrently.
-
-## Sub-agents
-
-Sub-agents are disabled by default. For a new thread, use the composer toggle or **Settings → Sub-agents** and choose a maximum concurrency from 1–24. When enabled, Mythra Code exposes the App Server's native collaboration tools and lets the model decide whether delegation is useful.
-
-- The selected maximum counts concurrently active child agents, not the root agent.
-- Children inherit the root thread's sandbox and approval policy.
-- Nesting is fixed at depth one, so children cannot spawn grandchildren.
-- The setting is captured at thread creation and cannot silently change an existing thread.
-- Spawn, interaction, wait, close, and interruption activity appears in the thread timeline.
-
-Mythra Code does not add a hidden instruction telling the model to delegate. The toggle controls tool availability at the harness layer.
-
-## Agent workflows
-
-**Settings → Workflows** can build reusable recipes from ordered agent prompts and deterministic shell commands. Manual runs can use any project; a saved project is only the default and the destination for automatic runs.
-
-- Workflows run manually, on a recurring interval, or once when Mythra Code starts. Automatic runs require a default project.
-- Export a `.mythra-workflow.json` recipe and import it on another machine. Imports open for review before saving and use the recipient’s current model and permissions. The file includes prompts, commands, referenced skill names, and input defaults; it excludes project bindings, provider settings, schedules, and run history. Review literal paths or sensitive text you placed in recipe steps before sharing. Referenced skills must be installed separately.
-- Settings, Workspace tools, and command-palette launches show the destination project and inputs before starting a new workflow thread. Choosing a project for one manual run does not change its automatic schedule.
-- Agent steps support OpenAI, Claude Code, Cursor, OpenRouter, and LM Studio. Claude and Cursor use their own signed-in runtimes and resume the same conversation across steps; agent-only recipes do not require Codex. Explicit shell-command steps still use the Codex runtime.
-- Every run creates a named project thread, so prompts, model output, commands, and results remain inspectable.
-- Agent steps run sequentially in that thread and may expose selected local skills by their visible `$name`.
-- The workflow captures its provider, model, reasoning, permission, prompt, and sub-agent settings when saved. The editor can refresh that snapshot from the current Settings provider and model.
-- Prompts and commands support saved or run-time variables such as `${branch}`, plus built-ins including `${projectPath}`, `${date}`, `${previousStepOutput}`, and `${previousExitCode}`.
-- Each step can be conditional, retry up to five times with a configurable delay, stop the recipe on failure, or explicitly continue.
-- Active agent turns and shell processes can be stopped at the workflow level, including while a turn is still starting or waiting to retry. Runs abandoned by an app exit are recovered as interrupted rather than remaining permanently active.
-- Interval failures use bounded exponential backoff and never retry sooner than the configured interval. A manual run does not move the recurring schedule.
-- Run history records step-level attempts, output, duration, completion, failure, and the resulting thread in a dedicated inspector.
-- Manual workflows containing shell commands show the interpolated command preview before execution. Background runs do not wait for interactive approvals or questions: Claude and Cursor reject those requests without widening saved access. Each provider retains its existing permission boundaries.
-- Enabled workflows are available from Settings, the command palette, the Tools panel, and the composer. Type `!` to search recipes, then click one or use an arrow key and Enter to add its removable chip. Bare Enter never picks the first recipe; a space after `!` leaves ordinary punctuation. Add an optional note for agent steps, then review the project and inputs before running. Cancel keeps the chip and draft. Recipe names cannot start with whitespace.
-
-Existing one-click project actions and single-prompt schedules remain available for lightweight use. A saved schedule can be converted without removing the original; the converted workflow starts disabled so both versions cannot run at the same time unexpectedly.
-
-## Model and reasoning control
-
-When OpenAI subscription auth is selected, the composer exposes the current GPT-5.6 family as a branded animated control:
-
-- **Sol** (`gpt-5.6-sol`) uses orange and targets detail, judgment, and polish.
-- **Terra** (`gpt-5.6-terra`) uses light green and is the everyday workhorse.
-- **Luna** (`gpt-5.6-luna`) uses light blue and favors clear, fast, repeatable work.
-
-When OpenRouter is selected, the composer uses a compact searchable catalog with provider, context-window, and reasoning-capability metadata. A separate five-level reasoning slider is persisted and forwarded with thread and turn requests when the selected route supports reasoning.
-- The reasoning rail maps Light, Medium, High, Extra High, and Max to the runtime's supported reasoning-effort values.
-- The **Ultra** lever maps to Ultra reasoning, explicitly enables sub-agent access, and switches the control into an animated purple powered-up state. Account and model eligibility still come from App Server's model catalog.
-
-Model and effort are sent as real thread/turn overrides. They are not presentation-only aliases.
-
-## Workspace Studio
-
-The right-side Studio contains ten integrated surfaces, reachable from the command palette or with the Workspace shortcut (`⌘+B` on macOS, `Ctrl+B` on Windows). The selected surface is remembered between sessions; the dock itself always starts closed.
-
-1. **Files** — fuzzy project search, text previews, and one-click context attachment.
-2. **Review** — the live turn diff with per-file stage and revert, expanded lazily and revealed progressively for very large files, plus an App Server review turn. The panel states which baseline the diff is taken against and lists untracked files that a diff cannot contain. When the runtime cannot supply a diff, the repository answers with staged and unstaged changes against `HEAD`, or against the empty repository before its first commit.
-3. **Agents** — observed child threads, current status, child-thread inspection, and interruption.
-4. **Terminal** — a PTY-backed xterm surface with streamed bytes, stdin, resize, cancellation, Clear, and the selected permission sandbox. Each project (or isolated worktree) has its own session, so output and running state never appear under another project's header.
-5. **Checkpoints** — automatic before/after source snapshots for every Git-project run, complete-worktree restore and reapply, reversible acceptance, pre-restore safety copies, run diffs, and conversation forks and rollback.
-6. **Worktrees** — isolated-thread worktree review, apply, merge, recovery, and cleanup, with changed, ahead, and ignored-file counts.
-7. **Context** — file mentions and native local-image inputs attached to the next turn. Attachments belong to the conversation they were chosen in, exactly like composer text.
-8. **Usage** — cumulative per-thread input/output tokens, API-equivalent inference value, account rate limits, and a visible request-field audit.
-9. **Tools** — project actions, skill enable/disable, MCP status/OAuth, and permission-boundary guidance.
-10. **Git** — local repository initialization for a project that has none, GitHub repository attachment/creation, branch sync state, status, diff, stage all, tracked-file revert confirmation, commits, fetch/pull/push, PR comments, CI checks, and draft PR creation.
-
-Checkpoint snapshots are stored as hidden local Git refs without moving the project's branch, HEAD, commits, or staging index. They include tracked and untracked non-ignored source files; ignored files and build output are left alone. Restoring always requires a fresh safety snapshot of the current source state, and conversation rollback remains a separate chat-only action.
-
-## Privacy and telemetry
-
-Mythra Code contains **no telemetry, analytics, or crash reporting**. Network connections include the selected model provider, update and model-pricing catalog checks against the Mythra Code GitHub repository, official provider pricing-page checks, and user-initiated GitHub account or repository actions through the official GitHub CLI. Pricing checks send no prompts or usage records. Mythra Code never injects GitHub credentials into model prompts or project files. Agents with command access can still invoke credential-aware tools such as `git` or `gh`, just as they could in a terminal. Prompts, transcripts, settings, local usage totals, and audit records stay in local storage (SQLite in the app's data directory). Diagnostics leave the machine only when a user explicitly exports them.
-
-The small [`model-pricing.json`](model-pricing.json) catalog is fetched once on app launch and validated before it is cached. The request is an unauthenticated `GET` that carries no request body, account, or device identifier, and the last validated snapshot keeps working offline. Updating that file on `main` refreshes future API-equivalent usage estimates without requiring an app release. Mythra Code normally preserves the estimate recorded with each token increment: a later price reduction is never applied universally to earlier usage. Automatic corrections require evidence that a rate applied during the recorded usage period, with enough reported metrics to support the estimate; see [Repricing past usage](docs/usage-dashboard.md#repricing-past-usage).
-
-## Security boundaries
-
-- The webview can call only a small allowlist of App Server RPC methods.
-- The packaged app has a restrictive Content Security Policy and no external font dependency.
-- OpenRouter credentials use the OS keychain/keyring.
-- GitHub credentials remain in the official GitHub CLI credential store.
-- ChatGPT credentials use Codex's isolated credential store.
-- Model content is not rendered as HTML.
-- App Server uses stdio and is never exposed as a network listener.
-- Projects, settings, profiles, schedules, and bindings are mirrored to native SQLite in WAL mode. Existing localStorage data is migrated on first launch.
-- Approval and lifecycle audit records intentionally omit user-input answers so secret form fields are not persisted.
-- App Server requests have bounded, method-aware timeouts; a dead child is detected, restarted, and the interrupted RPC is retried once.
-
-## Performance and task control
-
-- Each thread owns independent messages, activities, approvals, child agents, diff, usage, unread state, and lifecycle status.
-- Streaming deltas are batched once per animation frame and routed by `threadId`, so background tasks cannot overwrite the active task.
-- Long transcripts are virtualized and Markdown/terminal code is split into lazy chunks to keep startup and scrolling responsive.
-- While a turn is running, Send adds a durable FIFO follow-up by default. A separate action can steer a message into the active turn, and Stop interrupts it without disturbing other threads.
-- Completed background work can raise a native notification. The sidebar shows running and unread state.
-- `⌘K` on macOS or `Ctrl+K` on Windows opens a command palette across commands, projects, and current-scope threads.
-- Scheduled project prompts run while Mythra Code is open and create normal, inspectable App Server threads.
-
-## In-app updates and releases
-
-Mythra Code checks the public [`m17h/Mythra-Code` GitHub Releases](https://github.com/m17h/Mythra-Code/releases) channel shortly after launch. **Settings → Updates** also provides a manual check. When a newer signed version exists, the user can review its notes, download it with progress feedback, install it, and restart into the new version without leaving the app.
-
-Both `latest.json` and the platform update bundle are hosted as GitHub Release assets. The app embeds only the updater public key and rejects artifacts that do not carry a valid matching signature. The private updater key is not part of this repository.
-
-Publisher workflow (run each native build on its matching operating system):
-
-```bash
-# Keep all version declarations synchronized (patch, minor, major, or exact version)
-npm run version:bump -- patch
-
-# Dispatch to the macOS or Windows native builder
-npm run release:build
-
-# Attach this platform's assets to the matching draft release
-npm run release:publish
-
-# After both native machines have uploaded their assets, publish the combined release
-npm run release:finalize
-```
-
-macOS stages artifacts in `release-assets/`; Windows stages them in `RELEASE ASSETS/`. Both directories are intentionally ignored by Git. Each platform publisher merges its updater entry into one draft `latest.json`; finalization refuses to publish until both platform entries and artifact sets are present. Each platform retains its existing updater signing key, and both artifact sets belong to the same `vX.Y.Z` GitHub release. Back up both keys securely: installed copies cannot trust future updates if their platform key is lost.
-
-## Verification and release notes
-
-`npm run verify` runs release-configuration checks, ESLint, strict Clippy, TypeScript and Rust checks, unit/integration component tests, browser timeline tests, and the production web build on both macOS and Windows CI. `npm run desktop:build` produces a local `.app` on macOS and an unbundled executable on Windows without creating release artifacts. `npm run release:build` dispatches to the native platform builder and requires that platform's publisher-owned credentials. Mythra Code does not embed those credentials or bundle Codex.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and state model.
+- [Skills and nested references](docs/skills.md)
+- [Local Git and thread pull requests](docs/thread-pull-requests.md)
+- [Usage, pricing, and historical estimates](docs/usage-dashboard.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Performance](docs/PERFORMANCE.md)
+- [Windows contributor notes](Windows/README.md)
 
 ## Acknowledgements
 
-Mythra Code did **not** use or copy any source code from [T3Code](https://github.com/pingdotgg/t3code). Mythra Code's inbox-style threads were designed and implemented independently for its own React, Zustand, and Tauri architecture. We did, however, take product-design inspiration from T3Code's inbox-oriented approach, and we gratefully credit [T3 Tools](https://t3.gg/) for helping demonstrate how natural that experience can feel.
-
-## Upstream references
-
-- [OpenAI Codex App Server](https://learn.chatgpt.com/docs/app-server)
-- [OpenAI Codex authentication](https://learn.chatgpt.com/docs/auth)
-- [OpenAI Codex sub-agents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
-- [OpenAI GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/latest-model)
-- [OpenAI Codex open-source repository](https://github.com/openai/codex)
-- [OpenRouter authentication](https://openrouter.ai/docs/api/reference/authentication)
-- [OpenRouter Responses API](https://openrouter.ai/docs/api/reference/responses/overview)
-- [LM Studio local server](https://lmstudio.ai/docs/developer/core/server)
-- [LM Studio OpenAI-compatible endpoints](https://lmstudio.ai/docs/developer/openai-compat)
-- [LM Studio Codex integration](https://lmstudio.ai/docs/integrations/codex)
+Mythra Code takes product-design inspiration from [T3 Code](https://github.com/pingdotgg/t3code)'s inbox-oriented experience. Its implementation uses its own React, Zustand, and Tauri architecture. Thanks to [T3 Tools](https://t3.gg/) and the maintainers of the open-source runtimes and libraries that make this app possible.
