@@ -3296,6 +3296,24 @@ mod worktree_lifecycle_tests {
         assert_eq!(git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(), "other");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn worktree_merge_allows_a_hook_commit_on_the_same_branch() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = RemovalFixture::new();
+        fs::write(fixture.isolated.join("file.txt"), "isolated change\n").unwrap();
+        git_stdout(&fixture.isolated, &["commit", "-am", "isolated change"], None).unwrap();
+        capture_checkpoint_snapshot("hook-commit-safety", fixture.source.to_str().unwrap(), "after", "safety").unwrap();
+        let hook = fixture.source.join(".git/hooks/post-merge");
+        fs::write(&hook, "#!/bin/sh\ngit commit --allow-empty -m 'hook commit'\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = worktree_merge_branch_sync(fixture.source.to_str().unwrap(), fixture.isolated.to_str().unwrap(),
+            "mythra/isolated", "hook-commit-safety", None).unwrap();
+        assert_eq!(result.source_commit, git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap());
+        assert_eq!(git_stdout(&fixture.source, &["log", "-1", "--format=%s"], None).unwrap(), "hook commit");
+        assert_eq!(git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(), "main");
+    }
+
     #[test]
     fn worktree_merge_preserves_unrelated_ignored_output_and_allows_tracked_file_to_directory() {
         let fixture = RemovalFixture::new();

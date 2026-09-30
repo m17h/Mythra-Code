@@ -67,8 +67,9 @@ jobs:
   webkit:
     name: WebKit (macOS 15)
     # Pin the browser test OS independently of the native macos-latest build.
-    # macOS 26/27 WebKit runtimes have exhibited browser-process hangs even
-    # before application code loads. This remains a blocking, complete suite.
+    # Hosted macOS 26 stalled during shard 6 (cause unresolved); local macOS
+    # 27 beta also hangs on a blank page. Keep every spec on this pinned OS
+    # and require a green result in the merge review. Native builds stay current.
     runs-on: macos-15
     timeout-minutes: 20
     steps:

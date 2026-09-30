@@ -313,8 +313,14 @@ describe("usage calendar", () => {
       return box.bottom <= square.top + 0.5 ? square.top - box.bottom : box.top - square.bottom;
     };
     const before = target.getBoundingClientRect().top;
+    const scrollBefore = scroller.scrollTop;
     scroller.scrollTop += 20;
-    expect(Math.round(before - target.getBoundingClientRect().top)).toBe(25);
+    const movement = before - target.getBoundingClientRect().top;
+    // WebKit quantizes scroll offsets at fractional zoom. Verify the actual
+    // movement against the applied scroll, allowing one zoomed CSS pixel;
+    // the attachment and clipping assertions below still test the behavior.
+    expect(movement).toBeGreaterThan(20);
+    expect(Math.abs(movement - (scroller.scrollTop - scrollBefore) * 1.25)).toBeLessThanOrEqual(1.25);
     // Re-placed on the next frame, flipping below when the room above runs out.
     await waitFor(() => { expect(attachedGap()).toBeGreaterThanOrEqual(0); expect(attachedGap()).toBeLessThan(3); });
     expectInViewport(shown);

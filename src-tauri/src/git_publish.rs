@@ -838,7 +838,7 @@ mod tests {
         run(&repo, &["update-ref", "refs/remotes/origin/main", &newer]);
         let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
         let result = establish_upstream(&repo, &binding, "main", &published, "main");
-        assert!(result.is_err(), "newer tracking ref was overwritten: {result:?}");
+        assert!(result.unwrap_err().contains("advanced or changed"));
         assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), newer);
         fs::remove_dir_all(root).unwrap();
     }
