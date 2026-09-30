@@ -201,12 +201,15 @@ describe("ModelPowerControl runtime catalog", () => {
       ["gpt-8.2.1-luna-20290115", "luna", "/model-icons/luna.png"],
       ["gpt-7-solar", "generic", undefined],
       ["preview-gpt-7-luna", "generic", undefined],
-      ["gpt-7-luna-research", "generic", undefined],
+      ["gpt-7-luna-research", "luna", "/model-icons/luna.png"],
       ["gpt-6-astra", "astra", "/model-icons/astra.png"],
       ["gpt-5.6-terra", "terra", "/model-icons/terra.png"],
     ]);
     expect(modelKind("gpt-8.2.1-luna-20290115")).toBe("luna");
     expect(modelKind("gpt-8.2-sol-2029-01-15")).toBe("sol");
+    expect(modelKind("gpt-8.2-sol-preview")).toBe("sol");
+    expect(modelKind("gpt-8.2-luna-latest")).toBe("luna");
+    expect(modelKind("gpt-8.2-lunatic")).toBe("generic");
 
     const { container, rerender } = render(
       <ModelPowerControl model="gpt-9.1-sol" effort="high" fast={false} runtimeModels={models} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />,
