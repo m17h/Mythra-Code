@@ -58,11 +58,23 @@ describe("performance UX contracts in a real browser", () => {
       expect(getComputedStyle(button).outlineStyle).not.toBe("none");
       const firstMounted = mounted()[0] as HTMLElement;
       const anchoredTop = firstMounted.getBoundingClientRect().top;
+      const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
+      const trace: unknown[] = [];
+      const record = (stage: string) => trace.push({ stage, scrollTop: scroller.scrollTop, anchorTop: firstMounted.getBoundingClientRect().top, focused: document.activeElement?.getAttribute("data-testid"), rows: mounted().length });
+      const scrollTop = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!;
+      Object.defineProperty(scroller, "scrollTop", { configurable: true, get() { return scrollTop.get!.call(this); }, set(value: number) { record(`write-before:${value}`); scrollTop.set!.call(this, value); record("write-after"); } });
+      const recordScroll = () => record("scroll-event");
+      scroller.addEventListener("scroll", recordScroll);
+      record("before-keyboard");
       const beforeCount = mounted().length;
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(mounted().length).toBeGreaterThan(beforeCount));
       const expandedCount = mounted().length;
-      expect(Math.abs(firstMounted.getBoundingClientRect().top - anchoredTop)).toBeLessThanOrEqual(2);
+      record("after-keyboard");
+      scroller.removeEventListener("scroll", recordScroll);
+      delete (scroller as unknown as { scrollTop?: number }).scrollTop;
+      const drift = Math.abs(firstMounted.getBoundingClientRect().top - anchoredTop);
+      expect(drift, JSON.stringify(trace)).toBeLessThanOrEqual(2);
       let scrollerToRearm: HTMLElement | null = null;
       if (!checkedDelayedRestore && beforeCount === TIMELINE_MOUNT_ROWS) {
         const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
