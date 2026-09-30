@@ -53,12 +53,14 @@ describe("performance UX contracts in a real browser", () => {
     let checkedDelayedRestore = false;
     while (screen.queryByTestId("reveal-earlier")) {
       const button = screen.getByTestId("reveal-earlier");
-      button.focus();
+      // Put the keyboard target in view before taking a scroll baseline.
+      // WebKit can defer focus reveal until native keyboard input arrives.
+      button.scrollIntoView({ block: "nearest" });
+      button.focus({ preventScroll: true });
       expect(button).toHaveFocus();
       expect(getComputedStyle(button).outlineStyle).not.toBe("none");
       const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
-      // WebKit reveals a focused offscreen button asynchronously. Establish
-      // the reading position after that reveal, before measuring the prepend.
+      // Verify the target is visible before measuring the prepend.
       await waitFor(() => {
         const control = button.getBoundingClientRect();
         const viewport = scroller.getBoundingClientRect();
