@@ -7,7 +7,7 @@ import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
 import { closesModelMenu } from "../lib/composerMenus";
 import { ModelCatalogHeader } from "./ModelCatalogHeader";
 
-export type ModelKind = "sol" | "terra" | "luna" | "astra";
+export type ModelKind = "sol" | "terra" | "luna" | "astra" | "generic";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface RuntimeModel {
@@ -34,8 +34,13 @@ export const OPENAI_MODELS: Array<{ kind: ModelKind; name: string; id: string; t
 ];
 
 function namedModelArtwork(id: string) {
-  const artworkId = id === "gpt-6-sol" ? "gpt-5.6-sol" : id === "gpt-6-luna" ? "gpt-5.6-luna" : id;
-  return OPENAI_MODELS.find((entry) => entry.id === artworkId);
+  const known = OPENAI_MODELS.find((entry) => entry.id === id);
+  if (known) return known;
+  // Runtime model IDs carry the family after a numeric GPT version. Match
+  // complete IDs, including dated snapshots, without borrowing artwork for
+  // unrelated names that happen to contain "sol" or "luna".
+  const family = /^gpt-\d+(?:\.\d+)*-(sol|luna)(?:-\d{6}(?:\d{2})?|-\d{4}-\d{2}-\d{2})?$/.exec(id)?.[1];
+  return family ? OPENAI_MODELS.find((entry) => entry.kind === family) : undefined;
 }
 
 interface ModelOption {
@@ -56,10 +61,7 @@ const EFFORTS: Array<{ value: Exclude<ReasoningEffort, "ultra">; label: string; 
 ];
 
 export function modelKind(model: string): ModelKind {
-  if (model.includes("astra")) return "astra";
-  if (model.includes("terra")) return "terra";
-  if (model.includes("luna")) return "luna";
-  return "sol";
+  return namedModelArtwork(model)?.kind ?? "generic";
 }
 
 /** Every model the account can actually run, decorated where Mythra Code knows one. */
@@ -132,7 +134,7 @@ export function ModelPowerControl({
   // menu never silently rewrites the user's choice.
   const selectedModel = options.find((entry) => entry.id === model)
     ?? (model ? { id: model, name: model, tagline: "Saved model", kind: modelKind(model), iconSrc: namedModelArtwork(model)?.iconSrc, isDefault: false } : options[0]);
-  const kind = selectedModel?.kind ?? "sol";
+  const kind = selectedModel?.kind ?? "generic";
   const effortIndex = Math.max(0, EFFORTS.findIndex((entry) => entry.value === (effort === "ultra" ? "max" : effort)));
   const reasoningFill = (effortIndex / (EFFORTS.length - 1)) * 100;
   const selectedModelIconSrc = selectedModel?.iconSrc;
@@ -184,7 +186,7 @@ export function ModelPowerControl({
     <div
       ref={rootRef}
       className={`model-power-control ${kind} ${menuOpen ? "menu-open" : ""} ${disabled ? "disabled" : ""} ${effortIndex === EFFORTS.length - 1 ? "effort-max" : ""}`}
-      style={{ "--reasoning-fill": `${reasoningFill}%`, ...effortFlairStyle(effortIndex, EFFORTS.length) } as CSSProperties}
+      style={{ "--reasoning-fill": `${reasoningFill}%`, "--model-accent": kind === "generic" ? "var(--muted-2)" : undefined, ...effortFlairStyle(effortIndex, EFFORTS.length) } as CSSProperties}
     >
       {providerControl}
       <div className={`model-picker ${signedIn === false ? "unavailable" : ""}`}>
@@ -249,6 +251,7 @@ export function ModelPowerControl({
                   aria-label={`${entry.name}: ${entry.tagline}`}
                   ref={(node) => { optionRefs.current[index] = node; }}
                   className={`model-menu-option ${entry.kind} ${selected ? "selected" : ""}${starredVisible > 0 && index === starredVisible - 1 ? " favorite-group-end" : ""}`}
+                  style={{ "--option-accent": entry.kind === "generic" ? "var(--muted-2)" : undefined } as CSSProperties}
                   disabled={disabled}
                   aria-disabled={signedIn === false || undefined}
                   onClick={() => {

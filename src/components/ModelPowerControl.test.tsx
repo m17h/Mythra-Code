@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ModelPowerControl } from "./ModelPowerControl";
+import { ModelPowerControl, modelKind, openAiModelOptions } from "./ModelPowerControl";
 
 describe("ModelPowerControl", () => {
   it("selects models, reasoning, and Fast independently", () => {
@@ -182,6 +182,37 @@ describe("ModelPowerControl runtime catalog", () => {
     expect(screen.getByRole("menuitemradio", { name: /GPT-6-Luna/ }).querySelector<HTMLImageElement>("img")?.src).toContain("/model-icons/luna.png");
 
     rerender(<ModelPowerControl model="gpt-6-luna" effort="high" fast={false} runtimeModels={models} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />);
+    expect(container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img")?.src).toContain("/model-icons/luna.png");
+  });
+
+  it("recognizes future Sol and Luna version families without decorating lookalikes", () => {
+    const models = [
+      runtimeModel("gpt-6.1-sol", "Future Sol"),
+      runtimeModel("gpt-8.2.1-luna-20290115", "Future Luna snapshot"),
+      runtimeModel("gpt-7-solar", "Solar research"),
+      runtimeModel("preview-gpt-7-luna", "Luna preview"),
+      runtimeModel("gpt-7-luna-research", "Luna research"),
+      runtimeModel("gpt-6-astra", "Astra"),
+      runtimeModel("gpt-5.6-terra", "Terra"),
+    ];
+    const options = openAiModelOptions(models);
+    expect(options.map((entry) => [entry.id, entry.kind, entry.iconSrc])).toEqual([
+      ["gpt-6.1-sol", "sol", "/model-icons/sol.png"],
+      ["gpt-8.2.1-luna-20290115", "luna", "/model-icons/luna.png"],
+      ["gpt-7-solar", "generic", undefined],
+      ["preview-gpt-7-luna", "generic", undefined],
+      ["gpt-7-luna-research", "generic", undefined],
+      ["gpt-6-astra", "astra", "/model-icons/astra.png"],
+      ["gpt-5.6-terra", "terra", "/model-icons/terra.png"],
+    ]);
+    expect(modelKind("gpt-8.2.1-luna-20290115")).toBe("luna");
+    expect(modelKind("gpt-8.2-sol-2029-01-15")).toBe("sol");
+
+    const { container, rerender } = render(
+      <ModelPowerControl model="gpt-9.1-sol" effort="high" fast={false} runtimeModels={models} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />,
+    );
+    expect(container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img")?.src).toContain("/model-icons/sol.png");
+    rerender(<ModelPowerControl model="gpt-9.1-luna-20290214" effort="high" fast={false} runtimeModels={models} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />);
     expect(container.querySelector<HTMLImageElement>(".model-picker-trigger .named-model-art img")?.src).toContain("/model-icons/luna.png");
   });
 

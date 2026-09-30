@@ -56,26 +56,22 @@ describe("performance UX contracts in a real browser", () => {
       button.focus();
       expect(button).toHaveFocus();
       expect(getComputedStyle(button).outlineStyle).not.toBe("none");
+      const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
+      // WebKit reveals a focused offscreen button asynchronously. Establish
+      // the reading position after that reveal, before measuring the prepend.
+      await waitFor(() => {
+        const control = button.getBoundingClientRect();
+        const viewport = scroller.getBoundingClientRect();
+        expect(control.top).toBeGreaterThanOrEqual(viewport.top);
+        expect(control.bottom).toBeLessThanOrEqual(viewport.bottom);
+      });
       const firstMounted = mounted()[0] as HTMLElement;
       const anchoredTop = firstMounted.getBoundingClientRect().top;
-      const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
-      const trace: unknown[] = [];
-      const recordKey = (event: Event) => trace.push({ stage: event.type, scrollTop: scroller.scrollTop });
-      const recordClick = () => trace.push({ stage: "click", scrollTop: scroller.scrollTop, anchorTop: firstMounted.getBoundingClientRect().top });
-      button.addEventListener("keydown", recordKey);
-      button.addEventListener("keyup", recordKey);
-      button.addEventListener("click", recordClick);
-      trace.push({ stage: "before-keyboard", anchoredTop, scrollTop: scroller.scrollTop });
       const beforeCount = mounted().length;
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(mounted().length).toBeGreaterThan(beforeCount));
       const expandedCount = mounted().length;
-      button.removeEventListener("keydown", recordKey);
-      button.removeEventListener("keyup", recordKey);
-      button.removeEventListener("click", recordClick);
-      const drift = Math.abs(firstMounted.getBoundingClientRect().top - anchoredTop);
-      console.log("prepend trace", JSON.stringify({ trace, drift, finalScrollTop: scroller.scrollTop, finalAnchorTop: firstMounted.getBoundingClientRect().top }));
-      expect(drift, JSON.stringify(trace)).toBeLessThanOrEqual(2);
+      expect(Math.abs(firstMounted.getBoundingClientRect().top - anchoredTop)).toBeLessThanOrEqual(2);
       let scrollerToRearm: HTMLElement | null = null;
       if (!checkedDelayedRestore && beforeCount === TIMELINE_MOUNT_ROWS) {
         const scroller = view.container.querySelector<HTMLElement>("[data-testid=timeline-scroller]")!;
