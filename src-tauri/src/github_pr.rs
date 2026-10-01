@@ -2125,6 +2125,93 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // Use the native test executable as the Windows fixture, rather than two
+    // cold PowerShell startups inside a five-second containment deadline. The
+    // child still inherits the parent's output handles and Job Object. This
+    // removes unrelated shell startup from the precondition, not the timeout
+    // or the descendant-containment assertions.
+    #[cfg(windows)]
+    #[test]
+    fn parent_exit_fixture_process() {
+        let Ok(role) = env::var("MYTHRA_PARENT_EXIT_FIXTURE_ROLE") else {
+            return;
+        };
+        let root = PathBuf::from(env::var_os("MYTHRA_PARENT_EXIT_FIXTURE_ROOT").unwrap());
+        let started = root.join("child-started");
+        let release = root.join("child-release");
+        if role == "child" {
+            fs::write(&started, "started").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while !release.exists() {
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::write(root.join("unexpected-child-write"), "late").unwrap();
+        } else {
+            assert_eq!(role, "parent");
+            let mut child =
+                crate::process_launch::background_std_command(env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "github_pr::tests::parent_exit_fixture_process",
+                        "--nocapture",
+                    ])
+                    .env("MYTHRA_PARENT_EXIT_FIXTURE_ROLE", "child")
+                    .env("MYTHRA_PARENT_EXIT_FIXTURE_ROOT", &root)
+                    .spawn()
+                    .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(4);
+            while !started.exists() {
+                assert!(
+                    child.try_wait().unwrap().is_none(),
+                    "fixture child exited before readiness"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "native fixture child did not signal readiness"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::write(root.join("parent-exited"), "exited").unwrap();
+            // Deliberately exit without waiting for the child: inherited pipes
+            // must keep the mutation worker's ownership until timeout cleanup.
+            std::process::exit(0);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_exit_fixture_child_can_write_when_not_contained() {
+        let root = env::temp_dir().join(format!("mythra-pr-fixture-control-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let mut parent =
+            crate::process_launch::background_std_command(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "github_pr::tests::parent_exit_fixture_process",
+                    "--nocapture",
+                ])
+                .env("MYTHRA_PARENT_EXIT_FIXTURE_ROLE", "parent")
+                .env("MYTHRA_PARENT_EXIT_FIXTURE_ROOT", &root)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+        assert!(parent.wait().unwrap().success());
+        assert!(root.join("parent-exited").exists());
+        assert!(root.join("child-started").exists());
+        assert!(!root.join("unexpected-child-write").exists());
+        fs::write(root.join("child-release"), "release").unwrap();
+        // The child inherited stdout/stderr. Draining them observes its exit,
+        // proving this fixture can perform the write if containment is broken.
+        let output = parent.wait_with_output().unwrap();
+        assert!(output.status.success());
+        assert!(root.join("unexpected-child-write").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn mutating_cli_parent_exit_keeps_descendants_contained_until_pipe_timeout() {
         let root = env::temp_dir().join(format!("mythra-pr-parent-exit-{}", uuid::Uuid::new_v4()));
@@ -2157,16 +2244,15 @@ mod tests {
         };
         #[cfg(windows)]
         let (command, timeout, after) = {
-            let child_script = root.join("child.ps1");
-            let parent_script = root.join("parent.ps1");
-            let started = root.join("child-started");
-            let escaped = |path: &Path| path.to_string_lossy().replace('\'', "''");
-            fs::write(&child_script, format!("Set-Content -LiteralPath '{}' -Value 'started'; $deadline = (Get-Date).AddSeconds(20); while (!(Test-Path -LiteralPath '{}')) {{ if ((Get-Date) -ge $deadline) {{ exit 0 }}; Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'late'", escaped(&started), escaped(&child_release), escaped(&late_write))).unwrap();
-            fs::write(&parent_script, format!("$child = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile', '-NonInteractive', '-File', '\"{}\"') -NoNewWindow -PassThru; while (!(Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Set-Content -LiteralPath '{}' -Value 'exited'; exit 0", escaped(&child_script), escaped(&started), escaped(&parent_exit))).unwrap();
-            let mut command = crate::process_launch::background_command("powershell.exe");
+            let mut command = crate::process_launch::background_command(env::current_exe().unwrap());
             command
-                .args(["-NoProfile", "-NonInteractive", "-File"])
-                .arg(parent_script);
+                .args([
+                    "--exact",
+                    "github_pr::tests::parent_exit_fixture_process",
+                    "--nocapture",
+                ])
+                .env("MYTHRA_PARENT_EXIT_FIXTURE_ROLE", "parent")
+                .env("MYTHRA_PARENT_EXIT_FIXTURE_ROOT", &root);
             (command, Duration::from_secs(5), Duration::from_millis(3200))
         };
         let lease = mutation_lease(Some(&root), &repository).await.unwrap();
@@ -2176,7 +2262,8 @@ mod tests {
         assert!(error.contains("timed out"), "{error}");
         assert!(
             parent_exit.exists(),
-            "fixture parent did not reach its exit before timeout"
+            "fixture parent did not reach its exit before timeout; child ready: {}; worker error: {error}",
+            root.join("child-started").exists()
         );
         let local = crate::git_workspace::repository_lock(&root).await.unwrap();
         assert!(local.try_lock().is_ok());

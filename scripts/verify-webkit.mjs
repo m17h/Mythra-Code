@@ -62,7 +62,8 @@ try {
   const failures = [];
   for (let shard = 1; shard <= shards; shard++) {
     try {
-      await run(['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.browser.config.ts', '--shard', `${shard}/${shards}`], 180_000);
+      await run(['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.browser.config.ts', '--shard', `${shard}/${shards}`,
+        '--reporter=default', '--reporter=json', `--outputFile=.test-artifacts/webkit-tests-${shard}.json`], 180_000);
     } catch (error) {
       // Collect assertion failures across the complete suite in one CI run.
       // A hung browser still fails promptly instead of spending the job budget.
