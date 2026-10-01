@@ -1,15 +1,28 @@
 import { useState } from "react";
 import type { ProjectRunCommand } from "../types";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
-import { invoke } from "@tauri-apps/api/core";
 import { ProjectRunControl } from "./ProjectRunControl";
+import { resetRunCommandDiscoveries } from "../hooks/useRunCommandDiscovery";
 import "../styles.css";
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-beforeEach(() => { localStorage.clear(); vi.mocked(invoke).mockReset(); });
+const invokeMock = vi.fn();
+beforeEach(() => {
+  localStorage.clear();
+  resetRunCommandDiscoveries();
+  invokeMock.mockReset();
+  // Exercise the real Tauri wrapper. Browser dependency optimization can load
+  // its ESM export before a module-level mock is installed (notably on Windows).
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke: (command: string, args: unknown) => {
+    if (command !== "run_discovery_start" && command !== "run_discovery_cancel") {
+      throw new Error(`Unexpected fixture command: ${command}`);
+    }
+    return invokeMock(command, args);
+  } });
+});
+afterEach(() => vi.unstubAllGlobals());
 it("keeps discovery settings and the proposed command usable in the run popover", async () => {
-  vi.mocked(invoke).mockResolvedValue({ command: "npm run desktop", label: "Desktop app", explanation: "The desktop script starts the development app." });
+  invokeMock.mockResolvedValue({ command: "npm run desktop", label: "Desktop app", explanation: "The desktop script starts the development app." });
   const onSave = vi.fn(), onRun = vi.fn();
   function RunHarness() {
     const [run, setRun] = useState<ProjectRunCommand>();
@@ -36,6 +49,9 @@ it("keeps discovery settings and the proposed command usable in the run popover"
   expect(onRun).not.toHaveBeenCalled();
   expect(onSave).toHaveBeenCalledOnce();
   expect(onSave).toHaveBeenCalledWith({ command: "npm run desktop", label: "Desktop app" });
+  expect(invokeMock).toHaveBeenCalledExactlyOnceWith("run_discovery_start", {
+    options: expect.objectContaining({ cwd: "/project", provider: "openai", model: "gpt-5.6-luna" }),
+  });
 });
 
 it("keeps all five provider choices clickable in a short window", async () => {
