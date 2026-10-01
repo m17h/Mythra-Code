@@ -167,8 +167,10 @@
   .mythra-logo__svg,
   .mythra-logo__piece,
   .mythra-logo__ghost path {
-    transition-duration: .001ms !important;
-    transition-delay: 0s !important;
+    /* Removing the transition property also cancels transitions that were
+       already in flight when the preference changed. A shorter duration alone
+       only affects future transitions, leaving an entrance or tilt moving. */
+    transition: none !important;
   }
   .mythra-logo__bob,
   .mythra-logo__sheen,

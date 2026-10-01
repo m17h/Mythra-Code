@@ -93,6 +93,45 @@ it("responds to live reduced-motion changes without hiding the logo or leaving l
   expect(button.hasAttribute("data-idle")).toBe(false);
 });
 
+it("stops an in-flight entrance immediately when reduced motion is enabled", async () => {
+  const view = render(<AnimatedMythraLogo />);
+  const button = view.getByRole("button");
+  const left = button.querySelector(".mythra-logo__piece--left")!;
+  await expect.poll(() => {
+    const opacity = Number(getComputedStyle(left).opacity);
+    return opacity > 0 && opacity < 1;
+  }).toBe(true);
+  await commands.setStreamTestReducedMotion(true);
+  expect(getComputedStyle(left).opacity).toBe("1");
+  expect(getComputedStyle(left).transform).toBe("none");
+  expect(button.querySelector("svg")!.getAnimations({ subtree: true })
+    .filter((animation) => animation.playState === "running")).toHaveLength(0);
+});
+
+it("settles active hover and tilt transitions immediately when reduced motion is enabled", async () => {
+  const view = render(<AnimatedMythraLogo />);
+  const button = view.getByRole("button");
+  const svg = button.querySelector("svg")!;
+  const fold = button.querySelector(".mythra-logo__piece--fold")!;
+  await expect.poll(() => button.hasAttribute("data-idle"), { timeout: 3000 }).toBe(true);
+  fireEvent.pointerEnter(button, { pointerType: "mouse" });
+  const rect = button.getBoundingClientRect();
+  fireEvent.pointerMove(button, {
+    pointerType: "mouse", clientX: rect.right, clientY: rect.top,
+  });
+  await expect.poll(() => button.style.getPropertyValue("--mythra-logo-rx")).toBe("6.00deg");
+  expect(button.style.getPropertyValue("--mythra-logo-ry")).toBe("8.00deg");
+  expect(svg.getAnimations({ subtree: true }).some((animation) => animation.playState === "running")).toBe(true);
+  await commands.setStreamTestReducedMotion(true);
+  expect(button).toHaveAttribute("aria-pressed", "true");
+  expect(getComputedStyle(fold).transform).toBe("matrix(1, 0, 0, 1, 40, -70)");
+  expect(button.style.getPropertyValue("--mythra-logo-rx")).toBe("0deg");
+  expect(button.style.getPropertyValue("--mythra-logo-ry")).toBe("0deg");
+  expect(svg.getAnimations({ subtree: true })).toHaveLength(0);
+  fireEvent.pointerLeave(button, { pointerType: "mouse" });
+  expect(getComputedStyle(fold).transform).toBe("none");
+});
+
 it("stops idle work when scrolled offscreen and resumes on return", async () => {
   const view = render(<AnimatedMythraLogo />);
   const button = view.getByRole("button");
