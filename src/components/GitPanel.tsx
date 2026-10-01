@@ -31,7 +31,7 @@ import type { GitHubRepoStatus } from "../lib/github";
 // Shapes owned by the Git workspace module. Imported as types only, so this
 // panel neither pulls the Tauri bridge into component tests nor breaks before
 // that module lands.
-import type { GitWorkflowControls } from "../lib/gitWorkspace";
+import type { GitWorkflowControls, GitWorkspaceSnapshot } from "../lib/gitWorkspace";
 import type { GitFocusTarget, GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
 import type { StudioTab } from "../lib/studioTabs";
 import { commitPlan, fileCount, relativeAge, type CommitPlan } from "../lib/gitChanges";
@@ -141,6 +141,44 @@ function focusDestination(root: HTMLElement | null, node: HTMLElement) {
   node.focus({ preventScroll: true });
 }
 
+/**
+ * What the commit card can honestly offer. "dirty" also stands for *unknown*:
+ * without a successful owner snapshot the ordinary commit buttons stay, since
+ * a missing or failed read is never evidence of a clean folder. The snapshot
+ * owns button availability: independently loaded file rows can finish after
+ * a commit and must not replace the owner's refreshed summary.
+ * Once clean, "push" and "synced" come from the snapshot's own tracking
+ * counts, else from a GitHub comparison of this very branch; anything less is
+ * "push-unknown", which still offers Push.
+ */
+type CommitReadiness = "dirty" | "detached" | "push" | "push-unknown" | "synced";
+
+function commitReadiness(input: {
+  snapshot: GitWorkspaceSnapshot | null;
+  workflowReadError?: string;
+  repoStatus: GitHubRepoStatus | null;
+  repoError?: string;
+}): CommitReadiness {
+  const { snapshot } = input;
+  if (!snapshot || input.workflowReadError) return "dirty";
+  if (snapshot.stagedFiles !== 0 || snapshot.unstagedFiles !== 0 || snapshot.changedFiles !== 0) return "dirty";
+  if (!snapshot.branch) return "detached";
+  // An unborn branch has no commit to push.
+  if (!snapshot.headOid) return "synced";
+  // Older runtimes leave tracking out of the snapshot entirely.
+  if (snapshot.upstream !== undefined || snapshot.ahead !== undefined) {
+    if (!snapshot.upstream) return "push";
+    if (snapshot.upstreamRemote !== undefined ? snapshot.upstreamRemote !== "origin" : !snapshot.upstream.startsWith("origin/")) return "push-unknown";
+    if (typeof snapshot.ahead !== "number") return "push-unknown";
+    return snapshot.ahead > 0 ? "push" : "synced";
+  }
+  const status = input.repoStatus;
+  if (input.repoError || !status || status.branch !== snapshot.branch) return "push-unknown";
+  if (!status.upstream) return "push";
+  if (!status.upstream.startsWith("origin/")) return "push-unknown";
+  return status.ahead > 0 ? "push" : "synced";
+}
+
 function GitPanelInner(props: GitPanelProps) {
   // These fields are local so typing a commit message does not re-render the
   // conversation, the sidebar, and every other Workspace surface.
@@ -186,6 +224,7 @@ function GitPanelInner(props: GitPanelProps) {
 
   const absent = props.repositoryState === "absent";
   const workflow = props.workflow;
+  const workspaceError = workflow?.readError || workflow?.error;
   const snapshot = workflow?.snapshot ?? null;
   const outsideRepositoryRoot = snapshot?.isRoot === false;
   const rootRequiredReason = `Open the repository root (${snapshot?.rootPath}) as your project before changing Git. This selected folder is inside that repository.`;
@@ -203,12 +242,14 @@ function GitPanelInner(props: GitPanelProps) {
   const mutationDisabled = localDisabled || mutationBusy;
   const mutationDisabledReason = localDisabled ? localDisabledReason : "Wait for the current Git operation to finish.";
   const repository = props.githubRepoStatus?.repository;
-  const upstream = props.githubRepoStatus?.upstream;
-  const ahead = props.githubRepoStatus?.ahead ?? 0;
-  const behind = props.githubRepoStatus?.behind ?? 0;
   // Last known, from the snapshot when there is one and from the GitHub probe
   // otherwise. Never invented, and never described as current.
   const branch = snapshot ? snapshot.branch : props.githubRepoStatus?.branch ?? null;
+  const matchingStatus = !props.githubRepoError && props.githubRepoStatus?.branch === branch ? props.githubRepoStatus : null;
+  const upstream = snapshot?.upstream !== undefined ? snapshot.upstream : matchingStatus?.upstream;
+  const upstreamRemote = snapshot?.upstreamRemote !== undefined ? snapshot.upstreamRemote : upstream?.startsWith("origin/") ? "origin" : null;
+  const ahead = snapshot?.ahead !== undefined ? snapshot.ahead : matchingStatus?.ahead ?? null;
+  const behind = snapshot?.behind !== undefined ? snapshot.behind : matchingStatus?.behind ?? null;
   const fetched = relativeAge(workflow?.lastFetchedAt);
   const autoPublish = workflow?.autoPublish;
   // "origin" is enough when the tracked branch has this branch's own name;
@@ -221,9 +262,18 @@ function GitPanelInner(props: GitPanelProps) {
   const changes = useProjectGitChanges(absent ? undefined : props.inspection, view === "changes" && !mutationBusy, changesRevision);
   const history = useProjectGitHistory(absent ? undefined : props.inspection, view === "history");
   const plan = commitPlan(changes.changes, snapshot);
-  const staged = plan.staged;
+  const staged = snapshot?.stagedFiles ?? plan.staged;
   const changed = plan.all;
-  const hasStaged = staged > 0;
+  const readiness = commitReadiness({
+    snapshot,
+    workflowReadError: workflow?.readError,
+    repoStatus: props.githubRepoStatus,
+    repoError: props.githubRepoError,
+  });
+  const nothingToCommit = readiness !== "dirty";
+  // A settled clean snapshot outranks staged rows the older list still shows.
+  const hasStaged = !nothingToCommit && staged > 0;
+  const nothingToPush = !!snapshot && !workflow?.readError && (!snapshot.headOid || (!!upstream && upstreamRemote === "origin" && ahead === 0));
 
   // Route requests move focus only. A palette entry named "Push" lands on the
   // Push button; it never presses it.
@@ -439,7 +489,9 @@ function GitPanelInner(props: GitPanelProps) {
     // Counts are the last ones read, against a named baseline. They are not
     // evidence about GitHub *now*, and they do not claim to be.
     ? upstream
-      ? `Compared with ${upstreamLabel}: ${ahead} to push, ${behind} to pull · ${fetched ? `fetched ${fetched}` : "last known · not fetched this session"}`
+      ? ahead !== null && behind !== null
+        ? `Compared with ${upstreamLabel}: ${ahead} to push, ${behind} to pull · ${fetched ? `fetched ${fetched}` : "last known · not fetched this session"}`
+        : `Tracking ${upstreamLabel}; push and pull counts are unavailable. Refresh to check again.`
       : `${branch ?? "This branch"} has no tracked branch here yet. Pushing sets one.`
     : props.githubAuthenticated
       ? "This project has no GitHub remote set up in Mythra Code."
@@ -462,6 +514,8 @@ function GitPanelInner(props: GitPanelProps) {
       aria-busy={props.gitCommitBusy}
       onSubmit={(event) => {
         event.preventDefault();
+        // Enter in the message field must not attempt an empty commit.
+        if (nothingToCommit) return;
         commit(hasStaged ? "commitStaged" : "commit");
       }}
     >
@@ -469,9 +523,11 @@ function GitPanelInner(props: GitPanelProps) {
         <span><GitCommitHorizontal size={17} /></span>
         <div>
           <strong>Commit changes locally</strong>
-          <small>{hasStaged
-            ? `${fileCount(staged)} staged${plan.heldBack ? `; newer edits to ${plan.heldBack} of them stay out` : ""}. ${autoPublish?.enabled ? "Saved locally, then pushed by automatic publishing." : "Saved to this repository only — nothing is pushed."}`
-            : `Stages all current changes and saves them to this repository. ${autoPublish?.enabled ? "Automatic publishing will push the commit." : "Nothing is pushed."}`}</small>
+          <small>{nothingToCommit
+            ? `The working folder matches the last commit.${repository && (readiness === "push" || readiness === "push-unknown") ? " Saved commits can still be pushed." : ""}`
+            : hasStaged
+              ? `${fileCount(staged)} staged${plan.heldBack ? `; newer edits to ${plan.heldBack} of them stay out` : ""}. ${autoPublish?.enabled ? "Saved locally, then pushed by automatic publishing." : "Saved to this repository only — nothing is pushed."}`
+              : `Stages all current changes and saves them to this repository. ${autoPublish?.enabled ? "Automatic publishing will push the commit." : "Nothing is pushed."}`}</small>
         </div>
       </div>
       {props.gitCommitSuccess && (
@@ -495,13 +551,43 @@ function GitPanelInner(props: GitPanelProps) {
             title={mutationDisabled ? mutationDisabledReason : "Stage and commit every current change"}
           ><GitCommitHorizontal size={13} /> Commit all changes{changed ? ` (${changed})` : ""}</button>
         </>
+      ) : nothingToCommit ? (
+        <button className="git-commit-button git-commit-empty" type="submit" disabled title={mutationDisabled ? mutationDisabledReason : "Nothing to commit: no staged, unstaged or new files."}>
+          {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
+          {props.gitCommitBusy ? "Committing…" : "Nothing to commit"}
+        </button>
       ) : (
         <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={mutationDisabled ? mutationDisabledReason : "Stage and commit every current change to the local repository"}>
           {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
           {props.gitCommitBusy ? "Committing…" : "Commit all changes locally"}
         </button>
       )}
-      {repository && (
+      {repository && nothingToCommit && (
+        readiness === "synced" ? (
+          <button
+            type="button"
+            className="github-secondary-button git-commit-secondary git-commit-empty"
+            disabled
+            title={mutationDisabled ? mutationDisabledReason : `Nothing to commit, and ${branch} has no commits waiting to push.`}
+          ><Upload size={13} /> Nothing to commit and push</button>
+        ) : (
+          <button
+            type="button"
+            className="github-secondary-button git-commit-secondary"
+            // Pushes existing commits only: no commit, and the message stays.
+            onClick={() => { if (!mutationDisabled && branch) props.onAction("push"); }}
+            disabled={mutationDisabled || readiness === "detached"}
+            title={mutationDisabled
+              ? mutationDisabledReason
+              : readiness === "detached"
+                ? "Check out a named branch before pushing"
+                : readiness === "push" && !upstream
+                  ? `Push ${branch} to ${repository} and track it there. Nothing new is committed.`
+                  : `Push saved commits on ${branch} to ${repository}. Nothing new is committed.`}
+          ><Upload size={13} /> Push</button>
+        )
+      )}
+      {repository && !nothingToCommit && (
         <button
           type="button"
           className="github-secondary-button git-commit-secondary"
@@ -516,7 +602,7 @@ function GitPanelInner(props: GitPanelProps) {
               : `Commit${hasStaged ? " the staged files" : " every current change"} and push it to ${repository}`}
         ><Upload size={13} /> Commit &amp; push</button>
       )}
-      <CommitIncludes plan={plan} />
+      {!nothingToCommit && <CommitIncludes plan={plan} />}
     </form>
   );
 
@@ -569,7 +655,7 @@ function GitPanelInner(props: GitPanelProps) {
             ) : (
               <span className="git-branch-static" title={branch ?? undefined}><GitBranch size={13} aria-hidden="true" /><span>{branch ?? "No branch checked out"}</span></span>
             )}
-            {repository && upstream && (
+            {repository && upstream && ahead !== null && behind !== null && (
               <span className="git-sync-counts" title={`Compared with ${upstream}`}>
                 <span className={ahead ? "active" : ""} aria-label={`${ahead} to push`}><Upload size={11} aria-hidden="true" />{ahead}</span>
                 <span className={behind ? "active" : ""} aria-label={`${behind} to pull`}><ArrowDownToLine size={11} aria-hidden="true" />{behind}</span>
@@ -601,11 +687,11 @@ function GitPanelInner(props: GitPanelProps) {
                 aria-label="Push commits"
                 aria-describedby={syncId}
                 onClick={() => props.onAction("push")}
-                disabled={mutationDisabled || !branch}
+                disabled={mutationDisabled || !branch || nothingToPush}
                 title={mutationDisabled
                   ? mutationDisabledReason
-                  : !branch ? "Check out a named branch before pushing" : `Push committed changes on ${branch} to ${repository}`}
-              ><Upload size={13} aria-hidden="true" /> Push{upstream && ahead > 0 ? <b>{ahead}</b> : null}</button>
+                  : !branch ? "Check out a named branch before pushing" : nothingToPush ? "No saved commits are waiting to push." : `Push committed changes on ${branch} to ${repository}`}
+              ><Upload size={13} aria-hidden="true" /> Push{upstream && ahead !== null && ahead > 0 ? <b>{ahead}</b> : null}</button>
               {!props.githubAuthenticated && <button type="button" onClick={props.onOpenGitHubSettings}>Connect account</button>}
             </div>
           )}
@@ -647,14 +733,14 @@ function GitPanelInner(props: GitPanelProps) {
           )}
 
           {workflow?.branchNotice && <p className="git-fineprint">{workflow.branchNotice}</p>}
-          {workflow?.error && (
+          {workspaceError && (
             <div className="git-local-note bad" role="alert">
               <CircleAlert size={13} aria-hidden="true" />
-              <span>{workflow.error}</span>
+              <span>{workspaceError}</span>
               <button type="button" className="thread-pr-inline-button" onClick={workflow.onRefresh}>Try again</button>
             </div>
           )}
-          {workflow?.notice && !workflow.error && (
+          {workflow?.notice && !workspaceError && (
             <div className="git-local-note" role="status" aria-live="polite">
               <CheckCircle2 size={13} aria-hidden="true" />
               <span>{workflow.notice}</span>
@@ -778,7 +864,7 @@ function GitPanelInner(props: GitPanelProps) {
             <ProjectPullRequestsView
               access={props.pullRequests}
               visible
-              checkout={snapshot ?? (workflow && !workflow.error ? null : undefined)}
+              checkout={snapshot ?? (workflow && !workspaceError ? null : undefined)}
               conversationPanel={props.pullRequestPanel}
               onOpenGitHubSettings={props.onOpenGitHubSettings}
               onConnectRepository={() => setShowGitHub(true)}

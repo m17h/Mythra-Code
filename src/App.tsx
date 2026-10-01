@@ -5744,6 +5744,7 @@ export default function App() {
   const gitWorkflow = useMemo<GitWorkflowControls>(() => ({
     snapshot: gitWorkspace.snapshot,
     readRevision: gitWorkspace.readRevision,
+    readError: gitWorkspace.readError,
     busy: gitWorkspace.busy,
     error: gitWorkspace.error,
     notice: gitWorkspace.notice,
@@ -5764,7 +5765,7 @@ export default function App() {
       },
       onRetry: () => retryPublishing(activeProject.id),
     } : undefined,
-  }), [gitWorkspace.snapshot, gitWorkspace.readRevision, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, refreshWorkspace, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission, setGitOutput]);
+  }), [gitWorkspace.snapshot, gitWorkspace.readRevision, gitWorkspace.readError, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, refreshWorkspace, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission, setGitOutput]);
 
   const prMutationBlockedReason = effectiveSettings.permission === "read-only"
     ? "Switch this thread to Ask or Full access before changing Git or a pull request."

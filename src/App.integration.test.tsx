@@ -2730,9 +2730,18 @@ describe("workspace switching during thread selection", () => {
   it("shows a successful push immediately, then explains uncommitted entries", async () => {
     const user = userEvent.setup();
     const pendingStatus = deferred<{ exitCode: number; stdout: string; stderr: string }>();
+    let pushed = false;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_repo_status" || command === "git_workspace_snapshot") return {
+        ...(stubInvoke(command, args) as Record<string, unknown>),
+        upstream: "origin/main", ahead: pushed ? 0 : 1, behind: 0,
+      };
+      return stubInvoke(command, args);
+    });
     commandExecImpl = (params) => {
       const command = params.command as string[];
       if (command.join(" ") === "git push") {
+        pushed = true;
         return { exitCode: 0, stdout: "", stderr: "Everything up-to-date\n" };
       }
       if (command.join(" ") === "git status --porcelain -uall") return pendingStatus.promise;
@@ -2906,11 +2915,33 @@ describe("workspace switching during thread selection", () => {
   it("can retry a failed push without committing the saved changes again", async () => {
     const user = userEvent.setup();
     const commands: string[][] = [];
+    let committed = false;
+    let pushed = false;
     let pushes = 0;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "github_repo_status") return {
+        ...(stubInvoke(command, args) as Record<string, unknown>), ahead: committed && !pushed ? 1 : 0,
+      };
+      if (command === "git_workspace_snapshot") return {
+        ...(stubInvoke(command, args) as Record<string, unknown>),
+        headOid: (committed ? "b" : "a").repeat(40), stagedFiles: 0,
+        unstagedFiles: committed ? 0 : 1, changedFiles: committed ? 0 : 1,
+        upstream: "origin/main", ahead: committed && !pushed ? 1 : 0, behind: 0,
+      };
+      if (command === "git_project_changes" && committed) return {
+        rootPath: String(args?.cwd ?? PROJECT_A.path), rows: [],
+        stagedFiles: 0, unstagedFiles: 0, untrackedFiles: 0, changedFiles: 0, truncated: false,
+      };
+      return stubInvoke(command, args);
+    });
     commandExecImpl = (params) => {
       const command = params.command as string[];
       commands.push(command);
-      if (command[1] === "push" && ++pushes === 1) return { exitCode: 1, stdout: "", stderr: "Network unavailable" };
+      if (command[1] === "commit") committed = true;
+      if (command[1] === "push") {
+        if (++pushes === 1) return { exitCode: 1, stdout: "", stderr: "Network unavailable" };
+        pushed = true;
+      }
       return { exitCode: 0, stdout: "", stderr: "" };
     };
     await renderApp();
@@ -2923,6 +2954,72 @@ describe("workspace switching during thread selection", () => {
     await user.click(screen.getByRole("button", { name: "Push commits" }));
     await waitFor(() => expect(pushes).toBe(2));
     expect(commands.filter((command) => command[1] === "commit")).toHaveLength(1);
+    expect(commands.filter((command) => command[1] === "add")).toHaveLength(1);
+  });
+
+  it("settles dirty edits to a local commit, pushes it without another commit, and keeps the next draft", async () => {
+    const user = userEvent.setup();
+    const commands: string[][] = [];
+    let committed = false;
+    let pushed = false;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      const ahead = committed && !pushed ? 1 : 0;
+      if (command === "github_repo_status") return { ...(stubInvoke(command, args) as Record<string, unknown>), ahead };
+      if (command === "git_workspace_snapshot") return {
+        branch: "main", headOid: (committed ? "b" : "a").repeat(40), branches: [],
+        stagedFiles: 0, unstagedFiles: committed ? 0 : 1, changedFiles: committed ? 0 : 1, stagedPaths: [],
+        rootPath: String(args?.cwd ?? PROJECT_A.path), isRoot: true,
+        upstream: "origin/main", ahead, behind: 0,
+      };
+      if (command === "git_project_changes" && committed) return {
+        rootPath: String(args?.cwd ?? PROJECT_A.path), rows: [],
+        stagedFiles: 0, unstagedFiles: 0, untrackedFiles: 0, changedFiles: 0, truncated: false,
+      };
+      return stubInvoke(command, args);
+    });
+    commandExecImpl = (params) => {
+      const command = params.command as string[];
+      commands.push(command);
+      if (command[1] === "commit") committed = true;
+      if (command[1] === "push") pushed = true;
+      return { exitCode: 0, stdout: "done", stderr: "" };
+    };
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
+    const message = screen.getByLabelText(/Commit message/i);
+    await user.type(message, "Save the dirty edits locally");
+    await user.click(await screen.findByRole("button", { name: "Commit all changes locally" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled());
+    expect(message).toHaveValue("");
+    expect(screen.getByLabelText("1 to push")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_commit")).toEqual([
+      ["git_workspace_commit", {
+        cwd: PROJECT_A.path, message: "Save the dirty edits locally", stagedOnly: false,
+        expectedHeadOid: "a".repeat(40), expectedBranch: "main",
+      }],
+    ]);
+
+    await user.type(message, "Keep this for my next edit");
+    const push = await screen.findByRole("button", { name: "Push" });
+    await waitFor(() => expect(push).toBeEnabled());
+    await user.click(push);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Nothing to commit and push" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
+    expect(screen.getByLabelText("0 to push")).toBeInTheDocument();
+    expect(message).toHaveValue("Keep this for my next edit");
+    expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_push")).toEqual([
+      ["git_workspace_push", {
+        cwd: PROJECT_A.path, headOid: "b".repeat(40), branch: "main",
+        expectedRemoteUrl: "https://github.com/test-user/alpha.git", expectedRepository: "test-user/alpha",
+      }],
+    ]);
+    const synced = screen.getByRole("button", { name: "Nothing to commit and push" });
+    await user.click(synced);
+    fireEvent.submit(synced.closest("form")!);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_commit")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_push")).toHaveLength(1);
+    expect(commands.filter((command) => command[1] === "commit")).toEqual([["git", "commit", "-m", "Save the dirty edits locally"]]);
     expect(commands.filter((command) => command[1] === "add")).toHaveLength(1);
   });
 

@@ -94,6 +94,10 @@ describe("useGitWorkspace", () => {
     native.get.mockRejectedValueOnce(new Error("read failed"));
     await act(async () => { await view.result.current.refresh(); });
     expect(revision()).toBe(2);
+    expect(view.result.current.readError).toBe("read failed");
+    expect(view.result.current.error).toBe("");
+    await act(async () => { await view.result.current.refresh(); });
+    expect(view.result.current.readError).toBe("");
   });
 
   it("starts a new-folder read immediately while the previous folder read is pending", async () => {
@@ -107,6 +111,74 @@ describe("useGitWorkspace", () => {
     expect(view.result.current.snapshot?.branch).toBe("beta");
     await act(async () => pending.get("/project/a")?.(snapshot("/project/a", "late-alpha")));
     expect(view.result.current.snapshot?.branch).toBe("beta");
+  });
+
+  it("rejects a pending pre-commit read and coalesces completion refreshes into one fresh read", async () => {
+    const initial = { ...snapshot("/project/a"), changedFiles: 1, unstagedFiles: 1, upstream: "origin/main", ahead: 0, behind: 0 };
+    const committed = { ...snapshot("/project/a", "main", "committed-oid"), upstream: "origin/main", ahead: 1, behind: 0 };
+    native.get.mockResolvedValueOnce(initial);
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(view.result.current.snapshot).toEqual(initial));
+    let finishOld!: (value: GitWorkspaceSnapshot) => void;
+    let finishFresh!: (value: GitWorkspaceSnapshot) => void;
+    native.get.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    native.get.mockImplementationOnce(() => new Promise((resolve) => { finishFresh = resolve; }));
+    act(() => { void view.result.current.refresh(); });
+    expect(native.get).toHaveBeenCalledTimes(2);
+    // App commits outside this hook's mutate helper and refreshes in finally.
+    await act(async () => {
+      // A prior poll must not prevent a later completion from invalidating it.
+      await view.result.current.refresh(false);
+      await view.result.current.refresh();
+      await view.result.current.refresh();
+      await view.result.current.refresh();
+    });
+    expect(native.get).toHaveBeenCalledTimes(2);
+    await act(async () => finishOld(initial));
+    expect(view.result.current.readRevision).toBe(1);
+    await waitFor(() => expect(native.get).toHaveBeenCalledTimes(3));
+    await act(async () => finishFresh(committed));
+    expect(view.result.current.snapshot).toEqual(committed);
+    expect(view.result.current.readRevision).toBe(2);
+    expect(native.get).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts a slow read despite repeated focus refreshes and queues only one follow-up", async () => {
+    let finishOld!: (value: GitWorkspaceSnapshot) => void;
+    let finishFresh!: (value: GitWorkspaceSnapshot) => void;
+    native.get.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    native.get.mockImplementationOnce(() => new Promise((resolve) => { finishFresh = resolve; }));
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(native.get).toHaveBeenCalledTimes(1));
+    act(() => {
+      for (let index = 0; index < 5; index += 1) window.dispatchEvent(new Event("focus"));
+    });
+    await act(async () => { await view.result.current.refresh(false); });
+    expect(native.get).toHaveBeenCalledTimes(1);
+    await act(async () => finishOld(snapshot("/project/a", "slow-first")));
+    expect(view.result.current.snapshot?.branch).toBe("slow-first");
+    expect(view.result.current.readRevision).toBe(1);
+    await waitFor(() => expect(native.get).toHaveBeenCalledTimes(2));
+    await act(async () => finishFresh(snapshot("/project/a", "fresh-follow-up")));
+    expect(view.result.current.snapshot?.branch).toBe("fresh-follow-up");
+    expect(view.result.current.readRevision).toBe(2);
+    expect(native.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops a queued completion refresh when navigating to another checkout", async () => {
+    const view = renderHook((props: Options) => useGitWorkspace(props), { initialProps: options() });
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    let finishOld!: (value: GitWorkspaceSnapshot) => void;
+    native.get.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    act(() => { void view.result.current.refresh(); });
+    await act(async () => { await view.result.current.refresh(); });
+    view.rerender(options({ cwd: "/project/b", projectPath: "/project/b" }));
+    await waitFor(() => expect(view.result.current.snapshot?.rootPath).toBe("/project/b"));
+    const newFolderRevision = view.result.current.readRevision;
+    await act(async () => finishOld(snapshot("/project/a", "old-branch")));
+    expect(view.result.current.snapshot?.rootPath).toBe("/project/b");
+    expect(view.result.current.readRevision).toBe(newFolderRevision);
+    expect(native.get.mock.calls.map(([cwd]) => cwd)).toEqual(["/project/a", "/project/a", "/project/b"]);
   });
 
   it("refreshes promptly when navigation returns to a folder whose old read is stale", async () => {
@@ -267,6 +339,20 @@ describe("useGitWorkspace", () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
+  it("clears a read failure when a mutation returns a valid workspace snapshot", async () => {
+    const view = renderHook(() => useGitWorkspace(options()));
+    await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
+    native.get.mockRejectedValueOnce(new Error("workspace inspection failed"));
+    await act(async () => { await view.result.current.refresh(); });
+    expect(view.result.current.readError).toBe("workspace inspection failed");
+    let finishRefresh!: (value: GitWorkspaceSnapshot) => void;
+    native.get.mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    await act(async () => { await view.result.current.onBranch("feature/recovered", true); });
+    expect(view.result.current.snapshot?.branch).toBe("feature/recovered");
+    expect(view.result.current.readError).toBe("");
+    await act(async () => finishRefresh(snapshot("/project/a", "feature/recovered")));
+  });
+
   it("retains native Git timeout guidance rather than suggesting a Codex restart", async () => {
     const warning = "Git fetch timed out. Your working files were not changed; inspect remote status before retrying.";
     native.fetch.mockRejectedValueOnce(new Error(warning));
@@ -274,5 +360,11 @@ describe("useGitWorkspace", () => {
     await waitFor(() => expect(view.result.current.snapshot).not.toBeNull());
     await act(async () => view.result.current.fetch());
     expect(view.result.current.error).toBe(warning);
+    expect(view.result.current.readError).toBe("");
+    const clean = view.result.current.snapshot;
+    await act(async () => { await view.result.current.refresh(); });
+    expect(view.result.current.snapshot).toEqual(clean);
+    expect(view.result.current.error).toBe("");
+    expect(view.result.current.readError).toBe("");
   });
 });

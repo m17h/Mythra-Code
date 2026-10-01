@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { GitPanel, type GitPanelProps } from "./GitPanel";
@@ -64,6 +64,316 @@ function workflow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("GitPanel commit controls", () => {
+  it("changes the primary actions from dirty to committed ahead to fully synced", () => {
+    const input = panelProps({ githubRepoStatus: { ...attached, ahead: 0, behind: 0 }, workflow: workflow() });
+    const view = render(<GitPanel {...input} />);
+    const message = screen.getByLabelText(/Commit message/i);
+    fireEvent.change(message, { target: { value: "Save the current edits" } });
+    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Commit & push" }));
+    expect(input.onAction).toHaveBeenLastCalledWith("commitPush", "Save the current edits");
+
+    const clean = workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) });
+    view.rerender(<GitPanel {...input} workflow={clean} githubRepoStatus={{ ...attached, ahead: 1, behind: 0 }} gitCommitSuccess="Saved the current edits." />);
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    expect(message).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Commit & push" })).not.toBeInTheDocument();
+    const push = screen.getByRole("button", { name: "Push" });
+    expect(push).toBeEnabled();
+    fireEvent.click(push);
+    expect(input.onAction).toHaveBeenLastCalledWith("push");
+
+    view.rerender(<GitPanel {...input} workflow={clean} githubRepoStatus={{ ...attached, ahead: 0, behind: 0 }} gitCommitSuccess="Saved the current edits." />);
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    const synced = screen.getByRole("button", { name: "Nothing to commit and push" });
+    expect(synced).toBeDisabled();
+    const count = vi.mocked(input.onAction).mock.calls.length;
+    fireEvent.click(synced);
+    fireEvent.submit(synced.closest("form")!);
+    expect(input.onAction).toHaveBeenCalledTimes(count);
+  });
+
+  it("blocks local clean form submissions while keeping a new commit draft", () => {
+    const input = panelProps({ workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }) });
+    render(<GitPanel {...input} />);
+    fireEvent.change(screen.getByLabelText(/Commit message/i), { target: { value: "Next edit's message" } });
+    const clean = screen.getByRole("button", { name: "Nothing to commit" });
+    expect(clean).toBeDisabled();
+    expect(clean).toHaveAttribute("title", expect.stringMatching(/nothing|no.*changes|clean/i));
+    fireEvent.submit(clean.closest("form")!);
+    expect(input.onAction).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Next edit's message");
+  });
+
+  it("pushes existing commits without consuming the next commit message", () => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }),
+      githubRepoStatus: attached,
+      gitCommitSuccess: "An earlier commit was saved.",
+      gitCommitSuccessRevision: 2,
+    });
+    const view = render(<GitPanel {...input} />);
+    fireEvent.change(screen.getByLabelText(/Commit message/i), { target: { value: "Keep for the next commit" } });
+    fireEvent.click(screen.getByRole("button", { name: "Push" }));
+    expect(input.onAction).toHaveBeenCalledExactlyOnceWith("push");
+    view.rerender(<GitPanel {...input} gitOperationBusy />);
+    view.rerender(<GitPanel {...input} gitCommitSuccess="Push completed." gitCommitSuccessRevision={3} githubRepoStatus={{ ...attached, ahead: 0, behind: 0 }} />);
+    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Keep for the next commit");
+    expect(screen.getByRole("button", { name: "Nothing to commit and push" })).toBeDisabled();
+  });
+
+  it("keeps Push available for a clean named branch without an upstream", () => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }),
+      githubRepoStatus: { ...attached, upstream: undefined, ahead: 0, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    const push = screen.getByRole("button", { name: "Push" });
+    expect(push).toBeEnabled();
+    fireEvent.click(push);
+    expect(input.onAction).toHaveBeenCalledExactlyOnceWith("push");
+  });
+
+  it("does not mistake remote commits left to pull for local commits to push", () => {
+    render(<GitPanel {...panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 2 },
+    })} />);
+    expect(screen.getByRole("button", { name: "Nothing to commit and push" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pull" })).toBeEnabled();
+  });
+
+  it.each([
+    { readOnly: true },
+    { gitCommitBusy: true },
+    { gitOperationBusy: true },
+    { githubBusy: true },
+    { gitInitializing: true },
+    { workflow: workflow({ busy: true, snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }) },
+  ])("guards the clean push-only action while mutations are unavailable: %j", (overrides) => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }),
+      githubRepoStatus: attached,
+      ...overrides,
+    });
+    render(<GitPanel {...input} />);
+    const push = screen.getByRole("button", { name: "Push" });
+    expect(push).toBeDisabled();
+    fireEvent.click(push);
+    fireEvent.submit(push.closest("form")!);
+    expect(input.onAction).not.toHaveBeenCalled();
+  });
+
+  it("preserves mutation guards when a clean checkout cannot push its branch", () => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ branch: null, stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }),
+      githubRepoStatus: attached,
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    const push = screen.getByRole("button", { name: "Push" });
+    expect(push).toBeDisabled();
+    expect(push).toHaveAttribute("title", expect.stringMatching(/named branch/i));
+    fireEvent.click(push);
+    expect(input.onAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { workflow: undefined },
+    { workflow: workflow({ snapshot: null }) },
+    { repositoryState: "unknown" as const, workflow: undefined },
+  ])("does not present unknown local change counts as a clean checkout: %j", (overrides) => {
+    const input = panelProps({ githubRepoStatus: { ...attached, ahead: 0, behind: 0 }, ...overrides });
+    render(<GitPanel {...input} />);
+    expect(screen.queryByRole("button", { name: /^Nothing to commit/ })).not.toBeInTheDocument();
+    const commit = screen.getByRole("button", { name: "Commit all changes locally" });
+    expect(commit).toBeEnabled();
+    fireEvent.click(commit);
+    expect(input.onAction).toHaveBeenCalledExactlyOnceWith("commit", "");
+  });
+
+  it.each([
+    { localAhead: 0, githubAhead: 2, label: "Nothing to commit and push", disabled: true },
+    { localAhead: 1, githubAhead: 0, label: "Push", disabled: false },
+  ])("uses fresh checkout tracking counts instead of an earlier GitHub probe: %j", ({ localAhead, githubAhead, label, disabled }) => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: attached.upstream, ahead: localAhead, behind: 0 }) }),
+      githubRepoStatus: { ...attached, ahead: githubAhead, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.getByText(/Compared with origin:/)).toHaveTextContent(`${localAhead} to push, 0 to pull`);
+    expect(screen.getByLabelText(`${localAhead} to push`)).toBeInTheDocument();
+    expect(screen.queryByLabelText("2 to push")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Push commits" })).toHaveTextContent(localAhead > 0 ? /^Push1$/ : /^Push$/);
+    const action = screen.getByRole("button", { name: label });
+    if (disabled) expect(action).toBeDisabled();
+    else {
+      expect(action).toBeEnabled();
+      fireEvent.click(action);
+      expect(input.onAction).toHaveBeenCalledExactlyOnceWith("push");
+    }
+  });
+
+  it("does not apply an earlier branch's synced GitHub counts to the current branch", () => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ branch: "feature/new-branch", stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 }) }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.queryByRole("button", { name: "Nothing to commit and push" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Push" }));
+    expect(input.onAction).toHaveBeenCalledExactlyOnceWith("push");
+  });
+
+  it("keeps unknown native tracking counts distinct from zero", () => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: attached.upstream, ahead: null, behind: null }) }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.queryByRole("button", { name: "Nothing to commit and push" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Push" })).toBeEnabled();
+  });
+
+  it("keeps a clean synced checkout settled after an unrelated Git operation fails", () => {
+    const input = panelProps({
+      workflow: workflow({
+        snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: attached.upstream, upstreamRemote: "origin", ahead: 0, behind: 0 }),
+        error: "Fetch failed", readError: "",
+      }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Fetch failed");
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Nothing to commit and push" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Commit all changes locally" })).not.toBeInTheDocument();
+  });
+
+  it("keeps commit actions available when the snapshot's status read failed", () => {
+    const input = panelProps({
+      workflow: workflow({
+        snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: attached.upstream, upstreamRemote: "origin", ahead: 0, behind: 0 }),
+        error: "Status failed", readError: "Status failed",
+      }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.queryByRole("button", { name: /^Nothing to commit/ })).not.toBeInTheDocument();
+    const commit = screen.getByRole("button", { name: "Commit all changes locally" });
+    expect(commit).toBeEnabled();
+    fireEvent.click(commit);
+    expect(input.onAction).toHaveBeenCalledExactlyOnceWith("commit", "");
+  });
+
+  it("does not treat a local upstream named like an origin branch as proof the remote is synced", () => {
+    const input = panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: "origin/local-baseline", upstreamRemote: ".", ahead: 0, behind: 0 }) }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    render(<GitPanel {...input} />);
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Nothing to commit and push" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Push commits" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Push" }));
+    expect(input.onAction).toHaveBeenCalledExactlyOnceWith("push");
+  });
+
+  it("uses a differently named tracked origin branch as the configured push baseline", () => {
+    render(<GitPanel {...panelProps({
+      workflow: workflow({ snapshot: snapshot({ stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: "origin/release/next", upstreamRemote: "origin", ahead: 0, behind: 0 }) }),
+      githubRepoStatus: attached,
+    })} />);
+    expect(screen.getByRole("button", { name: "Nothing to commit and push" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push commits" })).toBeDisabled();
+    expect(screen.getByText(/Compared with origin\/release\/next:/)).toHaveTextContent("0 to push, 0 to pull");
+  });
+
+  it.each(["unstaged", "staged"] as const)("settles commit availability from the fresh snapshot while the older %s Changes list refreshes", async (area) => {
+    const stagedFiles = area === "staged" ? 1 : 0;
+    const unstagedFiles = area === "unstaged" ? 1 : 0;
+    const dirtyChanges = {
+      rootPath: `/project/git-button-refresh-${area}`, rows: [{ path: "pending.ts", originalPath: null, area, status: "M" }],
+      stagedFiles, unstagedFiles, untrackedFiles: 0, changedFiles: 1, truncated: false,
+    };
+    let finishRefresh!: (changes: typeof dirtyChanges) => void;
+    const inspection = {
+      cwd: dirtyChanges.rootPath,
+      getChanges: vi.fn().mockResolvedValueOnce(dirtyChanges).mockImplementation(() => new Promise<typeof dirtyChanges>((resolve) => { finishRefresh = resolve; })),
+      getFileDiff: vi.fn(),
+      getHistory: vi.fn(),
+    };
+    const input = panelProps({
+      inspection,
+      workflow: workflow({ snapshot: snapshot({ stagedFiles, unstagedFiles, changedFiles: 1 }) }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    const view = render(<GitPanel {...input} />);
+    await vi.waitFor(() => expect(screen.getAllByText("pending.ts").length).toBeGreaterThan(0));
+    expect(screen.getByRole("button", { name: area === "staged" ? "Commit staged (1)" : "Commit all changes locally" })).toBeEnabled();
+    view.rerender(<GitPanel {...input} workflow={workflow({ snapshot: snapshot({ headOid: "next-commit", stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: attached.upstream, ahead: 1, behind: 0 }) })} />);
+    await vi.waitFor(() => expect(inspection.getChanges).toHaveBeenCalledTimes(2));
+    try {
+      expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Push" })).toBeEnabled();
+    } finally {
+      finishRefresh({ ...dirtyChanges, rows: [], stagedFiles: 0, unstagedFiles: 0, changedFiles: 0 });
+      await vi.waitFor(() => expect(screen.queryAllByText("pending.ts")).toHaveLength(0));
+    }
+  });
+
+  it("keeps the clean snapshot authoritative when an earlier dirty Changes request finishes late", async () => {
+    const dirtyChanges = {
+      rootPath: "/project/git-button-late-dirty-response",
+      rows: [{ path: "earlier-edit.ts", originalPath: null, area: "unstaged" as const, status: "M" }],
+      stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false,
+    };
+    let finishInitial!: (changes: typeof dirtyChanges) => void;
+    let finishFresh!: (changes: typeof dirtyChanges) => void;
+    const inspection = {
+      cwd: dirtyChanges.rootPath,
+      getChanges: vi.fn()
+        .mockImplementationOnce(() => new Promise<typeof dirtyChanges>((resolve) => { finishInitial = resolve; }))
+        .mockImplementationOnce(() => new Promise<typeof dirtyChanges>((resolve) => { finishFresh = resolve; })),
+      getFileDiff: vi.fn(),
+      getHistory: vi.fn(),
+    };
+    const input = panelProps({
+      inspection,
+      workflow: workflow({ snapshot: snapshot({ changedFiles: 1, unstagedFiles: 1, upstream: attached.upstream, ahead: 0, behind: 0 }) }),
+      githubRepoStatus: { ...attached, ahead: 0, behind: 0 },
+    });
+    const clock = vi.spyOn(Date, "now");
+    const startedAt = Date.now();
+    const view = render(<GitPanel {...input} />);
+    await vi.waitFor(() => expect(inspection.getChanges).toHaveBeenCalledTimes(1));
+    const cleanSnapshot = snapshot({ headOid: "late-response-commit", stagedFiles: 0, unstagedFiles: 0, changedFiles: 0, upstream: attached.upstream, ahead: 1, behind: 0 });
+    clock.mockReturnValue(startedAt + 1_000);
+    view.rerender(<GitPanel {...input} workflow={workflow({ busy: true, snapshot: cleanSnapshot })} />);
+    expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
+    view.rerender(<GitPanel {...input} workflow={workflow({ snapshot: cleanSnapshot })} />);
+    clock.mockReturnValue(startedAt + 2_000);
+    await act(async () => finishInitial(dirtyChanges));
+    await vi.waitFor(() => expect(inspection.getChanges).toHaveBeenCalledTimes(2));
+    try {
+      // Its completion time is later than the clean snapshot, but its data
+      // was requested before the commit and must not re-enable committing.
+      expect(screen.getAllByText("earlier-edit.ts").length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: "Nothing to commit" })).toBeDisabled();
+      const push = screen.getByRole("button", { name: "Push" });
+      expect(push).toBeEnabled();
+      fireEvent.click(push);
+      expect(input.onAction).toHaveBeenCalledExactlyOnceWith("push");
+    } finally {
+      clock.mockRestore();
+      await act(async () => finishFresh({ ...dirtyChanges, rows: [], unstagedFiles: 0, changedFiles: 0 }));
+      await vi.waitFor(() => expect(screen.queryAllByText("earlier-edit.ts")).toHaveLength(0));
+    }
+  });
+
   it("makes bulk revert's added-file preservation contract explicit", () => {
     const props = panelProps();
     render(<GitPanel {...props} />);
