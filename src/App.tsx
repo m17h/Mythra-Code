@@ -16,7 +16,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Bot, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
@@ -31,6 +31,7 @@ import { timelineFromTurns } from "./lib/threadTimeline";
 import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
 import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
+import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
 import { confirmDialog } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { ModelPowerControl, openAiModelOptions, type RuntimeModel } from "./components/ModelPowerControl";
@@ -7163,7 +7164,7 @@ export default function App() {
                       <span><strong>Provider handoff ready</strong><small>From {providerLabel(pendingHandoffForWorkspace.sourceProvider)} · review the visible context below, then send it to {providerLabel(pendingHandoffForWorkspace.targetProvider)}.</small></span>
                     </div>
                   )}
-                  <div className={`empty-state-icon ${activeWorkspace.isChat ? "chat" : ""}`}>{activeWorkspace.isChat ? <MessageSquare size={27} /> : <Bot size={27} />}</div>
+                  <AnimatedMythraLogo />
                   <h1>{activeWorkspace.isChat ? "Start a normal chat." : "What should we build?"}</h1>
                   <p>{activeWorkspace.isChat ? "This conversation is not attached to any project folder. Ask a question, brainstorm, or work without repository context." : `This thread works inside ${activeProject?.name}. Commands and file changes start in that project folder.`}</p>
                   <div className="trust-strip">
