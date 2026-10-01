@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { assertReleaseVerification } from "./verify-ci.mjs";
 
 const REPOSITORY = "m17h/Mythra-Code";
 const REQUIRED_PLATFORMS = ["darwin-aarch64", "windows-x86_64"];
@@ -38,10 +39,24 @@ const runs = JSON.parse(checked("gh", [
   "--commit", head,
   "--workflow", "Verify",
   "--limit", "10",
-  "--json", "status,conclusion,headSha",
+  "--json", "databaseId,status,conclusion,headSha",
 ], "CI check") || "[]");
-if (!runs.some((run) => run.headSha === head && run.status === "completed" && run.conclusion === "success")) {
-  throw new Error(`No successful Verify workflow exists for ${head}.`);
+let verifiedRun = false;
+for (const run of runs) {
+  if (run.headSha !== head || run.status !== "completed" || run.conclusion !== "success") continue;
+  const jobs = JSON.parse(checked("gh", [
+    "api", `repos/${REPOSITORY}/actions/runs/${run.databaseId}/jobs?per_page=100`,
+  ], "CI gate and lane check")).jobs;
+  try {
+    assertReleaseVerification(run, jobs, head);
+    verifiedRun = true;
+    break;
+  } catch (error) {
+    console.warn(`Verify run ${run.databaseId} cannot approve this release: ${error.message}`);
+  }
+}
+if (!verifiedRun) {
+  throw new Error(`No successful complete Verify gate and lane set exists for ${head}.`);
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "mythra-code-finalize-"));

@@ -23,6 +23,9 @@ export default defineConfig({
     },
   ],
   test: {
+    // Generated release-validation backups may contain other projects' tests.
+    // Never discover copied user/plugin data or generated artifacts as suites.
+    include: ["src/**/*.{test,spec}.{ts,tsx,js,jsx,mjs}", "scripts/**/*.{test,spec}.{ts,tsx,js,jsx,mjs}"],
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
