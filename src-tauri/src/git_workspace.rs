@@ -1571,6 +1571,38 @@ pub(super) fn bounded_git_output_with_prompt_policy(
     network: bool,
     suppress_askpass: bool,
 ) -> Result<(Output, bool), String> {
+    bounded_git_output_with_readiness(
+        repo,
+        args,
+        timeout,
+        output_limit,
+        (network, suppress_askpass),
+        |_| Ok(()),
+    )
+}
+
+// Native lifecycle fixtures can first establish which process/pipes are being
+// timed out. Production always uses the no-op above and retains its absolute
+// deadline; this entry point only exists in test builds.
+#[cfg(test)]
+pub(super) fn bounded_git_output_after_readiness(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+    readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+) -> Result<(Output, bool), String> {
+    bounded_git_output_with_readiness(repo, args, timeout, 4_000, (true, false), readiness)
+}
+
+fn bounded_git_output_with_readiness(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+    output_limit: usize,
+    prompt_policy: (bool, bool),
+    readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+) -> Result<(Output, bool), String> {
+    let (network, suppress_askpass) = prompt_policy;
     let home = env::var_os("HOME").map(PathBuf::from);
     let mut command = git_command_for(repo, env::var_os("PATH").as_deref(), home.as_deref());
     command
@@ -1625,6 +1657,7 @@ pub(super) fn bounded_git_output_with_prompt_policy(
     };
     let stdout_reader = drain(Box::new(stdout));
     let stderr_reader = drain(Box::new(stderr));
+    readiness(&mut child).map_err(|error| stop(&mut child, error))?;
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {

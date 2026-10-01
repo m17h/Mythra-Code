@@ -653,41 +653,244 @@ fn publish_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use crate::git_workspace::{
+        bounded_git_output_after_readiness, spawn_scoped_git, GitProcessScope,
+    };
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::{fs, process::Stdio, time::Instant};
 
-    #[tokio::test]
-    async fn timed_out_publication_stops_its_hook_descendants() {
-        let (root, repo) = fixture();
-        let remote = root.join("remote.git");
+    const FIXTURE_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
+    const CLEANUP_TIMEOUT: Duration = Duration::from_millis(750);
+
+    fn wait_for_stage(
+        description: &str,
+        mut ready: impl FnMut() -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + FIXTURE_STAGE_TIMEOUT;
+        while !ready()? {
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "fixture did not reach {description} within {FIXTURE_STAGE_TIMEOUT:?}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    }
+
+    fn install_controlled_hook(repo: &Path, background: bool, redirect: bool, gate_startup: bool) {
         let hook = repo.join(".git/hooks/pre-push");
-        let marker = repo.join("late-hook-marker");
-        fs::write(
-            &hook,
-            "#!/bin/sh\nprintf started > timeout-hook-started\nsleep 2\nprintf survived > late-hook-marker\n",
-        )
-        .unwrap();
+        let redirection = if redirect {
+            " </dev/null >/dev/null 2>&1"
+        } else {
+            ""
+        };
+        let finish = if background {
+            "if [ \"$prefix\" = control ]; then wait; fi"
+        } else {
+            "wait"
+        };
+        let startup_gate = if gate_startup {
+            "if [ \"$prefix\" = hook ]; then\n  attempt=0\n  while [ ! -f hook-start-release ] && [ \"$attempt\" -lt 1200 ]; do\n    sleep 0.1\n    attempt=$((attempt + 1))\n  done\n  test -f hook-start-release || exit 1\nfi\n"
+        } else {
+            ""
+        };
+        #[cfg(unix)]
+        let child = "sh -c '\n  prefix=$1\n  printf %s \"$$\" > \"$prefix-pid\"\n  printf started > \"$prefix-started\"\n  attempt=0\n  while [ ! -f \"$prefix-release\" ] && [ \"$attempt\" -lt 1200 ]; do\n    sleep 0.1\n    attempt=$((attempt + 1))\n  done\n  test -f \"$prefix-release\" || exit 1\n  printf survived > \"$prefix-marker\"\n' fixture-child \"$prefix\"";
+        #[cfg(windows)]
+        let child = {
+            // A native child gives the observer a real Windows PID rather
+            // than Git Bash's separate MSYS process identifier.
+            fs::write(
+                repo.join("fixture-child.ps1"),
+                r#"param([string]$Prefix)
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText("$Prefix-pid", [string]$PID)
+[IO.File]::WriteAllText("$Prefix-started", 'started')
+$Deadline = [DateTime]::UtcNow.AddSeconds(120)
+while (!(Test-Path "$Prefix-release")) {
+  if ([DateTime]::UtcNow -gt $Deadline) { exit 1 }
+  Start-Sleep -Milliseconds 100
+}
+[IO.File]::WriteAllText("$Prefix-marker", 'survived')
+"#,
+            )
+            .unwrap();
+            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./fixture-child.ps1 \"$prefix\""
+        };
+        // The deliberate one-second startup exceeds the former 750 ms limit.
+        // The child then waits for an explicit release, independent of how
+        // long Git startup or publication takes on the host.
+        fs::write(&hook, format!(
+            "#!/bin/sh\nif [ \"$1\" = fixture-control ]; then prefix=control; else prefix=hook; fi\n{startup_gate}sleep 1\n{child}{redirection} &\n{finish}\n"
+        )).unwrap();
         #[cfg(unix)]
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn hook_descendant_is_running(repo: &Path) -> Result<bool, String> {
+        let pid: u32 = fs::read_to_string(repo.join("hook-pid"))
+            .map_err(|error| error.to_string())?
+            .parse::<u32>()
+            .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+                return Ok(true);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(false)
+            } else {
+                Err(error.to_string())
+            }
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, ERROR_INVALID_PARAMETER},
+                System::Threading::{
+                    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                },
+            };
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle.is_null() {
+                let error = std::io::Error::last_os_error();
+                return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                    Ok(false)
+                } else {
+                    Err(error.to_string())
+                };
+            }
+            let mut exit_code = 0;
+            let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+            let error = std::io::Error::last_os_error();
+            unsafe { CloseHandle(handle) };
+            if queried == 0 {
+                Err(error.to_string())
+            } else {
+                Ok(exit_code == 259)
+            }
+        }
+    }
+
+    struct HookControl {
+        child: std::process::Child,
+        scope: GitProcessScope,
+    }
+
+    impl HookControl {
+        fn start(repo: &Path) -> Self {
+            let mut command = background_std_command("git");
+            command
+                .current_dir(repo)
+                .args([
+                    "-c",
+                    "alias.fixture-control=!sh .git/hooks/pre-push fixture-control",
+                    "fixture-control",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let (child, scope) = spawn_scoped_git(&mut command).unwrap();
+            let control = Self { child, scope };
+            wait_for_stage("positive control hook readiness", || {
+                Ok(repo.join("control-started").exists())
+            })
+            .unwrap();
+            control
+        }
+
+        fn release_and_finish(&mut self, repo: &Path) {
+            fs::write(repo.join("hook-release"), "released\n").unwrap();
+            fs::write(repo.join("control-release"), "released\n").unwrap();
+            wait_for_stage("positive control completion", || {
+                self.child
+                    .try_wait()
+                    .map(|status| status.is_some())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+            assert!(
+                self.child.wait().unwrap().success(),
+                "positive control hook failed"
+            );
+            assert!(
+                repo.join("control-marker").exists(),
+                "the unexpired control must observe release and write its marker"
+            );
+            // Wait for the tested descendant itself. The control could be
+            // scheduled first, so its marker alone cannot rule out a late
+            // write from a surviving tested hook.
+            wait_for_stage("tested hook descendant exit", || {
+                hook_descendant_is_running(repo).map(|running| !running)
+            })
+            .unwrap();
+        }
+    }
+
+    impl Drop for HookControl {
+        fn drop(&mut self) {
+            self.scope
+                .stop(&mut self.child, "fixture control cleanup".into());
+        }
+    }
+
+    fn gated_push_timeout(
+        repo: &Path,
+        args: &[String],
+        ready: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+    ) -> String {
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        let error =
+            bounded_git_output_after_readiness(repo, &args, CLEANUP_TIMEOUT, ready).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(!error.contains("Could not confirm"), "{error}");
+        error
+    }
+
+    #[test]
+    fn timed_out_publication_stops_its_hook_descendants() {
+        let (root, repo) = fixture();
+        let remote = root.join("remote.git");
+        install_controlled_hook(&repo, false, false, true);
         let args = vec![
             "push".into(),
             "--".into(),
             remote.to_string_lossy().into_owned(),
             "refs/heads/main:refs/heads/main".into(),
         ];
-        let result =
-            bounded_network_git_with_timeout(&repo, &args, "Git push", Duration::from_millis(750));
-        assert!(result.unwrap_err().contains("timed out"));
+        // Reproduce the old fixture flaw under controlled startup latency:
+        // the absolute deadline expires before there is any hook descendant.
+        let error = bounded_network_git_with_timeout(&repo, &args, "Git push", CLEANUP_TIMEOUT)
+            .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
         assert!(
-            repo.join("timeout-hook-started").exists(),
-            "the timeout did not exercise a running hook"
+            !repo.join("hook-started").exists(),
+            "delayed startup must exceed the old timeout"
         );
-        tokio::time::sleep(Duration::from_millis(2200)).await;
+        fs::write(repo.join("hook-start-release"), "released\n").unwrap();
+        let mut control = HookControl::start(&repo);
+        gated_push_timeout(&repo, &args, |child| {
+            wait_for_stage("running hook descendant", || {
+                if child
+                    .try_wait()
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    return Err("Git exited before the held hook became ready".into());
+                }
+                Ok(repo.join("hook-started").exists())
+            })
+        });
+        assert!(repo.join("hook-started").exists());
+        control.release_and_finish(&repo);
         assert!(
-            !marker.exists(),
+            !repo.join("hook-marker").exists(),
             "a pre-push descendant survived the publication timeout"
         );
+        drop(control);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -696,28 +899,36 @@ mod tests {
         let (root, repo) = fixture();
         let remote = root.join("remote.git");
         let head = run(&repo, &["rev-parse", "refs/heads/main"]);
-        let hook = repo.join(".git/hooks/pre-push");
-        let marker = repo.join("late-pipe-hook-marker");
-        fs::write(&hook, "#!/bin/sh\nprintf started > pipe-hook-started\n(sleep 2; printf survived > late-pipe-hook-marker) &\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        install_controlled_hook(&repo, true, false, false);
+        let mut control = HookControl::start(&repo);
         let args = vec![
             "push".into(),
             "--".into(),
             remote.to_string_lossy().into_owned(),
             "refs/heads/main:refs/heads/main".into(),
         ];
-        let error =
-            bounded_network_git_with_timeout(&repo, &args, "Git push", Duration::from_millis(750))
-                .unwrap_err();
-        assert!(error.contains("timed out"), "{error}");
-        assert!(repo.join("pipe-hook-started").exists());
+        gated_push_timeout(&repo, &args, |child| {
+            wait_for_stage(
+                "published ref and exited Git parent with inherited pipes",
+                || {
+                    let exited = child
+                        .try_wait()
+                        .map_err(|error| error.to_string())?
+                        .is_some_and(|status| status.success());
+                    let published = fs::read_to_string(remote.join("refs/heads/main"))
+                        .is_ok_and(|oid| oid.trim() == head);
+                    Ok(exited && published && repo.join("hook-started").exists())
+                },
+            )
+        });
+        assert!(repo.join("hook-started").exists());
         assert!(
             run(&repo, &["ls-remote", "origin", "refs/heads/main"]).starts_with(&head),
             "this fixture must reach successful publication before its inherited pipes time out"
         );
-        std::thread::sleep(Duration::from_millis(2200));
-        let survived = marker.exists();
+        control.release_and_finish(&repo);
+        let survived = repo.join("hook-marker").exists();
+        drop(control);
         fs::remove_dir_all(root).unwrap();
         assert!(
             !survived,
@@ -728,20 +939,28 @@ mod tests {
     #[test]
     fn successful_publication_preserves_a_hooks_intended_background_work() {
         let (root, repo) = fixture();
-        let hook = repo.join(".git/hooks/pre-push");
-        fs::write(&hook, "#!/bin/sh\n(sleep 1; printf completed > intended-hook-marker) </dev/null >/dev/null 2>&1 &\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        install_controlled_hook(&repo, true, true, false);
         let args = vec![
             "push".into(),
             "--".into(),
             root.join("remote.git").to_string_lossy().into_owned(),
             "refs/heads/main:refs/heads/main".into(),
         ];
-        bounded_network_git_with_timeout(&repo, &args, "Git push", Duration::from_secs(3)).unwrap();
-        std::thread::sleep(Duration::from_millis(1200));
+        bounded_network_git_with_timeout(&repo, &args, "Git push", PUBLISH_TIMEOUT).unwrap();
+        wait_for_stage("detached successful hook readiness", || {
+            Ok(repo.join("hook-started").exists())
+        })
+        .unwrap();
+        assert!(!repo.join("hook-marker").exists());
+        // Release only after the successful executor has dropped its scope.
+        fs::write(repo.join("hook-release"), "released\n").unwrap();
+        wait_for_stage(
+            "successful background hook completion after scope closure",
+            || Ok(repo.join("hook-marker").exists()),
+        )
+        .unwrap();
         assert!(
-            repo.join("intended-hook-marker").exists(),
+            repo.join("hook-marker").exists(),
             "normal successful hooks must not be killed when their job scope is closed"
         );
         fs::remove_dir_all(root).unwrap();
@@ -839,7 +1058,10 @@ mod tests {
         let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
         let result = establish_upstream(&repo, &binding, "main", &published, "main");
         assert!(result.unwrap_err().contains("advanced or changed"));
-        assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), newer);
+        assert_eq!(
+            run(&repo, &["rev-parse", "refs/remotes/origin/main"]),
+            newer
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -930,7 +1152,7 @@ mod tests {
         let hook = repo.join(".git/hooks/pre-push");
         fs::write(
             &hook,
-            "#!/bin/sh\nprintf started > publication-started\nattempt=0\nwhile [ ! -f publication-release ] && [ \"$attempt\" -lt 100 ]; do\n  sleep 0.1\n  attempt=$((attempt + 1))\ndone\ntest -f publication-release\n",
+            "#!/bin/sh\nprintf started > publication-started\nattempt=0\nwhile [ ! -f publication-release ] && [ \"$attempt\" -lt 1200 ]; do\n  sleep 0.1\n  attempt=$((attempt + 1))\ndone\ntest -f publication-release || exit 1\nprintf released > publication-release-observed\n",
         )
         .unwrap();
         #[cfg(unix)]
@@ -952,7 +1174,7 @@ mod tests {
         });
         // Windows starts several Git processes before reaching the hook. Wait
         // for the hook itself, then hold it open until after the lock check.
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + FIXTURE_STAGE_TIMEOUT;
         while !repo.join("publication-started").exists() {
             if task.is_finished() {
                 panic!(
@@ -961,7 +1183,7 @@ mod tests {
                 );
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                Instant::now() < deadline,
                 "publication did not reach its pre-push hook"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -975,10 +1197,45 @@ mod tests {
             "caller cancellation released the mutation lock while Git was running"
         );
         fs::write(repo.join("publication-release"), "released\n").unwrap();
-        let guard = tokio::time::timeout(Duration::from_secs(15), lock.lock())
+        for (stage, marker) in [
+            (
+                "hook release acknowledgement",
+                repo.join("publication-release-observed"),
+            ),
+            (
+                "remote ref publication",
+                root.join("remote.git/refs/heads/main"),
+            ),
+        ] {
+            tokio::time::timeout(FIXTURE_STAGE_TIMEOUT, async {
+                loop {
+                    let ready = if stage == "remote ref publication" {
+                        fs::read_to_string(&marker).is_ok_and(|published| published.trim() == oid)
+                    } else {
+                        marker.exists()
+                    };
+                    if ready {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
             .await
-            .unwrap();
+            .unwrap_or_else(|_| panic!("cancelled publication did not reach {stage}"));
+        }
+        // After the push, the worker still verifies the binding and records
+        // tracking refs using multiple Git commands. Give that real lifecycle
+        // its native budget, with the preceding phases diagnosed separately.
+        let guard = tokio::time::timeout(PUBLISH_TIMEOUT, lock.lock())
+            .await
+            .expect("publication completed remotely but its worker did not finish verification and release the repository lock");
         assert!(run(&repo, &["ls-remote", "origin", "refs/heads/main"]).starts_with(&oid));
+        assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), oid);
+        assert_eq!(run(&repo, &["config", "branch.main.remote"]), "origin");
+        assert_eq!(
+            run(&repo, &["config", "branch.main.merge"]),
+            "refs/heads/main"
+        );
         drop(guard);
         fs::remove_dir_all(root).unwrap();
     }
