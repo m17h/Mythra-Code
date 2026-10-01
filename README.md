@@ -2,7 +2,7 @@
 
 A local-first desktop app for working with coding agents across OpenAI, Claude, Cursor, OpenRouter, and LM Studio. Bring your own accounts, choose your models, and keep conversations, project tools, and Git work in one place.
 
-**[Download the latest release](https://github.com/m17h/Mythra-Code/releases/latest)** · **[Website](https://www.morgangermani.com/projects/mythra-code)** · **[Report an issue](https://github.com/m17h/Mythra-Code/issues)**
+**[Download the latest release](https://github.com/m17h/Mythra-Code/releases/latest)** · **[Website](https://mythra.work)** · **[Report an issue](https://github.com/m17h/Mythra-Code/issues)**
 
 Packaged releases support **Apple silicon Macs** and **Windows x64**. Intel Macs and Linux are not currently supported. This is the canonical source repository for both platforms; each release includes both platform builds.
 
