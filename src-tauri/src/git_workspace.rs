@@ -19,6 +19,8 @@ use crate::{
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NETWORK_OUTPUT: usize = 64 * 1024;
+const TRACKING_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_TRACKING_READ_OUTPUT: usize = 16 * 1024;
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_LOCAL_OUTPUT: usize = 512 * 1024;
 const REVERT_PREVIEW_TTL: Duration = Duration::from_secs(5 * 60);
@@ -42,6 +44,10 @@ pub(super) struct GitWorkspaceBranch {
 pub(super) struct GitWorkspaceSnapshot {
     branch: Option<String>,
     head_oid: Option<String>,
+    upstream: Option<String>,
+    upstream_remote: Option<String>,
+    ahead: Option<usize>,
+    behind: Option<usize>,
     branches: Vec<GitWorkspaceBranch>,
     staged_files: usize,
     unstaged_files: usize,
@@ -235,6 +241,87 @@ pub(super) fn worktree_branch_paths(repo: &Path) -> Result<HashMap<String, Strin
         .collect())
 }
 
+fn tracking_stdout(repo: &Path, args: &[&str], deadline: Instant) -> Option<String> {
+    let (output, truncated) = bounded_git_output(
+        repo,
+        args,
+        deadline.checked_duration_since(Instant::now())?,
+        MAX_TRACKING_READ_OUTPUT,
+        false,
+    )
+    .ok()?;
+    if !output.status.success() || truncated {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn snapshot_tracking(
+    repo: &Path,
+    branch: Option<&str>,
+    head_oid: Option<&str>,
+) -> (Option<String>, Option<String>, Option<usize>, Option<usize>) {
+    let (Some(branch), Some(head_oid)) = (branch, head_oid) else {
+        return (None, None, None, None);
+    };
+    let deadline = Instant::now() + TRACKING_READ_TIMEOUT;
+    let reference = format!("refs/heads/{branch}");
+    let Some(metadata) = tracking_stdout(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:short)%00%(upstream)%00%(objectname)%00%(upstream:remotename)",
+            &reference,
+        ],
+        deadline,
+    ) else {
+        return (None, None, None, None);
+    };
+    let fields: Vec<_> = metadata
+        .trim_end_matches(['\r', '\n'])
+        .split('\0')
+        .collect();
+    // Bind tracking metadata to the captured branch and HEAD. An external
+    // commit during this read must not give a different commit's counts.
+    if fields.len() != 4 || fields[2] != head_oid || fields[1].is_empty() {
+        return (None, None, None, None);
+    }
+    let upstream = Some(fields[0].to_string());
+    let upstream_remote = (!fields[3].is_empty()).then(|| fields[3].to_string());
+    let Some(upstream_oid) = tracking_stdout(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{}^{{commit}}", fields[1]),
+        ],
+        deadline,
+    ) else {
+        return (upstream, upstream_remote, None, None);
+    };
+    // Use immutable identities, not HEAD or @{upstream}, which another Git
+    // client could retarget between the metadata and history reads.
+    let comparison = format!("{head_oid}...{}", upstream_oid.trim());
+    let counts = tracking_stdout(
+        repo,
+        &["rev-list", "--left-right", "--count", &comparison],
+        deadline,
+    )
+    .and_then(|value| {
+        let mut parts = value.split_whitespace();
+        let ahead = parts.next()?.parse().ok()?;
+        let behind = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((ahead, behind))
+    });
+    match counts {
+        Some((ahead, behind)) => (upstream, upstream_remote, Some(ahead), Some(behind)),
+        None => (upstream, upstream_remote, None, None),
+    }
+}
+
 fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
     let branch = optional_git_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"]);
     let head_oid = optional_git_stdout(repo, &["rev-parse", "--verify", "HEAD"]);
@@ -305,9 +392,15 @@ fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
         };
     }
     staged_paths.sort();
+    let (upstream, upstream_remote, ahead, behind) =
+        snapshot_tracking(repo, branch.as_deref(), head_oid.as_deref());
     Ok(GitWorkspaceSnapshot {
         branch,
         head_oid,
+        upstream,
+        upstream_remote,
+        ahead,
+        behind,
         branches,
         staged_files: staged_paths.len(),
         unstaged_files: unstaged.len(),
@@ -1050,6 +1143,24 @@ fn commit_sync_with_timeout(
     expected_branch: Option<&str>,
     timeout: Duration,
 ) -> Result<GitWorkspaceCommitResult, String> {
+    commit_sync_with_command(
+        cwd,
+        message,
+        staged_only,
+        expected_head,
+        expected_branch,
+        |repo, args| local_git_with_options(repo, args, timeout, MAX_LOCAL_OUTPUT),
+    )
+}
+
+fn commit_sync_with_command(
+    cwd: &str,
+    message: &str,
+    staged_only: bool,
+    expected_head: Option<&str>,
+    expected_branch: Option<&str>,
+    command: impl FnOnce(&Path, &[&str]) -> Result<GitWorkspaceCommandResult, String>,
+) -> Result<GitWorkspaceCommitResult, String> {
     let message = message.trim();
     if message.is_empty() {
         return Err("Enter a commit message".into());
@@ -1083,7 +1194,7 @@ fn commit_sync_with_timeout(
     };
     let before_commit = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
     let before_branch = optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]);
-    let committed = local_git_with_options(&selected, &args, timeout, MAX_LOCAL_OUTPUT).map_err(|error| {
+    let committed = command(&selected, &args).map_err(|error| {
         let after_commit = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
         if after_commit != before_commit {
             if let Some(head) = after_commit {
@@ -1571,6 +1682,27 @@ pub(super) fn bounded_git_output_with_prompt_policy(
     network: bool,
     suppress_askpass: bool,
 ) -> Result<(Output, bool), String> {
+    bounded_git_output_with_readiness(
+        repo,
+        args,
+        timeout,
+        output_limit,
+        (network, suppress_askpass),
+        |_| Ok(()),
+    )
+}
+
+// Production uses the no-op readiness callback above and its existing absolute
+// timeout. Lifecycle tests can establish the exact phase before timing it out.
+fn bounded_git_output_with_readiness(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+    output_limit: usize,
+    prompt_policy: (bool, bool),
+    readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+) -> Result<(Output, bool), String> {
+    let (network, suppress_askpass) = prompt_policy;
     let home = env::var_os("HOME").map(PathBuf::from);
     let mut command = git_command_for(repo, env::var_os("PATH").as_deref(), home.as_deref());
     command
@@ -1625,6 +1757,7 @@ pub(super) fn bounded_git_output_with_prompt_policy(
     };
     let stdout_reader = drain(Box::new(stdout));
     let stderr_reader = drain(Box::new(stderr));
+    readiness(&mut child).map_err(|error| stop(&mut child, error))?;
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -1686,7 +1819,7 @@ fn push_destination(
     branch: &str,
     expected_remote_url: &str,
     expected_repository: &str,
-) -> Result<(String, String, bool), String> {
+) -> Result<(String, String, bool, String), String> {
     let fetch = git_stdout(repo, &["config", "--get-all", "remote.origin.url"], None)
         .map_err(|_| "The GitHub remote no longer exists. Refresh and try again.".to_string())?;
     if fetch != expected_remote_url
@@ -1734,7 +1867,34 @@ fn push_destination(
         None,
     )
     .map_err(|_| "The upstream branch name is invalid".to_string())?;
-    Ok((push_urls[0].to_string(), target, needs_upstream))
+    // Resolve Git's actual fetch mapping, including on a first push whose
+    // upstream is not configured yet. These overrides are read-only: they
+    // describe the binding we will record only after the push succeeds.
+    let tracking = git_stdout(
+        repo,
+        &[
+            "-c",
+            &format!("branch.{branch}.remote=origin"),
+            "-c",
+            &format!("branch.{branch}.merge=refs/heads/{target}"),
+            "for-each-ref",
+            "--format=%(upstream)",
+            &format!("refs/heads/{branch}"),
+        ],
+        None,
+    )?;
+    if tracking.is_empty() {
+        return Err("This branch has no local origin fetch mapping. Configure its mapping and refresh before pushing from the Git tab.".into());
+    }
+    git_stdout(repo, &["check-ref-format", &tracking], None)
+        .map_err(|_| "The origin fetch mapping is invalid".to_string())?;
+    if !tracking.starts_with("refs/")
+        || tracking.starts_with("refs/heads/")
+        || tracking.starts_with("refs/tags/")
+    {
+        return Err("The origin fetch mapping targets a local branch or tag. Inspect the mapping before pushing from the Git tab.".into());
+    }
+    Ok((push_urls[0].to_string(), target, needs_upstream, tracking))
 }
 
 fn push_sync(
@@ -1751,9 +1911,8 @@ fn push_sync(
     let selected = mutation_repo(cwd)?;
     validate_branch(&selected, branch)?;
     require_expected(&selected, head_oid, branch)?;
-    let (url, target, needs_upstream) =
+    let (url, target, needs_upstream, tracking_ref) =
         push_destination(&selected, branch, expected_remote_url, expected_repository)?;
-    let tracking_ref = format!("refs/remotes/origin/{target}");
     if optional_git_stdout(&selected, &["symbolic-ref", "--quiet", &tracking_ref]).is_some() {
         return Err("This remote tracking ref is symbolic. Inspect its mapping before pushing from the Git tab.".into());
     }
@@ -1776,7 +1935,7 @@ fn push_sync(
         .map_err(|error| {
             format!("The commit was pushed, but its local tracking could not be recorded: {error}")
         })?;
-    if current != (url, target.clone(), needs_upstream) {
+    if current != (url, target.clone(), needs_upstream, tracking_ref.clone()) {
         return Err("The commit was pushed, but its upstream changed during the push. Refresh before pushing again.".into());
     }
     let record = (|| {
@@ -4679,16 +4838,45 @@ mod tests {
         fs::write(path.join("file.txt"), "saved before timeout\n").unwrap();
         git_stdout(&path, &["add", "--", "file.txt"], None).unwrap();
         let hook = path.join(".git/hooks/post-commit");
-        fs::write(&hook, "#!/bin/sh\nsleep 2\n").unwrap();
+        let marker = path.join(".git/post-commit-started");
+        fs::write(&hook, "#!/bin/sh\ntouch .git/post-commit-started\nwhile [ ! -f .git/post-commit-release ]; do sleep 0.05; done\n").unwrap();
         enable_test_hook(&hook);
 
-        let error = commit_sync_with_timeout(
+        let error = commit_sync_with_command(
             path.to_str().unwrap(),
             "saved before timeout",
             true,
             before.head_oid.as_deref(),
             before.branch.as_deref(),
-            Duration::from_millis(750),
+            |repo, args| {
+                bounded_git_output_with_readiness(
+                    repo,
+                    args,
+                    Duration::from_millis(750),
+                    MAX_LOCAL_OUTPUT,
+                    (false, true),
+                    |child| {
+                        let deadline = Instant::now() + Duration::from_secs(15);
+                        while !marker.exists() {
+                            if child
+                                .try_wait()
+                                .map_err(|error| error.to_string())?
+                                .is_some()
+                            {
+                                return Err(
+                                    "Commit exited before entering the post-commit hook".into()
+                                );
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("Fixture never entered the post-commit hook".into());
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Ok(())
+                    },
+                )?;
+                Err("The gated post-commit hook unexpectedly completed without timing out".into())
+            },
         )
         .unwrap_err();
         let after = snapshot(&path).unwrap();
@@ -4782,6 +4970,393 @@ mod tests {
             "noisy successful hook"
         );
         assert_eq!(snapshot(&path).unwrap().changed_files, 0);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn push_refuses_missing_and_local_branch_or_tag_fetch_mappings() {
+        for mapping in [
+            "+refs/heads/main:refs/remotes/origin/main",
+            "+refs/heads/*:refs/heads/local/*",
+            "+refs/heads/*:refs/tags/local/*",
+        ] {
+            let fixture = remote_fixture();
+            git_stdout(
+                &fixture.client,
+                &["config", "remote.origin.fetch", mapping],
+                None,
+            )
+            .unwrap();
+            let head = snapshot(&fixture.client).unwrap().head_oid.unwrap();
+            let error = push_sync(
+                fixture.client.to_str().unwrap(),
+                &head,
+                "topic/local",
+                "https://github.com/test/repo.git",
+                "test/repo",
+            )
+            .unwrap_err();
+            assert!(error.contains("fetch mapping"), "{mapping}: {error}");
+            assert!(optional_git_stdout(
+                &fixture.bare,
+                &["rev-parse", "--verify", "refs/heads/topic/local"]
+            )
+            .is_none());
+            assert_eq!(
+                snapshot(&fixture.client).unwrap().head_oid.as_deref(),
+                Some(head.as_str())
+            );
+            assert!(
+                optional_git_stdout(&fixture.client, &["config", "branch.topic/local.remote"])
+                    .is_none()
+            );
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn push_does_not_record_a_fetch_mapping_changed_during_the_push() {
+        let fixture = remote_fixture();
+        git_stdout(
+            &fixture.client,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/custom-origin/*",
+            ],
+            None,
+        )
+        .unwrap();
+        git_stdout(&fixture.client, &["fetch", "origin"], None).unwrap();
+        git_stdout(
+            &fixture.client,
+            &["config", "branch.topic/local.remote", "origin"],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &fixture.client,
+            &["config", "branch.topic/local.merge", "refs/heads/main"],
+            None,
+        )
+        .unwrap();
+        let before = snapshot(&fixture.client).unwrap().head_oid.unwrap();
+        fs::write(fixture.client.join("file.txt"), "mapping race commit\n").unwrap();
+        let committed = commit_sync(
+            fixture.client.to_str().unwrap(),
+            "mapping race",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let hook = fixture.client.join(".git/hooks/pre-push");
+        fs::write(&hook, "#!/bin/sh\ngit config remote.origin.fetch '+refs/heads/*:refs/remotes/changed-origin/*'\n").unwrap();
+        enable_test_hook(&hook);
+        let error = push_sync(
+            fixture.client.to_str().unwrap(),
+            &committed.head_oid,
+            "topic/local",
+            "https://github.com/test/repo.git",
+            "test/repo",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("commit was pushed") && error.contains("upstream changed"),
+            "{error}"
+        );
+        assert_eq!(
+            git_stdout(&fixture.bare, &["rev-parse", "refs/heads/main"], None).unwrap(),
+            committed.head_oid
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.client,
+                &["rev-parse", "refs/remotes/custom-origin/main"],
+                None
+            )
+            .unwrap(),
+            before
+        );
+        assert!(optional_git_stdout(
+            &fixture.client,
+            &["rev-parse", "--verify", "refs/remotes/changed-origin/main"]
+        )
+        .is_none());
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn push_records_the_configured_custom_fetch_mapping() {
+        for existing_upstream in [false, true] {
+            let fixture = remote_fixture();
+            git_stdout(
+                &fixture.client,
+                &[
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/custom-origin/*",
+                ],
+                None,
+            )
+            .unwrap();
+            git_stdout(&fixture.client, &["fetch", "origin"], None).unwrap();
+            let target = if existing_upstream {
+                "main"
+            } else {
+                "topic/local"
+            };
+            if existing_upstream {
+                git_stdout(
+                    &fixture.client,
+                    &["config", "branch.topic/local.remote", "origin"],
+                    None,
+                )
+                .unwrap();
+                git_stdout(
+                    &fixture.client,
+                    &["config", "branch.topic/local.merge", "refs/heads/main"],
+                    None,
+                )
+                .unwrap();
+            }
+            fs::write(fixture.client.join("file.txt"), "custom mapping commit\n").unwrap();
+            let committed = commit_sync(
+                fixture.client.to_str().unwrap(),
+                "custom mapping",
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+            if existing_upstream {
+                assert_eq!(snapshot(&fixture.client).unwrap().ahead, Some(1));
+            }
+            push_sync(
+                fixture.client.to_str().unwrap(),
+                &committed.head_oid,
+                "topic/local",
+                "https://github.com/test/repo.git",
+                "test/repo",
+            )
+            .unwrap();
+            assert_eq!(
+                git_stdout(
+                    &fixture.bare,
+                    &["rev-parse", &format!("refs/heads/{target}")],
+                    None
+                )
+                .unwrap(),
+                committed.head_oid
+            );
+            assert_eq!(
+                git_stdout(
+                    &fixture.client,
+                    &["rev-parse", &format!("refs/remotes/custom-origin/{target}")],
+                    None
+                )
+                .unwrap(),
+                committed.head_oid
+            );
+            let after = snapshot(&fixture.client).unwrap();
+            assert_eq!(
+                after.upstream.as_deref(),
+                Some(format!("custom-origin/{target}").as_str())
+            );
+            assert_eq!(after.upstream_remote.as_deref(), Some("origin"));
+            assert_eq!((after.ahead, after.behind), (Some(0), Some(0)));
+            assert_eq!(after.changed_files, 0);
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn snapshot_tracking_follows_local_commits_and_successful_pushes() {
+        let fixture = remote_fixture();
+        let before = snapshot(&fixture.client).unwrap();
+        push_sync(
+            fixture.client.to_str().unwrap(),
+            before.head_oid.as_deref().unwrap(),
+            before.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        )
+        .unwrap();
+        let synced = snapshot(&fixture.client).unwrap();
+        assert_eq!(synced.upstream.as_deref(), Some("origin/topic/local"));
+        assert_eq!(synced.upstream_remote.as_deref(), Some("origin"));
+        assert_eq!((synced.ahead, synced.behind), (Some(0), Some(0)));
+        assert_eq!(synced.changed_files, 0);
+
+        fs::write(fixture.client.join("file.txt"), "local edits\n").unwrap();
+        let dirty = snapshot(&fixture.client).unwrap();
+        assert_eq!(dirty.changed_files, 1);
+        assert_eq!((dirty.ahead, dirty.behind), (Some(0), Some(0)));
+        let commit = commit_sync(
+            fixture.client.to_str().unwrap(),
+            "local commit",
+            false,
+            dirty.head_oid.as_deref(),
+            dirty.branch.as_deref(),
+        )
+        .unwrap();
+        let unpublished = snapshot(&fixture.client).unwrap();
+        assert_eq!(unpublished.changed_files, 0);
+        assert_eq!(
+            unpublished.head_oid.as_deref(),
+            Some(commit.head_oid.as_str())
+        );
+        assert_eq!((unpublished.ahead, unpublished.behind), (Some(1), Some(0)));
+        assert!(push_sync(
+            fixture.client.to_str().unwrap(),
+            &commit.head_oid,
+            commit.branch.as_deref().unwrap(),
+            "https://github.com/test/changed.git",
+            "test/changed",
+        )
+        .is_err());
+        assert_eq!(snapshot(&fixture.client).unwrap().ahead, Some(1));
+        push_sync(
+            fixture.client.to_str().unwrap(),
+            &commit.head_oid,
+            commit.branch.as_deref().unwrap(),
+            "https://github.com/test/repo.git",
+            "test/repo",
+        )
+        .unwrap();
+        let pushed = snapshot(&fixture.client).unwrap();
+        assert_eq!((pushed.ahead, pushed.behind), (Some(0), Some(0)));
+        assert_eq!(pushed.changed_files, 0);
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_tracking_preserves_unknown_counts_without_a_resolvable_upstream() {
+        let fixture = remote_fixture();
+        let unpublished = snapshot(&fixture.client).unwrap();
+        assert!(unpublished.head_oid.is_some());
+        assert!(unpublished.upstream.is_none());
+        assert_eq!((unpublished.ahead, unpublished.behind), (None, None));
+        configure_pull(&fixture);
+        git_stdout(
+            &fixture.client,
+            &["update-ref", "-d", "refs/remotes/origin/main"],
+            None,
+        )
+        .unwrap();
+        let missing = snapshot(&fixture.client).unwrap();
+        assert_eq!(missing.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(missing.upstream_remote.as_deref(), Some("origin"));
+        assert_eq!((missing.ahead, missing.behind), (None, None));
+        let serialized = serde_json::to_value(missing).unwrap();
+        assert!(serialized["ahead"].is_null());
+        assert!(serialized["behind"].is_null());
+        assert_eq!(serialized["upstream"], "origin/main");
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_tracking_handles_detached_unborn_and_changed_captured_heads() {
+        let path = fixture();
+        let before = snapshot(&path).unwrap();
+        git_stdout(&path, &["checkout", "--detach"], None).unwrap();
+        let detached = snapshot(&path).unwrap();
+        assert!(detached.branch.is_none());
+        assert!(detached.head_oid.is_some());
+        assert_eq!(
+            (detached.upstream, detached.ahead, detached.behind),
+            (None, None, None)
+        );
+        git_stdout(
+            &path,
+            &["checkout", before.branch.as_deref().unwrap()],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &[
+                "config",
+                &format!("branch.{}.remote", before.branch.as_deref().unwrap()),
+                ".",
+            ],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &[
+                "config",
+                &format!("branch.{}.merge", before.branch.as_deref().unwrap()),
+                &format!("refs/heads/{}", before.branch.as_deref().unwrap()),
+            ],
+            None,
+        )
+        .unwrap();
+        fs::write(path.join("file.txt"), "external commit\n").unwrap();
+        commit_sync(path.to_str().unwrap(), "external commit", false, None, None).unwrap();
+        assert_eq!(
+            snapshot_tracking(&path, before.branch.as_deref(), before.head_oid.as_deref()),
+            (None, None, None, None)
+        );
+        fs::remove_dir_all(path).unwrap();
+
+        let unborn =
+            env::temp_dir().join(format!("mythra-tracking-unborn-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&unborn).unwrap();
+        git_stdout(&unborn, &["init", "-b", "main"], None).unwrap();
+        fs::write(unborn.join("new.txt"), "initial edits\n").unwrap();
+        let initial = snapshot(&unborn).unwrap();
+        assert_eq!(initial.branch.as_deref(), Some("main"));
+        assert!(initial.head_oid.is_none());
+        assert_eq!(initial.changed_files, 1);
+        assert_eq!(
+            (initial.upstream, initial.ahead, initial.behind),
+            (None, None, None)
+        );
+        fs::remove_dir_all(unborn).unwrap();
+    }
+
+    #[test]
+    fn snapshot_tracking_reports_known_remote_commits_to_pull() {
+        let fixture = remote_fixture();
+        configure_pull(&fixture);
+        fs::write(fixture.seed.join("file.txt"), "remote advance\n").unwrap();
+        advance_pull(&fixture);
+        git_stdout(&fixture.client, &["fetch", "origin"], None).unwrap();
+        let behind = snapshot(&fixture.client).unwrap();
+        assert_eq!(behind.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((behind.ahead, behind.behind), (Some(0), Some(1)));
+        assert_eq!(behind.changed_files, 0);
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_tracking_identifies_local_upstreams_with_origin_like_names() {
+        let path = fixture();
+        let branch = snapshot(&path).unwrap().branch.unwrap();
+        git_stdout(&path, &["branch", "origin/local-baseline"], None).unwrap();
+        git_stdout(
+            &path,
+            &["config", &format!("branch.{branch}.remote"), "."],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &[
+                "config",
+                &format!("branch.{branch}.merge"),
+                "refs/heads/origin/local-baseline",
+            ],
+            None,
+        )
+        .unwrap();
+        let local = snapshot(&path).unwrap();
+        assert_eq!(local.upstream.as_deref(), Some("origin/local-baseline"));
+        assert_eq!(local.upstream_remote.as_deref(), Some("."));
+        assert_eq!((local.ahead, local.behind), (Some(0), Some(0)));
+        assert_eq!(serde_json::to_value(local).unwrap()["upstreamRemote"], ".");
         fs::remove_dir_all(path).unwrap();
     }
 

@@ -9,6 +9,13 @@ export interface GitWorkspaceBranch {
 export interface GitWorkspaceSnapshot {
   branch: string | null;
   headOid: string | null;
+  /** Local tracking state from the same workspace read; absent on older runtimes. */
+  upstream?: string | null;
+  /** Actual configured remote, including '.' for another local branch. */
+  upstreamRemote?: string | null;
+  /** Null means no resolvable comparison, rather than zero unpublished commits. */
+  ahead?: number | null;
+  behind?: number | null;
   branches: GitWorkspaceBranch[];
   stagedFiles: number;
   unstagedFiles: number;
@@ -25,6 +32,7 @@ export interface GitWorkflowControls {
   readRevision?: number;
   busy: boolean;
   error?: string;
+  readError?: string;
   notice?: string;
   isolated: boolean;
   branchNotice?: string;

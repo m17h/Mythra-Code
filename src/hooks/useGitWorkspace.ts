@@ -18,13 +18,14 @@ interface State {
   snapshot: GitWorkspaceSnapshot | null;
   busy: boolean;
   error: string;
+  readError: string;
   notice: string;
   branchNotice: string;
   /** Successful reads, including reads whose summary did not change. */
   readRevision: number;
   lastFetchedAt?: number;
 }
-const empty = (cwd: string | null): State => ({ cwd, snapshot: null, busy: false, error: "", notice: "", branchNotice: "", readRevision: 0 });
+const empty = (cwd: string | null): State => ({ cwd, snapshot: null, busy: false, error: "", readError: "", notice: "", branchNotice: "", readRevision: 0 });
 
 /** The checkout is the scope: thread navigation must never retarget a Git action. */
 export function useGitWorkspace(options: Options) {
@@ -43,7 +44,7 @@ export function useGitWorkspace(options: Options) {
   const mounted = useRef(true);
   const readSequence = useRef(0);
   const successfulReads = useRef(0);
-  const readsPending = useRef(new Map<string, number>());
+  const readsPending = useRef(new Map<string, { request: number; rerun: boolean; invalidated: boolean }>());
   const mutationsPending = useRef(new Set<string>());
   const update = useCallback((cwd: string, value: Partial<State>) => {
     if (!mounted.current || optionsRef.current.cwd !== cwd) return;
@@ -61,29 +62,45 @@ export function useGitWorkspace(options: Options) {
     // Counts, HEAD and staging paths cannot reveal same-count content edits.
     // Consumers may lazily reread their selected preview after this signal.
     successfulReads.current += 1;
-    update(cwd, { snapshot, branchNotice, ...value, readRevision: successfulReads.current });
+    update(cwd, { snapshot, branchNotice, readError: "", ...value, readRevision: successfulReads.current });
   }, [update]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (invalidate = true) => {
     const { cwd, enabled } = optionsRef.current;
     const scope = cwd ? normalizedProjectPath(cwd) : "";
-    if (!cwd || !enabled || readsPending.current.has(scope) || mutationsPending.current.has(scope)) return;
+    if (!mounted.current || !cwd || !enabled || mutationsPending.current.has(scope)) return;
+    const pending = readsPending.current.get(scope);
+    if (pending) {
+      // App mutations also call refresh when they settle. A read started before
+      // that operation must not overwrite its result with pre-operation state.
+      // Coalesce further requests until the pending read finishes.
+      pending.rerun = true;
+      if (invalidate && !pending.invalidated) {
+        pending.invalidated = true;
+        generation.current += 1;
+      }
+      return;
+    }
     const revision = generation.current;
     const request = readSequence.current += 1;
-    readsPending.current.set(scope, request);
+    const entry = { request, rerun: false, invalidated: false };
+    readsPending.current.set(scope, entry);
     try {
       const snapshot = await getGitWorkspace(cwd);
       if (revision === generation.current) accept(cwd, snapshot, { error: "" });
     } catch (error) {
-      if (revision === generation.current) update(cwd, { error: formatGitError(error) });
+      if (revision === generation.current) update(cwd, { readError: formatGitError(error) });
     } finally {
-      if (readsPending.current.get(scope) === request) {
+      if (readsPending.current.get(scope) === entry) {
         readsPending.current.delete(scope);
-        if (revision !== generation.current
-          && optionsRef.current.enabled
-          && optionsRef.current.cwd
-          && normalizedProjectPath(optionsRef.current.cwd) === scope) {
-          window.setTimeout(() => void refresh(), 0);
+        if (entry.rerun || revision !== generation.current) {
+          window.setTimeout(() => {
+            // Navigation or another refresh can supersede this scheduled read.
+            // Never retry an old checkout or invalidate a newer pending read.
+            if (mounted.current && optionsRef.current.enabled && optionsRef.current.cwd
+              && normalizedProjectPath(optionsRef.current.cwd) === scope
+              && !readsPending.current.has(scope)) void refresh(false);
+          }, 0);
         }
       }
     }
@@ -91,10 +108,10 @@ export function useGitWorkspace(options: Options) {
 
   useEffect(() => {
     generation.current += 1;
-    void refresh();
+    void refresh(false);
     if (!options.enabled) return;
-    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 10_000);
-    const focus = () => void refresh();
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(false); }, 10_000);
+    const focus = () => void refresh(false);
     window.addEventListener("focus", focus);
     return () => { generation.current += 1; window.clearInterval(timer); window.removeEventListener("focus", focus); };
   }, [options.cwd, options.enabled, refresh]);

@@ -25,6 +25,10 @@
 
 .git-inspect-row { align-items: center; }
 .git-commit-secondary { width: 100%; }
+/* Nothing to commit or push is a settled state, not a blocked action: neutral
+   gray at full legibility instead of the faded action color. */
+.git-commit-button.git-commit-empty:disabled,
+.github-secondary-button.git-commit-empty:disabled { color: var(--muted); border-color: var(--line); background: color-mix(in srgb, var(--text) 3%, transparent); opacity: 1; }
 
 /* Keep destination and synchronization details readable in a narrow dock. */
 .studio-panel .github-repo-card { grid-template-columns: 34px minmax(0, 1fr); }
