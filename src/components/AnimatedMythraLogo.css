@@ -1,0 +1,180 @@
+/* ===== Animated Mythra mark =====
+   The Mythra.work hero mark, sized for the new-thread welcome panel. It
+   assembles on mount, idles (breathes, glints, blinks) while on screen,
+   tilts toward the pointer, and comes apart on mouse hover or click/tap.
+   Offsets, times, delays and easing match the website. Piece transforms are
+   in SVG user units, so they scale with the mark, not the panel.
+
+   State hooks, all on the button:
+   - [data-scattered]       set by JS before first paint, dropped a frame later
+                            to play the assembly (full motion only)
+   - [data-idle]            set by JS once assembled, while on screen and the
+                            document is visible
+   - [aria-pressed="true"]  pieces apart
+
+   The padding leaves room for pieces that travel past the 1024 viewBox while
+   assembling or apart, and for the tilt. */
+
+.mythra-logo {
+  --mythra-logo-size: 168px;
+  --mythra-logo-gap: 20px;
+  display: flex;
+  justify-content: center;
+  padding: var(--mythra-logo-gap);
+}
+
+/* Short windows (down to the 680px minimum): reduce the space taken from
+   project controls. The website also shrinks the mark on small screens. */
+@media (max-height: 780px) {
+  .mythra-logo {
+    --mythra-logo-size: 96px;
+    --mythra-logo-gap: 12px;
+  }
+}
+
+.mythra-logo__button {
+  --mythra-logo-ease: cubic-bezier(.2, .8, .2, 1);
+  --mythra-logo-rx: 0deg;
+  --mythra-logo-ry: 0deg;
+  position: relative;
+  display: block;
+  flex: none;
+  width: var(--mythra-logo-size);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  perspective: 1000px;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mythra-logo__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  overflow: visible;
+  transform: rotateX(var(--mythra-logo-rx)) rotateY(var(--mythra-logo-ry));
+  transition: transform .5s var(--mythra-logo-ease);
+}
+
+/* ---- Assemble / apart ---- */
+.mythra-logo__piece {
+  transition:
+    transform .9s var(--mythra-logo-ease),
+    opacity .6s;
+}
+.mythra-logo__piece--fold { transition-delay: .36s; }
+.mythra-logo__piece--right { transition-delay: .24s; }
+.mythra-logo__piece--mid { transition-delay: .12s; }
+
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__piece {
+  transition-delay: 0s;
+  transition-duration: .5s;
+}
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__piece--fold { transform: translate(40px, -70px); }
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__piece--right { transform: translate(80px, 10px); }
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__piece--mid { transform: translate(10px, 70px); }
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__piece--left { transform: translate(-60px, -20px); }
+
+/* Declared after the apart pose at equal specificity so, as on the website,
+   the unassembled pose wins even when the pointer is already over the mark.
+   No transition into it: it is applied before first paint. */
+.mythra-logo__button[data-scattered] .mythra-logo__piece {
+  opacity: 0;
+  transition: none;
+}
+.mythra-logo__button[data-scattered] .mythra-logo__piece--fold { transform: translate(140px, -160px); }
+.mythra-logo__button[data-scattered] .mythra-logo__piece--right { transform: translate(180px, 60px); }
+.mythra-logo__button[data-scattered] .mythra-logo__piece--mid { transform: translate(0, 200px); }
+.mythra-logo__button[data-scattered] .mythra-logo__piece--left { transform: translate(-180px, -60px); }
+
+/* ---- Idle ----
+   The pieces breathe apart along their apart directions, a sheen sweeps
+   across every few seconds, and the caret blinks like a cursor. */
+.mythra-logo__piece--fold .mythra-logo__bob {
+  --mythra-logo-dx: 9px;
+  --mythra-logo-dy: -16px;
+}
+.mythra-logo__piece--right .mythra-logo__bob {
+  --mythra-logo-dx: 18px;
+  --mythra-logo-dy: 2px;
+  animation-delay: .35s;
+}
+.mythra-logo__piece--mid .mythra-logo__bob {
+  --mythra-logo-dx: 2px;
+  --mythra-logo-dy: 16px;
+  animation-delay: .7s;
+}
+.mythra-logo__piece--left .mythra-logo__bob {
+  --mythra-logo-dx: -13px;
+  --mythra-logo-dy: -4px;
+  animation-delay: 1.05s;
+}
+.mythra-logo__button[data-idle] .mythra-logo__bob {
+  animation-name: mythra-logo-breathe;
+  animation-duration: 5.6s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+.mythra-logo__button[data-idle] .mythra-logo__sheen {
+  animation: mythra-logo-sheen 7.5s cubic-bezier(.45, .05, .55, .95) 1.2s infinite;
+}
+
+.mythra-logo__cursor {
+  fill: #dffbfe;
+  opacity: 0;
+}
+.mythra-logo__button[data-idle] .mythra-logo__cursor {
+  animation: mythra-logo-blink 1.1s steps(1) infinite;
+}
+
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__bob { animation-play-state: paused; }
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__sheen { visibility: hidden; }
+
+/* Dashed outlines of where each piece belongs, shown while apart. */
+.mythra-logo__ghost path {
+  fill: none;
+  stroke: var(--muted, #8e96a1);
+  stroke-width: 3;
+  stroke-dasharray: 10 10;
+  opacity: 0;
+  transition: opacity .4s;
+}
+.mythra-logo__button[aria-pressed="true"] .mythra-logo__ghost path { opacity: .6; }
+
+@keyframes mythra-logo-breathe {
+  0%,
+  100% { transform: translate(0, 0); }
+  50% { transform: translate(var(--mythra-logo-dx), var(--mythra-logo-dy)); }
+}
+@keyframes mythra-logo-sheen {
+  0% { transform: translateX(0); }
+  30%,
+  100% { transform: translateX(1800px); }
+}
+@keyframes mythra-logo-blink {
+  50% { opacity: .95; }
+}
+
+/* JS never scatters or idles under reduced motion and stops tilting; this
+   makes coming apart (still available on hover, click or tap, as on the
+   website) an instant swap and guarantees nothing loops. */
+@media (prefers-reduced-motion: reduce) {
+  .mythra-logo__svg,
+  .mythra-logo__piece,
+  .mythra-logo__ghost path {
+    /* Removing the transition property also cancels transitions that were
+       already in flight when the preference changed. A shorter duration alone
+       only affects future transitions, leaving an entrance or tilt moving. */
+    transition: none !important;
+  }
+  .mythra-logo__bob,
+  .mythra-logo__sheen,
+  .mythra-logo__cursor {
+    animation: none !important;
+  }
+}

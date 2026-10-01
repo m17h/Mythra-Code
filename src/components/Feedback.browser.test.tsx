@@ -31,6 +31,28 @@ function selectText(node: Text, start: number, end: number, pointerUp = true) {
   if (pointerUp) node.parentElement?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
 }
 
+async function setSettledViewport(width: number, height: number) {
+  // Vitest acknowledges its parent iframe resize before the test frame's
+  // resize event necessarily fires. A late event correctly dismisses an open
+  // feedback action, so settle the viewport before starting the selection.
+  let resized = window.innerWidth === width && window.innerHeight === height;
+  const onResize = () => {
+    if (window.innerWidth === width && window.innerHeight === height) resized = true;
+  };
+  window.addEventListener("resize", onResize);
+  try {
+    await page.viewport(width, height);
+    await waitFor(() => {
+      expect(window.innerWidth).toBe(width);
+      expect(window.innerHeight).toBe(height);
+      expect(resized).toBe(true);
+    });
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+  } finally {
+    window.removeEventListener("resize", onResize);
+  }
+}
+
 function MountSentinel({ onMount }: { onMount?: () => void }) {
   useEffect(() => { onMount?.(); }, [onMount]);
   return <div data-testid="mounted-child" />;
@@ -126,11 +148,11 @@ async function waitForTrayPaint() {
 describe("review feedback in a real browser", () => {
   afterEach(async () => {
     document.body.style.removeProperty("background");
-    await page.viewport(1400, 900);
+    await setSettledViewport(1400, 900);
   });
 
   it("stages the selected assistant phrase and keeps the float within the viewport at 150% zoom", async () => {
-    await page.viewport(420, 700);
+    await setSettledViewport(420, 700);
     const added = vi.fn();
     render(<BrowserFeedbackShell source="assistant" onAdded={added} />);
     const paragraph = document.querySelector<HTMLElement>("[data-feedback-message='answer-1'] p");
@@ -165,7 +187,7 @@ describe("review feedback in a real browser", () => {
   });
 
   it("stages a selected diff line with the new-side path and line number", async () => {
-    await page.viewport(420, 700);
+    await setSettledViewport(420, 700);
     document.body.style.background = "#f5f7f6";
     const added = vi.fn();
     render(<BrowserFeedbackShell source="diff" onAdded={added} />);
@@ -196,7 +218,7 @@ describe("review feedback in a real browser", () => {
   });
 
   it("preserves patch markers when a selection spans removed and added lines", async () => {
-    await page.viewport(420, 700);
+    await setSettledViewport(420, 700);
     const added = vi.fn();
     render(<BrowserFeedbackShell source="diff" onAdded={added} />);
     const spans = Array.from(document.querySelectorAll<HTMLElement>("[data-feedback-diff] > span"));
@@ -222,7 +244,7 @@ describe("review feedback in a real browser", () => {
   });
 
   it("does not steal focus after Shift+Tab on an old selection, but offers feedback after Shift+Arrow selection", async () => {
-    await page.viewport(420, 700);
+    await setSettledViewport(420, 700);
     render(<BrowserFeedbackShell source="assistant" onAdded={vi.fn()} showFocusDestination />);
     const paragraph = document.querySelector<HTMLElement>("[data-feedback-message='answer-1'] p")!;
     const text = paragraph.firstChild as Text;
@@ -256,7 +278,7 @@ describe("review feedback in a real browser", () => {
   });
 
   it("does not reopen an old selection action after clicking elsewhere", async () => {
-    await page.viewport(420, 700);
+    await setSettledViewport(420, 700);
     render(<BrowserFeedbackShell source="assistant" onAdded={vi.fn()} showFocusDestination />);
     const paragraph = document.querySelector<HTMLElement>("[data-feedback-message='answer-1'] p")!;
     selectText(paragraph.firstChild as Text, 0, 8);
@@ -269,8 +291,24 @@ describe("review feedback in a real browser", () => {
     expect(screen.queryByRole("button", { name: "Add feedback on the selection" })).not.toBeInTheDocument();
   });
 
+  it("dismisses a selection action when the viewport really resizes", async () => {
+    await setSettledViewport(420, 700);
+    render(<BrowserFeedbackShell source="diff" onAdded={vi.fn()} />);
+    const line = Array.from(document.querySelectorAll<HTMLElement>("[data-feedback-diff] > span"))
+      .find((entry) => entry.textContent?.startsWith("+added line"))!;
+    selectText(line.firstChild as Text, 1, 6);
+    const button = await screen.findByRole("button", { name: "Add feedback on the selection" });
+    await waitForSelectionButtonToReceivePointer(button);
+
+    await setSettledViewport(460, 700);
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Add feedback on the selection" })).not.toBeInTheDocument());
+    await waitFor(() => expect(document.querySelector(".feedback-selection-float")).toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Add feedback" })).not.toBeInTheDocument();
+  });
+
   it("closes an old scope editor without remounting children or sending its draft", async () => {
-    await page.viewport(420, 700);
+    await setSettledViewport(420, 700);
     const added = vi.fn();
     const mounted = vi.fn();
     const { rerender } = render(<BrowserFeedbackShell source="assistant" scopeKey="one" onAdded={added} onChildMount={mounted} />);
