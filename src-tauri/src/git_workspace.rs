@@ -1143,6 +1143,24 @@ fn commit_sync_with_timeout(
     expected_branch: Option<&str>,
     timeout: Duration,
 ) -> Result<GitWorkspaceCommitResult, String> {
+    commit_sync_with_command(
+        cwd,
+        message,
+        staged_only,
+        expected_head,
+        expected_branch,
+        |repo, args| local_git_with_options(repo, args, timeout, MAX_LOCAL_OUTPUT),
+    )
+}
+
+fn commit_sync_with_command(
+    cwd: &str,
+    message: &str,
+    staged_only: bool,
+    expected_head: Option<&str>,
+    expected_branch: Option<&str>,
+    command: impl FnOnce(&Path, &[&str]) -> Result<GitWorkspaceCommandResult, String>,
+) -> Result<GitWorkspaceCommitResult, String> {
     let message = message.trim();
     if message.is_empty() {
         return Err("Enter a commit message".into());
@@ -1176,7 +1194,7 @@ fn commit_sync_with_timeout(
     };
     let before_commit = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
     let before_branch = optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]);
-    let committed = local_git_with_options(&selected, &args, timeout, MAX_LOCAL_OUTPUT).map_err(|error| {
+    let committed = command(&selected, &args).map_err(|error| {
         let after_commit = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
         if after_commit != before_commit {
             if let Some(head) = after_commit {
@@ -1664,6 +1682,27 @@ pub(super) fn bounded_git_output_with_prompt_policy(
     network: bool,
     suppress_askpass: bool,
 ) -> Result<(Output, bool), String> {
+    bounded_git_output_with_readiness(
+        repo,
+        args,
+        timeout,
+        output_limit,
+        (network, suppress_askpass),
+        |_| Ok(()),
+    )
+}
+
+// Production uses the no-op readiness callback above and its existing absolute
+// timeout. Lifecycle tests can establish the exact phase before timing it out.
+fn bounded_git_output_with_readiness(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+    output_limit: usize,
+    prompt_policy: (bool, bool),
+    readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+) -> Result<(Output, bool), String> {
+    let (network, suppress_askpass) = prompt_policy;
     let home = env::var_os("HOME").map(PathBuf::from);
     let mut command = git_command_for(repo, env::var_os("PATH").as_deref(), home.as_deref());
     command
@@ -1718,6 +1757,7 @@ pub(super) fn bounded_git_output_with_prompt_policy(
     };
     let stdout_reader = drain(Box::new(stdout));
     let stderr_reader = drain(Box::new(stderr));
+    readiness(&mut child).map_err(|error| stop(&mut child, error))?;
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -4798,16 +4838,45 @@ mod tests {
         fs::write(path.join("file.txt"), "saved before timeout\n").unwrap();
         git_stdout(&path, &["add", "--", "file.txt"], None).unwrap();
         let hook = path.join(".git/hooks/post-commit");
-        fs::write(&hook, "#!/bin/sh\nsleep 2\n").unwrap();
+        let marker = path.join(".git/post-commit-started");
+        fs::write(&hook, "#!/bin/sh\ntouch .git/post-commit-started\nwhile [ ! -f .git/post-commit-release ]; do sleep 0.05; done\n").unwrap();
         enable_test_hook(&hook);
 
-        let error = commit_sync_with_timeout(
+        let error = commit_sync_with_command(
             path.to_str().unwrap(),
             "saved before timeout",
             true,
             before.head_oid.as_deref(),
             before.branch.as_deref(),
-            Duration::from_millis(750),
+            |repo, args| {
+                bounded_git_output_with_readiness(
+                    repo,
+                    args,
+                    Duration::from_millis(750),
+                    MAX_LOCAL_OUTPUT,
+                    (false, true),
+                    |child| {
+                        let deadline = Instant::now() + Duration::from_secs(15);
+                        while !marker.exists() {
+                            if child
+                                .try_wait()
+                                .map_err(|error| error.to_string())?
+                                .is_some()
+                            {
+                                return Err(
+                                    "Commit exited before entering the post-commit hook".into()
+                                );
+                            }
+                            if Instant::now() >= deadline {
+                                return Err("Fixture never entered the post-commit hook".into());
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Ok(())
+                    },
+                )?;
+                Err("The gated post-commit hook unexpectedly completed without timing out".into())
+            },
         )
         .unwrap_err();
         let after = snapshot(&path).unwrap();
