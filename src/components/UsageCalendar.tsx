@@ -352,6 +352,12 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     setSuppressed(false);
     let keyboard = true;
     try { keyboard = event.target.matches(":focus-visible"); } catch { /* Older engines: treat as keyboard focus. */ }
+    if (keyboard) {
+      // A stationary mouse may still be over an older day. The newer keyboard
+      // request wins until the user deliberately moves the pointer again.
+      cancelGrace();
+      setHover(null);
+    }
     setKeyboardFocus(keyboard);
   };
   const onBlur = (event: FocusEvent<HTMLElement>) => {
@@ -376,6 +382,10 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   const onKeyDown = (event: KeyboardEvent<HTMLTableElement>) => {
     const day = dayOf(event.target);
     if (!day) return;
+    if (["Tab", "Enter", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      cancelGrace();
+      setHover(null);
+    }
     if (event.key === "Tab" && !event.shiftKey) {
       // WebKit can lose its sequential focus position after a top-layer
       // card closes. Explicitly follow the same order with or without it:

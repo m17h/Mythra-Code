@@ -73,6 +73,24 @@ beforeEach(async () => { await page.viewport(1400, 900); await commands.setStrea
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); await page.viewport(1400, 900); });
 
 describe("usage calendar independent interaction review", () => {
+  it("lets keyboard navigation take over an earlier hover without disabling later pointer use", async () => {
+    const view = mount();
+    const previous = view.container.querySelector<HTMLElement>(`[data-day="${shiftDayKey(TODAY, -7)}"]`)!;
+    await page.getByRole("gridcell", { name: previous.getAttribute("aria-label")! }).hover();
+    expect(cardFor(view)).toHaveTextContent("earlier-model");
+    // Moving focus does not move the real mouse. Its older hover must not
+    // override the newly requested keyboard breakdown.
+    view.getByRole("button", { name: "Before calendar" }).focus();
+    await userEvent.keyboard("{Tab}");
+    expect(todayCell(view)).toHaveFocus();
+    expect(cardFor(view)).toHaveTextContent("300");
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(previous).toHaveFocus();
+    expect(cardFor(view)).toHaveTextContent("earlier-model");
+    await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
+    expect(cardFor(view)).toHaveTextContent("300");
+  });
+
   it("uses one day tab stop, arrow navigation, pinning, and an Escape that does not reach Settings", async () => {
     const view = mount();
     const grid = view.getByRole("grid");
