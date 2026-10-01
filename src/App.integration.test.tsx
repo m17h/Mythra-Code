@@ -3103,6 +3103,12 @@ describe("workspace switching during thread selection", () => {
     const nativeCommand = action === "Pull" ? "git_workspace_pull" : "git_workspace_push";
     const buttonName = action === "Pull" ? /^Pull$/ : "Push commits";
     invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      // This exercises cancellation/retry of an actionable transfer. A clean
+      // tracking baseline with zero unpublished commits now correctly disables
+      // Push once the deferred workspace snapshot settles.
+      if (action === "Push" && command === "github_repo_status") return {
+        ...(stubInvoke(command, args) as Record<string, unknown>), ahead: 1,
+      };
       if (command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path) return pending.promise;
       if (command === nativeCommand) return { stdout: "Transfer complete", stderr: "" };
       return stubInvoke(command, args);
@@ -3135,7 +3141,9 @@ describe("workspace switching during thread selection", () => {
       expect(await screen.findByText("Wait for agents in this folder to finish before changing Git.")).toBeInTheDocument();
     } else {
       // Cancellation releases the original mutation leases for a fresh click.
-      await user.click(await screen.findByRole("button", { name: buttonName }));
+      const retry = await screen.findByRole("button", { name: buttonName });
+      await waitFor(() => expect(retry).toBeEnabled());
+      await user.click(retry);
       await waitFor(() => expect(invokeMock.mock.calls.filter(([command]) => command === nativeCommand)).toHaveLength(1));
     }
   });
