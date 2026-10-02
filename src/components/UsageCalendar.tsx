@@ -367,7 +367,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   const onClick = (event: MouseEvent<HTMLTableElement>) => {
     const day = dayOf(event.target);
     if (!day) return;
-    keyboardOwnsCard.current = false;
+    keyboardOwnsCard.current = event.detail === 0 || clickPointerType.current === "touch";
     cancelGrace();
     // Keyboard/assistive activation has detail=0 and must not fabricate a
     // sticky hover. Real mouse unpinning retains the still-hovered breakdown.

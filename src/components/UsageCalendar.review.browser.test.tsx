@@ -148,6 +148,10 @@ describe("usage calendar independent interaction review", () => {
       expect(new Set(samples.map(({ x, y }) => `${x},${y}`)).size).toBe(1);
       expect(previous).toHaveFocus();
       expect(cardFor(view)).toHaveTextContent("earlier-model");
+      fireEvent.click(previous, { detail: 0 });
+      expect(previous).toHaveAttribute("aria-selected", "true");
+      await uncover();
+      expect(cardFor(view)).toHaveTextContent("earlier-model");
       await userEvent.keyboard("{Escape}");
       await uncover();
       expect(view.queryByRole("group", { name: /^Usage on / })).toBeNull();
