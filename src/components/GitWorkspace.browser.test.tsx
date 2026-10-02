@@ -148,7 +148,7 @@ it.each(THEMES)("keeps the $name Git workspace readable at 150% zoom in a narrow
   // The counts beside a long branch stay on screen.
   const header = view.container.querySelector(".git-checkout")!.getBoundingClientRect();
   expect(screen.getByLabelText("3 to push").getBoundingClientRect().right).toBeLessThanOrEqual(header.right + 1);
-  if (id === "atari" || id === "monochrome" || id === "daylight") await page.screenshot({ path: `../../test-results/pr-screenshots/git-changes-${id}-150.png` });
+  if (id === "atari" || id === "synthwave" || id === "daylight") await page.screenshot({ path: `../../test-results/pr-screenshots/git-changes-${id}-150.png` });
 });
 
 it("honours reduced motion without removing the transitions otherwise", async () => {
@@ -191,7 +191,7 @@ it.each(["tracked", "new"] as const)("allows keyboard scrolling through a long %
   expect(view.container.querySelector<HTMLElement>(".studio-panel")!.scrollWidth).toBeLessThanOrEqual(view.container.querySelector<HTMLElement>(".studio-panel")!.clientWidth + 1);
 });
 
-it.each(["mythra", "light-mythra", "atari", "monochrome"])("keeps %s Git status and selected-row safety text readable on actual surfaces", async (theme) => {
+it.each(["mythra", "light-mythra", "atari", "synthwave"])("keeps %s Git status and selected-row safety text readable on actual surfaces", async (theme) => {
   const view = mount(props(), 360, theme);
   const [select] = await screen.findAllByRole("button", { name: new RegExp(`^${LONG_DIR}/AnExtremely`) });
   await userEvent.click(select);
@@ -443,7 +443,7 @@ describe("project pull requests in the dock", () => {
     expect(controls.onBranch).toHaveBeenCalledWith("main", false);
   });
 
-  it.each(["mythra", "light-mythra", "atari", "monochrome"])("keeps %s project PR labels readable on actual list and detail surfaces", async (theme) => {
+  it.each(["mythra", "light-mythra", "atari", "synthwave"])("keeps %s project PR labels readable on actual list and detail surfaces", async (theme) => {
     const access = prAccess();
     access.threadLink = { repository: "owner/repo", number: 41 };
     const view = mount(props({ view: "pulls", pullRequests: access }), 360, theme);

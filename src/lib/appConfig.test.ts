@@ -12,10 +12,24 @@ describe("theme catalog", () => {
     expect(DEFAULT_SETTINGS.theme).toBe("mythra");
   });
 
-  it("migrates retired Ember and Terminal selections to Mythra", () => {
-    expect(sanitizeTheme("ember")).toBe("mythra");
-    expect(sanitizeTheme("terminal")).toBe("mythra");
-    expect(sanitizeTheme("light-mythra")).toBe("light-mythra");
+  it("offers exactly the supported palettes, each once", () => {
+    expect(THEMES.map((theme) => theme.id)).toEqual(["mythra", "light-mythra", "kiwi", "daylight", "synthwave", "atari"]);
+    expect(THEMES.some((theme) => /midnight|monochrome/i.test(`${theme.id} ${theme.name}`))).toBe(false);
+  });
+
+  it.each(["ember", "terminal", "midnight", "monochrome"])("migrates a retired %s selection to Mythra", (retired) => {
+    expect(sanitizeTheme(retired)).toBe("mythra");
+  });
+
+  it("keeps supported selections as saved", () => {
+    for (const theme of THEMES) expect(sanitizeTheme(theme.id)).toBe(theme.id);
+  });
+
+  it("previews Synthwave on Mythra's neutral graphite and Light Mythra with a clear cyan", () => {
+    const swatches = Object.fromEntries(THEMES.map((theme) => [theme.id, theme.swatches]));
+    expect(swatches.synthwave.slice(0, 2)).toEqual(swatches.mythra.slice(0, 2));
+    expect(swatches.synthwave[2]).toBe("#ff6ac1");
+    expect(swatches["light-mythra"][2]).not.toBe("#0880a3");
   });
 
   it("marks both branded light palettes for shared light component styling", () => {
@@ -25,13 +39,13 @@ describe("theme catalog", () => {
     expect(themeColorScheme("kiwi")).toBe("dark");
   });
 
-  it("registers and restores Atari and Monochrome with the correct color schemes", () => {
-    for (const id of ["atari", "monochrome"] as const) {
+  it("registers and restores Atari and Synthwave with the correct color schemes", () => {
+    for (const id of ["atari", "synthwave"] as const) {
       expect(THEMES.filter((theme) => theme.id === id)).toHaveLength(1);
       expect(sanitizeTheme(id)).toBe(id);
     }
     expect(themeColorScheme("atari")).toBe("light");
-    expect(themeColorScheme("monochrome")).toBe("dark");
+    expect(themeColorScheme("synthwave")).toBe("dark");
   });
 });
 

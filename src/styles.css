@@ -250,7 +250,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
   --bg: #f2f6f7; --sidebar: #e8eff1; --panel: #ffffff; --panel-2: #edf3f4; --panel-3: #dee8ea;
   --field: #ffffff; --menu-surface: #ffffff; --line: rgba(15,49,58,.11); --line-strong: rgba(15,49,58,.19); --line-quiet: rgba(15,49,58,.06);
   --text: #172126; --ink-2: #38484d; --muted: #52666d; --muted-2: #586b71;
-  --green: #087f9b; --green-soft: rgba(8,127,155,.1); --green-line: rgba(8,127,155,.28); --info: #176f9c;
+  --green: #0068b5; --green-soft: rgba(10,149,212,.12); --green-line: rgba(0,104,181,.28); --info: #176f9c;
   --shadow: 0 22px 70px rgba(34,72,82,.16); --elev-1: 0 1px 2px rgba(34,72,82,.09); --elev-2: 0 6px 18px rgba(34,72,82,.1); --elev-3: 0 16px 40px rgba(34,72,82,.14);
   --topbar: rgba(242,246,247,.84);
 }
@@ -258,7 +258,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="light-mythra"] .message-body { color: #26363b; }
 .app-shell[data-theme="light-mythra"] .message.user .message-avatar { background: #dce7e9; }
 .app-shell[data-theme="light-mythra"] .code-block pre, .app-shell[data-theme="light-mythra"] .approval-command { color: #31474d; background: #f5f8f9; }
-.app-shell[data-theme="light-mythra"] .rich-markdown code:not(pre code) { color: #086f87; background: rgba(8,127,155,.07); }
+.app-shell[data-theme="light-mythra"] .rich-markdown code:not(pre code) { color: #0068b5; background: rgba(10,149,212,.08); }
 .app-shell[data-theme="light-mythra"] .studio-dock { background: #ebf1f2; }
 .app-shell[data-theme="light-mythra"] .studio-tabs { background: #e3ebed; }
 .app-shell[data-theme="light-mythra"] .studio-header { background: rgba(235,241,242,.94); }
@@ -307,10 +307,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="atari"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), var(--panel-3) var(--reasoning-fill), var(--panel-3) 100%); }
 .app-shell[data-theme="atari"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), var(--panel-3) var(--router-fill), var(--panel-3) 100%); }
 
-/* Monochrome keeps Mythra's elevations and semantic warning/error colours.
-   Only decorative model effects are desaturated; branding and status stay clear. */
-.app-shell[data-theme="monochrome"] { --green: #eceeeb; --green-soft: rgba(236,238,235,.09); --green-line: rgba(236,238,235,.26); --info: #c3c7c4; --muted: #959ba3; }
-.app-shell[data-theme="monochrome"] :is(.reasoning-rail, .reasoning-heading, .reasoning-labels, .openrouter-reasoning-rail, .openrouter-reasoning-heading, .openrouter-reasoning-labels) { filter: grayscale(1); }
 .sidebar { position: relative; z-index: 2; display: flex; flex-direction: column; flex: 0 0 var(--sidebar-width, var(--sidebar-width-fallback, 264px)); width: var(--sidebar-width, var(--sidebar-width-fallback, 264px)); background: var(--sidebar); border-right: 1px solid var(--line); transition: width var(--t-mid) var(--ease), flex-basis var(--t-mid) var(--ease), opacity var(--t-fast) ease; overflow: hidden; }
 .sidebar.closed { width: 0; flex-basis: 0; opacity: 0; border-right: 0; }
 .sidebar-brand { display: flex; align-items: center; height: var(--topbar-h); padding: 0 var(--s-3) 0 var(--s-4); gap: var(--s-2); font-size: var(--fs-body); font-weight: 650; letter-spacing: var(--track-display); white-space: nowrap; }
@@ -3377,9 +3373,8 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 
 /* ===== Extended themes =====
    Dark variants recolor the semantic tokens only; every component rule
-   already reads through them. */
-.app-shell[data-theme="midnight"] { --bg: #14181f; --sidebar: #171c24; --panel: #1d232d; --panel-2: #232a36; --panel-3: #2b3441; --field: #1a202a; --menu-surface: #232a36; --topbar: rgba(20,24,31,.88); --green: #7fc4ff; --green-soft: rgba(127,196,255,.12); --green-line: rgba(127,196,255,.28); --orange: #e8b46a; --red: #ff8d95; --info: #9bd0ff; }
-.app-shell[data-theme="synthwave"] { --bg: #17131f; --sidebar: #1b1626; --panel: #221b2e; --panel-2: #2a2138; --panel-3: #342a44; --field: #1e1829; --menu-surface: #2a2138; --topbar: rgba(23,19,31,.88); --green: #ff6ac1; --green-soft: rgba(255,106,193,.13); --green-line: rgba(255,106,193,.3); --orange: #ffb45f; --red: #ff7582; --info: #8be1ff; --text: #f0ebf4; --ink-2: #cdc4d6; }
+   already reads through them. Synthwave keeps Mythra's neutral surfaces. */
+.app-shell[data-theme="synthwave"] { --green: #ff6ac1; --green-soft: rgba(255,106,193,.13); --green-line: rgba(255,106,193,.3); --orange: #ffb45f; --red: #ff7582; --info: #8be1ff; }
 
 /* ===== Effort slider styles =====
    data-effort-slider on the app shell picks the look; the drag/glide

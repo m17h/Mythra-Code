@@ -92,7 +92,7 @@
 .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active {
   color: var(--on-accent);
   border-color: transparent;
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   box-shadow: 0 6px 16px -6px var(--lm-accent-glow);
 }
 .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active kbd { color: inherit; border-color: transparent; background: rgba(0, 0, 0, .14); }
@@ -149,17 +149,17 @@
   border: 0;
   border-radius: var(--r-control);
   color: var(--on-accent);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   box-shadow: 0 8px 22px -10px var(--lm-accent-glow);
   font-weight: 660;
 }
 .app-shell[data-theme][data-color-scheme] .primary-button:hover:not(:disabled) {
   border-color: transparent;
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   filter: brightness(1.08);
   box-shadow: 0 12px 28px -10px var(--lm-accent-glow);
 }
-.app-shell[data-theme][data-color-scheme] .primary-button:active:not(:disabled) { background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .primary-button:active:not(:disabled) { background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .primary-button:disabled { filter: grayscale(.5); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .secondary-button {
   border: 1px solid var(--line-strong);
@@ -298,12 +298,12 @@
   background: var(--menu-surface);
   box-shadow: var(--lm-pop-shadow);
 }
-.app-shell[data-theme][data-color-scheme] .app-update-notice-icon { width: 32px; height: 32px; border-radius: var(--r-control); color: var(--on-accent); background: var(--green) var(--lm-grad); }
-.app-shell[data-theme][data-color-scheme] .app-update-notice-action { height: 32px; padding: 0 14px; border: 0; border-radius: var(--r-control); color: var(--on-accent); background: var(--green) var(--lm-grad); }
-.app-shell[data-theme][data-color-scheme] .app-update-notice-action:hover { border-color: transparent; background: var(--green) var(--lm-grad); filter: brightness(1.08); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-icon { width: 32px; height: 32px; border-radius: var(--r-control); color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-action { height: 32px; padding: 0 14px; border: 0; border-radius: var(--r-control); color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-action:hover { border-color: transparent; background: var(--lm-fill) var(--lm-grad); filter: brightness(1.08); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice-dismiss { width: 32px; height: 32px; border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice-progress { left: 22px; right: 22px; height: 3px; background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .app-update-notice-progress > span { background: var(--green) var(--lm-grad); box-shadow: 0 0 8px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-progress > span { background: var(--lm-fill) var(--lm-grad); box-shadow: 0 0 8px var(--lm-accent-glow); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice.failed { border-color: var(--red); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-icon { color: var(--red); background: rgba(255, 120, 120, .15); }
 .app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-action { color: var(--text); background: var(--panel-3); }
@@ -320,7 +320,7 @@
   font-weight: 560;
 }
 .app-shell[data-theme][data-color-scheme] .app-toast.success { border-color: var(--green-line); }
-.app-shell[data-theme][data-color-scheme] .app-toast-icon { width: 30px; height: 30px; border-radius: var(--r-control); color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .app-toast-icon { width: 30px; height: 30px; border-radius: var(--r-control); color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .app-toast.info .app-toast-icon { color: var(--ink-2); background: var(--panel-3); }
 .app-shell[data-theme][data-color-scheme] .app-toast > button { width: 30px; height: 30px; border-radius: var(--r-control); }
 

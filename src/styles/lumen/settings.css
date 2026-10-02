@@ -116,7 +116,7 @@
   width: 14px;
   height: 2px;
   border-radius: var(--r-pill);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
 }
 .app-shell[data-theme][data-color-scheme] .set-card {
   border: 1px solid var(--line);
@@ -142,13 +142,13 @@
 /* ---- Controls inside settings ---- */
 .app-shell[data-theme][data-color-scheme] .toggle-switch { width: 40px; height: 22px; padding: 3px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .app-shell[data-theme][data-color-scheme] .toggle-switch span { width: 16px; height: 16px; background: var(--muted); box-shadow: 0 1px 3px rgba(0, 0, 0, .3); }
-.app-shell[data-theme][data-color-scheme] .toggle-switch.on { background: var(--green) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.on { background: var(--lm-fill) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
 /* Every active switch shares one track: the theme accent (gradient-lit where
    supported) with an on-accent thumb, which keeps at least 3:1 against it. */
 .app-shell[data-theme][data-color-scheme] .toggle-switch.on span { background: var(--on-accent); transform: translateX(18px); }
 .app-shell[data-theme][data-color-scheme] .mini-toggle.on,
 .app-shell[data-theme][data-color-scheme] .sa-tile-switch.on,
-.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--green) var(--lm-grad); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--lm-fill) var(--lm-grad); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .mini-toggle.on span,
 .app-shell[data-theme][data-color-scheme] .sa-tile-switch.on span,
 .app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: var(--on-accent); }
@@ -197,7 +197,7 @@
   background-image: var(--lm-grad-soft);
   box-shadow: 0 0 0 3px var(--green-soft), 0 14px 30px -18px var(--lm-accent-glow);
 }
-.app-shell[data-theme][data-color-scheme] .theme-card > svg { width: 18px; height: 18px; padding: 3px; border-radius: 50%; color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .theme-card > svg { width: 18px; height: 18px; padding: 3px; border-radius: 50%; color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .theme-preview { width: 64px; height: 50px; border-radius: 12px; box-shadow: 0 8px 18px -10px rgba(0, 0, 0, .6); }
 .app-shell[data-theme][data-color-scheme] .theme-card strong { font-family: var(--font-display); font-size: 13.5px; font-weight: 700; letter-spacing: -.015em; }
 
@@ -236,7 +236,7 @@
 .app-shell[data-theme][data-color-scheme] .usage-segmented > button,
 .app-shell[data-theme][data-color-scheme] .usage-tabs > button { border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .usage-segmented > button.selected,
-.app-shell[data-theme][data-color-scheme] .usage-tabs > button.selected { color: var(--on-accent); background: var(--green) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .usage-tabs > button.selected { color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
 .app-shell[data-theme][data-color-scheme] .usage-pricing-details > summary { border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .usage-pricing-panel,
 .app-shell[data-theme][data-color-scheme] .usage-evidence-body { border-radius: 16px; }

@@ -5,9 +5,8 @@
  * dock, so keeping them in one file would have pulled every panel rule into
  * the initial stylesheet for a control that is one pill wide.
  *
- * Everything here is expressed in the shell's own tokens, so the five
- * palettes (Mythra, Kiwi, Midnight, Synthwave, Astra) and both colour
- * schemes are covered without a single per-theme override. The panel sizes
+ * Everything here is expressed in the shell's own tokens, so every palette
+ * and both colour schemes are covered without a single per-theme override. The panel sizes
  * itself against its own inline width rather than the viewport, because the
  * Git dock is resizable between roughly 360px and 500px while the window
  * stays wide. */

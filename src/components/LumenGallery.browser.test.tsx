@@ -276,8 +276,8 @@ function OverlaysFixture({ theme, dialog = true }: { theme: ThemeName; dialog?: 
 it("FIXTURE gallery: welcome, update notice and permission menu", async () => {
   await commands.setStreamTestReducedMotion(true);
   await page.viewport(1400, 900);
-  render(<OverlaysFixture theme="midnight" dialog={false} />);
-  await page.screenshot({ path: "../../test-results/lumen/midnight-welcome.png" });
+  render(<OverlaysFixture theme="synthwave" dialog={false} />);
+  await page.screenshot({ path: "../../test-results/lumen/synthwave-welcome.png" });
 });
 
 it.each(["mythra", "daylight"] as const)("FIXTURE gallery: %s overlays", async (theme) => {

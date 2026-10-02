@@ -19,7 +19,7 @@
   margin-top: 0;
   border-radius: 50%;
   color: var(--on-accent);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   box-shadow: 0 0 0 3px var(--green-soft), 0 6px 16px -6px var(--lm-accent-glow);
 }
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-claude { color: #fff; background: #d97757; box-shadow: 0 0 0 3px rgba(217, 119, 87, .16), 0 6px 16px -6px rgba(217, 119, 87, .6); }
@@ -73,7 +73,7 @@
 }
 
 .app-shell[data-theme][data-color-scheme] .message-steer-status { font-family: var(--font-mono); font-size: 9.5px; }
-.app-shell[data-theme][data-color-scheme] .stream-caret { width: 8px; height: 16px; border-radius: 2px; background: var(--green) var(--lm-grad); box-shadow: 0 0 10px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .stream-caret { width: 8px; height: 16px; border-radius: 2px; background: var(--lm-fill) var(--lm-grad); box-shadow: 0 0 10px var(--lm-accent-glow); }
 
 /* ---- Markdown ---- */
 .app-shell[data-theme][data-color-scheme] .rich-markdown h1,
@@ -90,7 +90,7 @@
   height: .9em;
   margin-right: .5em;
   border-radius: var(--r-pill);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   vertical-align: -.08em;
 }
 .app-shell[data-theme][data-color-scheme] .rich-markdown a { color: var(--green); text-decoration-color: var(--green-line); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
@@ -217,7 +217,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .reasoning-toggle:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
 .app-shell[data-theme][data-color-scheme] .reasoning-disclosure.expanded .reasoning-toggle { color: var(--text); border-color: var(--green-line); }
-.app-shell[data-theme][data-color-scheme] .reasoning-live-dot { width: 6px; height: 6px; background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .reasoning-live-dot { width: 6px; height: 6px; background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .reasoning-text,
 .app-shell[data-theme][data-color-scheme] .command-list,
 .app-shell[data-theme][data-color-scheme] .completed-work-list { margin-left: 12px; padding-left: 14px; border-left: 2px solid var(--green-line); }

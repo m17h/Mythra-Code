@@ -40,7 +40,7 @@ const POLICY: ProjectSubagentSettings = {
 async function open(readiness = READY, modelCatalogs?: SubAgentCommandCenterProps["modelCatalogs"]) {
   const onChange = vi.fn();
   const view = render(
-    <div className="app-shell" data-theme="midnight" data-color-scheme="dark" style={{ display: "flex", alignItems: "flex-end", width: 900, height: 860, padding: 20 }}>
+    <div className="app-shell" data-theme="synthwave" data-color-scheme="dark" style={{ display: "flex", alignItems: "flex-end", width: 900, height: 860, padding: 20 }}>
       <SubAgentCommandCenter
         policy={POLICY}
         capturedPolicy={null}

@@ -17,7 +17,7 @@ export type OpenAILogoStyle = "openai" | "codex";
 export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
-export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "midnight" | "synthwave" | "atari" | "monochrome";
+export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "synthwave" | "atari";
 export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "astra" | "ink" | "reactor" | "comet" | "coil";
 /** Typeface family used for chat prose and the composer. Built-in stacks only. */
 export type ChatFont = "system" | "humanist" | "serif" | "mono";

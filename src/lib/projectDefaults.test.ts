@@ -7,20 +7,30 @@ describe("project defaults", () => {
     expect(defaults?.effortSlider).toBe("comet");
     expect(defaults?.effortSlider).toBeDefined();
   });
-  it.each(["atari", "monochrome"])("preserves the %s theme in per-project settings", (theme) => {
+  it.each(["atari", "synthwave"])("preserves the %s theme in per-project settings", (theme) => {
     expect(sanitizeProjectDefaults({ provider: "openai", model: "gpt-5.6-sol", theme })?.theme).toBe(theme);
+  });
+  it.each(["midnight", "monochrome"])("migrates a retired %s project theme to Mythra without dropping the override", (retired) => {
+    expect(sanitizeProjectDefaults({ provider: "openai", model: "gpt-5.6-sol", theme: retired })?.theme).toBe("mythra");
+    const [project] = sanitizeProjectDefaultOverrides([{
+      id: "project-1",
+      name: "Project",
+      path: "/project",
+      overrides: { defaults: { provider: "openai", model: "gpt-5.6-sol", theme: retired } } as never,
+    }]);
+    expect(project.overrides?.defaults).toEqual({ provider: "openai", model: "gpt-5.6-sol", theme: "mythra" });
   });
   it("keeps valid routing and optional appearance defaults", () => {
     expect(sanitizeProjectDefaults({
       provider: "claude",
       model: "claude-opus-5",
-      theme: "midnight",
+      theme: "synthwave",
       effortSlider: "coil",
       chatFont: "serif",
     })).toEqual({
       provider: "claude",
       model: "claude-opus-5",
-      theme: "midnight",
+      theme: "synthwave",
       effortSlider: "coil",
       chatFont: "serif",
     });

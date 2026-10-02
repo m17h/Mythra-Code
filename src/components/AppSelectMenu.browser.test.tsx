@@ -174,7 +174,7 @@ describe("app-owned select browser layout", () => {
 
   it("can open a settings model menu above its trigger without clipping into the footer", () => {
     const view = render(
-      <div className="app-shell" data-theme="midnight" style={{ display: "block", width: 760, height: 520, padding: "340px 80px 0" }}>
+      <div className="app-shell" data-theme="synthwave" style={{ display: "block", width: 760, height: 520, padding: "340px 80px 0" }}>
         <div className="field-label default-model-picker" style={{ width: 520 }}>
           <AppSelectMenu
             value="claude-opus-5"

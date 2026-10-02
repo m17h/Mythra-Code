@@ -590,8 +590,11 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Light Mythra.*Paper white/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Kiwi.*electric green/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Light Kiwi.*Paper white/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Midnight.*ocean blue/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Synthwave.*magenta/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Synthwave.*Deep graphite.*neon pink/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Atari.*Warm tan/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Midnight/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Monochrome/ })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".theme-card")).toHaveLength(6);
     expect(screen.queryByRole("button", { name: /Ember.*amber/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Terminal.*Phosphor/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Spectrum.*Heat colors/ })).toBeInTheDocument();
@@ -818,7 +821,7 @@ describe("SettingsModal", () => {
     ]);
   });
 
-  it.each([["atari", "Atari"], ["monochrome", "Monochrome"]] as const)("previews and saves the %s theme", (theme, name) => {
+  it.each([["atari", "Atari"], ["synthwave", "Synthwave"]] as const)("previews and saves the %s theme", (theme, name) => {
     const onSave = vi.fn();
     const onThemePreview = vi.fn();
     render(<SettingsModal {...modalProps({ onSave, onThemePreview })} />);
@@ -1143,7 +1146,8 @@ describe("SettingsModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Default model for Alpha" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Opus 5/ }));
     fireEvent.click(screen.getByRole("button", { name: "App theme for Alpha" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /Midnight/ }));
+    expect(screen.queryByRole("menuitemradio", { name: /Midnight|Monochrome/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Synthwave/ }));
     fireEvent.click(screen.getByRole("button", { name: "Effort slider for Alpha" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /Coil/ }));
     const fontPicker = screen.getByRole("button", { name: "Chat font for Alpha" });
@@ -1159,7 +1163,7 @@ describe("SettingsModal", () => {
           defaults: {
             provider: "claude",
             model: "claude-opus-5",
-            theme: "midnight",
+            theme: "synthwave",
             effortSlider: "coil",
             chatFont: "serif",
           },
@@ -1256,7 +1260,7 @@ describe("SettingsModal", () => {
     const onEffortSliderPreview = vi.fn();
     const onSave = vi.fn();
     const onProjects = vi.fn();
-    const project = { id: "alpha", name: "Alpha", path: "/projects/alpha", overrides: { defaults: { provider: "openai" as const, model: "gpt-5.6-sol", theme: "midnight" as const, chatFont: "mono" as const, effortSlider: "coil" as const } } };
+    const project = { id: "alpha", name: "Alpha", path: "/projects/alpha", overrides: { defaults: { provider: "openai" as const, model: "gpt-5.6-sol", theme: "synthwave" as const, chatFont: "mono" as const, effortSlider: "coil" as const } } };
     render(<SettingsModal {...modalProps({
       initialSection: "general",
       initialDraft: { appearance: { theme: "daylight", chatFont: "serif", effortSlider: "classic" } },

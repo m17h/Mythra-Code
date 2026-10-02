@@ -164,9 +164,9 @@ describe("thread pull request — screenshots", () => {
   });
 
   it("captures a draft with the mark-ready confirmation", async () => {
-    const view = render(dock(400, "dark", "midnight", <ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ isDraft: true }) })} />));
+    const view = render(dock(400, "dark", "synthwave", <ThreadPullRequestPanel {...panelProps({ linked: true, pullRequest: pullRequest({ isDraft: true }) })} />));
     fireEvent.click(screen.getByRole("button", { name: /mark ready…/i }));
-    await shoot("03-mark-ready-midnight");
+    await shoot("03-mark-ready-synthwave");
     expect(view.container.querySelector("[aria-label='Confirm mark ready for review']")).toBeTruthy();
   });
 

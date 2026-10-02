@@ -22,13 +22,13 @@
 
    Theme map (ids unchanged; palettes redesigned):
      mythra        neutral graphite canvas, restrained light-blue accents
-     light-mythra  mist canvas, white islands, deep cyan → indigo
+     light-mythra  mist canvas, white islands, sky-cyan fills, deep sky-blue text
      kiwi          moss-black canvas, lime → teal
      daylight      sage canvas, paper islands, leaf → jade
-     midnight      abyssal blue canvas, ice → cobalt
-     synthwave     plum canvas, magenta → violet
-     atari         sand canvas, parchment islands, brick → amber
-     monochrome    graphite canvas, white → steel
+     synthwave     Mythra's neutral graphite surfaces, hot pink accents
+     atari         sand canvas, parchment islands, brick accents, orange-red mark
+   Midnight and Monochrome are retired; saved selections migrate to Mythra
+   (sanitizeTheme / sanitizeProjectDefaults) before reaching the shell.
    ========================================================================== */
 
 /* Motion and type tokens are also published on :root so portalled fallbacks
@@ -134,8 +134,14 @@
      @supports. */
   /* Calm by default (Morgan: themes must not distract from work). Every theme's
      accent-2 is a tonal shade of its own accent, so this "gradient" reads as a
-     nearly flat accent fill. Headings and the wordmark are solid text. */
-  --lm-grad: linear-gradient(135deg, var(--green) 0%, var(--accent-2) 100%);
+     nearly flat accent fill. Headings and the wordmark are solid text.
+     Solid accent fills (primary actions, switches, badges) paint --lm-fill
+     under --lm-grad, with --on-accent ink. Both default to the text accent; a
+     theme may light its fills separately from --green, which stays the
+     readable accent for text, links and focus. */
+  --lm-fill: var(--green);
+  --lm-fill-2: var(--accent-2);
+  --lm-grad: linear-gradient(135deg, var(--lm-fill) 0%, var(--lm-fill-2) 100%);
   --lm-grad-text: linear-gradient(var(--text), var(--text));
   --lm-grad-soft: linear-gradient(135deg, var(--green-soft), rgba(0, 0, 0, 0) 85%);
   --lm-glow: 0 6px 16px -8px rgba(0, 0, 0, .4);
@@ -150,7 +156,7 @@
   --ring: 0 0 0 3px var(--green-soft);
   --surface-quiet: var(--lm-hover);
   --surface-selected: var(--green-soft);
-  --toggle-active-track: var(--green) var(--lm-grad);
+  --toggle-active-track: var(--lm-fill) var(--lm-grad);
 }
 @supports (color: color-mix(in srgb, red, blue)) {
   .app-shell[data-theme][data-color-scheme] {
@@ -221,60 +227,26 @@
   --lm-code-bg: #1a1c20; --lm-code-ink: #c4cbc5;
 }
 
-/* ---- Midnight: the official blue-graphite, ice-blue accent ---- */
-.app-shell[data-theme="midnight"][data-color-scheme] {
-  --lm-canvas: #0f1217;
-  --lm-aurora-1: rgba(255, 255, 255, .02);
-  --lm-aurora-2: rgba(134, 200, 255, .025);
-  --lm-aurora-3: rgba(255, 255, 255, .01);
-  --bg: #14181f; --sidebar: #171c24; --panel: #1d232d; --panel-2: #232a36; --panel-3: #2b3441;
-  --field: #1a202a; --menu-surface: #232a36; --topbar: rgba(20, 24, 31, .88);
-  --line: rgba(200, 220, 255, .075); --line-strong: rgba(200, 220, 255, .13); --line-quiet: rgba(200, 220, 255, .04);
-  --text: #eaeff6; --ink-2: #c3ccd8; --muted: #8e99a8; --muted-2: #909aa9;
-  --green: #86c8ff; --accent-2: #74b6f0; --on-accent: #08182a;
-  --green-soft: rgba(134, 200, 255, .11); --green-line: rgba(134, 200, 255, .27);
-  --orange: #e8b46a; --red: #ff8d95; --info: #9bd0ff;
-  --lm-island-edge: rgba(200, 220, 255, .08);
-  --lm-island-highlight: rgba(255, 255, 255, .05);
-  --lm-hover: rgba(220, 230, 255, .05); --lm-press: rgba(220, 230, 255, .08);
-  --lm-code-bg: #12161d; --lm-code-ink: #c6cfdb;
-}
-
-/* ---- Synthwave: the official plum-graphite, magenta accent ---- */
+/* ---- Synthwave: Mythra's neutral graphite, hot pink accent ----
+   Morgan: the same dark-gray surfaces as Mythra, with no plum or violet
+   washes. Every surface value below is Mythra's; the canvas light is
+   neutral. Pink stays on actions, selection, focus and the mark. */
 .app-shell[data-theme="synthwave"][data-color-scheme] {
-  --lm-canvas: #121016;
-  --lm-aurora-1: rgba(255, 255, 255, .02);
-  --lm-aurora-2: rgba(255, 106, 193, .025);
-  --lm-aurora-3: rgba(255, 255, 255, .01);
-  --bg: #17131f; --sidebar: #1b1626; --panel: #221b2e; --panel-2: #2a2138; --panel-3: #342a44;
-  --field: #1e1829; --menu-surface: #2a2138; --topbar: rgba(23, 19, 31, .88);
-  --line: rgba(240, 225, 255, .075); --line-strong: rgba(240, 225, 255, .13); --line-quiet: rgba(240, 225, 255, .04);
-  --text: #f0ebf4; --ink-2: #cdc4d6; --muted: #a197ad; --muted-2: #a399af;
+  --lm-canvas: #16181b;
+  --lm-aurora-1: rgba(255, 255, 255, .025);
+  --lm-aurora-2: rgba(255, 255, 255, .02);
+  --lm-aurora-3: rgba(255, 255, 255, .012);
+  --bg: #1e2024; --sidebar: #22252a; --panel: #292d32; --panel-2: #30353b; --panel-3: #393f46;
+  --field: #262a2f; --menu-surface: #30353b; --topbar: rgba(30, 32, 36, .88);
+  --line: rgba(255, 255, 255, .068); --line-strong: rgba(255, 255, 255, .115); --line-quiet: rgba(255, 255, 255, .038);
+  --text: #eceeeb; --ink-2: #c3c7c4; --muted: #8d9299; --muted-2: #8f959e;
   --green: #ff6ac1; --accent-2: #ef58b1; --on-accent: #2a0a1c;
   --green-soft: rgba(255, 106, 193, .11); --green-line: rgba(255, 106, 193, .28);
   --orange: #ffb45f; --red: #ff7582; --info: #8be1ff;
-  --lm-island-edge: rgba(240, 225, 255, .08);
+  --lm-island-edge: rgba(255, 255, 255, .07);
   --lm-island-highlight: rgba(255, 255, 255, .05);
-  --lm-hover: rgba(240, 225, 255, .05); --lm-press: rgba(240, 225, 255, .08);
-  --lm-code-bg: #15111b; --lm-code-ink: #d2c8dc;
-}
-
-/* ---- Monochrome ---- */
-.app-shell[data-theme="monochrome"][data-color-scheme] {
-  --lm-canvas: #070708;
-  --lm-aurora-1: rgba(255, 255, 255, .02);
-  --lm-aurora-2: rgba(255, 255, 255, .015);
-  --lm-aurora-3: rgba(255, 255, 255, .01);
-  --bg: #111214; --sidebar: #0d0e10; --panel: #17181b; --panel-2: #1d1f22; --panel-3: #282a2e;
-  --field: #0a0a0c; --menu-surface: #1a1b1e; --topbar: rgba(17, 18, 20, .72);
-  --line: rgba(255, 255, 255, .08); --line-strong: rgba(255, 255, 255, .15); --line-quiet: rgba(255, 255, 255, .045);
-  --text: #f2f3f5; --ink-2: #cfd2d7; --muted: #9a9fa8; --muted-2: #989da6;
-  --green: #f2f3f5; --accent-2: #dfe2e6; --on-accent: #0b0b0c;
-  --green-soft: rgba(242, 243, 245, .09); --green-line: rgba(242, 243, 245, .26);
-  --info: #c9ced6;
-  --lm-island-edge: rgba(255, 255, 255, .09);
-  --lm-hover: rgba(255, 255, 255, .06); --lm-press: rgba(255, 255, 255, .09);
-  --lm-code-bg: #08080a;
+  --lm-hover: rgba(255, 255, 255, .05); --lm-press: rgba(255, 255, 255, .08);
+  --lm-code-bg: #1a1c20; --lm-code-ink: #c4cbc5;
 }
 
 /* ---- Shared light treatment ---- */
@@ -292,18 +264,24 @@
   --shadow: var(--lm-pop-shadow);
 }
 
-/* ---- Light Mythra ---- */
+/* ---- Light Mythra ----
+   Morgan: cyan / light blue, not teal. Solid fills are a clear sky cyan
+   (#0a95d4, at least 3:1 on primary control surfaces so the control edge
+   still reads) with dark ink (5.3:1); --green is the related deeper sky blue
+   (#0068b5, 5.8:1 on white) for text accents, links, markers and focus rings.
+   Selection tints use the cyan. */
 .app-shell[data-theme="light-mythra"][data-color-scheme] {
   --lm-canvas: #e3e7ea;
   --lm-aurora-1: rgba(255, 255, 255, .35);
-  --lm-aurora-2: rgba(8, 128, 163, .03);
+  --lm-aurora-2: rgba(10, 149, 212, .03);
   --lm-aurora-3: rgba(255, 255, 255, .25);
   --bg: #fbfdfe; --sidebar: #f3f7f9; --panel: #ffffff; --panel-2: #f2f6f8; --panel-3: #e3ebef;
   --field: #f7fafb; --menu-surface: #ffffff; --topbar: rgba(251, 253, 254, .78);
   --line: rgba(20, 50, 70, .1); --line-strong: rgba(20, 50, 70, .18); --line-quiet: rgba(20, 50, 70, .055);
   --text: #0f1d26; --ink-2: #33454f; --muted: #4f626c; --muted-2: #55676f;
-  --green: #0880a3; --accent-2: #07728f; --on-accent: #ffffff;
-  --green-soft: rgba(8, 128, 163, .1); --green-line: rgba(8, 128, 163, .3);
+  --green: #0068b5; --accent-2: #005d9f;
+  --lm-fill: #0a95d4; --lm-fill-2: #0b8fcf; --on-accent: #021a24;
+  --green-soft: rgba(10, 149, 212, .12); --green-line: rgba(0, 104, 181, .3);
   --orange: #a35f12; --red: #bf3b3b; --info: #1767a0;
   --lm-island-edge: rgba(20, 50, 70, .09);
   --lm-code-bg: #f3f7f9; --lm-code-ink: #26404c;
@@ -353,10 +331,13 @@
    inherited from the shell, so app, project and preview themes all apply
    live. Each palette keeps the mark's three-tone structure (light "cyan"
    pieces, mid-tone "blue" centre, deeper "fold") and is chosen for at least
-   3:1 against its theme's surfaces on the main pieces. Mythra keeps the
-   original brand colours. Outside a themed shell the hex fallbacks in
-   MythraMarkColors.css (also the brand colours) apply. */
-.app-shell[data-theme="mythra"][data-color-scheme] {
+   3:1 against its theme's surfaces on the main pieces. Mythra and Light
+   Mythra keep the original brand colours (Morgan: Light Mythra's logo looks
+   exactly like Mythra's; on white its deep blue centre and fold carry the
+   shape). Outside a themed shell the hex fallbacks in MythraMarkColors.css
+   (also the brand colours) apply. */
+.app-shell[data-theme="mythra"][data-color-scheme],
+.app-shell[data-theme="light-mythra"][data-color-scheme] {
   --mythra-mark-cyan-a: #35E7F2; --mythra-mark-cyan-b: #08AEEA;
   --mythra-mark-blue-a: #148EFF; --mythra-mark-blue-b: #1644E8;
   --mythra-mark-fold-a: #176BFA; --mythra-mark-fold-b: #1247D9;
@@ -365,14 +346,7 @@
 /* Other themes: one coherent tonal family per theme, a restrained version of
    the brand's structure. Each uses only shades of its own accent: light outer
    pieces, a deeper centre and a mid-depth fold. There are no second hues
-   (Morgan: no rainbow pieces, no gold on Atari). Light Mythra keeps the brand
-   hues, deepened for white surfaces. */
-.app-shell[data-theme="light-mythra"][data-color-scheme] {
-  --mythra-mark-cyan-a: #13a9c9; --mythra-mark-cyan-b: #078db3;
-  --mythra-mark-blue-a: #1673d9; --mythra-mark-blue-b: #1650c4;
-  --mythra-mark-fold-a: #1a62d2; --mythra-mark-fold-b: #1547b4;
-  --mythra-mark-caret: #e8fbff;
-}
+   (Morgan: no rainbow pieces, no gold on Atari). */
 .app-shell[data-theme="kiwi"][data-color-scheme] {
   --mythra-mark-cyan-a: #bde88f; --mythra-mark-cyan-b: #9bd468;
   --mythra-mark-blue-a: #74b146; --mythra-mark-blue-b: #578f31;
@@ -385,29 +359,20 @@
   --mythra-mark-fold-a: #3a821d; --mythra-mark-fold-b: #2c6a15;
   --mythra-mark-caret: #f2fbea;
 }
-.app-shell[data-theme="midnight"][data-color-scheme] {
-  --mythra-mark-cyan-a: #a9d7ff; --mythra-mark-cyan-b: #86c2f6;
-  --mythra-mark-blue-a: #5f9be0; --mythra-mark-blue-b: #457cc6;
-  --mythra-mark-fold-a: #6ea8ea; --mythra-mark-fold-b: #4f88d0;
-  --mythra-mark-caret: #eef6ff;
-}
 .app-shell[data-theme="synthwave"][data-color-scheme] {
   --mythra-mark-cyan-a: #ff94d0; --mythra-mark-cyan-b: #f774bf;
   --mythra-mark-blue-a: #d4529f; --mythra-mark-blue-b: #b23f84;
   --mythra-mark-fold-a: #e461ae; --mythra-mark-fold-b: #c64b93;
   --mythra-mark-caret: #fff0f8;
 }
+/* Atari: a vivid orange-red family (Morgan: more orange/red, less brown).
+   Outer pieces average about 3.4:1 on the tan sidebar; the deeper red centre
+   and fold stay saturated instead of dropping into oxblood. */
 .app-shell[data-theme="atari"][data-color-scheme] {
-  --mythra-mark-cyan-a: #ad4c3a; --mythra-mark-cyan-b: #933c30;
-  --mythra-mark-blue-a: #7a2f26; --mythra-mark-blue-b: #61241d;
-  --mythra-mark-fold-a: #9f4535; --mythra-mark-fold-b: #84362b;
+  --mythra-mark-cyan-a: #de562c; --mythra-mark-cyan-b: #c4401f;
+  --mythra-mark-blue-a: #b8321c; --mythra-mark-blue-b: #96260f;
+  --mythra-mark-fold-a: #cc4524; --mythra-mark-fold-b: #ac3519;
   --mythra-mark-caret: #fff4e6;
-}
-.app-shell[data-theme="monochrome"][data-color-scheme] {
-  --mythra-mark-cyan-a: #f2f3f5; --mythra-mark-cyan-b: #d3d6db;
-  --mythra-mark-blue-a: #a3a9b2; --mythra-mark-blue-b: #80868f;
-  --mythra-mark-fold-a: #b8bdc4; --mythra-mark-fold-b: #969ca5;
-  --mythra-mark-caret: #ffffff;
 }
 
 /* Responsive measure. The legacy ladder sets these on :root, which the
