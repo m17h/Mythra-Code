@@ -1,4 +1,4 @@
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent as browserUserEvent } from "vitest/browser";
 import { AppSelectMenu } from "./AppSelectMenu";
@@ -7,6 +7,29 @@ import "../styles.css";
 afterEach(() => page.viewport(1400, 900));
 
 describe("app-owned select browser layout", () => {
+  it("initializes fallback focus after an opening-frame render reschedules it", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
+    Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+    try {
+      const picker = () => <div role="dialog" style={{ position: "relative", width: 600, height: 600 }}>
+        <AppSelectMenu value="one" options={[{ value: "one", label: "One" }]} ariaLabel="Rescheduled picker" portal searchable onChange={vi.fn()} />
+      </div>;
+      const view = render(picker());
+      // A real rendering-frame update can invalidate the pending opening frame.
+      // Queue it before opening; no browser scheduling or focus APIs are mocked.
+      const firstFrame = new Promise<void>((resolve) => requestAnimationFrame(() => {
+        view.rerender(picker());
+        resolve();
+      }));
+      fireEvent.click(view.getByRole("button", { name: "Rescheduled picker" }));
+      await firstFrame;
+      const input = view.getByRole("textbox", { name: "Search Rescheduled picker" });
+      await waitFor(() => expect(input).toHaveFocus());
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "showPopover", descriptor);
+    }
+  });
+
   it.each([false, true])("keeps search, stars and Show all in keyboard order (Popover API: %s)", async (popover) => {
     const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
     if (!popover) Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
@@ -20,9 +43,10 @@ describe("app-owned select browser layout", () => {
         </div>
       </div>);
       await page.getByRole("button", { name: "Keyboard choices" }).click();
-      await new Promise(requestAnimationFrame);
+      // Portal positioning commits state and can reschedule opening focus.
+      // Assert actual readiness, not a particular number of rendering frames.
+      await waitFor(() => expect(view.getByRole("textbox", { name: "Search Keyboard choices" })).toHaveFocus());
       const search = view.getByRole("textbox", { name: "Search Keyboard choices" });
-      expect(search).toHaveFocus();
       await browserUserEvent.keyboard("{Tab}");
       expect(view.getByRole("menuitemradio", { name: "Choice 0" })).toHaveFocus();
       await browserUserEvent.keyboard("{Tab}");

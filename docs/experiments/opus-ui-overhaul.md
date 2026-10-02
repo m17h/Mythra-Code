@@ -1,6 +1,6 @@
 # Opus UI overhaul experiment: "Lumen"
 
-Status: **PR #122 open; review repairs complete, final verification in progress.**
+Status: **PR #122 open; review repairs and final verification in progress.**
 This is an unmerged UI experiment on
 `codex/opus-ui-overhaul-experiment` (base `be7fc1b`). Morgan authorized committing,
 pushing and creating a PR on 2026-10-02, but not merging or releasing. Earlier
@@ -9,6 +9,25 @@ No version change or release is part of this experiment.
 
 ## PR review (2026-10-02)
 
+- Final local Chromium and WebKit each passed all 633 cases. The next hosted
+  run (`37049851775`, head `d3a804b`) passed both native OS lanes, all four unit
+  shards and both renderer lanes, but failed two pinned-WebKit assertions.
+  Neither the local passes nor successful individual lanes approve that failed
+  gate. Investigation confirmed the usage summary retained a two-column grid
+  while staggered entrance transforms gave its tiles different visual tops;
+  the row-count test must inspect settled geometry rather than count animation
+  positions. The searchable-menu focus assertion also requires semantic focus
+  readiness, not an assumed single rendering frame. See PR #122 for the final
+  repaired-head gate result; this document is not merge authorization.
+- The final readiness repairs are test-only: row grouping checks logical grid
+  positions while finite entrances are completed for bounds/screenshots. Codex
+  challenged the initial settlement-only repair and reproduced another false
+  third-row count with a hovered, lifted card. Separate deterministic tests
+  cover stagger and hover without removing either interaction. Real WebKit
+  opening-frame rerender diagnostics reproduced absent first-frame but correct
+  eventual search focus; semantic readiness preserves the positive focus
+  assertion. Eighty reopen probes saw only visible-menu focus attempts, so no
+  additional speculative production focus workaround was introduced.
 - Initial implementation commit: `fbc2755`; proposed merge:
   <https://github.com/m17h/Mythra-Code/pull/122>. No merge is authorized yet.
 - Five GPT-6.1-Sol reviewers checked sub-agent state, Settings/onboarding,
