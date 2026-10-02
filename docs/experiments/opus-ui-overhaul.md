@@ -3,12 +3,29 @@
 Status: **PR #122 open; review repairs and final verification in progress.**
 This is an unmerged UI experiment on
 `codex/opus-ui-overhaul-experiment` (base `be7fc1b`). Morgan authorized committing,
-pushing and creating a PR on 2026-10-02, but not merging or releasing. Earlier
+pushing and creating a PR on 2026-10-02, then authorized merging after the final
+review and required checks pass. No release is authorized. Earlier
 uncommitted/unpushed statements below describe the state at those checkpoints.
 No version change or release is part of this experiment.
 
 ## PR review (2026-10-02)
 
+- Hosted run `37055012579` (head `b2a0c35`) passed pinned WebKit, both
+  renderer lanes, all four unit shards and Windows native. The macOS native
+  suite failed one existing worktree test's setup-marker wait. A controlled
+  preflight delay reproduced its one-second operation budget expiring before
+  `git status` launched the descendant fixture; timeout safely preserved the
+  folder and files. This mechanism is verified locally, while the exact hosted
+  cause remains an inference without worker timing in its log.
+  The repair is entirely test-only: bounded preflight allowance, readiness
+  written by the actual descendant, and an explicit escape-probe handshake
+  released only after worker ownership and preservation assertions succeed.
+  Original assertions remain, with an additional folder-preservation check;
+  fixture teardown ends both loops on earlier failure. Production deadlines
+  and Git behavior are unchanged. Exact-source focused Cargo checks passed
+  normally and with the controlled preflight delay. An independent Sol reviewer
+  found no blocker; Codex reviewed the diff. The final repaired head still needs
+  its complete gate. See PR #122 for final head/base evidence and merge state.
 - Hosted run `37052403065` (head `ab61700`) passed both OS native suites, all
   four unit shards and both renderer lanes, including the preceding readiness
   repairs. WebKit exposed a separate calendar ownership defect: a stationary
@@ -46,7 +63,8 @@ No version change or release is part of this experiment.
   assertion. Eighty reopen probes saw only visible-menu focus attempts, so no
   additional speculative production focus workaround was introduced.
 - Initial implementation commit: `fbc2755`; proposed merge:
-  <https://github.com/m17h/Mythra-Code/pull/122>. No merge is authorized yet.
+  <https://github.com/m17h/Mythra-Code/pull/122>. This initial checkpoint preceded
+  Morgan's subsequent conditional merge authorization.
 - Five GPT-6.1-Sol reviewers checked sub-agent state, Settings/onboarding,
   CSS/accessibility, animations/compatibility and test integrity. Codex reviewed
   their repairs independently. The implementation's earlier Opus passes are
