@@ -31,6 +31,12 @@ No version change or release is part of this experiment.
     use viewport-fixed placement; scrolled dialogs account for their own offsets.
     Independent review caught both generic zoom offsets and the dialog-scroll
     omission before the final source was frozen.
+  - Full WebKit verification then exposed a menu-opening focus race and normal
+    Tab escaping Settings. Initial focus is now cancelled on close and respects
+    deliberate focus; explicit popup Tab order retains search, favorite stars
+    and Show all, then exits to the surrounding dialog at the boundary. The
+    shared modal trap was not changed, and already-handled events remain owned
+    by their handler. Four actual-App cases cover both API paths at 100%/150%.
 - The initial hosted run failed. Cold-cache reproduction identified a browser
   test optimizer reload caused by the dynamically discovered Tauri window API.
   It is explicitly preloaded, rather than hiding failing tests or adding retries.
@@ -38,14 +44,20 @@ No version change or release is part of this experiment.
   renderer code still requires a fresh complete gate on the final PR input.
 - Native macOS evidence: the isolated experiment app was visually inspected;
   account selection remained separate from the default provider, and the modern
-  default-provider and scale popups appeared above neighboring cards. Cancel restored
+  default-provider and scale popups appeared above neighboring cards. Native
+  Tab/Shift+Tab moved between provider choices without selecting; Escape
+  refocused the trigger. Cancel restored
   preferences. No real provider turns or official-app data changes were needed.
   Browser tests use isolated fixtures/stubbed IPC; current WebKit/Chromium with
   APIs disabled are not actual Safari 13/Chrome 105 or Windows desktop evidence.
 - Focused repair evidence: Settings containment 5/5 per engine; Comet 14/14
   per engine, logo/Lumen 56/56 per engine; no-container header 4/4 per engine;
   strengthened calendar placement passed WebKit; row-menu anchoring passed
-  Chromium; final portal regressions 17/17 Chromium; select unit tests 11/11.
+  Chromium; final select/focus regressions 17/17 per engine; focused select/modal
+  unit tests 19/19. Full cold Chromium initially passed all 629 tests across
+  62 files, proving the optimizer repair; subsequent full WebKit passed 628
+  and caught the focus failure described above, also reproduced by hosted CI.
+  The corrected browser inventory now contains 633 cases.
   TypeScript, lint, production renderer build, Chromium/WebKit emitted startup,
   lazy Settings and reload, and the performance scorecard pass. Growth remains
   report-only; the existing 500 kB chunk warning is informational, not a new

@@ -459,9 +459,12 @@ it.each([100, 150])("keeps the Interface size popup above neighboring settings a
   expect(view.container.querySelector<HTMLElement>(".app-shell")!.style.zoom).toBe(String(uiScale / 100));
 });
 
-it.each([100, 150])("keeps Settings selects reachable without the Popover API at %s%%", async (uiScale) => {
+it.each([
+  { uiScale: 100, popover: false }, { uiScale: 150, popover: false },
+  { uiScale: 100, popover: true }, { uiScale: 150, popover: true },
+])("keeps Settings selects reachable with or without the Popover API ($uiScale%, API: $popover)", async ({ uiScale, popover }) => {
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
-  Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+  if (!popover) Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
   try {
     await page.viewport(1400, 1000);
     await commands.setStreamTestReducedMotion(true);
@@ -481,6 +484,15 @@ it.each([100, 150])("keeps Settings selects reachable without the Popover API at
       expect(option.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))).toBe(true);
     });
     await expectReachable(astra);
+    astra.focus();
+    await new Promise(requestAnimationFrame);
+    expect(astra).toHaveFocus();
+    await browserUserEvent.keyboard("{Tab}");
+    expect(screen.getByRole("button", { name: "Star Astra" })).toHaveFocus();
+    await browserUserEvent.keyboard(" ");
+    expect(screen.getByRole("button", { name: "Unstar Astra" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("menu", { name: "Default OpenAI model choices" })).toBeVisible();
+    expect(trigger).not.toHaveTextContent("Astra");
     await browserUserEvent.click(astra);
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveTextContent("Astra");
@@ -488,10 +500,33 @@ it.each([100, 150])("keeps Settings selects reachable without the Popover API at
     await browserUserEvent.click(provider);
     const claude = screen.getByRole("menuitemradio", { name: /Claude Code subscription/ });
     await expectReachable(claude);
-    const options = screen.getAllByRole("menuitemradio");
-    options.at(-1)!.focus();
+    await new Promise(requestAnimationFrame);
     await browserUserEvent.keyboard("{Tab}");
     expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(claude).toHaveFocus();
+    const middle = screen.getByRole("menuitemradio", { name: /Claude Code subscription/ });
+    middle.focus();
+    await new Promise(requestAnimationFrame);
+    expect(middle).toHaveFocus();
+    await browserUserEvent.keyboard("{Tab}");
+    expect(screen.getByRole("menuitemradio", { name: /^Cursor/ })).toHaveFocus();
+    const last = screen.getAllByRole("menuitemradio").at(-1)!;
+    last.focus();
+    await new Promise(requestAnimationFrame);
+    expect(last).toHaveFocus();
+    await browserUserEvent.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(screen.getByRole("menuitemradio", { name: /^OpenRouter/ })).toHaveFocus();
+    last.focus();
+    await browserUserEvent.keyboard("{Tab}");
+    expect(screen.queryByRole("menu", { name: "Default provider choices" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    await browserUserEvent.click(provider);
+    screen.getAllByRole("menuitemradio")[0].focus();
+    await new Promise(requestAnimationFrame);
+    await browserUserEvent.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(provider).not.toHaveFocus();
+    await browserUserEvent.click(provider);
     await browserUserEvent.keyboard("{Escape}");
     expect(provider).toHaveFocus();
     expect(dialog).toBeVisible();

@@ -231,6 +231,38 @@ export function AppSelectMenu({
       if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.key === "Tab" && menuRef.current?.contains(event.target as Node)) {
+        const visibleControls = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")]
+          .filter((element) => element.tabIndex >= 0 && !element.closest("[hidden], [inert], [aria-hidden='true']")
+            && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden");
+        const direction = event.shiftKey ? -1 : 1;
+        // Keep every popup control in Tab order, including favorite stars,
+        // search and Show all. Native WebKit Tab order can skip buttons.
+        const popupControls = visibleControls(menuRef.current);
+        const current = popupControls.indexOf(document.activeElement as HTMLElement);
+        const next = current + direction;
+        if (current >= 0 && next >= 0 && next < popupControls.length) {
+          event.preventDefault();
+          event.stopPropagation();
+          popupControls[next].focus();
+          return;
+        }
+        const dialog = triggerRef.current?.closest<HTMLElement>('[role="dialog"]');
+        // At the popup boundary, return to the surrounding form's order.
+        // Keeping this scoped to its own dialog preserves stacked modal traps.
+        if (dialog) {
+          const controls = visibleControls(dialog).filter((element) => !menuRef.current?.contains(element));
+          const index = controls.indexOf(triggerRef.current!);
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+          (index >= 0 ? controls[(index + direction + controls.length) % controls.length] : triggerRef.current)?.focus();
+        } else {
+          close();
+        }
+        return;
+      }
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
@@ -247,7 +279,12 @@ export function AppSelectMenu({
 
   useEffect(() => {
     if (!open) return;
-    requestAnimationFrame(() => {
+    const openingFocus = document.activeElement;
+    const frame = requestAnimationFrame(() => {
+      // Initial focus must not replace a choice the user already focused
+      // before this frame, or outlive a menu that closed in the meantime.
+      if (menuRef.current?.contains(document.activeElement)
+        || (document.activeElement !== openingFocus && document.activeElement !== document.body)) return;
       if (searchable) {
         searchRef.current?.focus();
         return;
@@ -257,6 +294,7 @@ export function AppSelectMenu({
       const firstEnabled = optionRefs.current.find((item) => item?.isConnected && !item.disabled);
       (selectedButton?.isConnected && !selectedButton.disabled ? selectedButton : firstEnabled)?.focus();
     });
+    return () => cancelAnimationFrame(frame);
   }, [open, searchable, value, visible]);
 
   useEffect(() => {

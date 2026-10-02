@@ -1,12 +1,52 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent as browserUserEvent } from "vitest/browser";
 import { AppSelectMenu } from "./AppSelectMenu";
 import "../styles.css";
 
 afterEach(() => page.viewport(1400, 900));
 
 describe("app-owned select browser layout", () => {
+  it.each([false, true])("keeps search, stars and Show all in keyboard order (Popover API: %s)", async (popover) => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
+    if (!popover) Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+    try {
+      const onChange = vi.fn();
+      const onToggleFavorite = vi.fn();
+      const view = render(<div className="app-shell" data-theme="mythra" data-color-scheme="dark" style={{ display: "block", width: 800, height: 700 }}>
+        <div role="dialog" aria-label="Keyboard picker" style={{ position: "relative", width: 600, height: 600 }}>
+          <AppSelectMenu value="0" options={Array.from({ length: 100 }, (_, index) => ({ value: String(index), label: `Choice ${index}` }))} ariaLabel="Keyboard choices" portal searchable onChange={onChange} onToggleFavorite={onToggleFavorite} />
+          <button>After picker</button>
+        </div>
+      </div>);
+      await page.getByRole("button", { name: "Keyboard choices" }).click();
+      await new Promise(requestAnimationFrame);
+      const search = view.getByRole("textbox", { name: "Search Keyboard choices" });
+      expect(search).toHaveFocus();
+      await browserUserEvent.keyboard("{Tab}");
+      expect(view.getByRole("menuitemradio", { name: "Choice 0" })).toHaveFocus();
+      await browserUserEvent.keyboard("{Tab}");
+      expect(view.getByRole("button", { name: "Star Choice 0" })).toHaveFocus();
+      await browserUserEvent.keyboard(" ");
+      expect(onToggleFavorite).toHaveBeenCalledWith("0");
+      expect(onChange).not.toHaveBeenCalled();
+      const last = view.getByRole("menuitemradio", { name: "Choice 79" });
+      last.focus();
+      await browserUserEvent.keyboard("{Tab}");
+      expect(view.getByRole("button", { name: "Star Choice 79" })).toHaveFocus();
+      await browserUserEvent.keyboard("{Tab}");
+      expect(view.getByRole("button", { name: /Show all 100 options/ })).toHaveFocus();
+      await browserUserEvent.keyboard(" ");
+      expect(view.getAllByRole("menuitemradio")).toHaveLength(100);
+      search.focus();
+      await browserUserEvent.keyboard("{Shift>}{Tab}{/Shift}");
+      expect(view.queryByRole("menu", { name: "Keyboard choices choices" })).not.toBeInTheDocument();
+      expect(view.getByRole("button", { name: "After picker" })).toHaveFocus();
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "showPopover", descriptor);
+    }
+  });
+
   it.each([1, 1.5])("anchors fallback choices in a scrolled dialog at %s zoom", async (zoom) => {
     const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
     Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
