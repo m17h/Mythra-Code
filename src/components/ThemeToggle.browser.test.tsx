@@ -6,6 +6,18 @@ import "../styles.css";
 
 const THEMES = THEME_CATALOG.map((theme) => theme.id);
 
+function luminance(color: string) {
+  const channels = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map((value) => {
+    const channel = value / 255;
+    return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+  });
+  return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+}
+function contrast(first: string, second: string) {
+  const a = luminance(first), b = luminance(second);
+  return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+}
+
 function ToggleSamples({ theme }: { theme: ThemeName }) {
   return (
     <div className="app-shell" data-theme={theme} data-color-scheme={themeColorScheme(theme)} data-testid={theme}>
@@ -42,24 +54,44 @@ describe("theme-aware toggle colors", () => {
     expect([...trackColors]).not.toContain("rgba(167, 226, 111, 0.32)");
   });
 
+  // Lumen redesign: an active switch is a track in the theme accent (lit by
+  // the accent gradient where supported) carrying an on-accent thumb. The
+  // contracts below are the legacy ones restated for that model: the track is
+  // the theme's own hue, never another theme's, and the thumb stays visible.
   it("keeps Midnight entirely blue instead of pairing its blue thumb with a green track", () => {
     const view = render(<ToggleSamples theme="midnight" />);
     const track = view.container.querySelector<HTMLElement>(".toggle-switch.on");
     const thumb = view.container.querySelector<HTMLElement>(".toggle-switch.on span");
 
-    expect(getComputedStyle(thumb!).backgroundColor).toBe("rgb(127, 196, 255)");
+    expect(getComputedStyle(track!).backgroundColor).toBe("rgb(134, 200, 255)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe("rgba(167, 226, 111, 0.32)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe(getComputedStyle(thumb!).backgroundColor);
+    expect(contrast(getComputedStyle(thumb!).backgroundColor, getComputedStyle(track!).backgroundColor)).toBeGreaterThanOrEqual(3);
   });
 
   it("gives Light Mythra its own cyan palette instead of inheriting Light Kiwi green", () => {
-    const view = render(<ToggleSamples theme="light-mythra" />);
+    const view = render(<><ToggleSamples theme="light-mythra" /><ToggleSamples theme="daylight" /></>);
     const shell = view.getByTestId("light-mythra");
     const track = shell.querySelector<HTMLElement>(".toggle-switch.on");
     const thumb = shell.querySelector<HTMLElement>(".toggle-switch.on span");
+    const kiwiTrack = view.getByTestId("daylight").querySelector<HTMLElement>(".toggle-switch.on");
 
-    expect(getComputedStyle(shell).backgroundColor).toBe("rgb(242, 246, 247)");
-    expect(getComputedStyle(thumb!).backgroundColor).toBe("rgb(8, 127, 155)");
+    // The restrained canvas for Light Mythra stays neutral, with cyan
+    // reserved for the active control rather than the entire surface.
+    expect(getComputedStyle(shell).backgroundColor).toBe("rgb(227, 231, 234)");
+    expect(getComputedStyle(track!).backgroundColor).toBe("rgb(8, 128, 163)");
+    expect(getComputedStyle(track!).backgroundColor).not.toBe(getComputedStyle(kiwiTrack!).backgroundColor);
     expect(getComputedStyle(track!).backgroundColor).not.toBe("rgba(62, 142, 34, 0.38)");
+    expect(contrast(getComputedStyle(thumb!).backgroundColor, getComputedStyle(track!).backgroundColor)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps every theme's switch thumb distinguishable from its track", () => {
+    const view = render(<>{THEMES.map((theme) => <ToggleSamples key={theme} theme={theme} />)}</>);
+    for (const theme of THEMES) {
+      const shell = view.getByTestId(theme);
+      const track = shell.querySelector<HTMLElement>(".toggle-switch.on")!;
+      const thumb = shell.querySelector<HTMLElement>(".toggle-switch.on span")!;
+      expect(contrast(getComputedStyle(thumb).backgroundColor, getComputedStyle(track).backgroundColor), theme).toBeGreaterThanOrEqual(3);
+    }
   });
 });

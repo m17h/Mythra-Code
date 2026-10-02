@@ -5,6 +5,9 @@ import { hydrateNativeStorage } from "./lib/storage";
 import { installContextMenuBlocker } from "./lib/contextMenu";
 import { installGlobalErrorCapture } from "./lib/errorLog";
 import "./styles.css";
+// The Lumen redesign must follow styles.css: same-named @keyframes and any
+// equal-specificity rules resolve to whichever sheet comes last.
+import "./styles/lumen/index.css";
 
 // This is a desktop application, not a browser surface. Prevent Chromium's
 // reload/inspect context menu everywhere, including before React mounts.

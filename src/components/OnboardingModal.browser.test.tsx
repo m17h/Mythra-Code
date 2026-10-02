@@ -25,6 +25,7 @@ function OnboardingFixture({ scheme = "dark", scale = 1, open = true, hostSlider
         openRouterReady={false}
         skillsFolder=""
         onComplete={vi.fn()}
+        onThemeChange={vi.fn()}
         onOpenSettings={vi.fn()}
         onChooseSkillsFolder={vi.fn()}
         onAddProject={vi.fn(async () => false)}

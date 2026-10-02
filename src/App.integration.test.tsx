@@ -549,12 +549,14 @@ describe("onboarding Settings handoff", () => {
     expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
   });
 
-  it("passes unsaved theme, font, and slider previews into Interface and restores saved settings on cancel", { timeout: 15_000 }, async () => {
+  it("saves the onboarding theme immediately but discards unsaved font and slider drafts on cancel", { timeout: 15_000 }, async () => {
     localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "mythra", chatFont: "system", effortSlider: "aurora" }));
     const { user, tour } = await runOnboarding();
     await user.click(within(tour).getByRole("button", { name: "Make it yours" }));
     expect(within(tour).getByRole("heading", { name: "Make it feel like yours." })).toBeInTheDocument();
     await user.click(within(tour).getByRole("radio", { name: "Synthwave" }));
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "synthwave");
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).theme).toBe("synthwave");
     await user.click(within(tour).getByRole("radio", { name: "Mono" }));
     await user.click(within(tour).getByRole("button", { name: "Next slider style" }));
     expect(within(tour).getByText("Astra")).toBeInTheDocument();
@@ -569,18 +571,18 @@ describe("onboarding Settings handoff", () => {
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "synthwave");
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "mono");
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-effort-slider", "astra");
-    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).theme).toBe("mythra");
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).theme).toBe("synthwave");
 
     await user.click(within(settings).getByRole("button", { name: "Cancel" }));
     expect(await screen.findByRole("dialog", { name: "Mythra Code onboarding" })).toBeInTheDocument();
     expect(within(tour).getByRole("heading", { name: "Make it feel like yours." })).toBeInTheDocument();
-    expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "mythra");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-theme", "synthwave");
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-chat-font", "system");
 
     await user.click(within(tour).getByRole("button", { name: "Skip tour" }));
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const reopened = await screen.findByRole("dialog", { name: "Settings" });
-    expect(within(reopened).getByRole("button", { name: /Mythra.*Deep graphite/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(reopened).getByRole("button", { name: /Synthwave.*Neon violet/ })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).getByRole("button", { name: /Interface default.*same typeface/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).getByRole("button", { name: /Aurora.*northern-light/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
@@ -1227,6 +1229,33 @@ describe("chat header provider usage", () => {
 
     expect(await screen.findByRole("button", { name: /OpenAI subscription.*Sign in for usage/i })).toHaveTextContent("Sign in for usage");
     expect(screen.queryByRole("button", { name: /OpenAI subscription.*58% left/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("project sidebar Open folder action", () => {
+  it("opens an inactive project's own folder without changing the active workspace", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: `Options for ${PROJECT_B.name}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Open folder" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("open_workspace_folder", { path: PROJECT_B.path }));
+    expect(screen.queryByRole("menu", { name: `Options for ${PROJECT_B.name}` })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: PROJECT_A.name }).closest(".workspace-row-wrap")).toHaveClass("active");
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "thread/resume")).toBe(false);
+  });
+
+  it("keeps a missing project folder error visible without suggesting a runtime reinstall", async () => {
+    const failure = "Could not access the folder: No such file or directory";
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "open_workspace_folder") throw new Error(failure);
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: `Options for ${PROJECT_A.name}` }));
+    await user.click(screen.getByRole("menuitem", { name: "Open folder" }));
+    expect(await screen.findByText(failure)).toBeInTheDocument();
+    expect(screen.queryByText(/Codex runtime could not be found/)).not.toBeInTheDocument();
   });
 });
 
@@ -3802,7 +3831,7 @@ describe("workspace switching during thread selection", () => {
       ).toBe(true);
     });
 
-    await user.click(screen.getByRole("button", { name: /^New thread/ }));
+    await user.click(screen.getByRole("button", { name: /^New threadCtrl/ }));
     await act(async () => {
       pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } as Thread });
       await pendingResume.promise;
@@ -4865,14 +4894,63 @@ describe("composer sub-agent command center", () => {
     return stored.find((project) => project.id === projectId)?.overrides?.subagents;
   }
 
-  it("writes a project's edits into that project's own sub-agent override", async () => {
+  it("starts each new thread off despite enabled defaults and preserves an existing opt-in", async () => {
+    const user = userEvent.setup();
+    const configured = { subagentsEnabled: true, subagentMax: 2, childAgents: { enabled: true, targets: [{ id: "claude", provider: "claude", model: "claude-fable-5", label: "Reviewer", description: "", enabled: true }] } };
+    localStorage.setItem("kiwi.settings", JSON.stringify(configured));
+    await renderApp();
+    await openCrew(user);
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+    expect(screen.getByText("Reviewer")).toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: /^New threadCtrl/ }));
+    await openCrew(user);
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+    await user.keyboard("{Escape}");
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    await openCrew(user);
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).toBeChecked();
+    expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}")).toMatchObject(configured);
+    expect(projectSubagents(PROJECT_A.id)).toBeUndefined();
+  });
+
+  it.each([false, true])("persists a newly created thread's explicit spawning choice %s across navigation", async (optIn) => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: true, childAgents: { enabled: true, targets: [{ id: "reviewer", provider: "openai", model: "gpt-5.6-terra", label: "Reviewer", enabled: true }] } }));
+    resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
+    await renderApp();
+    if (optIn) {
+      await openCrew(user);
+      await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+      await user.keyboard("{Escape}");
+    }
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "save this choice{Enter}");
+    await waitFor(() => expect(codexCalls("turn/start").at(-1)).toMatchObject({ threadId: "isolated-thread" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")["isolated-thread"]).toBe(optIn));
+    const sessions = invokeMock.mock.calls.filter(([command]) => command === "child_agent_session_start");
+    expect(sessions.some(([, args]) => Array.isArray((args?.options as { targets?: unknown[] } | undefined)?.targets) && ((args?.options as { targets: unknown[] }).targets.length > 0))).toBe(optIn);
+    await user.click(screen.getByRole("button", { name: /^New threadCtrl/ }));
+    await openCrew(user);
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+    await user.keyboard("{Escape}");
+    // The newly created row carries its active task in this harness, while
+    // the legacy row with the same label has never been started.
+    await user.click(screen.getAllByRole("button", { name: "Open Alpha thread" }).find((row) => row.classList.contains("live"))!);
+    await openCrew(user);
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" }).getAttribute("aria-checked")).toBe(String(optIn));
+  });
+
+  it("saves a project's configured roster while keeping its new-thread opt-in local", async () => {
     const user = userEvent.setup();
     await renderApp();
     await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
 
     await openCrew(user);
-    expect(screen.getByText(`Editing ${PROJECT_A.name}`)).toBeInTheDocument();
+    expect(screen.getByText("Editing this new thread")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));
 
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem("kiwi.projects") ?? "[]") as Array<{
@@ -4880,12 +4958,16 @@ describe("composer sub-agent command center", () => {
         overrides?: { subagents?: { enabled: boolean; maxConcurrent: number } };
       }>;
       expect(stored.find((project) => project.id === PROJECT_A.id)?.overrides?.subagents)
-        .toMatchObject({ enabled: true, maxConcurrent: 1 });
+        .toMatchObject({ enabled: false, maxConcurrent: 1, childAgents: { targets: [expect.objectContaining({ id: "claude" })] } });
       // The sibling project keeps inheriting the global defaults.
       expect(stored.find((project) => project.id === PROJECT_B.id)?.overrides).toBeUndefined();
     });
     expect(JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}").subagentsEnabled ?? false).toBe(false);
-    expect(await screen.findByText("project")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: /^New threadCtrl/ }));
+    await openCrew(user);
+    expect(screen.getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+    expect(within(screen.getByRole("dialog", { name: "Sub-agent command center" })).getAllByText("Claude").length).toBeGreaterThan(0);
   });
 
   it("writes edits made in Chats to the global defaults", async () => {
@@ -4894,14 +4976,14 @@ describe("composer sub-agent command center", () => {
     await user.click(screen.getByRole("button", { name: /Chats/ }));
 
     await openCrew(user);
-    expect(screen.getByText("Editing app defaults · projects without an override")).toBeInTheDocument();
+    expect(screen.getByText("Editing this new thread")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.click(screen.getByRole("button", { name: "More concurrent sub-agents" }));
     await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));
 
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem("kiwi.settings") ?? "{}");
-      expect(stored.subagentsEnabled).toBe(true);
+      expect(stored.subagentsEnabled ?? false).toBe(false);
       expect(stored.subagentMax).toBe(1);
       expect(stored.childAgents).toMatchObject({
         enabled: true,
@@ -4929,16 +5011,17 @@ describe("composer sub-agent command center", () => {
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.click(screen.getByRole("button", { name: "Add Claude sub-agent" }));
 
-    // This thread lives in a project, so the edit lands on that project's own
-    // sub-agent policy — the one its next turn will read.
+    // The crew remains reusable in this project; spawning is opted into only
+    // for the open conversation.
     await waitFor(() => {
       expect(projectSubagents(PROJECT_A.id)).toMatchObject({
-        enabled: true,
+        enabled: false,
         childAgents: {
           enabled: true,
           targets: [expect.objectContaining({ id: "claude", provider: "claude" })],
         },
       });
+      expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toBe(true);
     });
   });
 
@@ -5069,7 +5152,7 @@ describe("composer sub-agent command center", () => {
     await openCrew(user);
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(projectSubagents(PROJECT_A.id)).toMatchObject({ enabled: true }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toBe(true));
 
     const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "now split this up{Enter}");

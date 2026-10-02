@@ -1,0 +1,13 @@
+/* Lumen: the experimental full-interface redesign. Loaded after styles.css
+   (see main.tsx). Every rule is scoped by .app-shell[data-theme][data-color-scheme];
+   see tokens.css for the compatibility contract. */
+@import "./tokens.css";
+@import "./motion.css";
+@import "./shell.css";
+@import "./stage.css";
+@import "./transcript.css";
+@import "./composer.css";
+@import "./dock.css";
+@import "./settings.css";
+@import "./overlays.css";
+@import "./responsive.css";

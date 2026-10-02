@@ -1,0 +1,287 @@
+/* ============================================================================
+   Lumen settings
+   A large sheet over a dimmed canvas. The navigation column is lit like the
+   navigator, with rounded-square rows and icon chips; each pane opens with a display
+   title, and its groups deal in as rounded cards. Usage becomes a dashboard
+   of lit stat tiles.
+   Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
+   ========================================================================== */
+
+/* ---- Backdrop and sheet ---- */
+.app-shell[data-theme][data-color-scheme] .modal-backdrop {
+  background: var(--lm-scrim);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  backdrop-filter: blur(6px) saturate(120%);
+}
+.app-shell[data-theme][data-color-scheme] .settings-modal {
+  border: 1px solid var(--lm-island-edge);
+  border-radius: 28px;
+  background: var(--panel);
+  box-shadow: 0 1px 0 var(--lm-island-highlight) inset, 0 50px 120px -30px rgba(0, 0, 0, .75), 0 0 0 1px rgba(0, 0, 0, .2);
+}
+/* Give the standard sheet 40px more headroom, centered by its existing
+   backdrop. Keep Usage's larger dashboard and short-window clamping intact. */
+.app-shell[data-theme][data-color-scheme] .settings-modal:not(.settings-modal-wide) {
+  height: min(760px, 100%);
+}
+.app-shell[data-theme][data-color-scheme="light"] .settings-modal { box-shadow: 0 1px 0 #fff inset, 0 50px 110px -34px rgba(25, 35, 55, .4), 0 0 0 1px rgba(25, 35, 55, .06); }
+.app-shell[data-theme][data-color-scheme] .settings-layout { grid-template-columns: 248px minmax(0, 1fr); }
+
+/* ---- Navigation column ---- */
+.app-shell[data-theme][data-color-scheme] .settings-nav {
+  border-right: 1px solid var(--line-quiet);
+  background-color: var(--sidebar);
+  background-image: radial-gradient(120% 40% at 0% 0%, var(--lm-wash), transparent 70%);
+}
+.app-shell[data-theme][data-color-scheme] .settings-nav-head { gap: 14px; padding: 22px 14px 14px; }
+.app-shell[data-theme][data-color-scheme] .settings-nav-head h2 {
+  padding: 0 6px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 780;
+  letter-spacing: -.04em;
+}
+.app-shell[data-theme][data-color-scheme] .settings-search {
+  height: 36px;
+  border-radius: var(--r-control);
+  background: var(--field);
+}
+.app-shell[data-theme][data-color-scheme] .settings-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .settings-search-clear { border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 16px; padding: 0 12px 18px; }
+.app-shell[data-theme][data-color-scheme] .settings-nav-group { gap: 2px; }
+.app-shell[data-theme][data-color-scheme] .settings-nav-label { padding: 0 10px 6px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .settings-nav button {
+  min-height: 36px;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 10px 0 5px;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  font-weight: 560;
+}
+.app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child {
+  width: 26px;
+  height: 26px;
+  padding: 6px;
+  border-radius: var(--r-xs);
+  color: var(--muted-2);
+  background: var(--lm-hover);
+}
+.app-shell[data-theme][data-color-scheme] .settings-nav button:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .settings-nav button.active {
+  color: var(--text);
+  font-weight: 660;
+  background: var(--panel-2);
+  background-image: var(--lm-grad-soft);
+  box-shadow: inset 0 0 0 1px var(--green-line), 0 8px 18px -12px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .settings-nav button.active > svg:first-child { color: var(--green); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .settings-update-dot { background: var(--green); box-shadow: none; }
+
+/* ---- Pane ---- */
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading {
+  gap: 14px;
+  padding: 26px 22px 18px 32px;
+  border-bottom: 0;
+  background: linear-gradient(180deg, var(--lm-wash), transparent);
+}
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > h3 {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 780;
+  line-height: 1.1;
+  letter-spacing: -.04em;
+}
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > small { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .settings-close { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .settings-content { padding: 8px 32px 32px; }
+.app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, transparent, var(--panel)); }
+.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer {
+  padding: 14px 32px;
+  border-top: 1px solid var(--line-quiet);
+  background: var(--panel);
+}
+
+/* ---- The two primitives: groups and rows ---- */
+.app-shell[data-theme][data-color-scheme] .set-group { gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .set-group + .set-group { margin-top: 26px; }
+.app-shell[data-theme][data-color-scheme] .set-group > h4,
+.app-shell[data-theme][data-color-scheme] .set-group-head > h4 { align-items: center; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .set-group > h4::before,
+.app-shell[data-theme][data-color-scheme] .set-group-head > h4::before {
+  content: "";
+  width: 14px;
+  height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--green) var(--lm-grad);
+}
+.app-shell[data-theme][data-color-scheme] .set-card {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel-2);
+  box-shadow: 0 14px 30px -26px rgba(0, 0, 0, .7);
+}
+.app-shell[data-theme][data-color-scheme] .set-card > * + * { border-top-color: var(--line-quiet); }
+/* A bare card is only a wrapper for a grid of tiles that carry their own
+   radius. Without its own surface it has nothing to clip, and the 20px
+   radius above would otherwise cut the corners (and selection rings) of
+   the tiles in its outer rows and columns. */
+.app-shell[data-theme][data-color-scheme] .set-card.bare { overflow: visible; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .set-row { padding: 15px 18px; }
+.app-shell[data-theme][data-color-scheme] .set-copy > strong { color: var(--text); font-size: 13px; font-weight: 640; }
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list,
+.app-shell[data-theme][data-color-scheme] .set-group > .inline-create,
+.app-shell[data-theme][data-color-scheme] .set-group > .stacked-create,
+.app-shell[data-theme][data-color-scheme] .set-group > .schedule-create,
+.app-shell[data-theme][data-color-scheme] .set-group > .compact-note,
+.app-shell[data-theme][data-color-scheme] .set-group > .github-clone-grid { border-radius: 20px; background: var(--panel-2); }
+
+/* ---- Controls inside settings ---- */
+.app-shell[data-theme][data-color-scheme] .toggle-switch { width: 40px; height: 22px; padding: 3px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .toggle-switch span { width: 16px; height: 16px; background: var(--muted); box-shadow: 0 1px 3px rgba(0, 0, 0, .3); }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.on { background: var(--green) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
+/* Every active switch shares one track: the theme accent (gradient-lit where
+   supported) with an on-accent thumb, which keeps at least 3:1 against it. */
+.app-shell[data-theme][data-color-scheme] .toggle-switch.on span { background: var(--on-accent); transform: translateX(18px); }
+.app-shell[data-theme][data-color-scheme] .mini-toggle.on,
+.app-shell[data-theme][data-color-scheme] .sa-tile-switch.on,
+.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--green) var(--lm-grad); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .mini-toggle.on span,
+.app-shell[data-theme][data-color-scheme] .sa-tile-switch.on span,
+.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: var(--on-accent); }
+.app-shell[data-theme][data-color-scheme] .app-select-trigger {
+  min-height: 34px;
+  padding: 4px 10px 4px 12px;
+  border-radius: var(--r-control);
+  background: var(--field);
+}
+.app-shell[data-theme][data-color-scheme] .app-select-trigger:hover,
+.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { border-color: var(--green-line); background: var(--field); }
+.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .number-stepper { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .provider-status,
+.app-shell[data-theme][data-color-scheme] .skill-off-tag,
+.app-shell[data-theme][data-color-scheme] .sri-state,
+.app-shell[data-theme][data-color-scheme] .workflow-run-chip { border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .settings-modal input[type="text"],
+.app-shell[data-theme][data-color-scheme] .settings-modal input[type="url"],
+.app-shell[data-theme][data-color-scheme] .settings-modal input[type="password"],
+.app-shell[data-theme][data-color-scheme] .settings-modal input[type="number"] { border-radius: var(--r-sm); }
+.app-shell[data-theme][data-color-scheme] .settings-modal textarea { border-radius: var(--r-md); }
+
+/* ---- Theme gallery: tall tiles with a large live miniature ---- */
+.app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .theme-card {
+  position: relative;
+  min-height: 78px;
+  grid-template-columns: 64px minmax(0, 1fr) 18px;
+  gap: 14px;
+  padding: 10px 14px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel-2);
+}
+.app-shell[data-theme][data-color-scheme] .theme-card:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .theme-card.selected {
+  color: var(--text);
+  border-color: var(--green-line);
+  background-image: var(--lm-grad-soft);
+  box-shadow: 0 0 0 3px var(--green-soft), 0 14px 30px -18px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .theme-card > svg { width: 18px; height: 18px; padding: 3px; border-radius: 50%; color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .theme-preview { width: 64px; height: 50px; border-radius: 12px; box-shadow: 0 8px 18px -10px rgba(0, 0, 0, .6); }
+.app-shell[data-theme][data-color-scheme] .theme-card strong { font-family: var(--font-display); font-size: 13.5px; font-weight: 700; letter-spacing: -.015em; }
+
+/* Provider and profile cards across Models & accounts. */
+.app-shell[data-theme][data-color-scheme] .provider-card,
+.app-shell[data-theme][data-color-scheme] .profile-card,
+.app-shell[data-theme][data-color-scheme] .workflow-card { border-radius: 18px; }
+.app-shell[data-theme][data-color-scheme] .provider-card:hover,
+.app-shell[data-theme][data-color-scheme] .profile-card:hover,
+.app-shell[data-theme][data-color-scheme] .workflow-card:hover { background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .provider-logo { border-radius: 12px; }
+.app-shell[data-theme][data-color-scheme] .manager-list > div { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .manager-list > div:hover { background: var(--lm-hover); }
+
+/* ---- Usage dashboard ---- */
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats {
+  gap: 10px;
+  overflow: visible;
+  border: 0;
+  background: none;
+}
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div {
+  padding: 16px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel-2);
+  background-image: linear-gradient(160deg, var(--lm-wash), transparent 65%);
+}
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div + div { border-left: 1px solid var(--line); }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats strong { font-family: var(--font-display); font-weight: 760; letter-spacing: -.035em; }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats span { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-card,
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-empty { padding: 18px; border-radius: 20px; background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .usage-segmented,
+.app-shell[data-theme][data-color-scheme] .usage-tabs { padding: 3px; border-radius: var(--r-md); background: var(--field); }
+.app-shell[data-theme][data-color-scheme] .usage-segmented > button,
+.app-shell[data-theme][data-color-scheme] .usage-tabs > button { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .usage-segmented > button.selected,
+.app-shell[data-theme][data-color-scheme] .usage-tabs > button.selected { color: var(--on-accent); background: var(--green) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .usage-pricing-details > summary { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .usage-pricing-panel,
+.app-shell[data-theme][data-color-scheme] .usage-evidence-body { border-radius: 16px; }
+.app-shell[data-theme][data-color-scheme] .usage-coverage { border-left: 3px solid var(--green); border-radius: 0 var(--r-md) var(--r-md) 0; }
+.app-shell[data-theme][data-color-scheme] .usage-chart-bar { border-radius: 4px 4px 1px 1px; }
+/* The floating day card keeps a tight corner: at 125–150% UI scale a larger
+   radius would round its hit area away from the pointer at the corners. */
+.app-shell[data-theme][data-color-scheme] .usage-heat-card { border-radius: 10px; box-shadow: var(--lm-pop-shadow); }
+
+/* ---- Motion ---- */
+@media (prefers-reduced-motion: no-preference) {
+  /* Legacy owns the sheet's enter/exit animations (names are pinned by
+     tests); Lumen re-choreographs their frames in motion.css and only gives
+     the entrance a softer spring here. */
+  .app-shell[data-theme][data-color-scheme] .settings-backdrop.open .settings-modal { animation-duration: 420ms; animation-timing-function: var(--lm-spring-soft); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), scale var(--lm-d-2) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { transition: color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button:hover > svg:first-child { transform: scale(1.08); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button.active > svg:first-child { animation: lm-dot-in var(--lm-d-3) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-group { animation: lm-slide-right var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-group:nth-child(2) { animation-delay: 50ms; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-group:nth-child(3) { animation-delay: 100ms; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-group:nth-child(n+4) { animation-delay: 150ms; }
+
+  /* Switching section mounts a new pane body; its groups rise in turn. */
+  .app-shell[data-theme][data-color-scheme] .settings-content > *,
+  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > * { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .settings-content > :nth-child(2),
+  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > :nth-child(2) { animation-delay: 50ms; }
+  .app-shell[data-theme][data-color-scheme] .settings-content > :nth-child(3),
+  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > :nth-child(3) { animation-delay: 100ms; }
+  .app-shell[data-theme][data-color-scheme] .settings-content > :nth-child(n+4),
+  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > :nth-child(n+4) { animation-delay: 150ms; }
+  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section { animation: none; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
+
+  .app-shell[data-theme][data-color-scheme] .toggle-switch,
+  .app-shell[data-theme][data-color-scheme] .mini-toggle,
+  .app-shell[data-theme][data-color-scheme] .sa-tile-switch { transition: background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) ease; }
+  .app-shell[data-theme][data-color-scheme] .toggle-switch span,
+  .app-shell[data-theme][data-color-scheme] .mini-toggle span,
+  .app-shell[data-theme][data-color-scheme] .sa-tile-switch span { transition: transform var(--lm-d-3) var(--lm-spring), background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .theme-card,
+  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div { transition: border-color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .theme-card:hover,
+  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:hover { transform: translateY(-2px); }
+  .app-shell[data-theme][data-color-scheme] .theme-card.selected > svg { animation: lm-dot-in var(--lm-d-3) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .usage-segmented > button,
+  .app-shell[data-theme][data-color-scheme] .usage-tabs > button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div { animation: lm-pop var(--lm-d-3) var(--lm-spring-soft) backwards; }
+  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:nth-child(2) { animation-delay: 50ms; }
+  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:nth-child(3) { animation-delay: 100ms; }
+  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:nth-child(4) { animation-delay: 150ms; }
+}

@@ -8,6 +8,7 @@ import { ThreadProviderControl } from "./ThreadProviderControl";
 import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import "../styles.css";
 import "./SettingsModal.css";
+import { THEMES, themeColorScheme } from "../lib/appConfig";
 
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
@@ -297,7 +298,7 @@ describe("model control browser layout", () => {
   const NEW_STYLE_PALETTES = {
     astra: ["rgb(88, 230, 255)", "rgb(90, 160, 255)", "rgb(131, 109, 255)", "rgb(184, 93, 255)", "rgb(255, 110, 216)"],
     reactor: ["rgb(167, 139, 250)", "rgb(209, 107, 255)", "rgb(246, 93, 181)", "rgb(255, 133, 85)", "rgb(255, 209, 102)"],
-    dart: ["rgb(14, 155, 115)", "rgb(28, 180, 107)", "rgb(67, 203, 92)", "rgb(126, 224, 74)", "rgb(194, 242, 60)"],
+    comet: ["rgb(79, 125, 255)", "rgb(71, 148, 255)", "rgb(58, 168, 255)", "rgb(54, 191, 247)", "rgb(95, 214, 255)"],
     coil: ["rgb(106, 79, 224)", "rgb(138, 76, 230)", "rgb(171, 72, 224)", "rgb(209, 68, 207)", "rgb(244, 63, 174)"],
   } as const;
 
@@ -313,9 +314,13 @@ describe("model control browser layout", () => {
       const claudeGauge = view.container.querySelector<SVGElement>(".openrouter-reasoning-heading > svg:first-child");
       const codexGauge = view.container.querySelector<SVGElement>(".reasoning-heading > svg:first-child");
       const activeLabel = view.container.querySelector<HTMLElement>(".reasoning-labels span.active");
-      expect(getComputedStyle(claudeGauge!).color).toBe(palette[level]);
-      expect(getComputedStyle(codexGauge!).color).toBe(palette[level]);
-      expect(getComputedStyle(activeLabel!).color).toBe(palette[level]);
+      const colorProbe = document.createElement("span");
+      colorProbe.style.color = sliderStyle === "comet" ? `color-mix(in srgb, ${palette[level]} 55%, #f2fbff)` : palette[level];
+      view.container.append(colorProbe);
+      const expected = getComputedStyle(colorProbe).color;
+      expect(getComputedStyle(claudeGauge!).color).toBe(expected);
+      expect(getComputedStyle(codexGauge!).color).toBe(expected);
+      expect(getComputedStyle(activeLabel!).color).toBe(expected);
       view.unmount();
     });
   });
@@ -652,11 +657,10 @@ describe("model control browser layout", () => {
     card.remove();
   });
 
-  // The wake and the cord are drawn on the rail's own ::before, each cut to a
-  // shape of its own: neither style is a colored bar with a round thumb.
+  // Every decorative rail owns its animation rather than inheriting another
+  // theme's movement.
   it.each([
     ["astra", "astra-twinkle"],
-    ["dart", "dart-slipstream"],
     ["coil", "coil-twist"],
   ] as const)("drives the %s rail decoration from its own animation", (sliderStyle, animationName) => {
     const view = renderStyle(sliderStyle, "high");
@@ -665,14 +669,95 @@ describe("model control browser layout", () => {
     expect(getComputedStyle(rail!, "::before").animationName).toBe(animationName);
   });
 
-  it("cuts the dart wake into a wedge that widens toward the arrowhead", () => {
-    const view = renderStyle("dart", "high");
+  it("renders Comet as a slim neutral rail with a clipped blue trail", () => {
+    const view = renderStyle("comet", "high");
 
     const rail = view.container.querySelector<HTMLElement>(".reasoning-rail");
     const track = view.container.querySelector<HTMLElement>(".reasoning-control input[type='range']");
-    expect(getComputedStyle(rail!, "::before").clipPath).toContain("polygon");
-    // The track keeps nothing but a hairline flight line under the wake.
-    expect(getComputedStyle(track!).backgroundSize).toContain("1px");
+    const tail = rail!.querySelector<HTMLElement>(".reasoning-ticks")!;
+    const current = getComputedStyle(tail, "::before");
+    expect(getComputedStyle(tail).clipPath).toMatch(/^polygon\(/);
+    expect(current.pointerEvents).toBe("none");
+    expect(current.animationName).toBe("comet-flow");
+    expect(parseFloat(getComputedStyle(track!).height)).toBe(4);
+    expect(parseFloat(current.width)).toBeGreaterThan(0);
+    expect(getComputedStyle(rail!, "::before").display).toBe("none");
+    expect(splitLayers(getComputedStyle(tail).backgroundImage)).toHaveLength(2);
+  });
+
+  it.each(["dark", "light"])("keeps Comet current confined on both rails and stops it for reduced motion (%s)", async (scheme) => {
+    const view = render(<div className="app-shell" data-theme={scheme === "light" ? "atari" : "mythra"} data-color-scheme={scheme} data-effort-slider="comet">
+      <ClaudeModelControl model="claude-opus-5" effort="high" onModel={vi.fn()} onEffort={vi.fn()} />
+      <ModelPowerControl model="gpt-5.6-sol" effort="high" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+      <span className="slider-style-preview comet"><i className="slider-style-rail" /><i className="slider-style-thumb" /></span>
+    </div>);
+    const rails = [...view.container.querySelectorAll<HTMLElement>(".reasoning-rail, .openrouter-reasoning-rail")];
+    expect(rails).toHaveLength(2);
+    for (const rail of rails) {
+      const tail = rail.querySelector<HTMLElement>(".reasoning-ticks, .openrouter-reasoning-ticks")!;
+      const current = getComputedStyle(tail, "::before");
+      expect(current.animationName).toBe("comet-flow");
+      const heat = Number(rail.style.getPropertyValue("--effort-heat"));
+      const head = (rail.offsetWidth - 14) * heat + 7;
+      expect(getComputedStyle(tail).clipPath).toMatch(/^polygon\(/);
+      const headProbe = document.createElement("span");
+      headProbe.style.position = "absolute";
+      headProbe.style.left = "var(--comet-head)";
+      tail.append(headProbe);
+      expect(parseFloat(getComputedStyle(headProbe).left)).toBeCloseTo(head, 0);
+      expect(current.pointerEvents).toBe("none");
+      expect(getComputedStyle(tail, "::after").animationName).toBe("comet-flow");
+    }
+    const preview = view.container.querySelector<HTMLElement>(".slider-style-preview .slider-style-rail")!;
+    expect(getComputedStyle(preview, "::after").animationName).toBe("comet-flow");
+    await commands.setStreamTestReducedMotion(true);
+    for (const rail of rails) {
+      const tail = rail.querySelector<HTMLElement>(".reasoning-ticks, .openrouter-reasoning-ticks")!;
+      expect(getComputedStyle(tail, "::before").animationName).toBe("none");
+      expect(getComputedStyle(tail, "::after").animationName).toBe("none");
+    }
+    expect(getComputedStyle(preview, "::after").animationName).toBe("none");
+  });
+
+  it("hides an empty Comet trail, freezes a disabled trail and keeps dragging usable", () => {
+    const view = renderStyle("comet", "high");
+    const rail = view.container.querySelector<HTMLElement>(".reasoning-rail")!;
+    const input = rail.querySelector<HTMLInputElement>("input")!;
+    const box = input.getBoundingClientRect();
+    const tail = rail.querySelector<HTMLElement>(".reasoning-ticks")!;
+    for (const state of ["empty", "dragging", "disabled"]) {
+      rail.classList.add(state);
+      if (state === "empty") expect(getComputedStyle(tail).visibility).toBe("hidden");
+      if (state === "disabled") expect(getComputedStyle(tail, "::before").animationName).toBe("none");
+      if (state === "dragging") expect(getComputedStyle(tail, "::before").animationName).toBe("comet-flow");
+      expect(input.getBoundingClientRect().width).toBe(box.width);
+      rail.classList.remove(state);
+    }
+    expect(getComputedStyle(tail, "::before").animationName).toBe("comet-flow");
+  });
+
+  it.each(THEMES.map(({ id }) => id))("keeps Comet's small effort text readable at every level in %s", (theme) => {
+    const context = document.createElement("canvas").getContext("2d")!;
+    const luminance = (color: string) => {
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      const channels = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3).map((value) => {
+        const channel = value / 255;
+        return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+      });
+      return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+    };
+    for (const effort of EFFORT_LEVELS) {
+      const view = render(<div className="app-shell" data-theme={theme} data-color-scheme={themeColorScheme(theme)} data-effort-slider="comet">
+        <ModelPowerControl model="gpt-5.6-sol" effort={effort} fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+        <span data-testid="background" style={{ background: "var(--panel)" }} />
+      </div>);
+      const foreground = luminance(getComputedStyle(view.container.querySelector(".reasoning-labels span.active")!).color);
+      const background = luminance(getComputedStyle(view.getByTestId("background")).backgroundColor);
+      const ratio = (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05);
+      expect(ratio, `${theme} ${effort}`).toBeGreaterThanOrEqual(4.5);
+      view.unmount();
+    }
   });
 
   it("renders reactor as animated energy cells with rectangular markers", () => {
@@ -718,10 +803,10 @@ describe("model control browser layout", () => {
     expect(cord.backgroundRepeat).toBe("no-repeat");
   });
 
-  // Energy pulses, the slipstream runs and the cord turns faster the harder
+  // Energy pulses, current flows and the cord turns faster the harder
   // the model works — again, straight off the rail's live --effort-heat.
   it.each([
-    ["dart", "--dart-rush"],
+    ["comet", "--comet-pace"],
     ["coil", "--coil-spin"],
     ["reactor", "--reactor-flow"],
   ] as const)("shortens the %s motion as effort rises", (sliderStyle, timingVariable) => {

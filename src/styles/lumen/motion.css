@@ -1,0 +1,77 @@
+/* ============================================================================
+   Lumen motion vocabulary
+   ----------------------------------------------------------------------------
+   1. Everything that moves is declared inside
+      `@media (prefers-reduced-motion: no-preference)`. Under reduced motion
+      Lumen adds no transitions or animations at all, and the legacy reduced-
+      motion rules (which tests pin) keep ownership.
+   2. Entrances play once on insertion (opacity plus a short translate/scale)
+      with `backwards` fill, so they release the element afterwards and never
+      hold a transform over hover states or layout-owned transforms.
+   3. Assistant prose is never delayed. Only user bubbles, tool nodes, cards,
+      menus and sheets get entrances.
+   4. No new infinite decorative loops. Indefinite motion stays limited to
+      status indicators that already existed (spinners, live/working states),
+      plus the loading shimmer, which only exists while something is loading.
+   5. Legacy keyframes that JS or tests reference by name keep their names.
+      Lumen loads after styles.css, and the last @keyframes of a name wins, so
+      those are re-choreographed here. Keyframes owned by lazily loaded
+      component sheets are left alone (they load later and would win anyway).
+   6. The animated Mythra logo is never targeted.
+   7. Press feedback uses the individual `scale` property: it composes with
+      layout-owned transforms. Engines without it (Safari < 14.1) simply get no
+      press scale, which is a harmless enhancement loss.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* ---- Lumen primitives ---- */
+  @keyframes lm-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes lm-rise-sm { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  @keyframes lm-fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes lm-pop { from { opacity: 0; transform: translateY(6px) scale(.94); } to { opacity: 1; transform: none; } }
+  @keyframes lm-pop-down { from { opacity: 0; transform: translateY(-6px) scale(.95); } to { opacity: 1; transform: none; } }
+  /* Opacity-first variant for elements whose transform belongs to layout.
+     The scale/translate frames are an enhancement; older engines fade only. */
+  @keyframes lm-pop-i { from { opacity: 0; scale: .9; translate: 0 8px; } to { opacity: 1; scale: 1; translate: 0 0; } }
+  @keyframes lm-slide-right { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+  @keyframes lm-slide-left { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+  @keyframes lm-send { 0% { opacity: 0; transform: translateY(18px) scale(.96); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+  @keyframes lm-bar-in { from { transform: scaleY(0); opacity: 0; } to { transform: scaleY(1); opacity: 1; } }
+  @keyframes lm-dot-in { from { transform: scale(0); } 60% { transform: scale(1.3); } to { transform: scale(1); } }
+  @keyframes lm-shimmer { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+
+  /* ---- Legacy keyframes from styles.css, re-choreographed ---- */
+  @keyframes settings-backdrop-enter { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes settings-backdrop-exit { from { opacity: 1; visibility: visible; } to { opacity: 0; visibility: hidden; } }
+  @keyframes settings-modal-enter {
+    from { opacity: 0; transform: translateY(34px) scale(.93); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes settings-modal-exit {
+    from { opacity: 1; transform: translateY(0) scale(1); }
+    to { opacity: 0; transform: translateY(20px) scale(.955); }
+  }
+  @keyframes palette-in { from { opacity: 0; transform: translateY(-14px) scale(.96); } to { opacity: 1; transform: none; } }
+  @keyframes sa-pop { from { opacity: 0; transform: translateY(10px) scale(.95); } to { opacity: 1; transform: none; } }
+  @keyframes sa-pop-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(8px) scale(.96); } }
+  /* Transform only, like legacy: an opened select menu must be visible (and
+     hit-testable) from its first frame. */
+  @keyframes sa-select-pop { from { transform: translateY(-4px) scale(.96); } to { transform: none; } }
+  /* Travel no further than legacy's 6px, so the card never rises over the
+     header it floats beneath. */
+  @keyframes update-notice-arrive { from { opacity: 0; transform: translateY(-6px) scale(.95); } 70% { transform: translateY(1px) scale(1.005); } to { opacity: 1; transform: none; } }
+  @keyframes toast-arrive { from { opacity: 0; transform: translate(-50%, -18px) scale(.94); } 70% { transform: translate(-50%, 2px) scale(1.01); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+  /* ---- Universal button physics ----
+     Deliberately lighter than the shell scope, (0,3,1), so the transitions on
+     specific Lumen components, (0,4,0) and up, still win. */
+  .app-shell[data-theme] button:not(.mythra-logo__button) {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform, scale, translate, filter;
+    transition-duration: var(--lm-d-2);
+    transition-timing-function: var(--lm-ease-out);
+  }
+  .app-shell[data-theme][data-color-scheme] button:not(.mythra-logo__button):not(:disabled):active {
+    scale: .965;
+    transition-duration: 70ms;
+  }
+}

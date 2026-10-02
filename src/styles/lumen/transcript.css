@@ -1,0 +1,303 @@
+/* ============================================================================
+   Lumen transcript
+   User turns are lit bubbles on the right. The assistant runs flush beside a
+   provider orb. Tool and agent activity hangs off a vertical spine as
+   timeline nodes. Code renders as slabs with a header strip.
+   Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
+   ========================================================================== */
+
+.app-shell[data-theme][data-color-scheme] .timeline-entry { width: min(var(--measure), calc(100% - 72px)); }
+.app-shell[data-theme][data-color-scheme] .timeline-entry-message { padding-bottom: 28px; }
+.app-shell[data-theme][data-color-scheme] .timeline-top-space { height: 28px; }
+.app-shell[data-theme][data-color-scheme] .timeline-bottom-space { height: 96px; }
+
+/* ---- Messages ---- */
+.app-shell[data-theme][data-color-scheme] .message { grid-template-columns: 30px minmax(0, 1fr); gap: 14px; }
+.app-shell[data-theme][data-color-scheme] .message-avatar {
+  width: 30px;
+  height: 30px;
+  margin-top: 0;
+  border-radius: 50%;
+  color: var(--on-accent);
+  background: var(--green) var(--lm-grad);
+  box-shadow: 0 0 0 3px var(--green-soft), 0 6px 16px -6px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .message-avatar.provider-claude { color: #fff; background: #d97757; box-shadow: 0 0 0 3px rgba(217, 119, 87, .16), 0 6px 16px -6px rgba(217, 119, 87, .6); }
+.app-shell[data-theme][data-color-scheme] .message-avatar.provider-openai { color: #fff; background: #0f120d; box-shadow: 0 0 0 3px var(--line-strong), 0 6px 16px -6px rgba(0, 0, 0, .6); }
+.app-shell[data-theme][data-color-scheme] .message-avatar.provider-cursor { color: #26251e; background: #edecec; box-shadow: 0 0 0 3px var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .message-avatar.provider-lmstudio { background: transparent; box-shadow: none; }
+
+.app-shell[data-theme][data-color-scheme] .message-body { color: var(--ink-2); font-size: var(--fs-body); line-height: 1.72; }
+.app-shell[data-theme][data-color-scheme] .message.assistant .message-body { padding-top: 4px; }
+
+/* The user's avatar is hidden (legacy), so their row is a single column; this
+   must be restated because the two-column rule above out-ranks legacy. */
+.app-shell[data-theme][data-color-scheme] .message.user { grid-template-columns: minmax(0, 1fr); margin-left: 14%; }
+.app-shell[data-theme][data-color-scheme] .message.user .message-body {
+  padding: 12px 17px;
+  border: 1px solid var(--lm-bubble-edge);
+  border-radius: 22px 22px 6px 22px;
+  color: var(--text);
+  background-color: var(--panel-2);
+  background-image: linear-gradient(135deg, var(--lm-wash), rgba(0, 0, 0, 0) 80%);
+  box-shadow: 0 16px 34px -20px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .message.user .message-stack .message-attachments + .message-body { border-radius: 22px 6px 6px 22px; }
+.app-shell[data-theme][data-color-scheme] .message-body.message-attachments { padding: 6px; }
+.app-shell[data-theme][data-color-scheme] .message-image-preview { border-radius: 16px; }
+
+/* Hover actions: a floating toolbar over the message corner. They
+   also appear on keyboard focus (legacy :focus-within) and always on touch. */
+.app-shell[data-theme][data-color-scheme] .message-actions {
+  top: -30px;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--menu-surface);
+  box-shadow: var(--elev-2);
+}
+.app-shell[data-theme][data-color-scheme] .message-actions button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--r-xs);
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .message-actions button:hover { color: var(--text); background: var(--lm-hover); }
+@media (hover: none) {
+  .app-shell[data-theme][data-color-scheme] .message-actions { opacity: 1; pointer-events: auto; }
+}
+
+.app-shell[data-theme][data-color-scheme] .message-steer-status { font-family: var(--font-mono); font-size: 9.5px; }
+.app-shell[data-theme][data-color-scheme] .stream-caret { width: 8px; height: 16px; border-radius: 2px; background: var(--green) var(--lm-grad); box-shadow: 0 0 10px var(--lm-accent-glow); }
+
+/* ---- Markdown ---- */
+.app-shell[data-theme][data-color-scheme] .rich-markdown h1,
+.app-shell[data-theme][data-color-scheme] .rich-markdown h2,
+.app-shell[data-theme][data-color-scheme] .rich-markdown h3,
+.app-shell[data-theme][data-color-scheme] .rich-markdown h4 { color: var(--text); font-family: var(--font-display); font-weight: 720; letter-spacing: -.022em; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown h1 { font-size: 1.45em; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown h2 { font-size: 1.24em; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown h1::before,
+.app-shell[data-theme][data-color-scheme] .rich-markdown h2::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: .9em;
+  margin-right: .5em;
+  border-radius: var(--r-pill);
+  background: var(--green) var(--lm-grad);
+  vertical-align: -.08em;
+}
+.app-shell[data-theme][data-color-scheme] .rich-markdown a { color: var(--green); text-decoration-color: var(--green-line); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown blockquote { padding: 6px 0 6px 14px; border-left: 3px solid var(--green); color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .rich-markdown li::marker { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .rich-markdown table { overflow: hidden; border-collapse: separate; border-spacing: 0; border: 1px solid var(--line); border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .rich-markdown th,
+.app-shell[data-theme][data-color-scheme] .rich-markdown td { border: 0; border-bottom: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .rich-markdown th { color: var(--text); background: var(--panel-2); font-family: var(--font-mono); font-size: .8em; letter-spacing: .05em; text-transform: uppercase; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown tr:last-child td { border-bottom: 0; }
+.app-shell[data-theme][data-color-scheme] .rich-markdown hr { height: 1px; border: 0; background: linear-gradient(90deg, transparent, var(--line-strong), transparent); }
+.app-shell[data-theme][data-color-scheme] .rich-markdown code:not(pre code) {
+  padding: 1.5px 6px;
+  border: 1px solid var(--green-line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--green-soft);
+}
+
+/* ---- Code slabs ---- */
+.app-shell[data-theme][data-color-scheme] .code-block { margin: 14px 0; border-radius: var(--r-lg); }
+.app-shell[data-theme][data-color-scheme] .code-block::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 1px;
+  left: 1px;
+  right: 1px;
+  height: 31px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-bottom: 1px solid var(--line-quiet);
+  background: linear-gradient(90deg, var(--lm-wash), transparent 70%);
+  pointer-events: none;
+}
+.app-shell[data-theme][data-color-scheme] .code-block pre {
+  padding: 42px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  color: var(--lm-code-ink);
+  background: var(--lm-code-bg);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+.app-shell[data-theme][data-color-scheme] .code-copy {
+  z-index: 2;
+  top: 5px;
+  right: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  background: var(--panel-2);
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .code-copy:hover { color: var(--text); border-color: var(--green-line); }
+
+/* ---- Spine: activity entries hang off a rail under the avatar column ---- */
+.app-shell[data-theme][data-color-scheme] .timeline-entry-activity,
+.app-shell[data-theme][data-color-scheme] .timeline-entry-disclosure { position: relative; }
+.app-shell[data-theme][data-color-scheme] .timeline-entry-activity::before,
+.app-shell[data-theme][data-color-scheme] .timeline-entry-disclosure::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 14px;
+  width: 2px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(180deg, var(--green-line), var(--line));
+  pointer-events: none;
+}
+.app-shell[data-theme][data-color-scheme] .flow-timeline .activity-row { position: relative; margin-left: 42px; }
+.app-shell[data-theme][data-color-scheme] .flow-timeline .activity-row::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  left: -32px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+.app-shell[data-theme][data-color-scheme] .flow-timeline .activity-row.command-activity::before { background: var(--accent-2); }
+.app-shell[data-theme][data-color-scheme] .flow-timeline .reasoning-disclosure,
+.app-shell[data-theme][data-color-scheme] .flow-timeline .subagent-relay-card,
+.app-shell[data-theme][data-color-scheme] .flow-timeline .subagent-relay-manifest,
+.app-shell[data-theme][data-color-scheme] .flow-timeline .inline-approval { margin-left: 42px; }
+.app-shell[data-theme][data-color-scheme] .completed-work-list .subagent-relay-card,
+.app-shell[data-theme][data-color-scheme] .completed-work-list .subagent-relay-manifest,
+.app-shell[data-theme][data-color-scheme] .completed-work-list .activity-row { margin-left: 0; }
+.app-shell[data-theme][data-color-scheme] .completed-work-list .activity-row::before { display: none; }
+
+.app-shell[data-theme][data-color-scheme] .activity-row {
+  padding: 8px 12px 8px 9px;
+  border: 1px solid var(--line-quiet);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .activity-row:hover { border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .activity-icon { width: 24px; height: 24px; border-radius: 8px; color: var(--ink-2); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .activity-icon.file { color: var(--green); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .activity-icon.agent { color: var(--info); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .activity-icon.command { color: var(--accent-2); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .activity-copy > span,
+.app-shell[data-theme][data-color-scheme] .activity-toggle span { color: var(--ink-2); font-family: var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .activity-toggle { color: var(--ink-2); }
+.app-shell[data-theme][data-color-scheme] .activity-copy pre,
+.app-shell[data-theme][data-color-scheme] .command-list-item pre { border: 1px solid var(--line-quiet); border-radius: var(--r-sm); color: var(--lm-code-ink); background: var(--lm-code-bg); }
+
+/* Reasoning: a rounded toggle with a gradient rule beside the thoughts. */
+.app-shell[data-theme][data-color-scheme] .reasoning-toggle {
+  min-height: 26px;
+  gap: 6px;
+  padding: 0 11px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: var(--panel);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .reasoning-toggle:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .reasoning-disclosure.expanded .reasoning-toggle { color: var(--text); border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .reasoning-live-dot { width: 6px; height: 6px; background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .reasoning-text,
+.app-shell[data-theme][data-color-scheme] .command-list,
+.app-shell[data-theme][data-color-scheme] .completed-work-list { margin-left: 12px; padding-left: 14px; border-left: 2px solid var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .reasoning-text { color: var(--muted); font-size: 12px; line-height: 1.62; }
+.app-shell[data-theme][data-color-scheme] .command-list-item,
+.app-shell[data-theme][data-color-scheme] .completed-work-update { border-color: var(--line-quiet); border-radius: var(--r-md); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .command-list-title code { color: var(--ink-2); }
+
+/* Sub-agent relay cards keep their provider rail and motion; Lumen gives them
+   tile form. */
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card { border-color: var(--line-quiet); border-radius: var(--r-md); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card:hover { border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-card.status-failed { border-color: var(--red); background-image: linear-gradient(90deg, rgba(255, 110, 110, .12), rgba(255, 110, 110, .03)); }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-avatar { border-radius: 10px; }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-manifest { border-color: var(--line); border-radius: var(--r-lg); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-manifest > header { border-bottom-color: var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .subagent-relay-status { border-radius: var(--r-chip); }
+/* Lazily loaded timeline pieces (Feedback.css, ChatTimeline.compaction.css). */
+.app-shell[data-theme][data-color-scheme] .feedback-selection-button,
+.app-shell[data-theme][data-color-scheme] .context-compaction-pill { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .feedback-tray-heading em { border-radius: var(--r-chip); }
+
+/* Inline approvals: an amber card on the spine. */
+.app-shell[data-theme][data-color-scheme] .inline-approval {
+  padding: 14px;
+  border: 1px solid var(--orange);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  background-image: linear-gradient(135deg, rgba(240, 170, 90, .12), rgba(240, 170, 90, .03));
+  box-shadow: 0 16px 34px -20px var(--orange);
+}
+.app-shell[data-theme][data-color-scheme] .approval-command { border-radius: var(--r-md); color: var(--lm-code-ink); background: var(--lm-code-bg); }
+
+/* ---- Timeline controls ---- */
+.app-shell[data-theme][data-color-scheme] .timeline-history-control button,
+.app-shell[data-theme][data-color-scheme] .timeline-scroll-latest {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .timeline-scroll-latest { bottom: 96px; }
+.app-shell[data-theme][data-color-scheme] .timeline-scroll-latest:hover,
+.app-shell[data-theme][data-color-scheme] .timeline-history-control button:hover:not(:disabled) { border-color: var(--green-line); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .timeline-window-gap { border-top: 0; border-bottom: 0; border-radius: var(--r-control); background: var(--panel); font-family: var(--font-mono); font-size: 10px; }
+.app-shell[data-theme][data-color-scheme] .timeline-entry.search-hit { outline-color: var(--orange); border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .timeline-loading { gap: 10px; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .timeline-loading::after {
+  content: "";
+  width: 120px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--line), var(--green-line), var(--line)) 0 0 / 200% 100%;
+}
+
+@media (max-width: 860px) {
+  .app-shell[data-theme][data-color-scheme] .message.user { margin-left: 0; }
+}
+
+/* ---- Motion ---- */
+@media (prefers-reduced-motion: no-preference) {
+  /* A sent message lifts out of the composer. Assistant prose never animates
+     here; it keeps the streaming fade it already had. */
+  .app-shell[data-theme][data-color-scheme] .message.user { animation: lm-send var(--lm-d-4) var(--lm-spring-soft) backwards; transform-origin: bottom right; }
+  .app-shell[data-theme][data-color-scheme] .flow-timeline .activity-row,
+  .app-shell[data-theme][data-color-scheme] .flow-timeline .reasoning-disclosure,
+  .app-shell[data-theme][data-color-scheme] .inline-approval { animation: lm-slide-right var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .flow-timeline .activity-row::before { animation: lm-dot-in var(--lm-d-3) var(--lm-spring) backwards; }
+  .app-shell[data-theme][data-color-scheme] .message-actions { transition: opacity var(--lm-d-2) ease, transform var(--lm-d-2) var(--lm-ease-out); transform: translateY(4px); }
+  .app-shell[data-theme][data-color-scheme] .message:hover .message-actions,
+  .app-shell[data-theme][data-color-scheme] .message-actions:focus-within { transform: none; }
+  .app-shell[data-theme][data-color-scheme] .activity-row,
+  .app-shell[data-theme][data-color-scheme] .reasoning-toggle,
+  .app-shell[data-theme][data-color-scheme] .subagent-relay-card,
+  .app-shell[data-theme][data-color-scheme] .code-copy { transition: border-color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, color var(--lm-d-1) ease, opacity var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .timeline-scroll-latest { animation: lm-pop-i var(--lm-d-3) var(--lm-spring) backwards; }
+  .app-shell[data-theme][data-color-scheme] .timeline-loading::after { animation: lm-shimmer 1.4s linear infinite; }
+}

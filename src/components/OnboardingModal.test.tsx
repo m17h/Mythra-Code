@@ -15,6 +15,7 @@ function props(overrides: Partial<Props> = {}): Props {
     openRouterReady: false,
     skillsFolder: "",
     onComplete: vi.fn(),
+    onThemeChange: vi.fn(),
     onOpenSettings: vi.fn(),
     onChooseSkillsFolder: vi.fn(),
     onAddProject: vi.fn(async () => false),
@@ -52,6 +53,17 @@ describe("OnboardingModal", () => {
     expect(screen.getByRole("radio", { name: "OpenRouter" })).toHaveAccessibleDescription(/API credits.*Add an OpenRouter API key/);
     rerender(<OnboardingModal {...input} openRouterReady />);
     expect(screen.getByRole("radio", { name: "OpenRouter" })).toHaveAccessibleDescription(/API credits.*OpenRouter ready/);
+  });
+
+  it("shows only provider names on the tiles without redundant subtitles", () => {
+    render(<OnboardingModal {...props()} />);
+    for (const name of ["ChatGPT", "Claude", "Cursor", "OpenRouter", "LM Studio"]) {
+      const tile = screen.getByRole("radio", { name });
+      const visibleText = Array.from(tile.children)
+        .filter((child) => !child.classList.contains("sr-only"))
+        .map((child) => child.textContent).join("").trim();
+      expect(visibleText).toBe(name);
+    }
   });
 
   it("offers five steps and allows the tour to finish before a provider is ready", () => {
@@ -182,14 +194,16 @@ describe("OnboardingModal", () => {
     expect(input.onComplete).toHaveBeenCalledOnce();
   });
 
-  it("keeps appearance changes in the preview and routes saved choices to Settings", () => {
+  it("applies explicit theme choices while keeping font and slider changes as Settings drafts", () => {
     const input = props();
     const { container } = render(<div className="app-shell" data-theme="mythra" data-chat-font="system" data-effort-slider="classic"><OnboardingModal {...input} /></div>);
     fireEvent.click(screen.getByRole("button", { name: "Make it yours" }));
+    expect(input.onThemeChange).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("radio", { name: "Light Kiwi" }));
     fireEvent.click(screen.getByRole("radio", { name: "Serif" }));
     fireEvent.click(screen.getByRole("button", { name: "Next slider style" }));
-    expect(screen.getByText(/Preview only · not saved/)).toBeInTheDocument();
+    expect(input.onThemeChange).toHaveBeenCalledExactlyOnceWith("daylight");
+    expect(screen.getByText("Font & slider preview")).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "Light Kiwi" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("radio", { name: "Serif" })).toHaveAttribute("aria-checked", "true");
     expect(container.querySelector(".app-shell")?.getAttribute("data-theme")).toBe("mythra");

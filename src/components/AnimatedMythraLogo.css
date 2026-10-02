@@ -125,7 +125,8 @@
 }
 
 .mythra-logo__cursor {
-  fill: #dffbfe;
+  /* Follows the active theme (see MythraMarkColors.css / Lumen tokens). */
+  fill: var(--mythra-mark-caret, #dffbfe);
   opacity: 0;
 }
 .mythra-logo__button[data-idle] .mythra-logo__cursor {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { UsageEvidence } from "../types";
 import {
   Bot,
@@ -363,6 +363,8 @@ export function StudioDock(props: {
         aria-orientation="vertical"
         aria-label="Workspace tools"
         ref={tabsRef}
+        // Drives the sliding selection indicator below; presentation only.
+        style={{ "--studio-tab-index": Math.max(0, TABS.findIndex((entry) => entry.id === props.tab)) } as CSSProperties}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); moveTab(1); }
           else if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); moveTab(-1); }
@@ -387,6 +389,7 @@ export function StudioDock(props: {
             <Icon size={16} /><span>{label}</span>
           </button>
         ))}
+        <span className="studio-tab-indicator" aria-hidden="true" />
       </div>
       <div className="studio-panel" role="tabpanel" id={panelId} aria-labelledby={tabId(props.tab)} tabIndex={0}>
         {props.tab === "files" && <>

@@ -1,0 +1,295 @@
+/* ============================================================================
+   Lumen workbench (studio dock)
+   A floating island at the right of the window. The tool rail moves to the
+   window's outer edge, mirroring the navigator, with a sliding selection
+   indicator. Panels are stacks of rounded tiles; every tab switch deals its
+   content in.
+   Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
+   ========================================================================== */
+
+.app-shell[data-theme][data-color-scheme] .studio-dock {
+  margin-left: var(--lm-gutter);
+  grid-template-columns: minmax(0, 1fr) 72px;
+  border-left: 1px solid var(--lm-island-edge);
+  background-color: var(--sidebar);
+  background-image: linear-gradient(180deg, var(--lm-wash), transparent 180px);
+}
+.app-shell[data-theme][data-color-scheme] .studio-dock.closed { margin-left: 0; border-width: 0; box-shadow: none; }
+
+/* ---- Tool rail ---- */
+.app-shell[data-theme][data-color-scheme] .studio-tabs {
+  --studio-tab-step: 52px;
+  position: relative;
+  order: 2;
+  min-width: 72px;
+  gap: 2px;
+  padding: 8px 6px;
+  overflow-y: auto;
+  border-right: 0;
+  border-left: 1px solid var(--line-quiet);
+  background: var(--field);
+  scrollbar-width: none;
+}
+.app-shell[data-theme][data-color-scheme] .studio-tabs::-webkit-scrollbar { display: none; }
+.app-shell[data-theme][data-color-scheme] .studio-tabs button {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: 60px;
+  height: 50px;
+  gap: 5px;
+  border-radius: 14px;
+  color: var(--muted-2);
+  background: transparent;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .studio-tabs button span { font-size: 9.5px; }
+.app-shell[data-theme][data-color-scheme] .studio-tabs button:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .studio-tabs button.active { color: var(--text); background: transparent; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .studio-tabs button.active::before { display: none; }
+.app-shell[data-theme][data-color-scheme] .studio-tabs button.active > svg { color: var(--green); }
+/* Sliding indicator: one element that travels to the selected tab. Without
+   the custom property it simply rests on the first tab. */
+.app-shell[data-theme][data-color-scheme] .studio-tab-indicator {
+  position: absolute;
+  z-index: 0;
+  top: 8px;
+  left: 6px;
+  width: 60px;
+  height: 50px;
+  border: 1px solid var(--green-line);
+  border-radius: 14px;
+  background: var(--panel-2);
+  background-image: var(--lm-grad-soft);
+  box-shadow: 0 8px 20px -12px var(--lm-accent-glow);
+  transform: translateY(calc(var(--studio-tab-index, 0) * var(--studio-tab-step)));
+  pointer-events: none;
+}
+/* Elsewhere (test fixtures, simplified docks) a rail may have no indicator;
+   legacy keeps those tabs' own active styles. */
+
+/* ---- Panel ---- */
+.app-shell[data-theme][data-color-scheme] .studio-panel { padding: 0 16px 22px; }
+.app-shell[data-theme][data-color-scheme] .studio-header {
+  min-height: 64px;
+  margin: 0 -16px 14px;
+  padding: 0 10px 0 16px;
+  border-bottom: 0;
+  background: var(--sidebar);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .studio-header::after {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--green-line), var(--line) 40%, transparent);
+}
+.app-shell[data-theme][data-color-scheme] .studio-header { grid-template-columns: 32px minmax(0, 1fr) 30px; gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .studio-header-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: var(--green);
+  background: var(--panel-2);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .studio-header h2 { font-family: var(--font-display); font-size: 15px; font-weight: 720; letter-spacing: -.022em; }
+.app-shell[data-theme][data-color-scheme] .studio-header p { font-size: 11px; }
+.app-shell[data-theme][data-color-scheme] .studio-header .icon-button { border-radius: var(--r-control); }
+
+/* Action rows become rounded chips. */
+.app-shell[data-theme][data-color-scheme] .studio-actions { gap: 6px; margin-bottom: 14px; }
+.app-shell[data-theme][data-color-scheme] .studio-actions button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: var(--panel);
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .studio-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .studio-actions button.approved { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .studio-actions button.danger-action { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .studio-actions button.danger-action:hover:not(:disabled) { color: var(--red); border-color: var(--red); background: rgba(255, 120, 120, .1); }
+
+/* Tiles. */
+.app-shell[data-theme][data-color-scheme] .checkpoint-card,
+.app-shell[data-theme][data-color-scheme] .worktree-card,
+.app-shell[data-theme][data-color-scheme] .rate-card,
+.app-shell[data-theme][data-color-scheme] .provider-quota-card,
+.app-shell[data-theme][data-color-scheme] .tool-policy-card,
+.app-shell[data-theme][data-color-scheme] .checkpoint-note,
+.app-shell[data-theme][data-color-scheme] .history-warning,
+.app-shell[data-theme][data-color-scheme] .git-local-card,
+.app-shell[data-theme][data-color-scheme] .git-checkout,
+.app-shell[data-theme][data-color-scheme] .git-auto-publish,
+.app-shell[data-theme][data-color-scheme] .git-local-note,
+.app-shell[data-theme][data-color-scheme] .usage-hero {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .history-warning,
+.app-shell[data-theme][data-color-scheme] .checkpoint-note,
+.app-shell[data-theme][data-color-scheme] .tool-policy-card { border-color: var(--line-quiet); background: var(--panel); background-image: linear-gradient(90deg, var(--lm-wash), transparent 60%); }
+.app-shell[data-theme][data-color-scheme] .history-warning > svg,
+.app-shell[data-theme][data-color-scheme] .checkpoint-note > svg,
+.app-shell[data-theme][data-color-scheme] .tool-policy-card > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card { padding: 12px; }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card.current { border-color: var(--info); background-image: linear-gradient(135deg, rgba(127, 200, 255, .1), transparent 60%); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card.current::before { width: 3px; border-radius: 0 3px 3px 0; background: var(--info); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-card.accepted { border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .checkpoint-state-icon { border-radius: 50%; }
+
+.app-shell[data-theme][data-color-scheme] .metric-grid { gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .metric-grid > div {
+  padding: 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  background-image: linear-gradient(160deg, var(--lm-wash), transparent 70%);
+}
+.app-shell[data-theme][data-color-scheme] .metric-grid strong { font-family: var(--font-display); font-size: 22px; font-weight: 740; letter-spacing: -.03em; }
+
+.app-shell[data-theme][data-color-scheme] .studio-list-row {
+  min-height: 50px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-quiet);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .studio-list-row:hover { border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .studio-list-row > button { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .panel-label { margin: 22px 0 10px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .panel-label::after { background: linear-gradient(90deg, var(--line-strong), transparent); }
+
+.app-shell[data-theme][data-color-scheme] .attachment-drop {
+  min-height: 120px;
+  border: 1.5px dashed var(--green-line);
+  border-radius: var(--r-xl);
+  color: var(--green);
+  background: var(--green-soft);
+}
+.app-shell[data-theme][data-color-scheme] .attachment-drop:hover { color: var(--green); border-color: var(--green); background: var(--lm-tint-strong); }
+.app-shell[data-theme][data-color-scheme] .attachment-drop > svg { width: 44px; height: 44px; padding: 11px; border-radius: var(--r-md); color: var(--green); background: var(--panel-2); }
+
+.app-shell[data-theme][data-color-scheme] .studio-empty {
+  min-height: 150px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-xl);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .studio-empty > svg { width: 44px; height: 44px; padding: 11px; border-radius: var(--r-md); color: var(--green); background: var(--green-soft); opacity: 1; }
+
+/* Code surfaces: diffs, previews, git console and terminal. */
+.app-shell[data-theme][data-color-scheme] .diff-view,
+.app-shell[data-theme][data-color-scheme] .git-screen,
+.app-shell[data-theme][data-color-scheme] .file-preview {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  color: var(--lm-code-ink);
+  background: var(--lm-code-bg);
+}
+.app-shell[data-theme][data-color-scheme] .file-preview pre { color: var(--lm-code-ink); }
+.app-shell[data-theme][data-color-scheme] .file-search {
+  height: 36px;
+  padding: 0 8px 0 12px;
+  border-radius: var(--r-control);
+  background: var(--field);
+}
+.app-shell[data-theme][data-color-scheme] .file-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+/* The terminal stays dark in every theme, as before; Lumen rounds it into a
+   slab with a lit top edge. */
+.app-shell[data-theme][data-color-scheme] .xterm-host {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: #070a10;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04), 0 18px 40px -26px rgba(0, 0, 0, .8);
+}
+.app-shell[data-theme][data-color-scheme] .terminal-input { border-radius: var(--r-control); }
+
+/* Git workspace pieces that live in git-workflow.css. */
+.app-shell[data-theme][data-color-scheme] .git-view-tabs { padding: 3px; border-radius: var(--r-md); background: var(--field); }
+.app-shell[data-theme][data-color-scheme] .git-view-tabs > button { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .git-folder-chip { border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .git-sync-counts { border-radius: var(--r-xs); }
+.app-shell[data-theme][data-color-scheme] .git-sync-counts > span { border-radius: 4px; }
+.app-shell[data-theme][data-color-scheme] .git-pr-filters > button { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .git-remote-actions > button b,
+.app-shell[data-theme][data-color-scheme] .git-change-chip,
+.app-shell[data-theme][data-color-scheme] .git-pr-row-tags em { border-radius: var(--r-chip); }
+/* The selected view is a raised neutral tab with an accent edge, so its label
+   keeps text ink (readable against the dock however it is measured). */
+.app-shell[data-theme][data-color-scheme] .git-view-tabs > button.active { color: var(--text); background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--green-line), 0 4px 12px -6px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .git-change-row:hover { border-color: var(--line); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .git-change-status { border-radius: 6px; }
+.app-shell[data-theme][data-color-scheme] .app-action-trigger { min-height: 30px; border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .app-action-list { padding: 6px; border-radius: var(--r-lg); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button { border-radius: var(--r-sm); }
+.app-shell[data-theme][data-color-scheme] .app-action-list > button:hover:not(:disabled) { color: var(--text); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .git-sync-counts > span.active { color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .git-console { border-radius: var(--r-lg); }
+.app-shell[data-theme][data-color-scheme] .git-commit-button,
+.app-shell[data-theme][data-color-scheme] .github-create-button {
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--on-accent);
+  background: var(--green) var(--lm-grad);
+  box-shadow: 0 8px 20px -10px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .git-commit-button:disabled,
+.app-shell[data-theme][data-color-scheme] .github-create-button:disabled { color: var(--muted-2); background: var(--panel-3); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .github-secondary-button { border-radius: var(--r-control); }
+/* "Nothing to commit" is a settled state, not a blocked action: both settled
+   buttons share one neutral, fully legible look (legacy contract). */
+.app-shell[data-theme][data-color-scheme] .git-commit-button.git-commit-empty:disabled,
+.app-shell[data-theme][data-color-scheme] .github-secondary-button.git-commit-empty:disabled {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel);
+  box-shadow: none;
+  opacity: 1;
+}
+
+/* ---- Small docks keep the rail compact ---- */
+@media (max-height: 640px) {
+  .app-shell[data-theme][data-color-scheme] .studio-tabs { --studio-tab-step: 44px; }
+  .app-shell[data-theme][data-color-scheme] .studio-tabs button,
+  .app-shell[data-theme][data-color-scheme] .studio-tab-indicator { height: 42px; }
+  .app-shell[data-theme][data-color-scheme] .studio-tabs button span { display: none; }
+}
+
+/* ---- Motion ---- */
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .studio-dock {
+    transition: flex-basis var(--lm-d-3) var(--lm-ease-out), width var(--lm-d-3) var(--lm-ease-out), margin var(--lm-d-3) var(--lm-ease-out), opacity var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-ease-out), border-color var(--lm-d-2) ease;
+  }
+  .app-shell[data-theme][data-color-scheme] .studio-tab-indicator { transition: transform 420ms var(--lm-spring-soft); }
+  .app-shell[data-theme][data-color-scheme] .studio-tabs button { transition: color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, scale var(--lm-d-2) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .studio-tabs button.active > svg { animation: lm-dot-in var(--lm-d-3) var(--lm-spring); }
+
+  /* Each tab switch mounts fresh panel children; they deal in with a short
+     stagger. The rule only fires on insertion, never on re-render. */
+  .app-shell[data-theme][data-color-scheme] .studio-panel > * { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .studio-panel > :nth-child(2) { animation-delay: 40ms; }
+  .app-shell[data-theme][data-color-scheme] .studio-panel > :nth-child(3) { animation-delay: 80ms; }
+  .app-shell[data-theme][data-color-scheme] .studio-panel > :nth-child(4) { animation-delay: 120ms; }
+  .app-shell[data-theme][data-color-scheme] .studio-panel > :nth-child(5) { animation-delay: 160ms; }
+  .app-shell[data-theme][data-color-scheme] .studio-panel > :nth-child(n+6) { animation-delay: 200ms; }
+  .app-shell[data-theme][data-color-scheme] .studio-header-icon { animation: lm-dot-in 420ms var(--lm-spring) backwards; }
+  .app-shell[data-theme][data-color-scheme] .checkpoint-card,
+  .app-shell[data-theme][data-color-scheme] .studio-list-row,
+  .app-shell[data-theme][data-color-scheme] .metric-grid > div {
+    transition: border-color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-spring), box-shadow var(--lm-d-3) var(--lm-ease-out);
+  }
+  .app-shell[data-theme][data-color-scheme] .checkpoint-card:hover,
+  .app-shell[data-theme][data-color-scheme] .metric-grid > div:hover { transform: translateY(-2px); box-shadow: 0 14px 28px -18px rgba(0, 0, 0, .6); }
+  .app-shell[data-theme][data-color-scheme] .attachment-drop > svg { transition: transform var(--lm-d-4) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .attachment-drop:hover > svg { transform: translateY(-3px) rotate(-6deg) scale(1.06); }
+}

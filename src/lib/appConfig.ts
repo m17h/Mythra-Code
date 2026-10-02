@@ -16,14 +16,16 @@ export const DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234/v1";
 export const RELEASE_NOTES_URL = "https://github.com/m17h/Mythra-Code/releases/latest";
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [
-  { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#1e2024", "#292d32", "#64ddf2"] },
-  { id: "light-mythra", name: "Light Mythra", description: "Paper white with a deep cyan accent", swatches: ["#f3f6f7", "#ffffff", "#087f9b"] },
-  { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#1e2024", "#292d32", "#a7e26f"] },
-  { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#f4f5f2", "#ffffff", "#3e8e22"] },
-  { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#14181f", "#1d232d", "#7fc4ff"] },
-  { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#17131f", "#221b2e", "#ff6ac1"] },
-  { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#eee5d2", "#f7efdf", "#8e3b32"] },
-  { id: "monochrome", name: "Monochrome", description: "Graphite with quiet white accents", swatches: ["#1e2024", "#292d32", "#eceeeb"] },
+  // Swatches are display-only previews ([canvas, island panel, accent]) and
+  // track the Lumen palettes in src/styles/lumen/tokens.css.
+  { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#16181b", "#292d32", "#64ddf2"] },
+  { id: "light-mythra", name: "Light Mythra", description: "Paper white with a deep cyan accent", swatches: ["#e3e7ea", "#ffffff", "#0880a3"] },
+  { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#16181b", "#292d32", "#a6df72"] },
+  { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#e4e6e0", "#ffffff", "#3a861d"] },
+  { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#0f1217", "#1d232d", "#86c8ff"] },
+  { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#121016", "#221b2e", "#ff6ac1"] },
+  { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#ddd0b6", "#f7efdf", "#8e3b32"] },
+  { id: "monochrome", name: "Monochrome", description: "Graphite with quiet white accents", swatches: ["#070708", "#17181b", "#f2f3f5"] },
 ];
 
 /** Stored theme ids may outlive a palette. Retired and malformed values fall
@@ -45,7 +47,7 @@ export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; 
   { id: "pixel", name: "Pixel", description: "A chunky retro VU meter with a square thumb" },
   { id: "ink", name: "Ink", description: "A bare monochrome line for zero distraction" },
   { id: "reactor", name: "Reactor", description: "Pulsing energy cells and a glowing reactor core" },
-  { id: "dart", name: "Dart", description: "An arrowhead cutting a widening wake down the rail" },
+  { id: "comet", name: "Comet", description: "A soft ice-blue trail that streams toward the thumb" },
   { id: "coil", name: "Coil", description: "A twisted cord that winds tighter the harder it works" },
 ];
 
@@ -93,6 +95,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * still fall back to the default instead of leaving the shell unstyled. */
 export function sanitizeEffortSlider(value: unknown): EffortSliderStyle {
   if (value === "shard" || value === "tide") return "reactor";
+  if (value === "dart" || value === "filament") return "comet";
   return EFFORT_SLIDER_STYLES.some((style) => style.id === value)
     ? value as EffortSliderStyle
     : DEFAULT_SETTINGS.effortSlider;

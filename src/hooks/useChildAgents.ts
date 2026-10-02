@@ -757,8 +757,8 @@ export function useChildAgents(context: ChildAgentContext): {
         // sanitized settings, so the model cannot dress up what it is asking
         // for — including how long the change lasts.
         command: [
-          "Scope: this project's saved settings, from your next message onward",
-          `Sub-agents: ${next.enabled ? "on" : "off"}`,
+          "Scope: crew and limit saved for this project; spawning switch applies only to this thread, from your next message onward",
+          `Sub-agents in this thread: ${next.enabled ? "on" : "off"}`,
           `Parallel limit: ${next.maxConcurrent}`,
           crew,
         ].join("\n"),
@@ -789,14 +789,14 @@ export function useChildAgents(context: ChildAgentContext): {
       status: "completed",
     });
     if (!approved) {
-      note("Sub-agent change declined", "This project keeps its current sub-agent crew, parallel limit, and switches.");
+      note("Sub-agent change declined", "The configured crew, parallel limit, and this thread's spawning switch are unchanged.");
       return;
     }
     const next = sanitizeProjectSubagentSettings(approval.params.settings);
     if (!next) throw new Error("This sub-agent settings proposal is no longer valid.");
     await contextRef.current.applyProjectSubagentSettings(approval.threadId, next);
     note(
-      "Sub-agent change applied to this project",
+      "Sub-agent settings updated",
       "The current turn keeps the crew it started with. Your next message runs with the approved settings.",
     );
   }, []);

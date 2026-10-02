@@ -41,6 +41,7 @@ import type { Account, ChatFont, EffortSliderStyle, Provider, SettingsSection, T
 import { useModalFocus } from "../hooks/useModalFocus";
 import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
 import { EffortSlider, effortFlairStyle } from "./effortFlair";
+import { MythraMark } from "./MythraMark";
 
 const CODEX_INSTALL_URL = "https://learn.chatgpt.com/docs/codex/cli";
 const OPENROUTER_KEYS_URL = "https://openrouter.ai/settings/keys";
@@ -244,7 +245,7 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
 
   return <section className="ob-page ob-connect" aria-labelledby={headingId}>
     <div className="ob-hero">
-      <span className="ob-glyph" aria-hidden="true"><img src="/mythra-code-glyph.svg" alt="" /></span>
+      <span className="ob-glyph" aria-hidden="true"><MythraMark /></span>
       <PageHeading headingRef={headingRef} id={headingId} title="Welcome to Mythra Code" centered>
         Connect one AI provider to start. You can add more anytime.
       </PageHeading>
@@ -261,9 +262,12 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
         className: "ob-tile",
         content: <>
           {pulse?.id === id && <i key={pulse.key} className="ob-tile-ring" aria-hidden="true" />}
+          {/* Readiness is a corner dot, not a second text line; the kind and
+              status stay in the tile's accessible description and the
+              selected provider's panel. */}
+          <i className={`ob-tile-status ${readiness[id].ready ? "on" : ""}`} aria-hidden="true" />
           <span className="ob-tile-logo" aria-hidden="true"><Logo size={18} /></span>
           <span className="ob-tile-name" aria-hidden="true">{name}</span>
-          <span className="ob-tile-kind" aria-hidden="true"><i className={`ob-dot ${readiness[id].ready ? "on" : ""}`} /><span>{kind}</span></span>
         </>,
       }))}
     />
@@ -416,11 +420,12 @@ function previewTokens(theme: ThemeName): CSSProperties {
   } as CSSProperties;
 }
 
-function PersonalizePage({ headingRef, open, preview, onPreview, onSettings }: {
+function PersonalizePage({ headingRef, open, preview, onPreview, onThemeChange, onSettings }: {
   headingRef: HeadingRef;
   open: boolean;
   preview: AppearancePreview | null;
   onPreview: (preview: AppearancePreview) => void;
+  onThemeChange: (theme: ThemeName) => void;
   onSettings: OpenSettings;
 }) {
   const headingId = useId();
@@ -439,17 +444,17 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onSettings }: {
 
   return <section ref={rootRef} className="ob-page" aria-labelledby={headingId}>
     <PageHeading headingRef={headingRef} id={headingId} eyebrow="Make it yours" title="Make it feel like yours.">
-      Try a look here. Nothing is saved until you take it to Settings → Interface and press Save.
+      Selecting a theme applies it to the app and saves it. Fonts and slider styles preview here; save those in Settings → Interface.
     </PageHeading>
     <div className="ob-personalize">
       <div className="ob-fields">
         <div className="ob-field">
           <span className="ob-field-label">Theme</span>
           <RadioGroup
-            label="Preview theme"
+            label="App theme"
             className="ob-swatches"
             value={current.theme}
-            onChange={(next) => update({ theme: next })}
+            onChange={(next) => { update({ theme: next }); onThemeChange(next); }}
             options={THEMES.map((entry) => ({
               id: entry.id,
               label: entry.name,
@@ -482,7 +487,7 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onSettings }: {
       <div className="ob-preview" style={previewTokens(current.theme)}>
         <div className="ob-preview-bar">
           <span className="ob-preview-dots" aria-hidden="true"><i /><i /><i /></span>
-          <span className="ob-preview-badge"><Sparkles size={11} aria-hidden="true" />Preview only · not saved</span>
+          <span className="ob-preview-badge"><Sparkles size={11} aria-hidden="true" />Font & slider preview</span>
         </div>
         <div className="ob-preview-chat" style={{ fontFamily: `var(--chat-font-${current.chatFont})` }}>
           <p className="ob-preview-user">Tidy up the settings panel.</p>
@@ -493,7 +498,7 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onSettings }: {
         <div className="app-shell ob-effort-shell" data-effort-slider={current.effortSlider} data-color-scheme={themeColorScheme(current.theme)}>
           <div
             className={`model-power-control ob-effort-wrap ${effortMax ? "effort-max" : ""}`}
-            style={{ ...effortFlairStyle(current.effortIndex, PREVIEW_EFFORTS.length), "--model-accent": "var(--ob-pv-accent)", "--reactor-live": "var(--reactor-effort-color, #f65db5)", "--dart-live": "var(--dart-effort-color, #43cb5c)" } as CSSProperties}
+            style={{ ...effortFlairStyle(current.effortIndex, PREVIEW_EFFORTS.length), "--model-accent": "var(--ob-pv-accent)", "--reactor-live": "var(--reactor-effort-color, #f65db5)" } as CSSProperties}
           >
             <div className="reasoning-control">
               <div className="reasoning-heading"><Gauge size={13} aria-hidden="true" /><span>Reasoning</span><strong key={current.effortIndex}>{PREVIEW_EFFORTS[current.effortIndex].label}</strong></div>
@@ -591,6 +596,7 @@ export function OnboardingModal({
   lmStudioReady = false,
   skillsFolder,
   onComplete,
+  onThemeChange,
   onOpenSettings,
   onChooseSkillsFolder,
   onAddProject,
@@ -607,6 +613,8 @@ export function OnboardingModal({
   lmStudioReady?: boolean;
   skillsFolder: string;
   onComplete: () => void;
+  /** A deliberate theme choice applies and persists the app-wide preference. */
+  onThemeChange: (theme: ThemeName) => void;
   /** Suspends the tour (the caller sets `open` false) and reopens it on the same page afterwards.
       `draft` seeds unsaved Settings values; nothing is persisted unless the user saves. */
   onOpenSettings: (section: SettingsSection, draft?: OnboardingSettingsDraft) => void;
@@ -711,7 +719,7 @@ export function OnboardingModal({
   if (step.id === "connect") content = <ConnectPage headingRef={headingRef} readiness={readiness} inputs={inputs} onSettings={openSettings} preferredProvider={preferredProvider} />;
   else if (step.id === "projects") content = <ProjectsPage headingRef={headingRef} onSettings={openSettings} />;
   else if (step.id === "direct") content = <DirectPage headingRef={headingRef} onSettings={openSettings} />;
-  else if (step.id === "personalize") content = <PersonalizePage headingRef={headingRef} open={open} preview={appearance} onPreview={setAppearance} onSettings={openSettings} />;
+  else if (step.id === "personalize") content = <PersonalizePage headingRef={headingRef} open={open} preview={appearance} onPreview={setAppearance} onThemeChange={onThemeChange} onSettings={openSettings} />;
   else content = <ReadyPage headingRef={headingRef} readiness={readiness} skillsFolder={skillsFolder} projectPending={projectPending} projectError={projectError} onSettings={openSettings} onChooseSkillsFolder={onChooseSkillsFolder} onOpenProject={() => void openProject()} onStartChat={startChat} />;
 
   const last = stepIndex === STEPS.length - 1;
@@ -720,7 +728,7 @@ export function OnboardingModal({
   return <div className={`modal-backdrop onboarding-backdrop ${open ? "open" : "closed"}`} aria-hidden={!open} inert={!open ? true : undefined}>
     <div ref={dialogRef} className="onboarding-modal" role="dialog" aria-modal="true" aria-label="Mythra Code onboarding">
       <div className="ob-header">
-        <img className="ob-header-glyph" src="/mythra-code-glyph.svg" alt="" aria-hidden="true" />
+        <MythraMark className="ob-header-glyph" />
         <nav className="ob-stepper" aria-label="Onboarding progress">
           <ol>
             {STEPS.map((entry, index) => <li key={entry.id} className={`${index === stepIndex ? "current" : ""} ${index < stepIndex ? "done" : ""}`}>

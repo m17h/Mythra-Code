@@ -17,7 +17,9 @@ export default defineConfig({
   // ChatTimeline converts local image paths for sent attachment previews.
   // Pre-bundling the Tauri helper prevents Vite from reloading a live browser
   // spec the first time that lazy timeline chunk is imported.
-  optimizeDeps: { include: ["@tauri-apps/api/core"] },
+  // The real-App header spec (App.header.browser.test.tsx) imports the whole
+  // App, which pulls in these too; pre-bundle them so the first run is stable.
+  optimizeDeps: { include: ["@tauri-apps/api/core", "@tauri-apps/api/webview", "@tauri-apps/plugin-notification", "@testing-library/user-event"] },
   test: {
     include: ["src/**/*.browser.test.{ts,tsx}"],
     setupFiles: ["./src/test/browser-setup.ts"],

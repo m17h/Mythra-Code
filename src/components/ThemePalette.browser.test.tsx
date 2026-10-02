@@ -96,8 +96,10 @@ it.each(["atari", "monochrome"] as const)("keeps %s surfaces, accent ink, and ch
     }
     expect(getComputedStyle(view.container.querySelector<SVGElement>(".provider-mark.claude .claude-logo-option")!).fill).toBe("rgb(255, 255, 255)");
   } else {
-    expect(panel.backgroundColor).toBe("rgb(41, 45, 50)");
-    expect(getComputedStyle(view.getByTestId("accent")).color).toBe("rgb(236, 238, 235)");
+    // Lumen Monochrome: a deeper graphite panel and a cooler white accent. The
+    // contrast assertions above remain the real readability contract.
+    expect(panel.backgroundColor).toBe("rgb(23, 24, 27)");
+    expect(getComputedStyle(view.getByTestId("accent")).color).toBe("rgb(242, 243, 245)");
     expect(getComputedStyle(view.container.querySelector<HTMLElement>(".openrouter-reasoning-heading")!).filter).toBe("grayscale(1)");
     for (const selector of [".openrouter-control", ".claude-logo"]) expect(getComputedStyle(view.container.querySelector<HTMLElement>(selector)!).filter).toBe("none");
   }

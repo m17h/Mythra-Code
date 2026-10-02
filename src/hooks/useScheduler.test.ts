@@ -94,6 +94,27 @@ describe("useScheduler", () => {
     expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
   });
 
+  it.each([false, true])("records new scheduled threads off before a failing turn, including reuse fallback %s", async (reuse) => {
+    const run = { ...scheduleRunSnapshot(DEFAULT_SETTINGS), subagentsEnabled: true };
+    const schedule = testSchedule({ run, threadMode: reuse ? "reuse" : "new", lastThreadId: reuse ? "gone" : undefined });
+    const onThreadCreated = vi.fn();
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/resume") throw new Error("missing");
+      if (method === "thread/start") return { thread: { id: "fresh" } };
+      if (method === "turn/start") throw new Error("turn failed");
+      return {};
+    });
+    const runs: ScheduleRunRecord[] = [];
+    renderHook(() => useScheduler(testSchedulerDeps(schedule, runs, { onThreadCreated })));
+    await act(async () => { await flushMicrotasks(30); });
+    expect(onThreadCreated).toHaveBeenCalledWith("fresh", expect.objectContaining({ id: "project-1" }));
+    const start = codex.rpc.mock.calls.find(([method]) => method === "thread/start")!;
+    expect(start[1].config.features).toMatchObject({ multi_agent: false, multi_agent_v2: false });
+    expect(start[1].config).not.toHaveProperty("mcp_servers.mythra_agents");
+    expect(schedule.run?.subagentsEnabled).toBe(true);
+    expect(runs.at(-1)?.status).toBe("failed");
+  });
+
   it("delivers resolved skill context while storing the raw scheduled prompt", async () => {
     const runs: ScheduleRunRecord[] = [];
     const resolveSkillPrompt = vi.fn(async () => "resolved schedule skill context");
