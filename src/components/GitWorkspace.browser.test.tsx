@@ -241,25 +241,97 @@ it("waits for deferred checkout reads and uses current props for a pending Push 
   expect(ready.onAction).not.toHaveBeenCalled();
 });
 
-it.each(["failed", "pending", "missing"] as const)("distinguishes a %s repository probe in the focused remote-route recovery", async (probe) => {
-  const onFocusHandled = vi.fn();
-  const input = props({
-    githubRepoStatus: probe === "missing" ? { isRepo: true, repository: null, branch: "feature/work", upstream: null, ahead: 0, behind: 0 } : null,
-    githubRepoError: probe === "failed" ? "Repository status could not be read: network unavailable." : undefined,
-    focusRequest: { view: "changes", focus: "push", nonce: 97 }, onFocusHandled,
+for (const probe of ["failed", "pending", "missing"] as const) {
+  it(`distinguishes a ${probe} repository probe in the focused remote-route recovery`, async () => {
+    const onFocusHandled = vi.fn();
+    const input = props({
+      githubRepoStatus: probe === "missing" ? { isRepo: true, repository: null, branch: "feature/work", upstream: null, ahead: 0, behind: 0 } : null,
+      githubRepoError: probe === "failed" ? "Repository status could not be read: network unavailable." : undefined,
+      focusRequest: { view: "changes", focus: "push", nonce: 97 }, onFocusHandled,
+    });
+    const view = mount(input, 360);
+    // A pending probe intentionally gets 40 real animation frames to settle.
+    // Parallel browser contexts can render below 40Hz, so the default 1s
+    // assertion deadline can expire before the component's recovery budget.
+    await waitFor(() => expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(97), { timeout: probe === "pending" ? 5_000 : 1_000 });
+    const notice = view.container.querySelector<HTMLElement>(".git-route-notice")!;
+    expect(document.activeElement).toBe(notice);
+    expect(notice).toHaveTextContent(probe === "missing" ? /Connect a GitHub repository before pushing commits/ : /GitHub connection status is unavailable/);
+    if (probe !== "missing") expect(notice).not.toHaveTextContent(/Connect a GitHub repository before/);
+    expect(input.onAction).not.toHaveBeenCalled();
+    notice.focus();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    expect(onFocusHandled).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(notice);
+  }, probe === "pending" ? 7_000 : undefined);
+}
+
+it.each(["pending", "ready"] as const)("recovers a %s remote route when animation frames are throttled", async (probe) => {
+  // Keep real browser frames and layout, but deliver frames to the component
+  // at most every 50ms, as on a busy renderer. Forty frames cannot fit inside
+  // Testing Library's default 1s assertion deadline at this refresh rate.
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  const cancelFrame = window.cancelAnimationFrame.bind(window);
+  const pending = new Map<number, { timer?: number; frame?: number }>();
+  let sequence = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const handle = ++sequence;
+    const entry: { timer?: number; frame?: number } = {};
+    pending.set(handle, entry);
+    entry.timer = window.setTimeout(() => {
+      entry.frame = requestFrame((time) => { pending.delete(handle); callback(time); });
+    }, 50);
+    return handle;
   });
-  const view = mount(input, 360);
-  await waitFor(() => expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(97));
-  const notice = view.container.querySelector<HTMLElement>(".git-route-notice")!;
-  expect(document.activeElement).toBe(notice);
-  expect(notice).toHaveTextContent(probe === "missing" ? /Connect a GitHub repository before pushing commits/ : /GitHub connection status is unavailable/);
-  if (probe !== "missing") expect(notice).not.toHaveTextContent(/Connect a GitHub repository before/);
-  expect(input.onAction).not.toHaveBeenCalled();
-  notice.focus();
-  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-  expect(onFocusHandled).toHaveBeenCalledOnce();
-  expect(document.activeElement).toBe(notice);
-});
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+    const entry = pending.get(handle);
+    if (!entry) return;
+    window.clearTimeout(entry.timer);
+    if (entry.frame !== undefined) cancelFrame(entry.frame);
+    pending.delete(handle);
+  });
+  let ownerRead = 0;
+  let mounted: ReturnType<typeof mount> | undefined;
+  try {
+    const onFocusHandled = vi.fn();
+    const input = props({ githubRepoStatus: null, focusRequest: { view: "changes", focus: "push", nonce: 98 }, onFocusHandled });
+    const view = mount(input, 360);
+    mounted = view;
+    if (probe === "ready") {
+      // Readiness can arrive after 1s but before the frame budget expires.
+      // The route must still find the real control using the owner's props.
+      ownerRead = window.setTimeout(() => view.rerender(shell({ ...input, githubRepoStatus: props().githubRepoStatus }, 360)), 1_100);
+    }
+    await waitFor(() => expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(98), { timeout: 5_000 });
+    const notice = view.container.querySelector<HTMLElement>(".git-route-notice")!;
+    if (probe === "pending") {
+      expect(document.activeElement).toBe(notice);
+      expect(notice).toHaveTextContent(/GitHub connection status is unavailable/);
+      expect(notice).not.toHaveTextContent(/Connect a GitHub repository before/);
+      // A read settling after recovery must not replay the consumed route.
+      view.rerender(shell({ ...input, githubRepoStatus: props().githubRepoStatus }, 360));
+    } else {
+      expect(notice).toBeNull();
+      expect(document.activeElement).toHaveAccessibleName("Push commits");
+    }
+    const focus = document.activeElement;
+    await screen.findByRole("button", { name: "Push commits" });
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(98);
+    expect(document.activeElement).toBe(focus);
+    expect(input.onAction).not.toHaveBeenCalled();
+  } finally {
+    window.clearTimeout(ownerRead);
+    // Unmount while the component's mocked handles still have their matching
+    // cancellation implementation, including when an assertion has failed.
+    mounted?.unmount();
+    for (const entry of pending.values()) {
+      window.clearTimeout(entry.timer);
+      if (entry.frame !== undefined) cancelFrame(entry.frame);
+    }
+    vi.restoreAllMocks();
+  }
+}, 7_000);
 
 it("clears obsolete route notices on a valid route and a checkout change", async () => {
   const onFocusHandled = vi.fn();
