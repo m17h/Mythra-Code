@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands, page, userEvent as browserUserEvent } from "vitest/browser";
+import { sanitizeTheme } from "./lib/appConfig";
 import type { Project } from "./types";
 
 /*
@@ -113,7 +114,7 @@ async function renderApp({ project = PROJECT, theme = "atari", uiScale = 100, pr
   const url = `./App.tsx?header-case=${++appInstance}`;
   const { default: App } = await import(/* @vite-ignore */ url) as typeof import("./App");
   const view = render(<App />);
-  expect(view.container.querySelector(".app-shell")).toHaveAttribute("data-theme", project.overrides?.defaults?.theme ?? theme);
+  expect(view.container.querySelector(".app-shell")).toHaveAttribute("data-theme", sanitizeTheme(project.overrides?.defaults?.theme ?? theme));
   await screen.findByRole("button", { name: "Open workspace tools" }, { timeout: 10_000 });
   await waitFor(() => expect(view.container.querySelector(".project-run-control")).not.toBeNull(), { timeout: 10_000 });
   return view;
@@ -559,9 +560,35 @@ it.each([
   }
 });
 
+it.each([
+  { retired: "midnight", projectOverride: false },
+  { retired: "monochrome", projectOverride: false },
+  { retired: "midnight", projectOverride: true },
+  { retired: "monochrome", projectOverride: true },
+])("opens a saved retired $retired theme as a fully styled Mythra shell (project override: $projectOverride)", async ({ retired, projectOverride }) => {
+  await commands.setStreamTestReducedMotion(true);
+  // A project override keeps overriding (on Mythra) instead of falling back to
+  // the different global theme, which here is the light Atari palette.
+  const project = projectOverride ? { ...PROJECT, overrides: { defaults: { provider: "openai", model: "gpt-6-sol", theme: retired } } } as unknown as Project : PROJECT;
+  const view = await renderApp({ theme: projectOverride ? "atari" : retired, provider: "openai", project });
+  const shell = view.container.querySelector<HTMLElement>(".app-shell")!;
+  expect(shell).toHaveAttribute("data-theme", "mythra");
+  expect(shell).toHaveAttribute("data-color-scheme", "dark");
+  expect(getComputedStyle(shell).backgroundColor).toBe("rgb(22, 24, 27)");
+  expect(getComputedStyle(view.container.querySelector(".sidebar")!).backgroundColor).toBe("rgb(34, 37, 42)");
+  for (const root of [view.container.querySelector(".brand-mark svg.mythra-mark")!, view.container.querySelector(".mythra-logo")!]) {
+    expect(getComputedStyle(root.querySelector(".mythra-mark-stop--cyan-a")!).stopColor).toBe("rgb(53, 231, 242)");
+  }
+  if (projectOverride) {
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("button", { name: "Close settings" });
+    expect(screen.getByRole("button", { name: /Atari Warm tan/ })).toHaveAttribute("aria-pressed", "true");
+  }
+});
+
 it.each([false, true])("applies and saves the onboarding theme without overwriting project overrides (override=%s)", async (projectOverride) => {
   await commands.setStreamTestReducedMotion(true);
-  const project: Project = { ...PROJECT, ...(projectOverride ? { overrides: { defaults: { provider: "openai", model: "gpt-6-sol", theme: "midnight" } } } : {}) };
+  const project: Project = { ...PROJECT, ...(projectOverride ? { overrides: { defaults: { provider: "openai", model: "gpt-6-sol", theme: "synthwave" } } } : {}) };
   const view = await renderApp({ theme: "mythra", project });
   await userEvent.click(screen.getByRole("button", { name: "Settings" }));
   await screen.findByRole("button", { name: "Close settings" });
@@ -575,8 +602,8 @@ it.each([false, true])("applies and saves the onboarding theme without overwriti
   expect(JSON.parse(localStorage.getItem("kiwi.settings")!).theme).toBe("atari");
   await browserUserEvent.click(screen.getByRole("button", { name: "Skip tour" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Mythra Code onboarding" })).not.toBeInTheDocument());
-  expect(view.container.querySelector(".app-shell")).toHaveAttribute("data-theme", projectOverride ? "midnight" : "atari");
-  if (projectOverride) expect(JSON.parse(localStorage.getItem("kiwi.projects")!)[0].overrides.defaults.theme).toBe("midnight");
+  expect(view.container.querySelector(".app-shell")).toHaveAttribute("data-theme", projectOverride ? "synthwave" : "atari");
+  if (projectOverride) expect(JSON.parse(localStorage.getItem("kiwi.projects")!)[0].overrides.defaults.theme).toBe("synthwave");
   await userEvent.click(screen.getByRole("button", { name: "Settings" }));
   await screen.findByRole("button", { name: "Close settings" });
   expect(screen.getByRole("button", { name: /Atari Warm tan/ })).toHaveAttribute("aria-pressed", "true");

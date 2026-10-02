@@ -27,7 +27,7 @@ function providerMark(openAiLogo: "openai" | "codex", colorScheme: "light" | "da
 }
 
 describe("ThreadProviderControl theme styling", () => {
-  it.each(["atari", "monochrome"] as const)("keeps Codex legible in the new %s palette", (theme) => {
+  it.each(["atari", "synthwave"] as const)("keeps Codex legible in the %s palette", (theme) => {
     expect(getComputedStyle(providerMark("codex", themeColorScheme(theme), theme)).backgroundColor)
       .toBe(theme === "atari" ? "rgb(255, 255, 255)" : "rgb(26, 29, 24)");
   });

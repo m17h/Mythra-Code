@@ -19,17 +19,16 @@ export const THEMES: Array<{ id: ThemeName; name: string; description: string; s
   // Swatches are display-only previews ([canvas, island panel, accent]) and
   // track the Lumen palettes in src/styles/lumen/tokens.css.
   { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#16181b", "#292d32", "#64ddf2"] },
-  { id: "light-mythra", name: "Light Mythra", description: "Paper white with a deep cyan accent", swatches: ["#e3e7ea", "#ffffff", "#0880a3"] },
+  { id: "light-mythra", name: "Light Mythra", description: "Paper white with clear sky-cyan accents", swatches: ["#e3e7ea", "#ffffff", "#0068b5"] },
   { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#16181b", "#292d32", "#a6df72"] },
   { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#e4e6e0", "#ffffff", "#3a861d"] },
-  { id: "midnight", name: "Midnight", description: "Deep ocean blue with arctic ice", swatches: ["#0f1217", "#1d232d", "#86c8ff"] },
-  { id: "synthwave", name: "Synthwave", description: "Neon violet with hot magenta", swatches: ["#121016", "#221b2e", "#ff6ac1"] },
+  { id: "synthwave", name: "Synthwave", description: "Deep graphite with hot neon pink", swatches: ["#16181b", "#292d32", "#ff6ac1"] },
   { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#ddd0b6", "#f7efdf", "#8e3b32"] },
-  { id: "monochrome", name: "Monochrome", description: "Graphite with quiet white accents", swatches: ["#070708", "#17181b", "#f2f3f5"] },
 ];
 
-/** Stored theme ids may outlive a palette. Retired and malformed values fall
- * back to Mythra instead of leaving the shell with an unstyled data attribute. */
+/** Stored theme ids may outlive a palette. Retired (Ember, Terminal, Midnight,
+ * Monochrome) and malformed values fall back to Mythra instead of leaving the
+ * shell with an unstyled data attribute. */
 export function sanitizeTheme(value: unknown): ThemeName {
   return THEMES.some((theme) => theme.id === value) ? value as ThemeName : "mythra";
 }

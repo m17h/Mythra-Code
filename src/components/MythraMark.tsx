@@ -20,8 +20,9 @@ interface MythraMarkProps {
 /**
  * The static Mythra Code mark as inline SVG, so its colours follow the active
  * theme through CSS (MythraMarkColors.css) wherever it is shown in the app:
- * the sidebar brand, onboarding and other in-app branding. Gradient and mask
- * ids are instance-unique, so any number of marks can share a page.
+ * the sidebar brand, onboarding and other in-app branding. The static caret
+ * is always white; the animated logo owns its separate cutout and blink.
+ * Gradient ids are instance-unique, so any number of marks can share a page.
  */
 export function MythraMark({ className, size, title }: MythraMarkProps) {
   const ids = `mythra-mark-${useId().replace(/[^\w-]/g, "")}`;
@@ -50,15 +51,12 @@ export function MythraMark({ className, size, title }: MythraMarkProps) {
           <stop className="mythra-mark-stop--fold-a" stopColor="#176BFA" />
           <stop className="mythra-mark-stop--fold-b" offset="1" stopColor="#1247D9" />
         </linearGradient>
-        <mask id={`${ids}-caret`}>
-          <rect width="1024" height="1024" fill="#fff" />
-          <path d={CARET} fill="#000" />
-        </mask>
       </defs>
       <path d={FOLD} fill={url("fold")} />
       <path d={RIGHT} fill={url("cyan")} />
-      <path d={MID} fill={url("blue")} mask={url("caret")} />
+      <path d={MID} fill={url("blue")} />
       <path d={LEFT} fill={url("cyan")} />
+      <path className="mythra-mark-caret" d={CARET} fill="#fff" />
     </svg>
   );
 }

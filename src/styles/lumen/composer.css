@@ -44,7 +44,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .toolbar-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--panel-3); }
 .app-shell[data-theme][data-color-scheme] .toolbar-button[aria-expanded="true"] { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments { color: var(--on-accent); border-color: transparent; background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments { color: var(--on-accent); border-color: transparent; background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .agents-button.enabled,
 .app-shell[data-theme][data-color-scheme] .agents-button.live { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
 
@@ -54,11 +54,11 @@
   border: 0;
   border-radius: var(--r-control);
   color: var(--on-accent);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   box-shadow: 0 8px 20px -6px var(--lm-accent-glow);
 }
-.app-shell[data-theme][data-color-scheme] .send-button:hover:not(:disabled) { border-color: transparent; background: var(--green) var(--lm-grad); filter: brightness(1.1); box-shadow: 0 12px 26px -6px var(--lm-accent-glow); }
-.app-shell[data-theme][data-color-scheme] .send-button:active:not(:disabled) { background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .send-button:hover:not(:disabled) { border-color: transparent; background: var(--lm-fill) var(--lm-grad); filter: brightness(1.1); box-shadow: 0 12px 26px -6px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .send-button:active:not(:disabled) { background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .send-button:disabled { color: var(--muted-2); background: var(--panel-3); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .send-button.queue-button { width: auto; height: 34px; padding: 0 14px; border-radius: var(--r-control); }
 .app-shell[data-theme][data-color-scheme] .stop-button {
@@ -98,7 +98,7 @@
   height: 22px;
   border-radius: var(--r-chip);
   color: var(--on-accent);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 700;
@@ -131,7 +131,7 @@
 .app-shell[data-theme][data-color-scheme] .permission-menu button:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .permission-menu button.selected { color: var(--text); background: var(--green-soft); box-shadow: inset 0 0 0 1px var(--green-line); }
 .app-shell[data-theme][data-color-scheme] .permission-menu button > svg:first-child { width: 30px; height: 30px; padding: 6px; border-radius: 10px; background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .permission-menu button.selected > svg:first-child { color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .permission-menu button.selected > svg:first-child { color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 
 /* ---- Model rails (every provider) ---- */
 .app-shell[data-theme][data-color-scheme] .model-power-control,
@@ -208,7 +208,7 @@
 .app-shell[data-theme][data-color-scheme] .sa-tile { border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .sa-row.on { background: var(--green-soft); }
 .app-shell[data-theme][data-color-scheme] .sa-readout { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .sa-header-mark { border-radius: var(--r-sm); color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .sa-header-mark { border-radius: var(--r-sm); color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 
 /* ---- Motion ---- */
 @media (prefers-reduced-motion: no-preference) {

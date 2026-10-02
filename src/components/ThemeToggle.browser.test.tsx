@@ -58,12 +58,12 @@ describe("theme-aware toggle colors", () => {
   // the accent gradient where supported) carrying an on-accent thumb. The
   // contracts below are the legacy ones restated for that model: the track is
   // the theme's own hue, never another theme's, and the thumb stays visible.
-  it("keeps Midnight entirely blue instead of pairing its blue thumb with a green track", () => {
-    const view = render(<ToggleSamples theme="midnight" />);
+  it("keeps Synthwave's switches pink instead of pairing its thumb with a green track", () => {
+    const view = render(<ToggleSamples theme="synthwave" />);
     const track = view.container.querySelector<HTMLElement>(".toggle-switch.on");
     const thumb = view.container.querySelector<HTMLElement>(".toggle-switch.on span");
 
-    expect(getComputedStyle(track!).backgroundColor).toBe("rgb(134, 200, 255)");
+    expect(getComputedStyle(track!).backgroundColor).toBe("rgb(255, 106, 193)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe("rgba(167, 226, 111, 0.32)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe(getComputedStyle(thumb!).backgroundColor);
     expect(contrast(getComputedStyle(thumb!).backgroundColor, getComputedStyle(track!).backgroundColor)).toBeGreaterThanOrEqual(3);
@@ -76,10 +76,10 @@ describe("theme-aware toggle colors", () => {
     const thumb = shell.querySelector<HTMLElement>(".toggle-switch.on span");
     const kiwiTrack = view.getByTestId("daylight").querySelector<HTMLElement>(".toggle-switch.on");
 
-    // The restrained canvas for Light Mythra stays neutral, with cyan
+    // The restrained canvas for Light Mythra stays neutral, with sky cyan
     // reserved for the active control rather than the entire surface.
     expect(getComputedStyle(shell).backgroundColor).toBe("rgb(227, 231, 234)");
-    expect(getComputedStyle(track!).backgroundColor).toBe("rgb(8, 128, 163)");
+    expect(getComputedStyle(track!).backgroundColor).toBe("rgb(10, 149, 212)");
     expect(getComputedStyle(track!).backgroundColor).not.toBe(getComputedStyle(kiwiTrack!).backgroundColor);
     expect(getComputedStyle(track!).backgroundColor).not.toBe("rgba(62, 142, 34, 0.38)");
     expect(contrast(getComputedStyle(thumb!).backgroundColor, getComputedStyle(track!).backgroundColor)).toBeGreaterThanOrEqual(3);

@@ -7,8 +7,7 @@
 .usage-dashboard { container-type: inline-size; contain: layout; --usage-series-1: #3987e5; --usage-series-2: #d95926; }
 .app-shell[data-color-scheme="light"] .usage-dashboard { --usage-series-1: #2a78d6; --usage-series-2: #eb6834; }
 .app-shell[data-theme="atari"] .usage-dashboard { --usage-series-1: #8e3b32; --usage-series-2: #977030; }
-.app-shell[data-theme="monochrome"] .usage-dashboard { --usage-series-1: #eceeeb; --usage-series-2: #8d9299; }
-.app-shell:is([data-theme="atari"], [data-theme="monochrome"]) .usage-dashboard :is(.usage-chart-bar, .usage-swatch).series-2 { background: repeating-linear-gradient(135deg, var(--usage-series-2) 0 3px, var(--field) 3px 5px); }
+.app-shell[data-theme="atari"] .usage-dashboard :is(.usage-chart-bar, .usage-swatch).series-2 { background: repeating-linear-gradient(135deg, var(--usage-series-2) 0 3px, var(--field) 3px 5px); }
 
 .usage-dashboard-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--s-2) var(--s-4); }
 .usage-dashboard-head > div:first-child > p { margin: var(--s-1) 0 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; max-width: 62ch; }

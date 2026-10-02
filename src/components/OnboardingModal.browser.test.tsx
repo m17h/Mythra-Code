@@ -94,7 +94,7 @@ describe("onboarding keyboard behavior in a real browser", () => {
     const previewShell = view.container.querySelector<HTMLElement>(".ob-effort-shell")!;
     const hostShell = view.container.firstElementChild as HTMLElement;
     const accents = new Set<string>();
-    for (const name of ["Mythra", "Light Mythra", "Kiwi", "Light Kiwi", "Midnight", "Synthwave"]) {
+    for (const name of ["Mythra", "Light Mythra", "Kiwi", "Light Kiwi", "Synthwave", "Atari"]) {
       await userEvent.click(screen.getByRole("radio", { name }));
       const accent = getComputedStyle(preview).getPropertyValue("--ob-pv-accent").trim();
       accents.add(accent);

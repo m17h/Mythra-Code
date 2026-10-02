@@ -30,7 +30,7 @@
 .app-shell[data-theme][data-color-scheme] .row-menu-list button.danger:hover { color: var(--red); background: rgba(255, 120, 120, .12); }
 .app-shell[data-theme][data-color-scheme] .app-select-menu [role="option"] { border-radius: var(--r-sm); }
 
-.app-shell[data-theme][data-color-scheme] .project-prompt-icon { border-radius: 11px; color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-icon { border-radius: 11px; color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes > button { min-height: 70px; border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-modes > button.selected { border-color: var(--green-line); background: var(--green-soft); }
 .app-shell[data-theme][data-color-scheme] .project-prompt-editor textarea { border-radius: var(--r-md); }
@@ -135,7 +135,7 @@
   box-shadow: 0 8px 22px -10px var(--red);
 }
 .app-shell[data-theme][data-color-scheme] .confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { background: var(--red); filter: brightness(1.08); }
-.app-shell[data-theme][data-color-scheme] .runtime-setup-mark { border: 0; border-radius: 18px; color: var(--on-accent); background: var(--green) var(--lm-grad); box-shadow: 0 12px 28px -10px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .runtime-setup-mark { border: 0; border-radius: 18px; color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); box-shadow: 0 12px 28px -10px var(--lm-accent-glow); }
 .app-shell[data-theme][data-color-scheme] .runtime-option { border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .runtime-option.recommended { border-color: var(--green-line); background: var(--green-soft); }
 .app-shell[data-theme][data-color-scheme] .runtime-note,
@@ -156,7 +156,7 @@
 /* The welcome glyph holds the themed Mythra mark, so it sits on a neutral
    tile (an accent fill would fight the mark's own theme colours). */
 .app-shell[data-theme][data-color-scheme] .ob-glyph { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--panel-2); }
-.app-shell[data-theme][data-color-scheme] .ob-ready-mark { border: 0; border-radius: 16px; color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .ob-ready-mark { border: 0; border-radius: 16px; color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 /* Stepper, tags and theme swatches: rounded squares (OnboardingModal.css
    keeps the status dots round). */
 .app-shell[data-theme][data-color-scheme] .ob-stepper button,

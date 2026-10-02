@@ -183,7 +183,7 @@ describe("usage calendar", () => {
     seed();
     const themes: Array<[ThemeName, "dark" | "light"]> = [
       ["mythra", "dark"], ["light-mythra", "light"], ["kiwi", "dark"], ["daylight", "light"],
-      ["midnight", "dark"], ["synthwave", "dark"], ["atari", "light"], ["monochrome", "dark"],
+      ["synthwave", "dark"], ["atari", "light"],
     ];
     for (const [theme, scheme] of themes) {
       const { view, calendar, cell } = mount({ theme, scheme });

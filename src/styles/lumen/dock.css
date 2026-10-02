@@ -233,14 +233,14 @@
 .app-shell[data-theme][data-color-scheme] .app-action-list { padding: 6px; border-radius: var(--r-lg); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button { border-radius: var(--r-sm); }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button:hover:not(:disabled) { color: var(--text); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .git-sync-counts > span.active { color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .git-sync-counts > span.active { color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
 .app-shell[data-theme][data-color-scheme] .git-console { border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .git-commit-button,
 .app-shell[data-theme][data-color-scheme] .github-create-button {
   border: 0;
   border-radius: var(--r-control);
   color: var(--on-accent);
-  background: var(--green) var(--lm-grad);
+  background: var(--lm-fill) var(--lm-grad);
   box-shadow: 0 8px 20px -10px var(--lm-accent-glow);
 }
 .app-shell[data-theme][data-color-scheme] .git-commit-button:disabled,

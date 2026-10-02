@@ -564,7 +564,7 @@ describe("onboarding Settings handoff", () => {
 
     const settings = await screen.findByRole("dialog", { name: "Settings" });
     expect(within(settings).getByRole("heading", { name: "Interface" })).toBeInTheDocument();
-    expect(within(settings).getByRole("button", { name: /Synthwave.*Neon violet/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(settings).getByRole("button", { name: /Synthwave.*neon pink/ })).toHaveAttribute("aria-pressed", "true");
     expect(within(settings).getByRole("button", { name: /Monospace/ })).toHaveAttribute("aria-pressed", "true");
     expect(within(settings).getByRole("button", { name: /Astra.*living nebula/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(settings).getByText("Unsaved changes")).toBeInTheDocument();
@@ -582,7 +582,7 @@ describe("onboarding Settings handoff", () => {
     await user.click(within(tour).getByRole("button", { name: "Skip tour" }));
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const reopened = await screen.findByRole("dialog", { name: "Settings" });
-    expect(within(reopened).getByRole("button", { name: /Synthwave.*Neon violet/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(reopened).getByRole("button", { name: /Synthwave.*neon pink/ })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).getByRole("button", { name: /Interface default.*same typeface/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).getByRole("button", { name: /Aurora.*northern-light/i })).toHaveAttribute("aria-pressed", "true");
     expect(within(reopened).queryByText("Unsaved changes")).not.toBeInTheDocument();
@@ -1433,12 +1433,20 @@ describe("Claude model updates", () => {
 });
 
 describe("chat typeface", () => {
-  it.each([["atari", "light"], ["monochrome", "dark"]])("restores the saved %s palette on the actual app shell", async (theme, scheme) => {
+  it.each([["atari", "light"], ["synthwave", "dark"]])("restores the saved %s palette on the actual app shell", async (theme, scheme) => {
     localStorage.setItem("kiwi.settings", JSON.stringify({ theme }));
     await renderApp();
     const shell = document.querySelector(".app-shell");
     expect(shell).toHaveAttribute("data-theme", theme);
     expect(shell).toHaveAttribute("data-color-scheme", scheme);
+  });
+
+  it.each(["midnight", "monochrome"])("opens a saved retired %s palette as Mythra instead of an unstyled shell", async (theme) => {
+    localStorage.setItem("kiwi.settings", JSON.stringify({ theme }));
+    await renderApp();
+    const shell = document.querySelector(".app-shell");
+    expect(shell).toHaveAttribute("data-theme", "mythra");
+    expect(shell).toHaveAttribute("data-color-scheme", "dark");
   });
 
   it("publishes a saved chat font on the shell for the scoped chat styles to read", async () => {
@@ -1452,13 +1460,13 @@ describe("chat typeface", () => {
   it("falls back to the interface default for settings saved before the selector", async () => {
     // A settings blob from an older build has no chatFont at all, and a
     // hand-edited one can hold anything; both must render as the default.
-    localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "midnight", chatFont: "Papyrus" }));
+    localStorage.setItem("kiwi.settings", JSON.stringify({ theme: "synthwave", chatFont: "Papyrus" }));
 
     await renderApp();
 
     const shell = document.querySelector(".app-shell");
     expect(shell).toHaveAttribute("data-chat-font", "system");
-    expect(shell).toHaveAttribute("data-theme", "midnight");
+    expect(shell).toHaveAttribute("data-theme", "synthwave");
   });
 
   it("previews live and restores the saved typeface when Settings is cancelled", async () => {

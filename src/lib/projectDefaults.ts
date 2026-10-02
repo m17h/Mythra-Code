@@ -1,5 +1,5 @@
 import type { Project, ProjectDefaults, Provider } from "../types";
-import { EFFORT_SLIDER_STYLES, sanitizeChatFont, sanitizeEffortSlider, THEMES } from "./appConfig";
+import { EFFORT_SLIDER_STYLES, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, THEMES } from "./appConfig";
 import { modelForProvider } from "./threadProvider";
 
 const PROJECT_DEFAULT_PROVIDERS: Provider[] = ["openai", "claude", "cursor", "openrouter", "lmstudio"];
@@ -17,7 +17,12 @@ export function sanitizeProjectDefaults(value: unknown): ProjectDefaults | null 
   if (!model) return null;
 
   const defaults: ProjectDefaults = { provider, model };
-  if (THEMES.some((theme) => theme.id === raw.theme)) defaults.theme = raw.theme;
+  const theme: unknown = raw.theme;
+  // A retired palette keeps the project's appearance override on Mythra, its
+  // replacement, rather than silently following a different global theme.
+  if (theme === "midnight" || theme === "monochrome" || THEMES.some((entry) => entry.id === theme)) {
+    defaults.theme = sanitizeTheme(theme);
+  }
   const effortSlider: unknown = raw.effortSlider;
   // Retired ids that have a direct replacement keep the project's override;
   // anything unrecognised is dropped rather than becoming the default style.

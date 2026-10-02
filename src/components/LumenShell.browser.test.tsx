@@ -387,13 +387,17 @@ it("themes every in-app Mythra mark from the active shell, live, with brand fall
   expect(new Set(ids).size).toBe(ids.length);
 });
 
-it.each(THEMES.map((theme) => theme.id))("gives the Mythra mark a readable palette of its own in %s", (theme) => {
+// Morgan: Light Mythra's mark is the brand mark itself, identical to Mythra's.
+const BRAND_MARK_THEMES: ThemeName[] = ["mythra", "light-mythra"];
+
+it.each(THEMES.map((theme) => theme.id).filter((theme) => theme !== "light-mythra"))("gives the Mythra mark a readable palette of its own in %s", (theme) => {
   const view = render(<>{THEMES.map((entry) => (
     <Shell key={entry.id} theme={entry.id}><div data-testid={entry.id} style={{ background: "var(--bg)" }}><MythraMark /></div></Shell>
   ))}</>);
   const own = stopColors(view.getByTestId(theme));
-  // Every theme's palette is distinct from every other theme's.
-  for (const other of THEMES.filter((entry) => entry.id !== theme)) {
+  // Every theme's palette is distinct from every other theme's, except that
+  // the two brand themes share the original brand palette.
+  for (const other of THEMES.filter((entry) => entry.id !== theme && !(BRAND_MARK_THEMES.includes(theme) && BRAND_MARK_THEMES.includes(entry.id)))) {
     expect(stopColors(view.getByTestId(other.id))["cyan-a"], `${theme} vs ${other.id}`).not.toBe(own["cyan-a"]);
   }
   const surface = getComputedStyle(view.getByTestId(theme)).backgroundColor;
@@ -403,6 +407,56 @@ it.each(THEMES.map((theme) => theme.id))("gives the Mythra mark a readable palet
   expect(contrast(average(own["cyan-a"], own["cyan-b"]), surface), `${theme} outer pieces`).toBeGreaterThanOrEqual(3);
   expect(contrast(average(own["blue-a"], own["blue-b"]), surface), `${theme} centre`).toBeGreaterThanOrEqual(2.5);
   expect(contrast(average(own["fold-a"], own["fold-b"]), surface), `${theme} fold`).toBeGreaterThanOrEqual(2.5);
+});
+
+it("draws Light Mythra's marks with exactly the original brand stops and caret", () => {
+  const view = render(<>
+    <Shell theme="mythra"><div data-testid="mythra"><AnimatedMythraLogo /><MythraMark /></div></Shell>
+    <Shell theme="light-mythra"><div data-testid="light-mythra" style={{ background: "var(--bg)" }}><AnimatedMythraLogo /><MythraMark /></div></Shell>
+  </>);
+  const brand = { "cyan-a": "rgb(53, 231, 242)", "cyan-b": "rgb(8, 174, 234)", "blue-a": "rgb(20, 142, 255)", "blue-b": "rgb(22, 68, 232)", "fold-a": "rgb(23, 107, 250)", "fold-b": "rgb(18, 71, 217)" };
+  for (const theme of BRAND_MARK_THEMES) {
+    const root = view.getByTestId(theme);
+    expect(stopColors(root.querySelector(".mythra-logo")!), `${theme} animated`).toEqual(brand);
+    expect(stopColors(root.querySelector("svg.mythra-mark")!), `${theme} static`).toEqual(brand);
+    expect(getComputedStyle(root.querySelector(".mythra-logo__cursor")!).fill, `${theme} caret`).toBe("rgb(223, 251, 254)");
+  }
+  // On white the bright outer pieces are soft by design (a brand mark, exempt
+  // from text contrast); the deep blue centre and fold still carry the shape.
+  const surface = getComputedStyle(view.getByTestId("light-mythra")).backgroundColor;
+  expect(contrast(average(brand["blue-a"], brand["blue-b"]), surface)).toBeGreaterThanOrEqual(3);
+  expect(contrast(average(brand["fold-a"], brand["fold-b"]), surface)).toBeGreaterThanOrEqual(3);
+});
+
+it("gives Atari's marks a vivid orange-red palette rather than brown, readable on its tan surfaces", () => {
+  const view = render(<Shell theme="atari">
+    <aside className="sidebar"><span className="brand-mark"><MythraMark /></span></aside>
+    <div data-testid="stage" style={{ background: "var(--bg)" }}><AnimatedMythraLogo /></div>
+    <div data-testid="panel" style={{ background: "var(--panel)" }}><MythraMark className="ob-header-glyph" /></div>
+  </Shell>);
+  const roots = [view.container.querySelector(".brand-mark svg")!, view.container.querySelector(".mythra-logo")!, view.getByTestId("panel").querySelector("svg")!];
+  const own = stopColors(roots[0]);
+  for (const root of roots) expect(stopColors(root)).toEqual(own);
+  for (const stop of STOPS) {
+    const [r, g, b] = own[stop].match(/[\d.]+/g)!.map((value) => Number(value) / 255);
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), lightness = (max + min) / 2;
+    const saturation = (max - min) / (1 - Math.abs(2 * lightness - 1));
+    const hue = ((g - b) / (max - min)) * 60;
+    expect(max, `${stop} is led by red`).toBe(r);
+    // Orange-red hue, high chroma and not darkened into brown or oxblood.
+    expect(hue, `${stop} hue`).toBeGreaterThanOrEqual(5);
+    expect(hue, `${stop} hue`).toBeLessThanOrEqual(20);
+    expect(saturation, `${stop} saturation`).toBeGreaterThanOrEqual(.65);
+    expect(lightness, `${stop} lightness`).toBeGreaterThanOrEqual(.3);
+  }
+  for (const surface of [view.container.querySelector(".sidebar")!, view.getByTestId("stage"), view.getByTestId("panel")]) {
+    const backdrop = getComputedStyle(surface).backgroundColor;
+    expect(contrast(average(own["cyan-a"], own["cyan-b"]), backdrop), "outer pieces").toBeGreaterThanOrEqual(3);
+    expect(contrast(average(own["blue-a"], own["blue-b"]), backdrop), "centre").toBeGreaterThanOrEqual(3);
+  }
+  // The rest of Atari stays as it was: tan canvas, brick accent.
+  expect(getComputedStyle(view.container.querySelector(".app-shell")!).backgroundColor).toBe("rgb(221, 208, 182)");
+  expect(getComputedStyle(view.container.querySelector(".app-shell")!).getPropertyValue("--green").trim()).toBe("#8e3b32");
 });
 
 it.each(THEMES.map((theme) => theme.id))("keeps action controls legible in %s", (theme) => {

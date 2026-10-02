@@ -112,7 +112,7 @@ it.each(THEMES)("supports creation and visibility at 150% in the narrow $name do
   expect(input.onGitHubCreate).toHaveBeenLastCalledWith("a-readable-repository-name", "public");
   const panel = view.container.querySelector<HTMLElement>(".studio-panel")!;
   expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth + 1);
-  if (id === "atari" || id === "monochrome") await page.screenshot({ path: `../../test-results/pr-screenshots/git-publish-${id}-150.png` });
+  if (id === "atari" || id === "synthwave") await page.screenshot({ path: `../../test-results/pr-screenshots/git-publish-${id}-150.png` });
 });
 
 for (const width of [360, 520]) {
