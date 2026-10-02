@@ -18,6 +18,26 @@ function search(value: string, ariaLabel = "Default model") {
 }
 
 describe("AppSelectMenu", () => {
+  it("keeps deliberate option focus when its opening animation frame runs", async () => {
+    render(<AppSelectMenu value="one" ariaLabel="Model" options={[
+      { value: "one", label: "One" }, { value: "two", label: "Two" },
+    ]} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const second = screen.getByRole("menuitemradio", { name: "Two" });
+    second.focus();
+    await act(async () => { await new Promise(requestAnimationFrame); });
+    expect(second).toHaveFocus();
+  });
+
+  it("does not steal focus moved to another control before its opening frame", async () => {
+    render(<><button>Another dialog control</button><AppSelectMenu value="one" ariaLabel="Model" options={[{ value: "one", label: "One" }]} onChange={vi.fn()} /></>);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const other = screen.getByRole("button", { name: "Another dialog control" });
+    other.focus();
+    await act(async () => { await new Promise(requestAnimationFrame); });
+    expect(other).toHaveFocus();
+  });
+
   it("shows disabled catalog entries without allowing selection", () => {
     const onChange = vi.fn();
     render(<AppSelectMenu value="" ariaLabel="Model" options={[{ value: "next", label: "Next model", disabled: true }]} onChange={onChange} />);

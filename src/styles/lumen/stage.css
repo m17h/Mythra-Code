@@ -1,0 +1,493 @@
+/* ============================================================================
+   Lumen stage: the chat island, its floating header, the landing screens,
+   notifications and banners.
+   Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
+   ========================================================================== */
+
+.app-shell[data-theme][data-color-scheme] .main-panel {
+  background-color: var(--bg);
+  background-image: radial-gradient(90% 50% at 50% -10%, var(--lm-wash), transparent 70%);
+}
+
+/* ---- Header: a borderless title left, an instrument tray right ---- */
+.app-shell[data-theme][data-color-scheme] .topbar {
+  gap: 14px;
+  padding: 0 12px 0 18px;
+  border-bottom: 0;
+  border-radius: var(--lm-island-r) var(--lm-island-r) 0 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .topbar::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-strong) 20%, var(--line-strong) 80%, transparent);
+  pointer-events: none;
+}
+.app-shell[data-theme][data-color-scheme] .topbar-left { gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .project-heading { gap: 2px; padding-left: 0; }
+.app-shell[data-theme][data-color-scheme] .project-heading > span {
+  font-family: var(--font-display);
+  font-size: 15.5px;
+  font-weight: 720;
+  letter-spacing: -.028em;
+}
+.app-shell[data-theme][data-color-scheme] .project-heading small { color: var(--muted-2); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: -.01em; }
+
+.app-shell[data-theme][data-color-scheme] .topbar-right {
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: 0 8px 22px -14px rgba(0, 0, 0, .55);
+}
+.app-shell[data-theme][data-color-scheme] .topbar-right > .icon-button { width: 30px; height: 30px; border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .command-palette-trigger {
+  height: 30px;
+  padding: 0 6px 0 11px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: var(--field);
+}
+.app-shell[data-theme][data-color-scheme] .command-palette-trigger:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .command-palette-trigger kbd,
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger kbd,
+.app-shell[data-theme][data-color-scheme] .palette-footer kbd,
+.app-shell[data-theme][data-color-scheme] .palette-results kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  color: var(--muted-2);
+  background: var(--lm-hover);
+  font: 600 9.5px var(--font-mono);
+}
+.app-shell[data-theme][data-color-scheme] .runtime-status {
+  height: 30px;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .runtime-status > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .topbar-usage-chip { height: 30px; border: 0; border-radius: var(--r-control); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .topbar-usage-chip:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger {
+  height: 30px;
+  padding: 0 6px 0 11px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger:hover:not(:disabled) { border-color: transparent; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active {
+  color: var(--on-accent);
+  border-color: transparent;
+  background: var(--green) var(--lm-grad);
+  box-shadow: 0 6px 16px -6px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active kbd { color: inherit; border-color: transparent; background: rgba(0, 0, 0, .14); }
+
+/* Left-side chips: every one is a rounded chip with a tinted ground. */
+.app-shell[data-theme][data-color-scheme] .isolation-chip,
+.app-shell[data-theme][data-color-scheme] .handoff-chip { height: 28px; padding: 0 10px; border-radius: var(--r-control); font-size: 11px; }
+/* Pull-request chip and its lazily loaded panel (thread-pull-request*.css). */
+.app-shell[data-theme][data-color-scheme] .thread-pr-chip { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .thread-pr-chip > em,
+.app-shell[data-theme][data-color-scheme] .thread-pr-fact,
+.app-shell[data-theme][data-color-scheme] .thread-pr-state,
+.app-shell[data-theme][data-color-scheme] .thread-pr-help-button { border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-trigger {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .project-prompt-trigger:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-trigger.custom { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-trigger small,
+.app-shell[data-theme][data-color-scheme] .project-run-trigger small { border-radius: var(--r-chip); font-family: var(--font-mono); font-size: 9.5px; }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger {
+  height: 30px;
+  padding: 0 10px 0 12px;
+  border-radius: var(--r-control) 0 0 var(--r-control);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .project-run-edit {
+  width: 28px;
+  height: 30px;
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.ready { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.ready:hover { background: var(--lm-tint-strong); }
+.app-shell[data-theme][data-color-scheme] .project-run-trigger.running { border-color: var(--amber); background: rgba(242, 180, 106, .14); }
+
+/* ---- Conversation search: a floating bar ---- */
+.app-shell[data-theme][data-color-scheme] .conv-search-bar {
+  width: min(560px, calc(100% - 32px));
+  margin: 10px auto 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+}
+
+/* ---- Buttons ---- */
+.app-shell[data-theme][data-color-scheme] .primary-button {
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--on-accent);
+  background: var(--green) var(--lm-grad);
+  box-shadow: 0 8px 22px -10px var(--lm-accent-glow);
+  font-weight: 660;
+}
+.app-shell[data-theme][data-color-scheme] .primary-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--green) var(--lm-grad);
+  filter: brightness(1.08);
+  box-shadow: 0 12px 28px -10px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .primary-button:active:not(:disabled) { background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .primary-button:disabled { filter: grayscale(.5); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .secondary-button {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: var(--panel-2);
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .secondary-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .secondary-button.danger { color: var(--red); border-color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .secondary-button.danger:hover:not(:disabled) { color: var(--red); background: rgba(255, 120, 120, .12); }
+
+/* ---- Welcome (no workspace selected) ---- */
+.app-shell[data-theme][data-color-scheme] .welcome-orbit {
+  width: 76px;
+  height: 76px;
+  border: 1px solid var(--line-strong);
+  border-radius: 22px;
+  color: var(--green);
+  background: var(--panel);
+  box-shadow: var(--elev-2);
+}
+.app-shell[data-theme][data-color-scheme] .welcome-screen h1,
+.app-shell[data-theme][data-color-scheme] .thread-empty-state h1 {
+  margin: 22px 0 10px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--fs-display);
+  font-weight: 760;
+  line-height: 1.08;
+  letter-spacing: var(--track-display);
+}
+.app-shell[data-theme][data-color-scheme] .welcome-screen p,
+.app-shell[data-theme][data-color-scheme] .thread-empty-state p { max-width: 50ch; margin-bottom: 20px; color: var(--muted); font-size: 14.5px; line-height: 1.6; }
+.app-shell[data-theme][data-color-scheme] .welcome-actions { gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .welcome-actions .primary-button,
+.app-shell[data-theme][data-color-scheme] .welcome-actions .secondary-button { min-height: 46px; padding: 0 22px; font-size: 13.5px; }
+
+/* ---- New-thread landing ----
+   The animated logo renders exactly as AnimatedMythraLogo ships it: no
+   backdrop, rings, wrapper or context chip (Morgan asked for both the halo
+   and the "Project · name" chip to go). The heading follows the logo. */
+
+.app-shell[data-theme][data-color-scheme] .trust-strip { gap: 8px; color: var(--ink-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .trust-strip span {
+  height: 28px;
+  gap: 6px;
+  padding: 0 11px 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .trust-strip svg {
+  width: 14px;
+  height: 14px;
+  color: var(--green);
+}
+
+/* Workspace choice: two large selectable tiles with a radio indicator. */
+.app-shell[data-theme][data-color-scheme] .isolation-choice { width: min(600px, 100%); gap: 10px; margin: 18px 0 4px; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button {
+  position: relative;
+  min-height: 70px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  color: var(--muted);
+  background: var(--panel);
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button:hover:not(:disabled) { color: var(--ink-2); border-color: var(--line-strong); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.active {
+  color: var(--text);
+  border-color: var(--green-line);
+  background-color: var(--panel);
+  background-image: var(--lm-grad-soft);
+  box-shadow: 0 14px 30px -18px var(--lm-accent-glow);
+}
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button > svg {
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  border-radius: 10px;
+  color: var(--ink-2);
+  background: var(--lm-hover);
+}
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.active > svg { color: var(--green); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .isolation-choice strong { color: var(--text); font-family: var(--font-display); font-size: 13.5px; font-weight: 680; letter-spacing: -.015em; }
+.app-shell[data-theme][data-color-scheme] .isolation-choice > button.git-initialize-choice { border-style: dashed; border-color: var(--green-line); color: var(--green); background: var(--green-soft); }
+
+/* Shortcut chips into the workbench. */
+.app-shell[data-theme][data-color-scheme] .empty-state-actions { gap: 8px; margin-top: 14px; }
+.app-shell[data-theme][data-color-scheme] .empty-state-actions button {
+  min-height: 36px;
+  gap: 8px;
+  padding: 0 14px 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  background: var(--panel);
+  font-size: 12px;
+  font-weight: 600;
+}
+.app-shell[data-theme][data-color-scheme] .empty-state-actions button > svg {
+  width: 26px;
+  height: 26px;
+  padding: 6px;
+  border-radius: var(--r-xs);
+  color: var(--muted);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .empty-state-actions button:hover { color: var(--text); border-color: var(--green-line); background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .handoff-draft-banner { padding: 12px 14px; border-color: var(--green-line); border-radius: var(--r-lg); background: var(--green-soft); }
+
+/* ---- Banners ---- */
+.app-shell[data-theme][data-color-scheme] .error-banner {
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--red);
+  border-radius: var(--r-lg);
+  color: var(--text);
+  background: var(--panel);
+  background-image: linear-gradient(90deg, rgba(255, 110, 110, .16), rgba(255, 110, 110, .06));
+  box-shadow: 0 14px 30px -18px var(--red);
+}
+.app-shell[data-theme][data-color-scheme] .error-banner button.error-settings { min-height: 28px; padding: 0 12px; border-radius: var(--r-control); }
+
+/* ---- Update notice: a floating bar under the header ---- */
+.app-shell[data-theme][data-color-scheme] .app-update-notice-region { top: calc(var(--topbar-h) + 8px); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice {
+  min-height: 44px;
+  padding: 5px 5px 5px 6px;
+  border: 1px solid var(--green-line);
+  border-radius: var(--r-md);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+}
+.app-shell[data-theme][data-color-scheme] .app-update-notice-icon { width: 32px; height: 32px; border-radius: var(--r-control); color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-action { height: 32px; padding: 0 14px; border: 0; border-radius: var(--r-control); color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-action:hover { border-color: transparent; background: var(--green) var(--lm-grad); filter: brightness(1.08); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-dismiss { width: 32px; height: 32px; border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-progress { left: 22px; right: 22px; height: 3px; background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice-progress > span { background: var(--green) var(--lm-grad); box-shadow: 0 0 8px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice.failed { border-color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-icon { color: var(--red); background: rgba(255, 120, 120, .15); }
+.app-shell[data-theme][data-color-scheme] .app-update-notice.failed .app-update-notice-action { color: var(--text); background: var(--panel-3); }
+
+/* ---- Toast: a rounded bar that drops from the top edge ---- */
+.app-shell[data-theme][data-color-scheme] .app-toast {
+  top: 18px;
+  min-height: 44px;
+  padding: 6px 6px 6px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+  font-weight: 560;
+}
+.app-shell[data-theme][data-color-scheme] .app-toast.success { border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .app-toast-icon { width: 30px; height: 30px; border-radius: var(--r-control); color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .app-toast.info .app-toast-icon { color: var(--ink-2); background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .app-toast > button { width: 30px; height: 30px; border-radius: var(--r-control); }
+
+/* ---- Header collapse ladder ------------------------------------------------
+   Diagnosis (Morgan's 1500x1000 renderer screenshot, navigator and dock open):
+   Lumen's chips and instrument tray are wider than legacy's, and Lumen's
+   higher-specificity selectors left nothing on the left able to give way. The
+   project name collapsed to zero width and the GitHub / instructions / Run
+   chips ran under the tray. The fix is driven by the ACTUAL chat column
+   (`chat-main` container), which the navigator, dock and UI scale all narrow:
+
+   - Structure: the left group may shrink and the project name gives way
+     first, down to a readable minimum. Chips and the tray keep their size and
+     shed labels step by step instead.
+   - Every icon-only state keeps its control and a 30px hit area; accessible
+     names already live on aria-label/title, so nothing loses its name.
+   - Search and export stay reachable as icon buttons. (Legacy hid them below
+     720px; App.header.browser.test.tsx asserts they remain usable.)
+   - At the narrowest columns the tray wraps to its own row rather than
+     overlapping. */
+.app-shell[data-theme][data-color-scheme] .topbar-left { flex: 1 1 0; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .topbar-left > * { flex-shrink: 0; }
+.app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { flex: 0 1 auto; min-width: 64px; max-width: 320px; }
+.app-shell[data-theme][data-color-scheme] .project-heading > span,
+.app-shell[data-theme][data-color-scheme] .project-heading small { display: block; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .topbar-right { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .topbar-usage-chip { max-width: 190px; }
+.app-shell[data-theme][data-color-scheme] .topbar-usage-chip > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-chip { height: 30px; flex-shrink: 0; }
+
+@container chat-main (max-width: 1080px) {
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger kbd,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger kbd { display: none; }
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger { padding-right: 11px; }
+  .app-shell[data-theme][data-color-scheme] .runtime-status > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .runtime-status { padding: 0 9px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip { max-width: 150px; }
+  .app-shell[data-theme][data-color-scheme] .project-heading { max-width: 220px; }
+}
+@container chat-main (max-width: 960px) {
+  .app-shell[data-theme][data-color-scheme] .topbar { gap: 8px; padding-left: 12px; padding-right: 8px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-left { gap: 6px; }
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger small { display: none; }
+  .app-shell[data-theme][data-color-scheme] .project-heading { max-width: 180px; }
+}
+@container chat-main (max-width: 860px) {
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > span,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > svg:not(:first-child) { display: none; }
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty > span,
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip > em { display: none; }
+}
+/* Legacy's 720px step hides search, export and the status line. Lumen keeps
+   search and export as icon buttons; the status dot (not interactive, named
+   by its title) is the only thing that goes. */
+@container chat-main (max-width: 760px) {
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger { display: flex; }
+  .app-shell[data-theme][data-color-scheme] .topbar-export-button { display: grid; }
+  .app-shell[data-theme][data-color-scheme] .runtime-status { display: none; }
+  .app-shell[data-theme][data-color-scheme] .project-heading small { display: none; }
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger small,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > svg:last-child { display: none; }
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger { width: 32px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .isolation-chip,
+  .app-shell[data-theme][data-color-scheme] .handoff-chip { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip { max-width: 92px; padding: 0 8px; }
+}
+@container chat-main (max-width: 600px) {
+  .app-shell[data-theme][data-color-scheme] .topbar { gap: 6px; padding-left: 8px; padding-right: 6px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-left { gap: 4px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-right { gap: 0; padding: 2px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { min-width: 52px; }
+}
+/* Narrowest columns (e.g. 150% UI scale with both panes open): the tray takes
+   its own row under the project row instead of overlapping it. */
+@container chat-main (max-width: 400px) {
+  .app-shell[data-theme][data-color-scheme] .topbar { flex: 0 0 auto; height: auto; min-height: var(--topbar-h); flex-wrap: wrap; row-gap: 6px; padding-top: 8px; padding-bottom: 8px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-left { flex: 1 1 100%; }
+  .app-shell[data-theme][data-color-scheme] .topbar-right { margin-left: auto; }
+}
+
+/* Safari 13 cannot run the container ladder. Keep every action as a named
+   icon button and let the groups wrap using their intrinsic width, so sidebar,
+   dock and UI zoom still affect layout without viewport breakpoint guesses. */
+@supports not (container-type: inline-size) {
+  .app-shell[data-theme][data-color-scheme] .topbar {
+    flex: 0 0 auto; height: auto; min-height: var(--topbar-h);
+    flex-wrap: wrap; gap: 6px; padding: 8px;
+  }
+  .app-shell[data-theme][data-color-scheme] .topbar-left { flex: 1 1 280px; gap: 4px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { min-width: 52px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-right { margin-left: auto; gap: 0; padding: 2px; }
+  .app-shell[data-theme][data-color-scheme] .project-heading small,
+  .app-shell[data-theme][data-color-scheme] .runtime-status,
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger kbd,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger kbd,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger small,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > svg:last-child,
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger small,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > span,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > svg:not(:first-child),
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty > span,
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip > em,
+  .app-shell[data-theme][data-color-scheme] .isolation-chip > span,
+  .app-shell[data-theme][data-color-scheme] .handoff-chip > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip,
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty,
+  .app-shell[data-theme][data-color-scheme] .isolation-chip,
+  .app-shell[data-theme][data-color-scheme] .handoff-chip { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger { display: flex; }
+  .app-shell[data-theme][data-color-scheme] .topbar-export-button { display: grid; }
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger { width: 32px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip:not(.empty) { max-width: 92px; padding: 0 8px; }
+}
+
+/* ---- Motion ---- */
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .topbar-right > *,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger,
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger,
+  .app-shell[data-theme][data-color-scheme] .project-run-edit,
+  .app-shell[data-theme][data-color-scheme] .isolation-chip,
+  .app-shell[data-theme][data-color-scheme] .handoff-chip {
+    transition: color var(--lm-d-1) ease, background var(--lm-d-2) ease, border-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), scale var(--lm-d-2) var(--lm-spring);
+  }
+  .app-shell[data-theme][data-color-scheme] .primary-button { transition: filter var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-spring), scale var(--lm-d-2) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .primary-button:hover:not(:disabled) { transform: translateY(-1px); }
+
+  /* Landing choreography: the halo blooms, then the copy and choices rise in
+     turn. The logo plays its own assembly and is not animated by Lumen. */
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > *:not(.mythra-logo),
+  .app-shell[data-theme][data-color-scheme] .welcome-screen > * { animation: lm-rise var(--lm-d-4) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(2),
+  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(2) { animation-delay: 140ms; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(3),
+  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(3) { animation-delay: 200ms; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(4),
+  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(4) { animation-delay: 260ms; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(5),
+  .app-shell[data-theme][data-color-scheme] .welcome-screen > :nth-child(5) { animation-delay: 320ms; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(6) { animation-delay: 380ms; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(7) { animation-delay: 440ms; }
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state > :nth-child(n+8) { animation-delay: 500ms; }
+  .app-shell[data-theme][data-color-scheme] .isolation-choice > button,
+  .app-shell[data-theme][data-color-scheme] .empty-state-actions button {
+    transition: color var(--lm-d-2) ease, border-color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-spring), scale var(--lm-d-2) var(--lm-spring);
+  }
+  .app-shell[data-theme][data-color-scheme] .isolation-choice > button:hover:not(:disabled),
+  .app-shell[data-theme][data-color-scheme] .empty-state-actions button:hover { transform: translateY(-2px); }
+  .app-shell[data-theme][data-color-scheme] .welcome-orbit { transition: transform var(--lm-d-4) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .welcome-orbit:hover { transform: rotate(-6deg) scale(1.05); }
+  .app-shell[data-theme][data-color-scheme] .error-banner { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
+  .app-shell[data-theme][data-color-scheme] .conv-search-bar { animation: lm-pop-down var(--lm-d-3) var(--lm-spring) backwards; }
+  .app-shell[data-theme][data-color-scheme] .app-update-notice-progress > span { transition: width var(--lm-d-3) var(--lm-ease-out); }
+}

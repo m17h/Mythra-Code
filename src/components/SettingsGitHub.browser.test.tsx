@@ -103,6 +103,13 @@ it.each([[360, 400, 1], [980, 480, 1.5]] as const)("keeps real Settings usable a
     const content = dialog.querySelector<HTMLElement>(".settings-content")!;
     expect(content.scrollWidth).toBeLessThanOrEqual(content.clientWidth + 1);
     expect(content.clientHeight).toBeGreaterThan(0);
+    // The chooser's preview and check must leave a readable text column even
+    // when zoom narrows the pane without crossing a viewport media breakpoint.
+    for (const card of content.querySelectorAll<HTMLElement>(".theme-card, .slider-style-card, .chat-font-card, .provider-logo-options > button")) {
+      const label = card.querySelector<HTMLElement>("span:nth-child(2)")!;
+      expect(label.clientWidth, card.textContent ?? "chooser label").toBeGreaterThanOrEqual(70);
+      expect(card.scrollWidth, card.textContent ?? "chooser card").toBeLessThanOrEqual(card.clientWidth + 1);
+    }
     const save = within(dialog).getByRole("button", { name: /^Save settings$/ });
     expect(save.getBoundingClientRect().bottom).toBeLessThanOrEqual(height + 1);
     save.focus();

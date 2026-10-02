@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import "./AnimatedMythraLogo.css";
+import "./MythraMarkColors.css";
 
 /** The website starts idling 1300ms after assembly begins: just after the last
  *  piece (0.36s delay + 0.9s) has landed. */
@@ -168,17 +169,19 @@ export function AnimatedMythraLogo({ className }: AnimatedMythraLogoProps) {
       >
         <svg className="mythra-logo__svg" viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
           <defs>
+            {/* Stop colours follow the active theme via MythraMarkColors.css;
+                the attributes are the brand fallback outside a themed shell. */}
             <linearGradient id={`${ids}-cyan`} x1="170" y1="180" x2="620" y2="700" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#35E7F2" />
-              <stop offset="1" stopColor="#08AEEA" />
+              <stop className="mythra-mark-stop--cyan-a" stopColor="#35E7F2" />
+              <stop className="mythra-mark-stop--cyan-b" offset="1" stopColor="#08AEEA" />
             </linearGradient>
             <linearGradient id={`${ids}-blue`} x1="430" y1="400" x2="610" y2="840" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#148EFF" />
-              <stop offset="1" stopColor="#1644E8" />
+              <stop className="mythra-mark-stop--blue-a" stopColor="#148EFF" />
+              <stop className="mythra-mark-stop--blue-b" offset="1" stopColor="#1644E8" />
             </linearGradient>
             <linearGradient id={`${ids}-fold`} x1="500" y1="230" x2="820" y2="430" gradientUnits="userSpaceOnUse">
-              <stop stopColor="#176BFA" />
-              <stop offset="1" stopColor="#1247D9" />
+              <stop className="mythra-mark-stop--fold-a" stopColor="#176BFA" />
+              <stop className="mythra-mark-stop--fold-b" offset="1" stopColor="#1247D9" />
             </linearGradient>
             <linearGradient id={`${ids}-shine`} x1="0" y1="0" x2="1" y2="0">
               <stop offset="0" stopColor="#fff" stopOpacity="0" />

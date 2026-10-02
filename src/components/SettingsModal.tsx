@@ -536,6 +536,8 @@ export function SettingsModal({
   const managedDeveloperRuntimeUpdater = useDeveloperRuntimeUpdater(onClaudeRefresh, !injectedDeveloperRuntimeUpdater);
   const developerRuntimeUpdater = injectedDeveloperRuntimeUpdater ?? managedDeveloperRuntimeUpdater;
   const [local, setLocal] = useState(settings);
+  // Browsing credentials is not an edit to the defaults for new threads.
+  const [accountProvider, setAccountProvider] = useState<Provider>(settings.provider);
   const analyzeGlobalPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", text), [onAnalyzeSkillDependencies]);
   const analyzeCodexPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "openai", text, "")), [local.systemPrompt, onAnalyzeSkillDependencies]);
   const analyzeClaudePrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "claude", "", text)), [local.systemPrompt, onAnalyzeSkillDependencies]);
@@ -651,6 +653,7 @@ export function SettingsModal({
       draftBaselineRef.current = { settings, projects };
       const seeded = settingsWithOnboardingDraft(settings, initialDraft, lmStudioModels[0]?.id);
       setLocal(seeded);
+      setAccountProvider(seeded.provider);
       setLocalProjects(projects);
       setExpandedPresetId(null);
       setRenamingPresetId(null);
@@ -1126,6 +1129,7 @@ export function SettingsModal({
                     value={String(local.uiScale ?? 100)}
                     options={INTERFACE_SIZE_OPTIONS}
                     ariaLabel="Interface size"
+                    portal
                     onChange={(value) => previewUiScale(Number(value))}
                   />
                 </div>
@@ -1515,14 +1519,15 @@ export function SettingsModal({
               <div className="set-card">
                 <div className="set-row">
                   <div className="set-copy">
-                    <strong>Default setup for new tasks</strong>
-                    <small>Changes apply to new tasks. Existing tasks keep the setup they started with.</small>
+                    <strong>Reusable sub-agent setup</strong>
+                    <small>Every new thread starts with sub-agents off. Enable spawning in that thread's composer when needed. Saved crews and limits remain available; existing thread opt-ins are kept.</small>
                   </div>
                   <div className="set-control">
                     <button type="button" className="secondary-button" aria-expanded={agentDefaultsOpen} onClick={() => setAgentDefaultsOpen((open) => !open)}>{agentDefaultsOpen ? "Done editing" : "Edit defaults"}</button>
                   </div>
                 </div>
             {agentDefaultsOpen && <div className="set-body" role="group" aria-label="Sub-agent defaults editor">
+            <p className="subagent-applied-note">The saved switch below applies to older threads that still use defaults. It does not enable spawning in new threads.</p>
             <div className="field-label">
               <span>Edit defaults for</span>
               <AppSelectMenu ariaLabel="Sub-agent defaults scope" value={agentEditScope} options={[
@@ -1706,43 +1711,42 @@ export function SettingsModal({
           {settingsSection === "models" &&
           <section className="settings-section">
             <div className="set-group">
-              <h4>Default provider</h4>
-              <p>New threads start with this provider. Each thread keeps its own provider after it starts.</p>
+              <h4>Accounts & connections</h4>
+              <p>Select a provider to connect or manage its account. This does not change your defaults.</p>
             <div className="provider-cards">
-              <button className={`provider-card ${local.provider === "openai" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "openai"))}>
+              <button className={`provider-card ${accountProvider === "openai" ? "selected" : ""}`} aria-pressed={accountProvider === "openai"} onClick={() => setAccountProvider("openai")}>
                 <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
                 <span><strong>OpenAI</strong><small>ChatGPT subscription</small></span>
                 <span className={`provider-status ${account?.type === "chatgpt" ? "on" : ""}`}>{account?.type === "chatgpt" ? "Connected" : runtimeStatus?.available ? "Not signed in" : "Codex CLI needed"}</span>
-                {local.provider === "openai" && <Check size={16} />}
+                {accountProvider === "openai" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "claude" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "claude"))}>
+              <button className={`provider-card ${accountProvider === "claude" ? "selected" : ""}`} aria-pressed={accountProvider === "claude"} onClick={() => setAccountProvider("claude")}>
                 <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
                 <span><strong>Anthropic</strong><small>Claude Code subscription</small></span>
                 <span className={`provider-status ${claudeStatus?.loggedIn ? "on" : ""}`}>{claudeStatus?.loggedIn ? "Connected" : claudeStatus?.available ? "Not signed in" : "Claude Code needed"}</span>
-                {local.provider === "claude" && <Check size={16} />}
+                {accountProvider === "claude" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "cursor" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "cursor"))}>
+              <button className={`provider-card ${accountProvider === "cursor" ? "selected" : ""}`} aria-pressed={accountProvider === "cursor"} onClick={() => setAccountProvider("cursor")}>
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <span><strong>Cursor</strong><small>Cursor subscription</small></span>
                 <span className={`provider-status ${cursorStatus?.loggedIn ? "on" : ""}`}>{cursorStatus?.loggedIn ? "Connected" : cursorStatus?.available ? "Not signed in" : "Cursor Agent needed"}</span>
-                {local.provider === "cursor" && <Check size={16} />}
+                {accountProvider === "cursor" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "openrouter" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "openrouter"))}>
+              <button className={`provider-card ${accountProvider === "openrouter" ? "selected" : ""}`} aria-pressed={accountProvider === "openrouter"} onClick={() => setAccountProvider("openrouter")}>
                 <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>
                 <span><strong>OpenRouter</strong><small>Pay-as-you-go API key</small></span>
                 <span className={`provider-status ${openRouterReady ? "on" : ""}`}>{openRouterReady ? "Key saved" : "No key yet"}</span>
-                {local.provider === "openrouter" && <Check size={16} />}
+                {accountProvider === "openrouter" && <Check size={16} />}
               </button>
-              <button className={`provider-card ${local.provider === "lmstudio" ? "selected" : ""}`} onClick={() => setLocal(settingsWithDefaultProvider(local, "lmstudio", lmStudioModels[0]?.id))}>
+              <button className={`provider-card ${accountProvider === "lmstudio" ? "selected" : ""}`} aria-pressed={accountProvider === "lmstudio"} onClick={() => setAccountProvider("lmstudio")}>
                 <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>
                 <span><strong>LM Studio</strong><small>Local models on this computer</small></span>
                 <span className={`provider-status ${lmStudioReady ? "on" : ""}`}>{lmStudioReady ? "Connected" : "Not connected"}</span>
-                {local.provider === "lmstudio" && <Check size={16} />}
+                {accountProvider === "lmstudio" && <Check size={16} />}
               </button>
             </div>
-            <p className="provider-default-note">Use the provider control above the conversation to choose a different provider for one new thread without changing this default.</p>
 
-            {local.provider === "openai" ? (
+            {accountProvider === "openai" ? (
               <div className="credential-panel">
                 <div>
                   <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : "ChatGPT subscription"}</strong>
@@ -1759,7 +1763,7 @@ export function SettingsModal({
                   </button>
                 )}
               </div>
-            ) : local.provider === "openrouter" ? (
+            ) : accountProvider === "openrouter" ? (
               <div className="credential-panel stacked">
                 <div className="credential-status">
                   <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Stored securely on this device" : "No key stored"}</small></div>
@@ -1770,7 +1774,7 @@ export function SettingsModal({
                   <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
                 </div>
               </div>
-            ) : local.provider === "lmstudio" ? (
+            ) : accountProvider === "lmstudio" ? (
               <div className="credential-panel stacked">
                 <div className="credential-status">
                   <div>
@@ -1794,7 +1798,7 @@ export function SettingsModal({
                   <button className="secondary-button" onClick={() => void testLmStudioConnection()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Test connection</button>
                 </div>
               </div>
-            ) : local.provider === "claude" ? (
+            ) : accountProvider === "claude" ? (
               <div className="credential-panel">
                 <div>
                   <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
@@ -1835,10 +1839,19 @@ export function SettingsModal({
 
             </div>
             <div className="set-group">
-              <h4>Default model</h4>
+              <h4>Defaults for new threads</h4>
+              <p>New threads start with this provider and model. Existing threads keep their own selections.</p>
               <div className="set-card"><div className="set-row stack default-model-picker">
               <div className="set-control">
+              <div className="project-default-grid">
+              <div className="project-default-field">
+                <span>Default provider</span>
+                <AppSelectMenu value={local.provider} options={PROJECT_PROVIDER_OPTIONS} ariaLabel="Default provider" menuPlacement="top" portal onChange={(provider) => setLocal((current) => settingsWithDefaultProvider(current, provider as Provider, lmStudioModels[0]?.id))} />
+              </div>
+              <div className="project-default-field project-default-model">
+              <span>Default model</span>
               <AppSelectMenu
+                key={local.provider}
                 value={local.model}
                 options={defaultModelOptions}
                 selectedDisplay={defaultModelSelectedDisplay}
@@ -1846,12 +1859,15 @@ export function SettingsModal({
                 placeholder="Choose a default model"
                 searchable={defaultModelOptions.length > 8 || local.provider === "openrouter" || local.provider === "lmstudio" || local.provider === "cursor"}
                 menuPlacement="top"
+                portal
                 favorites={favoriteModels(modelFavorites, local.provider)}
                 {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(local.provider, model) } : {})}
                 {...(local.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})}
                 emptyMessage={local.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."}
-                onChange={(model) => setLocal({ ...local, model })}
+                onChange={(model) => setLocal((current) => ({ ...current, model }))}
               />
+              </div>
+              </div>
               {local.provider === "claude" && !claudeModels.length
                 ? <div className="settings-notice" role="status"><Info size={13} /><span>Showing Mythra Code’s built-in Claude list because the Claude Code catalog could not be read.</span><button type="button" className="secondary-button" onClick={() => void onClaudeRefresh()}>Retry</button></div>
                 : <small className="set-control-help">{defaultModelHelp}</small>}

@@ -1,0 +1,203 @@
+/* ============================================================================
+   Lumen overlays: the command palette, dialogs, menus, popovers and pickers,
+   plus the shared empty and loading states.
+   One floating-surface recipe everywhere: menu surface, 16–28px radius, the
+   pop shadow, items as rounded pills with a tinted selection.
+   Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
+   ========================================================================== */
+
+/* ---- Shared floating surfaces ---- */
+.app-shell[data-theme][data-color-scheme] .row-menu-list,
+.app-shell[data-theme][data-color-scheme] .app-select-menu,
+.app-shell[data-theme][data-color-scheme] .model-menu,
+.app-shell[data-theme][data-color-scheme] .openrouter-menu,
+.app-shell[data-theme][data-color-scheme] .project-prompt-popover,
+.app-shell[data-theme][data-color-scheme] .usage-popover {
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: var(--menu-surface);
+  box-shadow: var(--lm-pop-shadow);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .row-menu-list,
+.app-shell[data-theme][data-color-scheme] .app-select-menu { padding: 6px; border-radius: 16px; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-popover,
+.app-shell[data-theme][data-color-scheme] .usage-popover { padding: 16px; border-radius: 22px; }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button { min-height: 32px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button.danger { color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .row-menu-list button.danger:hover { color: var(--red); background: rgba(255, 120, 120, .12); }
+.app-shell[data-theme][data-color-scheme] .app-select-menu [role="option"] { border-radius: var(--r-sm); }
+
+.app-shell[data-theme][data-color-scheme] .project-prompt-icon { border-radius: 11px; color: var(--on-accent); background: var(--green) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes > button { min-height: 70px; border-radius: var(--r-lg); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-modes > button.selected { border-color: var(--green-line); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-editor textarea { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .usage-popover-window { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .usage-popover-track { height: 6px; border-radius: var(--r-pill); }
+
+/* Model pickers: options as rounded rows; the selected model is lit. */
+.app-shell[data-theme][data-color-scheme] .model-menu,
+.app-shell[data-theme][data-color-scheme] .openrouter-menu { padding: 8px; }
+.app-shell[data-theme][data-color-scheme] .model-menu-option,
+.app-shell[data-theme][data-color-scheme] .openrouter-options > button,
+.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star) { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .model-menu-option.selected,
+.app-shell[data-theme][data-color-scheme] .openrouter-options > button.selected,
+.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star).selected {
+  color: var(--text);
+  background: var(--panel-3);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.app-shell[data-theme][data-color-scheme] .openrouter-search-row,
+.app-shell[data-theme][data-color-scheme] .cursor-model-search { border-radius: var(--r-control); background: var(--field); }
+
+/* ---- Command palette: a lit search sheet ---- */
+.app-shell[data-theme][data-color-scheme] .palette-backdrop { padding-top: min(14vh, 120px); }
+.app-shell[data-theme][data-color-scheme] .command-palette {
+  width: min(660px, calc(100vw - 40px));
+  border: 1px solid var(--lm-island-edge);
+  border-radius: 26px;
+  background: var(--menu-surface);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .15), 0 50px 110px -30px rgba(0, 0, 0, .8), 0 0 80px -30px var(--lm-accent-glow);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.app-shell[data-theme][data-color-scheme] .palette-search {
+  position: relative;
+  height: 62px;
+  padding: 0 14px 0 20px;
+  border-bottom: 0;
+}
+.app-shell[data-theme][data-color-scheme] .palette-search::after {
+  content: "";
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--green-line), var(--line) 50%, transparent);
+}
+.app-shell[data-theme][data-color-scheme] .palette-search > svg:first-child { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .palette-search input { font-family: var(--font-display); font-size: 17px; font-weight: 560; }
+.app-shell[data-theme][data-color-scheme] .palette-search button { border-radius: var(--r-xs); }
+.app-shell[data-theme][data-color-scheme] .palette-results { padding: 8px; }
+.app-shell[data-theme][data-color-scheme] .palette-group-label { padding: 10px 10px 6px; background: var(--menu-surface); }
+.app-shell[data-theme][data-color-scheme] .palette-results > button,
+.app-shell[data-theme][data-color-scheme] .palette-group > button { min-height: 50px; padding: 4px 10px 4px 6px; border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .palette-results > button > span,
+.app-shell[data-theme][data-color-scheme] .palette-group > button > span { width: 32px; height: 32px; border-radius: 10px; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .palette-results > button,
+.app-shell[data-theme][data-color-scheme] .palette-group > button { grid-template-columns: 32px minmax(0, 1fr) auto; }
+.app-shell[data-theme][data-color-scheme] .palette-results > button.active,
+.app-shell[data-theme][data-color-scheme] .palette-group > button.active {
+  color: var(--text);
+  background: var(--panel-3);
+  background-image: var(--lm-grad-soft);
+  box-shadow: inset 0 0 0 1px var(--green-line);
+}
+.app-shell[data-theme][data-color-scheme] .palette-results > button.active > span,
+.app-shell[data-theme][data-color-scheme] .palette-group > button.active > span { color: var(--green); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .palette-results strong { font-size: 13px; font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .palette-footer { height: 38px; padding: 0 16px; border-top: 1px solid var(--line-quiet); }
+
+/* ---- Dialogs: confirm, approval, runtime, auth ---- */
+.app-shell[data-theme][data-color-scheme] .confirm-dialog,
+.app-shell[data-theme][data-color-scheme] .approval-modal,
+.app-shell[data-theme][data-color-scheme] .runtime-setup-modal {
+  border: 1px solid var(--lm-island-edge);
+  border-radius: 26px;
+  background: var(--panel);
+  box-shadow: 0 50px 110px -30px rgba(0, 0, 0, .75), 0 0 0 1px rgba(0, 0, 0, .15);
+}
+.app-shell[data-theme][data-color-scheme] .confirm-dialog { padding: 26px; }
+.app-shell[data-theme][data-color-scheme] .approval-modal { padding: 24px; }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-icon,
+.app-shell[data-theme][data-color-scheme] .approval-shield {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  color: var(--orange);
+  background: rgba(240, 170, 90, .14);
+  box-shadow: 0 0 0 6px rgba(240, 170, 90, .06);
+}
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-icon.danger { color: var(--red); background: rgba(255, 120, 120, .14); box-shadow: 0 0 0 6px rgba(255, 120, 120, .06); }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog h2,
+.app-shell[data-theme][data-color-scheme] .approval-modal h2,
+.app-shell[data-theme][data-color-scheme] .runtime-setup-copy h2,
+.app-shell[data-theme][data-color-scheme] .modal-header h2 { font-family: var(--font-display); font-weight: 760; letter-spacing: -.03em; }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog h2 { font-size: 18px; }
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-actions .primary-button.confirm-danger {
+  color: var(--lm-on-danger);
+  background: var(--red);
+  box-shadow: 0 8px 22px -10px var(--red);
+}
+.app-shell[data-theme][data-color-scheme] .confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { background: var(--red); filter: brightness(1.08); }
+.app-shell[data-theme][data-color-scheme] .runtime-setup-mark { border: 0; border-radius: 18px; color: var(--on-accent); background: var(--green) var(--lm-grad); box-shadow: 0 12px 28px -10px var(--lm-accent-glow); }
+.app-shell[data-theme][data-color-scheme] .runtime-option { border-radius: var(--r-lg); }
+.app-shell[data-theme][data-color-scheme] .runtime-option.recommended { border-color: var(--green-line); background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .runtime-note,
+.app-shell[data-theme][data-color-scheme] .auth-required-detail { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .modal-header { border-bottom-color: var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .modal-footer { border-top-color: var(--line-quiet); background: var(--panel); }
+
+/* ---- Onboarding sheet ---- */
+.app-shell[data-theme][data-color-scheme] .onboarding-modal {
+  border-color: var(--lm-island-edge);
+  border-radius: 28px;
+  box-shadow: 0 50px 120px -30px rgba(0, 0, 0, .75);
+}
+.app-shell[data-theme][data-color-scheme] .modal-backdrop.onboarding-backdrop { background: var(--lm-scrim); }
+.app-shell[data-theme][data-color-scheme] .ob-tile,
+.app-shell[data-theme][data-color-scheme] .ob-destination,
+.app-shell[data-theme][data-color-scheme] .ob-plinth { border-radius: 18px; }
+/* The welcome glyph holds the themed Mythra mark, so it sits on a neutral
+   tile (an accent fill would fight the mark's own theme colours). */
+.app-shell[data-theme][data-color-scheme] .ob-glyph { border: 1px solid var(--line-strong); border-radius: 14px; background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .ob-ready-mark { border: 0; border-radius: 16px; color: var(--on-accent); background: var(--green) var(--lm-grad); }
+/* Stepper, tags and theme swatches: rounded squares (OnboardingModal.css
+   keeps the status dots round). */
+.app-shell[data-theme][data-color-scheme] .ob-stepper button,
+.app-shell[data-theme][data-color-scheme] .ob-swatch-option { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .ob-step-num,
+.app-shell[data-theme][data-color-scheme] .ob-route-icon,
+.app-shell[data-theme][data-color-scheme] .ob-swatch,
+.app-shell[data-theme][data-color-scheme] .ob-chip,
+.app-shell[data-theme][data-color-scheme] .ob-scope,
+.app-shell[data-theme][data-color-scheme] .ob-status,
+.app-shell[data-theme][data-color-scheme] .ob-preview-badge { border-radius: var(--r-chip); }
+
+/* ---- Agent questions and feedback cards ---- */
+.app-shell[data-theme][data-color-scheme] .agent-question-form,
+.app-shell[data-theme][data-color-scheme] .feedback-note-card { border-radius: 20px; }
+
+/* ---- Empty and loading states ---- */
+.app-shell[data-theme][data-color-scheme] .tool-empty-line { color: var(--muted-2); font-family: var(--font-mono); font-size: 10.5px; }
+.app-shell[data-theme][data-color-scheme] .spin { color: var(--green); }
+
+/* ---- Motion ----
+   Popovers driven by JS fades (project prompt, usage, app select) already
+   animate through their own hooks; Lumen gives them surfaces only, so tests
+   that read their first animation keep reading the hook's. */
+@media (prefers-reduced-motion: no-preference) {
+  /* The list is placed with a legacy translateX(-100%), so its entrance uses
+     the individual-property keyframe and never touches `transform`. */
+  .app-shell[data-theme][data-color-scheme] .row-menu-list { animation: lm-pop-i var(--lm-d-2) var(--lm-ease-out) backwards; transform-origin: top right; }
+  .app-shell[data-theme][data-color-scheme] .row-menu-list button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, scale var(--lm-d-2) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .palette-results > button,
+  .app-shell[data-theme][data-color-scheme] .palette-group > button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .palette-results > button > span,
+  .app-shell[data-theme][data-color-scheme] .palette-group > button > span { transition: color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .palette-results > button.active > span,
+  .app-shell[data-theme][data-color-scheme] .palette-group > button.active > span { transform: scale(1.06); }
+  .app-shell[data-theme][data-color-scheme] .palette-group { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .palette-group:nth-child(2) { animation-delay: 40ms; }
+  .app-shell[data-theme][data-color-scheme] .palette-group:nth-child(n+3) { animation-delay: 80ms; }
+  .app-shell[data-theme][data-color-scheme] .confirm-dialog-icon,
+  .app-shell[data-theme][data-color-scheme] .approval-shield,
+  .app-shell[data-theme][data-color-scheme] .runtime-setup-mark { animation: lm-dot-in 480ms var(--lm-spring) 80ms backwards; }
+  .app-shell[data-theme][data-color-scheme] .model-menu-option,
+  .app-shell[data-theme][data-color-scheme] .openrouter-options > button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }
+}

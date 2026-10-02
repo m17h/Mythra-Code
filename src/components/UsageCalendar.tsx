@@ -26,6 +26,11 @@ const CARD_GAP = 1;
 /** Time to cross from a square into its card before the card closes. */
 const HOVER_GRACE_MS = 180;
 
+// Ephemeral mouse history survives a calendar remount under a stationary
+// pointer. Listeners exist only while a calendar is mounted. Before any sample
+// is known, the first move must remain usable as a legitimate pointer request.
+let lastPointerPoint: { x: number; y: number } | null = null;
+
 function effectiveZoom(element: HTMLElement): number {
   const current = (element as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom;
   if (typeof current === "number" && Number.isFinite(current) && current > 0) return current;
@@ -196,6 +201,25 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   const scrollRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const graceRef = useRef<number | null>(null);
+  const keyboardOwnsCard = useRef(false);
+  const pointerPoint = useRef(lastPointerPoint);
+  const clickPointerType = useRef("mouse");
+
+  // Layout/top-layer changes can dispatch pointer boundary events (and even
+  // pointermove) without moving the mouse. Only changed viewport coordinates
+  // release a keyboard request. Track outside the grid too, so leaving and
+  // returning to the same square still counts as deliberate pointer use.
+  useEffect(() => {
+    const onMove = (event: globalThis.PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      const previous = pointerPoint.current;
+      if (!previous || previous.x !== event.clientX || previous.y !== event.clientY) keyboardOwnsCard.current = false;
+      pointerPoint.current = { x: event.clientX, y: event.clientY };
+      lastPointerPoint = pointerPoint.current;
+    };
+    document.addEventListener("pointermove", onMove, true);
+    return () => document.removeEventListener("pointermove", onMove, true);
+  }, []);
 
   const { calendar, detailAhead, startedDay } = useMemo(() => {
     const detail = source.detail(usageCalendarRange(today));
@@ -302,6 +326,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
         tableRef.current?.querySelector<HTMLElement>(`[data-day="${cursorRef.current}"]`)?.focus({ preventScroll: true });
       }
       cancelGrace();
+      keyboardOwnsCard.current = true;
       setHover(null);
       setPinned(null);
       setSuppressed(true);
@@ -326,11 +351,14 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     setCursor(day);
     setSuppressed(false);
     tableRef.current?.querySelector<HTMLElement>(`[data-day="${day}"]`)?.focus();
+    // Explicit navigation is keyboard input even if an engine's focus-visible
+    // heuristic doesn't carry across a programmatic focus change.
+    setKeyboardFocus(true);
   };
 
   const onPointerOver = (event: PointerEvent<HTMLTableElement>) => {
     // Touch has no hover; a tap selects instead.
-    if (event.pointerType === "touch") return;
+    if (event.pointerType === "touch" || keyboardOwnsCard.current) return;
     const day = dayOf(event.target);
     if (!day) return;
     cancelGrace();
@@ -339,6 +367,12 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   const onClick = (event: MouseEvent<HTMLTableElement>) => {
     const day = dayOf(event.target);
     if (!day) return;
+    keyboardOwnsCard.current = event.detail === 0 || clickPointerType.current === "touch";
+    cancelGrace();
+    // Keyboard/assistive activation has detail=0 and must not fabricate a
+    // sticky hover. Real mouse unpinning retains the still-hovered breakdown.
+    setHover(clickPointerType.current !== "touch" && event.detail > 0 ? day : null);
+    setKeyboardFocus(false);
     setCursor(day);
     setSuppressed(false);
     setPinned((current) => (current === day ? null : day));
@@ -356,6 +390,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
       // A stationary mouse may still be over an older day. The newer keyboard
       // request wins until the user deliberately moves the pointer again.
       cancelGrace();
+      keyboardOwnsCard.current = true;
       setHover(null);
     }
     setKeyboardFocus(keyboard);
@@ -384,6 +419,8 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     if (!day) return;
     if (["Tab", "Enter", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       cancelGrace();
+      keyboardOwnsCard.current = true;
+      setKeyboardFocus(true);
       setHover(null);
     }
     if (event.key === "Tab" && !event.shiftKey) {
@@ -466,8 +503,8 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     {!detailAhead && <div ref={scrollRef} className="usage-heat-scroll">
       <table ref={tableRef} className="usage-heat-table" role="grid" aria-readonly="true" aria-describedby={noteId}
         aria-label={`Tokens per day, ${shortDay(calendar.range.from)} to ${shortDay(calendar.range.to)}`}
-        onPointerOver={onPointerOver} onPointerLeave={(event) => { if (event.pointerType !== "touch") leaveSoon(); }}
-        onClick={onClick} onKeyDown={onKeyDown}>
+        onPointerOver={onPointerOver} onPointerMove={onPointerOver} onPointerLeave={(event) => { if (event.pointerType !== "touch") leaveSoon(); }}
+        onPointerDown={(event) => { clickPointerType.current = event.pointerType; }} onClick={onClick} onKeyDown={onKeyDown}>
         <thead aria-hidden="true">
           <tr><td />{months.map((month) => <th key={month.key} colSpan={month.span} className="usage-heat-month"><span>{month.label}</span></th>)}</tr>
         </thead>

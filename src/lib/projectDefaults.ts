@@ -1,5 +1,5 @@
 import type { Project, ProjectDefaults, Provider } from "../types";
-import { EFFORT_SLIDER_STYLES, sanitizeChatFont, THEMES } from "./appConfig";
+import { EFFORT_SLIDER_STYLES, sanitizeChatFont, sanitizeEffortSlider, THEMES } from "./appConfig";
 import { modelForProvider } from "./threadProvider";
 
 const PROJECT_DEFAULT_PROVIDERS: Provider[] = ["openai", "claude", "cursor", "openrouter", "lmstudio"];
@@ -18,7 +18,12 @@ export function sanitizeProjectDefaults(value: unknown): ProjectDefaults | null 
 
   const defaults: ProjectDefaults = { provider, model };
   if (THEMES.some((theme) => theme.id === raw.theme)) defaults.theme = raw.theme;
-  if (EFFORT_SLIDER_STYLES.some((style) => style.id === raw.effortSlider)) defaults.effortSlider = raw.effortSlider;
+  const effortSlider: unknown = raw.effortSlider;
+  // Retired ids that have a direct replacement keep the project's override;
+  // anything unrecognised is dropped rather than becoming the default style.
+  if (effortSlider === "dart" || effortSlider === "filament" || EFFORT_SLIDER_STYLES.some((style) => style.id === effortSlider)) {
+    defaults.effortSlider = sanitizeEffortSlider(effortSlider);
+  }
   const chatFont = sanitizeChatFont(raw.chatFont);
   if (raw.chatFont === chatFont) defaults.chatFont = chatFont;
   return defaults;

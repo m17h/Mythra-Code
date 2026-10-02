@@ -121,18 +121,53 @@
 }
 .slider-style-preview.reactor .slider-style-thumb { left: 72%; width: 15px; height: 15px; border: 1px solid #ff8555; background: radial-gradient(circle, white 0 14%, #ff8555 20% 34%, #241c32 40% 59%, #ff8555 64%); box-shadow: 0 0 9px #f65db5; }
 @media (prefers-reduced-motion: reduce) { .slider-style-preview.reactor .slider-style-rail::after { animation: none; } }
-/* Dart: a flight line with the wake widening into the arrowhead. */
-.slider-style-preview.dart .slider-style-rail { height: 1px; border-radius: 0; background: var(--panel-3); }
-.slider-style-preview.dart .slider-style-rail::after {
-  content: ""; position: absolute; left: 0; top: 50%; width: 62%; height: 15px; transform: translateY(-50%);
-  clip-path: polygon(0 46%, 100% 0, 100% 100%, 0 54%);
-  background: linear-gradient(90deg, color-mix(in srgb, #43cb5c 18%, transparent), #7ee04a);
+/* Comet: the same wedge-clipped tail, streaks and head as the real slider.
+   The head is centred at 64% of the card, which is 68% of the 46px rail, so
+   the tail's wedge ends there and the groove runs from there to the rail end.
+   The groove is painted on the card itself because the rail is the wedge. */
+.slider-style-preview.comet {
+  --pv-comet: #3aa8ff; --pv-ice: #dcf6ff; --pv-tail: rgba(58,116,255,.55);
+  --pv-streak: rgba(226,248,255,.92); --pv-spray: rgba(120,206,255,.72);
+  --pv-groove: color-mix(in srgb, var(--text) 13%, var(--panel));
+  --pv-edge: rgba(255,255,255,.72); --pv-drop: rgba(0,0,0,.45);
+  background: linear-gradient(var(--pv-groove), var(--pv-groove)) no-repeat 37px 50% / 15px 4px, rgba(0,0,0,.24);
 }
-.slider-style-preview.dart .slider-style-thumb {
-  left: 62%; width: 14px; height: 13px; border: 0; border-radius: 0;
-  clip-path: polygon(0 0, 100% 50%, 0 100%, 30% 50%);
-  background: linear-gradient(180deg, #c2f23c, #7ee04a);
+.app-shell[data-color-scheme="light"] .slider-style-preview.comet {
+  --pv-comet: #2a86d6; --pv-ice: #1aa3ee; --pv-tail: rgba(22,98,214,.45);
+  --pv-streak: rgba(255,255,255,.86); --pv-spray: rgba(24,132,222,.55);
+  --pv-groove: color-mix(in srgb, var(--text) 12%, var(--panel));
+  --pv-edge: rgba(16,34,56,.26); --pv-drop: rgba(16,34,56,.2);
+  background: linear-gradient(var(--pv-groove), var(--pv-groove)) no-repeat 37px 50% / 15px 4px, rgba(0,0,0,.06);
 }
+.slider-style-preview.comet .slider-style-rail {
+  height: 12px; border-radius: 0;
+  background:
+    linear-gradient(90deg, var(--pv-tail), var(--pv-comet) 72%, var(--pv-ice)) no-repeat 0 50% / 68% 3px,
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--pv-comet) 30%, transparent)) no-repeat 0 50% / 68% 100%;
+  clip-path: polygon(0 calc(50% - 1.5px), 68% calc(50% - 4.5px), 68% calc(50% + 4.5px), 0 calc(50% + 1.5px));
+  -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.45), #000 68%);
+  mask-image: linear-gradient(90deg, rgba(0,0,0,.45), #000 68%);
+}
+/* One sheet of streaks sliding by its 32px tile on the shared comet-flow. */
+.slider-style-preview.comet .slider-style-rail::after {
+  --comet-tile: 32px;
+  content: ""; position: absolute; top: 0; bottom: 0; left: -32px; right: 0; pointer-events: none;
+  background-image:
+    linear-gradient(90deg, transparent 20%, var(--pv-streak) 90%, transparent),
+    linear-gradient(90deg, transparent 50%, var(--pv-spray) 94%, transparent),
+    linear-gradient(90deg, transparent 50%, var(--pv-spray) 94%, transparent);
+  background-size: 32px 1px, 32px 1px, 32px 1px;
+  background-position: 0 5.5px, 12px 2.5px, 24px 8.5px;
+  background-repeat: repeat-x;
+  animation: comet-flow 1.4s linear infinite;
+}
+.slider-style-preview.comet .slider-style-thumb {
+  left: 64%; width: 10px; height: 10px; box-sizing: border-box; border: 1px solid var(--pv-edge); border-radius: 3px;
+  background: linear-gradient(180deg, #fff, #e3e9f0);
+  box-shadow: 0 1px 2px var(--pv-drop), -1px 0 4px color-mix(in srgb, var(--pv-comet) 45%, transparent);
+}
+/* This lazy sheet loads after styles.css, so it must stop its own streaks. */
+@media (prefers-reduced-motion: reduce) { .slider-style-preview.comet .slider-style-rail::after { animation: none; } }
 /* Coil: the cord itself, wound tight, with its hex collar. */
 .slider-style-preview.coil .slider-style-rail {
   height: 16px; border-radius: 0;

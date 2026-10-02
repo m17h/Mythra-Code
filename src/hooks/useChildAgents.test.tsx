@@ -451,7 +451,8 @@ describe("useChildAgents", () => {
       const view = await mount({ applyProjectSubagentSettings });
       await view.send(request({ tool: "propose_agent_settings", arguments: { crossProviderEnabled: false } }));
       const approval = useTaskStore.getState().tasks["root-1"].approvals[0];
-      expect(String(approval.params.command)).toContain("Sub-agents: off");
+      expect(String(approval.params.command)).toContain("Sub-agents in this thread: off");
+      expect(String(approval.params.command)).toContain("spawning switch applies only to this thread");
       await act(async () => { await view.result.current.respondToSettingsProposal(approval, { decision: "accept" }); });
       expect(applyProjectSubagentSettings).toHaveBeenCalledWith("root-1", expect.objectContaining({ enabled: false }));
     });

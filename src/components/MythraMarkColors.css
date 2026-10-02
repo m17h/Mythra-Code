@@ -1,0 +1,24 @@
+/* ===== Mythra mark colours =====
+   Shared by the animated new-thread logo (AnimatedMythraLogo) and the static
+   inline mark (MythraMark). Each gradient stop reads a theme variable through
+   live CSS inheritance, so the mark follows the active app / project / preview
+   theme on whatever shell it sits in, with no React state involved.
+
+   Fallbacks, outermost first:
+   1. The hex in each var() below: the original brand colours, used whenever
+      no theme defines the variables (an SVG outside a themed shell).
+   2. The stop-color presentation attribute on each <stop>: used if this sheet
+      is not applied at all (it is only overridden by these class rules).
+
+   The per-theme values live with the theme palettes in
+   src/styles/lumen/tokens.css. No filters or hue rotation: these are real
+   stop colours, chosen per theme for contrast on that theme's surfaces. */
+
+.mythra-mark-stop--cyan-a { stop-color: var(--mythra-mark-cyan-a, #35E7F2); }
+.mythra-mark-stop--cyan-b { stop-color: var(--mythra-mark-cyan-b, #08AEEA); }
+.mythra-mark-stop--blue-a { stop-color: var(--mythra-mark-blue-a, #148EFF); }
+.mythra-mark-stop--blue-b { stop-color: var(--mythra-mark-blue-b, #1644E8); }
+.mythra-mark-stop--fold-a { stop-color: var(--mythra-mark-fold-a, #176BFA); }
+.mythra-mark-stop--fold-b { stop-color: var(--mythra-mark-fold-b, #1247D9); }
+
+.mythra-mark { display: block; flex: none; }

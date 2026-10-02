@@ -46,6 +46,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.threadHandoffs",
   "kiwi.pendingHandoff",
   "kiwi.childAgentPolicies",
+  "kiwi.threadSubagentSettings",
   "kiwi.childAgentLinks",
   "kiwi.nativeAgentLinks",
   "kiwi.threadSubagentCapabilities",
@@ -58,7 +59,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 27;
+export const STORAGE_SCHEMA_VERSION = 28;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -253,6 +254,8 @@ export function migrateStorage(): void {
   // likewise starts empty; the catalog and bundled rates apply until a check.
   // Version 27 adds the optional last successful model count to each official
   // pricing source. Older snapshots infer it until their next successful read.
+  // Version 28 adds optional thread-local spawning switches. Missing entries
+  // retain existing threads' legacy opt-ins; fresh threads explicitly store off.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

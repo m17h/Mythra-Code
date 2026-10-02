@@ -6,7 +6,7 @@ export type OnboardingSettingsDraft = {
   appearance?: Pick<AppSettings, "theme" | "chatFont" | "effortSlider">;
 };
 
-/** Match the default-provider cards in Settings, including their model reset. */
+/** Match the default-provider selector in Settings, including its model reset. */
 export function settingsWithDefaultProvider(settings: AppSettings, provider: Provider, firstLmStudioModel = ""): AppSettings {
   const sameProvider = provider === settings.provider;
   const model = provider === "openai" ? (sameProvider && settings.model ? settings.model : DEFAULT_OPENAI_MODEL)

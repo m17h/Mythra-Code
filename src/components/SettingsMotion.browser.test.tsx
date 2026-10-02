@@ -7,10 +7,10 @@ import "../styles.css";
 
 // Settings stays mounted after its first open. Exercise its real CSS with
 // the same open/closed and inert attributes without unrelated settings APIs.
-function Fixture({ scale = 1 }: { scale?: number }) {
+function Fixture({ scale = 1, lumen = false }: { scale?: number; lumen?: boolean }) {
   const [open, setOpen] = useState(true);
   const [usage, setUsage] = useState(false);
-  return <div style={{ zoom: scale, "--ui-scale": scale } as CSSProperties}>
+  return <div className={lumen ? "app-shell" : undefined} data-theme={lumen ? "mythra" : undefined} data-color-scheme={lumen ? "dark" : undefined} style={{ zoom: scale, "--ui-scale": scale } as CSSProperties}>
     <button onClick={() => setOpen(true)}>Open settings</button>
     <div data-testid="backdrop" className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} inert={!open || undefined} aria-hidden={!open}>
       <div className={`settings-modal${usage ? " settings-modal-wide" : ""}`} data-testid="modal">
@@ -56,14 +56,14 @@ it("keeps the busy GitHub refresh indicator static only when reduced motion is r
   expect(icon.getAnimations()).toHaveLength(1);
 });
 
-it("smoothly expands for Usage and shrinks back without moving its center", async () => {
+it.each([{ lumen: false, height: 720 }, { lumen: true, height: 760 }])("smoothly expands for Usage and shrinks back without moving its center (Lumen: $lumen)", async ({ lumen, height }) => {
   await page.viewport(1400, 1000);
-  const view = render(<Fixture />);
+  const view = render(<Fixture lumen={lumen} />);
   const modal = view.getByTestId("modal");
   act(() => modal.getAnimations().forEach((animation) => animation.finish()));
   const start = modal.getBoundingClientRect();
   expect(start.width).toBeCloseTo(920, 0);
-  expect(start.height).toBeCloseTo(720, 0);
+  expect(start.height).toBeCloseTo(height, 0);
 
   for (const [tab, smaller, larger] of [["Usage", start, { width: 1200, height: 880 }], ["General", start, { width: 1200, height: 880 }]] as const) {
     // Commit the starting layout so the browser can create real CSS transitions.
@@ -84,7 +84,7 @@ it("smoothly expands for Usage and shrinks back without moving its center", asyn
     expect(midway.top + midway.height / 2).toBeCloseTo(start.top + start.height / 2, 0);
     act(() => resize.forEach((animation) => animation.finish()));
     expect(modal.getBoundingClientRect().width).toBeCloseTo(tab === "Usage" ? 1200 : 920, 0);
-    expect(modal.getBoundingClientRect().height).toBeCloseTo(tab === "Usage" ? 880 : 720, 0);
+    expect(modal.getBoundingClientRect().height).toBeCloseTo(tab === "Usage" ? 880 : height, 0);
   }
 });
 

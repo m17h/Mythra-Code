@@ -188,6 +188,29 @@ describe("SettingsModal", () => {
     expect(providers).toEqual(["OpenAI", "Anthropic", "Cursor", "OpenRouter", "LM Studio"]);
   });
 
+  it("browses accounts without changing the default provider or model", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "models", onSave })} />);
+    fireEvent.click(screen.getByRole("button", { name: /Anthropic.*Claude Code subscription/ }));
+    expect(screen.getByRole("button", { name: "Default OpenAI model" })).toBeInTheDocument();
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ provider: DEFAULT_SETTINGS.provider, model: DEFAULT_SETTINGS.model }));
+  });
+
+  it("changes default provider independently of the account being managed", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "models", onSave,
+      lmStudioModels: [{ id: "local-model", displayName: "Local model", publisher: "local", trainedForToolUse: true, reasoningEfforts: [] }],
+    })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Default provider" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /LM Studio/ }));
+    expect(screen.getByRole("button", { name: "Default LM Studio model" })).toHaveTextContent("Local model");
+    expect(screen.queryByText("LM Studio local server")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ provider: "lmstudio", model: "local-model" }));
+  });
+
   it("uses the official OpenRouter glyph in provider settings", () => {
     const { container } = render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
     expect(container.querySelector(".provider-logo.openrouter svg")).toHaveAttribute("viewBox", "0 0 401.4 293.7");
@@ -579,7 +602,7 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: /Astra.*living nebula/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Ink.*monochrome/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Reactor.*Pulsing energy cells/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Dart.*arrowhead/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Comet.*soft ice-blue trail/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Coil.*twisted cord/ })).toBeInTheDocument();
 
     const themeCards = container.querySelectorAll<HTMLButtonElement>(".theme-card");
@@ -605,7 +628,7 @@ describe("SettingsModal", () => {
   it.each([
     [/Astra.*living nebula/, "astra", "slider-style-preview astra"],
     [/Reactor.*Pulsing energy cells/, "reactor", "slider-style-preview reactor"],
-    [/Dart.*arrowhead/, "dart", "slider-style-preview dart"],
+    [/Comet.*soft ice-blue trail/, "comet", "slider-style-preview comet"],
     [/Coil.*twisted cord/, "coil", "slider-style-preview coil"],
   ])("previews and selects the %s effort-slider style", (name, id, previewClass) => {
     const onEffortSliderPreview = vi.fn();
@@ -624,7 +647,7 @@ describe("SettingsModal", () => {
 
     expect(screen.getByRole("button", { name: /Models & accounts/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("Default provider")).toBeInTheDocument();
-    expect(screen.getByText(/Each thread keeps its own provider/)).toBeInTheDocument();
+    expect(screen.getByText(/Existing threads keep their own selections/)).toBeInTheDocument();
   });
 
   it("keeps scheduled task controls in their own settings destination", () => {
@@ -1547,6 +1570,7 @@ describe("SettingsModal", () => {
 
   it("keeps the defaults editor collapsed beside the preset workflow", () => {
     render(<SettingsModal {...modalProps({ initialSection: "agents" })} />);
+    expect(screen.getByText(/Every new thread starts with sub-agents off/)).toBeInTheDocument();
 
     const archiveToggle = screen.getByRole("switch", { name: "Archive sub-agent threads automatically" });
     const presetsHeading = screen.getByRole("heading", { name: "Sub-agent presets" });

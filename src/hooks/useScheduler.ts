@@ -26,6 +26,8 @@ export interface SchedulerDeps {
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
   onThreadStarted: (project: Project) => void;
+  /** Persist fresh-thread defaults before any turn preparation can fail. */
+  onThreadCreated?: (threadId: string, project: Project) => void;
   recordRun: (run: ScheduleRunRecord) => void;
 }
 
@@ -110,16 +112,21 @@ export function useScheduler(deps: SchedulerDeps): void {
         : { prompt: await current.resolveSkillPrompt(scheduled.prompt), systemPrompt: run.systemPrompt };
       await current.ensureSkillRoots();
       const providerPrompt = resolved.prompt;
-      const runtimeRun = { ...run, systemPrompt: resolved.systemPrompt };
+      let runtimeRun = { ...run, systemPrompt: resolved.systemPrompt };
       const modelContextWindow = run.provider === "lmstudio"
         ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
         : undefined;
-      const startFreshThread = () => rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(runtimeRun, project.path, {
-        serviceName: "Mythra Code",
-        modelContextWindow,
-        interactive: false,
-        perTurnSystemPrompt: true,
-      }));
+      const startFreshThread = async () => {
+        runtimeRun = { ...runtimeRun, subagentsEnabled: false };
+        const started = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(runtimeRun, project.path, {
+          serviceName: "Mythra Code",
+          modelContextWindow,
+          interactive: false,
+          perTurnSystemPrompt: true,
+        }));
+        current.onThreadCreated?.(started.thread.id, project);
+        return started;
+      };
       let started: { thread: Thread; model?: unknown };
       if (reuseThread && scheduled.lastThreadId) {
         try {

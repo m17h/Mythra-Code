@@ -1,0 +1,90 @@
+/* ============================================================================
+   Lumen responsive ladder
+   ----------------------------------------------------------------------------
+   Lumen's shell scope out-specifies legacy rules, including the legacy media
+   and container queries that adapt layout to small windows, docks and UI
+   scale. Every property Lumen sets that a legacy query also adapts is
+   restated here at Lumen's specificity, with the same breakpoints, so the
+   narrow-window behaviour that tests and users rely on is preserved.
+   Loaded last.
+   ========================================================================== */
+
+/* ---- Workbench overlay (legacy max-width 1250) ----
+   Below 1250px legacy floats the dock over the chat as a fixed sheet. Lumen
+   keeps that behaviour and insets it by the canvas gutters as a floating
+   island with an overlay shadow. */
+@media (max-width: 1250px) {
+  /* The sheet starts below the chat header, so the header (including the
+     Workspace toggle that closes it, Search and Run) is never covered while
+     the dock is open. The header is raised above the sheet for the rare case
+     where a very narrow column wraps it onto two rows. */
+  .app-shell[data-theme][data-color-scheme] .studio-dock {
+    top: calc(var(--lm-gutter) + var(--topbar-h));
+    right: var(--lm-gutter);
+    bottom: var(--lm-gutter);
+    margin-left: 0;
+    box-shadow: var(--lm-pop-shadow), -30px 0 90px rgba(0, 0, 0, .45);
+  }
+  .app-shell[data-theme][data-color-scheme] .studio-dock.closed { box-shadow: none; }
+  .app-shell[data-theme][data-color-scheme] .topbar { z-index: 31; }
+}
+
+/* ---- Reading measure and composer gutters (legacy 1180 / 1000 / 700) ---- */
+@media (max-width: 1180px) {
+  .app-shell[data-theme][data-color-scheme] .timeline-entry { width: min(var(--measure), calc(100% - 48px)); }
+}
+@media (max-width: 1000px) {
+  .app-shell[data-theme][data-color-scheme] .timeline-entry { width: min(var(--measure), calc(100% - 36px)); }
+  .app-shell[data-theme][data-color-scheme] .composer-zone { padding-left: 16px; padding-right: 16px; }
+}
+@media (max-width: 700px) {
+  .app-shell[data-theme][data-color-scheme] .timeline-entry { width: calc(100% - 24px); }
+  .app-shell[data-theme][data-color-scheme] .composer-zone { padding: 8px 12px 12px; }
+  .app-shell[data-theme][data-color-scheme] .composer-input-wrap { --composer-input-padding-block-start: 12px; --composer-input-padding-inline: 12px; }
+  .app-shell[data-theme][data-color-scheme] .welcome-screen h1,
+  .app-shell[data-theme][data-color-scheme] .thread-empty-state h1 { font-size: 26px; }
+  .app-shell[data-theme][data-color-scheme] .permission-menu { width: min(310px, calc(100vw - 40px)); }
+  .app-shell[data-theme][data-color-scheme] .isolation-choice { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- Chat column container ladder (legacy chat-main 520) ---- */
+@container chat-main (max-width: 520px) {
+  .app-shell[data-theme][data-color-scheme] .topbar { padding-left: 8px; padding-right: 8px; }
+}
+
+/* ---- Settings: short windows (legacy max-height 720) ---- */
+@media (max-height: 720px) {
+  .app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 0; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-label { display: none; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button { min-height: 30px; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { width: 22px; height: 22px; padding: 4px; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-head { padding-top: 12px; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-heading { padding-top: 16px; padding-bottom: 12px; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > h3 { font-size: 21px; }
+}
+
+/* ---- Settings: narrow windows (legacy max-width 760) ----
+   The nav column becomes a scrolling strip of pills above the pane. */
+@media (max-width: 760px) {
+  .app-shell[data-theme][data-color-scheme] .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav { border-right: 0; border-bottom: 1px solid var(--line-quiet); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-head { padding: 8px 8px 0; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 4px; padding: 8px; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-group { gap: 0; animation: none; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav-label { display: none; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button {
+    width: auto;
+    min-height: 32px;
+    grid-template-columns: 22px auto;
+    gap: 6px;
+    padding: 0 12px 0 5px;
+  }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { width: 22px; height: 22px; padding: 4px; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-heading { padding: 12px 12px 12px 16px; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > h3 { font-size: 20px; }
+  .app-shell[data-theme][data-color-scheme] .settings-content { padding: 16px; }
+  .app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer { padding: 12px 16px; }
+  .app-shell[data-theme][data-color-scheme] .set-row { padding: 12px 14px; }
+  .app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: minmax(0, 1fr); }
+  .app-shell[data-theme][data-color-scheme] .settings-modal { border-radius: 20px; }
+}

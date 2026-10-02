@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { sanitizeProjectDefaultOverrides, sanitizeProjectDefaults } from "./projectDefaults";
 
 describe("project defaults", () => {
+  it.each(["dart", "filament"])("migrates a retired %s project selection without dropping its appearance override", (retired) => {
+    const defaults = sanitizeProjectDefaults({ provider: "claude", model: "claude-opus-5", effortSlider: retired });
+    expect(defaults?.effortSlider).toBe("comet");
+    expect(defaults?.effortSlider).toBeDefined();
+  });
   it.each(["atari", "monochrome"])("preserves the %s theme in per-project settings", (theme) => {
     expect(sanitizeProjectDefaults({ provider: "openai", model: "gpt-5.6-sol", theme })?.theme).toBe(theme);
   });

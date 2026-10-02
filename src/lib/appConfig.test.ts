@@ -36,9 +36,17 @@ describe("theme catalog", () => {
 });
 
 describe("effort slider catalog", () => {
+  it("retires Dart and migrates saved selections to its registered replacement", () => {
+    const replacement = sanitizeEffortSlider("dart");
+    expect(EFFORT_SLIDER_STYLES.some((style) => String(style.id) === "dart" || style.name === "Dart")).toBe(false);
+    expect(replacement).not.toBe("dart");
+    expect(replacement).not.toBe(DEFAULT_SETTINGS.effortSlider);
+    expect(EFFORT_SLIDER_STYLES.some((style) => style.id === replacement)).toBe(true);
+  });
+
   it("registers every style exactly once, with a name and a description", () => {
     const ids = EFFORT_SLIDER_STYLES.map((style) => style.id);
-    expect(ids).toEqual(["aurora", "astra", "spectrum", "classic", "neon", "pixel", "ink", "reactor", "dart", "coil"]);
+    expect(ids).toEqual(["aurora", "astra", "spectrum", "classic", "neon", "pixel", "ink", "reactor", "comet", "coil"]);
     expect(new Set(ids).size).toBe(ids.length);
     expect(EFFORT_SLIDER_STYLES.every((style) => style.name.length > 0 && style.description.length > 0)).toBe(true);
   });
@@ -46,7 +54,9 @@ describe("effort slider catalog", () => {
   it("persists the newest styles and still falls back for unknown ones", () => {
     expect(sanitizeEffortSlider("astra")).toBe("astra");
     expect(sanitizeEffortSlider("reactor")).toBe("reactor");
-    expect(sanitizeEffortSlider("dart")).toBe("dart");
+    expect(sanitizeEffortSlider("dart")).toBe("comet");
+    expect(sanitizeEffortSlider("filament")).toBe("comet");
+    expect(sanitizeEffortSlider("comet")).toBe("comet");
     expect(sanitizeEffortSlider("coil")).toBe("coil");
     expect(sanitizeEffortSlider("tidal")).toBe(DEFAULT_SETTINGS.effortSlider);
     expect(sanitizeEffortSlider(undefined)).toBe(DEFAULT_SETTINGS.effortSlider);

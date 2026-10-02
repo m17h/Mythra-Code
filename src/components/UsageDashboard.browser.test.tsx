@@ -1,5 +1,5 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
-import { page, userEvent } from "vitest/browser";
+import { commands, page, userEvent } from "vitest/browser";
 import { beforeEach, describe, expect, it } from "vitest";
 import { UsageDashboard } from "./UsageDashboard";
 import { refreshOfficialPricing } from "../lib/officialPricing";
@@ -33,10 +33,26 @@ function expectContained(dashboard: HTMLElement) {
   }
 }
 
+async function settleSummaryEntrance(dashboard: HTMLElement) {
+  // Tile entrances have independent delays and transforms. Visual rectangles
+  // describe those moving tiles, so settle their finite motion before checking
+  // visual bounds and taking screenshots. Hover feedback remains intentional.
+  for (const tile of dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")) {
+    for (const animation of tile.getAnimations()) animation.finish();
+  }
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function summaryRowCount(dashboard: HTMLElement) {
+  // offsetTop belongs to grid layout, unlike painted rectangle tops, which
+  // also include each tile's entrance and persistent hover transforms.
+  return new Set([...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")].map((tile) => tile.offsetTop)).size;
+}
+
 const tab = (view: ReturnType<typeof render>, name: string) => view.getByRole("tab", { name });
 
 describe("usage dashboard layout", () => {
-  beforeEach(async () => { seedUsageDashboard(); await page.viewport(1400, 900); });
+  beforeEach(async () => { seedUsageDashboard(); await page.viewport(1400, 900); await commands.setStreamTestReducedMotion(false); });
 
   it.each(["light", "dark"] as const)("keeps unknown cache and tier evidence readable and keyboard-scrollable in narrow %s", async (scheme) => {
     localStorage.clear();
@@ -85,19 +101,19 @@ describe("usage dashboard layout", () => {
       </div></div>
     </div>);
     const dashboard = view.getByRole("region", { name: "Local usage" });
+    await settleSummaryEntrance(dashboard);
     const width = dashboard.getBoundingClientRect().width;
     // The standard 920px sheet leaves ~648px; the widened one ~928px.
     expect(width).toBeGreaterThan(880);
-    const boxes = [...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")].map((item) => item.getBoundingClientRect());
-    expect(new Set(boxes.map((box) => Math.round(box.top))).size).toBe(1);
+    expect(summaryRowCount(dashboard)).toBe(1);
     await page.screenshot({ element: view.container.querySelector<HTMLElement>(".settings-modal")!, path: "../../test-results/usage-settings-sheet.png" });
   });
 
   it.each([928, 640, 320])("fits every view at a %ipx panel", async (width) => {
     const { view, dashboard } = mount(width);
     await waitFor(() => expect(dashboard.clientWidth).toBeGreaterThan(0));
-    const stats = [...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")].map((item) => item.getBoundingClientRect());
-    const rows = new Set(stats.map((box) => Math.round(box.top))).size;
+    await settleSummaryEntrance(dashboard);
+    const rows = summaryRowCount(dashboard);
     // Four across on desktop, two by two in the standard sheet, a list when narrow.
     expect(rows).toBe(width >= 900 ? 1 : width >= 600 ? 2 : 4);
     expectContained(dashboard);
@@ -121,6 +137,51 @@ describe("usage dashboard layout", () => {
       expect(cell.scrollWidth, cell.textContent ?? "").toBeLessThanOrEqual(cell.clientWidth + 1);
     }
     await page.screenshot({ element: dashboard, path: `../../test-results/usage-compare-${width}.png` });
+  });
+
+  it("keeps two logical summary rows while staggered entrances temporarily separate their visual tops", async () => {
+    await userEvent.hover(document.documentElement);
+    const { dashboard } = mount(640);
+    const tiles = [...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")];
+    expect(tiles.some((tile) => tile.matches(":hover"))).toBe(false);
+    const animations = tiles.map((tile) => tile.getAnimations());
+    expect(tiles).toHaveLength(4);
+    for (const group of animations) {
+      expect(group).toHaveLength(1);
+      group[0].pause();
+      group[0].currentTime = 60;
+    }
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const layoutTops = tiles.map((tile) => tile.offsetTop);
+    expect(layoutTops[0]).toBe(layoutTops[1]);
+    expect(layoutTops[2]).toBe(layoutTops[3]);
+    expect(layoutTops[2]).toBeGreaterThan(layoutTops[0]);
+    // This recreates the former three-row result without changing the grid:
+    // independently moving cards do not yet share painted top coordinates.
+    expect(new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size).toBeGreaterThan(2);
+    await settleSummaryEntrance(dashboard);
+    expect(summaryRowCount(dashboard)).toBe(2);
+    expect(new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size).toBe(2);
+    expectContained(dashboard);
+  });
+
+  it("keeps summary row measurement valid when a settled tile is hovered", async () => {
+    const { dashboard } = mount(640);
+    const tiles = [...dashboard.querySelectorAll<HTMLElement>(".usage-dashboard-stats > div")];
+    await settleSummaryEntrance(dashboard);
+    await userEvent.hover(tiles[0]);
+    await settleSummaryEntrance(dashboard);
+    expect(tiles[0].matches(":hover")).toBe(true);
+    expect(summaryRowCount(dashboard)).toBe(2);
+    expect(new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size).toBeGreaterThan(2);
+    expectContained(dashboard);
+    // Neutral painted rectangles align again when the intentional hover lift
+    // ends; the pointer persists across browser tests, so make that explicit.
+    await userEvent.hover(dashboard.querySelector<HTMLElement>("h4")!);
+    await settleSummaryEntrance(dashboard);
+    expect(tiles.some((tile) => tile.matches(":hover"))).toBe(false);
+    expect(summaryRowCount(dashboard)).toBe(2);
+    expect(new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size).toBe(2);
   });
 
   it("renders the development preview's weeks of Opus and Sol in dark and light", async () => {

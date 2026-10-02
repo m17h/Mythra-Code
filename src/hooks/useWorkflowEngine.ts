@@ -219,6 +219,8 @@ interface WorkflowEngineDeps {
   updateWorkflow: (id: string, patch: (current: WorkflowDefinition) => WorkflowDefinition) => void;
   recordRun: (run: WorkflowRunRecord) => void;
   onThreadStarted: (project: Project, threadId: string, source: WorkflowRunSource) => void;
+  /** Record fresh-thread authority before any subsequent preparation. */
+  onThreadCreated?: (threadId: string) => void;
   onError: (message: string) => void;
   turnTimeoutMs?: number;
 }
@@ -336,7 +338,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       if (source === "manual") current.onError(preflight.message);
       return undefined;
     }
-    const { workflow, project } = preflight;
+    const project = preflight.project;
+    // Each recipe creates a new root conversation; saved recipe settings
+    // cannot grant spawning authority to that fresh conversation.
+    const workflow = { ...preflight.workflow, run: { ...preflight.workflow.run, subagentsEnabled: false } };
     const userPrompt = invocation?.userPrompt?.trim() ?? "";
     if (userPrompt && !workflow.steps.some((step) => step.type === "agent")) {
       current.onError("This recipe only runs commands. Use its inputs instead of an additional prompt.");
@@ -426,6 +431,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
         threadId = started.thread.id;
         appServerModel = started.model;
       }
+      current.onThreadCreated?.(threadId);
       active.threadId = threadId;
       if (active.stopRequested) throw new WorkflowStoppedError();
       current.bindThreadToProject(threadId, project.path);

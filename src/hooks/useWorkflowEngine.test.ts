@@ -86,6 +86,24 @@ describe("workflow turn waiting", () => {
     vi.useRealTimers();
   });
 
+  it("creates workflow threads off despite an enabled saved recipe and records them before a turn failure", async () => {
+    const workflow = testWorkflow({ run: { ...scheduleRunSnapshot(DEFAULT_SETTINGS), subagentsEnabled: true }, steps: [{ id: "review", name: "Review", type: "agent", prompt: "Review", continueOnError: false }] });
+    const runs: WorkflowRunRecord[] = [];
+    const onThreadCreated = vi.fn();
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/start") return { thread: { id: "fresh" } };
+      if (method === "turn/start") throw new Error("turn failed");
+      return {};
+    });
+    const { result } = renderHook(() => useWorkflowEngine(testEngineDeps(workflow, runs, { onThreadCreated })));
+    await act(async () => { await result.current.runWorkflow(workflow.id); });
+    expect(onThreadCreated).toHaveBeenCalledWith("fresh");
+    const start = codex.rpc.mock.calls.find(([method]) => method === "thread/start")!;
+    expect(start[1].config.features).toMatchObject({ multi_agent: false, multi_agent_v2: false });
+    expect(start[1].config).not.toHaveProperty("mcp_servers.mythra_agents");
+    expect(workflow.run.subagentsEnabled).toBe(true);
+  });
+
   it("resolves when the agent turn completes", async () => {
     useTaskStore.getState().ensureTask("thread-1");
     useTaskStore.getState().setTaskStatus("thread-1", "running");

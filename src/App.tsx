@@ -32,6 +32,7 @@ import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsup
 import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
 import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
+import { MythraMark } from "./components/MythraMark";
 import { confirmDialog } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { ModelPowerControl, openAiModelOptions, type RuntimeModel } from "./components/ModelPowerControl";
@@ -156,6 +157,7 @@ import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
+import { sanitizeThreadSubagentSettings, settingsForThreadSubagents } from "./lib/threadSubagentSettings";
 import { sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
@@ -637,6 +639,8 @@ export default function App() {
   // Cross-provider delegation: one frozen policy per bridge session, plus the
   // parent/child ownership record that outlives a reload.
   const [childAgentPolicies, persistChildAgentPolicies] = usePersistedState<Record<string, ChildAgentPolicy>>("kiwi.childAgentPolicies", {}, { init: (load) => sanitizeChildAgentPolicies(load()) });
+  const [threadSubagentSettings, persistThreadSubagentSettings, threadSubagentSettingsRef] = usePersistedStateRef<Record<string, boolean>>("kiwi.threadSubagentSettings", {}, { init: (load) => sanitizeThreadSubagentSettings(load()) });
+  const [draftSubagentSettings, setDraftSubagentSettings] = useState(false);
   const [childAgentLinks, persistChildAgentLinks] = usePersistedState<Record<string, ChildAgentLink>>("kiwi.childAgentLinks", {}, { init: (load) => sanitizeChildAgentLinks(load()) });
   const [nativeAgentLinks, persistNativeAgentLinks] = usePersistedState<Record<string, NativeAgentLink>>("kiwi.nativeAgentLinks", {}, { init: (load) => sanitizeNativeAgentLinks(load()) });
   const [pendingHandoff, setPendingHandoff] = usePersistedState<ThreadHandoff | null>("kiwi.pendingHandoff", null, {
@@ -897,7 +901,7 @@ export default function App() {
       ? subscriptionSystemPrompts[activeProvider]
       : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
     const resolved = {
-      ...projectSettings,
+      ...settingsForThreadSubagents(projectSettings, activeThreadId, threadSubagentSettings, draftSubagentSettings),
       provider: activeProvider,
       model: modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
@@ -908,7 +912,7 @@ export default function App() {
     return activeThread && isSubAgentThread(activeThread, childThreadLinks)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, draftThreadModel, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, draftThreadModel, draftSubagentSettings, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
   // Destructive Git confirmations recheck the permission visible when they finish.
   const gitPermissionRef = useRef(effectiveSettings.permission);
   gitPermissionRef.current = effectiveSettings.permission;
@@ -1376,15 +1380,16 @@ export default function App() {
     thread.id,
     threadProjectBindingsRef.current?.[thread.id] || thread.cwd || activeWorkspace?.path || "",
   );
-  const openThreadFolder = async (thread: Thread) => {
+  const openWorkspaceFolder = async (path: string) => {
     try {
-      await invoke("open_workspace_folder", { path: threadFolderFor(thread) });
+      await invoke("open_workspace_folder", { path });
     } catch (reason) {
       // Folder IO failures are not provider/runtime errors. In particular,
       // "No such file or directory" must not suggest reinstalling Codex.
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  const openThreadFolder = (thread: Thread) => openWorkspaceFolder(threadFolderFor(thread));
 
   useEffect(() => {
     let disposed = false;
@@ -1560,26 +1565,25 @@ export default function App() {
   );
 
   /**
-   * Write a sub-agent policy edited in the composer back to the scope it came
-   * from: the active project's own override, or the global defaults that Chats
-   * and every uncustomized project inherit.
+   * Composer choices grant authority only to this conversation. Settings keeps
+   * the reusable project/app crew; it cannot opt a future thread into spawning.
    */
   const persistComposerSubagentPolicy = useCallback(
     (next: ProjectSubagentSettings) => {
+      if (activeThreadId) persistThreadSubagentSettings((current) => ({ ...current, [activeThreadId]: next.enabled }));
+      else setDraftSubagentSettings(next.enabled);
+      // Preserve reusable roster/limit editing; the enable switch alone is
+      // local authority. An enabled stored default is legacy state only.
+      if (next.maxConcurrent === projectSettings.subagentMax && JSON.stringify(next.childAgents) === JSON.stringify(projectSettings.childAgents)) return;
       if (!activeProject) {
-        persistSettings({
-          ...settings,
-          subagentsEnabled: next.enabled,
-          subagentMax: next.maxConcurrent,
-          childAgents: next.childAgents,
-        });
-        return;
+        persistSettings((current) => ({ ...current, subagentMax: next.maxConcurrent, childAgents: next.childAgents }));
+      } else {
+        setProjects((current) => current.map((project) => project.id === activeProject.id
+          ? { ...project, overrides: { ...project.overrides, subagents: { ...next, enabled: project.overrides?.subagents?.enabled ?? settings.subagentsEnabled } } }
+          : project));
       }
-      setProjects((current) => current.map((project) => (project.id === activeProject.id
-        ? { ...project, overrides: { ...(project.overrides ?? {}), subagents: next } }
-        : project)));
     },
-    [activeProject, persistSettings, setProjects, settings],
+    [activeProject, activeThreadId, persistSettings, persistThreadSubagentSettings, projectSettings, setProjects, settings.subagentsEnabled],
   );
 
   /** Replace or clear one project's Run button command. */
@@ -1680,8 +1684,8 @@ export default function App() {
 
   /**
    * Stage destination/model/reasoning/limit edits for this conversation only.
-   * The global/project switches intentionally remain live defaults, while the
-   * captured roster is promoted atomically by the next prompt.
+   * The thread's switch stays local, while the captured roster is promoted
+   * atomically by the next prompt.
    */
   const persistActiveThreadSubagentPolicy = useCallback((next: ProjectSubagentSettings) => {
     const existing = activeDelegationPolicy;
@@ -1698,14 +1702,7 @@ export default function App() {
       return;
     }
 
-    // Only the main revocation switch belongs to the shared policy. Clearing
-    // this thread's roster must never rewrite project/global defaults.
-    if (next.enabled !== composerSubagentPolicy.enabled) {
-      persistComposerSubagentPolicy({
-        ...composerSubagentPolicy,
-        enabled: next.enabled,
-      });
-    }
+    persistThreadSubagentSettings((current) => ({ ...current, [activeThreadId]: next.enabled }));
 
     const crewChanged = next.maxConcurrent !== activeThreadSubagentPolicy.maxConcurrent
       || JSON.stringify(next.childAgents.targets) !== JSON.stringify(activeThreadSubagentPolicy.childAgents.targets);
@@ -1739,9 +1736,9 @@ export default function App() {
     activeThreadId,
     childAgentReadiness,
     childrenRunning,
-    composerSubagentPolicy,
     persistChildAgentPolicies,
     persistComposerSubagentPolicy,
+    persistThreadSubagentSettings,
     queuedTurns.length,
     setTransientStatus,
   ]);
@@ -3322,6 +3319,7 @@ export default function App() {
     selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
+    setDraftSubagentSettings(false);
     setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === projectDefaultProvider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
     setDraftThreadModel(pendingHandoffForWorkspace ? modelForProvider(pendingHandoffForWorkspace.targetProvider, "") : null);
     // Attachments are keyed by draft identity, so a workspace switch simply
@@ -3733,6 +3731,7 @@ export default function App() {
         items={[
           { label: project.pinned ? "Unpin project" : "Pin project", icon: project.pinned ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleProjectPin(project) },
           { label: "Project settings", icon: <Settings size={13} />, onSelect: () => openSettings("projects") },
+          { label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openWorkspaceFolder(project.path) },
           { label: "Remove from Mythra Code", icon: <Trash2 size={13} />, danger: true, onSelect: () => removeProject(project) },
         ]}
       />
@@ -3924,6 +3923,7 @@ export default function App() {
     );
     setError(null);
     setStatus("Loading thread");
+    setDraftSubagentSettings(false);
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
@@ -4031,7 +4031,7 @@ export default function App() {
         ? subscriptionSystemPrompts[provider]
         : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
       const targetSettings: AppSettings = {
-        ...projectSettings,
+        ...settingsForThreadSubagents(projectSettings, thread.id, threadSubagentSettingsRef.current),
         provider,
         model: modelForProvider(provider, threadModels[thread.id] ?? projectModel),
         systemPrompt: providerPrompt,
@@ -4278,6 +4278,7 @@ export default function App() {
     selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
+    setDraftSubagentSettings(false);
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
@@ -4325,6 +4326,7 @@ export default function App() {
         messages: task?.messages ?? [],
       });
       setPendingHandoff(handoff);
+      setDraftSubagentSettings(false);
       selectThreadRequestRef.current += 1;
       setActiveThread(null);
       useTaskStore.getState().setActiveThread(null);
@@ -4347,10 +4349,13 @@ export default function App() {
   };
 
   const handleThreadCreated = useCallback((threadId: string) => {
+    // This callback is captured with the sending draft, even if the user
+    // navigates while provider preparation is in flight.
+    persistThreadSubagentSettings((current) => ({ ...current, [threadId]: effectiveSettings.subagentsEnabled }));
     if (!pendingHandoffForWorkspace) return;
     persistThreadHandoffs((current) => ({ ...current, [threadId]: pendingHandoffForWorkspace }));
     setPendingHandoff(null);
-  }, [pendingHandoffForWorkspace, persistThreadHandoffs, setPendingHandoff]);
+  }, [effectiveSettings, pendingHandoffForWorkspace, persistThreadHandoffs, persistThreadSubagentSettings, setPendingHandoff]);
 
   const automaticTitles = useAutomaticThreadTitles({
     enabled: settings.automaticThreadTitles,
@@ -4449,10 +4454,11 @@ export default function App() {
       && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
     if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
     assertChildAgentProposalAvailable(childAgentPolicies, childAgentLinks, rootThreadId);
-    setProjects((current) => current.map((entry) => (entry.id === project.id
-      ? { ...entry, overrides: { ...(entry.overrides ?? {}), subagents: next } }
-      : entry)));
-    setTransientStatus(`Sub-agent settings updated for ${project.name}`);
+    persistThreadSubagentSettings((current) => ({ ...current, [rootThreadId]: next.enabled }));
+    setProjects((current) => current.map((entry) => entry.id === project.id
+      ? { ...entry, overrides: { ...entry.overrides, subagents: { ...next, enabled: entry.overrides?.subagents?.enabled ?? settings.subagentsEnabled } } }
+      : entry));
+    setTransientStatus("Sub-agent settings updated for this thread");
     // This approval is explicit user authority to refresh the otherwise-frozen
     // roster. The bridge the running turn is holding stays valid — only the
     // cached launch is dropped, so the next prompt rebuilds it with the
@@ -4474,15 +4480,15 @@ export default function App() {
       return { ...current, [existing.sessionId]: base };
     });
     invalidateChildAgentLaunch(existing.sessionId);
-  }, [childAgentLinks, childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, projects, setProjects, setTransientStatus]);
+  }, [childAgentLinks, childAgentPolicies, childAgentReadiness, persistChildAgentPolicies, persistThreadSubagentSettings, projects, setProjects, settings.subagentsEnabled, setTransientStatus]);
 
   const projectSubagentSettingsForThread = useCallback((rootThreadId: string): ProjectSubagentSettings => {
     const projectPath = threadProjectBindingsRef.current?.[rootThreadId];
     const project = projects.find((entry) => projectPath
       && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
     if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
-    return projectSubagentSettingsFromApp(settingsWithProjectSubagents(settings, project.overrides?.subagents));
-  }, [projects, settings]);
+    return projectSubagentSettingsFromApp(settingsForThreadSubagents(settingsWithProjectSubagents(settings, project.overrides?.subagents), rootThreadId, threadSubagentSettingsRef.current));
+  }, [projects, settings, threadSubagentSettingsRef]);
 
   /**
    * A model asked (through the bridge) to set this project's Run button. The
@@ -4839,6 +4845,7 @@ export default function App() {
     // archived thread loaded, and its old bridge identity is exactly what lets
     // the first restored turn detect that a refresh is required.
     if (!dropRecords) return;
+    persistThreadSubagentSettings((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== threadId)));
     forgetSubagentCapabilities(threadId);
     persistChildAgentPolicies((current) => {
       const next = Object.fromEntries(Object.entries(current).filter(([, policy]) => policy.rootThreadId !== threadId));
@@ -5239,6 +5246,7 @@ export default function App() {
         if (!isExcludeTurnsUnsupported(reason)) throw reason;
         result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
       }
+      persistThreadSubagentSettings((current) => ({ ...current, [result.thread.id]: false }));
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       const loaded = forkedWithoutTurns
         ? await loadThreadHistory({ threadId: result.thread.id, includeTurns: false }, { threadId: result.thread.id, includeTurns: true })
@@ -6523,6 +6531,7 @@ export default function App() {
     discardRunCheckpoint,
     updateWorkflow,
     recordRun: recordWorkflowRun,
+    onThreadCreated: (threadId) => persistThreadSubagentSettings((current) => ({ ...current, [threadId]: false })),
     onLocalThreadUpdated: (thread: Thread, cursorSessionId?: string, run?: ScheduleRunSettings) => {
       if (cursorSessionId) cursorSessionIdsRef.current[thread.id] = cursorSessionId;
       const remembered = knownThreadsRef.current?.[thread.id];
@@ -6681,6 +6690,9 @@ export default function App() {
     bindThreadToProject,
     beginRunCheckpoint,
     discardRunCheckpoint,
+    onThreadCreated: (threadId) => {
+      persistThreadSubagentSettings((current) => ({ ...current, [threadId]: false }));
+    },
     onThreadStarted: (workspace) => {
       if (workspace.isChat ? workspaceMode === "chat" : activeProject?.id === workspace.id) {
         void loadThreads(workspace);
@@ -6689,6 +6701,9 @@ export default function App() {
   });
 
   const activeChatFont = previewChatFont ?? projectDefaults?.chatFont ?? settings.chatFont;
+  // Onboarding edits the app-wide look. Show that look even when the active
+  // project has its own theme, without overwriting the project's saved choice.
+  const activeTheme = previewTheme ?? (onboardingOpen ? settings.theme : projectDefaults?.theme ?? settings.theme);
   const activeEffortSlider = previewEffortSlider ?? projectDefaults?.effortSlider ?? settings.effortSlider;
   // Let the tour's local preview be the only styled slider ancestor. The
   // obscured app restores its style when the tour closes or hands off to Settings.
@@ -6716,7 +6731,7 @@ export default function App() {
   });
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={previewTheme ?? projectDefaults?.theme ?? settings.theme} data-color-scheme={themeColorScheme(previewTheme ?? projectDefaults?.theme ?? settings.theme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
+    <div ref={shellRef} className="app-shell" data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       <RendererLaunchCommitMarker />
       <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
       {successToast && (
@@ -6753,7 +6768,7 @@ export default function App() {
         )}
         <div className="sidebar-brand">
           <div className="brand-mark">
-            <img src="/mythra-code-glyph.svg" alt="" />
+            <MythraMark />
           </div>
           <span>Mythra Code</span>
           <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">
@@ -6885,7 +6900,7 @@ export default function App() {
                   items={[
                     { label: pinnedThreadIds.includes(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadIds.includes(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
                     { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
-                    { label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) },
+                    ...(activeProject ? [{ label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) }] : []),
                     { label: "Archive", icon: <Archive size={13} />, onSelect: () => void archiveThread(thread) },
                     { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(thread.id, thread.name || thread.preview || "Untitled thread") },
                   ]}
@@ -7181,7 +7196,7 @@ export default function App() {
                   </div>
                   {!activeWorkspace.isChat && !activeThread && (
                     <div className="isolation-choice" aria-label="Thread workspace mode">
-                      <button className={!draftThreadIsolated ? "active" : ""} onClick={() => setDraftThreadIsolated(false)}>
+                      <button className={!draftThreadIsolated ? "active" : ""} aria-pressed={!draftThreadIsolated} onClick={() => setDraftThreadIsolated(false)}>
                         <Folder size={15} />
                         <span><strong>Shared project</strong><small>Work directly in {activeProject?.name}</small></span>
                       </button>
@@ -7203,6 +7218,7 @@ export default function App() {
                         ) : (
                           <button
                             className={draftThreadIsolated ? "active" : ""}
+                            aria-pressed={draftThreadIsolated}
                             onClick={() => setDraftThreadIsolated(true)}
                             disabled={!workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit}
                             title={!workspaceGitInfo.isRoot ? "Open the Git repository root to use an isolated worktree" : !workspaceGitInfo.hasCommit ? "Requires at least one Git commit" : "Create a private branch and worktree for this thread"}
@@ -7392,8 +7408,8 @@ export default function App() {
                       onUnavailable={(message) => showToast(message, "info")}
                       workers={subAgentWorkers}
                       parentActive={running || queuedTurns.length > 0}
-                      scopeLabel={activeProject ? activeProject.name : "app defaults · projects without an override"}
-                      projectOverride={!activeDelegationPolicy && Boolean(activeProject?.overrides?.subagents)}
+                      scopeLabel={activeThreadId ? "this thread" : "this new thread"}
+                      projectOverride={false}
                       presets={settings.childAgentPresets}
                       onSavePreset={(name, policy) => {
                         persistSettings((current) => {
@@ -7759,7 +7775,7 @@ export default function App() {
 
       {onboardingMounted && (
         <Suspense fallback={null}>
-          <OnboardingModal key={onboardingSession} open={onboardingOpen} preferredProvider={settings.provider} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onOpenSettings={(section: SettingsSection, draft?: OnboardingSettingsDraft) => {
+          <OnboardingModal key={onboardingSession} open={onboardingOpen} preferredProvider={settings.provider} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onThemeChange={(theme) => persistSettings((current) => ({ ...current, theme }))} onOpenSettings={(section: SettingsSection, draft?: OnboardingSettingsDraft) => {
             resumeOnboardingAfterSettings.current = true;
             setOnboardingOpen(false);
             openSettings(section, draft);

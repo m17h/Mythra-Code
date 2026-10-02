@@ -7,6 +7,26 @@ import "../styles.css";
 
 const highlights = () => [...CSS.highlights.entries()].filter(([name]) => name.startsWith("mythra-stream-"));
 const fadedText = () => highlights().flatMap(([, highlight]) => [...highlight].map((range) => (range as Range).toString())).join("");
+// Pin frame time; Markdown, DOM ranges and the browser Highlight registry
+// remain real, as in the cadence/fade suites.
+function frameClock() {
+  let now = 1200;
+  let id = 0;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { callbacks.set(++id, callback); return id; });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((key) => { callbacks.delete(key); });
+  return {
+    async advance(ms: number) {
+      now += ms;
+      await act(async () => {
+        const pending = [...callbacks.values()];
+        callbacks.clear();
+        pending.forEach((callback) => callback(now));
+      });
+    },
+  };
+}
 function Shell({ text, streaming = true, provider = "claude", history = [] }: {
   text: string; streaming?: boolean; provider?: Provider; history?: ChatMessage[];
 }) {
@@ -162,18 +182,75 @@ describe("live Markdown paint integration", () => {
   });
 
   it("keeps the final answer mounted when completed-turn compaction hides progress updates", async () => {
+    const clock = frameClock();
     const history: ChatMessage[] = [
       { id: "prompt", role: "user", text: "Build it", timelineOrder: 1, turnId: "turn" },
       { id: "progress", role: "assistant", text: "Preparing the changes", timelineOrder: 2, turnId: "turn" },
     ];
     const view = render(<Shell history={history} text="The result" />);
     view.rerender(<Shell history={history} text="The result is ready" />);
-    await vi.waitFor(() => expect(highlights().length).toBeGreaterThan(0));
+    await clock.advance(120);
+    expect(highlights().length).toBeGreaterThan(0);
+    const active = highlights();
+    const activeText = fadedText();
     const body = view.container.querySelectorAll(".message.assistant .rich-markdown")[1];
     expect(body).toBeDefined();
     view.rerender(<Shell history={history} text="The result is ready now." streaming={false} />);
     expect(view.container.querySelectorAll(".message.assistant .rich-markdown")).toHaveLength(1);
     expect(view.container.querySelector(".message.assistant .rich-markdown")).toBe(body);
     expect(highlights().length).toBeGreaterThan(0);
+    for (const [name, highlight] of active) expect(CSS.highlights.get(name)).toBe(highlight);
+    expect(fadedText()).toBe(activeText);
+    await clock.advance(240);
+    expect(body.textContent).toBe("The result is ready now.");
+    expect(fadedText()).toContain("now.");
+    await clock.advance(139);
+    expect(fadedText()).toContain("now.");
+    await clock.advance(1);
+    expect(highlights()).toHaveLength(0);
+    expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
+  });
+
+  it("keeps the completed answer and its new tail after an earlier fade naturally expires", async () => {
+    let completed = false;
+    const paints: Array<{ completed: boolean; text: string; connected: boolean }> = [];
+    const register = CSS.highlights.set.bind(CSS.highlights);
+    // Observe the real registry at registration rather than polling a 140ms
+    // cohort that can legitimately expire between hosted-runner assertions.
+    vi.spyOn(CSS.highlights, "set").mockImplementation((name, highlight) => {
+      const registered = register(name, highlight);
+      if (name.startsWith("mythra-stream-") && CSS.highlights.get(name) === highlight) {
+        for (const range of highlight) paints.push({ completed, text: (range as Range).toString(),
+          connected: (range as Range).startContainer.isConnected && (range as Range).endContainer.isConnected });
+      }
+      return registered;
+    });
+    const history: ChatMessage[] = [
+      { id: "prompt", role: "user", text: "Build it", timelineOrder: 1, turnId: "turn" },
+      { id: "progress", role: "assistant", text: "Preparing the changes", timelineOrder: 2, turnId: "turn" },
+    ];
+    const view = render(<Shell history={history} text="The result" />);
+    view.rerender(<Shell history={history} text="The result is ready" />);
+    await vi.waitFor(() => expect(paints.some((paint) => paint.connected && paint.text.length > 0)).toBe(true));
+    const body = view.container.querySelectorAll(".message.assistant .rich-markdown")[1];
+    const prefix = body.querySelector("p")!.firstChild;
+    // The provider may finish after the previous 140ms decoration has ended.
+    await vi.waitFor(() => {
+      expect(body.textContent).toBe("The result is ready");
+      expect(highlights()).toHaveLength(0);
+    });
+    completed = true;
+    view.rerender(<Shell history={history} text="The result is ready now." streaming={false} />);
+    expect(view.container.querySelectorAll(".message.assistant .rich-markdown")).toHaveLength(1);
+    expect(view.container.querySelector(".message.assistant .rich-markdown")).toBe(body);
+    expect(body.querySelector("p")!.firstChild).toBe(prefix);
+    expect(body.textContent).toBe("The result is ready");
+    await vi.waitFor(() => expect(body.textContent).toBe("The result is ready now."));
+    expect(paints.some((paint) => paint.completed && paint.connected && paint.text.length > 0)).toBe(true);
+    expect(body.querySelector("p")!.firstChild).toBe(prefix);
+    await vi.waitFor(() => {
+      expect(highlights()).toHaveLength(0);
+      expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
+    });
   });
 });

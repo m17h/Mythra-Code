@@ -1,0 +1,417 @@
+/* ============================================================================
+   Lumen tokens
+   ----------------------------------------------------------------------------
+   COMPATIBILITY CONTRACT (applies to every file in src/styles/lumen):
+   - No cascade layers. Production targets Safari 13 / Chrome 105, and WebKit
+     only gained @layer in 15.4. Legacy styles stay unwrapped and authoritative
+     for structure.
+   - Every Lumen rule is scoped by the *shell scope*
+         .app-shell[data-theme][data-color-scheme]
+     Both attributes are always present on the real shell. The scope gives
+     Lumen (0,3,0) of prefix specificity, which beats legacy theme/light
+     overrides such as `.app-shell[data-color-scheme="light"] .x` (0,2,0), and
+     beats lazily loaded component sheets regardless of when they load.
+   - Lumen is imported after styles.css in main.tsx, so equal-specificity ties
+     and same-named @keyframes also resolve to Lumen in production.
+   - Selectors avoid :is(), :where(), :has() and :focus-visible inside selector
+     lists. Safari 13 drops a whole rule if one selector in it is unknown, so
+     those features only ever appear in a rule of their own as an enhancement.
+   - Anything essential (text visibility, positioning, hit areas) avoids
+     color-mix(), individual transform properties and :has(). Those are
+     enhancements only.
+
+   Theme map (ids unchanged; palettes redesigned):
+     mythra        neutral graphite canvas, restrained light-blue accents
+     light-mythra  mist canvas, white islands, deep cyan → indigo
+     kiwi          moss-black canvas, lime → teal
+     daylight      sage canvas, paper islands, leaf → jade
+     midnight      abyssal blue canvas, ice → cobalt
+     synthwave     plum canvas, magenta → violet
+     atari         sand canvas, parchment islands, brick → amber
+     monochrome    graphite canvas, white → steel
+   ========================================================================== */
+
+/* Motion and type tokens are also published on :root so portalled fallbacks
+   (rendered on <body> when the top layer is unavailable) can read them. */
+:root {
+  --lm-d-1: 120ms;
+  --lm-d-2: 200ms;
+  --lm-d-3: 320ms;
+  --lm-d-4: 520ms;
+  --lm-ease-out: cubic-bezier(.16, 1, .3, 1);
+  --lm-ease-in: cubic-bezier(.7, 0, .84, 0);
+  --lm-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --lm-spring-soft: cubic-bezier(.22, 1.25, .36, 1);
+  --lm-stagger: 40ms;
+  --font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Inter Display", "Inter", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+}
+
+/* ---- Mythra (default) and the shared geometry ---- */
+.app-shell[data-theme][data-color-scheme] {
+  /* Type */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  --fs-micro: 10px;
+  --fs-meta: 11.5px;
+  --fs-ui: 12.75px;
+  --fs-body: 14px;
+  --fs-lede: 16px;
+  --fs-title: 22px;
+  --fs-display: 36px;
+  --track-tight: -.011em;
+  --track-display: -.034em;
+  --track-caps: .12em;
+
+  /* Geometry */
+  --r-xs: 7px;
+  --r-sm: 10px;
+  --r-md: 13px;
+  --r-lg: 17px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+  /* Morgan: rounded squares, not ovals. Controls, fields, chips and segmented
+     groups use --r-control; small tags, badges and kbd use --r-chip. --r-pill
+     is kept for hairline bars, rails and tracks, which stay capsules. */
+  --r-control: 10px;
+  --r-chip: 6px;
+  --lm-gutter: 8px;
+  --lm-island-r: 20px;
+  --topbar-h: 58px;
+  --measure: 780px;
+  --ease: var(--lm-ease-out);
+  --t-fast: var(--lm-d-1);
+  --t-mid: var(--lm-d-2);
+
+  /* Palette */
+  --lm-canvas: #05070b;
+  --lm-aurora-1: rgba(64, 214, 255, .16);
+  --lm-aurora-2: rgba(122, 104, 255, .15);
+  --lm-aurora-3: rgba(40, 90, 200, .10);
+  --bg: #0c1018;
+  --sidebar: #0a0e15;
+  --panel: #121823;
+  --panel-2: #171e2b;
+  --panel-3: #212a3a;
+  --field: #080b12;
+  --menu-surface: #141b27;
+  --topbar: rgba(12, 16, 24, .72);
+  --line: rgba(168, 196, 255, .085);
+  --line-strong: rgba(168, 196, 255, .155);
+  --line-quiet: rgba(168, 196, 255, .05);
+  --text: #eef2fa;
+  --ink-2: #c6cedd;
+  --muted: #8e99ad;
+  --muted-2: #8b96aa;
+  --green: #5ee3ff;
+  --accent-2: #8f7cff;
+  --on-accent: #04121a;
+  --green-soft: rgba(94, 227, 255, .12);
+  --green-line: rgba(94, 227, 255, .32);
+  --orange: #f2b46a;
+  --red: #ff8b8b;
+  --info: #8fc8ff;
+  --amber: #f2b46a;
+  /* Ink on a solid --red fill: dark on the light reds of dark themes. */
+  --lm-on-danger: #1c0707;
+  --lm-island-edge: rgba(190, 215, 255, .11);
+  --lm-island-highlight: rgba(255, 255, 255, .06);
+  --lm-island-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 24px 60px -24px rgba(0, 0, 0, .7), 0 2px 10px rgba(0, 0, 0, .35);
+  --lm-pop-shadow: 0 28px 70px -18px rgba(0, 0, 0, .75), 0 8px 24px -8px rgba(0, 0, 0, .5), 0 0 0 1px rgba(190, 215, 255, .06);
+  --lm-code-bg: #070a10;
+  --lm-code-ink: #cdd6e4;
+  --lm-scrim: rgba(3, 5, 9, .64);
+  --lm-hover: rgba(200, 220, 255, .06);
+  --lm-press: rgba(200, 220, 255, .09);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --elev-2: 0 10px 28px -10px rgba(0, 0, 0, .6);
+  --elev-3: 0 24px 56px -18px rgba(0, 0, 0, .7);
+  --shadow: var(--lm-pop-shadow);
+
+  /* Derived. These baseline values use only plain var() colour stops, so they
+     resolve on every supported engine (Safari 13 has no color-mix(), and a
+     declaration whose var() resolves to an unknown function becomes `unset`
+     rather than falling back). Richer color-mix() versions follow behind
+     @supports. */
+  /* Calm by default (Morgan: themes must not distract from work). Every theme's
+     accent-2 is a tonal shade of its own accent, so this "gradient" reads as a
+     nearly flat accent fill. Headings and the wordmark are solid text. */
+  --lm-grad: linear-gradient(135deg, var(--green) 0%, var(--accent-2) 100%);
+  --lm-grad-text: linear-gradient(var(--text), var(--text));
+  --lm-grad-soft: linear-gradient(135deg, var(--green-soft), rgba(0, 0, 0, 0) 85%);
+  --lm-glow: 0 6px 16px -8px rgba(0, 0, 0, .4);
+  --lm-tint: var(--green-soft);
+  --lm-tint-strong: var(--green-soft);
+  /* Container washes and accent-coloured shadows are separate tokens so the
+     accent stays on actions, selection and focus. Both are neutral by default:
+     no tinted surfaces and no coloured glows. */
+  --lm-wash: rgba(0, 0, 0, 0);
+  --lm-accent-glow: rgba(0, 0, 0, .3);
+  --lm-bubble-edge: var(--line-strong);
+  --ring: 0 0 0 3px var(--green-soft);
+  --surface-quiet: var(--lm-hover);
+  --surface-selected: var(--green-soft);
+  --toggle-active-track: var(--green) var(--lm-grad);
+}
+@supports (color: color-mix(in srgb, red, blue)) {
+  .app-shell[data-theme][data-color-scheme] {
+    --lm-grad-soft: linear-gradient(135deg, color-mix(in srgb, var(--green) 10%, transparent), color-mix(in srgb, var(--green) 4%, transparent));
+    --lm-tint-strong: color-mix(in srgb, var(--green) 18%, transparent);
+    --ring: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+    --surface-quiet: color-mix(in srgb, var(--text) 3%, transparent);
+    --surface-selected: color-mix(in srgb, var(--green) 10%, color-mix(in srgb, var(--text) 4%, transparent));
+  }
+}
+
+/* ---- Mythra ----
+   Morgan: "I want the Mythra theme to feel like it has with the dark gray and
+   the light blue accents." Surfaces return to the legacy styles.css Mythra
+   palette (neutral graphite, no navy), the canvas is a darker neutral gray,
+   and light blue (#64ddf2) is a restrained accent for primary actions,
+   selection, focus and small details. There is no indigo second accent, no
+   gradient text, no container washes and only faint accent glows. Declared
+   after the @supports block above so these values win at equal specificity. */
+.app-shell[data-theme="mythra"][data-color-scheme] {
+  --lm-canvas: #16181b;
+  --lm-aurora-1: rgba(255, 255, 255, .025);
+  --lm-aurora-2: rgba(100, 221, 242, .03);
+  --lm-aurora-3: rgba(255, 255, 255, .012);
+  --bg: #1e2024; --sidebar: #22252a; --panel: #292d32; --panel-2: #30353b; --panel-3: #393f46;
+  --field: #262a2f; --menu-surface: #30353b; --topbar: rgba(30, 32, 36, .88);
+  --line: rgba(255, 255, 255, .068); --line-strong: rgba(255, 255, 255, .115); --line-quiet: rgba(255, 255, 255, .038);
+  --text: #eceeeb; --ink-2: #c3c7c4; --muted: #8d9299; --muted-2: #8f959e;
+  --green: #64ddf2; --accent-2: #4fcbe8; --on-accent: #082028;
+  --green-soft: rgba(100, 221, 242, .11); --green-line: rgba(100, 221, 242, .28);
+  --orange: #e2a869; --red: #ef8a87; --info: #86cdf7; --amber: #e2a869;
+  --lm-island-edge: rgba(255, 255, 255, .07);
+  --lm-island-highlight: rgba(255, 255, 255, .05);
+  --lm-hover: rgba(255, 255, 255, .05);
+  --lm-press: rgba(255, 255, 255, .08);
+  --lm-code-bg: #1a1c20;
+  --lm-code-ink: #c4cbc5;
+  --lm-wash: rgba(255, 255, 255, 0);
+  --lm-accent-glow: rgba(100, 221, 242, .3);
+  --lm-bubble-edge: var(--line-strong);
+  --lm-grad-text: linear-gradient(var(--text), var(--text));
+  --lm-grad-soft: linear-gradient(135deg, rgba(100, 221, 242, .1), rgba(100, 221, 242, .035));
+  --lm-glow: 0 10px 26px -12px rgba(100, 221, 242, .4);
+}
+
+/* ---- Calm palette recalibration (Morgan: themes must not distract) ----
+   Surfaces are anchored on the official styles.css palettes: neutral or
+   low-chroma graphite, with each theme's identity carried by its accent in
+   small, purposeful places. Auroras are near-invisible, and accent-2 is a
+   tonal shade of the accent (never a second hue). */
+
+/* ---- Kiwi: the official graphite, with the leaf-green accent ---- */
+.app-shell[data-theme="kiwi"][data-color-scheme] {
+  --lm-canvas: #16181b;
+  --lm-aurora-1: rgba(255, 255, 255, .02);
+  --lm-aurora-2: rgba(166, 223, 114, .025);
+  --lm-aurora-3: rgba(255, 255, 255, .01);
+  --bg: #1e2024; --sidebar: #22252a; --panel: #292d32; --panel-2: #30353b; --panel-3: #393f46;
+  --field: #262a2f; --menu-surface: #30353b; --topbar: rgba(30, 32, 36, .88);
+  --line: rgba(255, 255, 255, .068); --line-strong: rgba(255, 255, 255, .115); --line-quiet: rgba(255, 255, 255, .038);
+  --text: #eceeeb; --ink-2: #c3c7c4; --muted: #8d9299; --muted-2: #8f959e;
+  --green: #a6df72; --accent-2: #93cf5e; --on-accent: #142008;
+  --green-soft: rgba(166, 223, 114, .11); --green-line: rgba(166, 223, 114, .26);
+  --info: #86cdf7;
+  --lm-island-edge: rgba(255, 255, 255, .07);
+  --lm-island-highlight: rgba(255, 255, 255, .05);
+  --lm-hover: rgba(255, 255, 255, .05); --lm-press: rgba(255, 255, 255, .08);
+  --lm-code-bg: #1a1c20; --lm-code-ink: #c4cbc5;
+}
+
+/* ---- Midnight: the official blue-graphite, ice-blue accent ---- */
+.app-shell[data-theme="midnight"][data-color-scheme] {
+  --lm-canvas: #0f1217;
+  --lm-aurora-1: rgba(255, 255, 255, .02);
+  --lm-aurora-2: rgba(134, 200, 255, .025);
+  --lm-aurora-3: rgba(255, 255, 255, .01);
+  --bg: #14181f; --sidebar: #171c24; --panel: #1d232d; --panel-2: #232a36; --panel-3: #2b3441;
+  --field: #1a202a; --menu-surface: #232a36; --topbar: rgba(20, 24, 31, .88);
+  --line: rgba(200, 220, 255, .075); --line-strong: rgba(200, 220, 255, .13); --line-quiet: rgba(200, 220, 255, .04);
+  --text: #eaeff6; --ink-2: #c3ccd8; --muted: #8e99a8; --muted-2: #909aa9;
+  --green: #86c8ff; --accent-2: #74b6f0; --on-accent: #08182a;
+  --green-soft: rgba(134, 200, 255, .11); --green-line: rgba(134, 200, 255, .27);
+  --orange: #e8b46a; --red: #ff8d95; --info: #9bd0ff;
+  --lm-island-edge: rgba(200, 220, 255, .08);
+  --lm-island-highlight: rgba(255, 255, 255, .05);
+  --lm-hover: rgba(220, 230, 255, .05); --lm-press: rgba(220, 230, 255, .08);
+  --lm-code-bg: #12161d; --lm-code-ink: #c6cfdb;
+}
+
+/* ---- Synthwave: the official plum-graphite, magenta accent ---- */
+.app-shell[data-theme="synthwave"][data-color-scheme] {
+  --lm-canvas: #121016;
+  --lm-aurora-1: rgba(255, 255, 255, .02);
+  --lm-aurora-2: rgba(255, 106, 193, .025);
+  --lm-aurora-3: rgba(255, 255, 255, .01);
+  --bg: #17131f; --sidebar: #1b1626; --panel: #221b2e; --panel-2: #2a2138; --panel-3: #342a44;
+  --field: #1e1829; --menu-surface: #2a2138; --topbar: rgba(23, 19, 31, .88);
+  --line: rgba(240, 225, 255, .075); --line-strong: rgba(240, 225, 255, .13); --line-quiet: rgba(240, 225, 255, .04);
+  --text: #f0ebf4; --ink-2: #cdc4d6; --muted: #a197ad; --muted-2: #a399af;
+  --green: #ff6ac1; --accent-2: #ef58b1; --on-accent: #2a0a1c;
+  --green-soft: rgba(255, 106, 193, .11); --green-line: rgba(255, 106, 193, .28);
+  --orange: #ffb45f; --red: #ff7582; --info: #8be1ff;
+  --lm-island-edge: rgba(240, 225, 255, .08);
+  --lm-island-highlight: rgba(255, 255, 255, .05);
+  --lm-hover: rgba(240, 225, 255, .05); --lm-press: rgba(240, 225, 255, .08);
+  --lm-code-bg: #15111b; --lm-code-ink: #d2c8dc;
+}
+
+/* ---- Monochrome ---- */
+.app-shell[data-theme="monochrome"][data-color-scheme] {
+  --lm-canvas: #070708;
+  --lm-aurora-1: rgba(255, 255, 255, .02);
+  --lm-aurora-2: rgba(255, 255, 255, .015);
+  --lm-aurora-3: rgba(255, 255, 255, .01);
+  --bg: #111214; --sidebar: #0d0e10; --panel: #17181b; --panel-2: #1d1f22; --panel-3: #282a2e;
+  --field: #0a0a0c; --menu-surface: #1a1b1e; --topbar: rgba(17, 18, 20, .72);
+  --line: rgba(255, 255, 255, .08); --line-strong: rgba(255, 255, 255, .15); --line-quiet: rgba(255, 255, 255, .045);
+  --text: #f2f3f5; --ink-2: #cfd2d7; --muted: #9a9fa8; --muted-2: #989da6;
+  --green: #f2f3f5; --accent-2: #dfe2e6; --on-accent: #0b0b0c;
+  --green-soft: rgba(242, 243, 245, .09); --green-line: rgba(242, 243, 245, .26);
+  --info: #c9ced6;
+  --lm-island-edge: rgba(255, 255, 255, .09);
+  --lm-hover: rgba(255, 255, 255, .06); --lm-press: rgba(255, 255, 255, .09);
+  --lm-code-bg: #08080a;
+}
+
+/* ---- Shared light treatment ---- */
+.app-shell[data-theme][data-color-scheme="light"] {
+  --lm-island-highlight: rgba(255, 255, 255, .9);
+  --lm-island-shadow: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 22px 50px -26px rgba(30, 40, 60, .28), 0 1px 3px rgba(30, 40, 60, .08);
+  --lm-pop-shadow: 0 28px 60px -20px rgba(25, 35, 55, .3), 0 6px 18px -8px rgba(25, 35, 55, .18), 0 0 0 1px rgba(25, 35, 55, .06);
+  --lm-scrim: rgba(30, 38, 52, .34);
+  --lm-on-danger: #ffffff;
+  --lm-hover: rgba(20, 30, 40, .05);
+  --lm-press: rgba(20, 30, 40, .08);
+  --elev-1: 0 1px 2px rgba(30, 40, 60, .08);
+  --elev-2: 0 10px 24px -12px rgba(30, 40, 60, .2);
+  --elev-3: 0 22px 48px -20px rgba(30, 40, 60, .26);
+  --shadow: var(--lm-pop-shadow);
+}
+
+/* ---- Light Mythra ---- */
+.app-shell[data-theme="light-mythra"][data-color-scheme] {
+  --lm-canvas: #e3e7ea;
+  --lm-aurora-1: rgba(255, 255, 255, .35);
+  --lm-aurora-2: rgba(8, 128, 163, .03);
+  --lm-aurora-3: rgba(255, 255, 255, .25);
+  --bg: #fbfdfe; --sidebar: #f3f7f9; --panel: #ffffff; --panel-2: #f2f6f8; --panel-3: #e3ebef;
+  --field: #f7fafb; --menu-surface: #ffffff; --topbar: rgba(251, 253, 254, .78);
+  --line: rgba(20, 50, 70, .1); --line-strong: rgba(20, 50, 70, .18); --line-quiet: rgba(20, 50, 70, .055);
+  --text: #0f1d26; --ink-2: #33454f; --muted: #4f626c; --muted-2: #55676f;
+  --green: #0880a3; --accent-2: #07728f; --on-accent: #ffffff;
+  --green-soft: rgba(8, 128, 163, .1); --green-line: rgba(8, 128, 163, .3);
+  --orange: #a35f12; --red: #bf3b3b; --info: #1767a0;
+  --lm-island-edge: rgba(20, 50, 70, .09);
+  --lm-code-bg: #f3f7f9; --lm-code-ink: #26404c;
+}
+
+/* ---- Light Kiwi ---- */
+.app-shell[data-theme="daylight"][data-color-scheme] {
+  --lm-canvas: #e4e6e0;
+  --lm-aurora-1: rgba(255, 255, 255, .35);
+  --lm-aurora-2: rgba(58, 134, 29, .03);
+  --lm-aurora-3: rgba(255, 255, 255, .25);
+  --bg: #fcfdfa; --sidebar: #f4f6f0; --panel: #ffffff; --panel-2: #f2f4ee; --panel-3: #e3e8dc;
+  --field: #f8faf5; --menu-surface: #ffffff; --topbar: rgba(252, 253, 250, .78);
+  --line: rgba(30, 50, 20, .1); --line-strong: rgba(30, 50, 20, .18); --line-quiet: rgba(30, 50, 20, .055);
+  --text: #18200f; --ink-2: #39452f; --muted: #535f4a; --muted-2: #58644e;
+  --green: #3a861d; --accent-2: #317719; --on-accent: #ffffff;
+  --green-soft: rgba(58, 134, 29, .1); --green-line: rgba(58, 134, 29, .3);
+  --orange: #a35f12; --red: #bc3f3a; --info: #14639f;
+  --lm-island-edge: rgba(30, 50, 20, .09);
+  --lm-code-bg: #f4f6f0; --lm-code-ink: #2f3d26;
+}
+
+/* ---- Atari ----
+   Parchment islands and the menu surface keep their established values; the
+   canvas, the accent pair and the geometry are Lumen's. */
+.app-shell[data-theme="atari"][data-color-scheme] {
+  --lm-canvas: #ddd0b6;
+  --lm-aurora-1: rgba(255, 248, 230, .3);
+  --lm-aurora-2: rgba(142, 59, 50, .035);
+  --lm-aurora-3: rgba(255, 248, 230, .2);
+  --bg: #f2e8d4; --sidebar: #ece0c6; --panel: #f7efdf; --panel-2: #eee1cc; --panel-3: #e0ceb1;
+  --field: #fff8ec; --menu-surface: #fff7e9; --topbar: rgba(242, 232, 212, .8);
+  --line: rgba(76, 52, 31, .13); --line-strong: rgba(76, 52, 31, .23); --line-quiet: rgba(76, 52, 31, .07);
+  --text: #2f251b; --ink-2: #54432f; --muted: #5d4734; --muted-2: #604936;
+  --green: #8e3b32; --accent-2: #7c322a; --on-accent: #fff8ec;
+  --green-soft: rgba(142, 59, 50, .09); --green-line: rgba(142, 59, 50, .3);
+  --info: #864039; --orange: #885813; --red: #a02e29;
+  --lm-island-edge: rgba(76, 52, 31, .12);
+  --lm-hover: rgba(76, 52, 31, .06); --lm-press: rgba(76, 52, 31, .09);
+  --lm-code-bg: #fff8ec; --lm-code-ink: #4a3a28;
+}
+
+/* ---- Mythra mark palettes ----
+   Morgan asked for the Mythra logo to match the active theme throughout the
+   app. Every in-app mark reads these through MythraMarkColors.css: the
+   animated new-thread logo, the sidebar brand and onboarding. They are
+   inherited from the shell, so app, project and preview themes all apply
+   live. Each palette keeps the mark's three-tone structure (light "cyan"
+   pieces, mid-tone "blue" centre, deeper "fold") and is chosen for at least
+   3:1 against its theme's surfaces on the main pieces. Mythra keeps the
+   original brand colours. Outside a themed shell the hex fallbacks in
+   MythraMarkColors.css (also the brand colours) apply. */
+.app-shell[data-theme="mythra"][data-color-scheme] {
+  --mythra-mark-cyan-a: #35E7F2; --mythra-mark-cyan-b: #08AEEA;
+  --mythra-mark-blue-a: #148EFF; --mythra-mark-blue-b: #1644E8;
+  --mythra-mark-fold-a: #176BFA; --mythra-mark-fold-b: #1247D9;
+  --mythra-mark-caret: #dffbfe;
+}
+/* Other themes: one coherent tonal family per theme, a restrained version of
+   the brand's structure. Each uses only shades of its own accent: light outer
+   pieces, a deeper centre and a mid-depth fold. There are no second hues
+   (Morgan: no rainbow pieces, no gold on Atari). Light Mythra keeps the brand
+   hues, deepened for white surfaces. */
+.app-shell[data-theme="light-mythra"][data-color-scheme] {
+  --mythra-mark-cyan-a: #13a9c9; --mythra-mark-cyan-b: #078db3;
+  --mythra-mark-blue-a: #1673d9; --mythra-mark-blue-b: #1650c4;
+  --mythra-mark-fold-a: #1a62d2; --mythra-mark-fold-b: #1547b4;
+  --mythra-mark-caret: #e8fbff;
+}
+.app-shell[data-theme="kiwi"][data-color-scheme] {
+  --mythra-mark-cyan-a: #bde88f; --mythra-mark-cyan-b: #9bd468;
+  --mythra-mark-blue-a: #74b146; --mythra-mark-blue-b: #578f31;
+  --mythra-mark-fold-a: #86c055; --mythra-mark-fold-b: #66a03b;
+  --mythra-mark-caret: #f4fbec;
+}
+.app-shell[data-theme="daylight"][data-color-scheme] {
+  --mythra-mark-cyan-a: #58a434; --mythra-mark-cyan-b: #418d22;
+  --mythra-mark-blue-a: #2f7519; --mythra-mark-blue-b: #235c12;
+  --mythra-mark-fold-a: #3a821d; --mythra-mark-fold-b: #2c6a15;
+  --mythra-mark-caret: #f2fbea;
+}
+.app-shell[data-theme="midnight"][data-color-scheme] {
+  --mythra-mark-cyan-a: #a9d7ff; --mythra-mark-cyan-b: #86c2f6;
+  --mythra-mark-blue-a: #5f9be0; --mythra-mark-blue-b: #457cc6;
+  --mythra-mark-fold-a: #6ea8ea; --mythra-mark-fold-b: #4f88d0;
+  --mythra-mark-caret: #eef6ff;
+}
+.app-shell[data-theme="synthwave"][data-color-scheme] {
+  --mythra-mark-cyan-a: #ff94d0; --mythra-mark-cyan-b: #f774bf;
+  --mythra-mark-blue-a: #d4529f; --mythra-mark-blue-b: #b23f84;
+  --mythra-mark-fold-a: #e461ae; --mythra-mark-fold-b: #c64b93;
+  --mythra-mark-caret: #fff0f8;
+}
+.app-shell[data-theme="atari"][data-color-scheme] {
+  --mythra-mark-cyan-a: #ad4c3a; --mythra-mark-cyan-b: #933c30;
+  --mythra-mark-blue-a: #7a2f26; --mythra-mark-blue-b: #61241d;
+  --mythra-mark-fold-a: #9f4535; --mythra-mark-fold-b: #84362b;
+  --mythra-mark-caret: #fff4e6;
+}
+.app-shell[data-theme="monochrome"][data-color-scheme] {
+  --mythra-mark-cyan-a: #f2f3f5; --mythra-mark-cyan-b: #d3d6db;
+  --mythra-mark-blue-a: #a3a9b2; --mythra-mark-blue-b: #80868f;
+  --mythra-mark-fold-a: #b8bdc4; --mythra-mark-fold-b: #969ca5;
+  --mythra-mark-caret: #ffffff;
+}
+
+/* Responsive measure. The legacy ladder sets these on :root, which the
+   shell-scoped values above would otherwise mask. */
+@media (max-width: 1180px) { .app-shell[data-theme][data-color-scheme] { --measure: 720px; } }
+@media (max-width: 1000px) { .app-shell[data-theme][data-color-scheme] { --measure: 680px; } }
+@media (max-width: 860px) { .app-shell[data-theme][data-color-scheme] { --topbar-h: 54px; } }

@@ -3020,11 +3020,35 @@ mod worktree_lifecycle_tests {
     #[tokio::test]
     async fn timed_out_removal_releases_cancelled_worker_ownership_and_stops_hook_descendants() {
         use std::{os::unix::fs::PermissionsExt, sync::mpsc};
+        // Removal's deadline covers several Git safety checks before status
+        // starts fsmonitor. Allow that preflight under native-suite contention;
+        // the descendant probe below is independent of this operation budget.
+        const OPERATION_BUDGET: Duration = Duration::from_secs(5);
+        const STARTUP_BOUND: Duration = Duration::from_secs(7);
+        const CLEANUP_BOUND: Duration = Duration::from_secs(7);
         let fixture = RemovalFixture::new();
         let ready = fixture.root.join("fsmonitor-ready");
+        let release_probe = fixture.root.join("fsmonitor-release-probe");
         let escaped = fixture.root.join("fsmonitor-descendant-escaped");
         let hook = fixture.root.join("fsmonitor.sh");
-        fs::write(&hook, format!("#!/bin/sh\nprintf ready > '{}'\n(sleep 1.5; printf escaped > '{}') &\nwhile true; do sleep 0.01; done\n", ready.display(), escaped.display())).unwrap();
+        // The descendant announces its own readiness, then waits until the
+        // worker has released ownership. A survivor must write its escape
+        // marker after that handshake, regardless of how long preflight took.
+        // Fixture teardown also ends both loops if an earlier assertion fails.
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\n(\nprintf ready > '{}'\nwhile test -d '{}' && ! test -f '{}'; do sleep 0.01; done\nif test -d '{}' && test -f '{}'; then printf escaped > '{}'; fi\n) &\nwhile test -d '{}'; do sleep 0.01; done\n",
+                ready.display(),
+                fixture.root.display(),
+                release_probe.display(),
+                fixture.root.display(),
+                release_probe.display(),
+                escaped.display(),
+                fixture.root.display(),
+            ),
+        )
+        .unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
         let index_path = PathBuf::from(
             git_stdout(
@@ -3072,7 +3096,7 @@ mod worktree_lifecycle_tests {
                         force: false,
                         delete_branch: true,
                         expected_retained_branch_oid: None,
-                        timeout: Duration::from_secs(1),
+                        timeout: OPERATION_BUDGET,
                     },
                 ))
                 .unwrap();
@@ -3080,17 +3104,22 @@ mod worktree_lifecycle_tests {
             })
             .await
         });
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(STARTUP_BOUND, async {
             while !ready.exists() {
+                if let Ok(result) = rx.try_recv() {
+                    panic!(
+                        "removal finished before the fsmonitor descendant was ready: {result:?}"
+                    );
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .unwrap();
+        .expect("fsmonitor descendant must start within the fixture's startup bound");
         outer.abort();
         assert!(outer.await.unwrap_err().is_cancelled());
         assert!(lock.try_lock().is_err());
-        let _next_worker_guard = tokio::time::timeout(Duration::from_secs(2), lock.lock())
+        let _next_worker_guard = tokio::time::timeout(CLEANUP_BOUND, lock.lock())
             .await
             .expect("timeout must finish the worker and release ownership for the next operation");
         assert!(rx
@@ -3098,11 +3127,16 @@ mod worktree_lifecycle_tests {
             .unwrap()
             .unwrap_err()
             .contains("timed out"));
+        assert!(
+            fixture.isolated.is_dir(),
+            "timeout must retain the worktree folder"
+        );
         assert_eq!(fs::read(&index_path).unwrap(), index_before);
         assert_eq!(
             fs::read_to_string(fixture.isolated.join("file.txt")).unwrap(),
             "keep my working change\n"
         );
+        fs::write(&release_probe, "probe\n").unwrap();
         tokio::time::sleep(Duration::from_millis(700)).await;
         assert!(
             !escaped.exists(),
