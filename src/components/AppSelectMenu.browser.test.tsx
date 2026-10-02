@@ -7,6 +7,68 @@ import "../styles.css";
 afterEach(() => page.viewport(1400, 900));
 
 describe("app-owned select browser layout", () => {
+  it.each([1, 1.5])("anchors fallback choices in a scrolled dialog at %s zoom", async (zoom) => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
+    Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+    try {
+      const onChange = vi.fn();
+      const view = render(<div className="app-shell" data-theme="mythra" data-color-scheme="dark" style={{ display: "block", width: 800, height: 600, zoom }}>
+        <div role="dialog" aria-label="Scrolled picker" style={{ position: "relative", width: 550, height: 240, overflow: "auto", margin: 40 }}>
+          <div style={{ width: 800, height: 250 }} />
+          <div style={{ width: 100, height: 60, marginLeft: 100, overflow: "hidden" }}>
+            <AppSelectMenu value="one" options={[{ value: "one", label: "One" }, { value: "two", label: "Two" }]} ariaLabel="Scrolled choices" portal onChange={onChange} />
+          </div>
+          <div style={{ height: 300 }} />
+        </div>
+      </div>);
+      const dialog = view.getByRole("dialog", { name: "Scrolled picker" });
+      dialog.scrollTop = 200;
+      dialog.scrollLeft = 40;
+      await page.getByRole("button", { name: "Scrolled choices" }).click();
+      const menu = view.container.querySelector<HTMLElement>(".app-select-menu")!;
+      menu.getAnimations().forEach((animation) => animation.finish());
+      const trigger = view.getByRole("button", { name: "Scrolled choices" }).getBoundingClientRect();
+      const bounds = menu.getBoundingClientRect();
+      expect(Math.abs(bounds.left - trigger.left)).toBeLessThanOrEqual(1);
+      expect(Math.abs(bounds.top - trigger.bottom - 4)).toBeLessThanOrEqual(1);
+      await page.getByRole("menuitemradio", { name: "Two" }).click();
+      expect(onChange).toHaveBeenCalledWith("two");
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "showPopover", descriptor);
+    }
+  });
+
+  it.each([1, 1.5])("anchors fallback choices outside a clipped, unpositioned shell at a nonzero offset (%s zoom)", async (zoom) => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
+    Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+    try {
+      const onChange = vi.fn();
+      const view = render(<div className="app-shell" data-theme="mythra" data-color-scheme="dark" style={{ display: "block", position: "static", width: 600, height: 400, marginLeft: 80, marginTop: 40, padding: "80px 100px", zoom }}>
+        <div style={{ width: 100, height: 60, overflow: "hidden" }}>
+          <AppSelectMenu value="one" options={[{ value: "one", label: "One" }, { value: "two", label: "Two" }]} ariaLabel="Fallback choices" portal onChange={onChange} />
+        </div>
+      </div>);
+      await page.getByRole("button", { name: "Fallback choices" }).click();
+      const menu = view.container.querySelector<HTMLElement>(".app-select-menu")!;
+      menu.getAnimations().forEach((animation) => animation.finish());
+      const trigger = view.getByRole("button", { name: "Fallback choices" }).getBoundingClientRect();
+      const bounds = menu.getBoundingClientRect();
+      expect(Math.abs(bounds.left - trigger.left)).toBeLessThanOrEqual(1);
+      expect(Math.abs(bounds.top - trigger.bottom - 4)).toBeLessThanOrEqual(1);
+      const palette = document.createElement("span");
+      palette.style.backgroundColor = "var(--menu-surface)";
+      view.container.querySelector(".app-shell")!.append(palette);
+      expect(getComputedStyle(menu).backgroundColor).toBe(getComputedStyle(palette).backgroundColor);
+      const option = view.getByRole("menuitemradio", { name: "Two" });
+      const box = option.getBoundingClientRect();
+      expect(option.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))).toBe(true);
+      await page.getByRole("menuitemradio", { name: "Two" }).click();
+      expect(onChange).toHaveBeenCalledWith("two");
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "showPopover", descriptor);
+    }
+  });
+
   it.each([1, 1.5])("keeps a searchable portal menu scrollable inside a short viewport at %s scale", async (zoom) => {
     await page.viewport(360, 200);
     const view = render(<div className="app-shell" style={{ display: "block", position: "fixed", inset: 0, width: window.innerWidth / zoom, height: window.innerHeight / zoom, zoom }}>

@@ -173,7 +173,13 @@
 .app-shell[data-theme][data-color-scheme] .settings-modal textarea { border-radius: var(--r-md); }
 
 /* ---- Theme gallery: tall tiles with a large live miniature ---- */
-.app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+/* Size chooser columns from the pane itself: UI zoom can make a wide window's
+   settings body narrower than the viewport media-query breakpoints imply.
+   Keep enough room beside each preview for its label and selection check. */
+.app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .slider-style-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.app-shell[data-theme][data-color-scheme] .chat-font-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.app-shell[data-theme][data-color-scheme] .provider-mark-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
 .app-shell[data-theme][data-color-scheme] .theme-card {
   position: relative;
   min-height: 78px;

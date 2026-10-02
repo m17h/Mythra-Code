@@ -1,11 +1,57 @@
 # Opus UI overhaul experiment: "Lumen"
 
-Status: **first pass and targeted corrections complete; preparing the authorized
-PR and final branch review.** This is an unmerged UI experiment on
+Status: **PR #122 open; review repairs complete, final verification in progress.**
+This is an unmerged UI experiment on
 `codex/opus-ui-overhaul-experiment` (base `be7fc1b`). Morgan authorized committing,
 pushing and creating a PR on 2026-10-02, but not merging or releasing. Earlier
 uncommitted/unpushed statements below describe the state at those checkpoints.
 No version change or release is part of this experiment.
+
+## PR review (2026-10-02)
+
+- Initial implementation commit: `fbc2755`; proposed merge:
+  <https://github.com/m17h/Mythra-Code/pull/122>. No merge is authorized yet.
+- Five GPT-6.1-Sol reviewers checked sub-agent state, Settings/onboarding,
+  CSS/accessibility, animations/compatibility and test integrity. Codex reviewed
+  their repairs independently. The implementation's earlier Opus passes are
+  recorded below; no new Opus pass was needed for this review.
+- Confirmed defects repaired with focused regressions:
+  - Settings chooser columns overflowed at short windows and enlarged scale;
+    columns now respond to the pane's available width.
+  - Comet's unsupported `color-mix()` values invalidated its rail; plain-color
+    fallbacks keep it visible without removing modern colors or motion.
+  - Header actions overlapped without container-query support; a wrapping,
+    named-icon fallback retains the controls.
+  - Transforming an entire inbox row displaced its viewport-positioned menu;
+    the same entrance animation now belongs to the card, not the menu's ancestor.
+  - Usage day cards assumed a fixed containing block that WebKit did not
+    establish; explicit layout containment makes placement consistent.
+  - Settings dropdowns remained clipped without Popover support; dialog-local
+    portals preserve keyboard focus and theme inheritance. Generic shell menus
+    use viewport-fixed placement; scrolled dialogs account for their own offsets.
+    Independent review caught both generic zoom offsets and the dialog-scroll
+    omission before the final source was frozen.
+- The initial hosted run failed. Cold-cache reproduction identified a browser
+  test optimizer reload caused by the dynamically discovered Tauri window API.
+  It is explicitly preloaded, rather than hiding failing tests or adding retries.
+  macOS/Windows Rust and all four unit shards passed that initial run; repaired
+  renderer code still requires a fresh complete gate on the final PR input.
+- Native macOS evidence: the isolated experiment app was visually inspected;
+  account selection remained separate from the default provider, and the modern
+  default-provider and scale popups appeared above neighboring cards. Cancel restored
+  preferences. No real provider turns or official-app data changes were needed.
+  Browser tests use isolated fixtures/stubbed IPC; current WebKit/Chromium with
+  APIs disabled are not actual Safari 13/Chrome 105 or Windows desktop evidence.
+- Focused repair evidence: Settings containment 5/5 per engine; Comet 14/14
+  per engine, logo/Lumen 56/56 per engine; no-container header 4/4 per engine;
+  strengthened calendar placement passed WebKit; row-menu anchoring passed
+  Chromium; final portal regressions 17/17 Chromium; select unit tests 11/11.
+  TypeScript, lint, production renderer build, Chromium/WebKit emitted startup,
+  lazy Settings and reload, and the performance scorecard pass. Growth remains
+  report-only; the existing 500 kB chunk warning is informational, not a new
+  suppressed test failure. Full cold Chromium, combined WebKit and the fresh
+  hosted gate are being checked next. See PR #122 for their final results rather
+  than treating this checkpoint document as merge authorization.
 
 ## Latest feedback pass (2026-10-02)
 

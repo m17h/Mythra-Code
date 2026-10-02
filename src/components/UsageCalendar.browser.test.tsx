@@ -350,6 +350,9 @@ describe("usage calendar", () => {
       await userEvent.keyboard("{Enter}");
       const card = view.getByRole("group", { name: /^Usage on / });
       expect(card).not.toHaveAttribute("popover");
+      // Placement must survive the dashboard entrance releasing its animated
+      // styles, even when keyboard focus opened the fallback card mid-entrance.
+      for (const animation of view.container.querySelector<HTMLElement>(".usage-dashboard")!.getAnimations()) animation.finish();
       const box = card.getBoundingClientRect();
       expect(box.top).toBeGreaterThanOrEqual(sheet.top);
       expect(box.bottom).toBeLessThanOrEqual(sheet.bottom);

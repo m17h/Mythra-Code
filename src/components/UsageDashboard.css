@@ -1,7 +1,10 @@
 /* Data palettes are independent from general UI accents and keep 3:1 contrast
    against their surfaces. The subdued themes also distinguish series two by
    texture so the comparison never relies on hue alone. */
-.usage-dashboard { container-type: inline-size; --usage-series-1: #3987e5; --usage-series-2: #d95926; }
+/* Explicit layout containment keeps fallback fixed-position day cards relative
+   to this dashboard in every engine. `container-type` alone does not create a
+   fixed containing block in current WebKit. */
+.usage-dashboard { container-type: inline-size; contain: layout; --usage-series-1: #3987e5; --usage-series-2: #d95926; }
 .app-shell[data-color-scheme="light"] .usage-dashboard { --usage-series-1: #2a78d6; --usage-series-2: #eb6834; }
 .app-shell[data-theme="atari"] .usage-dashboard { --usage-series-1: #8e3b32; --usage-series-2: #977030; }
 .app-shell[data-theme="monochrome"] .usage-dashboard { --usage-series-1: #eceeeb; --usage-series-2: #8d9299; }

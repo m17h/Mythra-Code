@@ -459,6 +459,71 @@ it.each([100, 150])("keeps the Interface size popup above neighboring settings a
   expect(view.container.querySelector<HTMLElement>(".app-shell")!.style.zoom).toBe(String(uiScale / 100));
 });
 
+it.each([100, 150])("keeps Settings selects reachable without the Popover API at %s%%", async (uiScale) => {
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "showPopover")!;
+  Object.defineProperty(HTMLElement.prototype, "showPopover", { configurable: true, value: undefined });
+  try {
+    await page.viewport(1400, 1000);
+    await commands.setStreamTestReducedMotion(true);
+    const view = await renderApp({ theme: "mythra", provider: "openai", uiScale });
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("button", { name: "Close settings" });
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    await userEvent.click(screen.getByRole("button", { name: "Models & accounts" }));
+    const trigger = screen.getByRole("button", { name: "Default OpenAI model" });
+    trigger.scrollIntoView({ block: "center" });
+    await browserUserEvent.click(trigger);
+    const astra = screen.getByRole("menuitemradio", { name: /Astra/ });
+    const expectReachable = async (option: HTMLElement) => waitFor(() => {
+      const box = option.getBoundingClientRect();
+      expect(box.top).toBeGreaterThanOrEqual(0);
+      expect(box.bottom).toBeLessThanOrEqual(window.innerHeight);
+      expect(option.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))).toBe(true);
+    });
+    await expectReachable(astra);
+    await browserUserEvent.click(astra);
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("Astra");
+    const provider = screen.getByRole("button", { name: "Default provider" });
+    await browserUserEvent.click(provider);
+    const claude = screen.getByRole("menuitemradio", { name: /Claude Code subscription/ });
+    await expectReachable(claude);
+    const options = screen.getAllByRole("menuitemradio");
+    options.at(-1)!.focus();
+    await browserUserEvent.keyboard("{Tab}");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await browserUserEvent.keyboard("{Escape}");
+    expect(provider).toHaveFocus();
+    expect(dialog).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Interface" }));
+    const scale = screen.getByRole("button", { name: "Interface size" });
+    scale.scrollIntoView({ block: "center" });
+    await browserUserEvent.click(scale);
+    const larger = screen.getByRole("menuitemradio", { name: /125%/ });
+    await expectReachable(larger);
+    await browserUserEvent.click(larger);
+    expect(view.container.querySelector<HTMLElement>(".app-shell")!.style.zoom).toBe("1.25");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await browserUserEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+    expect(view.container.querySelector<HTMLElement>(".app-shell")!.style.zoom).toBe(String(uiScale / 100));
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("button", { name: "Close settings" });
+    await userEvent.click(screen.getByRole("button", { name: "Models & accounts" }));
+    expect(screen.getByRole("button", { name: "Default OpenAI model" })).not.toHaveTextContent("Astra");
+    const reopened = screen.getByRole("button", { name: "Default OpenAI model" });
+    reopened.scrollIntoView({ block: "center" });
+    await browserUserEvent.click(reopened);
+    await expectReachable(screen.getByRole("menuitemradio", { name: /Astra/ }));
+    await browserUserEvent.click(screen.getByRole("menuitemradio", { name: /Astra/ }));
+    await browserUserEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).model).toMatch(/astra/);
+  } finally {
+    Object.defineProperty(HTMLElement.prototype, "showPopover", descriptor);
+  }
+});
+
 it.each([false, true])("applies and saves the onboarding theme without overwriting project overrides (override=%s)", async (projectOverride) => {
   await commands.setStreamTestReducedMotion(true);
   const project: Project = { ...PROJECT, ...(projectOverride ? { overrides: { defaults: { provider: "openai", model: "gpt-6-sol", theme: "midnight" } } } : {}) };
@@ -707,4 +772,51 @@ it("keeps the dock-open header usable after the navigator is widened", async () 
   const view = await renderApp({ theme: "atari" });
   await openDock();
   expectHeaderUsable(view.container, "wide navigator and dock");
+});
+
+/** Model a renderer without container queries, while retaining the rest of
+ * its real stylesheet. Modern Playwright is not an actual Safari 13 runtime. */
+function withoutContainerQueries() {
+  const restore: (() => void)[] = [];
+  function visit(parent: CSSStyleSheet | CSSGroupingRule) {
+    for (let index = parent.cssRules.length - 1; index >= 0; index--) {
+      const rule = parent.cssRules[index];
+      if (rule.cssText.startsWith("@container")) {
+        const text = rule.cssText;
+        parent.deleteRule(index);
+        restore.push(() => parent.insertRule(text, index));
+      } else if (rule instanceof CSSSupportsRule && /not\s*\(container-type:/.test(rule.conditionText)) {
+        // Activate the production fallback as an old renderer would do.
+        const fallback = rule.cssText.replace(/^@supports[^\{]+/, "@supports (display: block) ");
+        parent.insertRule(fallback, index + 1);
+        restore.push(() => parent.deleteRule(index + 1));
+      } else if (rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule) {
+        visit(rule);
+      }
+    }
+  }
+  for (const sheet of document.styleSheets) visit(sheet);
+  return () => restore.reverse().forEach((undo) => undo());
+}
+
+it.each([
+  { width: 1500, uiScale: 100 }, { width: 1500, uiScale: 125 },
+  { width: 1500, uiScale: 150 }, { width: 980, uiScale: 150 },
+])("keeps every header action reachable without container queries ($width px, $uiScale%)", async ({ width, uiScale }) => {
+  await page.viewport(width, 1000);
+  await commands.setStreamTestReducedMotion(true);
+  const view = await renderApp({ project: LONG_PROJECT, theme: "mythra", provider: "claude", uiScale });
+  const actions = headerControls(view.container.querySelector(".topbar")!).map(accessibleName).sort();
+  const restore = withoutContainerQueries();
+  try {
+    expectHeaderUsable(view.container, "without container queries, dock closed");
+    expect(headerControls(view.container.querySelector(".topbar")!).map(accessibleName).sort()).toEqual(actions);
+    await openDock();
+    expectHeaderUsable(view.container, "without container queries, dock open");
+    for (const name of ["Open command palette", "Close workspace tools"]) {
+      expect(headerControls(view.container.querySelector(".topbar")!).some((control) => accessibleName(control).includes(name)), name).toBe(true);
+    }
+  } finally {
+    restore();
+  }
 });

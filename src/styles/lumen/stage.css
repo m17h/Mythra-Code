@@ -410,6 +410,47 @@
   .app-shell[data-theme][data-color-scheme] .topbar-right { margin-left: auto; }
 }
 
+/* Safari 13 cannot run the container ladder. Keep every action as a named
+   icon button and let the groups wrap using their intrinsic width, so sidebar,
+   dock and UI zoom still affect layout without viewport breakpoint guesses. */
+@supports not (container-type: inline-size) {
+  .app-shell[data-theme][data-color-scheme] .topbar {
+    flex: 0 0 auto; height: auto; min-height: var(--topbar-h);
+    flex-wrap: wrap; gap: 6px; padding: 8px;
+  }
+  .app-shell[data-theme][data-color-scheme] .topbar-left { flex: 1 1 280px; gap: 4px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-left > .project-heading { min-width: 52px; }
+  .app-shell[data-theme][data-color-scheme] .topbar-right { margin-left: auto; gap: 0; padding: 2px; }
+  .app-shell[data-theme][data-color-scheme] .project-heading small,
+  .app-shell[data-theme][data-color-scheme] .runtime-status,
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger kbd,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger kbd,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger small,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger > svg:last-child,
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger > span,
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger small,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > span,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip > svg:not(:first-child),
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty > span,
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip > em,
+  .app-shell[data-theme][data-color-scheme] .isolation-chip > span,
+  .app-shell[data-theme][data-color-scheme] .handoff-chip > span { display: none; }
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger,
+  .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-trigger,
+  .app-shell[data-theme][data-color-scheme] .topbar-usage-chip,
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip.empty,
+  .app-shell[data-theme][data-color-scheme] .isolation-chip,
+  .app-shell[data-theme][data-color-scheme] .handoff-chip { width: 30px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .command-palette-trigger { display: flex; }
+  .app-shell[data-theme][data-color-scheme] .topbar-export-button { display: grid; }
+  .app-shell[data-theme][data-color-scheme] .project-run-trigger { width: 32px; padding: 0; justify-content: center; }
+  .app-shell[data-theme][data-color-scheme] .thread-pr-chip:not(.empty) { max-width: 92px; padding: 0 8px; }
+}
+
 /* ---- Motion ---- */
 @media (prefers-reduced-motion: no-preference) {
   .app-shell[data-theme][data-color-scheme] .topbar-right > *,

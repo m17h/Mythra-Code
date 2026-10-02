@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { ModelFavoriteStar } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
@@ -113,6 +114,14 @@ export function AppSelectMenu({
   const hidden = filtered.length - visible.length;
   const starredVisible = favoriteCount(visible, favorites, (option) => option.value);
   const topLayer = portal && !!HTMLElement.prototype.showPopover;
+  // Older renderers need a real DOM portal too. Stay inside the dialog so
+  // its native Tab trap still owns the choices, but escape cards and scrollers.
+  const portalHost = portal && !topLayer
+    ? rootRef.current?.closest<HTMLElement>('[role="dialog"]')
+      ?? rootRef.current?.closest<HTMLElement>(".app-shell")
+      ?? document.body
+    : null;
+  const dialogPortal = !!portalHost?.matches('[role="dialog"]') && getComputedStyle(portalHost).position !== "static";
 
   const close = () => {
     setOpen(false);
@@ -122,7 +131,7 @@ export function AppSelectMenu({
   };
 
   const positionPopover = useCallback(() => {
-    if (!open || !topLayer) return;
+    if (!open || !portal) return;
     const trigger = triggerRef.current;
     const menu = menuRef.current;
     if (!trigger || !menu) return;
@@ -130,13 +139,22 @@ export function AppSelectMenu({
     const triggerRect = trigger.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    // The top-layer menu still inherits app zoom. Rectangles are visual
-    // pixels; its fixed offsets and offsetHeight are unscaled layout pixels.
+    // The menu still inherits app zoom. Rectangles are visual
+    // pixels; its positioning offsets and offsetHeight are unscaled layout pixels.
     const zoom = effectiveZoom(menu);
-    const maxWidth = Math.max(1, viewportWidth - POPOVER_VIEWPORT_MARGIN * 2);
+    const hostRect = portalHost?.getBoundingClientRect();
+    const hostLeft = hostRect && portalHost !== document.body ? hostRect.left + portalHost!.clientLeft * zoom : 0;
+    const hostTop = hostRect && portalHost !== document.body ? hostRect.top + portalHost!.clientTop * zoom : 0;
+    const hostRight = hostRect && portalHost !== document.body ? hostLeft + portalHost!.clientWidth * zoom : viewportWidth;
+    const hostBottom = hostRect && portalHost !== document.body ? hostTop + portalHost!.clientHeight * zoom : viewportHeight;
+    const minLeft = Math.max(0, hostLeft) + POPOVER_VIEWPORT_MARGIN;
+    const minTop = Math.max(0, hostTop) + POPOVER_VIEWPORT_MARGIN;
+    const rightEdge = Math.min(viewportWidth, hostRight) - POPOVER_VIEWPORT_MARGIN;
+    const bottomEdge = Math.min(viewportHeight, hostBottom) - POPOVER_VIEWPORT_MARGIN;
+    const maxWidth = Math.max(1, rightEdge - minLeft);
     const width = Math.min(POPOVER_WIDTH * zoom, maxWidth);
     const layoutWidth = width / zoom;
-    const maxHeight = Math.max(1, viewportHeight - POPOVER_VIEWPORT_MARGIN * 2) / zoom;
+    const maxHeight = Math.max(1, bottomEdge - minTop) / zoom;
     // Clamp both dimensions before measuring. The options scroll inside the
     // remaining height, including in short windows at enlarged UI scales.
     menu.style.width = `${layoutWidth}px`;
@@ -145,17 +163,19 @@ export function AppSelectMenu({
     const above = triggerRect.top - POPOVER_GAP - height;
     const below = triggerRect.bottom + POPOVER_GAP;
     const openAbove = menuPlacement === "top"
-      ? above >= POPOVER_VIEWPORT_MARGIN || below + height > viewportHeight - POPOVER_VIEWPORT_MARGIN
-      : below + height > viewportHeight - POPOVER_VIEWPORT_MARGIN && above >= POPOVER_VIEWPORT_MARGIN;
+      ? above >= minTop || below + height > bottomEdge
+      : below + height > bottomEdge && above >= minTop;
     const preferredTop = openAbove ? above : below;
-    const maxTop = Math.max(POPOVER_VIEWPORT_MARGIN, viewportHeight - height - POPOVER_VIEWPORT_MARGIN);
-    const top = Math.min(Math.max(preferredTop, POPOVER_VIEWPORT_MARGIN), maxTop);
+    const maxTop = Math.max(minTop, bottomEdge - height);
+    const top = Math.min(Math.max(preferredTop, minTop), maxTop);
     const left = Math.max(
-      POPOVER_VIEWPORT_MARGIN,
-      Math.min(triggerRect.left, viewportWidth - width - POPOVER_VIEWPORT_MARGIN),
+      minLeft,
+      Math.min(triggerRect.left, rightEdge - width),
     );
-    const layoutTop = top / zoom;
-    const layoutLeft = left / zoom;
+    // Dialog portals use their positioned dialog's origin. Generic shell
+    // portals remain fixed in viewport space, avoiding static/zoom ancestors.
+    const layoutTop = (top - (dialogPortal ? hostTop : 0)) / zoom + (dialogPortal ? portalHost!.scrollTop : 0);
+    const layoutLeft = (left - (dialogPortal ? hostLeft : 0)) / zoom + (dialogPortal ? portalHost!.scrollLeft : 0);
     setPopoverStyle((current) => (
       current.top === layoutTop
       && current.left === layoutLeft
@@ -165,7 +185,7 @@ export function AppSelectMenu({
         ? current
         : { top: layoutTop, left: layoutLeft, width: layoutWidth, maxHeight, visibility: "visible" }
     ));
-  }, [open, topLayer, menuPlacement]);
+  }, [open, portal, portalHost, dialogPortal, menuPlacement]);
 
   // Captured scroll events can arrive once for every nested scrolling
   // ancestor. Geometry reads and a React update for each event force repeated
@@ -186,7 +206,7 @@ export function AppSelectMenu({
   }, [topLayer]);
 
   useEffect(() => {
-    if (!open || !topLayer) return;
+    if (!open || !portal) return;
     positionPopover();
     const onViewportChange = () => schedulePopoverPosition();
     window.addEventListener("resize", onViewportChange);
@@ -203,12 +223,12 @@ export function AppSelectMenu({
         positionFrameRef.current = null;
       }
     };
-  }, [open, topLayer, menuPlacement, normalizedQuery, searchable, value, visible.length, positionPopover, schedulePopoverPosition]);
+  }, [open, portal, menuPlacement, normalizedQuery, searchable, value, visible.length, positionPopover, schedulePopoverPosition]);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) close();
+      if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -257,8 +277,9 @@ export function AppSelectMenu({
       ref={setMenuRef}
       className="app-select-menu"
       popover={topLayer ? "manual" : undefined}
-      style={topLayer ? {
-        position: "fixed",
+      data-app-select-portal={portal || undefined}
+      style={portal ? {
+        position: dialogPortal ? "absolute" : "fixed",
         display: "flex",
         flexDirection: "column",
         inset: "auto",
@@ -360,7 +381,7 @@ export function AppSelectMenu({
         <ChevronDown size={12} aria-hidden="true" />
       </button>
 
-      {menu}
+      {menu && portalHost ? createPortal(menu, portalHost) : menu}
     </div>
   );
 }

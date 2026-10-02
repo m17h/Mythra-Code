@@ -9,6 +9,8 @@ import { ModelCatalogHeader } from "./ModelCatalogHeader";
 import "../styles.css";
 import "./SettingsModal.css";
 import { THEMES, themeColorScheme } from "../lib/appConfig";
+import railStyles from "../styles.css?raw";
+import themeTokens from "../styles/lumen/tokens.css?raw";
 
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
@@ -683,6 +685,41 @@ describe("model control browser layout", () => {
     expect(parseFloat(current.width)).toBeGreaterThan(0);
     expect(getComputedStyle(rail!, "::before").display).toBe("none");
     expect(splitLayers(getComputedStyle(tail).backgroundImage)).toHaveLength(2);
+  });
+
+  it.each(["dark", "light"])("keeps both Comet rails visible without color-mix support (%s)", (scheme) => {
+    // A separate document has no modern stylesheet underneath the fallback.
+    // Unknown functions are rejected just as color-mix is on Chrome 105 and
+    // Safari 13, including invalid-at-computed-value-time custom properties.
+    // This checks CSS fallback semantics, not an actual old browser runtime.
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    const frameDocument = frame.contentDocument!;
+    const style = frameDocument.createElement("style");
+    style.textContent = `${railStyles}\n${themeTokens}`.replaceAll("color-mix(", "unsupported-color-mix(");
+    frameDocument.head.append(style);
+    try {
+      const view = render(<div className="app-shell" data-theme={scheme === "light" ? "atari" : "mythra"} data-color-scheme={scheme} data-effort-slider="comet">
+        <ClaudeModelControl model="claude-opus-5" effort="high" onModel={vi.fn()} onEffort={vi.fn()} />
+        <ModelPowerControl model="gpt-5.6-sol" effort="high" fast={false} runtimeModels={[]} onModel={vi.fn()} onEffort={vi.fn()} onFast={vi.fn()} />
+      </div>, { container: frameDocument.body });
+      const computed = (element: Element) => frame.contentWindow!.getComputedStyle(element);
+      const rails = [...view.container.querySelectorAll(".reasoning-rail, .openrouter-reasoning-rail")];
+      expect(rails).toHaveLength(2);
+      for (const rail of rails) {
+        expect(computed(rail.querySelector("input")!).backgroundImage).not.toBe("none");
+        const tail = rail.querySelector(".reasoning-ticks, .openrouter-reasoning-ticks")!;
+        expect(splitLayers(computed(tail).backgroundImage)).toHaveLength(2);
+        expect(computed(tail).backgroundImage).not.toBe("none");
+        expect(computed(tail).clipPath).toMatch(/^polygon\(/);
+      }
+      const labels = [...view.container.querySelectorAll(".reasoning-labels span.active, .openrouter-reasoning-labels span.active")];
+      expect(labels).toHaveLength(2);
+      for (const label of labels) {
+        expect(computed(label).color).toBe(scheme === "light" ? "rgb(10, 79, 134)" : "rgb(165, 220, 255)");
+      }
+      view.unmount();
+    } finally { frame.remove(); }
   });
 
   it.each(["dark", "light"])("keeps Comet current confined on both rails and stops it for reduced motion (%s)", async (scheme) => {
