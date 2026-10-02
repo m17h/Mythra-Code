@@ -10,6 +10,22 @@ No version change or release is part of this experiment.
 
 ## PR review (2026-10-02)
 
+- Hosted run `37057251703` (head `a9c35b0`) passed both native OS suites,
+  all four unit shards, Windows renderer and pinned WebKit. macOS Chromium
+  passed 640/641 cases but failed an existing assertion that a streaming fade
+  must still be active at provider completion. Real Chromium reproduction
+  confirmed its 140ms fade can naturally end before the provider finishes;
+  the same Markdown DOM remains mounted while the 240ms pacer queues the final
+  append. The test now controls frame time for the active-fade case, retaining
+  its original assertions and checking Highlight identity, final-tail fade and
+  exact cleanup deadline. A separate real-time case observes genuine native
+  registrations rather than polling a fleeting cohort, and verifies natural
+  expiry, preserved DOM/text nodes, final text and cleanup. A deliberate
+  remount mutation failed the deterministic continuity assertion; production
+  source was restored byte-for-byte. No streaming behavior/timing changed.
+  All four related streaming/cadence/fade/pacer browser files passed 48/48 in
+  Chromium and 48/48 in WebKit; affected ESLint, TypeScript and diff checks passed.
+  This failed gate is not merge evidence; PR #122 records the final run.
 - Hosted run `37055012579` (head `b2a0c35`) passed pinned WebKit, both
   renderer lanes, all four unit shards and Windows native. The macOS native
   suite failed one existing worktree test's setup-marker wait. A controlled
