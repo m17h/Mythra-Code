@@ -9,6 +9,23 @@ No version change or release is part of this experiment.
 
 ## PR review (2026-10-02)
 
+- Hosted run `37052403065` (head `ab61700`) passed both OS native suites, all
+  four unit shards and both renderer lanes, including the preceding readiness
+  repairs. WebKit exposed a separate calendar ownership defect: a stationary
+  pointer's boundary/move events could restore today's hover card after arrow
+  navigation had focused the previous day. Real WebKit hit-test transitions
+  reproduced the incorrect contents, and independent source review confirmed
+  that hover unconditionally outranked keyboard intent.
+  The calendar now retains keyboard ownership until changed pointer coordinates
+  or explicit click/tap. A tiny ephemeral point cache survives remounts; its
+  listeners are installed only while calendars are mounted and cleaned up.
+  Regression coverage includes stationary/remounted pointers, Escape and Tab
+  dismissal, deliberate hover recovery, mouse unpinning, touch taps and
+  assistive clicks. Codex caught and corrected an intermediate click handler
+  that could fabricate persistent hover for assistive activation. A genuinely
+  first pointer sample has no preceding position to compare; the bounded policy
+  preserves initial-hover usability rather than claiming unavailable intent
+  evidence. No persistent user data or global input framework was introduced.
 - Final local Chromium and WebKit each passed all 633 cases. The next hosted
   run (`37049851775`, head `d3a804b`) passed both native OS lanes, all four unit
   shards and both renderer lanes, but failed two pinned-WebKit assertions.

@@ -73,6 +73,103 @@ beforeEach(async () => { await page.viewport(1400, 900); await commands.setStrea
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); await page.viewport(1400, 900); });
 
 describe("usage calendar independent interaction review", () => {
+  it("accepts the first pointer request after a keyboard-only mount", async () => {
+    const view = mount();
+    view.getByRole("button", { name: "Before calendar" }).focus();
+    await userEvent.keyboard("{Tab}{ArrowLeft}");
+    expect(cardFor(view)).toHaveTextContent("earlier-model");
+    await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
+    expect(cardFor(view)).toHaveTextContent("300");
+  });
+
+  it("lets touch taps explicitly pin and dismiss after keyboard navigation", async () => {
+    const view = mount();
+    view.getByRole("button", { name: "Before calendar" }).focus();
+    await userEvent.keyboard("{Tab}{ArrowLeft}");
+    const today = todayCell(view);
+    // A tap may have exactly the old pointer coordinates; unlike boundary
+    // events it is an explicit request. Touch must not leave a hover behind.
+    fireEvent.pointerDown(today, { pointerType: "touch" });
+    fireEvent.click(today);
+    expect(today).toHaveAttribute("aria-selected", "true");
+    expect(cardFor(view)).toHaveTextContent("300");
+    fireEvent.pointerDown(today, { pointerType: "touch" });
+    fireEvent.click(today);
+    expect(today).toHaveAttribute("aria-selected", "false");
+    expect(view.queryByRole("group", { name: /^Usage on / })).toBeNull();
+  });
+
+  it("does not turn assistive click activation into a hover that survives Tab out", async () => {
+    const view = mount();
+    view.getByRole("button", { name: "Before calendar" }).focus();
+    await userEvent.keyboard("{Tab}");
+    fireEvent.click(todayCell(view), { detail: 0 });
+    expect(todayCell(view)).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{Tab}{Tab}");
+    expect(view.getByRole("button", { name: "After calendar" })).toHaveFocus();
+    expect(view.queryByRole("group", { name: /^Usage on / })).toBeNull();
+  });
+
+  it.each([false, true])("keeps keyboard ownership under a stationary pointer after remount=%s", async (remount) => {
+    let view = mount();
+    await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
+    if (remount) {
+      view.unmount();
+      view = mount();
+    }
+    const grid = view.getByRole("grid");
+    const previous = grid.querySelector<HTMLElement>(`[data-day="${shiftDayKey(TODAY, -7)}"]`)!;
+    const samples: Array<{ type: string; day?: string; x: number; y: number }> = [];
+    const trace = (event: PointerEvent) => {
+      samples.push({ type: event.type, day: (event.target as HTMLElement).dataset?.day, x: event.clientX, y: event.clientY });
+    };
+    document.addEventListener("pointerover", trace);
+    document.addEventListener("pointermove", trace);
+    const uncover = async () => {
+      const box = todayCell(view).getBoundingClientRect();
+      const cover = document.createElement("div");
+      cover.dataset.testid = "pointer-cover";
+      Object.assign(cover.style, { position: "fixed", left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`, zIndex: "99999" });
+      document.body.append(cover);
+      try {
+        // Sample the hit test at the same position before and after revealing
+        // the day. This produces real native boundary events in both engines.
+        await page.getByTestId("pointer-cover").hover();
+      } finally { cover.remove(); }
+      await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
+    };
+    try {
+      view.getByRole("button", { name: "Before calendar" }).focus();
+      await userEvent.keyboard("{Tab}{ArrowLeft}");
+      expect(previous).toHaveFocus();
+      expect(cardFor(view)).toHaveTextContent("earlier-model");
+      await uncover();
+      expect(samples.some((sample) => sample.type === "pointerover" && sample.day === TODAY)).toBe(true);
+      expect(new Set(samples.map(({ x, y }) => `${x},${y}`)).size).toBe(1);
+      expect(previous).toHaveFocus();
+      expect(cardFor(view)).toHaveTextContent("earlier-model");
+      await userEvent.keyboard("{Escape}");
+      await uncover();
+      expect(view.queryByRole("group", { name: /^Usage on / })).toBeNull();
+      await userEvent.keyboard("{Tab}");
+      expect(view.getByRole("button", { name: "After calendar" })).toHaveFocus();
+      await uncover();
+      expect(view.queryByRole("group", { name: /^Usage on / })).toBeNull();
+      // Deliberately leave and return to precisely the old square; history
+      // outside the table must count, not just its previous hovered point.
+      await page.getByRole("button", { name: "After calendar" }).hover();
+      await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
+      expect(cardFor(view)).toHaveTextContent("300");
+      await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).click();
+      expect(todayCell(view)).toHaveAttribute("aria-selected", "true");
+      await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).click();
+      expect(todayCell(view)).toHaveAttribute("aria-selected", "false");
+      expect(cardFor(view)).toHaveTextContent("300");
+    } finally {
+      document.removeEventListener("pointerover", trace);
+      document.removeEventListener("pointermove", trace);
+    }
+  });
   it("lets keyboard navigation take over an earlier hover without disabling later pointer use", async () => {
     const view = mount();
     const previous = view.container.querySelector<HTMLElement>(`[data-day="${shiftDayKey(TODAY, -7)}"]`)!;
