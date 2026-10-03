@@ -28,10 +28,17 @@
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-lmstudio { background: transparent; box-shadow: none; }
 
 .app-shell[data-theme][data-color-scheme] .message-body { color: var(--ink-2); font-size: var(--fs-body); line-height: 1.72; }
-/* The hover toolbar starts 30px above a reply. Together with the previous
-   row's 28px padding, this reserves 8px of clearance instead of a 2px overlap.
-   Keep it reserved while streaming too, so completion doesn't shift the row. */
+/* The hover toolbar starts 30px above a reply. Reserve 8px of clearance
+   using the previous row's padding (messages: 28px, disclosures: 12px,
+   activities: 6px). Keep it reserved while streaming so completion is stable. */
 .app-shell[data-theme][data-color-scheme] .message.assistant { margin-top: 10px; }
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="work"] + [data-entry-kind="message"] .message.assistant,
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="commands"] + [data-entry-kind="message"] .message.assistant,
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="files"] + [data-entry-kind="message"] .message.assistant,
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="thinking"] + [data-entry-kind="message"] .message.assistant,
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="approval"] + [data-entry-kind="message"] .message.assistant { margin-top: 26px; }
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="activity"] + [data-entry-kind="message"] .message.assistant,
+.app-shell[data-theme][data-color-scheme] [data-entry-kind="spawns"] + [data-entry-kind="message"] .message.assistant { margin-top: 32px; }
 .app-shell[data-theme][data-color-scheme] .message.assistant .message-body { padding-top: 4px; }
 
 /* The user's avatar is hidden (legacy), so their row is a single column; this
