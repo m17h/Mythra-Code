@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
 import { GitPanel, type GitPanelProps } from "./GitPanel";
@@ -266,69 +266,101 @@ for (const probe of ["failed", "pending", "missing"] as const) {
   }, probe === "pending" ? 7_000 : undefined);
 }
 
-it.each(["pending", "ready"] as const)("recovers a %s remote route when animation frames are throttled", async (probe) => {
-  // Keep real browser frames and layout, but deliver frames to the component
-  // at most every 50ms, as on a busy renderer. Forty frames cannot fit inside
-  // Testing Library's default 1s assertion deadline at this refresh rate.
-  const requestFrame = window.requestAnimationFrame.bind(window);
-  const cancelFrame = window.cancelAnimationFrame.bind(window);
-  const pending = new Map<number, { timer?: number; frame?: number }>();
+function installControlledAnimationFrames(frameIntervalMs: number) {
+  const requestBrowserFrame = window.requestAnimationFrame.bind(window);
+  const callbacks = new Map<number, FrameRequestCallback>();
   let sequence = 0;
+  let timestamp = performance.now();
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
     const handle = ++sequence;
-    const entry: { timer?: number; frame?: number } = {};
-    pending.set(handle, entry);
-    entry.timer = window.setTimeout(() => {
-      entry.frame = requestFrame((time) => { pending.delete(handle); callback(time); });
-    }, 50);
+    callbacks.set(handle, callback);
     return handle;
   });
   vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
-    const entry = pending.get(handle);
-    if (!entry) return;
-    window.clearTimeout(entry.timer);
-    if (entry.frame !== undefined) cancelFrame(entry.frame);
-    pending.delete(handle);
+    callbacks.delete(handle);
   });
-  let ownerRead = 0;
+  return {
+    get pendingCount() { return callbacks.size; },
+    async settleBrowserFrame() {
+      // Let the actual browser commit layout/focus transitions at checkpoints.
+      await act(async () => new Promise<void>((resolve) => requestBrowserFrame(() => resolve())));
+    },
+    async deliverNextFrame() {
+      const next = [...callbacks.values()];
+      callbacks.clear();
+      timestamp += frameIntervalMs;
+      await act(async () => {
+        for (const callback of next) callback(timestamp);
+      });
+    },
+    async deliverFrames(count: number) {
+      for (let index = 0; index < count; index++) await this.deliverNextFrame();
+    },
+    clear() { callbacks.clear(); },
+  };
+}
+
+it.each(["pending", "ready"] as const)("recovers a %s remote route with controlled 50ms animation frames", async (probe) => {
+  // The component's recovery budget is a count of requestAnimationFrame
+  // callbacks. Deliver that exact cadence deterministically; a setTimeout
+  // followed by a real RAF would add host load twice to every simulated frame.
+  // DOM measurement and focus still run in Playwright's real browser.
+  const frames = installControlledAnimationFrames(50);
   let mounted: ReturnType<typeof mount> | undefined;
   try {
     const onFocusHandled = vi.fn();
     const input = props({ githubRepoStatus: null, focusRequest: { view: "changes", focus: "push", nonce: 98 }, onFocusHandled });
     const view = mount(input, 360);
     mounted = view;
-    if (probe === "ready") {
-      // Readiness can arrive after 1s but before the frame budget expires.
-      // The route must still find the real control using the owner's props.
-      ownerRead = window.setTimeout(() => view.rerender(shell({ ...input, githubRepoStatus: props().githubRepoStatus }, 360)), 1_100);
-    }
-    await waitFor(() => expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(98), { timeout: 5_000 });
-    const notice = view.container.querySelector<HTMLElement>(".git-route-notice")!;
+    await frames.settleBrowserFrame();
+    expect(frames.pendingCount).toBe(1);
+
     if (probe === "pending") {
-      expect(document.activeElement).toBe(notice);
+      await frames.deliverFrames(39);
+      expect(onFocusHandled).not.toHaveBeenCalled();
+      expect(view.container.querySelector(".git-route-notice")).toBeNull();
+
+      // The fortieth probe frame creates the notice; the next component frame
+      // focuses the committed notice and consumes the route exactly once.
+      await frames.deliverNextFrame();
+      await frames.settleBrowserFrame();
+      const notice = view.container.querySelector<HTMLElement>(".git-route-notice");
+      expect(notice).not.toBeNull();
       expect(notice).toHaveTextContent(/GitHub connection status is unavailable/);
       expect(notice).not.toHaveTextContent(/Connect a GitHub repository before/);
-      // A read settling after recovery must not replay the consumed route.
+      expect(onFocusHandled).not.toHaveBeenCalled();
+      await frames.deliverNextFrame();
+      expect(document.activeElement).toBe(notice);
+      await waitFor(() => expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(98), { timeout: 5_000 });
+
+      // A deferred owner read after recovery must not replay the route.
       view.rerender(shell({ ...input, githubRepoStatus: props().githubRepoStatus }, 360));
     } else {
-      expect(notice).toBeNull();
+      // Simulate the owner returning a usable repository after 1.1 seconds
+      // (22 frames) while the bounded probe is still pending.
+      await frames.deliverFrames(22);
+      expect(onFocusHandled).not.toHaveBeenCalled();
+      expect(view.container.querySelector(".git-route-notice")).toBeNull();
+      view.rerender(shell({ ...input, githubRepoStatus: props().githubRepoStatus }, 360));
+      await frames.settleBrowserFrame();
+      await frames.deliverNextFrame();
+      expect(view.container.querySelector(".git-route-notice")).toBeNull();
       expect(document.activeElement).toHaveAccessibleName("Push commits");
+      await waitFor(() => expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(98), { timeout: 5_000 });
     }
+
     const focus = document.activeElement;
-    await screen.findByRole("button", { name: "Push commits" });
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    await frames.settleBrowserFrame();
+    view.rerender(shell({ ...input, githubRepoStatus: props().githubRepoStatus }, 360));
+    await frames.settleBrowserFrame();
     expect(onFocusHandled).toHaveBeenCalledExactlyOnceWith(98);
     expect(document.activeElement).toBe(focus);
     expect(input.onAction).not.toHaveBeenCalled();
   } finally {
-    window.clearTimeout(ownerRead);
-    // Unmount while the component's mocked handles still have their matching
-    // cancellation implementation, including when an assertion has failed.
+    // Unmount while mocked handles still have their matching cancellation
+    // implementation, including when an assertion fails.
     mounted?.unmount();
-    for (const entry of pending.values()) {
-      window.clearTimeout(entry.timer);
-      if (entry.frame !== undefined) cancelFrame(entry.frame);
-    }
+    frames.clear();
     vi.restoreAllMocks();
   }
 }, 7_000);
