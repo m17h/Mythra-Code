@@ -27,7 +27,21 @@ import {
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
-import { useTaskStore } from "../lib/taskStore";
+import { storedPendingTimedTurns, useTaskStore } from "../lib/taskStore";
+import {
+  eligibleQueueHead,
+  formatDeliveryTime,
+  hasEligibleQueuedTurns,
+  TIMED_PROMPT_MAX_TIMER_MS,
+  timedClockDecision,
+} from "../lib/timedPrompts";
+import {
+  applyNewThreadSnapshot,
+  findNewThreadTimedPrompt,
+  newThreadSnapshot,
+  useNewThreadTimedPrompts,
+  type NewThreadTimedPrompt,
+} from "../lib/newThreadTimedPrompts";
 import { friendlyError } from "../lib/errors";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { confirmDialog } from "../lib/confirmDialog";
@@ -58,6 +72,19 @@ const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunner
 const activeQueuedDeliveries = new Set<string>();
 /** One bounded recovery attempt for a local-provider slot still unwinding. */
 const queuedBusyRetries = new Set<string>();
+/** Delivery contexts for timed first prompts of not-yet-created threads. */
+const newThreadDeliveries = new Map<string, TurnRunnerContext>();
+/** New-thread starts run one at a time so the shared-folder check sees each. */
+let newThreadDeliveryChain: Promise<void> = Promise.resolve();
+const newThreadDeliveriesInFlight = new Set<string>();
+/**
+ * Last timed-prompt clock check in this renderer session. `null` until the
+ * first check after launch/reload, so anything already due then is missed.
+ */
+let lastTimedClockCheckAt: number | null = null;
+let lastTimedPerformanceCheckAt: number | null = null;
+/** Failure text reported by a deferred new-thread start, keyed by prompt id. */
+const newThreadDeliveryErrors = new Map<string, string>();
 
 /** Stop before a provider request is an undelivered prompt, not a runtime error. */
 class CancelledTurnStart extends Error {}
@@ -83,6 +110,11 @@ export function forgetQueuedDeliveries(threadId?: string): void {
     queuedDeliveries.clear();
     activeQueuedDeliveries.clear();
     queuedBusyRetries.clear();
+    newThreadDeliveries.clear();
+    newThreadDeliveriesInFlight.clear();
+    newThreadDeliveryChain = Promise.resolve();
+    lastTimedClockCheckAt = null;
+    lastTimedPerformanceCheckAt = null;
     return;
   }
   for (const [queuedTurnId, delivery] of queuedDeliveries) {
@@ -115,11 +147,59 @@ function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, att
     setActiveThread: () => undefined,
     setAttachments: () => undefined,
     setStartingDraftTurn: () => undefined,
+    setDraftThreadIsolated: () => undefined,
     setError: (error) => { if (visible()) context.setError(error); },
     setStatus: (status) => { if (visible()) context.setStatus(status); },
     setTransientStatus: (status) => { if (visible()) context.setTransientStatus(status); },
   };
 }
+
+/**
+ * The deferred equivalent of pressing Send in a new-thread draft. The provider
+ * identity and isolation choice come from the snapshot taken when the prompt
+ * was scheduled, never from whatever the draft picker shows now. Errors are
+ * captured for the scheduled row; they reach the visible banner only while
+ * the user is looking at that same draft.
+ */
+function newThreadDeliveryContext(context: TurnRunnerContext, prompt: NewThreadTimedPrompt): TurnRunnerContext {
+  const base = queuedDeliveryContext(context, prompt.threadId, prompt.attachments, prompt.resolveSkillMentions, prompt.skillInvocationText);
+  const visible = () => useTaskStore.getState().activeThreadId === null
+    && context.activeWorkspacePathRef.current === normalizedProjectPath(prompt.workspacePath);
+  return {
+    ...base,
+    activeThread: null,
+    activeThreadIsChild: false,
+    draftThreadIsolated: prompt.snapshot.isolated,
+    effectiveSettings: {
+      ...applyNewThreadSnapshot(context.effectiveSettings, prompt.snapshot),
+      // The visible draft may have switched provider after scheduling. Keep
+      // this workspace's composition, but select the scheduled provider's
+      // instructions rather than the visible picker's instructions.
+      systemPrompt: context.subscriptionSystemPrompts[prompt.snapshot.provider] ?? context.effectiveSettings.systemPrompt,
+    },
+    setError: (error) => {
+      if (error) newThreadDeliveryErrors.set(prompt.id, error);
+      if (visible()) context.setError(error);
+    },
+    setStatus: (status) => { if (visible()) context.setStatus(status); },
+    setTransientStatus: (status) => { if (visible()) context.setTransientStatus(status); },
+  };
+}
+
+/** Global connection state stays live; captured thread/workspace policy stays owned. */
+function withLiveDeliveryReadiness(captured: TurnRunnerContext, live: TurnRunnerContext): TurnRunnerContext {
+  return {
+    ...captured,
+    runtimeStatus: live.runtimeStatus,
+    claudeStatus: live.claudeStatus,
+    cursorStatus: live.cursorStatus,
+    account: live.account,
+    openRouterReady: live.openRouterReady,
+    lmStudioReady: live.lmStudioReady,
+    childAgentReadiness: live.childAgentReadiness,
+  };
+}
+
 
 /** Keep only the image metadata the transcript needs, detached from composer state. */
 function messageImageAttachments(attachments: AttachmentRecord[]) {
@@ -157,7 +237,7 @@ export interface TurnRunnerContext {
   deferredDelivery?: boolean;
   attachments: AttachmentRecord[];
   effectiveSettings: AppSettings;
-  subscriptionSystemPrompts: Record<"openai" | "claude", string>;
+  subscriptionSystemPrompts: Record<"openai" | "claude", string> & Partial<Record<Provider, string>>;
   customAgents: CustomAgentProfile[];
   openRouterModels: OpenRouterModel[];
   lmStudioModels?: LMStudioModel[];
@@ -194,7 +274,12 @@ export interface TurnRunnerContext {
   executionPathFor: (threadId: string | null | undefined, logicalPath: string) => string;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
-  onThreadCreated: (threadId: string) => void;
+  /** Latest known record for a thread, so a long-delayed delivery never
+   * writes back a stale title or preview captured when it was scheduled. */
+  currentThread?: (threadId: string) => Thread | null | undefined;
+  /** `deferred` marks a scheduled first prompt, which must not consume the
+   * visible draft's pending handoff; `subagentsEnabled` is its snapshot. */
+  onThreadCreated: (threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean }) => void;
   onThreadTitlePending?: (threadId: string, prompt: string) => void;
   onThreadTitleCancelled?: (threadId: string) => void;
   onThreadTitleRequested?: (threadId: string, prompt: string) => void;
@@ -246,6 +331,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
   removeQueuedMessage: (queuedTurnId: string) => void;
   beginEditQueuedMessage: (queuedTurnId: string) => boolean;
   finishEditQueuedMessage: (queuedTurnId: string, text?: string) => boolean;
+  scheduleMessage: (text: string, deliverAt: number, options?: { useComposerAttachments?: boolean; skillInvocationText?: string }) => Promise<boolean>;
+  rescheduleQueuedMessage: (queuedTurnId: string, deliverAt: number) => boolean;
+  queueTimedMessageNow: (queuedTurnId: string) => boolean;
+  beginEditNewThreadPrompt: (id: string) => boolean;
+  finishEditNewThreadPrompt: (id: string, text?: string) => boolean;
+  rescheduleNewThreadPrompt: (id: string, deliverAt: number) => boolean;
+  sendNewThreadPromptNow: (id: string) => boolean;
+  removeNewThreadPrompt: (id: string) => void;
   stopTurn: () => Promise<void>;
 } {
   const contextRef = useRef(context);
@@ -310,30 +403,32 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return false;
     }
     if (effectiveSettings.provider !== "claude" && effectiveSettings.provider !== "cursor" && !runtimeStatus?.available) {
-      setRuntimeSetupOpen(true);
+      if (!deferredDelivery) setRuntimeSetupOpen(true);
+      setError("Set up the model runtime before starting this prompt.");
       return false;
     }
     if (effectiveSettings.provider === "openai" && account?.type !== "chatgpt") {
-      setAuthRequiredOpen(true);
+      if (!deferredDelivery) setAuthRequiredOpen(true);
+      setError("Sign in to ChatGPT before starting this prompt.");
       return false;
     }
     if (effectiveSettings.provider === "openrouter" && !openRouterReady) {
-      openSettings("models");
+      if (!deferredDelivery) openSettings("models");
       setError("Add an OpenRouter API key before using OpenRouter.");
       return false;
     }
     if (effectiveSettings.provider === "lmstudio" && !lmStudioReady) {
-      openSettings("models");
+      if (!deferredDelivery) openSettings("models");
       setError("Start the LM Studio local server and load at least one model before using LM Studio.");
       return false;
     }
     if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
-      openSettings("models");
+      if (!deferredDelivery) openSettings("models");
       setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
       return false;
     }
     if (effectiveSettings.provider === "cursor" && (!cursorStatus?.available || !cursorStatus.loggedIn)) {
-      openSettings("models");
+      if (!deferredDelivery) openSettings("models");
       setError(cursorStatus?.available ? "Sign in to Cursor Agent before using your Cursor subscription." : "Install Cursor Agent, then sign in before using the Cursor provider.");
       return false;
     }
@@ -442,9 +537,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // whole window with no context, but silently allowing two models to
         // edit one shared folder is unsafe. Hold the queue at this entry and
         // let the user retry it once the other run is finished.
-        if (deferredDelivery && activeThread) {
-          const overlapMessage = "This queued follow-up is waiting because another conversation is working in the same shared project folder. Start it again after that task finishes.";
-          useTaskStore.getState().upsertActivity(activeThread.id, {
+        if (deferredDelivery) {
+          const overlapMessage = activeThread
+            ? "This queued follow-up is waiting because another conversation is working in the same shared project folder. Start it again after that task finishes."
+            : "This scheduled prompt did not start because another conversation is working in the same shared project folder. Start it again after that task finishes, or reschedule it.";
+          if (activeThread) useTaskStore.getState().upsertActivity(activeThread.id, {
             id: `shared-folder-overlap-${activeThread.id}-${Date.now()}`,
             kind: "warning",
             title: "Another thread is working in this project folder",
@@ -481,10 +578,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
       useTaskStore.getState().beginAgentRun(startingThreadId);
       useTaskStore.getState().setTaskStatus(startingThreadId, "starting");
       pendingStart = pendingTurnStartsRef.current.begin(startingThreadId);
-    } else {
+    } else if (!deferredDelivery) {
+      // A scheduled first prompt is not the visible draft: it must neither
+      // cancel the user's own draft send nor be cancelled by its Stop.
       draftGeneration = ++draftGenerationRef.current;
       setStartingDraftTurn(true);
     }
+    const draftCancelled = () => draftGeneration !== undefined && draftGeneration !== draftGenerationRef.current;
     setStatus("Starting");
 
     let startedThreadId: string | undefined;
@@ -494,7 +594,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let childBridge: ChildAgentBridgeResult | null = null;
     const sentAttachments = [...attachments];
     const assertCanStart = () => {
-      if (pendingStart?.cancelRequested || (!activeThread && draftGeneration !== draftGenerationRef.current)) {
+      if (pendingStart?.cancelRequested || (!activeThread && draftCancelled())) {
         throw new CancelledTurnStart("Stopped before starting the model turn");
       }
     };
@@ -540,13 +640,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
         rememberThread(thread);
         contextRef.current.onThreadTitlePending?.(thread.id, text);
-        onThreadCreated(thread.id);
+        onThreadCreated(thread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled });
         persistThreadModel(thread.id, effectiveSettings.model);
         persistThreadReasoning(thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, thread!));
-          if (!threadSelectionChangedMidSend()) {
+          if (!deferredDelivery && !threadSelectionChangedMidSend()) {
             activatedCreatedThreadId = thread.id;
             setActiveThread(thread);
             useTaskStore.getState().setActiveThread(thread.id);
@@ -558,7 +658,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // Stop landed while this brand-new thread was still being created. The
       // prompt was never delivered, so report it as undelivered and let the
       // composer hand the user their text back instead of silently eating it.
-      if (!activeThread && draftGeneration !== draftGenerationRef.current) {
+      if (!activeThread && draftCancelled()) {
         contextRef.current.onThreadTitleCancelled?.(thread.id);
         useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
         setStartingDraftTurn(false);
@@ -773,14 +873,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
         rememberThread(startedThread);
         contextRef.current.onThreadTitlePending?.(startedThread.id, text);
-        onThreadCreated(startedThread.id);
+        onThreadCreated(startedThread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled });
         persistThreadModel(startedThread.id, effectiveSettings.model.trim() || (typeof runtimeTurnModel === "string" ? runtimeTurnModel.trim() : ""));
         persistThreadReasoning(startedThread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         recordSubagentCapabilities(startedThread.id, runtimeInstance, capabilities);
         useTaskStore.getState().ensureTask(startedThread.id, executionPath);
         if (!workspaceChangedMidSend()) {
           setThreads((current) => upsertThread(current, startedThread));
-          if (!threadSelectionChangedMidSend()) {
+          if (!deferredDelivery && !threadSelectionChangedMidSend()) {
             activatedCreatedThreadId = startedThread.id;
             setActiveThread(startedThread);
             useTaskStore.getState().setActiveThread(startedThread.id);
@@ -817,7 +917,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       rememberChildAgentPolicy(threadId);
       // See runLocalTurn: a draft stopped before its turn started keeps its text.
-      if (!activeThread && draftGeneration !== draftGenerationRef.current) {
+      if (!activeThread && draftCancelled()) {
         contextRef.current.onThreadTitleCancelled?.(threadId);
         useTaskStore.getState().setTaskStatus(threadId, "interrupted");
         setStartingDraftTurn(false);
@@ -930,13 +1030,17 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // Strictly FIFO: only ever start the head. A head left "failed" (or being
     // steered) holds the queue until the user retries or removes it, so
     // follow-ups can never silently run out of the order they were written in.
-    const queuedTurn = task.queuedTurns[0];
+    // Pending timed prompts are not in this FIFO at all, so a regular entry is
+    // never held behind one and a timed entry can never start early.
+    const queuedTurn = eligibleQueueHead(task.queuedTurns);
     if (!queuedTurn || queuedTurn.status !== "queued" || queuedTurn.editing) return;
-    const queuedContext = queuedDeliveries.get(queuedTurn.id)?.context;
+    const capturedContext = queuedDeliveries.get(queuedTurn.id)?.context;
     // A durable queue can outlive the renderer. Once the user opens that task,
     // the render path below reattaches a fresh delivery context and pumping
     // resumes; guessing provider/workspace settings before then is unsafe.
-    if (!queuedContext) return;
+    if (!capturedContext) return;
+    const liveThread = capturedContext.currentThread?.(threadId);
+    const queuedContext = liveThread?.id === threadId ? { ...capturedContext, activeThread: liveThread } : capturedContext;
     // Archive ownership can begin after a completion scheduled this pump. Keep
     // the durable entry queued so releasing the archive lock can retry it.
     if (archiveOwnsThread(threadId)) return;
@@ -944,12 +1048,17 @@ export function useTurnRunner(context: TurnRunnerContext): {
     activeQueuedDeliveries.add(threadId);
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
     let delivered = false;
+    let deliveryError: string | null = null;
     let retryBusySlot = false;
     try {
       // The captured provider context is stable, but an inline edit may have
       // changed the entry's skill source since it was first queued.
       delivered = await deliverMessage(
-        { ...queuedContext, skillInvocationText: queuedTurn.skillInvocationText },
+        {
+          ...withLiveDeliveryReadiness(queuedContext, contextRef.current),
+          skillInvocationText: queuedTurn.skillInvocationText,
+          setError: (error) => { deliveryError = error; queuedContext.setError(error); },
+        },
         queuedTurn.text,
         "turn",
       );
@@ -958,7 +1067,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         queuedDeliveries.delete(queuedTurn.id);
         queuedBusyRetries.delete(queuedTurn.id);
       } else {
-        const error = useTaskStore.getState().tasks[threadId]?.error ?? "The queued turn could not be started.";
+        const error = deliveryError ?? useTaskStore.getState().tasks[threadId]?.error ?? "The queued turn could not be started.";
         // The Claude result event and Windows process-tree teardown used to
         // cross in flight. Even with the backend ordering fixed, retain one
         // bounded recovery for older runtimes or an unusually slow cleanup:
@@ -1011,6 +1120,151 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }
 
+  // New-thread prompts belong to a logical workspace, not the visible thread.
+  // App supplies workspaceGitInfo for activeProject.path (the project root),
+  // even while an existing isolated/child thread is open. The deferred context
+  // clears activeThread, so its start never inherits that thread's worktree.
+  const scheduledWorkspacePath = context.activeWorkspace
+    ? normalizedProjectPath(context.activeWorkspace.path)
+    : null;
+  if (scheduledWorkspacePath) {
+    for (const [workspacePath, prompts] of Object.entries(useNewThreadTimedPrompts.getState().prompts)) {
+      if (normalizedProjectPath(workspacePath) !== scheduledWorkspacePath) continue;
+      for (const prompt of prompts) {
+        if (!newThreadDeliveriesInFlight.has(prompt.id)) newThreadDeliveries.set(prompt.id, newThreadDeliveryContext(context, prompt));
+      }
+    }
+  }
+
+  const startNewThreadPrompt = useCallback((id: string): boolean => {
+    const prompt = findNewThreadTimedPrompt(id);
+    if (!prompt || prompt.status !== "queued" || prompt.editing || newThreadDeliveriesInFlight.has(id) || !newThreadDeliveries.has(id)) return false;
+    newThreadDeliveriesInFlight.add(id);
+    useNewThreadTimedPrompts.getState().setStatus(id, "sending");
+    newThreadDeliveryChain = newThreadDeliveryChain.then(async () => {
+      const latest = findNewThreadTimedPrompt(id);
+      const ctx = newThreadDeliveries.get(id);
+      try {
+        if (!latest || latest.status !== "sending" || !ctx) return;
+        newThreadDeliveryErrors.delete(id);
+        let delivered = false;
+        try {
+          delivered = await deliverMessage({ ...withLiveDeliveryReadiness(ctx, contextRef.current), skillInvocationText: latest.skillInvocationText }, latest.text, "turn");
+        } catch (reason) {
+          newThreadDeliveryErrors.set(id, friendlyError(reason));
+        }
+        if (delivered) {
+          useNewThreadTimedPrompts.getState().remove(id);
+          newThreadDeliveries.delete(id);
+        } else {
+          useNewThreadTimedPrompts.getState().setStatus(id, "failed", newThreadDeliveryErrors.get(id) ?? "The scheduled prompt could not be started.");
+        }
+      } finally {
+        newThreadDeliveryErrors.delete(id);
+        newThreadDeliveriesInFlight.delete(id);
+      }
+    });
+    return true;
+  }, [deliverMessage]);
+
+  /**
+   * One clock check. A timed prompt is released only when this session saw
+   * its time pass within timer jitter with no detected suspension, and a delivery context exists
+   * at that moment. Everything else that is due — first check after launch or
+   * reload, a suspended gap (sleep), or no context — is persisted as missed and
+   * waits for the user: a prompt written for 9:00 must never run at 18:00, or
+   * even at 9:00:20 after reopening, without being asked.
+   */
+  const releaseDueTimedPrompts = useCallback(() => {
+    const now = Date.now();
+    const performanceNow = performance.now();
+    const previousCheckAt = lastTimedClockCheckAt;
+    const elapsedAwakeMs = lastTimedPerformanceCheckAt === null ? undefined : performanceNow - lastTimedPerformanceCheckAt;
+    lastTimedClockCheckAt = now;
+    lastTimedPerformanceCheckAt = performanceNow;
+    const releasable = new Map<string, string[]>();
+    const missed = new Map<string, string[]>();
+    const add = (target: Map<string, string[]>, threadId: string, id: string) => target.set(threadId, [...(target.get(threadId) ?? []), id]);
+    for (const entry of storedPendingTimedTurns()) {
+      if (entry.missedAt !== undefined || entry.editing || entry.status === "sending") continue;
+      const decision = timedClockDecision(entry.deliverAt!, now, previousCheckAt, undefined, elapsedAwakeMs);
+      if (decision === "wait") continue;
+      const deliverable = queuedDeliveries.get(entry.id)?.threadId === entry.threadId && Boolean(useTaskStore.getState().tasks[entry.threadId]);
+      add(decision === "release" && deliverable ? releasable : missed, entry.threadId, entry.id);
+    }
+    for (const [threadId, ids] of missed) useTaskStore.getState().markTimedTurnsMissed(threadId, ids, now);
+    for (const [threadId, ids] of releasable) {
+      useTaskStore.getState().releaseTimedTurns(threadId, ids);
+      const task = useTaskStore.getState().tasks[threadId];
+      const head = task ? eligibleQueueHead(task.queuedTurns) : undefined;
+      // An earlier Stop or failure holds ordinary follow-ups for the user.
+      // A prompt deliberately scheduled for now is a fresh intent, so it may
+      // start a stopped thread — but only when nothing held is ahead of it.
+      const stoppedBefore = task?.status === "interrupted" || task?.status === "error";
+      void pumpQueuedThread(threadId, Boolean(stoppedBefore && head && ids.includes(head.id)));
+    }
+    const missedNewThread: string[] = [];
+    for (const prompts of Object.values(useNewThreadTimedPrompts.getState().prompts)) {
+      for (const prompt of prompts) {
+        if (prompt.status !== "queued" || prompt.editing || prompt.missedAt !== undefined) continue;
+        const decision = timedClockDecision(prompt.deliverAt, now, previousCheckAt, undefined, elapsedAwakeMs);
+        if (decision === "wait") continue;
+        if (decision !== "release" || !startNewThreadPrompt(prompt.id)) missedNewThread.push(prompt.id);
+      }
+    }
+    if (missedNewThread.length) useNewThreadTimedPrompts.getState().markMissed(missedNewThread, now);
+  }, [pumpQueuedThread, startNewThreadPrompt]);
+
+  // One timer for the nearest future delivery, re-armed only when a queue
+  // changes, plus focus/visibility/wake checks. With no timed prompts there is
+  // no timer at all, and streamed deltas never reach this code.
+  useEffect(() => {
+    let timer: number | null = null;
+    let checkPending = false;
+    const arm = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      const now = Date.now();
+      let next = Number.POSITIVE_INFINITY;
+      for (const entry of storedPendingTimedTurns()) if (entry.deliverAt! > now) next = Math.min(next, entry.deliverAt!);
+      for (const prompts of Object.values(useNewThreadTimedPrompts.getState().prompts)) {
+        for (const prompt of prompts) if (prompt.status === "queued" && prompt.deliverAt > now) next = Math.min(next, prompt.deliverAt);
+      }
+      if (Number.isFinite(next)) timer = window.setTimeout(check, Math.min(TIMED_PROMPT_MAX_TIMER_MS, next - now + 5));
+    };
+    const check = () => {
+      checkPending = false;
+      releaseDueTimedPrompts();
+      arm();
+    };
+    const scheduleCheck = () => {
+      if (checkPending) return;
+      checkPending = true;
+      queueMicrotask(check);
+    };
+    const unsubscribeQueue = useTaskStore.subscribe((state, previous) => {
+      if (state.queueRevision !== previous.queueRevision) scheduleCheck();
+    });
+    const unsubscribeNewThread = useNewThreadTimedPrompts.subscribe((state, previous) => {
+      if (state.prompts !== previous.prompts) scheduleCheck();
+    });
+    const onVisibility = () => { if (document.visibilityState === "visible") scheduleCheck(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", scheduleCheck);
+    window.addEventListener("pageshow", scheduleCheck);
+    window.addEventListener("online", scheduleCheck);
+    check();
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      unsubscribeQueue();
+      unsubscribeNewThread();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", scheduleCheck);
+      window.removeEventListener("pageshow", scheduleCheck);
+      window.removeEventListener("online", scheduleCheck);
+    };
+  }, [releaseDueTimedPrompts]);
+
   useEffect(() => {
     const unsubscribe = useTaskStore.subscribe((state, previous) => {
       if (state.workflowOwners !== previous.workflowOwners) {
@@ -1040,8 +1294,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
   // gains a live delivery context (attached during the render above), so it is
   // also the moment those follow-ups become startable.
   useEffect(() => {
+    // Release first: a restored timed prompt may have just gained its context.
+    releaseDueTimedPrompts();
     if (activeThreadId) void pumpQueuedThread(activeThreadId);
-  }, [activeThreadId, pumpQueuedThread]);
+  }, [activeThreadId, scheduledWorkspacePath, pumpQueuedThread, releaseDueTimedPrompts]);
 
   const queueFollowUp = useCallback((ctx: TurnRunnerContext, text: string): boolean => {
     const thread = ctx.activeThread;
@@ -1101,7 +1357,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // attachments. Treat any @ words in answers literally.
     const ctx = { ...current, attachments: [], running: status === "running" || status === "starting", resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message };
     if (useTaskStore.getState().workflowOwners[threadId]) return queueFollowUp(ctx, text);
-    if (status === "starting" || (!ctx.running && useTaskStore.getState().tasks[threadId]?.queuedTurns.length)) return queueFollowUp(ctx, text);
+    if (status === "starting" || (!ctx.running && hasEligibleQueuedTurns(useTaskStore.getState().tasks[threadId]?.queuedTurns))) return queueFollowUp(ctx, text);
     let unavailable = false;
     const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; });
     return !delivered && unavailable ? queueFollowUp(ctx, text) : delivered;
@@ -1118,7 +1374,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (!text || !ctx.activeWorkspace) return false;
     if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
     if (ctx.running && !ctx.activeThread) return false;
-    if (ctx.activeThread && (ctx.running || useTaskStore.getState().tasks[ctx.activeThread.id]?.queuedTurns.length)) return queueFollowUp(ctx, text);
+    if (ctx.activeThread && (ctx.running || hasEligibleQueuedTurns(useTaskStore.getState().tasks[ctx.activeThread.id]?.queuedTurns))) return queueFollowUp(ctx, text);
     return deliverMessage(ctx, text, "turn");
   }, [deliverMessage, queueFollowUp]);
 
@@ -1154,7 +1410,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const delivered = await deliverMessage(ctx, text, "steer", undefined, resolutionFailure);
       return delivered || (!resolutionFailed && queueFollowUp(ctx, text));
     }
-    if (task?.queuedTurns.length) return queueFollowUp({ ...ctx, running: false }, text);
+    if (hasEligibleQueuedTurns(task?.queuedTurns)) return queueFollowUp({ ...ctx, running: false }, text);
     return deliverMessage({ ...ctx, running: false }, text, "turn");
   }, [deliverMessage, queueFollowUp]);
 
@@ -1167,6 +1423,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (task?.status !== "running") return;
     const queuedTurn = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
     if (!queuedTurn || queuedTurn.status === "sending" || queuedTurn.editing) return;
+    // A timed prompt waiting for its time can never be pushed into a turn.
+    if (queuedTurn.deliverAt !== undefined && queuedTurn.releasedAt === undefined) return;
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
     let steerUnavailable = false;
     let resolutionFailure: { reason: unknown } | undefined;
@@ -1207,7 +1465,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const retryQueuedMessage = useCallback((queuedTurnId: string) => {
     const threadId = contextRef.current.activeThread?.id;
     if (!threadId) return;
-    const head = useTaskStore.getState().tasks[threadId]?.queuedTurns[0];
+    const head = eligibleQueueHead(useTaskStore.getState().tasks[threadId]?.queuedTurns ?? []);
     if (head?.id !== queuedTurnId || head.status === "sending" || head.editing) return;
     queuedBusyRetries.delete(queuedTurnId);
     useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurnId, "queued");
@@ -1234,12 +1492,114 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (!threadId) return;
     const entries = useTaskStore.getState().tasks[threadId]?.queuedTurns;
     if (entries?.find((entry) => entry.id === queuedTurnId)?.status === "sending") return;
-    const wasHead = entries?.[0]?.id === queuedTurnId;
+    const wasHead = eligibleQueueHead(entries ?? [])?.id === queuedTurnId;
     useTaskStore.getState().removeQueuedTurn(threadId, queuedTurnId);
     queuedDeliveries.delete(queuedTurnId);
     queuedBusyRetries.delete(queuedTurnId);
     if (wasHead) void pumpQueuedThread(threadId);
   }, [pumpQueuedThread]);
+
+  const scheduleMessage = useCallback(async (text: string, deliverAt: number, options?: { useComposerAttachments?: boolean; skillInvocationText?: string }): Promise<boolean> => {
+    const current = contextRef.current;
+    const ctx: TurnRunnerContext = {
+      ...current,
+      ...(options?.useComposerAttachments === false ? { attachments: [], setAttachments: () => undefined } : {}),
+      ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
+    };
+    if (!text.trim() || !ctx.activeWorkspace) return false;
+    if (!Number.isFinite(deliverAt) || deliverAt <= Date.now()) {
+      ctx.setError("Choose a delivery time in the future.");
+      return false;
+    }
+    for (const attachment of ctx.attachments) {
+      const reason = attachment.kind === "image" ? unsupportedImageReason(attachment.path) : undefined;
+      if (reason) {
+        ctx.setError(reason);
+        return false;
+      }
+    }
+    const sentAttachments = [...ctx.attachments];
+    if (ctx.activeThread) {
+      const thread = ctx.activeThread;
+      if (archiveOwnsThread(thread.id)) return false;
+      const queuedTurn = useTaskStore.getState().enqueueTurn(thread.id, text, sentAttachments, {
+        ...(ctx.skillInvocationText !== undefined ? { skillInvocationText: ctx.skillInvocationText } : {}),
+        deliverAt,
+      });
+      queuedDeliveries.set(queuedTurn.id, {
+        threadId: thread.id,
+        context: queuedDeliveryContext(ctx, thread.id, sentAttachments, undefined, queuedTurn.skillInvocationText),
+      });
+    } else {
+      if (ctx.draftThreadIsolated && (!ctx.workspaceGitInfo?.isRepo || !ctx.workspaceGitInfo.isRoot || !ctx.workspaceGitInfo.hasCommit)) {
+        ctx.setError("Isolated threads require a Git repository root with at least one commit.");
+        return false;
+      }
+      const prompt = useNewThreadTimedPrompts.getState().add({
+        workspacePath: ctx.activeWorkspace.path,
+        workspaceName: ctx.activeWorkspace.name,
+        text,
+        attachments: sentAttachments,
+        deliverAt,
+        snapshot: newThreadSnapshot(ctx.effectiveSettings, ctx.draftThreadIsolated),
+        skillInvocationText: ctx.skillInvocationText,
+      });
+      newThreadDeliveries.set(prompt.id, newThreadDeliveryContext(ctx, prompt));
+    }
+    ctx.setAttachments((existing) => withoutSentAttachments(existing, sentAttachments));
+    ctx.setError(null);
+    ctx.setTransientStatus(`Scheduled for ${formatDeliveryTime(deliverAt)}`);
+    return true;
+  }, [archiveOwnsThread]);
+
+  const rescheduleQueuedMessage = useCallback((queuedTurnId: string, deliverAt: number): boolean => {
+    const threadId = contextRef.current.activeThread?.id;
+    if (!threadId || archiveOwnsThread(threadId)) return false;
+    if (!useTaskStore.getState().rescheduleQueuedTurn(threadId, queuedTurnId, deliverAt)) return false;
+    queuedBusyRetries.delete(queuedTurnId);
+    contextRef.current.setTransientStatus(`Rescheduled for ${formatDeliveryTime(deliverAt)}`);
+    // A released head may have just left the FIFO; let the next entry move.
+    void pumpQueuedThread(threadId);
+    return true;
+  }, [archiveOwnsThread, pumpQueuedThread]);
+
+  const queueTimedMessageNow = useCallback((queuedTurnId: string): boolean => {
+    const threadId = contextRef.current.activeThread?.id;
+    if (!threadId || archiveOwnsThread(threadId)) return false;
+    if (!useTaskStore.getState().releaseTimedTurnNow(threadId, queuedTurnId)) return false;
+    const task = useTaskStore.getState().tasks[threadId];
+    const isHead = eligibleQueueHead(task?.queuedTurns ?? [])?.id === queuedTurnId;
+    // An explicit "queue now" is the user's go-ahead for this entry, like Start.
+    void pumpQueuedThread(threadId, isHead);
+    return true;
+  }, [archiveOwnsThread, pumpQueuedThread]);
+
+  const beginEditNewThreadPrompt = useCallback((id: string) => useNewThreadTimedPrompts.getState().beginEdit(id), []);
+  const finishEditNewThreadPrompt = useCallback((id: string, text?: string) => useNewThreadTimedPrompts.getState().finishEdit(id, text), []);
+  const rescheduleNewThreadPrompt = useCallback((id: string, deliverAt: number): boolean => {
+    if (!useNewThreadTimedPrompts.getState().reschedule(id, deliverAt)) return false;
+    contextRef.current.setTransientStatus(`Rescheduled for ${formatDeliveryTime(deliverAt)}`);
+    return true;
+  }, []);
+  const sendNewThreadPromptNow = useCallback((id: string): boolean => {
+    const prompt = findNewThreadTimedPrompt(id);
+    if (!prompt || prompt.status === "sending" || prompt.editing) return false;
+    if (!newThreadDeliveries.has(id)) {
+      useNewThreadTimedPrompts.getState().setStatus(id, "failed", "Open the workspace this prompt was scheduled from, then try again.");
+      return false;
+    }
+    // Clearing the missed mark and starting happen in one tick, so no clock
+    // check can observe the overdue entry in between and re-mark it.
+    if (!useNewThreadTimedPrompts.getState().prepareManualStart(id)) return false;
+    if (startNewThreadPrompt(id)) return true;
+    useNewThreadTimedPrompts.getState().setStatus(id, "failed", "The scheduled prompt could not be prepared. Open its workspace and try again.");
+    return false;
+  }, [startNewThreadPrompt]);
+  const removeNewThreadPrompt = useCallback((id: string) => {
+    if (findNewThreadTimedPrompt(id)?.status === "sending") return;
+    useNewThreadTimedPrompts.getState().remove(id);
+    newThreadDeliveries.delete(id);
+  }, []);
 
   const stopTurn = useCallback(async () => {
     const ctx = contextRef.current;
@@ -1284,5 +1644,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, []);
 
-  return { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage, stopTurn };
+  return {
+    sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
+    scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
+    beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
+    stopTurn,
+  };
 }

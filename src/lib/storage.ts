@@ -43,6 +43,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.paneSizes",
   "kiwi.sidebarSplitRatio",
   "kiwi.queuedTurns",
+  "kiwi.newThreadTimedPrompts",
   "kiwi.threadHandoffs",
   "kiwi.pendingHandoff",
   "kiwi.childAgentPolicies",

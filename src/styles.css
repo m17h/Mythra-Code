@@ -385,6 +385,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .workspace-icon.chat { color: var(--info); background: transparent; }
 .workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .workspace-thread-count { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted-2); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: 10px; font-weight: 620; line-height: 1; font-variant-numeric: tabular-nums; }
+.workspace-counts { display: inline-flex; align-items: center; gap: 5px; }
+.scheduled-counts { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--muted-2); font-size: 10px; font-variant-numeric: tabular-nums; }
+.scheduled-count { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.scheduled-count svg { flex: 0 0 auto; opacity: .8; }
 .workspace-row:hover { color: var(--ink-2); background: rgba(255,255,255,.035); }
 .workspace-row.active, .workspace-row-wrap.active { color: var(--text); background: rgba(255,255,255,.062); }
 .workspace-row-wrap.active .workspace-row { color: var(--text); }
@@ -392,19 +396,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .workspace-row-wrap.active .workspace-icon { color: var(--green); background: transparent; }
 .workspace-row-wrap.active .workspace-thread-count { border-color: var(--line-strong); color: var(--ink-2); background: color-mix(in srgb, var(--text) 7%, transparent); }
 .workspace-row.chat.active .workspace-icon { color: var(--info); background: transparent; }
-/* Active marker: a short hairline rule, inset from the row edges. */
+/* Selection uses the neutral row fill, without an extra accent marker. */
 .workspace-row.chat.active { box-shadow: none; }
 .workspace-row-wrap.active { box-shadow: none; }
-.workspace-row-wrap.active::before, .workspace-row.chat.active::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: var(--r-pill); background: var(--green); }
-.workspace-row.chat.active::before { background: var(--info); }
 
 /* Inbox-style thread cards: workspace + live state, title, directory + provider. */
 .thread-row-wrap { position: relative; display: flex; align-items: stretch; border-radius: var(--r-md); }
 .thread-row-wrap.active { box-shadow: none; }
-.thread-row-wrap.active::before { content: ""; position: absolute; z-index: 1; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: var(--r-pill); background: var(--green); }
 .thread-card { position: relative; display: flex; flex: 1; flex-direction: column; gap: 3px; width: 100%; min-width: 0; min-height: 78px; padding: 9px 30px 9px 10px; overflow: hidden; border: 1px solid transparent; border-radius: var(--r-md); color: var(--muted); background: transparent; text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, opacity var(--t-fast) ease; }
 .thread-card:hover { color: var(--ink-2); background: color-mix(in srgb, var(--text) 4.2%, transparent); }
-.thread-row-wrap.active .thread-card { color: var(--text); border-color: var(--line); background: color-mix(in srgb, var(--text) 6.5%, transparent); }
+.thread-row-wrap.active .thread-card { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 6.5%, transparent); }
 .thread-card-context, .thread-card-meta { display: flex; align-items: center; min-width: 0; }
 .thread-card-context { min-height: 16px; gap: var(--s-2); }
 .thread-card-workspace { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 540; }
@@ -413,6 +414,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-workspace > span, .thread-card-title, .thread-card-directory { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .thread-card-title { display: block; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 590; line-height: 1.35; letter-spacing: var(--track-tight); }
 .thread-row-wrap.active .thread-card-title, .thread-card:hover .thread-card-title { color: var(--text); }
+.thread-row-wrap.active .thread-card-title { font-weight: 680; }
 .thread-card-meta { gap: 6px; min-height: 17px; color: var(--muted-2); font-size: var(--fs-meta); }
 .thread-card-directory { min-width: 0; flex: 1; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: -.02em; opacity: .82; }
 .thread-card-pin { flex: 0 0 auto; color: var(--ink-2); opacity: .7; }
@@ -2284,7 +2286,9 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .git-file-list code { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
 .git-file-list button { height: 22px; display: flex; align-items: center; gap: 3px; padding: 0 6px; border: 0; border-radius: 5px; color: var(--green); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: var(--fs-micro); cursor: pointer; }
 .git-file-list button.danger-action { padding: 0; justify-content: center; color: var(--red); background: rgba(239,138,135,.07); }
-.git-initialize-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: rgba(255,255,255,.02); }
+.git-initialize-card { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: var(--s-3); margin-bottom: var(--s-3); padding: var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: rgba(255,255,255,.02); }
+.git-initialize-card > .github-repo-icon { width: 24px; height: 24px; }
+.git-initialize-card > button { grid-column: 2; justify-self: start; max-width: 100%; }
 .git-initialize-card > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .git-initialize-card strong { font-size: var(--fs-ui); }
 .git-initialize-card small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
@@ -2643,6 +2647,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .archived-delete-all { height: 25px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px; padding: 0 5px; border: 0; border-radius: 6px; color: var(--muted-2); background: transparent; font-size: var(--fs-micro); cursor: pointer; white-space: nowrap; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
 .archived-delete-all:hover { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .thread-row-wrap.archived .thread-row.archived-label { display: flex; align-items: center; gap: 7px; opacity: .62; cursor: default; }
+.archived-thread-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 /* Streaming text renders as plain pre-wrap until Markdown parses on completion */
 .plain-stream { white-space: pre-wrap; overflow-wrap: anywhere; }

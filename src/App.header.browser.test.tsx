@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands, page, userEvent as browserUserEvent } from "vitest/browser";
@@ -119,6 +119,47 @@ async function renderApp({ project = PROJECT, theme = "atari", uiScale = 100, pr
   await waitFor(() => expect(view.container.querySelector(".project-run-control")).not.toBeNull(), { timeout: 10_000 });
   return view;
 }
+
+it("shows scheduled counts for project and Chats workspaces and updates thread cards when a schedule joins the queue", async () => {
+  await commands.setStreamTestReducedMotion(true);
+  const { useTaskStore, resetTaskStore } = await import("./lib/taskStore");
+  const { useNewThreadTimedPrompts, resetNewThreadTimedPromptsForTests, newThreadSnapshot } = await import("./lib/newThreadTimedPrompts");
+  const { DEFAULT_SETTINGS } = await import("./lib/appConfig");
+  resetTaskStore();
+  resetNewThreadTimedPromptsForTests();
+  const thread = { id: "scheduled-card", name: "Follow up later", preview: "Review later", cwd: PROJECT.path, updatedAt: 1, modelProvider: "openai" };
+  inboxThreads = [thread];
+  localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [thread.id]: thread }));
+  localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [thread.id]: PROJECT.path, "scheduled-chat": "/chats" }));
+  const task = useTaskStore.getState();
+  task.ensureTask(thread.id, PROJECT.path);
+  const pending = task.enqueueTurn(thread.id, "Check in later", [], { deliverAt: Date.now() + 86_400_000 });
+  task.enqueueTurn(thread.id, "Missed reminder", [], { deliverAt: Date.now() + 86_400_000 });
+  task.markTimedTurnsMissed(thread.id, [pending.id]);
+  task.enqueueTurn(thread.id, "Ordinary follow up", []);
+  task.ensureTask("scheduled-chat", "/chats");
+  task.enqueueTurn("scheduled-chat", "Chat reminder", [], { deliverAt: Date.now() + 86_400_000 });
+  const firstPrompts = useNewThreadTimedPrompts.getState();
+  firstPrompts.add({ workspacePath: PROJECT.path, workspaceName: PROJECT.name, text: "New project conversation", attachments: [], deliverAt: Date.now() + 86_400_000, snapshot: newThreadSnapshot(DEFAULT_SETTINGS, false) });
+  firstPrompts.add({ workspacePath: "/chats", workspaceName: "Chats", text: "New chat conversation", attachments: [], deliverAt: Date.now() + 86_400_000, snapshot: newThreadSnapshot(DEFAULT_SETTINGS, false) });
+  const view = await renderApp({ provider: "openai" });
+  try {
+    const projectRow = await screen.findByRole("button", { name: "Mythra Code, 1 scheduled new conversation, 2 scheduled prompts in existing threads" });
+    expect(screen.getByRole("button", { name: "Chats, 1 scheduled new conversation, 1 scheduled prompt in existing threads" })).toBeVisible();
+    const card = await screen.findByRole("button", { name: "Open Follow up later · 2 scheduled prompts in this thread" });
+    await waitFor(() => expect(card.querySelector(".scheduled-counts")).toBeVisible());
+    expect(projectRow.scrollWidth).toBeLessThanOrEqual(projectRow.clientWidth);
+    await act(async () => { useTaskStore.getState().releaseTimedTurnNow(thread.id, pending.id); });
+    expect(await screen.findByRole("button", { name: "Mythra Code, 1 scheduled new conversation, 1 scheduled prompt in existing threads" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Follow up later · 1 scheduled prompt in this thread" })).toBeVisible();
+    // Releasing to the FIFO changes the count immediately, before any send.
+    expect(useTaskStore.getState().tasks[thread.id].queuedTurns.find((entry) => entry.id === pending.id)?.releasedAt).toBeDefined();
+  } finally {
+    view.unmount();
+    resetTaskStore();
+    resetNewThreadTimedPromptsForTests();
+  }
+});
 
 it.each([ [false, "dart"], [true, "dart"], [false, "filament"], [true, "filament"] ] as const)("migrates retired selection in the real app (project override: %s, style: %s)", async (projectOverride, retired) => {
   const project = projectOverride ? { ...PROJECT, overrides: { defaults: { provider: "openai", model: "gpt-6-sol", effortSlider: retired } } } as unknown as Project : PROJECT;

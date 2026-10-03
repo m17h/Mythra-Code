@@ -43,6 +43,7 @@ import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadTitle } from "./components/ThreadTitle";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
+import { ScheduledCountBadge } from "./components/ScheduledCountBadge";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
@@ -75,7 +76,12 @@ import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMess
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
+import { hasEligibleQueuedTurns } from "./lib/timedPrompts";
+import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
+import { useClaudeContinuation } from "./hooks/useClaudeContinuation";
+import { ClaudeContinuationNotice } from "./components/ClaudeContinuationNotice";
 import { formatGitError, formatSkillFileError, friendlyError, isAuthenticationError } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import { subscribeBackgroundUsage } from "./lib/backgroundUsage";
@@ -273,6 +279,14 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Activity[] = [];
 const EMPTY_AGENTS: AgentRecord[] = [];
 const EMPTY_QUEUED_TURNS: QueuedTurn[] = [];
+const EMPTY_NEW_THREAD_PROMPTS: NewThreadTimedPrompt[] = [];
+
+/** Each scheduled new conversation shows the provider it was pinned to. */
+function describeNewThreadPrompt(entry: QueuedTurn): string | undefined {
+  const snapshot = (entry as Partial<NewThreadTimedPrompt>).snapshot;
+  if (!snapshot) return "new conversation";
+  return `new ${providerDisplayName(snapshot.provider)} conversation${snapshot.model ? ` (${snapshot.model})` : ""}${snapshot.isolated ? " · isolated worktree" : ""}`;
+}
 const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
 const DISCONNECTED_SUBSCRIPTION_STATUS = {
   available: false, path: null, version: null, loggedIn: false,
@@ -1098,6 +1112,17 @@ export default function App() {
   const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
+  // Pending timed prompts are not "queued work": they must not lock crew
+  // settings, recipes, or make the next send queue behind them.
+  const hasQueuedWork = hasEligibleQueuedTurns(queuedTurns);
+  const activeTurnId = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.activeTurnId : undefined));
+  // Scoped to the workspace, not to the draft view: after a normal first send
+  // (or on reopen inside an existing thread) these must remain reachable.
+  const scheduledNewPrompts = useNewThreadTimedPrompts((state) => state.prompts);
+  const scheduledWorkspacePath = activeWorkspace?.path;
+  const newThreadPrompts = useMemo(() => scheduledWorkspacePath
+    ? newThreadPromptsForWorkspace(scheduledNewPrompts, scheduledWorkspacePath)
+    : EMPTY_NEW_THREAD_PROMPTS, [scheduledNewPrompts, scheduledWorkspacePath]);
   const activeWorkflowOwner = useTaskStore((state) => (activeThreadId ? state.workflowOwners[activeThreadId] : undefined));
   const [staleFeedbackIds, setStaleFeedbackIds] = useState<string[]>([]);
   useEffect(() => {
@@ -1142,6 +1167,8 @@ export default function App() {
     [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
+  // Root-owned telemetry; shown only for the visible thread's live turn.
+  const claudeContinuation = useClaudeContinuation(activeThreadId, activeTurnId, running);
   useEffect(() => {
     setDeferredReasoningNoticeThreads((current) => {
       const next = new Set(
@@ -1194,6 +1221,20 @@ export default function App() {
     threadTaskStatuses,
     threadWorkflowOwners,
   );
+  // Queue mutations change the counts; streaming transcript updates do not.
+  // Read the durable cache, so a closed thread need not be hydrated to count.
+  const queueRevision = useTaskStore((state) => state.queueRevision);
+  const pendingTimedPrompts = useMemo(() => ({ revision: queueRevision, entries: storedPendingTimedTurns() }), [queueRevision]);
+  const sidebarKnownThreads = knownThreadsRef.current;
+  const sidebarThreadBindings = threadProjectBindingsRef.current;
+  const scheduledPromptCounts = useMemo(() => countScheduledPrompts(pendingTimedPrompts.entries, scheduledNewPrompts, {
+    bindings: sidebarThreadBindings,
+    knownThreads: sidebarKnownThreads,
+    worktrees: threadWorktrees,
+    tasks: useTaskStore.getState().tasks,
+    archivedThreads,
+  }), [pendingTimedPrompts, scheduledNewPrompts, sidebarKnownThreads, sidebarThreadBindings, threadWorktrees, archivedThreads]);
+  const chatScheduledCounts = chatWorkspacePath ? scheduledPromptCounts.workspaces[normalizedProjectPath(chatWorkspacePath)] : undefined;
   const workspaceKindThreads = useMemo(() => {
     if (!activeWorkspace) return [];
     return filterThreadsByKind(
@@ -1358,6 +1399,7 @@ export default function App() {
   const workspaceArchived = useMemo(() => (activeWorkspace
     ? archivedThreadsForInbox(archivedThreads, activeWorkspace.path, childThreadLinks, threadKindView)
     : []), [activeWorkspace, archivedThreads, childThreadLinks, threadKindView]);
+  const archivedScheduledCount = workspaceArchived.reduce((count, record) => count + (scheduledPromptCounts.threads[record.id] ?? 0), 0);
 
   const persistThreadModel = useCallback((threadId: string, model: string) => {
     setThreadModels((current) => (current[threadId] === model ? current : { ...current, [threadId]: model }));
@@ -1696,7 +1738,7 @@ export default function App() {
     // The rendered controls re-lock as soon as work starts, but re-check here
     // so a click that lands in the same tick as a run cannot mutate its crew.
     const latestStatus = useTaskStore.getState().statuses[activeThreadId] ?? "idle";
-    const parentActive = latestStatus === "starting" || latestStatus === "running" || queuedTurns.length > 0;
+    const parentActive = latestStatus === "starting" || latestStatus === "running" || hasQueuedWork;
     if (parentActive || childrenRunning) {
       setTransientStatus("Finish or stop the parent and every sub-agent before changing this setup");
       return;
@@ -1739,7 +1781,7 @@ export default function App() {
     persistChildAgentPolicies,
     persistComposerSubagentPolicy,
     persistThreadSubagentSettings,
-    queuedTurns.length,
+    hasQueuedWork,
     setTransientStatus,
   ]);
 
@@ -3688,6 +3730,8 @@ export default function App() {
   const renderProjectRow = (project: Project) => {
     const workingCount = projectThreadCounts[normalizedProjectPath(project.path)] ?? 0;
     const workingLabel = `${workingCount} thread${workingCount === 1 ? "" : "s"} working`;
+    const scheduledCounts = scheduledPromptCounts.workspaces[normalizedProjectPath(project.path)];
+    const rowLabel = [project.name, workingCount > 0 ? workingLabel : "", scheduledCounts ? scheduledCountsLabel(scheduledCounts) : ""].filter(Boolean).join(", ");
     return <div
       key={project.id}
       className={[
@@ -3702,7 +3746,7 @@ export default function App() {
     >
       <button
         className="workspace-row"
-        aria-label={workingCount > 0 ? `${project.name}, ${workingLabel}` : project.name}
+        aria-label={rowLabel}
         onClick={(event) => {
           if (suppressProjectClickRef.current) {
             event.preventDefault();
@@ -3715,15 +3759,18 @@ export default function App() {
       >
         <span className="workspace-icon">{project.pinned ? <Pin size={13} /> : <Folder size={14} />}</span>
         <span className="workspace-name">{project.name}</span>
-        {workingCount > 0 && (
-          <span
-            className="workspace-thread-count"
-            title={workingLabel}
-            aria-hidden="true"
-          >
-            {workingCount}
-          </span>
-        )}
+        <span className="workspace-counts">
+          <ScheduledCountBadge {...scheduledCounts} />
+          {workingCount > 0 && (
+            <span
+              className="workspace-thread-count"
+              title={workingLabel}
+              aria-hidden="true"
+            >
+              {workingCount}
+            </span>
+          )}
+        </span>
       </button>
       <RowMenu
         label={`Options for ${project.name}`}
@@ -4348,11 +4395,12 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  const handleThreadCreated = useCallback((threadId: string) => {
+  const handleThreadCreated = useCallback((threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean }) => {
     // This callback is captured with the sending draft, even if the user
     // navigates while provider preparation is in flight.
-    persistThreadSubagentSettings((current) => ({ ...current, [threadId]: effectiveSettings.subagentsEnabled }));
-    if (!pendingHandoffForWorkspace) return;
+    persistThreadSubagentSettings((current) => ({ ...current, [threadId]: options?.subagentsEnabled ?? effectiveSettings.subagentsEnabled }));
+    // A scheduled first prompt never consumes the visible draft's handoff.
+    if (options?.deferred || !pendingHandoffForWorkspace) return;
     persistThreadHandoffs((current) => ({ ...current, [threadId]: pendingHandoffForWorkspace }));
     setPendingHandoff(null);
   }, [effectiveSettings, pendingHandoffForWorkspace, persistThreadHandoffs, persistThreadSubagentSettings, setPendingHandoff]);
@@ -4377,7 +4425,12 @@ export default function App() {
       setActiveThread((entry) => entry?.id === id ? { ...entry, name } : entry);
     },
   });
-  const { sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage, stopTurn } = useTurnRunner({
+  const {
+    sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
+    scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
+    beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
+    stopTurn,
+  } = useTurnRunner({
     activeThread,
     activeWorkspace,
     activeProject,
@@ -4415,6 +4468,7 @@ export default function App() {
     executionPathFor,
     bindThreadToProject,
     rememberThread,
+    currentThread: (id) => knownThreadsRef.current?.[id],
     onThreadTitlePending: automaticTitles.prepareTitle,
     onThreadTitleCancelled: (id) => { void automaticTitles.cancel(id); },
     onThreadTitleRequested: automaticTitles.requestTitle,
@@ -5672,8 +5726,8 @@ export default function App() {
     await attachmentPreparations.track(attachmentKey, preparation);
   }, [attachmentKey, attachmentPreparations, setAttachments]);
 
-  const attachmentDeliveryRef = useRef({ sendMessage, steerMessage });
-  attachmentDeliveryRef.current = { sendMessage, steerMessage };
+  const attachmentDeliveryRef = useRef({ sendMessage, steerMessage, scheduleMessage });
+  attachmentDeliveryRef.current = { sendMessage, steerMessage, scheduleMessage };
   const deliverAfterAttachments = useCallback(async (text: string, mode: "sendMessage" | "steerMessage") => {
     const notes = feedback.notes;
     const prompt = formatFeedbackPrompt(text, notes);
@@ -5697,6 +5751,48 @@ export default function App() {
     if (accepted) feedback.removeNotes(notes);
     return accepted;
   }, [attachmentKey, attachmentPreparations, feedback, feedbackScope]);
+
+  // Scheduling persists the prompt and its attachments now, so it waits for
+  // durable attachment copies exactly like Send does.
+  const scheduleAfterAttachments = useCallback(async (text: string, deliverAt: number) => {
+    if (!activeThreadId && pendingHandoffForWorkspace) {
+      setError("Send or discard this handoff before scheduling a new thread's first prompt.");
+      return false;
+    }
+    const notes = feedback.notes;
+    const prompt = formatFeedbackPrompt(text, notes);
+    const skillInvocationText = notes.length ? feedbackSkillInvocationText(text, notes) : undefined;
+    try {
+      await attachmentPreparations.wait(attachmentKey);
+    } catch (reason) {
+      setError(friendlyError(reason));
+      return false;
+    }
+    if (attachmentKeyRef.current !== attachmentKey || feedbackScopeRef.current !== feedbackScope) return false;
+    const accepted = await attachmentDeliveryRef.current.scheduleMessage(prompt, deliverAt,
+      skillInvocationText === undefined ? undefined : { skillInvocationText });
+    if (accepted) feedback.removeNotes(notes);
+    return accepted;
+  }, [activeThreadId, attachmentKey, attachmentPreparations, feedback, feedbackScope, pendingHandoffForWorkspace]);
+  // This thread's own timed prompts exist only inside a thread view.
+  const timedActions = useMemo(() => activeThreadId
+    ? {
+        onBeginEdit: beginEditQueuedMessage,
+        onFinishEdit: finishEditQueuedMessage,
+        onReschedule: rescheduleQueuedMessage,
+        onRelease: queueTimedMessageNow,
+        onRemove: removeQueuedMessage,
+      }
+    : undefined, [activeThreadId, beginEditQueuedMessage, finishEditQueuedMessage, queueTimedMessageNow, removeQueuedMessage, rescheduleQueuedMessage]);
+  // Scheduled new conversations stay actionable from every view of their
+  // workspace; these callbacks address entries by id, not by the open thread.
+  const newThreadActions = useMemo(() => ({
+    onBeginEdit: beginEditNewThreadPrompt,
+    onFinishEdit: finishEditNewThreadPrompt,
+    onReschedule: rescheduleNewThreadPrompt,
+    onRelease: sendNewThreadPromptNow,
+    onRemove: removeNewThreadPrompt,
+  }), [beginEditNewThreadPrompt, finishEditNewThreadPrompt, removeNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow]);
 
   const refreshGitHubRepo = useCallback(async (cwd = activeExecutionPath || activeProject?.path || "") => {
     const refreshSequence = ++githubRepoRefreshSequenceRef.current;
@@ -6617,7 +6713,7 @@ export default function App() {
   const invokeComposerWorkflow = (id: string, prompt: string): Promise<boolean> => {
     const workflow = workflows.find((item) => item.id === id && item.enabled);
     if (!workflow || workflowLaunchRef.current || workflowLaunchStarting.current) return Promise.resolve(false);
-    if (running || queuedTurns.length || attachments.length || feedback.notes.length) {
+    if (running || hasQueuedWork || attachments.length || feedback.notes.length) {
       setError("Finish the active or queued work and remove attachments or feedback before starting a recipe. Your draft is kept.");
       return Promise.resolve(false);
     }
@@ -6652,7 +6748,7 @@ export default function App() {
     const snapshot = (workflow: WorkflowDefinition) => JSON.stringify([workflow.name, workflow.steps, workflow.variables, workflow.skillNames, workflow.run]);
     if (!latest?.enabled || snapshot(latest) !== snapshot(launch.workflow)
       || workflowRuns.some((run) => run.workflowId === id && run.status === "running")
-      || sourceTask?.status === "running" || sourceTask?.status === "starting" || sourceTask?.queuedTurns.length) {
+      || sourceTask?.status === "running" || sourceTask?.status === "starting" || hasEligibleQueuedTurns(sourceTask?.queuedTurns)) {
       setError("This recipe or thread changed while its preview was open. Select the recipe again to review it. Your draft is kept.");
       closeWorkflowLaunch();
       return;
@@ -6799,11 +6895,13 @@ export default function App() {
               className={`workspace-row chat ${workspaceMode === "chat" ? "active" : ""}`}
               onClick={() => setWorkspaceMode("chat")}
               title="Conversations without a project folder"
+              aria-label={chatScheduledCounts ? `Chats, ${scheduledCountsLabel(chatScheduledCounts)}` : "Chats"}
             >
               <span className="workspace-icon chat">
                 <MessageSquare size={14} />
               </span>
               <span className="workspace-name">Chats</span>
+              <ScheduledCountBadge {...chatScheduledCounts} />
             </button>
             {pinnedProjects.length > 0 && (
               <PinnedWorkspaceGroup count={pinnedProjects.length} containsActiveWorkspace={workspaceMode === "project" && pinnedProjects.some((project) => project.id === activeProjectId)}>
@@ -6892,6 +6990,7 @@ export default function App() {
                     isolated={Boolean(threadWorktrees[thread.id] && threadWorktrees[thread.id].status !== "removed")}
                     branch={threadWorktrees[thread.id]?.branch}
                     pullRequest={threadPullRequest.links[thread.id]?.snapshot}
+                    scheduledPromptCount={scheduledPromptCounts.threads[thread.id] ?? 0}
                     onOpen={() => void selectThread(thread)}
                   />
                 )}
@@ -6913,10 +7012,12 @@ export default function App() {
           {workspaceArchived.length > 0 && (
             <div className="archived-threads">
               <div className="archived-header">
-                <button className="archived-toggle" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}>
+                <button className="archived-toggle" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
+                  aria-label={archivedScheduledCount > 0 ? `Archived, ${workspaceArchived.length} thread${workspaceArchived.length === 1 ? "" : "s"}, ${archivedScheduledCount} scheduled prompt${archivedScheduledCount === 1 ? "" : "s"} in archived threads` : undefined}>
                   <Archive size={12} />
                   <span>Archived</span>
                   <span className="thread-count">{workspaceArchived.length}</span>
+                  <ScheduledCountBadge threadPrompts={archivedScheduledCount} label={`${archivedScheduledCount} scheduled prompts in archived threads`} />
                   <ChevronDown className={archivedOpen ? "open" : ""} size={12} />
                 </button>
                 <button
@@ -6931,9 +7032,11 @@ export default function App() {
               {archivedOpen &&
                 workspaceArchived.map((record) => (
                   <div key={record.id} className="thread-row-wrap archived">
-                    <span className="thread-row archived-label" title={`Archived ${new Date(record.archivedAt).toLocaleString()}`}>
+                    <span className="thread-row archived-label" role="group" title={`Archived ${new Date(record.archivedAt).toLocaleString()}`}
+                      aria-label={`${record.label}${scheduledPromptCounts.threads[record.id] ? `, ${scheduledPromptCounts.threads[record.id]} scheduled prompt${scheduledPromptCounts.threads[record.id] === 1 ? "" : "s"} in this thread` : ""}`}>
                       <Archive size={13} />
-                      <span>{record.label}</span>
+                      <span className="archived-thread-title">{record.label}</span>
+                      <ScheduledCountBadge threadPrompts={scheduledPromptCounts.threads[record.id] ?? 0} label={`${scheduledPromptCounts.threads[record.id] ?? 0} scheduled prompts in this thread`} />
                     </span>
                     <RowMenu
                       label={`Options for archived ${record.label}`}
@@ -7324,6 +7427,17 @@ export default function App() {
                 onRemoveQueued={removeQueuedMessage}
                 onBeginEditQueued={beginEditQueuedMessage}
                 onFinishEditQueued={finishEditQueuedMessage}
+                onSchedule={scheduleAfterAttachments}
+                scheduleContextLabel={activeThread
+                  ? "Joins this thread's queue at that time. It waits for any running task and never interrupts it."
+                  : `Starts a new ${providerDisplayName(effectiveSettings.provider)} thread${effectiveSettings.model ? ` (${effectiveSettings.model})` : ""}${draftThreadIsolated ? " in an isolated worktree" : ""}, using these settings.`}
+                timedActions={timedActions}
+                newThreadPrompts={newThreadPrompts}
+                newThreadActions={newThreadActions}
+                newThreadPromptDetail={describeNewThreadPrompt}
+                continuationNotice={claudeContinuation && (
+                  <ClaudeContinuationNotice variant={claudeContinuation.kind} onOpenUsage={() => openSettings("usage")} />
+                )}
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
@@ -7408,7 +7522,7 @@ export default function App() {
                       readiness={childAgentReadiness}
                       onUnavailable={(message) => showToast(message, "info")}
                       workers={subAgentWorkers}
-                      parentActive={running || queuedTurns.length > 0}
+                      parentActive={running || hasQueuedWork}
                       scopeLabel={activeThreadId ? "this thread" : "this new thread"}
                       projectOverride={false}
                       presets={settings.childAgentPresets}

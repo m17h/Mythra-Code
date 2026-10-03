@@ -33,6 +33,18 @@ describe("Composer", () => {
     resetDraftStoreForTests();
   });
 
+  it("keeps healthy skill mentions highlighted without adding a context row", async () => {
+    const analyze = vi.fn(async () => skillDependencyFixture());
+    const props = composerProps({ skills: [{ name: "review" }], onAnalyzeSkillDependencies: analyze });
+    const view = render(<Composer {...props} />);
+    fireEvent.change(screen.getByPlaceholderText("Ask anything"), { target: { value: "Use @review" } });
+    await waitFor(() => expect(analyze).toHaveBeenCalledWith("Use @review"));
+    await waitFor(() => expect(view.container.querySelector(".composer-skill-token")).toHaveTextContent("@review"));
+    expect(view.container.querySelector(".skill-dependency-details")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(props.onSend).toHaveBeenCalledWith("Use @review"));
+  });
+
   it("previews system-only blocked dependencies even with an empty draft and rechecks changed system context", async () => {
     const analyze = vi.fn(async () => skillDependencyFixture(true));
     const props = composerProps({ onAnalyzeSkillDependencies: analyze });

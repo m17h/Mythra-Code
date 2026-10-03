@@ -14,6 +14,7 @@ import type { PullRequest } from "../lib/pullRequests";
 import type { Provider } from "../types";
 import { ThreadTitle } from "./ThreadTitle";
 import { ProviderLogo } from "./BrandLogos";
+import { ScheduledCountBadge } from "./ScheduledCountBadge";
 
 /** Only what a card can show. Deliberately not the whole pull request: the
  *  inbox renders hundreds of these, and a card that accepted the full object
@@ -128,6 +129,7 @@ interface ThreadInboxCardProps {
   branch?: string;
   /** The pull request saved against this thread, when there is one. */
   pullRequest?: ThreadCardPullRequest | null;
+  scheduledPromptCount?: number;
   onOpen: () => void;
 }
 
@@ -154,6 +156,7 @@ export function ThreadInboxCard({
   isolated = false,
   branch,
   pullRequest = null,
+  scheduledPromptCount = 0,
   onOpen,
 }: ThreadInboxCardProps) {
   const lifecycle = useTaskStore((state) => threadCardLifecycle(
@@ -164,9 +167,12 @@ export function ThreadInboxCard({
   // A labelled button hides its own contents from a screen reader, so the pill
   // below would otherwise be seen by sighted people only. It is named here too.
   const accessibleTitle = titlePending ? "Generating title" : title;
-  const label = pullRequest
+  const baseLabel = pullRequest
     ? `Open ${accessibleTitle} · Pull request #${pullRequest.number} in ${pullRequest.repository}, ${threadCardPullRequestState(pullRequest).label}`
     : `Open ${accessibleTitle}`;
+  const label = scheduledPromptCount > 0
+    ? `${baseLabel} · ${scheduledPromptCount} scheduled prompt${scheduledPromptCount === 1 ? "" : "s"} in this thread`
+    : baseLabel;
   return (
     <button className={`thread-card ${lifecycle} provider-${provider}`} onClick={onOpen} aria-label={label}>
       <span className="thread-card-context">
@@ -182,6 +188,7 @@ export function ThreadInboxCard({
         {/* After the directory, not before the title: the pull request is
             context for the work, and the work's name comes first. */}
         {pullRequest && <ThreadCardPullRequestBadge pullRequest={pullRequest} />}
+        <ScheduledCountBadge threadPrompts={scheduledPromptCount} label={`${scheduledPromptCount} scheduled prompt${scheduledPromptCount === 1 ? "" : "s"} in this thread`} />
         {pinned && <Pin className="thread-card-pin" size={12} aria-label="Pinned" />}
         <span className={`thread-card-provider ${provider}`} title={`${providerName} thread`} aria-label={`${providerName} thread`}>
           <ProviderLogo provider={provider} size={13} />

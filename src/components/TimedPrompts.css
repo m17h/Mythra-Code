@@ -1,0 +1,84 @@
+/* Timed prompts: a quiet info accent separates "later" from "next". */
+.scheduled-prompts { --timed-accent: var(--info); }
+.scheduled-prompts + .queued-turns { border-top: 0; }
+.scheduled-prompt-badge { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; color: var(--timed-accent); background: color-mix(in srgb, var(--timed-accent) 11%, transparent); }
+.queued-turn.scheduled-prompt { border-color: color-mix(in srgb, var(--timed-accent) 18%, var(--line)); }
+.queued-turn.scheduled-prompt.is-missed { border-color: color-mix(in srgb, var(--orange, var(--red)) 32%, var(--line)); }
+.queued-turn.scheduled-prompt.is-missed .queued-turn-copy small { color: var(--orange, var(--muted)); }
+.queued-turn.scheduled-prompt.is-missed .scheduled-prompt-badge { color: var(--orange, var(--red)); background: color-mix(in srgb, var(--orange, var(--red)) 12%, transparent); }
+.queued-turn.scheduled-prompt.editing { align-items: start; }
+.queued-turn.scheduled-prompt.editing .scheduled-prompt-badge { margin-top: 7px; }
+.queued-turn-actions .release-scheduled:hover { color: var(--timed-accent); }
+.queued-turn-copy small .queued-turn-time { display: inline-flex; align-items: center; gap: 3px; color: var(--info); }
+/* Any number of schedules scroll inside their own list, so the composer
+   keeps its input and Send in view at the 980×680 minimum window, even at
+   150% UI scale with both groups (and an inline edit) expanded. The vh term is
+   divided by the shell zoom because it is applied inside the zoomed shell. */
+.scheduled-prompts .queued-turns-list {
+  max-height: min(168px, calc(24vh / var(--ui-scale, 1)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 4px;
+  /* Room for focus rings and row borders at the clipped edges. */
+  margin: -2px;
+  padding: 2px;
+}
+/* A bounded flex column would otherwise squeeze rows (notably the inline
+   editor) below their content height and make them overlap. */
+.scheduled-prompts .queued-turns-list > .queued-turn { flex-shrink: 0; }
+.scheduled-prompts .queued-turns-list[hidden] { display: none; }
+/* Stacked groups share the budget instead of doubling it. */
+.scheduled-prompts:has(+ .scheduled-prompts) .queued-turns-list,
+.scheduled-prompts + .scheduled-prompts .queued-turns-list { max-height: min(132px, calc(16vh / var(--ui-scale, 1))); }
+.scheduled-prompts .queued-turn-editor textarea { min-height: 52px; max-height: min(220px, calc(18vh / var(--ui-scale, 1))); }
+/* Two scheduled scopes can stack; the second sits flush under the first. */
+.scheduled-prompts + .scheduled-prompts { border-top: 0; padding-top: 2px; }
+.scheduled-prompts[data-collapsed] { padding-bottom: 6px; }
+.scheduled-prompts-toggle { width: 100%; gap: 6px; padding-block: 0; border: 0; border-radius: var(--r-xs); background: transparent; font-family: inherit; text-align: left; cursor: pointer; flex-wrap: wrap; }
+.scheduled-prompts-toggle > span { min-width: 0; }
+.scheduled-prompts-toggle > small { margin-left: auto; }
+.scheduled-prompts-toggle > .scheduled-prompts-attention { color: var(--orange, var(--red)); }
+.scheduled-prompts-toggle:hover:not(:disabled) { color: var(--text); }
+.scheduled-prompts-toggle:disabled { cursor: default; }
+.scheduled-prompts-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.scheduled-prompts-chevron { flex: 0 0 auto; transition: transform var(--t-fast, 120ms) ease; }
+.scheduled-prompts-toggle[aria-expanded="false"] .scheduled-prompts-chevron { transform: rotate(-90deg); }
+
+/* The schedule trigger shares the send button's footprint and shape. */
+.schedule-button { width: var(--ctl-md); height: var(--ctl-md); display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.schedule-button:hover:not(:disabled), .schedule-button[aria-expanded="true"] { color: var(--info); border-color: color-mix(in srgb, var(--info) 34%, var(--line)); background: color-mix(in srgb, var(--info) 8%, transparent); }
+.schedule-button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.schedule-button:disabled { color: var(--muted-2); cursor: default; opacity: .6; }
+
+/* [popover] carries UA chrome; every visual property is set explicitly. */
+.timed-prompt-picker { z-index: 160; box-sizing: border-box; max-width: calc(100vw - 16px); overflow: visible; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--lm-pop-shadow, var(--shadow)); font-size: var(--fs-meta); animation: timed-prompt-pop 160ms var(--ease, ease-out) both; }
+.timed-prompt-picker form { display: grid; gap: 10px; margin: 0; }
+.timed-prompt-picker header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.timed-prompt-picker header > span { display: flex; align-items: center; gap: 6px; color: var(--ink-2, var(--text)); font-size: var(--fs-ui); font-weight: 600; }
+.timed-prompt-picker header svg { color: var(--info); }
+.timed-prompt-close { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; cursor: pointer; }
+.timed-prompt-close:hover { color: var(--text); background: var(--hover, rgba(255,255,255,.06)); }
+.timed-prompt-context { margin: -4px 0 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.45; }
+.timed-prompt-fields { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; }
+.timed-prompt-fields label { display: grid; gap: 4px; min-width: 0; }
+.timed-prompt-fields label > span { color: var(--muted); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
+.timed-prompt-fields input { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--field); color-scheme: inherit; font: inherit; font-variant-numeric: tabular-nums; }
+.timed-prompt-fields input:focus-visible { outline: 1px solid var(--info); outline-offset: 1px; border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
+.timed-prompt-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.timed-prompt-quick button { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-control, var(--r-sm)); color: var(--muted); background: transparent; font: inherit; font-size: var(--fs-micro); cursor: pointer; }
+.timed-prompt-quick button:hover { color: var(--text); border-color: var(--line-strong); }
+.timed-prompt-summary { margin: 0; color: var(--ink-2, var(--text)); font-size: var(--fs-micro); line-height: 1.45; overflow-wrap: anywhere; }
+.timed-prompt-summary.is-error { color: var(--red); }
+.timed-prompt-disclosure { display: flex; gap: 6px; margin: 0; padding: 8px; border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--info) 6%, transparent); font-size: var(--fs-micro); line-height: 1.5; }
+.timed-prompt-disclosure svg { flex: 0 0 auto; margin-top: 2px; color: var(--info); }
+.timed-prompt-picker footer { display: flex; justify-content: flex-end; gap: 6px; }
+.timed-prompt-picker footer button { height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: transparent; font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.timed-prompt-picker footer button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--hover, rgba(255,255,255,.05)); }
+.timed-prompt-picker footer .timed-prompt-submit { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); color: var(--info); background: color-mix(in srgb, var(--info) 9%, transparent); font-weight: 600; }
+.timed-prompt-picker footer button:disabled { opacity: .45; cursor: default; }
+@keyframes timed-prompt-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .timed-prompt-picker { animation: none; }
+  .schedule-button, .scheduled-prompts-chevron { transition: none; }
+}
