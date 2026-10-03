@@ -122,3 +122,67 @@ it.each([[360, 400, 1], [980, 480, 1.5]] as const)("keeps real Settings usable a
   await page.getByRole("button", { name: "Interface", exact: true }).click();
   await assertContained();
 });
+
+// The "more below" fade must finish exactly where the pane is clipped. If it
+// ends early, a band of full-contrast content shows under it as a hard line
+// along the footer; if it overshoots, content is cut off still half-visible.
+// Viewports stay within the runner's 720px-tall frame so screenshots are 1:1
+// and edge pixels are not resampled.
+it.each([
+  ["mythra", 1280, 720, 1, "normal"],
+  ["mythra", 1280, 720, 1, "reduced"],
+  ["mythra", 1100, 720, 1.25, "reduced"],
+  ["atari", 700, 640, 1, "reduced"],
+] as const)("fades real %s Settings content into the footer at %sx%s, scale %s, %s motion", async (theme, width, height, scale, motion) => {
+  await commands.setStreamTestReducedMotion(motion === "reduced");
+  await page.viewport(width, height);
+  render(<div className="app-shell" data-theme={theme} data-color-scheme={themeColorScheme(theme)} style={{ zoom: scale, "--ui-scale": scale } as CSSProperties}>
+    <SettingsModal {...settingsProps({ initialSection: "general" })} />
+  </div>);
+  const dialog = screen.getByRole("dialog", { name: "Settings" });
+  const content = dialog.querySelector<HTMLElement>(".settings-content")!;
+  const footer = dialog.querySelector<HTMLElement>(".modal-footer")!;
+  const settled = () => Promise.all(document.getAnimations()
+    .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+    .map((animation) => animation.finished.catch(() => undefined)));
+  await settled();
+  // Clip a chooser title at the pane's edge so bright text sits under the fade.
+  // Client rects include the app scale; scrollTop is in the pane's own pixels.
+  const title = content.querySelector<HTMLElement>(".slider-style-card strong")!.getBoundingClientRect();
+  const viewport = content.getBoundingClientRect();
+  content.scrollTop += ((title.top + title.bottom) / 2 - viewport.bottom) * content.offsetHeight / viewport.height;
+  await waitFor(() => expect(getComputedStyle(content, "::after").opacity).toBe("1"));
+  await settled();
+
+  const shot = await page.screenshot({ element: dialog, save: false });
+  const image = new Image();
+  image.src = `data:image/png;base64,${shot}`;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true })!;
+  context.drawImage(image, 0, 0);
+  const frame = dialog.getBoundingClientRect();
+  const ratio = image.width / frame.width;
+  const pane = content.getBoundingClientRect();
+  const left = Math.ceil((pane.left - frame.left) * ratio);
+  const right = Math.floor((pane.left - frame.left + pane.width * content.clientWidth / content.offsetWidth) * ratio);
+  const edge = Math.floor((pane.bottom - frame.top) * ratio) - 1;
+  const footerRect = footer.getBoundingClientRect();
+  const surface = context.getImageData(left, Math.round((footerRect.top + footerRect.height / 2 - frame.top) * ratio), 1, 1).data;
+  const row = context.getImageData(left, edge, right - left, 1).data;
+  let difference = 0;
+  for (let index = 0; index < row.length; index += 4) {
+    for (let channel = 0; channel < 3; channel++) difference = Math.max(difference, Math.abs(row[index + channel] - surface[channel]));
+  }
+  expect(difference, "last visible content row against the footer surface").toBeLessThanOrEqual(12);
+
+  // The fade never hides or blocks the final control once the pane ends.
+  content.scrollTop = content.scrollHeight;
+  await waitFor(() => expect(content).not.toHaveClass("has-more-below"));
+  const controls = content.querySelectorAll<HTMLElement>("button, input, select, textarea");
+  const last = controls[controls.length - 1].getBoundingClientRect();
+  expect(last.bottom).toBeLessThanOrEqual(footerRect.top);
+  expect(controls[controls.length - 1].contains(document.elementFromPoint(last.left + last.width / 2, last.top + last.height / 2))).toBe(true);
+}, 30000);

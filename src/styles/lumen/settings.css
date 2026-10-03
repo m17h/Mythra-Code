@@ -97,7 +97,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > small { font-size: 12.5px; }
 .app-shell[data-theme][data-color-scheme] .settings-close { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--panel-2); }
-.app-shell[data-theme][data-color-scheme] .settings-content { padding: 8px 32px 32px; }
+.app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 32px; padding: 8px 32px var(--settings-content-end); }
 .app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, transparent, var(--panel)); }
 .app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer {
   padding: 14px 32px;
