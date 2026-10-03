@@ -82,7 +82,7 @@
   .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { width: 22px; height: 22px; padding: 4px; }
   .app-shell[data-theme][data-color-scheme] .settings-pane-heading { padding: 12px 12px 12px 16px; }
   .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > h3 { font-size: 20px; }
-  .app-shell[data-theme][data-color-scheme] .settings-content { padding: 16px; }
+  .app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 16px; padding: 16px 16px var(--settings-content-end); }
   .app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer { padding: 12px 16px; }
   .app-shell[data-theme][data-color-scheme] .set-row { padding: 12px 14px; }
   .app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: minmax(0, 1fr); }

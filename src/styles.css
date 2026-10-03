@@ -1323,9 +1323,11 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .settings-pane-heading > div > small { max-width: 68ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
 .settings-pane-heading > .secondary-button { margin-top: 2px; }
 .settings-close { flex: 0 0 auto; margin-top: -2px; }
-.settings-content { position: relative; min-width: 0; flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--s-6); scroll-padding-top: var(--s-5); }
-/* Sticky fade that only shows while there is more pane below the fold. */
-.settings-content::after { content: ""; position: sticky; bottom: calc(-1 * var(--s-6)); z-index: 1; display: block; height: 30px; margin-top: -30px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--panel)); opacity: 0; transition: opacity var(--t-fast) ease; }
+.settings-content { --settings-content-end: var(--s-6); position: relative; min-width: 0; flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--settings-content-end); scroll-padding-top: var(--s-5); }
+/* Sticky fade that only shows while there is more pane below the fold. Sticky
+   offsets start inside the scroller's padding, so the fade cancels exactly that
+   padding to meet the clipped edge; themes change it via --settings-content-end. */
+.settings-content::after { content: ""; position: sticky; bottom: calc(-1 * var(--settings-content-end)); z-index: 1; display: block; height: 30px; margin-top: -30px; pointer-events: none; background: linear-gradient(to bottom, transparent, var(--panel)); opacity: 0; transition: opacity var(--t-fast) ease; }
 .settings-content.has-more-below::after { opacity: 1; }
 .settings-modal .modal-footer { flex: 0 0 auto; }
 
@@ -2602,7 +2604,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
   .worker-config, .worker-add { grid-template-columns: 1fr; }
   .preset-create-actions { flex-wrap: wrap; justify-content: flex-start; }
   .settings-pane-heading { padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4); }
-  .settings-content { padding: 16px; }
+  .settings-content { --settings-content-end: 16px; padding: 16px 16px var(--settings-content-end); }
   /* Narrow rows put the control under its label instead of squeezing both —
      except a toggle, which is small enough to stay on the right where the
      eye already expects to find it. */
