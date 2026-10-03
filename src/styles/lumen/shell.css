@@ -378,6 +378,11 @@
   .app-shell[data-theme][data-color-scheme] .sidebar {
     transition: width var(--lm-d-3) var(--lm-ease-out), flex-basis var(--lm-d-3) var(--lm-ease-out), margin var(--lm-d-3) var(--lm-ease-out), opacity var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-ease-out);
   }
+  /* A pane drag rewrites --sidebar-width on every pointer move, so the edge has
+     to land on the pointer, not ease after it. Legacy's drag override cannot
+     outrank the rule above; this one does, and lifts on release so opening
+     and closing keep their motion. */
+  body[data-pane-resizing] .app-shell[data-theme][data-color-scheme] .sidebar { transition: none; }
   .app-shell[data-theme][data-color-scheme] .new-thread-button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, border-color var(--lm-d-2) ease, scale var(--lm-d-2) var(--lm-ease-out); }
   .app-shell[data-theme][data-color-scheme] .workspace-row,
   .app-shell[data-theme][data-color-scheme] .workspace-row-wrap { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }

@@ -270,6 +270,9 @@
   .app-shell[data-theme][data-color-scheme] .studio-dock {
     transition: flex-basis var(--lm-d-3) var(--lm-ease-out), width var(--lm-d-3) var(--lm-ease-out), margin var(--lm-d-3) var(--lm-ease-out), opacity var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-ease-out), border-color var(--lm-d-2) ease;
   }
+  /* Same contract as the navigator (shell.css): a drag paints --dock-width
+     directly; open and close keep the motion above. */
+  body[data-pane-resizing] .app-shell[data-theme][data-color-scheme] .studio-dock { transition: none; }
   .app-shell[data-theme][data-color-scheme] .studio-tab-indicator { transition: transform 420ms var(--lm-spring-soft); }
   .app-shell[data-theme][data-color-scheme] .studio-tabs button { transition: color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, scale var(--lm-d-2) var(--lm-spring); }
   .app-shell[data-theme][data-color-scheme] .studio-tabs button.active > svg { animation: lm-dot-in var(--lm-d-3) var(--lm-spring); }
