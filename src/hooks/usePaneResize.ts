@@ -6,7 +6,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
+  type RefCallback,
 } from "react";
 import { loadStored, storeValue } from "../lib/storage";
 
@@ -27,10 +27,15 @@ export const PANE_BOUNDS: Record<PaneKey, { min: number; max: number }> = {
 
 /**
  * The panes are sized off these custom properties rather than off inline
- * React styles. A drag can then move the edge by writing one property on the
- * shell — no render, and no risk of a render that happens to land mid-drag
- * (a streaming token, a status tick) stomping the live position back to the
- * last committed value.
+ * React styles. A drag can then move the edge by writing one property — no
+ * render, and no risk of a render that happens to land mid-drag (a streaming
+ * token, a status tick) stomping the live position back to the last committed
+ * value.
+ *
+ * Each property lives on its own pane root and is registered non-inherited
+ * (styles.css), keeping width-variable changes local to the pane instead of
+ * propagating them through the app. Resizing still changes surrounding layout
+ * and paint as the available space changes.
  */
 const PANE_VARIABLE: Record<PaneKey, string> = {
   sidebar: "--sidebar-width",
@@ -52,14 +57,14 @@ function normalizePaneSizes(sizes: Partial<PaneSizes> | null | undefined): PaneS
   };
 }
 
-function writePaneVariable(shell: HTMLElement | null, pane: PaneKey, size: number): void {
-  shell?.style.setProperty(PANE_VARIABLE[pane], `${size}px`);
+function writePaneVariable(root: HTMLElement | null, pane: PaneKey, size: number): void {
+  root?.style.setProperty(PANE_VARIABLE[pane], `${size}px`);
 }
 
 export interface PaneResizeApi {
   paneSizes: PaneSizes;
-  /** Attach to the app shell: it owns the pane width custom properties. */
-  shellRef: RefObject<HTMLDivElement | null>;
+  /** Attach to each pane's root element: it owns that pane's width property. */
+  paneRefs: Record<PaneKey, RefCallback<HTMLElement>>;
   startPaneResize: (pane: PaneKey) => (event: ReactPointerEvent) => void;
   resizePaneWithKeyboard: (pane: PaneKey) => (event: ReactKeyboardEvent) => void;
 }
@@ -73,21 +78,29 @@ export function usePaneResize(uiScale: number): PaneResizeApi {
   const uiScaleRef = useRef(uiScale);
   uiScaleRef.current = uiScale;
 
-  const shellRef = useRef<HTMLDivElement | null>(null);
+  const paneRootsRef = useRef<Record<PaneKey, HTMLElement | null>>({ sidebar: null, dock: null });
+  // Stable for the hook's lifetime, so React only calls them when a pane root
+  // actually mounts or unmounts. A root that mounts later (the lazily loaded
+  // dock) receives the committed size before its first paint.
+  const [paneRefs] = useState<Record<PaneKey, RefCallback<HTMLElement>>>(() => {
+    const attach = (pane: PaneKey) => (root: HTMLElement | null) => {
+      paneRootsRef.current[pane] = root;
+      writePaneVariable(root, pane, paneSizesRef.current[pane]);
+    };
+    return { sidebar: attach("sidebar"), dock: attach("dock") };
+  });
   // Cancellation of the gesture currently in flight, if any. Held so a new
   // drag — or an unmount — both detaches the previous listeners and restores
   // its last committed width.
   const cancelDragRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
 
-  // The committed size reaches the DOM here and nowhere else, so React only
-  // writes the property when the value actually changed (drag end, keyboard,
-  // first paint). During a drag this effect does not run at all.
+  // Synchronize committed size changes after drag end or keyboard input.
+  // Mount callbacks seed newly attached roots; pointer moves write directly
+  // without changing paneSizes, so this effect does not run during a drag.
   useLayoutEffect(() => {
-    const shell = shellRef.current;
-    if (!shell) return;
-    writePaneVariable(shell, "sidebar", paneSizes.sidebar);
-    writePaneVariable(shell, "dock", paneSizes.dock);
+    writePaneVariable(paneRootsRef.current.sidebar, "sidebar", paneSizes.sidebar);
+    writePaneVariable(paneRootsRef.current.dock, "dock", paneSizes.dock);
   }, [paneSizes]);
 
   useEffect(() => {
@@ -115,10 +128,11 @@ export function usePaneResize(uiScale: number): PaneResizeApi {
       event.preventDefault();
       cancelDragRef.current?.();
 
-      // React clears `currentTarget` once the handler returns, so both nodes
-      // are read out synchronously and kept by value.
+      // React clears `currentTarget` once the handler returns, and detaches
+      // pane refs before an unmount cancels the gesture, so both nodes are
+      // read out synchronously and kept by value.
       const handle: Element | null = event.currentTarget;
-      const shell = shellRef.current;
+      const root = paneRootsRef.current[pane];
       const pointerId = Number.isFinite(event.pointerId) ? event.pointerId : null;
       const startX = event.clientX;
       const startSize = paneSizesRef.current[pane];
@@ -131,7 +145,7 @@ export function usePaneResize(uiScale: number): PaneResizeApi {
         || candidate.pointerId === pointerId;
 
       const paint = (size: number) => {
-        writePaneVariable(shell, pane, size);
+        writePaneVariable(root, pane, size);
         handle?.setAttribute("aria-valuenow", String(Math.round(size)));
       };
 
@@ -239,5 +253,5 @@ export function usePaneResize(uiScale: number): PaneResizeApi {
     [commitPaneSize],
   );
 
-  return { paneSizes, shellRef, startPaneResize, resizePaneWithKeyboard };
+  return { paneSizes, paneRefs, startPaneResize, resizePaneWithKeyboard };
 }

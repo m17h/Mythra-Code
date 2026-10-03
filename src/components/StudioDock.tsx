@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import type { UsageEvidence } from "../types";
 import {
   Bot,
@@ -129,10 +129,11 @@ function reviewDiffSummary(diff: ReviewDiff, fileCount: number): string {
 export function StudioDock(props: {
   open: boolean;
   /**
-   * The dock's width is published by the app shell as --dock-width so a drag
-   * can move the edge without re-rendering this tree. These props only carry
-   * the separator's behaviour and its announced value.
+   * The dock's width is published as --dock-width on the root this ref
+   * receives, so a drag can move the edge without re-rendering this tree. The
+   * resize props only carry the separator's behaviour and its announced value.
    */
+  rootRef?: Ref<HTMLElement>;
   onResizeStart?: (event: React.PointerEvent) => void;
   onResizeKeyDown?: (event: React.KeyboardEvent) => void;
   resizeValue?: number;
@@ -336,13 +337,13 @@ export function StudioDock(props: {
   // When the dock is closed, skip all panel work (diff parsing, xterm,
   // file browser) — it re-rendered fully even while hidden.
   if (!renderContent) {
-    return <aside className="studio-dock closed" aria-label="Project workspace tools" aria-hidden inert />;
+    return <aside ref={props.rootRef} className="studio-dock closed" aria-label="Project workspace tools" aria-hidden inert />;
   }
   const projectLabel = props.projectName || "this project";
   const outsideRepositoryRoot = props.gitWorkflow?.snapshot?.isRoot === false;
   const repositoryRootReason = `Open the repository root (${props.gitWorkflow?.snapshot?.rootPath}) as your project before changing Git. This selected folder is inside that repository.`;
   return (
-    <aside className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
+    <aside ref={props.rootRef} className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
       {props.onResizeStart && (
         <div
           className="pane-resize dock-resize"

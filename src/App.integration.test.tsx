@@ -2696,15 +2696,19 @@ describe("workspace switching during thread selection", () => {
     const sidebar = document.querySelector("aside.sidebar") as HTMLElement;
     const separator = screen.getByRole("separator", { name: "Resize sidebar" });
 
-    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("260px");
-    // The pane must not be sized by an inline style, or a render landing
+    expect(sidebar.style.getPropertyValue("--sidebar-width")).toBe("260px");
+    // The pane must not be sized by an inline React style, or a render landing
     // mid-drag would snap it back to the last committed width.
-    expect(sidebar.getAttribute("style")).toBeNull();
+    expect(sidebar.style.width).toBe("");
+    expect(sidebar.style.flexBasis).toBe("");
+    // Nor by a property on the shell, which every pointer move would restyle
+    // the whole app through.
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("");
 
     fireEvent.pointerDown(separator, { clientX: 260, button: 0 });
     fireEvent.pointerMove(window, { clientX: 300 });
     // The edge has already moved, before anything reached React or storage.
-    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("300px");
+    expect(sidebar.style.getPropertyValue("--sidebar-width")).toBe("300px");
     expect(document.body).toHaveAttribute("data-pane-resizing", "sidebar");
     expect(localStorage.getItem("kiwi.paneSizes")).toBeNull();
 
@@ -2716,13 +2720,13 @@ describe("workspace switching during thread selection", () => {
 
   it("resizes the sidebar from the keyboard", async () => {
     await renderApp();
-    const shell = document.querySelector(".app-shell") as HTMLElement;
+    const sidebar = document.querySelector("aside.sidebar") as HTMLElement;
     const separator = screen.getByRole("separator", { name: "Resize sidebar" });
 
     separator.focus();
     fireEvent.keyDown(separator, { key: "ArrowRight" });
 
-    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("276px");
+    expect(sidebar.style.getPropertyValue("--sidebar-width")).toBe("276px");
     expect(separator).toHaveAttribute("aria-valuenow", "276");
     expect(JSON.parse(localStorage.getItem("kiwi.paneSizes") ?? "{}").sidebar).toBe(276);
   });

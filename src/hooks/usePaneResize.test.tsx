@@ -8,23 +8,24 @@ import { PANE_BOUNDS, usePaneResize, type PaneKey, type PaneResizeApi } from "./
 let api: PaneResizeApi;
 let renders = 0;
 
-function Harness({ scale }: { scale: number }) {
+function Harness({ scale, dock = true }: { scale: number; dock?: boolean }) {
   api = usePaneResize(scale);
   renders += 1;
   return (
-    <div ref={api.shellRef} data-testid="shell">
-      {(["sidebar", "dock"] as PaneKey[]).map((pane) => (
-        <div
-          key={pane}
-          data-testid={`${pane}-handle`}
-          role="separator"
-          onPointerDown={api.startPaneResize(pane)}
-          onKeyDown={api.resizePaneWithKeyboard(pane)}
-          aria-valuemin={PANE_BOUNDS[pane].min}
-          aria-valuemax={PANE_BOUNDS[pane].max}
-          aria-valuenow={Math.round(api.paneSizes[pane])}
-          tabIndex={0}
-        />
+    <div data-testid="shell">
+      {(["sidebar", "dock"] as PaneKey[]).filter((pane) => pane === "sidebar" || dock).map((pane) => (
+        <section key={pane} ref={api.paneRefs[pane]} data-testid={pane}>
+          <div
+            data-testid={`${pane}-handle`}
+            role="separator"
+            onPointerDown={api.startPaneResize(pane)}
+            onKeyDown={api.resizePaneWithKeyboard(pane)}
+            aria-valuemin={PANE_BOUNDS[pane].min}
+            aria-valuemax={PANE_BOUNDS[pane].max}
+            aria-valuenow={Math.round(api.paneSizes[pane])}
+            tabIndex={0}
+          />
+        </section>
       ))}
     </div>
   );
@@ -40,8 +41,10 @@ function mount(scale = 1) {
   };
 }
 
+const VARIABLE = { sidebar: "--sidebar-width", dock: "--dock-width" } as const;
+// Each width lives on its own pane root, never on a shared ancestor.
 const widthVar = (shell: HTMLElement, pane: PaneKey) =>
-  shell.style.getPropertyValue(pane === "sidebar" ? "--sidebar-width" : "--dock-width");
+  shell.querySelector<HTMLElement>(`[data-testid="${pane}"]`)!.style.getPropertyValue(VARIABLE[pane]);
 
 const storedSizes = () => JSON.parse(localStorage.getItem("kiwi.paneSizes") ?? "null");
 
@@ -52,10 +55,37 @@ describe("usePaneResize", () => {
     document.body.removeAttribute("data-pane-resizing");
   });
 
-  it("publishes the committed sizes as shell custom properties on mount", () => {
+  it("publishes the committed sizes on the pane roots on mount", () => {
     const { shell } = mount();
     expect(widthVar(shell, "sidebar")).toBe("300px");
     expect(widthVar(shell, "dock")).toBe("500px");
+  });
+
+  it("writes a drag on the dragged pane root only", () => {
+    const { shell, handle } = mount();
+
+    fireEvent.pointerDown(handle("sidebar"), { clientX: 400, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 440 });
+
+    expect(widthVar(shell, "sidebar")).toBe("340px");
+    expect(widthVar(shell, "dock")).toBe("500px");
+    // A write on a shared ancestor restyles everything beneath it.
+    expect(shell.getAttribute("style")).toBeNull();
+    fireEvent.pointerUp(window);
+  });
+
+  it("gives a pane root that mounts later the committed size", () => {
+    const view = render(<Harness scale={1} dock={false} />);
+    const shell = screen.getByTestId("shell");
+    fireEvent.keyDown(screen.getByTestId("sidebar-handle"), { key: "ArrowRight" });
+
+    view.rerender(<Harness scale={1} />);
+    expect(widthVar(shell, "dock")).toBe("500px");
+    fireEvent.keyDown(screen.getByTestId("dock-handle"), { key: "ArrowLeft" });
+    view.rerender(<Harness scale={1} dock={false} />);
+    view.rerender(<Harness scale={1} />);
+    expect(widthVar(shell, "dock")).toBe("516px");
+    expect(widthVar(shell, "sidebar")).toBe("316px");
   });
 
   it("tracks the pointer live without rendering or writing storage", () => {

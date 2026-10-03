@@ -1661,7 +1661,7 @@ export default function App() {
     [activeProject, setProjects],
   );
 
-  const { paneSizes, shellRef, startPaneResize, resizePaneWithKeyboard } = usePaneResize((settings.uiScale || 100) / 100);
+  const { paneSizes, paneRefs, startPaneResize, resizePaneWithKeyboard } = usePaneResize((settings.uiScale || 100) / 100);
   const {
     splitRatio: sidebarSplitRatio,
     sidebarSectionsRef,
@@ -6731,7 +6731,7 @@ export default function App() {
   });
 
   return (
-    <div ref={shellRef} className="app-shell" data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
+    <div className="app-shell" data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       <RendererLaunchCommitMarker />
       <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
       {successToast && (
@@ -6747,11 +6747,12 @@ export default function App() {
           is inert so keyboard and assistive-tech focus cannot reach it. The
           studio dock and remaining modals are covered by the full-screen
           backdrop and each dialog's own focus containment. */}
-      {/* Width comes from --sidebar-width on the shell, not an inline style:
-          a drag writes that property directly so the edge tracks the pointer
-          without rendering the app, and an unrelated render mid-drag cannot
-          snap the sidebar back to the last committed width. */}
-      <aside inert={settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
+      {/* Width comes from --sidebar-width, which usePaneResize writes on this
+          element, not from a React inline style: a drag writes that property
+          directly so the edge tracks the pointer without rendering the app,
+          and an unrelated render mid-drag cannot snap the sidebar back to the
+          last committed width. */}
+      <aside ref={paneRefs.sidebar} inert={settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
         {sidebarOpen && (
           <div
             className="pane-resize sidebar-resize"
@@ -7454,6 +7455,7 @@ export default function App() {
         <Suspense fallback={null}>
           <StudioDock
             open={studioOpen && Boolean(activeProject)}
+            rootRef={paneRefs.dock}
             onResizeStart={startPaneResize("dock")}
             onResizeKeyDown={resizePaneWithKeyboard("dock")}
             resizeValue={paneSizes.dock}

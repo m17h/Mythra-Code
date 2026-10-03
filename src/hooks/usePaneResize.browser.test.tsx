@@ -22,7 +22,7 @@ const START: Record<PaneKey, number> = { sidebar: 260, dock: 430 };
 const SIZE_PROPERTIES = new Set(["width", "flex-basis"]);
 
 function Workbench({ open = true }: { open?: boolean }) {
-  const { paneSizes, shellRef, startPaneResize } = usePaneResize(1);
+  const { paneSizes, paneRefs, startPaneResize } = usePaneResize(1);
   const handle = (pane: PaneKey, label: string) => (
     <div
       className={`pane-resize ${pane}-resize`}
@@ -37,10 +37,10 @@ function Workbench({ open = true }: { open?: boolean }) {
     />
   );
   return (
-    <div ref={shellRef} className="app-shell" data-theme="mythra" data-color-scheme={themeColorScheme("mythra")} data-testid="shell" style={{ height: 600 }}>
-      <aside className={`sidebar ${open ? "open" : "closed"}`} data-testid="sidebar">{open && handle("sidebar", "Resize sidebar")}</aside>
-      <main className="main-panel" />
-      <aside className={`studio-dock ${open ? "open" : "closed"}`} data-testid="dock">{open && handle("dock", "Resize workspace tools")}</aside>
+    <div className="app-shell" data-theme="mythra" data-color-scheme={themeColorScheme("mythra")} data-testid="shell" style={{ height: 600 }}>
+      <aside ref={paneRefs.sidebar} className={`sidebar ${open ? "open" : "closed"}`} data-testid="sidebar">{open && handle("sidebar", "Resize sidebar")}</aside>
+      <main className="main-panel"><p data-testid="transcript">Transcript</p></main>
+      <aside ref={paneRefs.dock} className={`studio-dock ${open ? "open" : "closed"}`} data-testid="dock">{open && handle("dock", "Resize workspace tools")}</aside>
     </div>
   );
 }
@@ -162,4 +162,22 @@ it.each<PaneKey>(["sidebar", "dock"])("tracks the %s drag with reduced motion", 
   await release();
   view.rerender(<Workbench open={false} />);
   expect(sizeTransitions(element)).toEqual([]);
+});
+
+it.each<PaneKey>(["sidebar", "dock"])("keeps the dragged width local to the %s root", async (pane) => {
+  render(<Workbench />);
+  const variable = pane === "sidebar" ? "--sidebar-width" : "--dock-width";
+  const computed = (element: Element) => getComputedStyle(element).getPropertyValue(variable).trim();
+  const startX = await press(pane);
+  await moveBy(startX, pane === "sidebar" ? 60 : -60);
+  const target = targetFor(pane, startX);
+
+  expect(computed(paneOf(pane))).toBe(`${target}px`);
+  // The width variable does not inherit into the shell, transcript, other
+  // pane or dragged pane contents. This checks variable isolation; resizing
+  // can still cause layout and paint in surrounding elements.
+  for (const element of [screen.getByTestId("shell"), screen.getByTestId("transcript"), paneOf(pane === "sidebar" ? "dock" : "sidebar"), handleOf(pane)]) {
+    expect(computed(element), element.className || element.tagName).toBe("");
+  }
+  await release();
 });
