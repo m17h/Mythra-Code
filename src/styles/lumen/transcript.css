@@ -28,6 +28,10 @@
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-lmstudio { background: transparent; box-shadow: none; }
 
 .app-shell[data-theme][data-color-scheme] .message-body { color: var(--ink-2); font-size: var(--fs-body); line-height: 1.72; }
+/* The hover toolbar starts 30px above a reply. Together with the previous
+   row's 28px padding, this reserves 8px of clearance instead of a 2px overlap.
+   Keep it reserved while streaming too, so completion doesn't shift the row. */
+.app-shell[data-theme][data-color-scheme] .message.assistant { margin-top: 10px; }
 .app-shell[data-theme][data-color-scheme] .message.assistant .message-body { padding-top: 4px; }
 
 /* The user's avatar is hidden (legacy), so their row is a single column; this
@@ -42,6 +46,8 @@
   background-image: linear-gradient(135deg, var(--lm-wash), rgba(0, 0, 0, 0) 80%);
   box-shadow: 0 16px 34px -20px var(--lm-accent-glow);
 }
+/* Match the other themes' neutral shadow without Mythra's cyan glow. */
+.app-shell[data-theme="mythra"][data-color-scheme] .message.user .message-body { box-shadow: 0 16px 34px -20px rgba(0, 0, 0, .3); }
 .app-shell[data-theme][data-color-scheme] .message.user .message-stack .message-attachments + .message-body { border-radius: 22px 6px 6px 22px; }
 .app-shell[data-theme][data-color-scheme] .message-body.message-attachments { padding: 6px; }
 .app-shell[data-theme][data-color-scheme] .message-image-preview { border-radius: 16px; }
@@ -57,6 +63,8 @@
   background: var(--menu-surface);
   box-shadow: var(--elev-2);
 }
+/* Keep response actions beside the response, not beneath the user's bubble. */
+.app-shell[data-theme][data-color-scheme] .message.assistant .message-actions { left: 0; right: auto; }
 .app-shell[data-theme][data-color-scheme] .message-actions button {
   height: 24px;
   padding: 0 9px;
