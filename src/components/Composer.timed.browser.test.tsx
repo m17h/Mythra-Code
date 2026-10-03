@@ -132,6 +132,24 @@ describe("scheduling prompts in the composer", () => {
     expect(toggle).toHaveTextContent("1 missed");
   });
 
+  it("releases future schedules only through an explicit action in either scope", async () => {
+    const timed = useTaskStore.getState().enqueueTurn(THREAD, "Future thread follow-up", [], { deliverAt: Date.now() + 3_600_000 });
+    const onRelease = vi.fn((id: string) => useTaskStore.getState().releaseTimedTurnNow(THREAD, id));
+    const newConversation: QueuedTurn = { id: "future-new", threadId: "new:/p", text: "Future new audit", attachments: [], createdAt: Date.now(), status: "queued", deliverAt: Date.now() + 7_200_000 };
+    const newRelease = vi.fn(() => true);
+    render(<Fixture onRelease={onRelease} newThreadPrompts={{ entries: [newConversation], actions: { onReschedule: () => true, onRelease: newRelease, onRemove: () => {} } }} />);
+    await userEvent.click(screen.getByRole("button", { name: /Scheduled · this thread/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Scheduled · new conversations/ }));
+    expect(onRelease).not.toHaveBeenCalled();
+    expect(newRelease).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Queue now scheduled prompt 1" }));
+    expect(onRelease).toHaveBeenCalledExactlyOnceWith(timed.id);
+    expect(screen.getByRole("list", { name: "Queued follow-up messages" })).toHaveTextContent("Future thread follow-up");
+    expect(screen.queryByRole("list", { name: "Scheduled for this thread" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Start now new conversation 1" }));
+    expect(newRelease).toHaveBeenCalledExactlyOnceWith("future-new");
+  });
+
   it("keeps this thread's schedule and scheduled new conversations distinct inside a thread", async () => {
     useTaskStore.getState().enqueueTurn(THREAD, "Follow up on CI here", [], { deliverAt: Date.now() + 3_600_000 });
     const newConversation: QueuedTurn = { id: "new-1", threadId: "new:/p", text: "Start the weekly audit", attachments: [], createdAt: 1, status: "queued", deliverAt: Date.now() + 7_200_000 };

@@ -49,7 +49,16 @@ function turnHasTimelineOutput(threadId: string, turnId: string): boolean {
   const task = useTaskStore.getState().tasks[threadId];
   if (!task) return false;
   const lastMessage = task.messages[task.messages.length - 1];
-  const lastActivity = task.activities[task.activities.length - 1];
+  // Allowance telemetry says whether work may continue, not whether Claude
+  // returned a response. It must not suppress final-result answer recovery or
+  // hide an empty success; keep looking for actual work before the notice.
+  let lastActivity: Activity | undefined;
+  for (let index = task.activities.length - 1; index >= 0; index--) {
+    const activity = task.activities[index];
+    if (activity.id.startsWith("claude-continuation-")) continue;
+    lastActivity = activity;
+    break;
+  }
   return task.assistantOutputTurnId === turnId
     || Boolean(lastMessage?.turnId === turnId && lastMessage.role === "assistant" && hasVisibleText(lastMessage.text))
     || lastActivity?.turnId === turnId;

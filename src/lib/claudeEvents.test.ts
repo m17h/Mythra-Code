@@ -80,6 +80,41 @@ describe("Claude event routing", () => {
     expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
   });
 
+  it.each(["grace", "paid"])("recovers result text after a %s notice when the assistant event was lost", (kind) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "rate_limit_event", rate_limit_info: {
+      status: "allowed", ...(kind === "grace" ? { rateLimitGraceActive: true } : { overageInUse: true }),
+    } });
+    send({ type: "result", subtype: "success", result: "The requested changes are complete." });
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toContainEqual(expect.objectContaining({
+      role: "assistant", text: "The requested changes are complete.", turnId: "turn-1",
+    }));
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+  });
+
+  it("reports a notice-only empty success instead of claiming Claude responded", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } });
+    send({ type: "result", subtype: "success", result: "" });
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({
+      status: "error", lastCompletedTurnStatus: "error",
+    });
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toContainEqual(expect.objectContaining({
+      id: "claude-empty-result-turn-1", status: "failed",
+    }));
+  });
+
+  it("preserves tool-only success when its final activity is an allowance notice", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "tool-message", content: [{
+      type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/tmp/project/file.ts" },
+    }] } });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } });
+    send({ type: "result", subtype: "success", result: "" });
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("completed");
+    expect(useTaskStore.getState().tasks["thread-1"].activities.find((row) => row.id === "claude-empty-result-turn-1")).toBeUndefined();
+  });
+
   it("keeps the wrap-up notice through streaming and a same-turn init, retiring only another turn's notice", () => {
     useClaudeContinuationStore.getState().update("thread-1", "old-turn", { kind: "grace" });
     send({ type: "system", subtype: "init" });

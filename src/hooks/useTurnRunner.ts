@@ -70,6 +70,8 @@ import type { Account, AppSettings, ChatMessage, CustomAgentProfile, Project, Pr
 
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
 const activeQueuedDeliveries = new Set<string>();
+/** Shared-folder new starts own their folder before a provider assigns a thread id. */
+const pendingSharedDraftStarts = new Map<symbol, string>();
 /** One bounded recovery attempt for a local-provider slot still unwinding. */
 const queuedBusyRetries = new Set<string>();
 /** Delivery contexts for timed first prompts of not-yet-created threads. */
@@ -109,6 +111,7 @@ export function forgetQueuedDeliveries(threadId?: string): void {
   if (threadId === undefined) {
     queuedDeliveries.clear();
     activeQueuedDeliveries.clear();
+    pendingSharedDraftStarts.clear();
     queuedBusyRetries.clear();
     newThreadDeliveries.clear();
     newThreadDeliveriesInFlight.clear();
@@ -344,6 +347,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   const contextRef = useRef(context);
   contextRef.current = context;
   const draftGenerationRef = useRef(0);
+  const ordinarySharedDraftStartsRef = useRef(new Set<symbol>());
 
   const archiveOwnsThread = useCallback((threadId: string): boolean => {
     const current = contextRef.current;
@@ -521,33 +525,38 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
 
     const willUseSharedFolder = !currentIsolation && !(draftThreadIsolated && !activeThread);
-    if (willUseSharedFolder) {
+    const sharedDraftStart = !activeThread && willUseSharedFolder ? Symbol("shared draft start") : undefined;
+    const sharedFolderOverlapMessage = activeThread
+      ? "This queued follow-up is waiting because another conversation is working in the same shared project folder. Start it again after that task finishes."
+      : "This scheduled prompt did not start because another conversation is working in the same shared project folder. Start it again after that task finishes, or reschedule it.";
+    const anotherSharedRun = (ownThreadId = activeThread?.id): boolean => {
+      if (!willUseSharedFolder) return false;
       const sharedPath = normalizedProjectPath(activeWorkspace.path);
+      if ([...pendingSharedDraftStarts].some(([token, path]) => token !== sharedDraftStart && path === sharedPath)) return true;
       const taskState = useTaskStore.getState();
-      const anotherSharedRun = Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
-        if (threadId === activeThread?.id || (threadStatus !== "starting" && threadStatus !== "running" && !taskState.workflowOwners[threadId])) return false;
+      return Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
+        if (threadId === ownThreadId || (threadStatus !== "starting" && threadStatus !== "running" && !taskState.workflowOwners[threadId])) return false;
         const logicalPath = threadProjectBindingsRef.current?.[threadId];
         const executionPath = taskState.tasks[threadId]?.workspacePath
           ?? (logicalPath ? executionPathFor(threadId, logicalPath) : undefined);
         return Boolean(executionPath && normalizedProjectPath(executionPath) === sharedPath);
       });
-      if (anotherSharedRun) {
+    };
+    if (willUseSharedFolder) {
+      if (anotherSharedRun()) {
         // A queued follow-up starts on its own schedule, possibly while the
         // user is reading another conversation. A modal there would block the
         // whole window with no context, but silently allowing two models to
         // edit one shared folder is unsafe. Hold the queue at this entry and
         // let the user retry it once the other run is finished.
         if (deferredDelivery) {
-          const overlapMessage = activeThread
-            ? "This queued follow-up is waiting because another conversation is working in the same shared project folder. Start it again after that task finishes."
-            : "This scheduled prompt did not start because another conversation is working in the same shared project folder. Start it again after that task finishes, or reschedule it.";
           if (activeThread) useTaskStore.getState().upsertActivity(activeThread.id, {
             id: `shared-folder-overlap-${activeThread.id}-${Date.now()}`,
             kind: "warning",
             title: "Another thread is working in this project folder",
-            detail: overlapMessage,
+            detail: sharedFolderOverlapMessage,
           });
-          throw new Error(overlapMessage);
+          throw new Error(sharedFolderOverlapMessage);
         } else if (!await confirmDialog(
           "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
         )) return false;
@@ -596,6 +605,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const assertCanStart = () => {
       if (pendingStart?.cancelRequested || (!activeThread && draftCancelled())) {
         throw new CancelledTurnStart("Stopped before starting the model turn");
+      }
+      // Preparation can await skill scans, bridges, worktrees and checkpoints.
+      // A scheduled first prompt has no task identity during the early awaits,
+      // so another shared-folder turn may start after the initial preflight.
+      // Check the live owner again at each boundary, including immediately
+      // before the provider call; exclude the thread this send just created.
+      if (deferredDelivery && anotherSharedRun(startedThreadId ?? activeThread?.id)) {
+        throw new Error(sharedFolderOverlapMessage);
       }
     };
 
@@ -721,6 +738,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
     };
 
     try {
+      if (sharedDraftStart) {
+        // Reserve synchronously before any preparation await. The draft flag
+        // alone is invisible to other background deliveries until a thread id
+        // exists; the reservation bridges that identity gap.
+        pendingSharedDraftStarts.set(sharedDraftStart, sendWorkspacePath);
+        if (!deferredDelivery) ordinarySharedDraftStartsRef.current.add(sharedDraftStart);
+      }
       // Skill scans can wait on disk or startup preparation. They are part of
       // starting a turn, so expose Stop before awaiting them and honor it
       // before creating any workspace, bridge, or provider process.
@@ -1014,6 +1038,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (cancelled) setTransientStatus("Stopped");
       else setError(friendlyError(reason));
       return false;
+    } finally {
+      if (sharedDraftStart) {
+        pendingSharedDraftStarts.delete(sharedDraftStart);
+        ordinarySharedDraftStartsRef.current.delete(sharedDraftStart);
+      }
     }
   }, [archiveOwnsThread]);
 
@@ -1610,6 +1639,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // point the send has reached, it aborts as soon as it learns its thread id.
     if (!activeThread) {
       draftGenerationRef.current += 1;
+      // A stopped draft cannot dispatch after its preparation resumes. Release
+      // its folder now even if a skill scan remains pending; scheduled starts
+      // have separate ownership and are unaffected by the visible draft Stop.
+      for (const token of ordinarySharedDraftStartsRef.current) pendingSharedDraftStarts.delete(token);
+      ordinarySharedDraftStartsRef.current.clear();
       setStartingDraftTurn(false);
       setTransientStatus("Stopped");
       return;

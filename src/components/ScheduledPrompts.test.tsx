@@ -40,6 +40,21 @@ describe("scheduled prompt disclosure", () => {
     expect(actions.onRelease).not.toHaveBeenCalled();
   });
 
+  it.each<[ScheduledPromptScope, string, number]>([
+    ["thread", "Queue now scheduled prompt 1", 60_000],
+    ["thread", "Queue now scheduled prompt 1", -1_000],
+    ["new-thread", "Start now new conversation 1", 60_000],
+    ["new-thread", "Start now new conversation 1", -1_000],
+  ])("allows an explicit release in %s through %s at offset %i", async (scope, actionLabel, offset) => {
+    const user = userEvent.setup();
+    const onRelease = vi.fn(() => true);
+    render(<ScheduledPrompts entries={[entry("ready", { deliverAt: Date.now() + offset })]} scope={scope} actions={{ ...actions, onRelease }} />);
+    await user.click(screen.getByRole("button", { name: /Scheduled ·/ }));
+    expect(onRelease).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: actionLabel }));
+    expect(onRelease).toHaveBeenCalledExactlyOnceWith("ready");
+  });
+
   it("keeps an active editor expanded until its edit finishes", async () => {
     const editActions = { ...actions, onFinishEdit: () => true };
     const editor = () => <textarea aria-label="Editing schedule" defaultValue="Unsaved revision" />;

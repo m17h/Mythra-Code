@@ -35,6 +35,7 @@ const worktrees = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/codex", () => codex);
+vi.mock("../lib/confirmDialog", () => ({ confirmDialog: vi.fn(async () => true) }));
 vi.mock("../lib/claude", () => claude);
 vi.mock("../lib/cursor", () => cursor);
 vi.mock("../lib/childAgentSessions", async (importOriginal) => ({
@@ -175,6 +176,31 @@ describe("timed prompts in a thread", () => {
     expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "timed follow-up" }));
   });
 
+  it("explicitly queues a future prompt now behind ordinary FIFO and refuses a duplicate release", async () => {
+    useTaskStore.getState().setActiveTurn(THREAD.id, "turn-live");
+    useTaskStore.getState().setTaskStatus(THREAD.id, "running");
+    const { result } = renderHook(() => useTurnRunner(context({ running: true })));
+    await act(async () => { await result.current.scheduleMessage("future prompt", NOW + 24 * 60 * MINUTE); });
+    const timedId = queue()[0].id;
+    await advance(100);
+    await act(async () => { expect(await result.current.sendMessage("ordinary first")).toBe(true); });
+    await advance(100);
+    await act(async () => {
+      expect(result.current.queueTimedMessageNow(timedId)).toBe(true);
+      expect(result.current.queueTimedMessageNow(timedId)).toBe(false);
+    });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    await act(async () => { useTaskStore.getState().completeTurn(THREAD.id, "turn-live", "completed"); });
+    await advance(0);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "ordinary first" }));
+    expect(queue()).toEqual([expect.objectContaining({ id: timedId, text: "future prompt", releasedAt: NOW + 200 })]);
+    await act(async () => { useTaskStore.getState().completeTurn(THREAD.id, "turn-new", "completed"); });
+    await advance(0);
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(2);
+    expect(cursor.startCursorTurn).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: "future prompt" }));
+    expect(queue()).toEqual([]);
+  });
+
   it("keeps a failed head holding the queue when a timed prompt becomes due behind it", async () => {
     const failed = useTaskStore.getState().enqueueTurn(THREAD.id, "earlier failure", []);
     useTaskStore.getState().setQueuedTurnStatus(THREAD.id, failed.id, "failed", "boom");
@@ -295,6 +321,119 @@ describe("timed prompts in a thread", () => {
 });
 
 describe("timed first prompt of a new thread", () => {
+  it("holds a scheduled new conversation behind an ordinary draft still preparing without a thread id", async () => {
+    useTaskStore.getState().setActiveThread(null);
+    let finishOrdinary!: () => void;
+    const ctx = context({
+      activeThread: null,
+      resolveSkillPrompt: vi.fn(async (message: string) => {
+        if (message === "ordinary draft") await new Promise<void>((resolve) => { finishOrdinary = resolve; });
+        return message;
+      }),
+    });
+    const { result } = renderHook(() => useTurnRunner(ctx));
+    await act(async () => { await result.current.scheduleMessage("timed draft", NOW + 10_000); });
+    let ordinarySend!: Promise<boolean>;
+    act(() => { ordinarySend = result.current.sendMessage("ordinary draft"); });
+    await advance(10_010);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(useNewThreadTimedPrompts.getState().prompts["/tmp/project"][0]).toMatchObject({
+      status: "failed", error: expect.stringContaining("another conversation"),
+    });
+    await act(async () => { finishOrdinary(); expect(await ordinarySend).toBe(true); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "ordinary draft" }));
+  });
+
+  it.each(["stop", "failure"] as const)("releases an ordinary draft reservation after %s so an explicit scheduled start can proceed", async (outcome) => {
+    useTaskStore.getState().setActiveThread(null);
+    let finishOrdinary!: () => void;
+    let ctx = context({
+      activeThread: null,
+      resolveSkillPrompt: vi.fn(async (message: string) => {
+        if (message === "ordinary draft") {
+          await new Promise<void>((resolve) => { finishOrdinary = resolve; });
+          if (outcome === "failure") throw new Error("skill scan failed");
+        }
+        return message;
+      }),
+    });
+    const { result, rerender } = renderHook(() => useTurnRunner(ctx));
+    await act(async () => { await result.current.scheduleMessage("timed draft", NOW + MINUTE); });
+    const promptId = useNewThreadTimedPrompts.getState().prompts["/tmp/project"][0].id;
+    let ordinarySend!: Promise<boolean>;
+    act(() => { ordinarySend = result.current.sendMessage("ordinary draft"); });
+    if (outcome === "stop") {
+      ctx = { ...ctx, running: true };
+      rerender();
+      await act(async () => { await result.current.stopTurn(); });
+      // Stop must release ownership even before the pending scan resolves.
+    } else {
+      await act(async () => { finishOrdinary(); expect(await ordinarySend).toBe(false); });
+    }
+    await act(async () => { expect(result.current.sendNewThreadPromptNow(promptId)).toBe(true); });
+    await advance(0);
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "timed draft" }));
+    if (outcome === "stop") await act(async () => { finishOrdinary(); expect(await ordinarySend).toBe(false); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reserve the shared project for an isolated ordinary draft awaiting preparation", async () => {
+    useTaskStore.getState().setActiveThread(null);
+    let finishOrdinary!: () => void;
+    let ctx = context({
+      activeThread: null,
+      workspaceGitInfo: { isRepo: true, isRoot: true, hasCommit: true },
+      resolveSkillPrompt: vi.fn(async (message: string) => {
+        if (message === "isolated draft") await new Promise<void>((resolve) => { finishOrdinary = resolve; });
+        return message;
+      }),
+    });
+    const { result, rerender } = renderHook(() => useTurnRunner(ctx));
+    await act(async () => { await result.current.scheduleMessage("timed shared draft", NOW + 10_000); });
+    ctx = { ...ctx, draftThreadIsolated: true };
+    rerender();
+    let ordinarySend!: Promise<boolean>;
+    act(() => { ordinarySend = result.current.sendMessage("isolated draft"); });
+    await advance(10_010);
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "timed shared draft", cwd: "/tmp/project" }));
+    await act(async () => { finishOrdinary(); expect(await ordinarySend).toBe(true); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(2);
+    expect(cursor.startCursorTurn).toHaveBeenLastCalledWith(expect.objectContaining({ prompt: "isolated draft", cwd: "/tmp/new-isolated-worktree" }));
+  });
+
+  it.each(["skills", "checkpoint"] as const)("holds a deferred new conversation if another shared run starts during %s preparation", async (boundary) => {
+    let finishPreparation!: () => void;
+    const pause = () => new Promise<void>((resolve) => { finishPreparation = resolve; });
+    const delayedSkillPrompt = vi.fn(async (message: string) => {
+      if (boundary === "skills" && message === "scheduled preparation") await pause();
+      return message;
+    });
+    const delayedCheckpoint = vi.fn(async (_threadId: string, _path: string, message: string) => {
+      if (boundary === "checkpoint" && message === "scheduled preparation") await pause();
+      return "checkpoint";
+    });
+    let ctx = context({ activeThread: null, resolveSkillPrompt: delayedSkillPrompt, beginRunCheckpoint: delayedCheckpoint });
+    const { result, rerender } = renderHook(() => useTurnRunner(ctx));
+    await act(async () => { await result.current.scheduleMessage("scheduled preparation", NOW + 10_000); });
+    await advance(10_010);
+    expect(delayedSkillPrompt).toHaveBeenCalledWith("scheduled preparation", undefined);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    // Another conversation starts while the deferred send awaits preparation.
+    // At the skill boundary it does not even have a thread identity yet.
+    ctx = { ...ctx, activeThread: THREAD };
+    rerender();
+    await act(async () => { expect(await result.current.sendMessage("ordinary now")).toBe(true); });
+    await act(async () => { finishPreparation(); });
+    await advance(0);
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+    expect(useNewThreadTimedPrompts.getState().prompts["/tmp/project"][0]).toMatchObject({
+      status: "failed", error: expect.stringContaining("another conversation"),
+    });
+  });
+
   it("starts a restored missed new conversation from an existing thread view using its project root", async () => {
     const prompt = useNewThreadTimedPrompts.getState().add({
       workspacePath: "/tmp/project", workspaceName: "Project", text: "restored isolated prompt", attachments: [], deliverAt: NOW - 1_000,
@@ -314,6 +453,23 @@ describe("timed first prompt of a new thread", () => {
     expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp/new-isolated-worktree" }));
     expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ isChildThread: false }));
     expect(useTaskStore.getState().activeThreadId).toBe(THREAD.id);
+  });
+
+  it("starts a future new conversation only on explicit request and refuses a duplicate start", async () => {
+    useTaskStore.getState().setActiveThread(null);
+    const ctx = context({ activeThread: null, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "scheduled-model" } });
+    const { result } = renderHook(() => useTurnRunner(ctx));
+    await act(async () => { await result.current.scheduleMessage("future new conversation", NOW + 24 * 60 * MINUTE); });
+    const prompt = useNewThreadTimedPrompts.getState().prompts["/tmp/project"][0];
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    await act(async () => {
+      expect(result.current.sendNewThreadPromptNow(prompt.id)).toBe(true);
+      expect(result.current.sendNewThreadPromptNow(prompt.id)).toBe(false);
+    });
+    await advance(0);
+    expect(claude.startClaudeTurn).toHaveBeenCalledTimes(1);
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "future new conversation", model: "scheduled-model" }));
+    expect(useNewThreadTimedPrompts.getState().prompts).toEqual({});
   });
 
   it("keeps a refused manual start's reason on its own row", async () => {

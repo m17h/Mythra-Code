@@ -6,7 +6,7 @@ import { themeColorScheme } from "../lib/appConfig";
 import "../styles.css";
 import "../styles/lumen/index.css";
 
-it.each(["mythra", "light-mythra"] as const)("keeps automatic-publishing controls inset from the outline in %s", async (theme) => {
+it.each(["mythra", "light-mythra", "atari", "synthwave"] as const)("keeps automatic-publishing controls inset from the outline in %s", async (theme) => {
   const input: GitPanelProps = {
     repositoryState: "ready", gitInitializing: false, gitOutput: "", gitCommitSuccess: "", gitCommitBusy: false,
     githubAuthenticated: true, readOnly: false, defaultRepositoryName: "repo",

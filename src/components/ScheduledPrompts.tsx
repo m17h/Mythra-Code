@@ -9,7 +9,7 @@ export interface TimedPromptActions {
   onBeginEdit?: (id: string) => boolean;
   onFinishEdit?: (id: string, text?: string) => boolean;
   onReschedule: (id: string, deliverAt: number) => boolean;
-  /** Missed or failed entries only: the user's explicit go-ahead. */
+  /** The user's explicit go-ahead, including release before delivery time. */
   onRelease: (id: string) => boolean;
   onRemove: (id: string) => void;
 }
@@ -151,11 +151,9 @@ export function ScheduledPrompts({
                       title="Change delivery time"
                       aria-label={`Reschedule ${label}`}
                     ><CalendarClock size={12} /></button>
-                    {(state === "missed" || state === "failed") && (
-                      <button type="button" className="release-scheduled" onClick={() => actions.onRelease(entry.id)} title={scope === "new-thread" ? "Start this new conversation now" : "Add to this thread's queue now"} aria-label={`${copy.release} ${label}`}>
-                        {state === "failed" ? <RotateCw size={12} /> : scope === "new-thread" ? <Send size={12} /> : <ListPlus size={12} />}
-                      </button>
-                    )}
+                    <button type="button" className="release-scheduled" onClick={() => actions.onRelease(entry.id)} title={scope === "new-thread" ? "Start this new conversation now" : "Add to this thread's queue now"} aria-label={`${copy.release} ${label}`}>
+                      {state === "failed" ? <RotateCw size={12} /> : scope === "new-thread" ? <Send size={12} /> : <ListPlus size={12} />}
+                    </button>
                     <button type="button" className="remove-queued" onClick={() => actions.onRemove(entry.id)} title={`Remove ${copy.item}`} aria-label={`Remove ${label}`}><Trash2 size={12} /></button>
                   </span>
                 )}

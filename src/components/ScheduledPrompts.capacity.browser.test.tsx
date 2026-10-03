@@ -118,14 +118,14 @@ describe("scheduled prompt capacity", () => {
   });
 
   it.each([1, 1.5])("keeps both groups, an inline edit and Send usable at %sx UI scale", async (scale) => {
-    const count = 120;
+    const count = 250;
     render(<DualGroupFixture count={count} scale={scale} />);
     const threadToggle = screen.getByRole("button", { name: /Scheduled · this thread/ });
     expect(threadToggle).toHaveAttribute("aria-expanded", "true");
     expect(threadToggle).toBeDisabled();
     const newToggle = screen.getByRole("button", { name: /Scheduled · new conversations/ });
     expect(newToggle).toHaveAttribute("aria-expanded", "false");
-    expect(newToggle).toHaveTextContent("40 missed");
+    expect(newToggle).toHaveTextContent("84 missed");
     await userEvent.click(newToggle);
     const threadList = screen.getByRole("list", { name: "Scheduled for this thread" });
     const newList = screen.getByRole("list", { name: "Scheduled new conversations" });
