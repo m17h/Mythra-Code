@@ -3,6 +3,7 @@ import { resetClaudeEventUsageState, routeClaudeEvent, type ClaudeEventContext }
 import { resetTaskStore, useTaskStore } from "./taskStore";
 import { markProviderStopIntent } from "./providerStopIntent";
 import { usageTotals } from "./usageLedger";
+import { useClaudeContinuationStore } from "./claudeContinuation";
 
 const context: ClaudeEventContext = {
   bindingFor: () => "/tmp/project",
@@ -25,6 +26,7 @@ describe("Claude event routing", () => {
   beforeEach(() => {
     resetClaudeEventUsageState();
     resetTaskStore();
+    useClaudeContinuationStore.setState({ byThread: {} });
     vi.clearAllMocks();
   });
 
@@ -53,6 +55,84 @@ describe("Claude event routing", () => {
       windows: [{ label: "Weekly", usedPercent: 42, resetsAt: 4567 }],
     });
     expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
+  });
+
+  it("keeps an eligible wrap-up running, records the notice once, and clears it on completion", () => {
+    send({ type: "system", subtype: "init" });
+    const info = { status: "allowed_warning", rateLimitGraceActive: true };
+    send({ type: "rate_limit_event", rate_limit_info: info });
+    send({ type: "rate_limit_event", rate_limit_info: info });
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("running");
+    expect(context.onTurnCompleted).not.toHaveBeenCalled();
+    expect(context.onError).not.toHaveBeenCalled();
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toMatchObject({ kind: "grace", turnId: "turn-1" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities.filter((row) => row.id.startsWith("claude-continuation"))).toHaveLength(1);
+    expect(useTaskStore.getState().tasks["thread-1"].activities.find((row) => row.id.startsWith("claude-continuation"))?.detail).toContain("counts toward your weekly usage");
+    send({ type: "result", subtype: "success" });
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+  });
+
+  it("distinguishes paid credits and clears the notice when a request is rejected", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", overageInUse: true } });
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]?.kind).toBe("paid");
+    send({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitGraceActive: true, overageInUse: true } });
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+  });
+
+  it.each(["grace", "paid"])("recovers result text after a %s notice when the assistant event was lost", (kind) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "rate_limit_event", rate_limit_info: {
+      status: "allowed", ...(kind === "grace" ? { rateLimitGraceActive: true } : { overageInUse: true }),
+    } });
+    send({ type: "result", subtype: "success", result: "The requested changes are complete." });
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toContainEqual(expect.objectContaining({
+      role: "assistant", text: "The requested changes are complete.", turnId: "turn-1",
+    }));
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+  });
+
+  it("reports a notice-only empty success instead of claiming Claude responded", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } });
+    send({ type: "result", subtype: "success", result: "" });
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({
+      status: "error", lastCompletedTurnStatus: "error",
+    });
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toContainEqual(expect.objectContaining({
+      id: "claude-empty-result-turn-1", status: "failed",
+    }));
+  });
+
+  it("preserves tool-only success when its final activity is an allowance notice", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "tool-message", content: [{
+      type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/tmp/project/file.ts" },
+    }] } });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } });
+    send({ type: "result", subtype: "success", result: "" });
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("completed");
+    expect(useTaskStore.getState().tasks["thread-1"].activities.find((row) => row.id === "claude-empty-result-turn-1")).toBeUndefined();
+  });
+
+  it("keeps the wrap-up notice through streaming and a same-turn init, retiring only another turn's notice", () => {
+    useClaudeContinuationStore.getState().update("thread-1", "old-turn", { kind: "grace" });
+    send({ type: "system", subtype: "init" });
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitGraceActive: true } });
+    send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Still working" } } });
+    send({ type: "system", subtype: "init" });
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toMatchObject({ kind: "grace", turnId: "turn-1" });
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("running");
+  });
+
+  it("ignores old-turn telemetry after a newer turn starts", () => {
+    send({ type: "system", subtype: "init" }, "new-turn");
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } }, "turn-1");
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } }, "new-turn");
+    send({ type: "openkiwi_exit", message: "process ended" }, "new-turn");
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
   });
 
   it("streams thinking and answer text into the compact timeline", () => {

@@ -147,7 +147,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .workspace-row:hover { color: var(--text); background: var(--lm-hover); }
 /* Plain compact line icons, as in the official release: no tile, no badge.
-   The selected row is a neutral fill plus a thin accent bar; the icon only
+   The selected row is a neutral fill; the icon only
    takes the accent ink. */
 .app-shell[data-theme][data-color-scheme] .workspace-icon {
   width: 21px;
@@ -166,18 +166,6 @@
 .app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active .workspace-row { background: transparent; box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active .workspace-icon { color: var(--green); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .workspace-row.chat.active .workspace-icon { color: var(--info); background: transparent; }
-/* Inside the row: the list scrolls, so anything past its edge would clip. */
-.app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active::before,
-.app-shell[data-theme][data-color-scheme] .workspace-row.chat.active::before {
-  left: 0;
-  top: 9px;
-  bottom: 9px;
-  width: 2px;
-  border-radius: var(--r-pill);
-  background: var(--green);
-  box-shadow: none;
-}
-.app-shell[data-theme][data-color-scheme] .workspace-row.chat.active::before { background: var(--info); }
 .app-shell[data-theme][data-color-scheme] .workspace-thread-count {
   border: 1px solid var(--line);
   border-radius: var(--r-chip);
@@ -251,8 +239,7 @@
 /* ---- Inbox tiles ---- */
 .app-shell[data-theme][data-color-scheme] .thread-list { gap: 6px; padding: 2px 0 14px; }
 .app-shell[data-theme][data-color-scheme] .thread-row-wrap { border-radius: var(--r-lg); }
-/* Selected tile: the legacy thin accent bar on a neutral, slightly raised tile. */
-.app-shell[data-theme][data-color-scheme] .thread-row-wrap.active::before { z-index: 2; left: 0; top: 14px; bottom: 14px; width: 2px; background: var(--green); }
+/* Selected tiles use a quiet neutral surface and border, never an accent bar. */
 .app-shell[data-theme][data-color-scheme] .thread-card {
   min-height: 82px;
   gap: 4px;
@@ -279,9 +266,15 @@
   background-image: none;
   box-shadow: none;
 }
+@supports (color: color-mix(in srgb, red, blue)) {
+  .app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card {
+    background-color: color-mix(in srgb, var(--text) 3%, var(--panel));
+  }
+}
 .app-shell[data-theme][data-color-scheme] .thread-card-title { color: var(--ink-2); font-family: var(--font-display); font-size: 13.25px; font-weight: 640; letter-spacing: -.015em; }
 .app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card-title,
 .app-shell[data-theme][data-color-scheme] .thread-card:hover .thread-card-title { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .thread-row-wrap.active .thread-card-title { font-weight: 680; }
 .app-shell[data-theme][data-color-scheme] .thread-card-workspace { color: var(--muted-2); font-size: 10.5px; font-weight: 560; }
 .app-shell[data-theme][data-color-scheme] .thread-card-directory { color: var(--muted-2); font-size: 10px; opacity: 1; }
 .app-shell[data-theme][data-color-scheme] .thread-card-provider { width: 20px; height: 20px; border-radius: 7px; }
@@ -386,8 +379,6 @@
   .app-shell[data-theme][data-color-scheme] .new-thread-button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, border-color var(--lm-d-2) ease, scale var(--lm-d-2) var(--lm-ease-out); }
   .app-shell[data-theme][data-color-scheme] .workspace-row,
   .app-shell[data-theme][data-color-scheme] .workspace-row-wrap { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }
-  .app-shell[data-theme][data-color-scheme] .workspace-row-wrap.active::before,
-  .app-shell[data-theme][data-color-scheme] .workspace-row.chat.active::before { animation: lm-bar-in var(--lm-d-3) var(--lm-spring) backwards; }
   .app-shell[data-theme][data-color-scheme] .thread-kind-switch button { transition: color var(--lm-d-2) ease, background-color var(--lm-d-2) ease; }
   .app-shell[data-theme][data-color-scheme] .thread-kind-switch button.active { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
   .app-shell[data-theme][data-color-scheme] .thread-search { transition: border-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }

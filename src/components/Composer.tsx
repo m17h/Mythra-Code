@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ArrowUp, Boxes, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, Pencil, RotateCw, Trash2, X } from "lucide-react";
+import { ArrowUp, Boxes, CalendarClock, CircleStop, CornerUpRight, FileCode2, ListPlus, LoaderCircle, Paperclip, Pencil, RotateCw, Trash2, X } from "lucide-react";
 import { loadStored, storeValue } from "../lib/storage";
 import { recordComposerInputToFrame } from "../lib/runtimePerformanceBridge";
 import type { ChatFont, Provider } from "../types";
@@ -20,7 +20,11 @@ import { skillMentionRanges } from "../lib/skillMentions";
 import { useSkillDependencyPreview, type AnalyzeSkillDependencies } from "../hooks/useSkillDependencyPreview";
 import { blockedSkillNames, SkillDependencyDetails } from "./SkillDependencyDetails";
 import { SkillDependencyNotice } from "./SkillDependencyNotice";
+import { hasBlockedSkillDependencies } from "../lib/skillDependencies";
 import { useSkillReferenceInspector } from "./SkillReferenceInspector";
+import { eligibleQueuedTurns, formatDeliveryTime, pendingTimedTurns } from "../lib/timedPrompts";
+import { ScheduledPrompts, type TimedPromptActions } from "./ScheduledPrompts";
+import { TimedPromptPicker } from "./TimedPromptPicker";
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
@@ -140,10 +144,11 @@ export function resizeComposerTextarea(
   syncComposerHighlight(textarea, highlight);
 }
 
-function QueuedTurnEditor({ entry, index, onFinish }: {
+function QueuedTurnEditor({ entry, index, onFinish, label = "queued message" }: {
   entry: QueuedTurn;
   index: number;
   onFinish: (id: string, text?: string) => boolean;
+  label?: string;
 }) {
   const draftKey = `${QUEUED_EDIT_PREFIX}${entry.id}`;
   const [text, setText] = useState(() => drafts()[draftKey] ?? entry.text);
@@ -169,7 +174,7 @@ function QueuedTurnEditor({ entry, index, onFinish }: {
     <div className="queued-turn-editor">
       <textarea
         ref={inputRef}
-        aria-label={`Edit queued message ${index + 1}`}
+        aria-label={`Edit ${label} ${index + 1}`}
         value={text}
         rows={3}
         onChange={(event) => {
@@ -245,9 +250,33 @@ export const Composer = forwardRef<ComposerHandle, {
   onRemoveQueued?: (queuedTurnId: string) => void;
   onBeginEditQueued?: (queuedTurnId: string) => boolean;
   onFinishEditQueued?: (queuedTurnId: string, text?: string) => boolean;
+  /** Schedule the draft for an absolute local time. Absent hides the control. */
+  onSchedule?: (text: string, deliverAt: number) => Promise<boolean>;
+  /** Where a scheduled prompt goes when due (this thread's queue or a new thread). */
+  scheduleContextLabel?: string;
+  /** Actions for timed prompts in this thread's own queue (`queuedTurns`). */
+  timedActions?: TimedPromptActions;
+  /**
+   * Scheduled first prompts of new conversations in this workspace. Shown in
+   * every composer of the workspace — including while an existing thread is
+   * open — so a normal first send can never strand them.
+   */
+  newThreadPrompts?: QueuedTurn[];
+  newThreadActions?: TimedPromptActions;
+  /** Provider/model identity line for a scheduled new conversation. */
+  newThreadPromptDetail?: (entry: QueuedTurn) => string | undefined;
+  /** Live, turn-scoped provider notice (for example Claude continuation). */
+  continuationNotice?: ReactNode;
   onStop: () => void;
 }>(function Composer(props, ref) {
-  const willQueue = props.queueing || Boolean(props.queuedTurns?.length);
+  // Pending timed prompts are not part of the FIFO: they neither make Enter
+  // queue nor hold back the prompts that will run next.
+  const eligibleTurns = useMemo(() => eligibleQueuedTurns(props.queuedTurns ?? []), [props.queuedTurns]);
+  const scheduledTurns = useMemo(() => pendingTimedTurns(props.queuedTurns ?? []), [props.queuedTurns]);
+  const scheduledNewThreads = useMemo(() => pendingTimedTurns(props.newThreadPrompts ?? []), [props.newThreadPrompts]);
+  const willQueue = props.queueing || eligibleTurns.length > 0;
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const scheduleButtonRef = useRef<HTMLButtonElement>(null);
   const [draft, setDraftState] = useState(() => draftFor(props.threadKey));
   const dependencyPreview = useSkillDependencyPreview(draft, props.onAnalyzeSkillDependencies, props.threadKey);
   const blockedNames = useMemo(() => blockedSkillNames(dependencyPreview.report), [dependencyPreview.report]);
@@ -291,6 +320,8 @@ export const Composer = forwardRef<ComposerHandle, {
     setMentions({ open: false, results: [], index: 0 });
     setWorkflowMenu({ open: false, results: [], index: -1 });
     setSelectedWorkflow(selectedWorkflowsRef.current.get(props.threadKey)?.workflow ?? null);
+    // A schedule always belongs to the draft it was opened from.
+    setScheduleOpen(false);
   }
 
   useImperativeHandle(ref, () => ({
@@ -318,7 +349,7 @@ export const Composer = forwardRef<ComposerHandle, {
   }, []);
 
   const workflowAvailable = Boolean(props.onWorkflow && props.workflows?.length
-    && !props.running && !props.queueing && !props.queuedTurns?.length
+    && !props.running && !props.queueing && !eligibleTurns.length
     && !props.attachments.length && !props.hasFeedback);
 
   useEffect(() => {
@@ -465,7 +496,7 @@ export const Composer = forwardRef<ComposerHandle, {
   const workflowBlockers = [
     props.hasFeedback && "feedback",
     props.attachments.length > 0 && "attachments",
-    Boolean(props.queuedTurns?.length) && "queued messages",
+    eligibleTurns.length > 0 && "queued messages",
   ].filter(Boolean).join(", ");
 
   const send = useCallback(async (mode: "default" | "steer" = "default") => {
@@ -546,16 +577,70 @@ export const Composer = forwardRef<ComposerHandle, {
     }
   }, [canLaunchWorkflow, closeMentions, closeWorkflows, draft, props, selectedWorkflow, setDraft]);
 
+  const canSchedule = Boolean(props.onSchedule) && !selectedWorkflow && !submitting && !workflowSubmitting
+    && Boolean(draft.trim() || props.hasFeedback);
+  // Same draft lifecycle as Send: clear optimistically, restore on failure
+  // into the draft the prompt was scheduled from.
+  const schedule = useCallback(async (deliverAt: number): Promise<boolean> => {
+    const text = draft.trim();
+    if (!props.onSchedule || (!text && !props.hasFeedback) || submittingRef.current.has(threadKeyRef.current)) return false;
+    const sentFromKey = threadKeyRef.current;
+    submittingRef.current.add(sentFromKey);
+    setSubmittingKeys(new Set(submittingRef.current));
+    closeMentions();
+    closeWorkflows();
+    setDraft("");
+    let scheduled = false;
+    try {
+      scheduled = await props.onSchedule(text, deliverAt);
+    } catch {
+      scheduled = false;
+    } finally {
+      submittingRef.current.delete(sentFromKey);
+      setSubmittingKeys(new Set(submittingRef.current));
+      if (!scheduled && text) {
+        if (threadKeyRef.current === sentFromKey) {
+          setDraftState((current) => {
+            const restored = current && current !== text ? `${text}\n\n${current}` : text;
+            persistDraft(sentFromKey, restored);
+            return restored;
+          });
+        } else {
+          const existing = draftFor(sentFromKey);
+          persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
+        }
+      }
+    }
+    return scheduled;
+  }, [closeMentions, closeWorkflows, draft, props, setDraft]);
+
   return (
     <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""}`}>
-      {Boolean(props.queuedTurns?.length) && (
+      {props.timedActions && (
+        <ScheduledPrompts
+          entries={scheduledTurns}
+          scope="thread"
+          actions={props.timedActions}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+        />
+      )}
+      {props.newThreadActions && (
+        <ScheduledPrompts
+          entries={scheduledNewThreads}
+          scope="new-thread"
+          actions={props.newThreadActions}
+          entryDetail={props.newThreadPromptDetail}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+        />
+      )}
+      {eligibleTurns.length > 0 && (
         <div className="queued-turns">
           <div className="queued-turns-heading">
             <span><ListPlus size={12} /> Next turns</span>
-            <small>{props.queuedTurns!.length} queued</small>
+            <small>{eligibleTurns.length} queued</small>
           </div>
           <div className="queued-turns-list" role="list" aria-label="Queued follow-up messages">
-            {props.queuedTurns!.map((queuedTurn, index) => {
+            {eligibleTurns.map((queuedTurn, index) => {
               if (queuedTurn.editing && props.onFinishEditQueued) return (
                 <div className="queued-turn editing" key={queuedTurn.id} role="listitem">
                   <span className="queued-turn-index">{index + 1}</span>
@@ -576,7 +661,7 @@ export const Composer = forwardRef<ComposerHandle, {
                         ? "Starting now…"
                         : queuedTurn.status === "failed"
                           ? queuedTurn.error || "Could not start"
-                          : `${queuedTurn.attachments.length ? `${queuedTurn.attachments.length} attachment${queuedTurn.attachments.length === 1 ? "" : "s"} · ` : ""}${stalled ? "Waiting — start it now or remove it" : waitingBehindEarlier ? "Waiting behind an earlier message" : "Runs after the active turn"}`}
+                          : `${queuedTurn.deliverAt !== undefined ? `Scheduled ${formatDeliveryTime(queuedTurn.deliverAt)} · ` : ""}${queuedTurn.attachments.length ? `${queuedTurn.attachments.length} attachment${queuedTurn.attachments.length === 1 ? "" : "s"} · ` : ""}${stalled ? "Waiting — start it now or remove it" : waitingBehindEarlier ? "Waiting behind an earlier message" : "Runs after the active turn"}`}
                     </small>
                   </span>
                   {queuedTurn.status === "sending" ? (
@@ -607,6 +692,7 @@ export const Composer = forwardRef<ComposerHandle, {
           </div>
         </div>
       )}
+      {props.continuationNotice}
       {props.feedbackTray}
       {props.attachments.length > 0 && (
         <div className="composer-attachments" aria-label="Attached context">
@@ -771,7 +857,7 @@ export const Composer = forwardRef<ComposerHandle, {
         {inspector.inspector}
       </div>
       <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
-      <SkillDependencyDetails report={dependencyPreview.report} />
+      {dependencyPreview.report && hasBlockedSkillDependencies(dependencyPreview.report) && <SkillDependencyDetails report={dependencyPreview.report} />}
       {props.modelControls}
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>
@@ -800,6 +886,31 @@ export const Composer = forwardRef<ComposerHandle, {
             >
               <CornerUpRight size={14} /> <span>Steer</span>
             </button>
+          )}
+          {props.onSchedule && (
+            <button
+              ref={scheduleButtonRef}
+              type="button"
+              className="schedule-button"
+              onClick={() => setScheduleOpen((open) => !open)}
+              disabled={!canSchedule && !scheduleOpen}
+              aria-haspopup="dialog"
+              aria-expanded={scheduleOpen}
+              aria-label="Schedule this prompt"
+              title="Schedule this prompt for a later time"
+            >
+              <CalendarClock size={15} />
+            </button>
+          )}
+          {scheduleOpen && props.onSchedule && (
+            <TimedPromptPicker
+              anchorRef={scheduleButtonRef}
+              title="Schedule prompt"
+              submitLabel="Schedule"
+              contextLabel={props.scheduleContextLabel}
+              onSubmit={schedule}
+              onClose={() => setScheduleOpen(false)}
+            />
           )}
           <button
             className={`send-button ${willQueue ? "queue-button" : ""}`}

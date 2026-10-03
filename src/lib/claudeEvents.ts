@@ -8,6 +8,7 @@ import { compactionActivity, compactionState, compactionTitle } from "./contextC
 import { consumeProviderStopIntent } from "./providerStopIntent";
 import { annotateThreadUsage, claudeCanonicalModel } from "./usageLedger";
 import { mergedUsageEvidence } from "./usageEvidence";
+import { parseClaudeContinuation, useClaudeContinuationStore } from "./claudeContinuation";
 
 interface ClaudeBlock {
   id: string;
@@ -48,7 +49,16 @@ function turnHasTimelineOutput(threadId: string, turnId: string): boolean {
   const task = useTaskStore.getState().tasks[threadId];
   if (!task) return false;
   const lastMessage = task.messages[task.messages.length - 1];
-  const lastActivity = task.activities[task.activities.length - 1];
+  // Allowance telemetry says whether work may continue, not whether Claude
+  // returned a response. It must not suppress final-result answer recovery or
+  // hide an empty success; keep looking for actual work before the notice.
+  let lastActivity: Activity | undefined;
+  for (let index = task.activities.length - 1; index >= 0; index--) {
+    const activity = task.activities[index];
+    if (activity.id.startsWith("claude-continuation-")) continue;
+    lastActivity = activity;
+    break;
+  }
   return task.assistantOutputTurnId === turnId
     || Boolean(lastMessage?.turnId === turnId && lastMessage.role === "assistant" && hasVisibleText(lastMessage.text))
     || lastActivity?.turnId === turnId;
@@ -436,6 +446,22 @@ export function routeClaudeEvent(
   if (type === "rate_limit_event") {
     const limits = parseClaudeRateLimitEvent(message);
     if (limits) ctx.onRateLimits?.(limits);
+    const continuation = parseClaudeContinuation(message);
+    const previous = useClaudeContinuationStore.getState().byThread[threadId];
+    useClaudeContinuationStore.getState().update(threadId, turnId, continuation);
+    if (continuation && (previous?.turnId !== turnId || previous.kind !== continuation.kind)) {
+      store.upsertActivity(threadId, {
+        id: `claude-continuation-${turnId}-${continuation.kind}`,
+        kind: "warning",
+        title: continuation.kind === "grace" ? "Claude is using its included wrap-up allowance" : "Claude is using paid usage credits",
+        detail: continuation.kind === "grace"
+          ? "Your five-hour limit was reached. Claude Code is continuing this response with your plan's included wrap-up allowance, which counts toward your weekly usage. The allowance is capped and may end before the task is finished."
+          : "Claude Code reports that paid usage credits are being consumed under your existing Anthropic account settings. Additional charges may apply. Mythra Code has not enabled or changed paid usage.",
+        status: "completed",
+        turnId,
+      });
+      ctx.onTranscriptChanged(threadId);
+    }
     return;
   }
 
@@ -591,6 +617,7 @@ export function routeClaudeEvent(
   }
 
   if (type === "result") {
+    useClaudeContinuationStore.getState().clear(threadId, turnId);
     store.flushDeltas();
     recordResultUsage(threadId, turnId, message.usage, message.modelUsage, ctx.bindingFor(threadId));
     const subtype = text(message.subtype);
@@ -686,6 +713,7 @@ export function routeClaudeEvent(
   }
 
   if (type === "openkiwi_exit") {
+    useClaudeContinuationStore.getState().clear(threadId, turnId);
     store.flushDeltas();
     // The result event that would clean this up is never coming.
     partialUsage.delete(`${threadId}\0${turnId}`);
@@ -795,6 +823,10 @@ export function routeClaudeEvent(
   }
 
   if (type === "system" && message.subtype === "init") {
+    // Only a different turn's init retires a live notice; a repeated init
+    // inside this turn (a steered follow-up) does not end the allowance.
+    const stale = useClaudeContinuationStore.getState().byThread[threadId];
+    if (stale && stale.turnId !== turnId) useClaudeContinuationStore.getState().clear(threadId, stale.turnId);
     store.setActiveTurn(threadId, turnId);
     store.setTaskStatus(threadId, "running");
   }

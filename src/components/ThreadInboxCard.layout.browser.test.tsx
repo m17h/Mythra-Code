@@ -18,6 +18,7 @@ describe("inbox PR badge layout", () => {
             <ThreadInboxCard threadId="preview" title="A very long descriptive thread title which must keep its own full row"
               workspaceName="An unusually long project name" directory="/work/projects/a-long-project-folder-name"
               provider="claude" providerName="Claude" pinned onOpen={() => {}}
+              scheduledPromptCount={128}
               pullRequest={{ number, repository: "organisation/a-long-repository-name", state: "OPEN", isDraft: false }} />
           </div>
         </div>);

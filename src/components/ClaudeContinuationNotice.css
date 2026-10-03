@@ -1,0 +1,11 @@
+/* Neutral surface; the accent only marks which kind of continuation it is. */
+.claude-continuation-notice { --continuation-accent: var(--info); display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 8px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--continuation-accent) 22%, var(--line)); border-radius: var(--r-md); color: var(--text); background: color-mix(in srgb, var(--continuation-accent) 5%, var(--panel, transparent)); }
+.claude-continuation-notice.is-paid { --continuation-accent: var(--orange, var(--red)); }
+.claude-continuation-icon { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; color: var(--continuation-accent); background: color-mix(in srgb, var(--continuation-accent) 12%, transparent); }
+.claude-continuation-copy { min-width: 0; display: grid; gap: 2px; }
+.claude-continuation-copy strong { color: var(--ink-2, var(--text)); font-size: var(--fs-meta); font-weight: 600; }
+.claude-continuation-copy small { color: var(--muted); font-size: var(--fs-micro); line-height: 1.45; overflow-wrap: anywhere; }
+.claude-continuation-notice button { align-self: center; height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: transparent; font: inherit; font-size: var(--fs-micro); white-space: nowrap; cursor: pointer; }
+.claude-continuation-notice button:hover { border-color: var(--line-strong); background: var(--hover, rgba(255,255,255,.05)); }
+.claude-continuation-notice button:focus-visible { outline: 2px solid var(--continuation-accent); outline-offset: 2px; }
+@media (max-width: 520px) { .claude-continuation-notice { grid-template-columns: 22px minmax(0, 1fr); } .claude-continuation-notice button { grid-column: 2; justify-self: start; } }

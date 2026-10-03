@@ -20,6 +20,21 @@ afterEach(async () => {
 });
 
 describe("nested dependencies across the editor and composer", () => {
+  it("highlights a healthy skill without a redundant context summary", async () => {
+    const analyze = vi.fn(async () => skillDependencyFixture());
+    const view = render(<div className="app-shell" data-theme="mythra" data-color-scheme="dark">
+      <Composer threadKey="healthy-preview" chatFont="system" running={false} queueing={false} canSteer={false}
+        dropActive={false} placeholder="Ask anything" attachments={[]} controls={null} skills={skills}
+        onRemoveAttachment={() => {}} onPasteImages={() => {}} onSend={async () => false} onSteer={async () => false}
+        onStop={() => {}} onAnalyzeSkillDependencies={analyze} />
+    </div>);
+    await userEvent.fill(screen.getByPlaceholderText("Ask anything"), "Use @review to inspect the changes");
+    expect(view.container.querySelector(".composer-skill-token")).toHaveTextContent("@review");
+    // Wait for draft analysis, not just the immediate highlight overlay.
+    await waitFor(() => expect(analyze).toHaveBeenCalledWith("Use @review to inspect the changes"));
+    expect(view.container.querySelector(".skill-dependency-details")).toBeNull();
+    expect(screen.queryByText("Turn blocked by skill dependencies")).toBeNull();
+  });
   it.each(["light", "dark"] as const)("shows a nested unsupported Word reference with a red root and full reason in %s", async (colorScheme) => {
     await page.viewport(430, 700);
     const report = skillDependencyFixture(true);

@@ -79,6 +79,19 @@ describe("ThreadInboxCard", () => {
     expect(formatWorkingDuration(Number.NaN)).toBe("0s");
     expect(formatWorkingDuration(3_661_000)).toBe("1h 1m");
   });
+
+  it("shows pending schedules beside metadata and announces them on the card", () => {
+    const view = render(<ThreadInboxCard threadId="closed" title="Follow up later"
+      workspaceName="Project" directory="/projects/app" provider="claude" providerName="Claude"
+      pinned={false} scheduledPromptCount={3} onOpen={() => {}} />);
+    expect(screen.getByRole("button", { name: "Open Follow up later · 3 scheduled prompts in this thread" })).toBeInTheDocument();
+    expect(view.container.querySelector(".thread-card-meta .scheduled-count")).toHaveTextContent("3");
+    view.rerender(<ThreadInboxCard threadId="closed" title="Follow up later"
+      workspaceName="Project" directory="/projects/app" provider="claude" providerName="Claude"
+      pinned={false} scheduledPromptCount={0} onOpen={() => {}} />);
+    expect(screen.getByRole("button", { name: "Open Follow up later" })).toBeInTheDocument();
+    expect(view.container.querySelector(".scheduled-counts")).toBeNull();
+  });
 });
 
 describe("ThreadInboxCard — the attached pull request", () => {

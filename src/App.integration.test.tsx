@@ -6142,3 +6142,146 @@ describe("Thread pull request integration", () => {
     expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
   });
 });
+
+describe("archived scheduled prompt visibility", () => {
+  it("keeps an unopened thread's schedules discoverable through archive, disclosure and restore", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [THREAD_A.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [THREAD_A.id]: THREAD_A }));
+    localStorage.setItem("kiwi.queuedTurns", JSON.stringify({
+      [THREAD_A.id]: [{ id: "archived-follow-up", threadId: THREAD_A.id, text: "Inspect tomorrow's build", attachments: [],
+        createdAt: Date.now(), deliverAt: Date.now() + 86_400_000, status: "queued" }],
+    }));
+    await renderApp();
+    const { useTaskStore, storedPendingTimedTurns } = await import("./lib/taskStore");
+    const projectName = "Alpha, 1 scheduled prompt in existing threads";
+    expect(await screen.findByRole("button", { name: projectName })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open Alpha thread · 1 scheduled prompt in this thread" })).toBeInTheDocument();
+    expect(useTaskStore.getState().tasks[THREAD_A.id]).toBeUndefined();
+
+    await user.click(screen.getByRole("button", { name: "Options for Alpha thread" }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({
+      method: "thread/archive", params: { threadId: THREAD_A.id },
+    })));
+    const archived = await screen.findByRole("button", { name: "Archived, 1 thread, 1 scheduled prompt in archived threads" });
+    expect(archived).toHaveAttribute("aria-expanded", "false");
+    expect(archived.querySelector(".scheduled-count")).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: projectName })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Open Alpha thread/ })).toBeNull();
+    expect(storedPendingTimedTurns()).toHaveLength(1);
+
+    await user.click(archived);
+    const archivedRow = screen.getByRole("group", { name: "Alpha thread, 1 scheduled prompt in this thread" });
+    expect(archivedRow.querySelector(".scheduled-count")).toHaveTextContent("1");
+    await user.click(archived);
+    expect(screen.getByRole("button", { name: projectName })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Options for archived Alpha thread" })).toBeNull();
+    await user.click(archived);
+    await user.click(screen.getByRole("button", { name: "Options for archived Alpha thread" }));
+    await user.click(screen.getByRole("menuitem", { name: "Restore" }));
+    expect(await screen.findByRole("button", { name: "Open Alpha thread · 1 scheduled prompt in this thread" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Archived, 1 thread/ })).toBeNull();
+    expect(screen.getByRole("button", { name: projectName })).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toBe(false);
+  });
+});
+
+describe("scheduled new conversations", () => {
+  function inTwoDays(): string {
+    const date = new Date(Date.now() + 2 * 86_400_000);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+
+  it("keeps a scheduled new conversation visible and actionable after a normal first send opens a thread", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    const { useNewThreadTimedPrompts } = await import("./lib/newThreadTimedPrompts");
+    const { useTaskStore } = await import("./lib/taskStore");
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    const draft = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+
+    // 1. Schedule a first prompt from the new-thread draft.
+    await user.type(draft, "Nightly dependency audit");
+    await user.click(screen.getByRole("button", { name: "Schedule this prompt" }));
+    const picker = await screen.findByRole("dialog", { name: "Schedule prompt" });
+    fireEvent.change(within(picker).getByLabelText("Date"), { target: { value: inTwoDays() } });
+    fireEvent.change(within(picker).getByLabelText("Time"), { target: { value: "09:00" } });
+    await user.click(within(picker).getByRole("button", { name: "Schedule" }));
+    const draftToggle = await screen.findByRole("button", { name: /Scheduled · new conversations/ });
+    expect(draftToggle).toHaveAttribute("aria-expanded", "false");
+    expect(draftToggle).toHaveTextContent("1 prompt");
+    await user.click(draftToggle);
+    const draftList = await screen.findByRole("list", { name: "Scheduled new conversations" });
+    expect(within(draftList).getByText("Nightly dependency audit")).toBeInTheDocument();
+    const [scheduled] = Object.values(useNewThreadTimedPrompts.getState().prompts).flat();
+    expect(scheduled).toMatchObject({ text: "Nightly dependency audit", status: "queued" });
+    await user.click(draftToggle);
+
+    // 2. A normal first send creates and opens a thread.
+    await user.type(screen.getByPlaceholderText(/Ask Mythra Code to work in/), "Inspect this project{Enter}");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "turn/start" })));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe("isolated-thread"));
+    // The ordinary send did not consume or start the scheduled prompt.
+    expect(Object.values(useNewThreadTimedPrompts.getState().prompts).flat()).toEqual([expect.objectContaining({ id: scheduled.id, status: "queued" })]);
+
+    // 3. Inside the thread, the scheduled new conversation stays reachable,
+    // clearly scoped apart from this thread's own schedule.
+    const toggle = await screen.findByRole("button", { name: /Scheduled · new conversations/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("1 prompt");
+    expect(toggle).toHaveAttribute("title", expect.stringContaining("Each starts its own thread"));
+    expect(screen.queryByRole("list", { name: "Scheduled for this thread" })).toBeNull();
+    await user.click(toggle);
+    const list = screen.getByRole("list", { name: "Scheduled new conversations" });
+    expect(within(list).getByText("Nightly dependency audit")).toBeInTheDocument();
+    expect(list).toHaveTextContent("new OpenAI conversation");
+
+    // Edit, reschedule and remove all act on the scheduled entry by id.
+    await user.click(within(list).getByRole("button", { name: "Edit new conversation 1" }));
+    const editor = await screen.findByRole("textbox", { name: "Edit new conversation 1" });
+    await user.clear(editor);
+    await user.type(editor, "Weekly dependency audit");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(Object.values(useNewThreadTimedPrompts.getState().prompts).flat()[0]).toMatchObject({ text: "Weekly dependency audit" }));
+
+    await user.click(within(screen.getByRole("list", { name: "Scheduled new conversations" })).getByRole("button", { name: "Reschedule new conversation 1" }));
+    const reschedule = await screen.findByRole("dialog", { name: "Reschedule new conversation" });
+    fireEvent.change(within(reschedule).getByLabelText("Time"), { target: { value: "10:30" } });
+    await user.click(within(reschedule).getByRole("button", { name: "Reschedule" }));
+    await waitFor(() => expect(new Date(Object.values(useNewThreadTimedPrompts.getState().prompts).flat()[0].deliverAt).getHours()).toBe(10));
+
+    await user.click(within(screen.getByRole("list", { name: "Scheduled new conversations" })).getByRole("button", { name: "Remove new conversation 1" }));
+    await waitFor(() => expect(useNewThreadTimedPrompts.getState().prompts).toEqual({}));
+    expect(screen.queryByRole("button", { name: /Scheduled · new conversations/ })).toBeNull();
+  });
+
+  it("surfaces a missed new conversation in its compact header and starts it only on request", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    const { useNewThreadTimedPrompts } = await import("./lib/newThreadTimedPrompts");
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "Release notes draft");
+    await user.click(screen.getByRole("button", { name: "Schedule this prompt" }));
+    const picker = await screen.findByRole("dialog", { name: "Schedule prompt" });
+    fireEvent.change(within(picker).getByLabelText("Date"), { target: { value: inTwoDays() } });
+    await user.click(within(picker).getByRole("button", { name: "Schedule" }));
+    await screen.findByRole("button", { name: /Scheduled · new conversations/ });
+    await user.click(await screen.findByRole("button", { name: /^Open Alpha thread\b/ }));
+    const [prompt] = Object.values(useNewThreadTimedPrompts.getState().prompts).flat();
+    act(() => { useNewThreadTimedPrompts.getState().markMissed([prompt.id]); });
+
+    // Needs a decision: expose that in the compact header without sending it.
+    const toggle = await screen.findByRole("button", { name: /Scheduled · new conversations/ });
+    expect(toggle).toHaveTextContent("1 missed");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    const list = await screen.findByRole("list", { name: "Scheduled new conversations" });
+    expect(list).toHaveTextContent("not sent automatically");
+    const turnStarts = () => invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start").length;
+    expect(turnStarts()).toBe(0);
+    await user.click(within(list).getByRole("button", { name: "Start now new conversation 1" }));
+    await waitFor(() => expect(turnStarts()).toBe(1));
+    await waitFor(() => expect(useNewThreadTimedPrompts.getState().prompts).toEqual({}));
+  });
+});

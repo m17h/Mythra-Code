@@ -5,6 +5,7 @@ const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, resetStorageMemoryForTests, flushPendingStateWrites, hydrateNativeStorage, loadStored, migrateStorage, removeStoredValue, storeValue } from "./storage";
+import { sanitizeStoredNewThreadPrompts } from "./newThreadTimedPrompts";
 
 describe("durable storage", () => {
   afterEach(resetStorageMemoryForTests);
@@ -27,6 +28,20 @@ describe("durable storage", () => {
   it("keeps per-thread model choices in durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadModels");
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadReasoning");
+  });
+
+  it("restores scheduled new conversations from native storage without relying on the webview cache", async () => {
+    const prompts = { workspace: [{
+      id: "scheduled", threadId: "new:workspace", workspacePath: "workspace", workspaceName: "Test workspace",
+      text: "Keep this prompt", attachments: [], createdAt: 1_000, status: "sending", deliverAt: 2_000_000_000_000,
+      snapshot: { provider: "claude", model: "claude-haiku-4-5", reasoningEffort: "medium", ultra: false, permission: "ask", serviceTier: null, subagentsEnabled: false, isolated: false },
+    }] };
+    invoke.mockImplementation(async (command: string, args?: { key: string }) => command === "state_read" && args?.key === "kiwi.newThreadTimedPrompts" ? prompts : null);
+    await hydrateNativeStorage();
+    expect(loadStored("kiwi.newThreadTimedPrompts", {})).toEqual(prompts);
+    expect(sanitizeStoredNewThreadPrompts(loadStored("kiwi.newThreadTimedPrompts", {})).workspace[0]).toMatchObject({
+      id: "scheduled", text: "Keep this prompt", status: "queued", missedAt: expect.any(Number), snapshot: { provider: "claude", permission: "ask" },
+    });
   });
 
   it("restores thread PR links from native storage after the webview cache is cleared", async () => {

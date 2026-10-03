@@ -37,6 +37,15 @@ export interface QueuedTurn {
   resolveSkillMentions?: false;
   /** Only this user-authored text may invoke skills inside a formatted prompt. */
   skillInvocationText?: string;
+  /**
+   * Timed prompt: epoch ms chosen by the user. The entry is not part of the
+   * FIFO until the local clock releases it (see `timedPrompts.ts`).
+   */
+  deliverAt?: number;
+  /** When a timed prompt joined the FIFO; absent while it is still pending. */
+  releasedAt?: number;
+  /** Its time passed without a continuously awake release; never sent unless the user asks. */
+  missedAt?: number;
 }
 
 const QUEUED_TURNS_KEY = "kiwi.queuedTurns";
@@ -59,6 +68,9 @@ export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, Queue
       const entry = candidate as Record<string, unknown>;
       if (typeof entry.id !== "string" || !entry.id.trim() || seenIds.has(entry.id)) continue;
       if (typeof entry.text !== "string" || !entry.text.trim()) continue;
+      // A damaged schedule must never degrade into an immediate prompt.
+      if ((entry.deliverAt !== undefined || entry.releasedAt !== undefined || entry.missedAt !== undefined)
+        && !validEpoch(entry.deliverAt)) continue;
       seenIds.add(entry.id);
       const attachments: AttachmentRecord[] = Array.isArray(entry.attachments)
         ? entry.attachments.flatMap((candidateAttachment) => {
@@ -83,11 +95,30 @@ export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, Queue
         ...(entry.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
         ...(typeof entry.skillInvocationText === "string" ? { skillInvocationText: entry.skillInvocationText } : {}),
         ...(typeof entry.error === "string" && entry.error ? { error: entry.error } : {}),
+        ...timedFields(entry),
       });
     }
     if (queuedTurns.length) result[threadId] = queuedTurns;
   }
   return result;
+}
+
+/** Largest instant a JavaScript Date can represent. */
+const MAX_DATE_MS = 8.64e15;
+
+function validEpoch(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= MAX_DATE_MS;
+}
+
+/** A restored release has no confirmed delivery receipt. Require approval. */
+function timedFields(entry: Record<string, unknown>): Pick<QueuedTurn, "deliverAt" | "releasedAt" | "missedAt"> {
+  if (!validEpoch(entry.deliverAt)) return {};
+  return {
+    deliverAt: entry.deliverAt,
+    ...(validEpoch(entry.releasedAt) || entry.status === "sending"
+      ? { missedAt: Date.now() }
+      : validEpoch(entry.missedAt) ? { missedAt: entry.missedAt } : {}),
+  };
 }
 
 function loadQueuedTurns(): Record<string, QueuedTurn[]> {
@@ -104,6 +135,15 @@ function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
     queuedTurnsCache = next;
   }
   storeValue(QUEUED_TURNS_KEY, queuedTurnsCache);
+}
+
+/** Timed entries still waiting for their time, across loaded and restored threads. */
+export function storedPendingTimedTurns(): QueuedTurn[] {
+  const result: QueuedTurn[] = [];
+  for (const entries of Object.values(queuedTurnsCache)) {
+    for (const entry of entries) if (entry.deliverAt !== undefined && entry.releasedAt === undefined) result.push(entry);
+  }
+  return result;
 }
 
 export interface ThreadTaskState {
@@ -197,7 +237,17 @@ interface TaskStoreState {
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
   clearApprovals: (threadId: string) => void;
-  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[], options?: { resolveSkillMentions?: false; skillInvocationText?: string }) => QueuedTurn;
+  /** Bumped by every queue mutation so subscribers can skip per-token store writes. */
+  queueRevision: number;
+  enqueueTurn: (threadId: string, text: string, attachments: AttachmentRecord[], options?: { resolveSkillMentions?: false; skillInvocationText?: string; deliverAt?: number }) => QueuedTurn;
+  /** Move due timed prompts into the FIFO at their delivery time. */
+  releaseTimedTurns: (threadId: string, queuedTurnIds: string[]) => void;
+  /** Persist that these prompts' times passed unobserved; works for restored, unopened threads. */
+  markTimedTurnsMissed: (threadId: string, queuedTurnIds: string[], missedAt?: number) => void;
+  /** Explicit user action: a pending or missed timed prompt joins the FIFO now. */
+  releaseTimedTurnNow: (threadId: string, queuedTurnId: string) => boolean;
+  /** Set a new future delivery time; the entry leaves the FIFO until then. */
+  rescheduleQueuedTurn: (threadId: string, queuedTurnId: string, deliverAt: number) => boolean;
   beginQueuedTurnEdit: (threadId: string, queuedTurnId: string) => boolean;
   finishQueuedTurnEdit: (threadId: string, queuedTurnId: string, text?: string) => boolean;
   setQueuedTurnStatus: (threadId: string, queuedTurnId: string, status: QueuedTurnStatus, error?: string) => void;
@@ -478,6 +528,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   tasks: {},
   statuses: {},
   workflowOwners: {},
+  queueRevision: 0,
   setWorkflowOwner: (threadId, owner) => set((state) => {
     const existing = state.workflowOwners[threadId];
     if (owner && existing?.runId === owner.runId && existing.workflowId === owner.workflowId) return state;
@@ -1262,14 +1313,75 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       status: "queued",
       ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
       ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
+      ...(options?.deliverAt !== undefined && validEpoch(options.deliverAt) ? { deliverAt: options.deliverAt } : {}),
     };
     set((state) => {
       const task = state.tasks[threadId] ?? emptyTask(threadId);
       const queuedTurns = [...task.queuedTurns, queuedTurn];
       persistQueuedTurns(threadId, queuedTurns);
-      return { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+      return { queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
     });
     return queuedTurn;
+  },
+  releaseTimedTurns: (threadId, queuedTurnIds) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task || !queuedTurnIds.length) return state;
+    const ids = new Set(queuedTurnIds);
+    let changed = false;
+    const queuedTurns = task.queuedTurns.map((entry) => {
+      if (!ids.has(entry.id) || entry.deliverAt === undefined || entry.releasedAt !== undefined || entry.missedAt !== undefined
+        || entry.editing || entry.status === "sending" || entry.deliverAt > Date.now()) return entry;
+      changed = true;
+      // Ordered by when it became due, not by when the timer happened to run.
+      return { ...entry, releasedAt: entry.deliverAt };
+    });
+    if (!changed) return state;
+    persistQueuedTurns(threadId, queuedTurns);
+    return { queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+  }),
+  markTimedTurnsMissed: (threadId, queuedTurnIds, missedAt = Date.now()) => set((state) => {
+    const task = state.tasks[threadId];
+    const current = task?.queuedTurns ?? queuedTurnsCache[threadId];
+    if (!current?.length || !queuedTurnIds.length) return state;
+    const ids = new Set(queuedTurnIds);
+    let changed = false;
+    const queuedTurns = current.map((entry) => {
+      if (!ids.has(entry.id) || entry.deliverAt === undefined || entry.releasedAt !== undefined || entry.missedAt !== undefined || entry.status === "sending") return entry;
+      changed = true;
+      return { ...entry, missedAt };
+    });
+    if (!changed) return state;
+    persistQueuedTurns(threadId, queuedTurns);
+    return {
+      queueRevision: state.queueRevision + 1,
+      ...(task ? { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } } : {}),
+    };
+  }),
+  releaseTimedTurnNow: (threadId, queuedTurnId) => {
+    const task = get().tasks[threadId];
+    const entry = task?.queuedTurns.find((item) => item.id === queuedTurnId);
+    if (!entry || entry.deliverAt === undefined || entry.releasedAt !== undefined || entry.editing || entry.status === "sending") return false;
+    const queuedTurns = task.queuedTurns.map((item) => {
+      if (item.id !== queuedTurnId) return item;
+      const { missedAt: _missed, ...rest } = item;
+      return { ...rest, status: "queued" as const, error: undefined, releasedAt: Math.max(Date.now(), item.createdAt) };
+    });
+    persistQueuedTurns(threadId, queuedTurns);
+    set((state) => ({ queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
+    return true;
+  },
+  rescheduleQueuedTurn: (threadId, queuedTurnId, deliverAt) => {
+    const task = get().tasks[threadId];
+    const entry = task?.queuedTurns.find((item) => item.id === queuedTurnId);
+    if (!entry || entry.status === "sending" || entry.editing || !validEpoch(deliverAt) || deliverAt <= Date.now()) return false;
+    const queuedTurns = task.queuedTurns.map((item) => {
+      if (item.id !== queuedTurnId) return item;
+      const { releasedAt: _released, missedAt: _missed, error: _error, ...rest } = item;
+      return { ...rest, status: "queued" as const, deliverAt };
+    });
+    persistQueuedTurns(threadId, queuedTurns);
+    set((state) => ({ queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
+    return true;
   },
   beginQueuedTurnEdit: (threadId, queuedTurnId) => {
     const task = get().tasks[threadId];
@@ -1277,7 +1389,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     if (!entry || entry.status === "sending" || entry.editing) return false;
     const queuedTurns = task.queuedTurns.map((item) => item.id === queuedTurnId ? { ...item, editing: true } : item);
     persistQueuedTurns(threadId, queuedTurns);
-    set((state) => ({ tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
+    set((state) => ({ queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
     return true;
   },
   finishQueuedTurnEdit: (threadId, queuedTurnId, text) => {
@@ -1298,25 +1410,28 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       };
     });
     persistQueuedTurns(threadId, queuedTurns);
-    set((state) => ({ tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
+    set((state) => ({ queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } }));
     return true;
   },
   setQueuedTurnStatus: (threadId, queuedTurnId, status, error) => set((state) => {
     const task = state.tasks[threadId];
     if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
-    if (status === "sending" && task.queuedTurns.find((entry) => entry.id === queuedTurnId)?.editing) return state;
+    const target = task.queuedTurns.find((entry) => entry.id === queuedTurnId);
+    if (status === "sending" && target?.editing) return state;
+    // Defense in depth: no delivery path may start a timed prompt early.
+    if (status === "sending" && target?.deliverAt !== undefined && target.releasedAt === undefined) return state;
     const queuedTurns = task.queuedTurns.map((entry) => entry.id === queuedTurnId
       ? { ...entry, status, ...(error ? { error } : { error: undefined }) }
       : entry);
     persistQueuedTurns(threadId, queuedTurns);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+    return { queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
   }),
   removeQueuedTurn: (threadId, queuedTurnId) => set((state) => {
     const task = state.tasks[threadId];
     if (!task || !task.queuedTurns.some((entry) => entry.id === queuedTurnId)) return state;
     const queuedTurns = task.queuedTurns.filter((entry) => entry.id !== queuedTurnId);
     persistQueuedTurns(threadId, queuedTurns);
-    return { tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
+    return { queueRevision: state.queueRevision + 1, tasks: { ...state.tasks, [threadId]: { ...task, queuedTurns, updatedAt: Date.now() } } };
   }),
   clearUnread: (threadId) => set((state) => state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], unread: false } } } : state),
   removeTask: (threadId) => {
@@ -1332,7 +1447,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       delete statuses[threadId];
       delete workflowOwners[threadId];
       persistQueuedTurns(threadId, []);
-      return { tasks, statuses, workflowOwners, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
+      return { tasks, statuses, workflowOwners, queueRevision: state.queueRevision + 1, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
     });
   },
 }));
@@ -1350,5 +1465,5 @@ export function resetTaskStore(): void {
   transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
   transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
   removeStoredValue(QUEUED_TURNS_KEY);
-  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {}, workflowOwners: {} });
+  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {}, workflowOwners: {}, queueRevision: 0 });
 }
