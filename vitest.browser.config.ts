@@ -40,6 +40,11 @@ export default defineConfig({
           // WebKit dispatches MediaQueryList changes on a later rendering step.
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         },
+        // Presses or releases the real mouse wherever it last moved, so a spec
+        // can hold a trusted drag open between userEvent.hover() moves.
+        async setMouseButton({ page }, down: boolean) {
+          await (down ? page.mouse.down() : page.mouse.up());
+        },
         async setForcedColors({ page }, active: boolean) {
           await page.emulateMedia({ forcedColors: active ? "active" : "none" });
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));

@@ -307,6 +307,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="atari"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), var(--panel-3) var(--reasoning-fill), var(--panel-3) 100%); }
 .app-shell[data-theme="atari"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), var(--panel-3) var(--router-fill), var(--panel-3) 100%); }
 
+/* usePaneResize writes each pane's width on that pane's root. Registered
+   non-inherited, the width variable stays local to that element instead of
+   propagating through its subtree; the universal syntax keeps var() fallbacks. */
+@property --sidebar-width { syntax: "*"; inherits: false; }
+@property --dock-width { syntax: "*"; inherits: false; }
 .sidebar { position: relative; z-index: 2; display: flex; flex-direction: column; flex: 0 0 var(--sidebar-width, var(--sidebar-width-fallback, 264px)); width: var(--sidebar-width, var(--sidebar-width-fallback, 264px)); background: var(--sidebar); border-right: 1px solid var(--line); transition: width var(--t-mid) var(--ease), flex-basis var(--t-mid) var(--ease), opacity var(--t-fast) ease; overflow: hidden; }
 .sidebar.closed { width: 0; flex-basis: 0; opacity: 0; border-right: 0; }
 .sidebar-brand { display: flex; align-items: center; height: var(--topbar-h); padding: 0 var(--s-3) 0 var(--s-4); gap: var(--s-2); font-size: var(--fs-body); font-weight: 650; letter-spacing: var(--track-display); white-space: nowrap; }
@@ -1854,9 +1859,9 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 @media (max-width: 1000px) {
   :root { --measure: 660px; }
-  /* Narrow-window default only. The shell publishes --sidebar-width from the
-     persisted/dragged size, and an inherited value the resizer owns must keep
-     winning over this breakpoint fallback. */
+  /* Narrow-window default only. The resizer publishes --sidebar-width on the
+     sidebar from the persisted/dragged size, and that value must keep winning
+     over this breakpoint fallback. */
   .sidebar { --sidebar-width-fallback: 236px; }
   .sidebar-section, .sidebar-footer { min-width: 236px; }
   .timeline-entry { width: calc(100% - 36px); }
