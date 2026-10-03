@@ -1,10 +1,35 @@
 import { render } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { themeColorScheme } from "../lib/appConfig";
+import { THEMES, themeColorScheme } from "../lib/appConfig";
 import { ClaudeProviderLogo, OpenAILogo } from "./BrandLogos";
+import { ChatTimeline } from "./ChatTimeline";
 import { ThreadInboxCard } from "./ThreadInboxCard";
 import "../styles.css";
 import "./UsageDashboard.css";
+
+it.each(THEMES)("keeps sent-message bubbles free of accent glow in $name", ({ id }) => {
+  const view = render(<div className="app-shell" data-theme={id} data-color-scheme={themeColorScheme(id)} style={{ height: 600, width: 900 }}>
+    <ChatTimeline messages={[
+      { id: "plain", role: "user", text: "Please review this change." },
+      { id: "image", role: "user", text: "Use this screenshot too.", attachments: [{
+        path: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='60'%3E%3Crect width='80' height='60' fill='%238fd6ff'/%3E%3C/svg%3E",
+        name: "example.svg", kind: "image",
+      }] },
+      { id: "reply", role: "assistant", text: "I will review it." },
+  ]} activities={[]} running={false} thinkingLabel="Thinking" provider="claude" />
+  </div>);
+  const bubbles = view.container.querySelectorAll<HTMLElement>(".message.user .message-body");
+  expect(bubbles).toHaveLength(3);
+  for (const bubble of bubbles) {
+    const style = getComputedStyle(bubble);
+    expect(style.boxShadow).toBe("rgba(0, 0, 0, 0.3) 0px 16px 34px -20px");
+    expect(style.borderTopWidth).toBe("1px");
+    expect(style.borderTopStyle).toBe("solid");
+    expect(style.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  }
+  // This is a bubble-only change; provider avatars keep their existing shadow.
+  expect(getComputedStyle(view.container.querySelector(".message.assistant .message-avatar")!).boxShadow).not.toBe("none");
+});
 
 function luminance(color: string) {
   const channels = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map((value) => {

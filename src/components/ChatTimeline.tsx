@@ -1380,7 +1380,7 @@ function FlowTimeline({
         <div ref={contentRef} className="flow-timeline-list">
           {searchWindowStart !== null && searchWindowEnd !== null && entries.slice(searchWindowStart, searchWindowEnd).map((entry, offset) => {
             const index = searchWindowStart + offset;
-            return <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
+            return <div data-entry-index={index} data-entry-kind={entry.kind} key={timelineEntryKey(entry, index)}>
               <TimelineEntryContent
                 activeEntryIndex={activeEntryIndex}
                 entry={entry}
@@ -1397,7 +1397,7 @@ function FlowTimeline({
           )}
           {suffixEntries.map((entry, offset) => {
             const index = hiddenPrefixCount + offset;
-            return <div data-entry-index={index} key={timelineEntryKey(entry, index)}>
+            return <div data-entry-index={index} data-entry-kind={entry.kind} key={timelineEntryKey(entry, index)}>
               <TimelineEntryContent
                 activeEntryIndex={activeEntryIndex}
                 entry={entry}
