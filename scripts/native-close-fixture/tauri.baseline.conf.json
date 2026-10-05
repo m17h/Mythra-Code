@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Mythra Native Close Baseline",
+  "version": "0.0.0",
+  "identifier": "com.mythra.nativeclosebaseline",
+  "build": { "frontendDist": "dist" },
+  "app": {
+    "windows": [{ "label": "main", "title": "Mythra Native Close Baseline - synthetic only", "width": 720, "height": 500 }],
+    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'", "assetProtocol": { "enable": true, "scope": [] } }
+  },
+  "bundle": { "active": false, "createUpdaterArtifacts": false, "icon": ["../../src-tauri/icons/icon.ico"] }
+}
