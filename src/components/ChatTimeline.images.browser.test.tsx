@@ -32,6 +32,83 @@ function RunningShortcuts({ onStop }: { onStop: () => void }) {
 }
 
 describe("historical sent image expansion", () => {
+  it.each(["both", "showModal", "close"])("uses a modal fallback when %s native dialog methods are unavailable", async (missing) => {
+    const prototype = HTMLDialogElement.prototype;
+    const showModal = Object.getOwnPropertyDescriptor(prototype, "showModal")!;
+    const close = Object.getOwnPropertyDescriptor(prototype, "close")!;
+    if (missing !== "close") Object.defineProperty(prototype, "showModal", { configurable: true, value: undefined });
+    if (missing !== "showModal") Object.defineProperty(prototype, "close", { configurable: true, value: undefined });
+    const backgroundClick = vi.fn();
+    const stopTurn = vi.fn();
+    let view: ReturnType<typeof render> | undefined;
+    try {
+      view = render(<div className="app-shell" data-theme="mythra" data-color-scheme="light" style={{ zoom: 1.5, "--ui-scale": 1.5, "--panel": "rgb(245, 246, 247)" } as CSSProperties}>
+        <RunningShortcuts onStop={stopTurn} />
+        <button onClick={backgroundClick}>Background action</button>
+        <MessageImagePreview path={landscape} name="legacy.png" />
+      </div>);
+      const trigger = screen.getByRole("button", { name: "Expand attached image: legacy.png" });
+      const background = screen.getByRole("button", { name: "Background action" });
+      const overflow = document.body.style.overflow;
+      const initialHidden = view.container.getAttribute("aria-hidden");
+      await userEvent.click(trigger);
+      const dialog = screen.getByRole("dialog", { name: "Image preview: legacy.png" });
+      expect(dialog).toHaveAttribute("aria-modal", "true");
+      expect(dialog.closest(".message-image-fallback")?.parentElement).toBe(document.body);
+      const closeButton = screen.getByRole("button", { name: "Close image preview" });
+      expect(closeButton).toHaveFocus();
+      await userEvent.tab();
+      expect(closeButton).toHaveFocus();
+      await userEvent.tab({ shift: true });
+      expect(closeButton).toHaveFocus();
+      background.focus();
+      expect(closeButton).toHaveFocus();
+      fireEvent.click(background);
+      expect(backgroundClick).not.toHaveBeenCalled();
+      expect(view.container).toHaveAttribute("aria-hidden", "true");
+      await userEvent.keyboard("{Control>}k{/Control}");
+      expect(getComputedStyle(dialog).backgroundColor).toBe("rgb(245, 246, 247)");
+      view.container.querySelector<HTMLElement>(".app-shell")!.style.setProperty("--panel", "rgb(250, 241, 232)");
+      await waitFor(() => expect(getComputedStyle(dialog).backgroundColor).toBe("rgb(250, 241, 232)"));
+      for (const width of [1400, 380]) {
+        await page.viewport(width, 900);
+        await waitFor(() => {
+          const bounds = dialog.getBoundingClientRect();
+          expect(bounds.left).toBeGreaterThanOrEqual(0);
+          expect(bounds.top).toBeGreaterThanOrEqual(0);
+          expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
+          expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
+        });
+      }
+      await userEvent.keyboard("{Escape}");
+      expect(stopTurn).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(trigger).toHaveFocus();
+      expect(view.container.getAttribute("aria-hidden")).toBe(initialHidden);
+      fireEvent.click(background);
+      expect(backgroundClick).toHaveBeenCalledOnce();
+      await userEvent.keyboard("{Escape}");
+      expect(stopTurn).toHaveBeenCalledOnce();
+      await userEvent.click(trigger);
+      const layer = document.querySelector<HTMLElement>(".message-image-fallback")!;
+      expect(document.elementFromPoint(window.innerWidth - 1, window.innerHeight - 1)).toBe(layer);
+      await userEvent.click(layer, { position: { x: 1, y: 1 } });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(backgroundClick).toHaveBeenCalledOnce();
+      expect(trigger).toHaveFocus();
+      await userEvent.click(trigger);
+      view.unmount();
+      expect(document.querySelector(".message-image-fallback")).toBeNull();
+      expect(document.body.style.overflow).toBe(overflow);
+      expect(view.container.getAttribute("aria-hidden")).toBe(initialHidden);
+    } finally {
+      view?.unmount();
+      Object.defineProperty(prototype, "showModal", showModal);
+      Object.defineProperty(prototype, "close", close);
+      await page.viewport(1400, 900);
+    }
+  });
+
   it("opens each original image above the scrollable history and preserves its aspect ratio", async () => {
     const view = render(<Transcript />);
     const thumbnail = screen.getByRole("img", { name: "Attached image: landscape.png" });
