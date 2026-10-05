@@ -5507,6 +5507,13 @@ describe("local workflow threads", () => {
 });
 
 describe("workspace attachments", () => {
+  beforeEach(() => {
+    // These interactions start in existing conversations. Own that fixture
+    // before importing App instead of depending on cold runtime discovery;
+    // renderApp only waits for the project buttons, not the thread list.
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [THREAD_A.id]: THREAD_A, [THREAD_B.id]: THREAD_B }));
+  });
+
   function codexCalls(method: string): Record<string, unknown>[] {
     return invokeMock.mock.calls
       .filter(([command, args]) => command === "codex_rpc" && args?.method === method)
