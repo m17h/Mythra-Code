@@ -616,23 +616,6 @@ export const Composer = forwardRef<ComposerHandle, {
 
   return (
     <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""}`}>
-      {props.timedActions && (
-        <ScheduledPrompts
-          entries={scheduledTurns}
-          scope="thread"
-          actions={props.timedActions}
-          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
-        />
-      )}
-      {props.newThreadActions && (
-        <ScheduledPrompts
-          entries={scheduledNewThreads}
-          scope="new-thread"
-          actions={props.newThreadActions}
-          entryDetail={props.newThreadPromptDetail}
-          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
-        />
-      )}
       {eligibleTurns.length > 0 && (
         <div className="queued-turns">
           <div className="queued-turns-heading">
@@ -691,6 +674,23 @@ export const Composer = forwardRef<ComposerHandle, {
             })}
           </div>
         </div>
+      )}
+      {props.timedActions && (
+        <ScheduledPrompts
+          entries={scheduledTurns}
+          scope="thread"
+          actions={props.timedActions}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+        />
+      )}
+      {props.newThreadActions && (
+        <ScheduledPrompts
+          entries={scheduledNewThreads}
+          scope="new-thread"
+          actions={props.newThreadActions}
+          entryDetail={props.newThreadPromptDetail}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+        />
       )}
       {props.continuationNotice}
       {props.feedbackTray}

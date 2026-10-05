@@ -84,10 +84,12 @@
   gap: 6px;
   padding: 12px 12px 8px;
   border-bottom: 1px solid var(--line-quiet);
-  border-radius: 26px 26px 0 0;
+  border-radius: 0;
   background: var(--panel-2);
   background-image: var(--lm-grad-soft);
 }
+/* Queue and schedule groups form one card. Only its outer top edge curves. */
+.app-shell[data-theme][data-color-scheme] .composer > .queued-turns:first-child { border-radius: 26px 26px 0 0; }
 .app-shell[data-theme][data-color-scheme] .queued-turn { min-height: 42px; padding: 5px 6px; border-color: var(--line); border-radius: var(--r-md); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .queued-turn.failed { border-color: var(--red); }
 .app-shell[data-theme][data-color-scheme] .queued-turn.sending { border-color: var(--green-line); }

@@ -69,6 +69,8 @@ export function GitChangesView(props: GitChangesViewProps) {
 
   return (
     <div className="git-changes">
+      {props.commit}
+
       <div className="git-view-toolbar">
         <div className="git-view-summary">
           {props.absent
@@ -131,7 +133,6 @@ export function GitChangesView(props: GitChangesViewProps) {
         </div>
       )}
 
-      {props.commit}
     </div>
   );
 }
