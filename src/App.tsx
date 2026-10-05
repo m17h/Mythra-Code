@@ -7433,7 +7433,7 @@ export default function App() {
                 newThreadActions={newThreadActions}
                 newThreadPromptDetail={describeNewThreadPrompt}
                 continuationNotice={claudeContinuation && (
-                  <ClaudeContinuationNotice variant={claudeContinuation.kind} onOpenUsage={() => openSettings("usage")} />
+                  <ClaudeContinuationNotice variant={claudeContinuation.kind} rateLimitType={claudeContinuation.rateLimitType} onOpenUsage={() => openSettings("usage")} />
                 )}
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={

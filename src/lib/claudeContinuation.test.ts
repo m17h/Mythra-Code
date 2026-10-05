@@ -12,6 +12,17 @@ describe("Claude subscription wrap-up telemetry", () => {
     expect(parseClaudeContinuation(event({ status: "allowed_warning", utilization: 1.1, rateLimitType: "five_hour" }))).toBeNull();
   });
 
+  it("retains the live allowance window and updates it within a turn", () => {
+    const fiveHour = parseClaudeContinuation(event({ status: "allowed", rateLimitGraceActive: true, rateLimitType: "five_hour" }));
+    const weekly = parseClaudeContinuation(event({ status: "allowed", rateLimitGraceActive: true, rateLimitType: "seven_day" }));
+    expect(fiveHour).toEqual({ kind: "grace", rateLimitType: "five_hour" });
+    expect(weekly).toEqual({ kind: "grace", rateLimitType: "seven_day" });
+    const store = useClaudeContinuationStore.getState();
+    store.update("a", "turn", fiveHour);
+    store.update("a", "turn", weekly);
+    expect(useClaudeContinuationStore.getState().byThread.a).toEqual({ kind: "grace", rateLimitType: "seven_day", turnId: "turn" });
+  });
+
   it("does not mistake offered paid credits for credits being consumed", () => {
     expect(parseClaudeContinuation(event({ status: "allowed", rateLimitGraceActive: true, overageStatus: "allowed" })))
       .toEqual({ kind: "grace" });

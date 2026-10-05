@@ -79,7 +79,7 @@ describe("usage calendar independent interaction review", () => {
     await userEvent.keyboard("{Tab}{ArrowLeft}");
     expect(cardFor(view)).toHaveTextContent("earlier-model");
     await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
-    expect(cardFor(view)).toHaveTextContent("300");
+    await waitFor(() => expect(cardFor(view)).toHaveTextContent("300"));
   });
 
   it("lets touch taps explicitly pin and dismiss after keyboard navigation", async () => {
@@ -113,6 +113,7 @@ describe("usage calendar independent interaction review", () => {
   it.each([false, true])("keeps keyboard ownership under a stationary pointer after remount=%s", async (remount) => {
     let view = mount();
     await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
+    await waitFor(() => expect(cardFor(view)).toHaveTextContent("300"));
     if (remount) {
       view.unmount();
       view = mount();
@@ -144,6 +145,9 @@ describe("usage calendar independent interaction review", () => {
       expect(previous).toHaveFocus();
       expect(cardFor(view)).toHaveTextContent("earlier-model");
       await uncover();
+      // Ownership must survive beyond the hover-intent window, rather than
+      // only look correct before an accidental pending timer could fire.
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
       expect(samples.some((sample) => sample.type === "pointerover" && sample.day === TODAY)).toBe(true);
       expect(new Set(samples.map(({ x, y }) => `${x},${y}`)).size).toBe(1);
       expect(previous).toHaveFocus();
@@ -154,6 +158,7 @@ describe("usage calendar independent interaction review", () => {
       expect(cardFor(view)).toHaveTextContent("earlier-model");
       await userEvent.keyboard("{Escape}");
       await uncover();
+      await new Promise((resolve) => window.setTimeout(resolve, 600));
       expect(view.queryByRole("group", { name: /^Usage on / })).toBeNull();
       await userEvent.keyboard("{Tab}");
       expect(view.getByRole("button", { name: "After calendar" })).toHaveFocus();
@@ -163,7 +168,7 @@ describe("usage calendar independent interaction review", () => {
       // outside the table must count, not just its previous hovered point.
       await page.getByRole("button", { name: "After calendar" }).hover();
       await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
-      expect(cardFor(view)).toHaveTextContent("300");
+      await waitFor(() => expect(cardFor(view)).toHaveTextContent("300"));
       await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).click();
       expect(todayCell(view)).toHaveAttribute("aria-selected", "true");
       await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).click();
@@ -178,7 +183,7 @@ describe("usage calendar independent interaction review", () => {
     const view = mount();
     const previous = view.container.querySelector<HTMLElement>(`[data-day="${shiftDayKey(TODAY, -7)}"]`)!;
     await page.getByRole("gridcell", { name: previous.getAttribute("aria-label")! }).hover();
-    expect(cardFor(view)).toHaveTextContent("earlier-model");
+    await waitFor(() => expect(cardFor(view)).toHaveTextContent("earlier-model"));
     // Moving focus does not move the real mouse. Its older hover must not
     // override the newly requested keyboard breakdown.
     view.getByRole("button", { name: "Before calendar" }).focus();
@@ -189,7 +194,7 @@ describe("usage calendar independent interaction review", () => {
     expect(previous).toHaveFocus();
     expect(cardFor(view)).toHaveTextContent("earlier-model");
     await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
-    expect(cardFor(view)).toHaveTextContent("300");
+    await waitFor(() => expect(cardFor(view)).toHaveTextContent("300"));
   });
 
   it("uses one day tab stop, arrow navigation, pinning, and an Escape that does not reach Settings", async () => {
@@ -224,7 +229,7 @@ describe("usage calendar independent interaction review", () => {
   it("keeps a pointer-opened breakdown available while travelling from the day into its card", async () => {
     const view = mount();
     await page.getByRole("gridcell", { name: todayCell(view).getAttribute("aria-label")! }).hover();
-    const card = cardFor(view);
+    const card = await view.findByRole("group", { name: /^Usage on / });
     expect(card).toBeVisible();
     expect(todayCell(view)).toHaveAttribute("aria-describedby", card.id);
     await page.getByRole("group", { name: card.getAttribute("aria-label")! }).hover();

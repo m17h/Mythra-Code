@@ -120,6 +120,15 @@ export function usageDetail(range: UsageRange | null): UsageDetail {
   return combineUsageDetail(range ? summarizeUsageHistory(range) : allHistory, range ? null : ledger);
 }
 
+/** Select dated detail from an already validated all-time snapshot. Reusing
+ * that snapshot avoids another scan/reconciliation of the whole history.
+ * Undated ledger usage never enters a date range, and interrupted-save detail
+ * stays suppressed exactly as it does in usageDetail(range). */
+export function selectUsageRange(allTime: UsageDetail, range: UsageRange): UsageDetail {
+  const selected = combineUsageDetail(summarizeUsageBuckets(allTime.buckets, range, allTime.startedDay, allTime.retainedFrom), null);
+  return allTime.detailAhead ? { ...selected, detailAhead: true } : selected;
+}
+
 function historyExceedsLedger(history: UsageHistorySummary, ledger: LedgerUsage): boolean {
   if (exceedsLedger(ledger.totals, history.totals)) return true;
   return history.providers.some((provider) => {

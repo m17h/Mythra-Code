@@ -4,8 +4,16 @@ export type ClaudeContinuationKind = "grace" | "paid";
 export interface ClaudeContinuation {
   turnId: string;
   kind: ClaudeContinuationKind;
+  /** The live CLI window; absence must not imply the five-hour limit. */
+  rateLimitType?: string;
   /** The CLI's reset boundary, not an invented countdown for the allowance. */
   expiresAt?: number;
+}
+
+export function claudeWrapUpLimitReachedText(rateLimitType?: string): string {
+  return rateLimitType === "five_hour"
+    ? "Your five-hour limit was reached."
+    : "Your Claude usage limit was reached.";
 }
 
 /**
@@ -34,7 +42,13 @@ export function parseClaudeContinuation(payload: unknown, now = Date.now()): Omi
   const expiresAt = typeof reset === "number" && Number.isFinite(reset) && reset > 0
     ? reset * 1000 : undefined;
   if (expiresAt !== undefined && expiresAt <= now) return null;
-  return { kind: "grace", ...(expiresAt !== undefined ? { expiresAt } : {}) };
+  const rateLimitType = typeof info.rateLimitType === "string" && info.rateLimitType.length > 0
+    ? info.rateLimitType : undefined;
+  return {
+    kind: "grace",
+    ...(rateLimitType !== undefined ? { rateLimitType } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+  };
 }
 
 interface ClaudeContinuationStore {
@@ -55,7 +69,8 @@ export const useClaudeContinuationStore = create<ClaudeContinuationStore>((set) 
       delete next[threadId];
       return { byThread: next };
     }
-    if (previous?.turnId === turnId && previous.kind === continuation.kind && previous.expiresAt === continuation.expiresAt) return state;
+    if (previous?.turnId === turnId && previous.kind === continuation.kind
+      && previous.rateLimitType === continuation.rateLimitType && previous.expiresAt === continuation.expiresAt) return state;
     return { byThread: { ...state.byThread, [threadId]: { ...continuation, turnId } } };
   }),
   clear: (threadId, turnId) => set((state) => {

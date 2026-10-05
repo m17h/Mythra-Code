@@ -3380,6 +3380,38 @@ fn claude_prompt_snapshot_version_support(version: Option<&str>) -> Option<bool>
     Some(version >= semver::Version::new(2, 1, 257))
 }
 
+fn claude_wrap_up_version_support(version: Option<&str>) -> Option<bool> {
+    // Client compatibility is necessary, but it does not prove that Anthropic
+    // will grant an allowance to this account or turn. Live telemetry owns that.
+    let token = version?.split_whitespace().next()?;
+    let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
+    Some(version >= semver::Version::new(2, 1, 277))
+}
+
+fn claude_wrap_up_version_warning(version: Option<&str>) -> Option<&'static str> {
+    match claude_wrap_up_version_support(version) {
+        Some(true) => None,
+        Some(false) => Some(
+            "Included wrap-up support requires Claude Code 2.1.277 or newer. Update Claude Code in Updates; normal Claude conversations remain available.",
+        ),
+        None => Some(
+            "Included wrap-up support could not be verified; it requires Claude Code 2.1.277 or newer. Recheck or update Claude Code in Updates.",
+        ),
+    }
+}
+
+fn claude_runtime_warnings(
+    version: Option<&str>,
+    credential_warning: Option<String>,
+) -> Option<String> {
+    let warnings = credential_warning
+        .into_iter()
+        .chain(claude_prompt_snapshot_version_warning(version).map(str::to_string))
+        .chain(claude_wrap_up_version_warning(version).map(str::to_string))
+        .collect::<Vec<_>>();
+    (!warnings.is_empty()).then(|| warnings.join(" "))
+}
+
 async fn claude_executable_identity(path: &Path) -> ClaudeExecutableIdentity {
     let metadata = tokio::fs::metadata(path).await.ok();
     #[cfg(unix)]
@@ -3734,14 +3766,7 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
     };
 
     let version = runtime_version(&path).await;
-    let warning = match (
-        warning,
-        claude_prompt_snapshot_version_warning(version.as_deref()),
-    ) {
-        (Some(existing), Some(freshness)) => Some(format!("{existing} {freshness}")),
-        (None, Some(freshness)) => Some(freshness.to_string()),
-        (existing, None) => existing,
-    };
+    let warning = claude_runtime_warnings(version.as_deref(), warning);
     let home = app.path().home_dir().ok();
     let auth = timeout(
         CLAUDE_AUTH_STATUS_TIMEOUT,

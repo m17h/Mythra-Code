@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -11,7 +11,7 @@ import {
   type RepricingSummary, type UsageBucket, type UsageComponentAmounts,
 } from "../lib/usageHistory";
 import {
-  componentBreakdown, componentCost, knownPricedModels, promptAverages, usageDetail, usagePeriods, USAGE_COMPONENTS,
+  componentBreakdown, componentCost, knownPricedModels, promptAverages, selectUsageRange, usageDetail, usagePeriods, USAGE_COMPONENTS,
   type ModelUsageSummary, type PromptAverages, type ProviderUsageSummary, type UsageComponentId, type UsageDetail, type UsageGrain, type UsagePeriod, type UsageRange,
 } from "../lib/usageSummary";
 import { AppSelectMenu } from "./AppSelectMenu";
@@ -879,18 +879,21 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
   const source = preview ?? LIVE_SOURCE;
   const baseId = useId();
   const tabs = useRef<HTMLDivElement>(null);
+  // Summaries scan retained history. A settings resize or view change should
+  // not repeat that work; ledger/pricing writes invalidate via the revision.
+  const allTimeSnapshot = useMemo(() => ({ revision, detail: source.detail(null) }), [source, revision]);
+  const allTime = allTimeSnapshot.detail;
   // Open on the last 30 days; before any dated detail exists, all time is the
   // only range with anything to show.
-  const [preset, setPreset] = useState<Preset>(() => (source.detail(null).startedDay ? "30d" : "all"));
+  const [preset, setPreset] = useState<Preset>(() => (allTime.startedDay ? "30d" : "all"));
   const [view, setView] = useState<View>("overview");
   const [chosenGrain, setGrain] = useState<UsageGrain | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const today = useLocalDay();
   const [custom, setCustom] = useState(() => ({ from: shiftDayKey(today, -6), to: today }));
-  const range = rangeFor(preset, today, custom);
-  const detail = source.detail(range);
-  const allTime = range ? source.detail(null) : detail;
-  const allTimeModels = allTime.providers.flatMap((provider) => provider.models);
+  const range = useMemo(() => rangeFor(preset, today, custom), [preset, today, custom]);
+  const detail = useMemo(() => range ? selectUsageRange(allTime, range) : allTime, [range, allTime]);
+  const allTimeModels = useMemo(() => allTime.providers.flatMap((provider) => provider.models), [allTime]);
   const [selection, setSelection] = useState<CompareSelection>(() => {
     const ranked = [...detail.providers.flatMap((provider) => provider.models), ...allTimeModels]
       .map((model) => modelKey(model.provider, model.model));
@@ -937,7 +940,7 @@ export function UsageDashboard({ onRefreshPricing, openRouterPricingError }: {
       <PricingStatus onRefreshPricing={onRefreshPricing} openRouterPricingError={openRouterPricingError} />
     </header>
     {preview?.preview && <p className="usage-preview-banner" role="note">Development preview — synthetic usage, not your data.</p>}
-    <UsageCalendarCard source={source} revision={revision} today={today} range={range}
+    <UsageCalendarCard source={source} calendarDetail={allTime} revision={revision} today={today} range={range}
       providerLabel={calendarProviderLabel} modelLabel={calendarModelLabel} />
     <div className="usage-toolbar">
       <RangePicker preset={preset} onPreset={setPreset} custom={custom} onCustom={setCustom} today={today} />

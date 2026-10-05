@@ -434,6 +434,9 @@ let cursorModelNames = new Map<string, string>();
 /** For `officialPricing`, after it stores a result or starts or ends a check. */
 export function notifyPricingChanged(): void { notifyUsage(); }
 
+/** Dated history changed without a corresponding all-time ledger write. */
+export function notifyUsageHistoryChanged(): void { notifyUsage(); }
+
 /** Cursor's pricing page and its live model catalog share display names, not
  * ids. Names match only exactly, ignoring case, spacing and parentheses. */
 export function cursorPricingKey(name: string): string {
