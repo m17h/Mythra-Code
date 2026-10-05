@@ -24,7 +24,8 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
   if (typeof version !== "number" || !Number.isFinite(version) || version < 0) return invalid("kiwi.schemaVersion");
   const projects = read("kiwi.projects");
   if (projects !== undefined && (!Array.isArray(projects) || projects.some((project) => (
-    !isRecord(project) || typeof project.path !== "string" || (project.overrides && !isRecord(project.overrides))
+    !isRecord(project) || typeof project.path !== "string" || typeof project.name !== "string"
+      || (project.overrides && !isRecord(project.overrides))
   )))) invalid("kiwi.projects");
 
   const threads = read("kiwi.knownThreads");
@@ -49,7 +50,9 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
   const ledger = read("kiwi.usageLedger");
   const costs = read("kiwi.costLedger");
   // App reads every cost row before its first commit.
-  if (costs !== undefined && (!Array.isArray(costs) || costs.some((record) => !isRecord(record)))) {
+  if (costs !== undefined && (!Array.isArray(costs) || costs.some((record) => (
+    !isRecord(record) || typeof record.cost !== "number" || !Number.isFinite(record.cost)
+  )))) {
     invalid("kiwi.costLedger");
   }
   // These migrations dereference rows; later readers already sanitize them.

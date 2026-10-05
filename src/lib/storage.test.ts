@@ -112,14 +112,14 @@ describe("durable storage", () => {
   });
 
   it("migrates legacy localStorage when SQLite is empty", async () => {
-    localStorage.setItem("kiwi.projects", JSON.stringify([{ id: "one", path: "/one" }]));
+    localStorage.setItem("kiwi.projects", JSON.stringify([{ id: "one", name: "One", path: "/one" }]));
     invoke.mockResolvedValueOnce(null).mockResolvedValueOnce(undefined);
     await hydrateNativeStorage(["kiwi.projects"]);
     // Hydration now also stamps kiwi.schemaVersion afterwards, so assert the
     // migration write happened rather than that it was last.
     expect(invoke).toHaveBeenCalledWith("state_write", {
       key: "kiwi.projects",
-      value: [{ id: "one", path: "/one" }],
+      value: [{ id: "one", name: "One", path: "/one" }],
     });
   });
 
@@ -240,6 +240,9 @@ describe("durable storage", () => {
     ["kiwi.projects", '[{"id":"saved","name":"Saved","path":7}]'],
     ["kiwi.projects", '[{"id":"saved","name":"Saved"}]'],
     ["kiwi.costLedger", "[null]"],
+    ["kiwi.projects", '[{"id":"saved","name":7,"path":"/saved"}]'],
+    ["kiwi.projects", '[{"id":"saved","path":"/saved"}]'],
+    ["kiwi.costLedger", JSON.stringify([{ cost: "0.25", day: new Date().toISOString().slice(0, 10), projectPath: "/saved" }])],
   ])("preserves unsafe immediate startup fields in %s before pending replay", async (key, raw) => {
     localStorage.setItem("kiwi.schemaVersion", "15");
     localStorage.setItem(key, raw);
@@ -258,6 +261,9 @@ describe("durable storage", () => {
     ["kiwi.projects", '[{"id":"saved","name":"Saved","path":7}]'],
     ["kiwi.projects", '[{"id":"saved","name":"Saved"}]'],
     ["kiwi.costLedger", "[null]"],
+    ["kiwi.projects", '[{"id":"saved","name":7,"path":"/saved"}]'],
+    ["kiwi.projects", '[{"id":"saved","path":"/saved"}]'],
+    ["kiwi.costLedger", JSON.stringify([{ cost: "0.25", day: new Date().toISOString().slice(0, 10), projectPath: "/saved" }])],
   ])("preserves unsafe native startup fields in %s without migration", async (key, raw) => {
     isTauri.mockReturnValue(true);
     invoke.mockImplementation(async (command, args) => {
@@ -512,9 +518,9 @@ describe("storage quota recovery", () => {
   it("reads native state even when hydration cannot update the cache", async () => {
     localStorage.setItem("kiwi.projects", '[{"id":"stale"}]');
     failCacheWrites();
-    invoke.mockResolvedValue([{ id: "durable", path: "/durable" }]);
+    invoke.mockResolvedValue([{ id: "durable", name: "Durable", path: "/durable" }]);
     await hydrateNativeStorage(["kiwi.projects"]);
-    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable", path: "/durable" }]);
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable", name: "Durable", path: "/durable" }]);
   });
   it("does not mark a failed cache write for replay, and still reads the new value", async () => {
     localStorage.setItem("kiwi.projects", '[{"id":"stale"}]');
@@ -526,10 +532,10 @@ describe("storage quota recovery", () => {
     expect(localStorage.getItem("kiwi.nativePending.kiwi.projects")).toBeNull();
     await flushPendingStateWrites();
     resetStorageMemoryForTests();
-    invoke.mockReset().mockResolvedValue([{ id: "durable", path: "/durable" }]);
+    invoke.mockReset().mockResolvedValue([{ id: "durable", name: "Durable", path: "/durable" }]);
     await hydrateNativeStorage(["kiwi.projects"]);
     expect(invoke).not.toHaveBeenCalledWith("state_write", expect.anything());
-    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable", path: "/durable" }]);
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable", name: "Durable", path: "/durable" }]);
   });
   it("hydrates even when cache reads are unavailable", async () => {
     isTauri.mockReturnValue(true);
@@ -539,12 +545,12 @@ describe("storage quota recovery", () => {
     // values outside a partial key list cannot establish migration safety.
     invoke.mockImplementation(async (method, args) => {
       if (method !== "state_read_raw") return null;
-      if (args.key === "kiwi.projects") return '[{"id":"durable","path":"/durable"}]';
+      if (args.key === "kiwi.projects") return '[{"id":"durable","name":"Durable","path":"/durable"}]';
       if (args.key === "kiwi.schemaVersion") return String(STORAGE_SCHEMA_VERSION);
       return null;
     });
     await hydrateNativeStorage();
-    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable", path: "/durable" }]);
+    expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable", name: "Durable", path: "/durable" }]);
     expect(invoke.mock.calls.every(([method]) => method === "state_read_raw" || method === "state_read")).toBe(true);
   });
   it("snapshots mutable values before their native write is queued", async () => {
