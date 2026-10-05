@@ -165,7 +165,51 @@ describe("durable storage", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it.each(["null", "{}", "[null]", "[7]"])("preserves unsafe pending archived threads: %s", async (raw) => {
+  it("preserves pending data when only its marker read fails", async () => {
+    isTauri.mockReturnValue(true);
+    const key = "kiwi.settings";
+    const marker = `kiwi.nativePending.${key}`;
+    localStorage.setItem(key, '{"model":42}');
+    localStorage.setItem(marker, "previous-session");
+    const getItem = localStorage.getItem.bind(localStorage);
+    const failedRead = vi.spyOn(localStorage, "getItem").mockImplementation((candidate) => {
+      if (candidate === marker) throw new Error("marker read denied");
+      return getItem(candidate);
+    });
+    invoke.mockResolvedValue('{"model":"older-native"}');
+
+    await expect(hydrateNativeStorage([key])).rejects.toThrow(`Saved startup data could not be read (${key}).`);
+
+    failedRead.mockRestore();
+    expect(localStorage.getItem(key)).toBe('{"model":42}');
+    expect(localStorage.getItem(marker)).toBe("previous-session");
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("validates the captured pending value even when later cache reads fail", async () => {
+    const key = "kiwi.settings";
+    const marker = `kiwi.nativePending.${key}`;
+    localStorage.setItem(key, '{"model":42}');
+    localStorage.setItem(marker, "previous-session");
+    const getItem = localStorage.getItem.bind(localStorage);
+    let valueReads = 0;
+    const failedRead = vi.spyOn(localStorage, "getItem").mockImplementation((candidate) => {
+      if (candidate === key && ++valueReads > 1) throw new Error("later cache read denied");
+      return getItem(candidate);
+    });
+    invoke.mockResolvedValue(null);
+
+    await expect(hydrateNativeStorage([key])).rejects.toThrow(`Saved startup data is invalid (${key}).`);
+
+    failedRead.mockRestore();
+    expect(localStorage.getItem(key)).toBe('{"model":42}');
+    expect(localStorage.getItem(marker)).toBe("previous-session");
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["null", "{}", "[null]", "[7]", "[{}]", '[{"path":7}]'])("preserves unsafe pending archived threads: %s", async (raw) => {
     localStorage.setItem("kiwi.archivedThreads", raw);
     localStorage.setItem("kiwi.nativePending.kiwi.archivedThreads", "previous-session");
     invoke.mockResolvedValue(null);
@@ -190,6 +234,22 @@ describe("durable storage", () => {
     expect(localStorage.getItem("kiwi.schemaVersion")).toBe("null");
     if (source === "pending") expect(localStorage.getItem("kiwi.nativePending.kiwi.schemaVersion")).toBe("previous-session");
     expect(invoke.mock.calls.every(([command]) => command === "state_read_raw")).toBe(true);
+  });
+
+  it("retains legacy archives with a path and no provider metadata", async () => {
+    isTauri.mockReturnValue(true);
+    const records = [{ id: "legacy-thread", path: "/projects/legacy", label: "Legacy", archivedAt: 1 }];
+    const raw = JSON.stringify(records);
+    invoke.mockImplementation(async (command, args) => {
+      if (command !== "state_read_raw") return null;
+      if (args.key === "kiwi.schemaVersion") return String(STORAGE_SCHEMA_VERSION);
+      if (args.key === "kiwi.archivedThreads") return raw;
+      return null;
+    });
+    await hydrateNativeStorage();
+    expect(loadStored("kiwi.archivedThreads", [])).toEqual(records);
+    expect(localStorage.getItem("kiwi.archivedThreads")).toBe(raw);
+    expect(invoke.mock.calls.every(([command]) => command === "state_read_raw" || command === "state_read")).toBe(true);
   });
 
   it.each(["[7]", '["saved"]', "[[]]"])("preserves unsafe legacy ledger rows before migration: %s", async (raw) => {
@@ -321,6 +381,32 @@ describe("durable storage", () => {
     expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
   });
 
+  it("keeps inaccessible recovery records untouched during native-only migration and updates", async () => {
+    isTauri.mockReturnValue(true);
+    localStorage.setItem("kiwi.settings", '{"model":42}');
+    localStorage.setItem("kiwi.nativePending.kiwi.settings", "unreadable-session");
+    const getItem = vi.spyOn(localStorage, "getItem").mockImplementation(() => { throw new Error("cache reads denied"); });
+    const setItem = vi.spyOn(localStorage, "setItem");
+    const removeItem = vi.spyOn(localStorage, "removeItem");
+    invoke.mockImplementation(async (command, args) => {
+      if (command !== "state_read_raw") return null;
+      if (args.key === "kiwi.schemaVersion") return "13";
+      if (args.key === "kiwi.settings") return '{"model":"safe-native","promptProfileId":"concise"}';
+      return null;
+    });
+
+    await hydrateNativeStorage();
+    storeValue("kiwi.settings", { model: "explicit-native-update" });
+    await flushPendingStateWrites();
+
+    expect(setItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+    getItem.mockRestore();
+    expect(localStorage.getItem("kiwi.settings")).toBe('{"model":42}');
+    expect(localStorage.getItem("kiwi.nativePending.kiwi.settings")).toBe("unreadable-session");
+    expect(loadStored("kiwi.settings", {})).toEqual({ model: "explicit-native-update" });
+  });
+
   it("writes both the immediate cache and durable store", async () => {
     invoke.mockResolvedValue(undefined);
     storeValue("kiwi.workspaceMode", "projects");
@@ -409,11 +495,20 @@ describe("storage quota recovery", () => {
     expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable" }]);
   });
   it("hydrates even when cache reads are unavailable", async () => {
+    isTauri.mockReturnValue(true);
     vi.spyOn(localStorage, "getItem").mockImplementation(() => { throw new Error("unavailable"); });
     vi.spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("unavailable"); });
-    invoke.mockImplementation(async (method, args) => method === "state_read" && args.key === "kiwi.projects" ? [{ id: "durable" }] : null);
-    await hydrateNativeStorage(["kiwi.projects"]);
+    // Exercise production's complete raw-read snapshot: inaccessible cache
+    // values outside a partial key list cannot establish migration safety.
+    invoke.mockImplementation(async (method, args) => {
+      if (method !== "state_read_raw") return null;
+      if (args.key === "kiwi.projects") return '[{"id":"durable"}]';
+      if (args.key === "kiwi.schemaVersion") return String(STORAGE_SCHEMA_VERSION);
+      return null;
+    });
+    await hydrateNativeStorage();
     expect(loadStored("kiwi.projects", [])).toEqual([{ id: "durable" }]);
+    expect(invoke.mock.calls.every(([method]) => method === "state_read_raw" || method === "state_read")).toBe(true);
   });
   it("snapshots mutable values before their native write is queued", async () => {
     let release!: () => void;

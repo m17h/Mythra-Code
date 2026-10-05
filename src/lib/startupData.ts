@@ -31,7 +31,9 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
   if (threads !== undefined && !isRecord(threads)) invalid("kiwi.knownThreads");
 
   const archived = read("kiwi.archivedThreads");
-  if (archived !== undefined && (!Array.isArray(archived) || archived.some((record) => !isRecord(record)))) {
+  if (archived !== undefined && (!Array.isArray(archived) || archived.some((record) => (
+    !isRecord(record) || typeof record.path !== "string"
+  )))) {
     invalid("kiwi.archivedThreads");
   }
 

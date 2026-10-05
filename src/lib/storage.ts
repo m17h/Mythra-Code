@@ -68,12 +68,23 @@ let nativeOperationSequence = 0;
 // Keep a readable copy when the webview cache is full or unavailable. The
 // observed cache value lets explicit external cache changes supersede it.
 const uncachedValues = new Map<string, { cached: string | null; value: string | null }>();
+// Native-only fallback must preserve physically unreadable pending records for
+// the rest of this document, including migration writes and explicit updates.
+const unreadableCacheKeys = new Set<string>();
 
 function readCache(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
 }
 
+function readCacheChecked(key: string): { ok: true; value: string | null } | { ok: false } {
+  try { return { ok: true, value: localStorage.getItem(key) }; } catch { return { ok: false }; }
+}
+
 function cacheValue(key: string, value: string | null): boolean {
+  if (unreadableCacheKeys.has(key)) {
+    uncachedValues.set(key, { cached: null, value });
+    return false;
+  }
   try {
     if (value === null) localStorage.removeItem(key);
     else localStorage.setItem(key, value);
@@ -85,9 +96,10 @@ function cacheValue(key: string, value: string | null): boolean {
   }
 }
 
-export function resetStorageMemoryForTests(): void { uncachedValues.clear(); }
+export function resetStorageMemoryForTests(): void { uncachedValues.clear(); unreadableCacheKeys.clear(); }
 
 function invalidatePendingMarker(key: string): void {
+  if (unreadableCacheKeys.has(key)) return;
   try { localStorage.removeItem(pendingMarkerKey(key)); } catch { /* Cache unavailable. */ }
 }
 
@@ -148,9 +160,13 @@ if (typeof window !== "undefined") {
   });
 }
 
-export function migrateStorage(): void {
-  validateStartupData(readStoredRaw);
-  const stored = loadStored<number>("kiwi.schemaVersion", 0);
+export function migrateStorage(readRaw: (key: string) => string | null = readStoredRaw): void {
+  validateStartupData(readRaw);
+  const loadMigrationStored = <T,>(key: string, fallback: T): T => {
+    const raw = readRaw(key);
+    return raw === null ? fallback : JSON.parse(raw) as T;
+  };
+  const stored = loadMigrationStored<number>("kiwi.schemaVersion", 0);
   if (stored >= STORAGE_SCHEMA_VERSION) return;
   // Version 2 adds the optional project systemPromptMode field. Version 3 adds
   // provider metadata to newly archived threads. Version 4 adds a separate
@@ -176,10 +192,10 @@ export function migrateStorage(): void {
   // text are preserved.
   if (stored < 14) {
     const legacyProfileIds = new Set(["empty", "concise", "reviewer"]);
-    const profiles = loadStored<Array<{ id?: string; builtIn?: boolean }>>("kiwi.promptProfiles", []);
+    const profiles = loadMigrationStored<Array<{ id?: string; builtIn?: boolean }>>("kiwi.promptProfiles", []);
     const userProfiles = profiles.filter((profile) => !profile.builtIn && !legacyProfileIds.has(profile.id ?? ""));
     if (userProfiles.length !== profiles.length) storeValue("kiwi.promptProfiles", userProfiles);
-    const settings = loadStored<Record<string, unknown>>("kiwi.settings", {});
+    const settings = loadMigrationStored<Record<string, unknown>>("kiwi.settings", {});
     if (legacyProfileIds.has(String(settings.promptProfileId ?? ""))) {
       storeValue("kiwi.settings", { ...settings, promptProfileId: "" });
     }
@@ -190,7 +206,7 @@ export function migrateStorage(): void {
   // The old field cannot be distinguished from a real latest-request value,
   // so clear only that derived value and preserve the full token/cost ledger.
   if (stored < 16) {
-    const records = loadStored<Array<Record<string, unknown>>>("kiwi.usageLedger", []);
+    const records = loadMigrationStored<Array<Record<string, unknown>>>("kiwi.usageLedger", []);
     if (Array.isArray(records) && records.length) {
       const withoutLegacyContext = (value: unknown): unknown => {
         if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -225,7 +241,7 @@ export function migrateStorage(): void {
   // bounds legacy previews. Canonical transcript messages live in provider
   // history and are not changed.
   if (stored < 20) {
-    const index = loadStored<Record<string, unknown>>("kiwi.knownThreads", {});
+    const index = loadMigrationStored<Record<string, unknown>>("kiwi.knownThreads", {});
     let changed = false;
     const compacted = Object.fromEntries(Object.entries(index).map(([threadId, value]) => {
       if (!value || typeof value !== "object" || Array.isArray(value)) return [threadId, value];
@@ -265,6 +281,7 @@ export function migrateStorage(): void {
 /** The current serialized value, including a write that could not fit in the
  * webview cache. Callers that cache parsed values must key on this value too. */
 export function readStoredRaw(key: string): string | null {
+  if (unreadableCacheKeys.has(key)) return uncachedValues.get(key)?.value ?? null;
   const cached = readCache(key);
   const uncached = uncachedValues.get(key);
   if (uncached && uncached.cached !== cached) uncachedValues.delete(key);
@@ -307,23 +324,38 @@ export async function hydrateNativeStorage(
   keys: readonly string[] = DURABLE_STORAGE_KEYS,
 ): Promise<void> {
   const hydrationWrites: Array<() => Promise<unknown>> = [];
+  const startupSnapshot = new Map<string, string | null>();
   const nativeStartup = isTauri();
   let startupReadFailure: string | null = null;
   await Promise.all(
     keys.map(async (key) => {
       try {
         const marker = pendingMarkerKey(key);
-        const pendingToken = readCache(marker);
+        const markerRead = readCacheChecked(marker);
+        const cachedRead = readCacheChecked(key);
+        // Unknown pending ownership must not replace a readable cache record.
+        // When the entire cache is inaccessible, native data can still be
+        // used in memory without touching those unreadable recovery records.
+        if (!markerRead.ok && (cachedRead.ok || !nativeStartup)) {
+          startupReadFailure ??= key;
+          return;
+        }
+        const cacheUnavailable = !markerRead.ok && !cachedRead.ok;
+        if (cacheUnavailable) unreadableCacheKeys.add(key);
+        const pendingToken = markerRead.ok ? markerRead.value : null;
+        if (STARTUP_DATA_KEYS.has(key) && cachedRead.ok) startupSnapshot.set(key, cachedRead.value);
+        const acceptNative = (raw: string) => {
+          if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, raw);
+          if (cacheUnavailable) uncachedValues.set(key, { cached: null, value: raw });
+          else cacheValue(key, raw);
+        };
         if (pendingToken !== null) {
-          let cached: string | null;
-          try {
-            // A pending deletion requires proven absence. An unreadable value
-            // must not become a durable delete or clear its recovery marker.
-            cached = localStorage.getItem(key);
-          } catch {
+          // A pending deletion requires proven absence, not a read failure.
+          if (!cachedRead.ok) {
             startupReadFailure ??= key;
             return;
           }
+          const cached = cachedRead.value;
           if (cached === null) {
             hydrationWrites.push(async () => {
               await invoke("state_delete", { key });
@@ -352,7 +384,7 @@ export async function hydrateNativeStorage(
             // let validation reject malformed JSON without losing its bytes.
             const raw = await invoke<string | null>("state_read_raw", { key });
             if (raw !== null) {
-              cacheValue(key, raw);
+              acceptNative(raw);
               return;
             }
           } catch {
@@ -362,11 +394,16 @@ export async function hydrateNativeStorage(
         } else {
           const nativeValue = await invoke<unknown | null>("state_read", { key });
           if (nativeValue !== null) {
-            cacheValue(key, JSON.stringify(nativeValue));
+            acceptNative(JSON.stringify(nativeValue));
             return;
           }
         }
-        const legacy = readCache(key);
+        if (!cachedRead.ok && !cacheUnavailable && STARTUP_DATA_KEYS.has(key)) {
+          startupReadFailure ??= key;
+          return;
+        }
+        const legacy = cachedRead.ok ? cachedRead.value : null;
+        if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, legacy);
         if (legacy !== null) {
           const value: unknown = JSON.parse(legacy);
           hydrationWrites.push(() => invoke("state_write", { key, value }));
@@ -376,12 +413,22 @@ export async function hydrateNativeStorage(
       }
     }),
   );
+  // Custom key lists still validate all startup records. Production's durable
+  // list already captured them above, including raw native values and pending
+  // replay inputs; never reread those values during validation or migration.
+  for (const key of STARTUP_DATA_KEYS) {
+    if (startupSnapshot.has(key)) continue;
+    const cached = readCacheChecked(key);
+    if (!cached.ok) startupReadFailure ??= key;
+    else startupSnapshot.set(key, cached.value);
+  }
   if (startupReadFailure !== null) throw new Error(`Saved startup data could not be read (${startupReadFailure}).`);
   // Never replay, mirror, migrate, or mount malformed startup data. In
   // particular, defaults must not overwrite the original saved records.
-  validateStartupData(readStoredRaw);
+  const readStartupSnapshot = (key: string): string | null => startupSnapshot.get(key) ?? null;
+  validateStartupData(readStartupSnapshot);
   await Promise.all(hydrationWrites.map(async (write) => {
     try { await write(); } catch { /* Web-only development keeps using the cache. */ }
   }));
-  migrateStorage();
+  migrateStorage(readStartupSnapshot);
 }
