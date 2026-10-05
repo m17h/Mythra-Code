@@ -52,7 +52,7 @@ function main() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
-    console.log("Usage: node scripts/native-close-fixture/build-native.mjs\nBuild two isolated native bins offline with production-seeded lock and four jobs.\nOptional CARGO_TARGET_DIR reuses an existing cache. No app is launched or bundled.");
+    console.log("Usage: node scripts/native-close-fixture/build-native.mjs\nBuild three isolated native bins offline with production-seeded lock and four jobs.\nOptional CARGO_TARGET_DIR reuses an existing cache. No app is launched or bundled.");
   } else if (args.length) {
     throw new Error("Unknown arguments; use --help. No build started.");
   } else main();

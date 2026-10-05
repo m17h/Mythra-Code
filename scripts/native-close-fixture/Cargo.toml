@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "mythra-native-close-baseline"
 path = "src/baseline.rs"
 
+[[bin]]
+name = "mythra-native-startup-test"
+path = "src/startup.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
 

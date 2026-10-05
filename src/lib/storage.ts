@@ -1,5 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { boundThreadPreview } from "./threadPreview";
+import { STARTUP_DATA_KEYS, validateStartupData } from "./startupData";
 
 export const DURABLE_STORAGE_KEYS = [
   "kiwi.schemaVersion",
@@ -148,6 +149,7 @@ if (typeof window !== "undefined") {
 }
 
 export function migrateStorage(): void {
+  validateStartupData(readStoredRaw);
   const stored = loadStored<number>("kiwi.schemaVersion", 0);
   if (stored >= STORAGE_SCHEMA_VERSION) return;
   // Version 2 adds the optional project systemPromptMode field. Version 3 adds
@@ -304,6 +306,9 @@ export function removeStoredValue(key: string): void {
 export async function hydrateNativeStorage(
   keys: readonly string[] = DURABLE_STORAGE_KEYS,
 ): Promise<void> {
+  const hydrationWrites: Array<() => Promise<unknown>> = [];
+  const nativeStartup = isTauri();
+  let nativeReadFailure: string | null = null;
   await Promise.all(
     keys.map(async (key) => {
       try {
@@ -312,40 +317,63 @@ export async function hydrateNativeStorage(
         if (pendingToken !== null) {
           const cached = readCache(key);
           if (cached === null) {
-            await invoke("state_delete", { key });
-            clearNativeOperationPending(key, pendingToken);
+            hydrationWrites.push(async () => {
+              await invoke("state_delete", { key });
+              clearNativeOperationPending(key, pendingToken);
+            });
             return;
           }
           try {
-            await invoke("state_write", { key, value: JSON.parse(cached) });
-            clearNativeOperationPending(key, pendingToken);
+            const value: unknown = JSON.parse(cached);
+            hydrationWrites.push(async () => {
+              await invoke("state_write", { key, value });
+              clearNativeOperationPending(key, pendingToken);
+            });
             return;
-          } catch (error) {
-            // Keep a valid pending marker for the next launch if the replay
-            // failed. Invalid JSON cannot be replayed, so fall through to the
-            // durable value instead of leaving hydration permanently wedged.
-            try {
-              JSON.parse(cached);
-              throw error;
-            } catch (parseError) {
-              if (parseError === error) throw error;
-              localStorage.removeItem(marker);
-            }
+          } catch {
+            // Preserve invalid startup input for diagnosis; validation below
+            // stops mounting without replaying or replacing the pending value.
+            if (STARTUP_DATA_KEYS.has(key)) return;
+            // Other stores retain their existing durable fallback behavior.
+            localStorage.removeItem(marker);
           }
         }
-        const nativeValue = await invoke<unknown | null>("state_read", { key });
-        if (nativeValue !== null) {
-          cacheValue(key, JSON.stringify(nativeValue));
-          return;
+        if (nativeStartup && STARTUP_DATA_KEYS.has(key)) {
+          try {
+            // Raw reads distinguish a saved JSON null from a missing row and
+            // let validation reject malformed JSON without losing its bytes.
+            const raw = await invoke<string | null>("state_read_raw", { key });
+            if (raw !== null) {
+              cacheValue(key, raw);
+              return;
+            }
+          } catch {
+            nativeReadFailure ??= key;
+            return;
+          }
+        } else {
+          const nativeValue = await invoke<unknown | null>("state_read", { key });
+          if (nativeValue !== null) {
+            cacheValue(key, JSON.stringify(nativeValue));
+            return;
+          }
         }
         const legacy = readCache(key);
         if (legacy !== null) {
-          await invoke("state_write", { key, value: JSON.parse(legacy) });
+          const value: unknown = JSON.parse(legacy);
+          hydrationWrites.push(() => invoke("state_write", { key, value }));
         }
       } catch {
         // Web-only development keeps using localStorage.
       }
     }),
   );
+  if (nativeReadFailure !== null) throw new Error(`Saved startup data could not be read (${nativeReadFailure}).`);
+  // Never replay, mirror, migrate, or mount malformed startup data. In
+  // particular, defaults must not overwrite the original saved records.
+  validateStartupData(readStoredRaw);
+  await Promise.all(hydrationWrites.map(async (write) => {
+    try { await write(); } catch { /* Web-only development keeps using the cache. */ }
+  }));
   migrateStorage();
 }

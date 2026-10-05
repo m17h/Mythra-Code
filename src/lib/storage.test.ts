@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, isTauri } = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(() => false) }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri }));
 
 import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, resetStorageMemoryForTests, flushPendingStateWrites, hydrateNativeStorage, loadStored, migrateStorage, removeStoredValue, storeValue } from "./storage";
 import { sanitizeStoredNewThreadPrompts } from "./newThreadTimedPrompts";
@@ -13,6 +13,7 @@ describe("durable storage", () => {
     await flushPendingStateWrites();
     localStorage.clear();
     invoke.mockReset();
+    isTauri.mockReturnValue(false);
   });
 
   it("hydrates local state from the native database", async () => {
@@ -144,6 +145,123 @@ describe("durable storage", () => {
     expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
   });
 
+  it.each([
+    ["kiwi.projects", "{}"],
+    ["kiwi.projects", "[null]"],
+    ["kiwi.projects", '[{"overrides":"saved secret content"}]'],
+    ["kiwi.knownThreads", "null"],
+    ["kiwi.settings", "null"],
+    ["kiwi.settings", '{"model":42}'],
+    ["kiwi.settings", '{"lmStudioBaseUrl":42}'],
+    ["kiwi.promptProfiles", "{}"],
+    ["kiwi.promptProfiles", "[null]"],
+    ["kiwi.usageLedger", "[null]"],
+  ])("preserves invalid %s before hydration writes or migrations", async (key, raw) => {
+    localStorage.setItem("kiwi.schemaVersion", "13");
+    localStorage.setItem(key, raw);
+    invoke.mockResolvedValue(null);
+
+    await expect(hydrateNativeStorage()).rejects.toThrow(`Saved startup data is invalid (${key}).`);
+
+    expect(localStorage.getItem(key)).toBe(raw);
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBe("13");
+    expect(invoke.mock.calls.every(([command]) => command === "state_read")).toBe(true);
+  });
+
+  it.each(["{ invalid JSON and private content", '{"model":42}'])(
+    "preserves malformed pending settings without replaying or replacing them: %s", async (raw) => {
+      localStorage.setItem("kiwi.settings", raw);
+      localStorage.setItem("kiwi.nativePending.kiwi.settings", "previous-session");
+      invoke.mockResolvedValue({ model: "older-native" });
+
+      await expect(hydrateNativeStorage(["kiwi.settings"])).rejects.toThrow("Saved startup data is invalid (kiwi.settings).");
+
+      expect(localStorage.getItem("kiwi.settings")).toBe(raw);
+      expect(localStorage.getItem("kiwi.nativePending.kiwi.settings")).toBe("previous-session");
+      expect(invoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks direct migrations before changing any invalid record", () => {
+    localStorage.setItem("kiwi.promptProfiles", "[null]");
+    expect(() => migrateStorage()).toThrow("Saved startup data is invalid (kiwi.promptProfiles).");
+    expect(localStorage.getItem("kiwi.promptProfiles")).toBe("[null]");
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("hydrates legacy settings with nullable optional model and URL fields", async () => {
+    const settings = { model: null, lmStudioBaseUrl: null, systemPrompt: "Keep this prompt" };
+    localStorage.setItem("kiwi.schemaVersion", "13");
+    localStorage.setItem("kiwi.settings", JSON.stringify(settings));
+    invoke.mockResolvedValue(null);
+    await hydrateNativeStorage();
+    expect(loadStored("kiwi.settings", {})).toEqual(settings);
+    expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
+  });
+
+  it("uses authoritative native data to heal malformed nonpending cache", async () => {
+    localStorage.setItem("kiwi.settings", "broken cache");
+    invoke.mockResolvedValue({ model: "valid-native" });
+    await hydrateNativeStorage(["kiwi.settings"]);
+    expect(loadStored("kiwi.settings", {})).toEqual({ model: "valid-native" });
+  });
+
+  it.each(["{}", '"not a version"', "-1"])("preserves an invalid schema version: %s", async (raw) => {
+    localStorage.setItem("kiwi.schemaVersion", raw);
+    invoke.mockResolvedValue(null);
+    await expect(hydrateNativeStorage()).rejects.toThrow("Saved startup data is invalid (kiwi.schemaVersion).");
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBe(raw);
+    expect(invoke.mock.calls.every(([command]) => command === "state_read")).toBe(true);
+  });
+
+  it("preserves invalid native records without writing defaults", async () => {
+    const settings = { model: 42, systemPrompt: "Keep private saved contents" };
+    invoke.mockImplementation(async (command, args) => command === "state_read" && args.key === "kiwi.settings" ? settings : null);
+    await expect(hydrateNativeStorage()).rejects.toThrow("Saved startup data is invalid (kiwi.settings).");
+    expect(loadStored("kiwi.settings", {})).toEqual(settings);
+    expect(invoke.mock.calls.every(([command]) => command === "state_read")).toBe(true);
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+  });
+
+  it.each(["null", "{ malformed private JSON", '{"lmStudioBaseUrl":123}'])(
+    "preserves malformed native raw settings and stops startup: %s", async (raw) => {
+      isTauri.mockReturnValue(true);
+      localStorage.setItem("kiwi.settings", '{"model":"stale cache"}');
+      invoke.mockImplementation(async (command, args) => command === "state_read_raw" && args.key === "kiwi.settings" ? raw : null);
+
+      await expect(hydrateNativeStorage()).rejects.toThrow("Saved startup data is invalid (kiwi.settings).");
+
+      expect(localStorage.getItem("kiwi.settings")).toBe(raw);
+      expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+      expect(invoke.mock.calls.every(([command]) => command === "state_read_raw" || command === "state_read")).toBe(true);
+    },
+  );
+
+  it("does not treat a failed authoritative native read as a missing record", async () => {
+    isTauri.mockReturnValue(true);
+    localStorage.setItem("kiwi.settings", '{"model":"stale cache"}');
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "state_read_raw" && args.key === "kiwi.settings") throw new Error("private database detail");
+      return null;
+    });
+    await expect(hydrateNativeStorage()).rejects.toThrow("Saved startup data could not be read (kiwi.settings).");
+    expect(localStorage.getItem("kiwi.settings")).toBe('{"model":"stale cache"}');
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+    expect(invoke.mock.calls.every(([command]) => command === "state_read_raw" || command === "state_read")).toBe(true);
+  });
+
+  it("hydrates valid native raw settings when cache access is denied", async () => {
+    isTauri.mockReturnValue(true);
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => { throw new Error("denied"); });
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("denied"); });
+    const settings = { model: null, lmStudioBaseUrl: null, systemPrompt: "Keep this prompt" };
+    invoke.mockImplementation(async (command, args) => command === "state_read_raw" && args.key === "kiwi.settings" ? JSON.stringify(settings) : null);
+    await hydrateNativeStorage();
+    expect(loadStored("kiwi.settings", {})).toEqual(settings);
+    expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
+  });
+
   it("writes both the immediate cache and durable store", async () => {
     invoke.mockResolvedValue(undefined);
     storeValue("kiwi.workspaceMode", "projects");
@@ -203,6 +321,7 @@ describe("storage quota recovery", () => {
     localStorage.clear();
     localStorage.setItem("kiwi.schemaVersion", String(STORAGE_SCHEMA_VERSION));
     invoke.mockReset();
+    isTauri.mockReturnValue(false);
   });
   afterEach(async () => {
     await flushPendingStateWrites();

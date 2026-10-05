@@ -1,4 +1,4 @@
-import { storeValue } from "./storage";
+import { readStoredRaw, storeValue } from "./storage";
 
 export interface CostEntry {
   threadId: string;
@@ -53,7 +53,7 @@ let cachedRaw: string | null | undefined;
 let cachedEntries: CostEntry[] | null = null;
 
 function ledger(): CostEntry[] {
-  const raw = localStorage.getItem(LEDGER_KEY);
+  const raw = readStoredRaw(LEDGER_KEY);
   if (cachedEntries && raw === cachedRaw) return cachedEntries;
   cachedRaw = raw;
   cachedEntries = parseEntries(raw);

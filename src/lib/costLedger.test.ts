@@ -1,11 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()), isTauri: () => false }));
 
-import { compactCostEntries, costTotals, formatCost, recordThreadCost, type CostEntry } from "./costLedger";
+import { invoke } from "@tauri-apps/api/core";
+import { compactCostEntries, costTotals, formatCost, recordThreadCost, resetCostLedgerCache, type CostEntry } from "./costLedger";
+import { hydrateNativeStorage, resetStorageMemoryForTests, STORAGE_SCHEMA_VERSION } from "./storage";
 
 describe("cost ledger", () => {
   beforeEach(() => localStorage.clear());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetStorageMemoryForTests();
+    resetCostLedgerCache();
+  });
 
   it("stores only cumulative deltas and sums totals", () => {
     recordThreadCost("t1", "/proj/a", 0.05);
@@ -69,6 +76,19 @@ describe("cost ledger", () => {
       JSON.stringify([{ threadId: "t9", projectPath: "/proj/a", cost: 0.5, day: new Date().toISOString().slice(0, 10), updatedAt: Date.now() }]),
     );
     expect(costTotals("/proj/a").project).toBeCloseTo(0.5);
+  });
+
+  it("retains native ledger totals when the webview storage cache is unavailable", async () => {
+    localStorage.setItem("kiwi.schemaVersion", JSON.stringify(STORAGE_SCHEMA_VERSION));
+    const entries: CostEntry[] = [{ threadId: "native-thread", projectPath: "/proj/a", cost: 0.25, day: new Date().toISOString().slice(0, 10), updatedAt: Date.now() }];
+    vi.mocked(invoke).mockResolvedValueOnce(entries);
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => { throw new Error("storage unavailable"); });
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("storage unavailable"); });
+
+    await hydrateNativeStorage(["kiwi.costLedger"]);
+    expect(costTotals("/proj/a")).toEqual({ today: 0.25, project: 0.25 });
+    recordThreadCost("native-thread", "/proj/a", 0.4);
+    expect(costTotals("/proj/a")).toEqual({ today: 0.4, project: 0.4 });
   });
 
   it("formats sub-cent costs with more precision", () => {

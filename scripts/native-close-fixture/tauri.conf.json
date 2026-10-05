@@ -8,5 +8,5 @@
     "windows": [{ "label": "main", "title": "Mythra Native Close Test - synthetic only", "width": 720, "height": 500 }],
     "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'", "assetProtocol": { "enable": true, "scope": [] } }
   },
-  "bundle": { "active": false, "createUpdaterArtifacts": false, "icon": ["../../src-tauri/icons/icon.ico"] }
+  "bundle": { "active": false, "createUpdaterArtifacts": false, "icon": ["../../src-tauri/icons/icon.ico", "../../src-tauri/icons/32x32.png"] }
 }

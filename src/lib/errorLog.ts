@@ -1,4 +1,5 @@
 import { auditEvent } from "./codex";
+import { safeErrorText } from "./errors";
 
 export interface LoggedError {
   message: string;
@@ -14,12 +15,18 @@ const buffer: LoggedError[] = [];
  * be answered from Settings → Diagnostics or the diagnostics export.
  */
 export function recordError(message: string): void {
-  if (!message) return;
-  const last = buffer[buffer.length - 1];
-  if (last && last.message === message && Date.now() - last.at < 2000) return;
-  buffer.push({ message, at: Date.now() });
-  if (buffer.length > MAX_BUFFERED_ERRORS) buffer.shift();
-  void auditEvent("ui.error", { message }).catch(() => {});
+  try {
+    const text = safeErrorText(message, "");
+    if (!text) return;
+    const at = Date.now();
+    const last = buffer[buffer.length - 1];
+    if (last && last.message === text && at - last.at < 2000) return;
+    buffer.push({ message: text, at });
+    if (buffer.length > MAX_BUFFERED_ERRORS) buffer.shift();
+    void Promise.resolve(auditEvent("ui.error", { message: text })).catch(() => {});
+  } catch {
+    // Diagnostics are best effort; they must never replace the original error.
+  }
 }
 
 export function recentErrors(): LoggedError[] {
@@ -36,12 +43,19 @@ export function clearErrorLog(): void {
  * the same diagnostics buffer so "it broke earlier" stays answerable.
  */
 export function installGlobalErrorCapture(): void {
-  window.addEventListener("error", (event) => {
-    recordError(`Uncaught: ${event.message || String(event.error ?? "unknown error")}`);
-  });
-  window.addEventListener("unhandledrejection", (event) => {
-    const reason = event.reason;
-    const message = reason instanceof Error ? reason.message : String(reason ?? "unknown reason");
-    recordError(`Unhandled rejection: ${message}`);
-  });
+  if (typeof window === "undefined") return;
+  try {
+    window.addEventListener("error", (event) => {
+      let message = "unknown error";
+      try { message = safeErrorText(event.message || event.error, message); } catch { /* Unreadable event. */ }
+      recordError(`Uncaught: ${message}`);
+    });
+  } catch { /* A diagnostics listener must not prevent startup. */ }
+  try {
+    window.addEventListener("unhandledrejection", (event) => {
+      let message = "unknown reason";
+      try { message = safeErrorText(event.reason, message); } catch { /* Unreadable event. */ }
+      recordError(`Unhandled rejection: ${message}`);
+    });
+  } catch { /* A diagnostics listener must not prevent startup. */ }
 }

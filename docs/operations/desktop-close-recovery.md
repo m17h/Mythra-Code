@@ -53,8 +53,10 @@ a cleanup audit label alone is not proof of successful termination.
 1. A durable backend session/event journal and reconciliation of provider
    history, drafts, pending approvals, queued/scheduled messages, and task IDs.
    Rebuilding the display must reconnect, not submit the work again.
-2. Native startup milestones and a browser-independent failure surface for
-   errors before WebView construction or frontend initialization.
+2. Native startup milestones and independent failure surfaces are now covered
+   by [desktop startup resilience](desktop-startup-resilience.md) for returned
+   setup errors and responsive-host frontend failures. Blocked WebView
+   construction and native-main-loop hangs remain unresolved boundaries.
 3. Coordinated renderer reload versus browser/control recreation, with a fresh
    validated display generation and bounded retries. GPU/utility failures that
    WebView2 recovers automatically must not trigger destructive recovery.

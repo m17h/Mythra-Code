@@ -33,6 +33,26 @@ function Shell({ baseline }: { baseline: boolean }) {
   </main>;
 }
 
-void invoke<{ baseline: boolean }>("fixture_info").then(({ baseline }) => {
-  createRoot(document.getElementById("root")!).render(<Shell baseline={baseline} />);
+function StartupShell() {
+  const [status, setStatus] = useState("Readiness withheld: the native warning is due once after 60 seconds.");
+  useFlushOnClose(() => invoke("fixture_flush", { mode: "saved" }), setStatus);
+  useEffect(() => { void invoke("fixture_record", { kind: "display-ready" }); }, []);
+  return <main style={{ fontFamily: "sans-serif", padding: 28 }}>
+    <h1>Native startup candidate</h1>
+    <p>Synthetic test only. No providers, production database, or model requests.</p>
+    <button onClick={() => {
+      void invoke("startup_ready").then(() => setStatus("Readiness acknowledged. No native timeout should appear."));
+    }}>Acknowledge ready</button>{" "}
+    <button onClick={() => {
+      // Render a useful fallback before reporting the fixed failure stage.
+      setStatus("Synthetic application import failure. Close this test window and try again.");
+      requestAnimationFrame(() => { void invoke("startup_failed", { stage: "app-import" }); });
+    }}>Show useful failure</button>
+    <p role="status">{status}</p>
+    <p>Native Keep waiting/Cancel must retain the window. Explicit Close uses the normal save handshake.</p>
+  </main>;
+}
+
+void invoke<{ baseline: boolean; startup: boolean }>("fixture_info").then(({ baseline, startup }) => {
+  createRoot(document.getElementById("root")!).render(startup ? <StartupShell /> : <Shell baseline={baseline} />);
 });

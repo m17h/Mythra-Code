@@ -34,7 +34,7 @@ async fn audit_append(app: AppHandle, kind: String, _thread: Option<String>, pay
 #[tauri::command]
 fn fixture_info(app: AppHandle) -> serde_json::Value {
     let child = app.state::<OwnedBackend>().0.lock().unwrap().as_ref().map(Child::id);
-    json!({"baseline": BASELINE,"pid":std::process::id(),"backendPid":child,"identifier":app.config().identifier,"dataDir":app.path().app_data_dir().ok(),"localDataDir":app.path().app_local_data_dir().ok()})
+    json!({"baseline": BASELINE,"startup":STARTUP,"pid":std::process::id(),"backendPid":child,"identifier":app.config().identifier,"dataDir":app.path().app_data_dir().ok(),"localDataDir":app.path().app_local_data_dir().ok()})
 }
 
 #[tauri::command]
