@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyComponentAmounts, type UsageBucket, type UsageComponentAmounts } from "./usageHistory";
-import { combineUsageDetail, componentBreakdown, promptAverages, usagePeriods, weekStart, type UsageSelectionTotals } from "./usageSummary";
+import { combineUsageDetail, componentBreakdown, promptAverages, selectUsageRange, summarizeUsageBuckets, usagePeriods, weekStart, type UsageSelectionTotals } from "./usageSummary";
 
 function bucket(day: string, model: string, amounts: Partial<UsageComponentAmounts>): UsageBucket {
   const value = { day, provider: "claude" as const, model, ...emptyComponentAmounts(), ...amounts };
@@ -12,6 +12,31 @@ const priced = (day: string, model: string, turns: number, scale = 1) => bucket(
   uncachedInputTokens: 100 * scale, cacheReadTokens: 400 * scale, cacheWriteTokens: 50 * scale, outputTokens: 20 * scale,
   uncachedInputCost: 1 * scale, cacheReadCost: 0.4 * scale, cacheWriteCost: 0.5 * scale, outputCost: 2 * scale,
   pricedTokens: 570 * scale, turns, modelTurns: turns,
+});
+
+describe("selecting ranges from a validated usage snapshot", () => {
+  it("matches dated aggregation without attributing undated totals to the range", () => {
+    const rows = [priced("2026-09-20", "opus", 2), priced("2026-09-21", "opus", 3, 2), priced("2026-09-22", "sonnet", 1, 3)];
+    const summary = summarizeUsageBuckets(rows, null, "2026-09-01", "2026-09-15");
+    const allTime = combineUsageDetail(summary, null);
+    // All-time legacy totals cannot be distributed by date.
+    allTime.totals.totalTokens += 100_000;
+    allTime.unallocated = { ...emptyComponentAmounts(), totalTokens: 100_000, estimatedCost: 20 };
+    const range = { from: "2026-09-21", to: "2026-09-22" };
+    const before = structuredClone(allTime);
+    expect(selectUsageRange(allTime, range)).toEqual(combineUsageDetail(summarizeUsageBuckets(rows, range, "2026-09-01", "2026-09-15"), null));
+    expect(allTime).toEqual(before);
+    expect(selectUsageRange(allTime, { from: "2026-10-01", to: "2026-10-02" }).totals.totalTokens).toBe(0);
+  });
+
+  it("keeps interrupted-save detail suppressed and propagates the warning", () => {
+    const allTime = { ...combineUsageDetail(summarizeUsageBuckets([], null, "2026-09-01"), null), detailAhead: true };
+    const selected = selectUsageRange(allTime, { from: "2026-09-21", to: "2026-09-22" });
+    expect(selected.detailAhead).toBe(true);
+    expect(selected.buckets).toEqual([]);
+    expect(selected.totals.totalTokens).toBe(0);
+    expect(selected.startedDay).toBe("2026-09-01");
+  });
 });
 
 describe("per-prompt averages", () => {

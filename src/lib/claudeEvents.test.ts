@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as tauri from "@tauri-apps/api/core";
 import { resetClaudeEventUsageState, routeClaudeEvent, type ClaudeEventContext } from "./claudeEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
 import { markProviderStopIntent } from "./providerStopIntent";
 import { usageTotals } from "./usageLedger";
 import { useClaudeContinuationStore } from "./claudeContinuation";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 
 const context: ClaudeEventContext = {
   bindingFor: () => "/tmp/project",
@@ -57,9 +60,11 @@ describe("Claude event routing", () => {
     expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
   });
 
-  it("keeps an eligible wrap-up running, records the notice once, and clears it on completion", () => {
+  it("accepts tools and streamed text after an allowed grace event until the successful result", () => {
+    const invoke = vi.mocked(tauri.invoke);
+    useTaskStore.getState().setActiveThread("thread-1");
     send({ type: "system", subtype: "init" });
-    const info = { status: "allowed_warning", rateLimitGraceActive: true };
+    const info = { status: "allowed_warning", rateLimitType: "five_hour", utilization: 1, rateLimitGraceActive: true };
     send({ type: "rate_limit_event", rate_limit_info: info });
     send({ type: "rate_limit_event", rate_limit_info: info });
     expect(useTaskStore.getState().tasks["thread-1"].status).toBe("running");
@@ -68,7 +73,84 @@ describe("Claude event routing", () => {
     expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toMatchObject({ kind: "grace", turnId: "turn-1" });
     expect(useTaskStore.getState().tasks["thread-1"].activities.filter((row) => row.id.startsWith("claude-continuation"))).toHaveLength(1);
     expect(useTaskStore.getState().tasks["thread-1"].activities.find((row) => row.id.startsWith("claude-continuation"))?.detail).toContain("counts toward your weekly usage");
-    send({ type: "result", subtype: "success" });
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "wrap-up-tools" } } });
+    send({ type: "stream_event", event: {
+      type: "content_block_start", index: 0,
+      content_block: { type: "tool_use", id: "wrap-up-read", name: "Read" },
+    } });
+    send({ type: "stream_event", event: {
+      type: "content_block_delta", index: 0,
+      delta: { type: "input_json_delta", partial_json: '{"file_path":"/tmp/project/file.ts"}' },
+    } });
+    send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    send({ type: "user", message: { content: [{
+      type: "tool_result", tool_use_id: "wrap-up-read", content: "The file contains the completed change.",
+    }] } });
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "wrap-up-answer" } } });
+    send({ type: "stream_event", event: {
+      type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "The change is complete." },
+    } });
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({ status: "running", activeTurnId: "turn-1" });
+    expect(context.onTurnCompleted).not.toHaveBeenCalled();
+    expect(context.onError).not.toHaveBeenCalled();
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]?.kind).toBe("grace");
+
+    // Leave the final delta queued: the terminal boundary must flush it.
+    send({ type: "result", subtype: "success", is_error: false, result: "The change is complete." });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task).toMatchObject({ status: "completed", lastCompletedTurnId: "turn-1", lastCompletedTurnStatus: "completed" });
+    expect(task.activeTurnId).toBeUndefined();
+    expect(task.messages).toEqual([expect.objectContaining({
+      id: "wrap-up-answer", text: "The change is complete.", turnId: "turn-1", turnStatus: "completed", streaming: false,
+    })]);
+    expect(task.activities).toContainEqual(expect.objectContaining({
+      id: "wrap-up-read", status: "completed", detail: "The file contains the completed change.", turnStatus: "completed",
+    }));
+    expect(context.onTurnCompleted).toHaveBeenCalledExactlyOnceWith("thread-1");
+    expect(context.onError).not.toHaveBeenCalled();
+    expect(context.onStatus).toHaveBeenLastCalledWith("Ready");
+    expect(context.onStatus).not.toHaveBeenCalledWith("Stopped");
+    expect(invoke.mock.calls.filter(([command]) => command.startsWith("claude_"))).toEqual([]);
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+  });
+
+  it("preserves partial output when rejection retains the grace flag and the turn ends in an error", () => {
+    const invoke = vi.mocked(tauri.invoke);
+    useTaskStore.getState().setActiveThread("thread-1");
+    send({ type: "system", subtype: "init" });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } });
+    send({ type: "assistant", message: { id: "partial-tool", content: [{
+      type: "tool_use", id: "partial-read", name: "Read", input: { file_path: "/tmp/project/file.ts" },
+    }] } });
+    send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "partial-read", content: "Existing source." }] } });
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "partial-answer" } } });
+    send({ type: "stream_event", event: {
+      type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "I inspected the source, but" },
+    } });
+    send({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitGraceActive: true } });
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({ status: "running", activeTurnId: "turn-1" });
+    expect(context.onTurnCompleted).not.toHaveBeenCalled();
+    expect(context.onError).not.toHaveBeenCalled();
+
+    const failure = { type: "result", subtype: "error_during_execution", is_error: true, result: "You've hit your limit." };
+    send(failure);
+    // A duplicate terminal event must not restart or complete the turn twice.
+    send(failure);
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task).toMatchObject({ status: "error", error: "You've hit your limit.", lastCompletedTurnStatus: "error" });
+    expect(task.activeTurnId).toBeUndefined();
+    expect(task.messages).toEqual([expect.objectContaining({
+      id: "partial-answer", text: "I inspected the source, but", turnStatus: "failed", streaming: false,
+    })]);
+    expect(task.activities).toContainEqual(expect.objectContaining({
+      id: "partial-read", detail: "Existing source.", status: "completed", turnStatus: "failed",
+    }));
+    expect(context.onError).toHaveBeenCalledExactlyOnceWith("You've hit your limit.");
+    expect(context.onTurnCompleted).toHaveBeenCalledExactlyOnceWith("thread-1");
+    expect(context.onStatus).toHaveBeenLastCalledWith("Task failed");
+    expect(context.onStatus).not.toHaveBeenCalledWith("Stopped");
+    expect(invoke.mock.calls.filter(([command]) => command.startsWith("claude_"))).toEqual([]);
     expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
   });
 

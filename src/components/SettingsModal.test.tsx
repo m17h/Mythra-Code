@@ -1196,6 +1196,30 @@ describe("SettingsModal", () => {
     expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["2.1.276 (Claude Code)", "Included wrap-up support requires Claude Code 2.1.277 or newer. Update Claude Code in Updates; normal Claude conversations remain available."],
+    ["unknown", "Included wrap-up support could not be verified; it requires Claude Code 2.1.277 or newer. Recheck or update Claude Code in Updates."],
+  ])("keeps a signed-in Claude account connected while showing its runtime warning (%s)", (version, warning) => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({
+      initialSection: "models",
+      settings: { ...DEFAULT_SETTINGS, provider: "claude" },
+      onSave,
+      claudeStatus: {
+        available: true, path: "/usr/local/bin/claude", version, loggedIn: true,
+        authMethod: "claude.ai", email: "fixture@example.com", subscriptionType: "max", warning,
+      },
+    })} />);
+
+    expect(screen.getByText("Connected", { selector: ".connected-badge" })).toBeInTheDocument();
+    const notice = screen.getByText(warning).closest(".settings-notice");
+    expect(notice).toHaveAttribute("role", "status");
+    fireEvent.click(within(notice as HTMLElement).getByRole("button", { name: "Open Updates" }));
+    expect(screen.getByRole("heading", { name: "Developer runtimes" })).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(developerRuntimeUpdater.updateRuntime).not.toHaveBeenCalled();
+  });
+
   it("previews a theme immediately but does not save it when cancelled", async () => {
     const onThemePreview = vi.fn();
     const onClose = vi.fn();

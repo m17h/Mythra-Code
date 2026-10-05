@@ -25,7 +25,7 @@
   height: min(760px, 100%);
 }
 .app-shell[data-theme][data-color-scheme="light"] .settings-modal { box-shadow: 0 1px 0 #fff inset, 0 50px 110px -34px rgba(25, 35, 55, .4), 0 0 0 1px rgba(25, 35, 55, .06); }
-.app-shell[data-theme][data-color-scheme] .settings-layout { grid-template-columns: 248px minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .settings-layout { --settings-nav-width: 248px; grid-template-columns: var(--settings-nav-width) minmax(0, 1fr); }
 
 /* ---- Navigation column ---- */
 .app-shell[data-theme][data-color-scheme] .settings-nav {

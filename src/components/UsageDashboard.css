@@ -237,6 +237,9 @@ details[open] > summary > .usage-disclosure, [aria-expanded="true"] > .usage-dis
   color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--elev-3, var(--shadow));
   font-size: var(--fs-meta); line-height: 1.4; font-variant-numeric: tabular-nums;
 }
+.usage-heat-card[data-overlaps-grid="true"][data-pinned="false"] { pointer-events: none; }
+.usage-heat-card-overlap-hint { display: none; margin: var(--s-2) 0 0; color: var(--muted); font-size: var(--fs-micro); }
+.usage-heat-card[data-overlaps-grid="true"] .usage-heat-card-overlap-hint { display: block; }
 @media (prefers-reduced-motion: no-preference) {
   .usage-heat-card { animation: usage-heat-card-in 120ms var(--ease, ease-out); }
 }

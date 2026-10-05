@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
@@ -741,6 +741,32 @@ export function SettingsModal({
 
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);
+
+  // Reserve the pane's destination width before a section switch paints.
+  // The sheet still resizes, but charts and wrapped text no longer reflow at
+  // every intermediate animation frame. Measuring the backdrop's content box
+  // keeps the destination inside the window at every UI scale.
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    const backdrop = dialog?.parentElement;
+    if (!dialog || !backdrop || !open) return;
+    const reserveWidth = (width: number) => {
+      if (width <= 0) return;
+      const frameStyle = getComputedStyle(dialog);
+      // Zoom can snap a 1px border to a fractional CSS pixel.
+      const borderWidth = parseFloat(frameStyle.borderLeftWidth) + parseFloat(frameStyle.borderRightWidth);
+      dialog.style.setProperty("--settings-frame-border", `${borderWidth}px`);
+      dialog.style.setProperty("--settings-available-width", `${width}px`);
+    };
+    const style = getComputedStyle(backdrop);
+    reserveWidth(backdrop.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) reserveWidth(entry.contentRect.width);
+    });
+    observer?.observe(backdrop);
+    return () => observer?.disconnect();
+  }, [open, local.uiScale]);
 
   // The modal's generic initial focus runs first; a repair link then brings
   // the exact authored prompt into view and selects the failed @reference.
@@ -1799,6 +1825,7 @@ export function SettingsModal({
                 </div>
               </div>
             ) : accountProvider === "claude" ? (
+              <>
               <div className="credential-panel">
                 <div>
                   <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
@@ -1816,6 +1843,11 @@ export function SettingsModal({
                 )}
                 <button className="icon-button" onClick={() => void onClaudeRefresh()} title="Refresh Claude status" aria-label="Refresh Claude status"><RotateCcw size={14} /></button>
               </div>
+              {claudeStatus?.loggedIn && claudeStatus.warning && <div className="settings-notice" role="status">
+                <Info size={13} /><span>{claudeStatus.warning}</span>
+                <button type="button" className="secondary-button" onClick={() => setSettingsSection("updates")}>Open Updates</button>
+              </div>}
+              </>
             ) : (
               <div className="credential-panel">
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
