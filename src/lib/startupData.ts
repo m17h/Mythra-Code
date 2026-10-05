@@ -1,7 +1,7 @@
 /** Records read before React mounts or rewritten by startup migrations. */
 export const STARTUP_DATA_KEYS = new Set([
   "kiwi.schemaVersion", "kiwi.projects", "kiwi.knownThreads", "kiwi.archivedThreads", "kiwi.settings",
-  "kiwi.promptProfiles", "kiwi.usageLedger",
+  "kiwi.promptProfiles", "kiwi.usageLedger", "kiwi.costLedger",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -24,7 +24,7 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
   if (typeof version !== "number" || !Number.isFinite(version) || version < 0) return invalid("kiwi.schemaVersion");
   const projects = read("kiwi.projects");
   if (projects !== undefined && (!Array.isArray(projects) || projects.some((project) => (
-    !isRecord(project) || (project.overrides && !isRecord(project.overrides))
+    !isRecord(project) || typeof project.path !== "string" || (project.overrides && !isRecord(project.overrides))
   )))) invalid("kiwi.projects");
 
   const threads = read("kiwi.knownThreads");
@@ -47,6 +47,11 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
 
   const profiles = read("kiwi.promptProfiles");
   const ledger = read("kiwi.usageLedger");
+  const costs = read("kiwi.costLedger");
+  // App reads every cost row before its first commit.
+  if (costs !== undefined && (!Array.isArray(costs) || costs.some((record) => !isRecord(record)))) {
+    invalid("kiwi.costLedger");
+  }
   // These migrations dereference rows; later readers already sanitize them.
   if (version < 14) {
     if (profiles !== undefined && (!Array.isArray(profiles) || profiles.some((profile) => !isRecord(profile)))) {
