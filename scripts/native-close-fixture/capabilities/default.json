@@ -1,0 +1,5 @@
+{
+  "identifier": "fixture-only",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:default"]
+}

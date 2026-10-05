@@ -1945,10 +1945,7 @@ export default function App() {
   });
   const scheduleClaudeThreadSave = localTranscriptSaves.schedule;
   const scheduleCursorThreadSave = localTranscriptSaves.schedule;
-  useFlushOnClose(() => flushBeforeClose([localTranscriptSaves.flushAll, flushPendingStateWrites]), setError, () => confirmDialog(
-    "Some recent changes could not be saved. Close without saving them? You can keep the window open and retry after resolving the storage problem.",
-    { confirmLabel: "Close without saving", cancelLabel: "Keep open" },
-  ));
+  useFlushOnClose(() => flushBeforeClose([localTranscriptSaves.flushAll, flushPendingStateWrites]), setError);
 
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);

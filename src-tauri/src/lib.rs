@@ -35,6 +35,7 @@ use tokio::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod agents;
+mod close_guard;
 mod cursor;
 mod git_inspection;
 mod git_publish;
@@ -59,6 +60,7 @@ use agents::{
     child_agent_session_end, child_agent_session_start, purge_stale_agent_bridges,
     run_agent_bridge, shutdown_agent_bridges_on_exit, ChildAgentState, AGENT_BRIDGE_ARG,
 };
+use close_guard::{close_guard_claim, close_guard_finish, CloseGuardState};
 use cursor::{
     cursor_login, cursor_models, cursor_permission_respond, cursor_runtime_status,
     cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start,
@@ -6730,6 +6732,9 @@ pub fn run() {
             // listening, so anything on disk at startup is debris from a
             // previous run and must not outlive it.
             purge_stale_agent_bridges(app.handle());
+            if let Some(window) = app.get_webview_window("main") {
+                close_guard::install(&window);
+            }
             Ok(())
         })
         .manage(RuntimeState::default())
@@ -6737,7 +6742,10 @@ pub fn run() {
         .manage(CursorState::default())
         .manage(ChildAgentState::default())
         .manage(RunDiscoveryState::default())
+        .manage(CloseGuardState::default())
         .invoke_handler(tauri::generate_handler![
+            close_guard_claim,
+            close_guard_finish,
             codex_runtime_status,
             codex_runtime_status_refresh,
             reserve_runtime_restart,
