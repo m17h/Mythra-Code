@@ -1,6 +1,6 @@
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { commands, page, userEvent } from "vitest/browser";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageDashboard } from "./UsageDashboard";
 import { UsageCalendarCard } from "./UsageCalendar";
 import { usageDetail } from "../lib/usageSummary";
@@ -115,18 +115,64 @@ describe("usage calendar", () => {
   beforeEach(async () => { await page.viewport(1400, 900); });
   afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
-  it("waits for hover intent instead of opening details while moving through days", async () => {
+  it("waits exactly 500ms on the current day and cancels skipped-day hover intent", async () => {
     seed();
     const { cell, card } = mount();
     await parkPointer();
-    await userEvent.hover(cell(dayAgo(2)));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(card()).toBeNull();
-    await userEvent.hover(cell(dayAgo(5)));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(card()).toBeNull();
-    await waitFor(() => expect(card()).toHaveTextContent("Unknown provider"));
-    expect(card()).not.toHaveTextContent("10,000");
+    // Trusted hover uses a runner round trip. Control only the timeout clock
+    // so transport/scheduling delay cannot consume the intent window; rAF,
+    // rendering, native pointer events and hit-testing remain real.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await userEvent.hover(cell(dayAgo(2)));
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(card()).toBeNull();
+      await userEvent.hover(cell(dayAgo(5)));
+      // Cross the skipped day's old deadline, still before the new deadline.
+      act(() => { vi.advanceTimersByTime(300); });
+      expect(card()).toBeNull();
+      act(() => { vi.advanceTimersByTime(199); });
+      expect(card()).toBeNull();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(card()).toHaveTextContent("Unknown provider");
+      expect(card()).not.toHaveTextContent("10,000");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("opens a hit-testable breakdown after real hover intent from a trusted pointer", async () => {
+    seed();
+    const { cell, card } = mount();
+    await parkPointer();
+    const target = cell(dayAgo(2));
+    let enteredAt: number | null = null;
+    let openedAt: number | null = null;
+    let trusted = false;
+    const onOver = (event: PointerEvent) => {
+      if (event.target !== target || enteredAt !== null) return;
+      enteredAt = performance.now();
+      trusted = event.isTrusted;
+    };
+    // Observe onset inside the page, before awaiting the hover RPC. A slow
+    // command return must not turn a correct 500ms delay into an early-open
+    // failure. Mutation delivery records the first committed breakdown.
+    const observer = new MutationObserver(() => {
+      if (card() && openedAt === null) openedAt = performance.now();
+    });
+    document.addEventListener("pointerover", onOver, true);
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      await userEvent.hover(target);
+      await waitFor(() => expect(card()).toHaveTextContent("10,000"));
+      expect(trusted).toBe(true);
+      expect(enteredAt).not.toBeNull();
+      expect(openedAt).not.toBeNull();
+      // Allow one millisecond for browser clock/timer resolution.
+      expect(openedAt! - enteredAt!).toBeGreaterThanOrEqual(499);
+      await waitFor(() => expectUnclipped(card()!));
+    } finally {
+      document.removeEventListener("pointerover", onOver, true);
+      observer.disconnect();
+    }
   });
 
   it("lets the real pointer explore neighboring days while a detailed popup is open", async () => {
