@@ -70,27 +70,60 @@ function mount(scale = 1, largeHistory = false) {
   </div>);
 }
 
-async function sampleTransition(dialog: HTMLElement, button: HTMLElement) {
-  const content = dialog.querySelector<HTMLElement>(".settings-content")!;
-  // Read the starting style so the browser establishes a real transition.
-  const startWidth = dialog.clientWidth;
-  const frames: Array<{ sheet: number; layout: number; gap: number }> = [];
-  let previous = performance.now();
-  fireEvent.click(button);
-  for (let index = 0; index < 24; index += 1) {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const now = performance.now();
-    frames.push({ sheet: dialog.clientWidth, layout: content.clientWidth, gap: now - previous });
-    const bounds = dialog.getBoundingClientRect();
-    for (const button of within(dialog).getAllByRole("button", { name: /^(Close settings|Cancel|Save settings)$/ })) {
+type TransitionFrame = ReturnType<typeof captureTransitionFrame>;
+
+function transitionControls(dialog: HTMLElement) {
+  return within(dialog).getAllByRole("button", { name: /^(Close settings|Cancel|Save settings)$/ });
+}
+
+function captureTransitionFrame(dialog: HTMLElement, controls: HTMLElement[]) {
+  return {
+    sheet: dialog.clientWidth,
+    height: dialog.clientHeight,
+    layout: dialog.querySelector<HTMLElement>(".settings-content")!.clientWidth,
+    bounds: dialog.getBoundingClientRect(),
+    controls: controls.map((button) => {
       const rect = button.getBoundingClientRect();
-      expect(rect.right).toBeLessThanOrEqual(bounds.right);
-      expect(rect.bottom).toBeLessThanOrEqual(bounds.bottom);
-      expect(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest("button")).toBe(button);
-    }
-    previous = now;
+      return { button, rect, hit: document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest("button") };
+    }),
+  };
+}
+
+function expectReachableControls(frame: TransitionFrame) {
+  for (const { button, rect, hit } of frame.controls) {
+    expect(rect.left).toBeGreaterThanOrEqual(frame.bounds.left);
+    expect(rect.top).toBeGreaterThanOrEqual(frame.bounds.top);
+    expect(rect.right).toBeLessThanOrEqual(frame.bounds.right);
+    expect(rect.bottom).toBeLessThanOrEqual(frame.bounds.bottom);
+    expect(hit).toBe(button);
   }
-  return { startWidth, frames };
+}
+
+async function sampleTransition(dialog: HTMLElement, button: HTMLElement) {
+  const controls = transitionControls(dialog);
+  // Establish the starting layout, then capture and pause the actual CSS
+  // transitions before yielding. Slow runner scheduling must not skip the
+  // intermediate geometry this contract verifies.
+  const startWidth = dialog.clientWidth;
+  const startHeight = dialog.clientHeight;
+  fireEvent.click(button);
+  void dialog.offsetWidth;
+  const resize = dialog.getAnimations().filter((animation): animation is CSSTransition =>
+    animation instanceof CSSTransition && ["width", "height"].includes(animation.transitionProperty));
+  resize.forEach((animation) => { animation.pause(); animation.currentTime = 0; });
+  expect(resize.map((animation) => animation.transitionProperty).sort()).toEqual(["height", "width"]);
+  for (const animation of resize) expect(animation.effect!.getTiming().duration).toBe(320);
+
+  const frames: TransitionFrame[] = [];
+  for (const time of [0, 40, 80, 160, 240, 320]) {
+    resize.forEach((animation) => { animation.currentTime = time; });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const frame = captureTransitionFrame(dialog, controls);
+    expectReachableControls(frame);
+    frames.push(frame);
+  }
+  resize.forEach((animation) => animation.finish());
+  return { startWidth, startHeight, frames };
 }
 
 afterEach(async () => {
@@ -107,12 +140,20 @@ it("reserves the destination content width while preserving both directions of t
   const nav = within(view.getByRole("navigation", { name: "Settings categories" }));
 
   for (const label of ["Usage", "Interface", "Usage", "Interface"]) {
-    const { startWidth, frames } = await sampleTransition(dialog, nav.getByRole("button", { name: new RegExp(`^${label}$`) }));
+    const { startWidth, startHeight, frames } = await sampleTransition(dialog, nav.getByRole("button", { name: new RegExp(`^${label}$`) }));
     const layoutWidths = new Set(frames.map((frame) => frame.layout));
+    expect(frames[0].sheet).toBe(startWidth);
+    expect(frames[0].height).toBe(startHeight);
     expect(frames[0].sheet).not.toBe(frames.at(-1)!.sheet);
     expect(startWidth).not.toBe(frames.at(-1)!.sheet);
     expect(new Set(frames.map((frame) => frame.sheet)).size).toBeGreaterThan(3);
     expect(frames.at(-1)!.sheet).toBe(label === "Usage" ? 1198 : 918);
+    expect(frames.at(-1)!.height).toBe(label === "Usage" ? 878 : 758);
+    const direction = label === "Usage" ? 1 : -1;
+    for (let index = 1; index < frames.length; index += 1) {
+      expect(direction * (frames[index].sheet - frames[index - 1].sheet)).toBeGreaterThan(0);
+      expect(direction * (frames[index].height - frames[index - 1].height)).toBeGreaterThan(0);
+    }
     // Charts and text lay out at their destination width once; the sheet still animates.
     expect(layoutWidths.size).toBe(1);
     if (label === "Usage") {
@@ -120,6 +161,29 @@ it("reserves the destination content width while preserving both directions of t
       expect(view.getByRole("grid", { name: /^Tokens per day/ }).querySelectorAll("[data-day]").length).toBeGreaterThan(350);
       expect(view.getByRole("radiogroup", { name: "Provider quota display" })).toBeInTheDocument();
     }
+  }
+});
+
+it("keeps controls hit-testable during natural playback with trusted navigation clicks", async () => {
+  await commands.setStreamTestReducedMotion(false);
+  await page.viewport(1400, 1000);
+  const view = mount(1, true);
+  const dialog = view.getByRole("dialog", { name: "Settings" });
+  await waitFor(() => expect(dialog.getAnimations()).toHaveLength(0));
+  const controls = transitionControls(dialog);
+  for (const label of ["Usage", "Interface"]) {
+    void dialog.offsetWidth;
+    await page.getByRole("button", { name: label, exact: true }).click();
+    const frames: TransitionFrame[] = [];
+    // Collect real unpaused frames first, without role queries/assertions in
+    // the sampling loop. Frame count is not an animation/performance promise.
+    for (let index = 0; index < 24; index += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      frames.push(captureTransitionFrame(dialog, controls));
+    }
+    frames.forEach(expectReachableControls);
+    expect(new Set(frames.map((frame) => frame.layout)).size).toBe(1);
+    await waitFor(() => expect(dialog.clientWidth).toBe(label === "Usage" ? 1198 : 918));
   }
 });
 
