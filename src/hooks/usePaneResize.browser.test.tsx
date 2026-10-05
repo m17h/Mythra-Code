@@ -4,7 +4,7 @@ import { commands, userEvent } from "vitest/browser";
 import { themeColorScheme } from "../lib/appConfig";
 import { clampPaneSize, PANE_BOUNDS, usePaneResize, type PaneKey } from "./usePaneResize";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()), isTauri: () => false }));
 
 declare module "vitest/browser" {
   interface BrowserCommands {

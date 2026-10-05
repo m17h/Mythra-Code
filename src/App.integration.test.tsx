@@ -481,6 +481,7 @@ afterEach(async () => {
   const { resetDraftStoreForTests } = await import("./components/Composer");
   resetDraftStoreForTests();
   vi.doUnmock("./components/SettingsModal");
+  vi.doUnmock("./components/WorkflowRunDialog");
 });
 
 describe("skill file recovery messages", () => {
@@ -681,7 +682,9 @@ describe("Codex cold startup", () => {
       await screen.findByRole("button", { name: PROJECT_B.name });
       fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       const reload = await screen.findByRole("button", { name: "Reload view" });
-      expect(reload).toHaveFocus();
+      // Overlay focus is assigned by useModalFocus's passive effect, which
+      // may flush after the fallback DOM commits on a contended runner.
+      await waitFor(() => expect(reload).toHaveFocus());
       if (how === "Escape") fireEvent.keyDown(reload, { key: "Escape" });
       else fireEvent.click(screen.getByRole("button", { name: "Close settings error" }));
       expect(screen.queryByText("The settings view hit a problem")).not.toBeInTheDocument();
@@ -5249,6 +5252,44 @@ describe("local workflow threads", () => {
       updatedAt: 1,
     };
   }
+
+  it("keeps app shortcuts behind a failed workflow overlay from changing the accepted draft", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.doMock("./components/WorkflowRunDialog", () => { throw new Error("Workflow chunk unavailable"); });
+    localStorage.setItem("kiwi.workflows", JSON.stringify([composerRecipe()]));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
+    await user.type(composer, "!Release");
+    await user.click(await screen.findByRole("option", { name: /Release review/ }));
+    fireEvent.change(composer, { target: { value: "Accepted draft before workflow failure" } });
+    await user.click(screen.getByRole("button", { name: "Run workflow Release review" }));
+    const dialog = await screen.findByRole("dialog", { name: "workflow error" });
+    const close = within(dialog).getByRole("button", { name: "Close workflow error" });
+    await waitFor(() => expect(close).toHaveFocus());
+    const shell = document.querySelector(".app-shell");
+    const workspaceBefore = document.querySelector(".studio-toggle")?.getAttribute("aria-expanded");
+    for (const key of ["f", "n", "k", ",", "b"]) {
+      fireEvent.keyDown(close, { key, ctrlKey: true, metaKey: true });
+      // Let shortcut-scheduled focus and selection changes run too.
+      await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+      expect(close).toHaveFocus();
+      expect(screen.getByRole("dialog", { name: "workflow error" })).toBe(dialog);
+      expect(document.querySelector(".app-shell")).toBe(shell);
+      expect(document.querySelector(".composer textarea")).toBe(composer);
+      expect(composer).toHaveValue("Accepted draft before workflow failure");
+      expect(document.querySelector(".studio-toggle")?.getAttribute("aria-expanded")).toBe(workspaceBefore);
+      expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    }
+    fireEvent.keyDown(close, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "workflow error" })).not.toBeInTheDocument();
+    expect(composer).toHaveValue("Accepted draft before workflow failure");
+    expect(screen.getByRole("button", { name: "Remove workflow Release review" })).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(0);
+  });
 
   it("keeps an explicit Composer recipe and note through canceled review, then sends the note after thread start", async () => {
     const user = userEvent.setup();

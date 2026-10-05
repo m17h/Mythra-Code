@@ -308,14 +308,22 @@ export async function hydrateNativeStorage(
 ): Promise<void> {
   const hydrationWrites: Array<() => Promise<unknown>> = [];
   const nativeStartup = isTauri();
-  let nativeReadFailure: string | null = null;
+  let startupReadFailure: string | null = null;
   await Promise.all(
     keys.map(async (key) => {
       try {
         const marker = pendingMarkerKey(key);
         const pendingToken = readCache(marker);
         if (pendingToken !== null) {
-          const cached = readCache(key);
+          let cached: string | null;
+          try {
+            // A pending deletion requires proven absence. An unreadable value
+            // must not become a durable delete or clear its recovery marker.
+            cached = localStorage.getItem(key);
+          } catch {
+            startupReadFailure ??= key;
+            return;
+          }
           if (cached === null) {
             hydrationWrites.push(async () => {
               await invoke("state_delete", { key });
@@ -348,7 +356,7 @@ export async function hydrateNativeStorage(
               return;
             }
           } catch {
-            nativeReadFailure ??= key;
+            startupReadFailure ??= key;
             return;
           }
         } else {
@@ -368,7 +376,7 @@ export async function hydrateNativeStorage(
       }
     }),
   );
-  if (nativeReadFailure !== null) throw new Error(`Saved startup data could not be read (${nativeReadFailure}).`);
+  if (startupReadFailure !== null) throw new Error(`Saved startup data could not be read (${startupReadFailure}).`);
   // Never replay, mirror, migrate, or mount malformed startup data. In
   // particular, defaults must not overwrite the original saved records.
   validateStartupData(readStoredRaw);

@@ -642,6 +642,10 @@ export default function App() {
   const [onboardingSession, setOnboardingSession] = useState(0);
   const onboardingExitTimerRef = useRef<number | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [workflowLaunch, setWorkflowLaunch] = useState<{
+    workflow: WorkflowDefinition; projectId?: string; prompt?: string; sourceThreadId?: string;
+    resolve?: (accepted: boolean) => void;
+  } | null>(null);
   const [threadSearch, setThreadSearch] = useState("");
   const [threadKindView, setThreadKindView] = useState<"main" | "subagents">("main");
   const [convSearchOpen, setConvSearchOpen] = useState(false);
@@ -6580,7 +6584,7 @@ export default function App() {
 
   useAppShortcuts({
     running: Boolean((running || childrenRunning) && activeThread),
-    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
     workspaceOpen: studioOpen && Boolean(activeProject),
@@ -6698,10 +6702,6 @@ export default function App() {
     setPendingWorkflowOpen({ projectId: project.id, threadId });
   };
 
-  const [workflowLaunch, setWorkflowLaunch] = useState<{
-    workflow: WorkflowDefinition; projectId?: string; prompt?: string; sourceThreadId?: string;
-    resolve?: (accepted: boolean) => void;
-  } | null>(null);
   const workflowLaunchRef = useRef(workflowLaunch);
   workflowLaunchRef.current = workflowLaunch;
   const workflowLaunchStarting = useRef<object | null>(null);

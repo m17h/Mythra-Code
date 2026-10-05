@@ -145,6 +145,65 @@ describe("durable storage", () => {
     expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
   });
 
+  it.each(["kiwi.projects", "kiwi.settings"])("preserves pending %s when its cache read fails", async (key) => {
+    const raw = key === "kiwi.projects" ? '[{"id":"saved-project"}]' : '{"theme":"mythra"}';
+    localStorage.setItem(key, raw);
+    localStorage.setItem(`kiwi.nativePending.${key}`, "previous-session");
+    const getItem = localStorage.getItem.bind(localStorage);
+    const failedRead = vi.spyOn(localStorage, "getItem").mockImplementation((candidate) => {
+      if (candidate === key) throw new Error("cache read denied");
+      return getItem(candidate);
+    });
+    invoke.mockResolvedValue(null);
+
+    await expect(hydrateNativeStorage([key])).rejects.toThrow(`Saved startup data could not be read (${key}).`);
+
+    failedRead.mockRestore();
+    expect(localStorage.getItem(key)).toBe(raw);
+    expect(localStorage.getItem(`kiwi.nativePending.${key}`)).toBe("previous-session");
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["null", "{}", "[null]", "[7]"])("preserves unsafe pending archived threads: %s", async (raw) => {
+    localStorage.setItem("kiwi.archivedThreads", raw);
+    localStorage.setItem("kiwi.nativePending.kiwi.archivedThreads", "previous-session");
+    invoke.mockResolvedValue(null);
+
+    await expect(hydrateNativeStorage(["kiwi.archivedThreads"])).rejects.toThrow("Saved startup data is invalid (kiwi.archivedThreads).");
+
+    expect(localStorage.getItem("kiwi.archivedThreads")).toBe(raw);
+    expect(localStorage.getItem("kiwi.nativePending.kiwi.archivedThreads")).toBe("previous-session");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["native", "pending"])("preserves a saved null schema version from %s", async (source) => {
+    isTauri.mockReturnValue(true);
+    if (source === "pending") {
+      localStorage.setItem("kiwi.schemaVersion", "null");
+      localStorage.setItem("kiwi.nativePending.kiwi.schemaVersion", "previous-session");
+    }
+    invoke.mockImplementation(async (command) => command === "state_read_raw" ? "null" : null);
+
+    await expect(hydrateNativeStorage(["kiwi.schemaVersion"])).rejects.toThrow("Saved startup data is invalid (kiwi.schemaVersion).");
+
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBe("null");
+    if (source === "pending") expect(localStorage.getItem("kiwi.nativePending.kiwi.schemaVersion")).toBe("previous-session");
+    expect(invoke.mock.calls.every(([command]) => command === "state_read_raw")).toBe(true);
+  });
+
+  it.each(["[7]", '["saved"]', "[[]]"])("preserves unsafe legacy ledger rows before migration: %s", async (raw) => {
+    localStorage.setItem("kiwi.schemaVersion", "15");
+    localStorage.setItem("kiwi.usageLedger", raw);
+    invoke.mockResolvedValue(null);
+
+    await expect(hydrateNativeStorage(["kiwi.usageLedger"])).rejects.toThrow("Saved startup data is invalid (kiwi.usageLedger).");
+
+    expect(localStorage.getItem("kiwi.usageLedger")).toBe(raw);
+    expect(localStorage.getItem("kiwi.schemaVersion")).toBe("15");
+    expect(invoke.mock.calls.every(([command]) => command === "state_read")).toBe(true);
+  });
+
   it.each([
     ["kiwi.projects", "{}"],
     ["kiwi.projects", "[null]"],

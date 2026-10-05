@@ -4,7 +4,7 @@ import { page, userEvent } from "vitest/browser";
 import { Composer, draftFor, resetDraftStoreForTests } from "./Composer";
 import "../styles.css";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), isTauri: () => false }));
 
 const workflows = [
   { id: "review", name: "Review branch", description: "Review changes in a new thread" },

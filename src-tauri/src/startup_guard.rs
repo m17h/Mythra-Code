@@ -215,12 +215,9 @@ fn fatal_action(has_main: bool, result: MessageDialogResult) -> FatalAction {
 /// Bind before construction: a constructor may pump messages and deliver a
 /// renderer acknowledgment before it returns the WebviewWindow handle.
 pub(super) fn prepare(app: &AppHandle, label: &str) -> Option<PreparedStartup> {
-    let Some((key, cancel)) = app
+    let (key, cancel) = app
         .state::<StartupGuardState>()
-        .with(|machine| machine.bind(label))
-    else {
-        return None;
-    };
+        .with(|machine| machine.bind(label))?;
     Some(PreparedStartup { key, cancel })
 }
 

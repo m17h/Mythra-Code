@@ -1,6 +1,6 @@
 /** Records read before React mounts or rewritten by startup migrations. */
 export const STARTUP_DATA_KEYS = new Set([
-  "kiwi.schemaVersion", "kiwi.projects", "kiwi.knownThreads", "kiwi.settings",
+  "kiwi.schemaVersion", "kiwi.projects", "kiwi.knownThreads", "kiwi.archivedThreads", "kiwi.settings",
   "kiwi.promptProfiles", "kiwi.usageLedger",
 ]);
 
@@ -19,7 +19,8 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
     if (raw === null) return undefined;
     try { return JSON.parse(raw); } catch { return invalid(key); }
   };
-  const version = read("kiwi.schemaVersion") ?? 0;
+  const savedVersion = read("kiwi.schemaVersion");
+  const version = savedVersion === undefined ? 0 : savedVersion;
   if (typeof version !== "number" || !Number.isFinite(version) || version < 0) return invalid("kiwi.schemaVersion");
   const projects = read("kiwi.projects");
   if (projects !== undefined && (!Array.isArray(projects) || projects.some((project) => (
@@ -28,6 +29,11 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
 
   const threads = read("kiwi.knownThreads");
   if (threads !== undefined && !isRecord(threads)) invalid("kiwi.knownThreads");
+
+  const archived = read("kiwi.archivedThreads");
+  if (archived !== undefined && (!Array.isArray(archived) || archived.some((record) => !isRecord(record)))) {
+    invalid("kiwi.archivedThreads");
+  }
 
   const settings = read("kiwi.settings");
   if (settings !== undefined) {
@@ -46,6 +52,6 @@ export function validateStartupData(readRaw: (key: string) => string | null): vo
     }
   }
   if (version < 16) {
-    if (Array.isArray(ledger) && ledger.some((record) => record === null)) invalid("kiwi.usageLedger");
+    if (Array.isArray(ledger) && ledger.some((record) => !isRecord(record))) invalid("kiwi.usageLedger");
   }
 }
