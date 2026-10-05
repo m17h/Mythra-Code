@@ -1,8 +1,7 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ImageIcon, ListChecks, MessageSquare, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
-import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ListChecks, MessageSquare, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown, { type Options as MarkdownOptions } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -27,6 +26,7 @@ import "./ChatTimeline.compaction.css";
 import "./ChatTimeline.skills.css";
 import { SkillDependencyDetails } from "./SkillDependencyDetails";
 import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
+import { MessageImagePreview } from "./MessageImagePreview";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
@@ -428,65 +428,6 @@ function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming
   return <FlushStreamingDisplay.Provider value={presenting ? flushForCopy : undefined}>
     <MessageMarkdown text={shownText} rootRef={rootRef} assistant />
   </FlushStreamingDisplay.Provider>;
-}
-
-function imagePreviewUrl(path: string): string {
-  if (/^(?:asset:|https?:|data:|blob:)/i.test(path)) return path;
-  try {
-    return convertFileSrc(path);
-  } catch {
-    // Browser previews do not have the Tauri bridge. Keeping the path makes
-    // component tests and browser development degrade without crashing.
-    return path;
-  }
-}
-
-function imagePreviewNeedsNativePermission(path: string): boolean {
-  return !/^(?:asset:|https?:|data:|blob:)/i.test(path) && isTauri();
-}
-
-function MessageImagePreview({ path, name }: { path: string; name: string }) {
-  const [failed, setFailed] = useState(false);
-  const [source, setSource] = useState(() => imagePreviewNeedsNativePermission(path) ? "" : imagePreviewUrl(path));
-
-  useEffect(() => {
-    let current = true;
-    setFailed(false);
-    if (!imagePreviewNeedsNativePermission(path)) {
-      setSource(imagePreviewUrl(path));
-      return () => { current = false; };
-    }
-    setSource("");
-    void invoke("prepare_image_preview", { path })
-      .then(() => {
-        if (current) setSource(imagePreviewUrl(path));
-      })
-      .catch(() => {
-        if (current) setFailed(true);
-      });
-    return () => { current = false; };
-  }, [path]);
-
-  if (failed) {
-    return (
-      <span className="message-image-preview unavailable" title={name}>
-        <ImageIcon size={16} aria-hidden="true" />
-        <span>{name}</span>
-      </span>
-    );
-  }
-  if (!source) return <span className="message-image-preview loading" role="img" aria-label={`Loading attached image: ${name}`} />;
-  return (
-    <img
-      className="message-image-preview"
-      src={source}
-      alt={`Attached image: ${name}`}
-      title={name}
-      loading="lazy"
-      draggable={false}
-      onError={() => setFailed(true)}
-    />
-  );
 }
 
 const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
