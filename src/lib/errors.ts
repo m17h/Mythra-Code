@@ -13,8 +13,10 @@ const TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
 export function friendlyError(reason: unknown): string {
   // Dependency resolution already supplies a bounded reason chain. Generic
   // runtime classification must not hide which selected source failed.
-  if (reason instanceof SkillDependencyError) return reason.message;
-  const raw = reason instanceof Error ? reason.message : String(reason ?? "Unknown error");
+  const raw = safeErrorText(reason);
+  try {
+    if (reason instanceof SkillDependencyError) return raw;
+  } catch { /* Revoked proxies can even throw during instanceof. */ }
   for (const [pattern, message] of TEXT_REPLACEMENTS) {
     if (pattern.test(raw)) return message;
   }
@@ -33,6 +35,22 @@ const GIT_ERROR_FALLBACK = "The Git operation failed without details. Refresh an
 const GIT_ERROR_HEAD_SHARE = 0.25;
 const GIT_ERROR_LINE_SNAP = 512;
 
+/** Error reporting must also work for rejected values whose conversion or
+ * message getter throws. Bound retained text before it reaches UI or logs. */
+export function safeErrorText(reason: unknown, fallback = "Unknown error"): string {
+  return boundErrorText(errorText(reason, fallback), "error output");
+}
+
+function errorText(reason: unknown, fallback: string): string {
+  try {
+    if (reason == null) return fallback;
+    const value: unknown = reason instanceof Error ? reason.message : reason;
+    return typeof value === "string" ? value : String(value);
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * Native Git and GitHub failures carry their own recovery guidance: whether a
  * commit may already be saved, a created repository's URL, or which path was
@@ -50,9 +68,13 @@ export function formatSkillFileError(reason: unknown): string {
 }
 
 function formatNativeOperationError(reason: unknown, fallback: string, outputKind: string): string {
-  const raw = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : reason == null ? "" : String(reason);
+  const raw = errorText(reason, "");
   const cleaned = raw.replace(/^Error:\s*/i, "").trim();
   if (!cleaned) return fallback;
+  return boundErrorText(cleaned, outputKind);
+}
+
+function boundErrorText(cleaned: string, outputKind: string): string {
   if (cleaned.length <= GIT_ERROR_MAX_LENGTH) return cleaned;
   // Reserve room for the widest possible marker before choosing the cuts.
   const budget = GIT_ERROR_MAX_LENGTH - omissionMarker(cleaned.length, outputKind).length;
@@ -75,5 +97,5 @@ function omissionMarker(omitted: number, outputKind: string): string {
 
 /** Authentication rejection, not a transient error while contacting auth. */
 export function isAuthenticationError(reason: unknown): boolean {
-  return /\b401\b|unauthori[sz]ed|refresh_token_(?:reused|expired|invalidated)|(?:token|authentication|sign.in).*(?:expired|invalid|revoked|required)|(?:sign|log) in again/i.test(String(reason));
+  return /\b401\b|unauthori[sz]ed|refresh_token_(?:reused|expired|invalidated)|(?:token|authentication|sign.in).*(?:expired|invalid|revoked|required)|(?:sign|log) in again/i.test(safeErrorText(reason, ""));
 }

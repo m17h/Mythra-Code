@@ -4,7 +4,7 @@ import { forgetQuestionRecords, hasUnansweredQuestionRequests, restoreQuestionRe
 import { DURABLE_STORAGE_KEYS, flushPendingStateWrites, hydrateNativeStorage } from "./storage";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn().mockResolvedValue(null) }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => false }));
 const question: ChatMessage = { id: "question", role: "assistant", text: "", turnId: "turn", questionRequestId: 42,
   questionRequestItemId: "item", questions: [{ id: "layout", title: "Which layout?" }] };
 

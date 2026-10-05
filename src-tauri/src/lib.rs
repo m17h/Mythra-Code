@@ -49,6 +49,7 @@ mod process_launch;
 mod project_git;
 mod run_discovery;
 mod skills;
+mod startup_guard;
 mod workspace_folder;
 #[cfg(test)]
 use agents::{
@@ -94,7 +95,7 @@ use persistence::{
     local_transcript_page_read, local_transcript_rename, local_transcript_snapshot_write,
     local_transcript_tail_write, local_transcript_write_state_read, lock_state_db,
     open_state_db_or_quarantine, shared_state_db, state_db_path, state_delete, state_read,
-    state_write, StateDb,
+    state_read_raw, state_write, StateDb,
 };
 #[cfg(windows)]
 use process_launch::interactive_command;
@@ -119,6 +120,7 @@ use skills::{
     local_skills_resolve_prompts, local_skills_scan, local_skills_sync, local_skills_update,
     normalize_skill_name,
 };
+use startup_guard::{startup_failed, startup_ready, StartupGuardState};
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
 const OPENROUTER_ACCOUNT: &str = "openrouter-api-key";
@@ -6738,18 +6740,47 @@ pub fn run() {
         std::process::exit(run_agent_bridge(&session));
     }
 
-    tauri::Builder::default()
+    // Tauri's automatic window construction and returned setup errors panic
+    // inside the event loop. Keep the original merged configuration intact
+    // for explicit construction, disabling only automatic creation in this
+    // context copy (including the Windows-specific updater configuration).
+    let mut context = tauri::generate_context!();
+    let startup_windows = context.config().app.windows.clone();
+    for window in &mut context.config_mut().app.windows {
+        window.create = false;
+    }
+
+    let application = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
-        .setup(|app| {
+        .setup(move |app| {
+            // Never propagate these returned failures to Tauri's setup panic.
+            // The asynchronous native dialog owns explicit acknowledgment.
             #[cfg(desktop)]
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
-            let db_path = state_db_path(app.handle()).map_err(std::io::Error::other)?;
-            let connection =
-                open_state_db_or_quarantine(&db_path).map_err(std::io::Error::other)?;
+            if app
+                .handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())
+                .is_err()
+            {
+                startup_guard::setup_failed(app.handle(), "updater");
+                return Ok(());
+            }
+            let db_path = match state_db_path(app.handle()) {
+                Ok(path) => path,
+                Err(_) => {
+                    startup_guard::setup_failed(app.handle(), "database-path");
+                    return Ok(());
+                }
+            };
+            let connection = match open_state_db_or_quarantine(&db_path) {
+                Ok(connection) => connection,
+                Err(_) => {
+                    startup_guard::setup_failed(app.handle(), "database-open");
+                    return Ok(());
+                }
+            };
             app.manage(StateDb {
                 connection: Arc::new(std::sync::Mutex::new(connection)),
             });
@@ -6757,8 +6788,34 @@ pub fn run() {
             // listening, so anything on disk at startup is debris from a
             // previous run and must not outlive it.
             purge_stale_agent_bridges(app.handle());
-            if let Some(window) = app.get_webview_window("main") {
-                close_guard::install(&window);
+            for window_config in startup_windows.iter().filter(|window| window.create) {
+                let builder =
+                    match tauri::WebviewWindowBuilder::from_config(app.handle(), window_config) {
+                        Ok(builder) => builder,
+                        Err(_) => {
+                            startup_guard::setup_failed(app.handle(), "window-config");
+                            return Ok(());
+                        }
+                    };
+                let prepared = (window_config.label == "main")
+                    .then(|| startup_guard::prepare(app.handle(), &window_config.label))
+                    .flatten();
+                let window = match builder.build() {
+                    Ok(window) => window,
+                    Err(_) => {
+                        if let Some(prepared) = prepared {
+                            startup_guard::cancel_prepared(app.handle(), prepared);
+                        }
+                        startup_guard::setup_failed(app.handle(), "window-create");
+                        return Ok(());
+                    }
+                };
+                if window.label() == "main" {
+                    close_guard::install(&window);
+                    if let Some(prepared) = prepared {
+                        startup_guard::install(&window, prepared);
+                    }
+                }
             }
             Ok(())
         })
@@ -6768,9 +6825,12 @@ pub fn run() {
         .manage(ChildAgentState::default())
         .manage(RunDiscoveryState::default())
         .manage(CloseGuardState::default())
+        .manage(StartupGuardState::default())
         .invoke_handler(tauri::generate_handler![
             close_guard_claim,
             close_guard_finish,
+            startup_ready,
+            startup_failed,
             codex_runtime_status,
             codex_runtime_status_refresh,
             reserve_runtime_restart,
@@ -6832,6 +6892,7 @@ pub fn run() {
             cursor_turn_active,
             cursor_permission_respond,
             state_read,
+            state_read_raw,
             state_write,
             state_delete,
             local_transcript_list,
@@ -6899,37 +6960,45 @@ pub fn run() {
             run_discovery_cancel,
             run_discovery::generate_thread_title
         ])
-        .build(tauri::generate_context!())
-        .expect("error while running Mythra Code")
-        .run(|app_handle, event| {
-            // Menu Quit (including Cmd-Q) must use the same renderer flush as
-            // the window close button. Once the last window is destroyed this
-            // path is skipped and normal runtime shutdown proceeds. Preserve
-            // nonzero exit codes, including the updater's restart request.
-            if let tauri::RunEvent::ExitRequested {
-                code: None | Some(0),
-                api,
-                ..
-            } = &event
-            {
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    if window.close().is_ok() {
-                        api.prevent_exit();
-                        return;
-                    }
+        .build(context);
+    let application = match application {
+        Ok(application) => application,
+        Err(_) => {
+            // No AppHandle exists here. Do not expose arbitrary native errors
+            // or user paths, and do not add an untested platform dialog path.
+            startup_guard::diagnostic("native-build", "build-failed", 0);
+            std::process::exit(1);
+        }
+    };
+    application.run(|app_handle, event| {
+        // Menu Quit (including Cmd-Q) must use the same renderer flush as
+        // the window close button. Once the last window is destroyed this
+        // path is skipped and normal runtime shutdown proceeds. Preserve
+        // nonzero exit codes, including the updater's restart request.
+        if let tauri::RunEvent::ExitRequested {
+            code: None | Some(0),
+            api,
+            ..
+        } = &event
+        {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                if window.close().is_ok() {
+                    api.prevent_exit();
+                    return;
                 }
             }
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
-                shutdown_runtime_on_exit(app_handle);
-                shutdown_claude_on_exit(app_handle);
-                shutdown_cursor_on_exit(app_handle);
-                shutdown_agent_bridges_on_exit(app_handle);
-                shutdown_run_discoveries_on_exit(app_handle);
-            }
-        });
+        }
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            shutdown_runtime_on_exit(app_handle);
+            shutdown_claude_on_exit(app_handle);
+            shutdown_cursor_on_exit(app_handle);
+            shutdown_agent_bridges_on_exit(app_handle);
+            shutdown_run_discoveries_on_exit(app_handle);
+        }
+    });
 }
 
 #[cfg(test)]

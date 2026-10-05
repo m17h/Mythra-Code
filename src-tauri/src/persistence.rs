@@ -1511,6 +1511,31 @@ pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Val
     .map_err(|error| format!("State read task failed: {error}"))?
 }
 
+// Startup must distinguish a missing record from a saved JSON `null` (or
+// malformed JSON). Returning serialized data preserves that distinction and
+// lets the frontend stop before migrations could replace an invalid record.
+fn read_state_raw(connection: &Connection, key: &str) -> Result<Option<String>, String> {
+    connection
+        .query_row(
+            "SELECT value FROM app_state WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| "Could not read saved startup data.".to_owned())
+}
+
+#[tauri::command]
+pub(super) async fn state_read_raw(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    let connection = shared_state_db(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = lock_state_db(&connection)?;
+        read_state_raw(&connection, &key)
+    })
+    .await
+    .map_err(|_| "Could not read saved startup data.".to_owned())?
+}
+
 fn write_state_value(
     connection: &Connection,
     key: &str,
@@ -2623,6 +2648,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(retained, 0);
+        drop(connection);
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn startup_raw_read_preserves_null_and_invalid_records_without_writing() {
+        let (directory, connection) = temporary_state_db("startup-raw-read");
+        assert_eq!(read_state_raw(&connection, "kiwi.settings").unwrap(), None);
+        for raw in ["null", "{invalid", "{}"] {
+            connection
+                .execute(
+                    "INSERT OR REPLACE INTO app_state(key, value, updated_at) VALUES (?1, ?2, 100)",
+                    params!["kiwi.settings", raw],
+                )
+                .unwrap();
+            assert_eq!(
+                read_state_raw(&connection, "kiwi.settings").unwrap(),
+                Some(raw.to_owned())
+            );
+            let saved: (String, i64) = connection
+                .query_row(
+                    "SELECT value, updated_at FROM app_state WHERE key = 'kiwi.settings'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(saved, (raw.to_owned(), 100));
+        }
         drop(connection);
         std::fs::remove_dir_all(directory).expect("remove test directory");
     }

@@ -50,6 +50,14 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [{
+            // The generated dynamic-import helper is dependency-free. Keep it
+            // out of application shared code so the minimal entry can catch a
+            // rejected application graph before React/storage evaluate.
+            name: "preload",
+            test: /vite\/preload-helper\.js$/,
+            priority: 2,
+            includeDependenciesRecursively: false,
+          }, {
             // Dated usage detail loads on the first recorded usage (a dynamic
             // import from the startup ledger) and with Settings. Being shared
             // by both would otherwise pull it into the startup `shared` chunk.

@@ -9,7 +9,7 @@ import type { QueuedTurn } from "../lib/taskStore";
 import type { TimedPromptActions } from "./ScheduledPrompts";
 import "../styles.css";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), isTauri: () => false }));
 
 const THREAD = "timed-a";
 

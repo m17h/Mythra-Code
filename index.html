@@ -5,9 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0c0d0f" />
     <title>Mythra Code</title>
+    <link rel="stylesheet" href="/bootstrap.css" />
+    <!-- This classic script has no application imports. It still runs when
+         the module entry or one of its dependencies cannot load. -->
+    <script src="/bootstrap.js"></script>
   </head>
   <body>
     <div id="root"></div>
+    <section id="startup-status" class="startup-status" role="status" aria-live="polite">
+      <div class="startup-status-card">
+        <h1 id="startup-title">Mythra Code couldn’t finish starting</h1>
+        <p id="startup-description">Close the app and open it again. If this continues, reinstall the latest version. Your saved data has not been reset.</p>
+        <p id="startup-stage" class="startup-status-stage"></p>
+      </div>
+    </section>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

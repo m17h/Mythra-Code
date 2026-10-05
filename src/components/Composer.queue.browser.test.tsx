@@ -5,7 +5,7 @@ import { Composer, resetDraftStoreForTests } from "./Composer";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import "../styles.css";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), isTauri: () => false }));
 
 function Fixture({ threadId = "queue-a", narrow = false }: { threadId?: string; narrow?: boolean }) {
   const entries = useTaskStore((state) => state.tasks[threadId].queuedTurns);

@@ -22,7 +22,7 @@ import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, li
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
-import { flushPendingStateWrites, loadStored, storeValue } from "./lib/storage";
+import { flushPendingStateWrites, loadStored, readStoredRaw, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
@@ -216,10 +216,12 @@ import {
 
 const WorkflowRunDialog = lazy(() => import("./components/WorkflowRunDialog").then((module) => ({ default: module.WorkflowRunDialog })));
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
-const ChatTimeline = lazy(() => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline })));
+const loadChatTimeline = () => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline }));
+const ChatTimeline = lazy(loadChatTimeline);
 const ThreadPullRequestPanel = lazy(() => import("./components/ThreadPullRequestPanel").then((module) => ({ default: module.ThreadPullRequestPanel })));
 const ChecksControl = lazy(() => import("./components/ChecksControl").then((module) => ({ default: module.ChecksControl })));
-const StudioDock = lazy(() => import("./components/StudioDock").then((module) => ({ default: module.StudioDock })));
+const loadStudioDock = () => import("./components/StudioDock").then((module) => ({ default: module.StudioDock }));
+const StudioDock = lazy(loadStudioDock);
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
 let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
 type SettingsModalComponent = typeof import("./components/SettingsModal").SettingsModal;
@@ -450,7 +452,7 @@ const initialProjects = sortProjectsByPin(sanitizeProjectCheckOverrides(sanitize
 const initialWorkspaceMode: WorkspaceMode = loadStored<WorkspaceMode>("kiwi.workspaceMode", initialProjects.length ? "project" : "chat");
 const initialKnownThreads = compactSidebarIndex(loadStored<ThreadSidebarIndex>("kiwi.knownThreads", {}));
 const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0);
-const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: localStorage.getItem("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
+const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: readStoredRaw("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
@@ -554,13 +556,13 @@ function RendererLaunchCommitMarker() {
   return null;
 }
 
-function ConversationTimeline({ threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
+function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: typeof ChatTimeline; threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
-  return <ChatTimeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
+  return <Timeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
 }
 
 export default function App() {
@@ -628,6 +630,11 @@ export default function App() {
   const promptFocusNonceRef = useRef(0);
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
+  // Replace React.lazy only after an explicit recovery attempt. Resetting a
+  // boundary alone would replay its cached import rejection indefinitely.
+  const [timelineView, setTimelineView] = useState(() => ({ View: ChatTimeline, attempt: 0 }));
+  const [studioView, setStudioView] = useState(() => ({ View: StudioDock, attempt: 0 }));
+  const StudioDockView = studioView.View;
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
   const [settingsInitialDraft, setSettingsInitialDraft] = useState<OnboardingSettingsDraft | undefined>();
   const [onboardingOpen, setOnboardingOpen] = useState(initialOnboardingOpen);
@@ -635,6 +642,10 @@ export default function App() {
   const [onboardingSession, setOnboardingSession] = useState(0);
   const onboardingExitTimerRef = useRef<number | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [workflowLaunch, setWorkflowLaunch] = useState<{
+    workflow: WorkflowDefinition; projectId?: string; prompt?: string; sourceThreadId?: string;
+    resolve?: (accepted: boolean) => void;
+  } | null>(null);
   const [threadSearch, setThreadSearch] = useState("");
   const [threadKindView, setThreadKindView] = useState<"main" | "subagents">("main");
   const [convSearchOpen, setConvSearchOpen] = useState(false);
@@ -1865,6 +1876,16 @@ export default function App() {
     }
     setOnboardingMounted(true);
     requestAnimationFrame(() => setOnboardingOpen(true));
+  }, []);
+
+  const dismissOnboardingError = useCallback(() => {
+    resumeOnboardingAfterSettings.current = false;
+    if (onboardingExitTimerRef.current !== null) {
+      window.clearTimeout(onboardingExitTimerRef.current);
+      onboardingExitTimerRef.current = null;
+    }
+    setOnboardingOpen(false);
+    setOnboardingMounted(false);
   }, []);
 
   useEffect(
@@ -6563,7 +6584,7 @@ export default function App() {
 
   useAppShortcuts({
     running: Boolean((running || childrenRunning) && activeThread),
-    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
     workspaceOpen: studioOpen && Boolean(activeProject),
@@ -6681,10 +6702,6 @@ export default function App() {
     setPendingWorkflowOpen({ projectId: project.id, threadId });
   };
 
-  const [workflowLaunch, setWorkflowLaunch] = useState<{
-    workflow: WorkflowDefinition; projectId?: string; prompt?: string; sourceThreadId?: string;
-    resolve?: (accepted: boolean) => void;
-  } | null>(null);
   const workflowLaunchRef = useRef(workflowLaunch);
   workflowLaunchRef.current = workflowLaunch;
   const workflowLaunchStarting = useRef<object | null>(null);
@@ -7367,7 +7384,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <ErrorBoundary label="conversation">
+                <ErrorBoundary label="conversation" key={timelineView.attempt} resetKey={activeThreadId} onRetry={() => setTimelineView((current) => ({ View: lazy(loadChatTimeline), attempt: current.attempt + 1 }))}>
                   <Suspense
                     fallback={
                       <div className="timeline-loading">
@@ -7376,7 +7393,7 @@ export default function App() {
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker}>
-                    <AgentQuestionDelivery value={{ threadId: activeThreadId, send: answerQuestions }}><ConversationTimeline threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
+                    <AgentQuestionDelivery value={{ threadId: activeThreadId, send: answerQuestions }}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
@@ -7395,6 +7412,7 @@ export default function App() {
                   </div>
                 </div>
               )}
+              <ErrorBoundary label="composer" resetKey={attachmentKey}>
               <Composer
                 ref={composerRef}
                 threadKey={attachmentKey}
@@ -7547,6 +7565,7 @@ export default function App() {
                   </>
                 }
               />
+              </ErrorBoundary>
               <div className="composer-caption">
                 Mythra Code can make mistakes. Review commands and changes before shipping.
                 {contextPercent !== null ? (
@@ -7562,9 +7581,9 @@ export default function App() {
         )}
       </main>
 
-      <ErrorBoundary label="workspace tools">
+      <ErrorBoundary label="workspace tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
         <Suspense fallback={null}>
-          <StudioDock
+          <StudioDockView
             open={studioOpen && Boolean(activeProject)}
             rootRef={paneRefs.dock}
             onResizeStart={startPaneResize("dock")}
@@ -7733,6 +7752,7 @@ export default function App() {
         <ErrorBoundary
           key={settingsLoadAttempt}
           label="settings"
+          overlay
           onDismiss={() => { closeSettings(); setSettingsMounted(false); }}
           onRetry={() => {
             settingsModalPromise = null;
@@ -7887,6 +7907,7 @@ export default function App() {
       )}
 
       {onboardingMounted && (
+        <ErrorBoundary label="onboarding" resetKey={onboardingSession} retryable={false} overlay onDismiss={dismissOnboardingError}>
         <Suspense fallback={null}>
           <OnboardingModal key={onboardingSession} open={onboardingOpen} preferredProvider={settings.provider} runtimeStatus={runtimeStatus} claudeStatus={claudeStatus} cursorStatus={cursorStatus} account={account} openRouterReady={openRouterReady} lmStudioReady={lmStudioReady} skillsFolder={skillsFolder} onComplete={completeOnboarding} onThemeChange={(theme) => persistSettings((current) => ({ ...current, theme }))} onOpenSettings={(section: SettingsSection, draft?: OnboardingSettingsDraft) => {
             resumeOnboardingAfterSettings.current = true;
@@ -7894,9 +7915,10 @@ export default function App() {
             openSettings(section, draft);
           }} onChooseSkillsFolder={() => void chooseSkillsFolder()} onAddProject={addProject} onStartChat={startNormalChat} />
         </Suspense>
+        </ErrorBoundary>
       )}
 
-      {workflowLaunch && <Suspense fallback={null}><WorkflowRunDialog workflow={workflowLaunch.workflow} projects={projects} initialProjectId={workflowLaunch.projectId} userPrompt={workflowLaunch.prompt} onClose={closeWorkflowLaunch} onRun={launchReviewedWorkflow} /></Suspense>}
+      {workflowLaunch && <ErrorBoundary label="workflow" retryable={false} overlay onDismiss={closeWorkflowLaunch}><Suspense fallback={null}><WorkflowRunDialog workflow={workflowLaunch.workflow} projects={projects} initialProjectId={workflowLaunch.projectId} userPrompt={workflowLaunch.prompt} onClose={closeWorkflowLaunch} onRun={launchReviewedWorkflow} /></Suspense></ErrorBoundary>}
 
       <RuntimeSetupModal open={runtimeSetupOpen} checking={runtimeChecking} onClose={() => setRuntimeSetupOpen(false)} onRetry={() => void retryRuntime()} />
 
@@ -7916,7 +7938,7 @@ export default function App() {
           onRespond={(result) => respondToApproval(pendingApproval, result)}
         />
       )}
-      {commandPaletteOpen && <Suspense fallback={null}>
+      {commandPaletteOpen && <ErrorBoundary label="command palette" retryable={false} overlay onDismiss={() => setCommandPaletteOpen(false)}><Suspense fallback={null}>
       <CommandPalette
         open={commandPaletteOpen}
         projects={projects}
@@ -7935,7 +7957,7 @@ export default function App() {
         onTool={openStudio}
         onGitRoute={openGitRoute}
       />
-      </Suspense>}
+      </Suspense></ErrorBoundary>}
       <ConfirmDialogModal />
       </FeedbackProvider>
     </div>

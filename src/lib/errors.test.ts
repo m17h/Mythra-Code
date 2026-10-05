@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { formatGitError, formatSkillFileError, friendlyError, GIT_ERROR_MAX_LENGTH, isAuthenticationError } from "./errors";
+import { formatGitError, formatSkillFileError, friendlyError, GIT_ERROR_MAX_LENGTH, isAuthenticationError, safeErrorText } from "./errors";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "./skillDependencies";
+
+it("formats unreadable thrown values without failing the recovery surface", () => {
+  const unreadableError = Object.defineProperty(new Error(), "message", { get() { throw new Error("message getter failed"); } });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  for (const reason of [null, undefined, { toString() { throw new Error("coercion failed"); } }, unreadableError, revoked.proxy]) {
+    expect(safeErrorText(reason)).toBe("Unknown error");
+    expect(friendlyError(reason)).toBe("Unknown error");
+    expect(formatGitError(reason)).toMatch(/Git operation failed without details/);
+    expect(formatSkillFileError(reason)).toMatch(/skill file operation failed without details/);
+    expect(isAuthenticationError(reason)).toBe(false);
+  }
+  expect(safeErrorText("start\n" + "x".repeat(40_000) + "\nrecovery instructions").length).toBeLessThanOrEqual(GIT_ERROR_MAX_LENGTH);
+});
 
 describe("friendlyError", () => {
   it.each(["permission denied", "no such file or directory", "operation timed out"])("preserves the dependency reason chain for %s", (message) => {

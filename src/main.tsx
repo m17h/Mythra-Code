@@ -1,28 +1,15 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { ErrorBoundary } from "./components/ErrorBoundary";
-import { hydrateNativeStorage } from "./lib/storage";
-import { installContextMenuBlocker } from "./lib/contextMenu";
-import { installGlobalErrorCapture } from "./lib/errorLog";
-import "./styles.css";
-// The Lumen redesign must follow styles.css: same-named @keyframes and any
-// equal-specificity rules resolve to whichever sheet comes last.
-import "./styles/lumen/index.css";
+// Keep the entry independent of React, storage and application modules. A
+// rejected dependency evaluation must reach this catch before any App mount.
+// Even a small static helper import can be grouped into an application shared
+// chunk by the production bundler, so this entry has no runtime imports.
+async function start(): Promise<void> {
+  window.__MYTHRA_STARTUP__?.stage("entry");
+  try {
+    const { startApplication } = await import("./lib/startApplication");
+    await startApplication();
+  } catch {
+    window.__MYTHRA_STARTUP__?.fail();
+  }
+}
 
-// This is a desktop application, not a browser surface. Prevent Chromium's
-// reload/inspect context menu everywhere, including before React mounts.
-installContextMenuBlocker();
-installGlobalErrorCapture();
-
-void hydrateNativeStorage().finally(async () => {
-  const { default: App } = await import("./App");
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      {/* Last-resort boundary: a crash anywhere in App shows a recoverable
-          fallback instead of a blank window. */}
-      <ErrorBoundary label="application">
-        <App />
-      </ErrorBoundary>
-    </StrictMode>,
-  );
-});
+void start();

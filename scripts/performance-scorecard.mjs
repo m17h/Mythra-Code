@@ -315,6 +315,9 @@ export async function measureBundles(distDirectory) {
     for (const importedKey of Array.isArray(entry.imports) ? entry.imports : []) visitManifestEntry(importedKey);
   };
   visitManifestEntry("index.html");
+  // The dependency-free entry defers the React bootstrap so startup failures
+  // can be caught. It is still required startup work, not a deferred feature.
+  if (manifest["src/lib/startApplication.tsx"]) visitManifestEntry("src/lib/startApplication.tsx");
   visitManifestEntry("src/App.tsx");
   const appEntryPath = join(dist, manifest["src/App.tsx"].file);
   const startupJavascriptPaths = [...new Set([...startupKeys]
@@ -324,6 +327,10 @@ export async function measureBundles(distDirectory) {
   const startupStylesheetPaths = [...new Set([...startupKeys].flatMap((key) => (
     Array.isArray(manifest[key]?.css) ? manifest[key].css : []
   )))].map((path) => join(dist, path));
+  // Public recovery assets are copied by Vite and do not appear in its module
+  // manifest. Count them too rather than understating startup payloads.
+  if (existsSync(join(dist, "bootstrap.js"))) startupJavascriptPaths.push(join(dist, "bootstrap.js"));
+  if (existsSync(join(dist, "bootstrap.css"))) startupStylesheetPaths.push(join(dist, "bootstrap.css"));
   const [jsMeasurements, cssMeasurements, appEntry] = await Promise.all([
     Promise.all(javascript.map((path) => fileMeasurement(path, dist))),
     Promise.all(css.map((path) => fileMeasurement(path, dist))),
