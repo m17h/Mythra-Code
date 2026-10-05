@@ -2,6 +2,8 @@ import { act, fireEvent, render, waitFor, within } from "@testing-library/react"
 import { commands, page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UsageDashboard } from "./UsageDashboard";
+import { UsageCalendarCard } from "./UsageCalendar";
+import { usageDetail } from "../lib/usageSummary";
 import { annotateThreadUsage, flushUsageLedger, recordUsageDelta, resetUsageLedgerCache, type UsageProvider } from "../lib/usageLedger";
 import { localDayKey, shiftDayKey } from "../lib/usageHistory";
 import type { ThemeName } from "../types";
@@ -72,7 +74,7 @@ async function parkPointer() {
   await waitFor(() => expect(document.querySelector(".usage-heat-card")).toBeNull());
 }
 
-/** Leave the current card first; an open card can cover neighbouring squares. */
+/** Start a fresh hover without carrying the preceding day's intent timer. */
 async function hoverDay(target: HTMLElement) {
   await userEvent.hover(document.querySelector("h4")!);
   await waitFor(() => expect(document.querySelector(".usage-heat-card")).toBeNull());
@@ -113,6 +115,93 @@ describe("usage calendar", () => {
   beforeEach(async () => { await page.viewport(1400, 900); });
   afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
+  it("waits for hover intent instead of opening details while moving through days", async () => {
+    seed();
+    const { cell, card } = mount();
+    await parkPointer();
+    await userEvent.hover(cell(dayAgo(2)));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(card()).toBeNull();
+    await userEvent.hover(cell(dayAgo(5)));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(card()).toBeNull();
+    await waitFor(() => expect(card()).toHaveTextContent("Unknown provider"));
+    expect(card()).not.toHaveTextContent("10,000");
+  });
+
+  it("lets the real pointer explore neighboring days while a detailed popup is open", async () => {
+    seed();
+    const { cell, card, grid } = mount();
+    await parkPointer();
+    await userEvent.hover(cell(dayAgo(2)));
+    await waitFor(() => expect(card()).toHaveTextContent("10,000"));
+    const popup = card()!.getBoundingClientRect();
+    const squares = [...grid.querySelectorAll<HTMLElement>("[data-day]")];
+    for (const square of squares) {
+      const box = square.getBoundingClientRect();
+      expect(popup.bottom <= box.top || popup.top >= box.bottom).toBe(true);
+      expect(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)).toBe(square);
+    }
+    // No parking the pointer outside the calendar to get around the popup.
+    await userEvent.hover(cell(dayAgo(5)));
+    await waitFor(() => expect(card()).toHaveTextContent("Unknown provider"));
+    await userEvent.hover(cell(dayAgo(3)));
+    await waitFor(() => expect(card()).toHaveTextContent("No tokens recorded on this day."));
+  });
+
+  it("keeps days reachable when a very short zoomed viewport forces overlap, and pins the list for scrolling", async () => {
+    seed({ manyModels: 40 });
+    await page.viewport(900, 260);
+    const view = render(<div className="app-shell" data-theme="mythra" data-color-scheme="dark"
+      style={{ display: "block", zoom: 1.5, height: 260 / 1.5, overflow: "clip" }}>
+      <div className="usage-dashboard" style={{ width: 580 }}>
+        <UsageCalendarCard source={{ detail: usageDetail, reported: () => ({ cost: 0, requests: 0 }) }} revision={0} today={TODAY} range={null}
+          providerLabel={(provider) => provider} modelLabel={(model) => model} />
+      </div>
+    </div>);
+    const calendar = view.getByRole("region", { name: "Token activity" });
+    const grid = within(calendar).getByRole("grid", { name: /^Tokens per day/ });
+    const card = () => document.querySelector<HTMLElement>(".usage-heat-card");
+    const target = grid.querySelector<HTMLElement>(`[data-day="${dayAgo(1)}"]`)!;
+    // Center the painted grid so neither side can fit a readable popup.
+    // The bounded shell prevents auto-scrolling from moving it out of this
+    // geometry, independently of each engine's scrollIntoView behavior.
+    const table = grid.getBoundingClientRect();
+    calendar.style.marginTop = `${(window.innerHeight / 2 - (table.top + table.height / 2)) / 1.5}px`;
+    await userEvent.hover(target);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const shown = card()!;
+    expect(shown.dataset.overlapsGrid).toBe("true");
+    expect(getComputedStyle(shown).pointerEvents).toBe("none");
+    await waitFor(() => expect(within(shown).getByText("Click a day to keep details open and scroll.")).toBeVisible());
+    const box = target.getBoundingClientRect();
+    expect(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)).toBe(target);
+    await userEvent.click(target);
+    expect(shown.dataset.pinned).toBe("true");
+    expect(getComputedStyle(shown).pointerEvents).toBe("auto");
+    const list = within(shown).getByRole("region", { name: /^Providers and models on / });
+    expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
+    list.focus();
+    await userEvent.keyboard("{End}");
+    await waitFor(() => expect(list.scrollTop).toBeGreaterThan(0));
+    await userEvent.keyboard("{Escape}");
+    expect(card()).toBeNull();
+  });
+
+  it("cancels another day's intent while moving into the open scrollable breakdown", async () => {
+    seed({ manyModels: 40 });
+    const { cell, card } = mount();
+    await parkPointer();
+    await userEvent.hover(cell(dayAgo(1)));
+    await waitFor(() => expect(card()?.querySelectorAll("li")).toHaveLength(40));
+    const shown = card()!;
+    await userEvent.hover(cell(dayAgo(2)));
+    await userEvent.hover(shown.querySelector<HTMLElement>(".usage-heat-card-list")!);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(card()).toBe(shown);
+    expect(card()?.querySelectorAll("li")).toHaveLength(40);
+  });
+
   it("shows every provider and model for a hovered day as shares of that day's total tokens", async () => {
     seed();
     const { cell, card } = mount();
@@ -135,9 +224,9 @@ describe("usage calendar", () => {
     expect(shown).toHaveTextContent("Percentages are shares of this day’s total tokens.");
     expectInViewport(shown);
     expectUnclipped(shown);
-    // Beside its square without covering it, closer than the 3px spacing to the next square.
-    const [box, square] = [shown.getBoundingClientRect(), cell(dayAgo(2)).getBoundingClientRect()];
-    const gap = box.bottom <= square.top ? square.top - box.bottom : box.top - square.bottom;
+    // Outside the entire grid, leaving every other day visible and reachable.
+    const [box, table] = [shown.getBoundingClientRect(), cell(dayAgo(2)).closest("table")!.getBoundingClientRect()];
+    const gap = box.bottom <= table.top ? table.top - box.bottom : box.top - table.bottom;
     expect(gap).toBeGreaterThanOrEqual(0);
     expect(gap).toBeLessThan(3);
 
@@ -307,10 +396,10 @@ describe("usage calendar", () => {
     await Promise.all(shown.getAnimations().map((animation) => animation.finished));
     expect(within(shown).getByText("Total tokens")).toBeVisible();
 
-    // It follows its square as Settings scrolls, and hides once the square leaves view.
+    // It follows the grid as Settings scrolls, and hides once its square leaves view.
     const attachedGap = () => {
-      const [box, square] = [shown.getBoundingClientRect(), target.getBoundingClientRect()];
-      return box.bottom <= square.top + 0.5 ? square.top - box.bottom : box.top - square.bottom;
+      const [box, table] = [shown.getBoundingClientRect(), target.closest("table")!.getBoundingClientRect()];
+      return box.bottom <= table.top + 0.5 ? table.top - box.bottom : box.top - table.bottom;
     };
     const before = target.getBoundingClientRect().top;
     const scrollBefore = scroller.scrollTop;

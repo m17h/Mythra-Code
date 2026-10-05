@@ -1236,12 +1236,12 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(2,3,4,.68); backdrop-filter: blur(7px); }
 .settings-backdrop { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 300ms, backdrop-filter 260ms ease; }
 .settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; animation: settings-backdrop-enter 210ms ease both; transition-delay: 0s; }
-.settings-modal { position: relative; width: min(920px, 100%); height: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease, width 320ms cubic-bezier(.2,.86,.24,1), height 320ms cubic-bezier(.2,.86,.24,1); }
+.settings-modal { --settings-target-width: 920px; position: relative; width: min(var(--settings-target-width), 100%); height: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease, width 320ms cubic-bezier(.2,.86,.24,1), height 320ms cubic-bezier(.2,.86,.24,1); }
 /* The usage dashboard's charts and tables get a wider sheet; other sections keep the reading width.
    The real box resizes (the backdrop grid keeps it centred) so text never scales. Keep resizing
    through the exit too, so closing midway doesn't snap. Sizes are percentages of the backdrop's padded
    grid area rather than vh, so they stay inside the window under the shell's UI-scale zoom. */
-.settings-modal.settings-modal-wide { width: min(1200px, 100%); height: min(880px, 100%); }
+.settings-modal.settings-modal-wide { --settings-target-width: 1200px; height: min(880px, 100%); }
 /* The entrance only fills backwards: its last frame equals the open style, so once it ends it
    releases the sheet instead of holding transform and filter over every later resize. */
 .settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); animation: settings-modal-enter 300ms cubic-bezier(.2,.86,.24,1) backwards; }
@@ -1297,7 +1297,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
    hairline between neighbours. Controls never float loose on the pane
    background, which is what previously made each pane look like a different
    product. */
-.settings-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: 224px minmax(0,1fr); overflow: hidden; }
+.settings-layout { --settings-nav-width: 224px; min-height: 0; flex: 1; display: grid; grid-template-columns: var(--settings-nav-width) minmax(0,1fr); overflow: hidden; }
 
 /* -- Sidebar -- */
 .settings-nav { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--sidebar) 76%, var(--panel)); }
@@ -1330,7 +1330,10 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .settings-pane-heading > div > small { max-width: 68ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
 .settings-pane-heading > .secondary-button { margin-top: 2px; }
 .settings-close { flex: 0 0 auto; margin-top: -2px; }
-.settings-content { --settings-content-end: var(--s-6); position: relative; min-width: 0; flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--settings-content-end); scroll-padding-top: var(--s-5); }
+/* Reserve only the scrolling body at its destination width. Header and footer
+   follow the visible sheet so Close, Cancel and Save remain reachable during
+   expansion. Without a measured backdrop (standalone fixtures), width is auto. */
+.settings-content { --settings-content-end: var(--s-6); position: relative; min-width: 0; width: calc(min(var(--settings-target-width), var(--settings-available-width)) - var(--settings-frame-border, 2px) - var(--settings-nav-width)); flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--settings-content-end); scroll-padding-top: var(--s-5); }
 /* Sticky fade that only shows while there is more pane below the fold. Sticky
    offsets start inside the scroller's padding, so the fade cancels exactly that
    padding to meet the clipped edge; themes change it via --settings-content-end. */
@@ -2597,7 +2600,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
   .reasoning-control { grid-column: 1 / -1; }
   .model-picker-copy em { display: none; }
   .settings-modal, .settings-modal.settings-modal-wide { height: 100%; }
-  .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
+  .settings-layout { --settings-nav-width: 0px; grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
   /* The rail becomes a scrolling tab strip above the pane. The window title
      goes with it — the pane header already says where you are — but the search
      field stays, because it is the fastest way through thirteen destinations

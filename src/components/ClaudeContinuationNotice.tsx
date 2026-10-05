@@ -1,4 +1,5 @@
 import { CreditCard, Hourglass } from "lucide-react";
+import { claudeWrapUpLimitReachedText } from "../lib/claudeContinuation";
 import "./ClaudeContinuationNotice.css";
 
 export type ClaudeContinuationVariant = "grace" | "paid";
@@ -11,8 +12,9 @@ export type ClaudeContinuationVariant = "grace" | "paid";
  * usage credits are being spent. Neither copy promises the task will finish,
  * states a quota, or offers to turn anything on.
  */
-export function ClaudeContinuationNotice({ variant, onOpenUsage }: {
+export function ClaudeContinuationNotice({ variant, rateLimitType, onOpenUsage }: {
   variant: ClaudeContinuationVariant;
+  rateLimitType?: string;
   onOpenUsage?: () => void;
 }) {
   const grace = variant === "grace";
@@ -25,7 +27,7 @@ export function ClaudeContinuationNotice({ variant, onOpenUsage }: {
         <strong>{grace ? "Included wrap-up allowance in use" : "Claude usage credits in use"}</strong>
         <small>
           {grace
-            ? "Your five-hour limit was reached. Claude Code is continuing this response with your plan's included wrap-up allowance, which counts toward your weekly usage. The allowance is capped by Anthropic and may end before the task is finished."
+            ? `${claudeWrapUpLimitReachedText(rateLimitType)} Claude Code is continuing this response with your plan's included wrap-up allowance, which counts toward your weekly usage. The allowance is capped by Anthropic and may end before the task is finished.`
             : "Claude Code reports that usage credits (extra usage) are being used for this turn. Additional charges may apply."}
         </small>
       </span>

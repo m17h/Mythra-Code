@@ -220,6 +220,70 @@ fn claude_system_prompt_snapshot_support_is_version_compatible() {
 }
 
 #[test]
+fn claude_wrap_up_compatibility_distinguishes_old_supported_and_unknown_versions() {
+    for version in [
+        "2.1.277 (Claude Code)",
+        "2.1.288 (Claude Code)",
+        "v2.1.277",
+        "2.1.277+build.1",
+        "3.0.0",
+    ] {
+        assert_eq!(
+            claude_wrap_up_version_support(Some(version)),
+            Some(true),
+            "{version}"
+        );
+        assert!(
+            claude_wrap_up_version_warning(Some(version)).is_none(),
+            "{version}"
+        );
+    }
+    for version in ["2.1.276 (Claude Code)", "2.0.0", "2.1.277-beta.1"] {
+        assert_eq!(
+            claude_wrap_up_version_support(Some(version)),
+            Some(false),
+            "{version}"
+        );
+        let warning = claude_wrap_up_version_warning(Some(version)).unwrap();
+        assert!(warning.contains("requires Claude Code 2.1.277 or newer"));
+        assert!(warning.contains("normal Claude conversations remain available"));
+    }
+    for version in [
+        None,
+        Some(""),
+        Some("unknown"),
+        Some("2.1"),
+        Some("2.1.277garbage"),
+        Some("<html>2.1.277</html>"),
+        Some("Claude Code 2.1.277"),
+    ] {
+        assert_eq!(claude_wrap_up_version_support(version), None);
+        let warning = claude_wrap_up_version_warning(version).unwrap();
+        assert!(warning.contains("could not be verified"));
+        assert!(!warning.contains("normal Claude conversations remain available"));
+    }
+}
+
+#[test]
+fn claude_runtime_warnings_preserve_credentials_and_unknown_prompt_snapshot_guidance() {
+    assert!(claude_runtime_warnings(Some("2.1.277 (Claude Code)"), None).is_none());
+    let credential = "Credential overrides are ignored.";
+    assert_eq!(
+        claude_runtime_warnings(Some("2.1.288 (Claude Code)"), Some(credential.into())),
+        Some(credential.into())
+    );
+    let old =
+        claude_runtime_warnings(Some("2.1.276 (Claude Code)"), Some(credential.into())).unwrap();
+    assert!(old.starts_with(credential));
+    assert!(old.contains("requires Claude Code 2.1.277 or newer"));
+    assert!(!old.contains("Updated system instructions"));
+    let unknown = claude_runtime_warnings(None, Some(credential.into())).unwrap();
+    assert!(unknown.starts_with(credential));
+    assert!(unknown.contains("Updated system instructions in resumed conversations may not apply"));
+    assert!(unknown.contains("Included wrap-up support could not be verified"));
+}
+
+#[test]
 fn claude_system_prompt_arguments_refresh_first_resumed_changed_and_cleared_prompts() {
     let nested = r#"<mythra_code_invoked_skills>{"systemPrompt":"Use @policy","skills":[{"kind":"skill","name":"policy","instructions":"New policy"},{"kind":"document","name":"guide","instructions":"Fresh reference"}]}</mythra_code_invoked_skills>"#;
     // The same arguments are used for first turns and --resume. Neither a

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import type { UsageProvider } from "../lib/usageLedger";
 import { shiftDayKey } from "../lib/usageHistory";
 import { buildUsageCalendar, formatDayShare, usageCalendarRange, type CalendarDay, type UsageCalendar } from "../lib/usageCalendar";
-import type { UsageRange } from "../lib/usageSummary";
+import type { UsageDetail, UsageRange } from "../lib/usageSummary";
 import type { UsageDashboardSource } from "./usageDashboardPreview";
 
 const number = (value: number) => Math.round(value).toLocaleString();
@@ -12,17 +12,26 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 
 function dateOf(day: string): Date {
   const [year, month, date] = day.split("-").map(Number);
-  return new Date(year, month - 1, date, 12);
+  return new Date(Date.UTC(year, month - 1, date, 12));
 }
-const longDay = (day: string) => dateOf(day).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-const cardDay = (day: string) => dateOf(day).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-const shortDay = (day: string) => dateOf(day).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-const monthOf = (day: string) => dateOf(day).toLocaleDateString(undefined, { month: "short" });
+// Reuse locale formatters: constructing one for every day square can delay
+// the first Usage frame, especially on Windows with a full year of labels.
+// Format date keys as UTC calendar dates, not real usage timestamps. Otherwise
+// cached formatters retain the old system zone after travel and shift labels.
+const LONG_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "long", month: "long", day: "numeric", year: "numeric" });
+const CARD_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+const SHORT_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+const MONTH_FORMAT = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short" });
+const longDay = (day: string) => LONG_DAY_FORMAT.format(dateOf(day));
+const cardDay = (day: string) => CARD_DAY_FORMAT.format(dateOf(day));
+const shortDay = (day: string) => SHORT_DAY_FORMAT.format(dateOf(day));
+const monthOf = (day: string) => MONTH_FORMAT.format(dateOf(day));
 
 const VIEWPORT_MARGIN = 8;
-/** Less than the 3px spacing between squares, so the pointer passes from a
- * square straight into its card without crossing a neighbouring square. */
+/** Keep the card close enough to the grid to move into its scrollable list. */
 const CARD_GAP = 1;
+/** Skimming small day squares must not open or replace their breakdowns. */
+const HOVER_INTENT_MS = 500;
 /** Time to cross from a square into its card before the card closes. */
 const HOVER_GRACE_MS = 180;
 
@@ -80,14 +89,14 @@ function fixedContainingBlock(element: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Above the square when it fits, else below, clamped inside `bounds` (the
+ * Above the whole grid when it fits, else below, clamped inside `bounds` (the
  * viewport in the top layer). The card's height is capped to the roomier side
- * so it doesn't cover its square (or, when both are short, to the bounds), and
+ * so it doesn't cover other days (or, when both are short, to the bounds), and
  * its list scrolls. Rectangles are visual pixels; fixed offsets are layout
  * pixels from `origin` under UI zoom. A square that its scrolling ancestors
  * have hidden takes its card with it.
  */
-function placeCard(card: HTMLElement, anchor: DOMRect, anchorVisible: Box, bounds: Box, origin: { x: number; y: number }) {
+function placeCard(card: HTMLElement, anchor: DOMRect, grid: DOMRect, anchorVisible: Box, bounds: Box, origin: { x: number; y: number }) {
   const zoom = effectiveZoom(card);
   const hidden = anchor.bottom <= anchorVisible.top || anchor.top >= anchorVisible.bottom
     || anchor.right <= anchorVisible.left || anchor.left >= anchorVisible.right;
@@ -96,23 +105,26 @@ function placeCard(card: HTMLElement, anchor: DOMRect, anchorVisible: Box, bound
   const bottom0 = bounds.bottom - VIEWPORT_MARGIN;
   const left0 = bounds.left + VIEWPORT_MARGIN;
   const right0 = bounds.right - VIEWPORT_MARGIN;
-  const spaceAbove = anchor.top - CARD_GAP - top0;
-  const spaceBelow = bottom0 - anchor.bottom - CARD_GAP;
+  const spaceAbove = grid.top - CARD_GAP - top0;
+  const spaceBelow = bottom0 - grid.bottom - CARD_GAP;
   const room = Math.max(spaceAbove, spaceBelow);
   const maxHeight = room >= 180 ? room : bottom0 - top0;
   card.style.maxWidth = `${Math.max(0, right0 - left0) / zoom}px`;
   card.style.maxHeight = `${Math.max(0, maxHeight) / zoom}px`;
   const cardWidth = card.offsetWidth * zoom;
   const cardHeight = card.offsetHeight * zoom;
-  const above = anchor.top - CARD_GAP - cardHeight;
-  const below = anchor.bottom + CARD_GAP;
+  const above = grid.top - CARD_GAP - cardHeight;
+  const below = grid.bottom + CARD_GAP;
   let top = above >= top0 ? above : below + cardHeight <= bottom0 ? below : spaceAbove > spaceBelow ? top0 : below;
   top = Math.min(Math.max(top, top0), Math.max(top0, bottom0 - cardHeight));
   const preferredLeft = anchor.left + anchor.width / 2 - cardWidth / 2;
   const left = Math.min(Math.max(preferredLeft, left0), Math.max(left0, right0 - cardWidth));
   card.style.top = `${(top - origin.y) / zoom}px`;
   card.style.left = `${(left - origin.x) / zoom}px`;
-  card.dataset.side = top + cardHeight <= anchor.top + 1 ? "above" : "below";
+  card.dataset.side = top + cardHeight <= grid.top + 1 ? "above" : "below";
+  // If neither side can hold a readable card, hover remains nonblocking.
+  // Pinning the day explicitly enables the overlapping card's scrollable list.
+  card.dataset.overlapsGrid = String(top < grid.bottom && top + cardHeight > grid.top);
 }
 
 const TABBABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])";
@@ -184,10 +196,12 @@ function DayCard({ entry, today, trackedFrom, startedDay, providerLabel, modelLa
  * selected range is shown by fading the days outside it, never by hiding
  * usage. Hover, focus or tap a square for that day's providers and models.
  */
-export function UsageCalendarCard({ source, revision, today, range, providerLabel, modelLabel }: {
+export function UsageCalendarCard({ source, revision, calendarDetail, today, range, providerLabel, modelLabel }: {
   source: UsageDashboardSource;
   /** The ledger revision; a change means recorded usage may have changed. */
   revision: number;
+  /** The dashboard's current all-time snapshot, avoiding a second history read. */
+  calendarDetail?: UsageDetail;
   today: string;
   /** The page's selected range, or null for all time. */
   range: UsageRange | null;
@@ -201,6 +215,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   const scrollRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const graceRef = useRef<number | null>(null);
+  const hoverIntentRef = useRef<{ timer: number; day: string } | null>(null);
   const keyboardOwnsCard = useRef(false);
   const pointerPoint = useRef(lastPointerPoint);
   const clickPointerType = useRef("mouse");
@@ -222,10 +237,10 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   }, []);
 
   const { calendar, detailAhead, startedDay } = useMemo(() => {
-    const detail = source.detail(usageCalendarRange(today));
+    const detail = calendarDetail ?? source.detail(usageCalendarRange(today));
     // Keyed to the ledger revision: the same source returns new records after a write.
     return { revision, calendar: buildUsageCalendar(detail.buckets, today, detail), detailAhead: Boolean(detail.detailAhead), startedDay: detail.startedDay };
-  }, [source, revision, today]);
+  }, [source, revision, calendarDetail, today]);
 
   const [hover, setHover] = useState<string | null>(null);
   const [pinned, setPinned] = useState<string | null>(null);
@@ -247,11 +262,21 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     if (graceRef.current !== null) window.clearTimeout(graceRef.current);
     graceRef.current = null;
   }, []);
+  const cancelHoverIntent = useCallback(() => {
+    if (hoverIntentRef.current) window.clearTimeout(hoverIntentRef.current.timer);
+    hoverIntentRef.current = null;
+  }, []);
   const leaveSoon = useCallback(() => {
+    cancelHoverIntent();
     cancelGrace();
     graceRef.current = window.setTimeout(() => { graceRef.current = null; setHover(null); }, HOVER_GRACE_MS);
-  }, [cancelGrace]);
+  }, [cancelGrace, cancelHoverIntent]);
   useEffect(() => cancelGrace, [cancelGrace]);
+  useEffect(() => {
+    // A pending day belongs to this calendar and must not survive replacement
+    // of its data source, a midnight rollover, hidden detail or unmount.
+    return cancelHoverIntent;
+  }, [cancelHoverIntent, source, today, detailAhead]);
 
   // Newest days are on the right; a narrow panel starts scrolled to them.
   useLayoutEffect(() => {
@@ -279,7 +304,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
         origin = { x: rect.left + block.clientLeft * zoom, y: rect.top + block.clientTop * zoom };
       }
     }
-    placeCard(card, cell.getBoundingClientRect(), visibleBox(cell.parentElement), bounds, origin);
+    placeCard(card, cell.getBoundingClientRect(), tableRef.current!.getBoundingClientRect(), visibleBox(cell.parentElement), bounds, origin);
   }, [shownDay]);
 
   useLayoutEffect(() => {
@@ -326,6 +351,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
         tableRef.current?.querySelector<HTMLElement>(`[data-day="${cursorRef.current}"]`)?.focus({ preventScroll: true });
       }
       cancelGrace();
+      cancelHoverIntent();
       keyboardOwnsCard.current = true;
       setHover(null);
       setPinned(null);
@@ -333,7 +359,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [visible, cancelGrace]);
+  }, [visible, cancelGrace, cancelHoverIntent]);
 
   // A tap or click anywhere else releases a pinned day.
   useEffect(() => {
@@ -360,15 +386,24 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     // Touch has no hover; a tap selects instead.
     if (event.pointerType === "touch" || keyboardOwnsCard.current) return;
     const day = dayOf(event.target);
-    if (!day) return;
+    if (!day) { leaveSoon(); return; }
     cancelGrace();
-    setHover(day);
+    if (hover === day) { cancelHoverIntent(); return; }
+    // Pointermove within a square does not restart its intent timer.
+    if (hoverIntentRef.current?.day === day) return;
+    cancelHoverIntent();
+    const timer = window.setTimeout(() => {
+      hoverIntentRef.current = null;
+      if (!keyboardOwnsCard.current) setHover(day);
+    }, HOVER_INTENT_MS);
+    hoverIntentRef.current = { timer, day };
   };
   const onClick = (event: MouseEvent<HTMLTableElement>) => {
     const day = dayOf(event.target);
     if (!day) return;
     keyboardOwnsCard.current = event.detail === 0 || clickPointerType.current === "touch";
     cancelGrace();
+    cancelHoverIntent();
     // Keyboard/assistive activation has detail=0 and must not fabricate a
     // sticky hover. Real mouse unpinning retains the still-hovered breakdown.
     setHover(clickPointerType.current !== "touch" && event.detail > 0 ? day : null);
@@ -390,6 +425,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
       // A stationary mouse may still be over an older day. The newer keyboard
       // request wins until the user deliberately moves the pointer again.
       cancelGrace();
+      cancelHoverIntent();
       keyboardOwnsCard.current = true;
       setHover(null);
     }
@@ -417,6 +453,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
   const onKeyDown = (event: KeyboardEvent<HTMLTableElement>) => {
     const day = dayOf(event.target);
     if (!day) return;
+    cancelHoverIntent();
     if (["Tab", "Enter", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       cancelGrace();
       keyboardOwnsCard.current = true;
@@ -441,7 +478,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
       setPinned((current) => (current === day ? null : day));
       return;
     }
-    const weekday = (dateOf(day).getDay() + 6) % 7;
+    const weekday = (dateOf(day).getUTCDay() + 6) % 7;
     const rowStart = shiftDayKey(calendar.range.from, weekday);
     let rowEnd = rowStart;
     while (shiftDayKey(rowEnd, 7) <= calendar.range.to) rowEnd = shiftDayKey(rowEnd, 7);
@@ -457,7 +494,7 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
     if (calendar.days.has(next)) focusDay(next);
   };
 
-  // The page builds a new range object each render; depend on its days.
+  // Depend on range endpoints to keep day cells stable.
   const rangeFrom = range?.from ?? null;
   const rangeTo = range?.to ?? null;
   const outsideRange = useCallback((day: string) => rangeFrom !== null && rangeTo !== null && (day < rangeFrom || day > rangeTo), [rangeFrom, rangeTo]);
@@ -512,10 +549,11 @@ export function UsageCalendarCard({ source, revision, today, range, providerLabe
       </table>
     </div>}
     {shown && !detailAhead && <div ref={cardRef} id={cardId} className="usage-heat-card" popover={topLayer ? "manual" : undefined}
-      role="group" aria-label={`Usage on ${longDay(shown.day)}`} data-state={shown.state}
-      onPointerEnter={cancelGrace} onKeyDown={onCardKeyDown} onPointerLeave={(event) => { if (event.pointerType !== "touch" && hover) leaveSoon(); }}>
+      role="group" aria-label={`Usage on ${longDay(shown.day)}`} data-state={shown.state} data-pinned={shown.day === pinnedDay}
+      onPointerEnter={() => { cancelGrace(); cancelHoverIntent(); }} onKeyDown={onCardKeyDown} onPointerLeave={(event) => { if (event.pointerType !== "touch" && hover) leaveSoon(); }}>
       <DayCard entry={shown} today={today} trackedFrom={calendar.trackedFrom} startedDay={startedDay}
         providerLabel={providerLabel} modelLabel={modelLabel} pinned={shown.day === pinnedDay} />
+      {shown.day !== pinnedDay && <p className="usage-heat-card-overlap-hint">Click a day to keep details open and scroll.</p>}
     </div>}
   </section>;
 }

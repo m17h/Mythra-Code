@@ -1,7 +1,7 @@
 import type { TokenUsageView } from "../components/StudioDock";
 import {
   attachUsageHistory, cacheWriteCost, canReplayCorrectionWithoutCheckpoint, commitPricingCorrections, correctionDayWasPruned,
-  flushUsageLedger, pricingCorrectionCheckpoint, prunePricingCorrectionCheckpoints, USAGE_HISTORY_KEY,
+  flushUsageLedger, getUsageRevision, notifyUsageHistoryChanged, pricingCorrectionCheckpoint, prunePricingCorrectionCheckpoints, USAGE_HISTORY_KEY,
   type ModelPricing, type PricingCorrection, type PricingCorrectionCheckpoint, type UsageProvider,
 } from "./usageLedger";
 import { historicalPricing } from "./pricingEvidence";
@@ -762,7 +762,11 @@ export function repriceUsageHistory(): number {
     applyCohortRate(current, bucket, cohort, pricing, basis, (cohort.revision ?? 0) + 1);
   cachedState = current;
   dirty = true;
+  const revisionBeforeFlush = getUsageRevision();
   flushUsageLedger();
+  // Checkpoint recovery can repair only dated history. Its flush must invalidate
+  // visible snapshots too, but a normal ledger flush already published a change.
+  if (getUsageRevision() === revisionBeforeFlush) notifyUsageHistoryChanged();
   return pending.length + reconciled;
 }
 

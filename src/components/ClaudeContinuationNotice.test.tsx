@@ -4,7 +4,7 @@ import { ClaudeContinuationNotice } from "./ClaudeContinuationNotice";
 
 describe("ClaudeContinuationNotice", () => {
   it("describes the capped wrap-up allowance without promising completion or a quota", () => {
-    render(<ClaudeContinuationNotice variant="grace" />);
+    render(<ClaudeContinuationNotice variant="grace" rateLimitType="five_hour" />);
     const notice = screen.getByRole("status");
     expect(notice).toHaveTextContent("Included wrap-up allowance in use");
     expect(notice).toHaveTextContent("Your five-hour limit was reached");
@@ -12,6 +12,15 @@ describe("ClaudeContinuationNotice", () => {
     expect(notice).toHaveTextContent("capped by Anthropic and may end before the task is finished");
     expect(notice.textContent).not.toMatch(/charge|credit|unlimited|\d+ (?:times|left|remaining)/i);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it.each([undefined, "seven_day", "seven_day_overage_included", "future_window"])("does not invent a five-hour limit for the %s window", (rateLimitType) => {
+    render(<ClaudeContinuationNotice variant="grace" rateLimitType={rateLimitType} />);
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent("Your Claude usage limit was reached.");
+    expect(notice).toHaveTextContent("counts toward your weekly usage");
+    expect(notice).toHaveTextContent("may end before the task is finished");
+    expect(notice.textContent).not.toMatch(/five-hour/i);
   });
 
   it("reports paid usage credits separately and never offers to enable them", () => {

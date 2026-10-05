@@ -66,7 +66,7 @@
 /* ---- Settings: narrow windows (legacy max-width 760) ----
    The nav column becomes a scrolling strip of pills above the pane. */
 @media (max-width: 760px) {
-  .app-shell[data-theme][data-color-scheme] .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .app-shell[data-theme][data-color-scheme] .settings-layout { --settings-nav-width: 0px; grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .app-shell[data-theme][data-color-scheme] .settings-nav { border-right: 0; border-bottom: 1px solid var(--line-quiet); }
   .app-shell[data-theme][data-color-scheme] .settings-nav-head { padding: 8px 8px 0; }
   .app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 4px; padding: 8px; }

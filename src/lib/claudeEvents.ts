@@ -8,7 +8,8 @@ import { compactionActivity, compactionState, compactionTitle } from "./contextC
 import { consumeProviderStopIntent } from "./providerStopIntent";
 import { annotateThreadUsage, claudeCanonicalModel } from "./usageLedger";
 import { mergedUsageEvidence } from "./usageEvidence";
-import { parseClaudeContinuation, useClaudeContinuationStore } from "./claudeContinuation";
+import { claudeWrapUpLimitReachedText, parseClaudeContinuation, useClaudeContinuationStore } from "./claudeContinuation";
+import { CLAUDE_USAGE_LIMIT_EXPLANATION, claudeResultError } from "./claudeUsageLimit";
 
 interface ClaudeBlock {
   id: string;
@@ -449,13 +450,13 @@ export function routeClaudeEvent(
     const continuation = parseClaudeContinuation(message);
     const previous = useClaudeContinuationStore.getState().byThread[threadId];
     useClaudeContinuationStore.getState().update(threadId, turnId, continuation);
-    if (continuation && (previous?.turnId !== turnId || previous.kind !== continuation.kind)) {
+    if (continuation && (previous?.turnId !== turnId || previous.kind !== continuation.kind || previous.rateLimitType !== continuation.rateLimitType)) {
       store.upsertActivity(threadId, {
         id: `claude-continuation-${turnId}-${continuation.kind}`,
         kind: "warning",
         title: continuation.kind === "grace" ? "Claude is using its included wrap-up allowance" : "Claude is using paid usage credits",
         detail: continuation.kind === "grace"
-          ? "Your five-hour limit was reached. Claude Code is continuing this response with your plan's included wrap-up allowance, which counts toward your weekly usage. The allowance is capped and may end before the task is finished."
+          ? `${claudeWrapUpLimitReachedText(continuation.rateLimitType)} Claude Code is continuing this response with your plan's included wrap-up allowance, which counts toward your weekly usage. The allowance is capped and may end before the task is finished.`
           : "Claude Code reports that paid usage credits are being consumed under your existing Anthropic account settings. Additional charges may apply. Mythra Code has not enabled or changed paid usage.",
         status: "completed",
         turnId,
@@ -573,6 +574,20 @@ export function routeClaudeEvent(
       .filter((entry) => entry.type === "text")
       .map((entry) => text(entry.text))
       .join("");
+    if (message.error === "rate_limit") {
+      // An explicit refusal overrides a retained grace flag. This is only a
+      // diagnostic, not a turn boundary: the native runtime still owns whether
+      // work continues, and we never retry or enable paid usage here.
+      useClaudeContinuationStore.getState().clear(threadId, turnId);
+      store.upsertActivity(threadId, {
+        id: `claude-usage-limit-${turnId}`,
+        kind: "warning",
+        title: "Claude usage limit reached",
+        detail: [answer, CLAUDE_USAGE_LIMIT_EXPLANATION].filter(Boolean).join("\n\n"),
+        status: "failed",
+        turnId,
+      });
+    }
     if (answer)
       store.completeMessage(threadId, { id, role: "assistant", text: answer, turnId });
     for (const entry of content
@@ -686,7 +701,7 @@ export function routeClaudeEvent(
     } else if (failed || emptySuccess) {
       const error =
         failed
-          ? text(message.result) || "Claude could not complete this request."
+          ? claudeResultError(message)
           : emptySuccessError;
       store.setTaskStatus(threadId, "error", error);
       foregroundError(ctx, threadId, error);
