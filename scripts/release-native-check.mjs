@@ -6,6 +6,8 @@ import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { assertPlan, atomicJson, containedPath, digest, fileHash, HASH, objectHash, processIdentity, readJson, receiptPath, saveReceipt, workerTreeAlive } from './release-state.mjs';
 
+import { sourceUpgradeSchema, validateUpgradeObservation } from './release-upgrade-snapshot.mjs';
+
 const observations = {
   'native-startup': ['exact-package-identity', 'visible-native-shell', 'affected-startup-replay'],
   'native-close': ['healthy-save-close-reopen', 'affected-close-failure', 'owned-processes-exited'],
@@ -13,6 +15,7 @@ const observations = {
   'native-onboarding': ['fresh-isolated-profile', 'affected-onboarding-flow'],
   'native-installer': ['isolated-installer-environment', 'affected-install-update-recovery'],
 };
+export function expectedNativeObservations(check) { return [...(observations[check] ?? [])]; }
 export function assertQaSourceSupport({ root, plan, execute = execFileSync }) {
   const source = (path) => execute('git', ['show', `${plan.commit}:${path}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   let module, integration, recipe;
@@ -33,13 +36,20 @@ export function createNativeContract({ root, stateRoot, plan, platform }) {
   const selected = plan.checks.filter((c) => c.kind === 'native' && c.required && c.platform === platform);
   if (!selected.length) throw new Error('No native checks are required for this platform');
   const profileId = randomUUID();
+  const upgradeCases = plan.predecessors.flatMap((p) => {
+    const storageSchema = sourceUpgradeSchema({ root, predecessorCommit: p.commit, candidateCommit: plan.commit });
+    return storageSchema ? [{ id: `upgrade:${p.tag}@${p.commit}`, predecessor: { tag: p.tag, commit: p.commit }, recipeSha256: sourceCapability.recipeSha256, storageSchema }] : [];
+  });
   const contract = { schemaVersion: 1, planHash: plan.planHash, commit: plan.commit, version: plan.version, platform,
     packagePath: build.details.packagePath, packageSha256: build.details.packageSha256,
     executableSha256: audit.details.executableSha256,
     sourceCapability,
     profile: { root: resolve(stateRoot, 'qa-profiles', profileId), profileId, environment: 'MYTHRA_RELEASE_QA_ROOT' },
     releaseScope: { changedFiles: plan.changedFiles, classifications: plan.classifications, boundaryHints: plan.boundaryHints, knownIssues: plan.knownIssues, predecessors: plan.predecessors },
-    checks: selected.map((c) => ({ id: c.id, reason: c.reason, observations: observations[c.id.split(':')[0]] })),
+    checks: selected.map((c) => ({ id: c.id, reason: c.reason, observations: observations[c.id.split(':')[0]],
+      // Optional historical reuse requires explicit predecessor fixtures. These
+      // describe the already-selected case; absence never counts as coverage.
+      upgradeCases })),
     scope: { sourceReadOnly: true, noPublish: true, noRealProfile: true, noProviderRequests: true, normalComputerUseReview: true } };
   return { ...contract, contractHash: objectHash(contract) };
 }
@@ -55,6 +65,8 @@ Read the frozen maintained recipe ${contract.sourceCapability?.recipePath}, and 
 Use the final DMG app or NSIS payload verified by the integrity audit. Retain the extracted app/executable under the release state directory after cleanup, so its bytes can be independently rehashed. Resolve executable image path/hash/PID/start time and match version ${contract.version}, package hash ${contract.packageSha256}, foreground window and accessibility identity BEFORE interacting. The actual AX title MUST contain the FULL profileId ${contract.profile.profileId} in "Mythra Code — Release QA ${contract.profile.profileId}"; an app label, bundle path or launcher result alone does not establish this. If AX resolves the user's installed app, do not click/type there. A launcher returning an older registered copy is a failed launch: close only that explicitly owned idle test instance if authorized, and use the supported exact-path launcher; do not repeat the same failed method. A different directory does not isolate an NSIS global process-kill action: installer cases require a supported isolated OS environment, otherwise return blocked.
 
 Run exactly the selected contract checks, sharing healthy startup/save/close work across cases. Inspect actual native pixels plus AX; process liveness, render-ready events, DOM-only results and fixture module passes are insufficient. Use synthetic representative prior-version saved data; an empty folder with a marker is not existing-data coverage. Seed malformed data only in this isolated profile and preserve raw rows where the selected storage case requires it. No paid provider turn. No unrelated UI tour, fresh account, or hypothetical test expansion.
+
+For each upgradeCases entry relevant to your selected case, retain the exact predecessor tag/commit fixture before launch and after the accepted replay using the maintained recipe's historical-coverage format. An upgrade observation is optional for ordinary package acceptance; report it only when that exact predecessor replay actually occurred. Never turn a fresh profile or marker-only folder into historical coverage. Missing upgrade proof means future releases must retain their native upgrade check.
 
 Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, control-ready, renderer-storage, render-ready, render-failed, close-finish, exit). Wait for matching control-ready for this exact launch BEFORE writing any control request; profile-open alone is too early. Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. On Windows remove the owned disposable root only after process exit. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
 
@@ -78,7 +90,7 @@ export const nativeResultSchema = {
   },
 };
 
-export function validateNativeResult(result, contract, stateRoot) {
+export function validateNativeResult(result, contract, stateRoot, { executablePath = (entry) => containedPath(stateRoot, relative(stateRoot, entry.executablePath)) } = {}) {
   if (result.status !== 'passed') throw new Error(`Native worker ${result.status}: ${result.reason}`);
   if (!result.capability?.verified || !/cua|sky|computer.use/i.test(result.capability.tool) || !result.cleanupComplete || !result.restorationComplete) throw new Error('Native worker lacks verified computer use or completed cleanup');
   if (objectHash(result.results?.map((r) => r.checkId).sort()) !== objectHash(contract.checks.map((c) => c.id).sort())) throw new Error('Native worker omitted or duplicated required checks');
@@ -88,7 +100,7 @@ export function validateNativeResult(result, contract, stateRoot) {
     const expected = contract.checks.find((c) => c.id === entry.checkId);
     if (!Number.isInteger(entry.pid) || entry.pid < 1 || !entry.processStart || !/^[a-f0-9-]{36}$/.test(entry.runId) || !entry.windowIdentity?.includes(contract.profile.profileId) || entry.version !== contract.version || !HASH.test(entry.executableSha256)
       || entry.executableSha256 !== contract.executableSha256) throw new Error('Native worker package/process identity mismatch');
-    if (fileHash(containedPath(stateRoot, relative(stateRoot, entry.executablePath))) !== entry.executableSha256) throw new Error('Native executable no longer matches observed bytes');
+    if (fileHash(executablePath(entry)) !== entry.executableSha256) throw new Error('Native executable no longer matches observed bytes');
     if (expected.observations.some((id) => !entry.observations.some((o) => o.id === id && entry.evidence.some((e) => e.path === o.evidence)))) throw new Error('Native acceptance observation lacks evidence');
     if (!entry.evidence.some((e) => /\.(png|jpe?g)$/.test(e.path)) || !entry.evidence.some((e) => /(?:accessibility|ax)\.json$/.test(e.path))) throw new Error('Native result needs pixels and accessibility evidence');
     for (const item of entry.evidence) if (!HASH.test(item.sha256) || fileHash(containedPath(stateRoot, item.path)) !== item.sha256) throw new Error('Native evidence hash mismatch');
@@ -113,6 +125,13 @@ export function validateNativeResult(result, contract, stateRoot) {
       && (e.details.previous === null || e.details.previous === contract.profile.profileId))) throw new Error('Native renderer did not confirm this isolated persistent store');
     const savedClose = primary.findIndex((e) => e.kind === 'close-finish' && e.details?.accepted === true && e.details.result === 'saved');
     if (savedClose < 0 || primary.findIndex((e) => e.kind === 'exit') <= savedClose) throw new Error('Native primary run did not finish saved normal close before exit');
+    for (const upgrade of expected.upgradeCases ?? []) {
+      const observation = entry.observations.find((o) => o.id === upgrade.id);
+      if (!observation) continue; // Legacy/ordinary acceptance remains valid, but cannot yield upgrade coverage.
+      if (!entry.evidence.some((e) => e.path === observation.evidence)) throw new Error('Upgrade observation is not retained evidence');
+      const proof = readJson(containedPath(stateRoot, observation.evidence));
+      validateUpgradeObservation({ proof, upgrade, entry, contract, stateRoot, events });
+    }
     if (contract.platform === 'darwin-aarch64') {
       const initialized = events.find((e) => e.profileId === contract.profile.profileId && e.kind === 'webview-maintenance-initialized'
         && e.details?.mainThread === true && e.details.persistent === false && e.details.url === 'about:blank');
@@ -290,8 +309,8 @@ export async function runNativeCheck({ root, stateRoot, plan, check }) {
   const startedAt = status.startedAt, completedAt = status.completedAt;
   const receipts = result.results.map((r) => ({ schemaVersion: 1, checkId: r.checkId, status: 'passed', planHash: plan.planHash, commit: plan.commit,
     platform: check.platform, packageSha256: contract.packageSha256, checkerVersion: 'native-check-v1', startedAt, completedAt,
-    evidence: [...r.evidence, ...[contractPath, resultPath, containedPath(stateRoot, result.capability.evidence)].map((path) => ({ path: relative(stateRoot, path).replaceAll('\\', '/'), sha256: fileHash(path) }))],
-    details: { ...r, workerContractHash: contract.contractHash, sessionId: status.sessionId, runtime, cleanupComplete: result.cleanupComplete, restorationComplete: result.restorationComplete } }));
+    evidence: [...r.evidence, ...[r.executablePath, contractPath, resultPath, containedPath(stateRoot, result.capability.evidence)].map((path) => ({ path: relative(stateRoot, path).replaceAll('\\', '/'), sha256: fileHash(path) }))],
+    details: { ...r, portableExecutablePath: relative(stateRoot, r.executablePath).replaceAll('\\', '/'), workerContractHash: contract.contractHash, sessionId: status.sessionId, runtime, cleanupComplete: result.cleanupComplete, restorationComplete: result.restorationComplete } }));
   for (const receipt of receipts) saveReceipt(stateRoot, plan, receipt);
   atomicJson(statusPath, { ...status, status: 'passed', completedAt, contractHash: contract.contractHash });
   return receipts.find((r) => r.checkId === check.id);

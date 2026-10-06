@@ -150,6 +150,9 @@ jobs:
 
   gate:
     name: Verify gate
+    permissions:
+      contents: read
+      actions: read
     if: always()
     needs: [native, unit, renderer, webkit]
     runs-on: ubuntu-latest
@@ -159,11 +162,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: verification-*
-          path: .test-artifacts/
-          merge-multiple: true
+      - run: npm ci
+      # Reruns retain earlier artifacts. REST selection chooses the newest exact
+      # lane upload; runtime-backend name selection can retain a failed attempt.
+      - name: Download exact verification artifacts and verify archive digests
+        run: node scripts/verify-ci.mjs artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Require every lane, shard, report and matching commit input
         run: node scripts/verify-ci.mjs gate
         env:

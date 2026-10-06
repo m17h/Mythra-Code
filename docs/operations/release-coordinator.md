@@ -289,3 +289,48 @@ actual execution from waiting without reconstructing private agent transcripts.
 A newer failed run on the same SHA is contradictory evidence to investigate
 under `AGENTS.md`; an older green run does not excuse a known source assertion
 failure. The existing complete exact-source evidence policy remains unchanged.
+
+## Reusing accepted upgrade coverage
+
+Keep installed withdrawn versions in `predecessors`. An unchanged historical
+upgrade boundary can stop selecting native checks only after an accepted public
+release actually validated that predecessor, platform and check. Ordinary
+CSS, passive assets and literal intrinsic SVG geometry/paint in the maintained
+`BrandLogos.tsx` icon module may preserve coverage. Executable changes, unknown
+inputs, dependencies, configuration and recipe changes invalidate it. Current
+diff triggers and active known issues always select their checks.
+
+The release agent records this optional evidence during an **already required**
+native check using the historical snapshot recipe in `native-release-qa.md`.
+Do not add a native tour solely to seed coverage. Once that coordinator run is
+fully accepted and public, the agent exports each genuinely observed tuple:
+
+```sh
+node scripts/release-upgrade-coverage.mjs /absolute/accepted-state v1.22.1 darwin-aarch64 native-storage /absolute/coverage/storage-mac.json
+```
+
+The agent stores exports under `<accepted-state>/upgrade-coverage/`, records
+that accepted state location in its release handoff, discovers those retained
+proofs at the next kickoff, and adds their paths to the next release input's
+`upgradeCoverage` array and retains the accepted state directory, including executable, snapshots,
+contracts and receipts. Morgan does not prepare these files. The planner reads
+these paths, verifies public tags/assets and all required accepted native
+results, and compares frozen source inputs. Matching coverage removes only the
+historical trigger; the plan names the accepted release in its reason. Missing
+coverage keeps the check. Invalid submitted evidence fails explicitly. Source
+input mismatch keeps native checks rather than reusing a stale package result.
+
+Planning, publisher resume and finalization recheck retained evidence; chained
+coverage is revalidated with cycle/depth limits. Full CI, new native builds,
+signing, package/crypto audits and public verification remain fresh. Resolved
+issue hashes may document an issue in the prior checked plan; they never clear
+an active issue in the new plan. This fingerprint covers repository inputs,
+not live OS/WebView versions or overlay settings. Agent preflight must record a
+relevant runtime change or unresolved compatibility issue in `knownIssues` or
+`boundaryHints`, which still force the check. External RTSS observations are
+not a source fix or qualified historical proof.
+
+Legacy 1.22.2 evidence lacks this explicit predecessor fixture contract and does
+not qualify automatically. This feature does not supply the missing affected
+save-failure or isolated installer recipes, or solve macOS computer-use exact
+window targeting. Releases needing those checks retain their explicit blocker.

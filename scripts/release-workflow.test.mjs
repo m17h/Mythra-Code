@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
+import { zipSync } from 'fflate';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -294,6 +296,32 @@ function hosted() {
     jobs: names.map((name) => ({ name, status: 'completed', conclusion: 'success' })), receipts };
 }
 describe('hosted proof and asset audit', () => {
+  test('release evidence downloads current immutable uploads with verified digests, never name-deduplicated old attempts', () => {
+    const evidence = hosted(), archives = new Map(), downloads = [];
+    const artifacts = evidence.receipts.map((receipt, index) => {
+      const archive = Buffer.from(zipSync({ [`receipt-${receipt.id}.json`]: Buffer.from(JSON.stringify(receipt)) }));
+      const id = index + 100; archives.set(id, archive);
+      return { id, name: receipt.id === 'webkit-macOS' ? 'verification-webkit' : `verification-${receipt.id}`,
+        created_at: '2026-01-01T00:00:00Z', expired: false, workflow_run: { id: 123, head_sha: sha },
+        digest: `sha256:${createHash('sha256').update(archive).digest('hex')}` };
+    });
+    const old = artifacts.find((a) => a.name === 'verification-unit-Windows-1');
+    const current = { ...old, id: 1, created_at: '2026-01-01T00:01:00Z' };
+    archives.set(1, archives.get(old.id)); artifacts.unshift(current);
+    const execute = (command, args) => {
+      expect(command).toBe('gh'); expect(args[0]).toBe('api');
+      const endpoint = args.at(-1);
+      if (endpoint.endsWith('/runs/123')) return JSON.stringify(evidence.run);
+      if (endpoint.includes('/jobs?')) return JSON.stringify({ jobs: evidence.jobs });
+      if (endpoint.includes('/artifacts?')) return JSON.stringify([{ artifacts }]);
+      const id = Number(/artifacts\/(\d+)\/zip$/.exec(endpoint)?.[1]);
+      downloads.push(id); return archives.get(id);
+    };
+    const proof = verifyHostedEvidence({ root: '.', commit: sha, runId: 123, execute });
+    expect(proof.artifacts).toHaveLength(9); expect(downloads).toContain(1); expect(downloads).not.toContain(old.id);
+    archives.set(1, Buffer.from('corrupted transport bytes'));
+    expect(() => verifyHostedEvidence({ root: '.', commit: sha, runId: 123, execute })).toThrow(/digest differs/);
+  });
   test('queued hosted checks wait, but completed failed checks block', () => {
     for (const status of ['queued', 'in_progress']) {
       expect(() => verifyHostedEvidence({ root: '.', commit: sha, execute: () => JSON.stringify([{ databaseId: 1, headSha: sha, status, conclusion: null }]) })).toThrow(/queued/);
@@ -326,6 +354,8 @@ describe('hosted proof and asset audit', () => {
   });
 });
 
+// Include real Git worktree and Windows process-identity/lease setup; retain the
+// coordinator's explicit 1000ms deadline and every resume assertion below.
 test('detached workspace preserves development edits; interrupted DAG resumes without repeating completed stages', async () => {
   const root = temp(), stateRoot = temp(), destination = join(temp(), 'release');
   const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -348,4 +378,4 @@ test('detached workspace preserves development edits; interrupted DAG resumes wi
   const resumed = await runRelease({ root: destination, stateRoot, handlers, resume: true, retryReason: 'Simulated network outage resolved' });
   expect(resumed.complete).toBe(true);
   expect(executed.slice(first.length)).toEqual(['draft', 'publish', 'public']);
-});
+}, process.platform === 'win32' ? 30_000 : 5_000);

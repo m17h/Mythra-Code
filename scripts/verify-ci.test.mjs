@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { zipSync } from 'fflate';
 import { resolve } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { assertContract, assertGate, assertTestReport, assertUnitInventory, assertReleaseVerification, expectedReceipts, lanes } from './verify-ci.mjs';
+import { assertContract, assertGate, assertTestReport, assertUnitInventory, assertReleaseVerification, expectedReceipts, lanes, selectVerificationArtifacts, readVerificationArchive } from './verify-ci.mjs';
 
 const sha = '1'.repeat(40);
 const input = { checkout: sha, event: 'pull_request', head: '2'.repeat(40), base: '3'.repeat(40) };
@@ -145,4 +147,66 @@ test('local diagnostic receipts cannot approve hosted merges', () => {
   const reports = receipts();
   for (const receipt of reports) receipt.input.event = 'local';
   expect(() => assertGate(needs(), reports, sha)).toThrow(/hosted workflow evidence/);
+});
+
+
+describe('immutable verification artifact selection', () => {
+  const make = () => expectedReceipts().map((id, index) => ({ id: index + 100, name: id === 'webkit-macOS' ? 'verification-webkit' : `verification-${id}`,
+    created_at: '2026-01-01T00:00:00Z', expired: false, digest: `sha256:${'a'.repeat(64)}`, workflow_run: { id: 123, head_sha: input.head } }));
+  const identity = { runId: 123, head: input.head };
+  test('selects newest attempt by chronology, preserves prior artifacts and ignores ID ordering', () => {
+    const artifacts = make(), previous = artifacts.find((a) => a.name === 'verification-unit-Windows-1');
+    const current = { ...previous, id: 1, created_at: '2026-01-01T00:01:00Z' };
+    artifacts.push(current);
+    expect(selectVerificationArtifacts(artifacts, identity)).toHaveLength(9);
+    expect(selectVerificationArtifacts(artifacts, identity).find((a) => a.name === previous.name)).toBe(current);
+    expect(artifacts).toContain(previous);
+  });
+  test('rejects missing lanes, unexpected lanes and ambiguous newest chronology', () => {
+    const artifacts = make();
+    expect(() => selectVerificationArtifacts(artifacts.slice(1), identity)).toThrow(/Missing/);
+    expect(() => selectVerificationArtifacts([...artifacts, { ...artifacts[0], name: 'verification-unknown' }], identity)).toThrow(/unexpected/);
+    expect(() => selectVerificationArtifacts([...artifacts, { ...artifacts[0], id: 999 }], identity)).toThrow(/ambiguous/);
+  });
+  test.each([
+    { expired: true }, { workflow_run: { id: 999, head_sha: input.head } },
+    { workflow_run: { id: 123, head_sha: '9'.repeat(40) } }, { digest: null }, { id: -1 }, { created_at: 'invalid' },
+  ])('rejects invalid newest upload without falling back to old evidence: %j', (change) => {
+    const artifacts = make();
+    artifacts.push({ ...artifacts[0], id: 999, created_at: '2026-01-01T00:01:00Z', ...change });
+    expect(() => selectVerificationArtifacts(artifacts, identity)).toThrow();
+  });
+  test('a newest failed receipt is still rejected by the complete gate', () => {
+    const artifacts = make(), previous = artifacts.find((a) => a.name === 'verification-unit-Windows-1');
+    const latest = { ...previous, id: 1, created_at: '2026-01-01T00:01:00Z' };
+    artifacts.push(latest);
+    expect(selectVerificationArtifacts(artifacts, identity)).toContain(latest);
+    const reports = receipts(); reports.find((r) => r.id === 'unit-Windows-1').status = 'failed';
+    expect(() => assertGate(needs(), reports, sha)).toThrow(/failed/);
+  });
+});
+
+describe('immutable artifact archive validation', () => {
+  const name = 'receipt-native-macOS.json';
+  const bytes = Buffer.from(JSON.stringify({ id: 'native-macOS' }));
+  const artifact = (archive) => ({ name: 'verification-native-macOS', digest: `sha256:${createHash('sha256').update(archive).digest('hex')}` });
+  test('reads only the exact receipt after validating the ZIP digest', () => {
+    const archive = zipSync({ [name]: bytes, '../ignored.txt': Buffer.from('not extracted') });
+    expect(readVerificationArchive(artifact(archive), archive).receipt.id).toBe('native-macOS');
+    expect(() => readVerificationArchive({ ...artifact(archive), digest: `sha256:${'0'.repeat(64)}` }, archive)).toThrow(/digest/);
+  });
+  test.each([
+    {}, { [`nested/${name}`]: bytes }, { [name]: bytes, 'receipt-foreign.json': bytes },
+    { [name]: Buffer.from(JSON.stringify({ id: 'native-Windows' })) },
+  ])('rejects missing, foreign, nested or additional receipts: %j', (files) => {
+    const archive = zipSync(files);
+    expect(() => readVerificationArchive(artifact(archive), archive)).toThrow(/receipt/);
+  });
+  test('rejects duplicate central directory receipt names before accepting overwritten ZIP output', () => {
+    const archive = Buffer.from(zipSync({ [name]: bytes, 'receipt-native-mac0S.json': bytes }, { level: 0 }));
+    // Two equal-length names become duplicate entries in both headers without
+    // changing either JSON body or the ZIP directory offsets.
+    const duplicate = Buffer.from(archive.toString('latin1').replaceAll('receipt-native-mac0S.json', name), 'latin1');
+    expect(() => readVerificationArchive(artifact(duplicate), duplicate)).toThrow(/duplicate/);
+  });
 });

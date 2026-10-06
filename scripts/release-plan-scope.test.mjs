@@ -80,7 +80,7 @@ describe('native release scope safety', () => {
     const commit = (message) => { git('add', '.'); git('commit', '-m', message); };
     git('init'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid');
     git('remote', 'add', 'origin', 'https://github.com/m17h/Mythra-Code.git');
-    for (const file of ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs']) write(file, 'policy\n');
+    for (const file of ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs', 'scripts/release-upgrade-coverage.mjs']) write(file, 'policy\n');
     write('package.json', JSON.stringify({ version: '1.2.3' }));
     write('src-tauri/src/lib.rs', 'fn integration() {}\n'); commit('accepted baseline'); git('tag', 'v1.2.2');
     write('src-tauri/src/lib.rs', 'fn integration() { open_state_db(); report_renderer_ready(); CloseRequested(); }\n');

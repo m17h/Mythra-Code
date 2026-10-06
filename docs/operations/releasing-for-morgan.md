@@ -104,3 +104,18 @@ builder about 12 minutes. Hours of repeated coordination and fragile profile
 setup were additional time. Saved stages and reliable isolation address those
 delays; removing tests alone would not. There is no guaranteed release duration:
 compiler caches, runner queues, notarization and genuine defects still vary.
+
+## Previously validated upgrades
+
+When an old withdrawn version remains supported, the agent looks for retained
+proof that an accepted public release already exercised that exact upgrade.
+It records optional proof during an already required native check, exports it
+after public acceptance, and supplies qualifying retained paths at the next
+release kickoff. You do not prepare JSON or choose tests.
+
+With that evidence and unchanged boundary inputs, ordinary CSS or passive icon
+changes can avoid repeating historical native cases. New affected changes and
+active issues still require their checks; CI, new builds, signing and public
+audits still run. Missing proof keeps the historical checks. The older 1.22.2
+records do not contain this qualified upgrade proof, so they cannot supply an
+automatic exemption. This does not remove the native tooling limits above.

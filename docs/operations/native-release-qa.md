@@ -156,3 +156,56 @@ metadata/hashes and never move/rename the source profile. This contract exposes
 no corruption, save-failure, installer, provider, or crash-injection hook;
 those cases require a maintained native recipe and evidence of the real
 boundary before they may be recorded as tested.
+
+## Optional historical upgrade evidence
+
+This records an already required predecessor replay for later test selection;
+it is not another mandatory native test. A fresh profile or arbitrary JSON
+label is not upgrade evidence. The native contract lists optional `upgradeCases`
+with exact predecessor tag/commit, platform/check and recipe hash. Capture only
+the case actually exercised. Ordinary native acceptance can omit this proof.
+
+The release agent prepares the maintained synthetic predecessor SQLite fixture
+in the owned QA root. First initialize complete settings through the owned QA
+UI and close normally only when the helper confirms its frozen defaults source
+(`src/lib/appConfig.ts` and its runtime default dependency
+`src/lib/providerUsage.ts`) is byte-identical to the predecessor. Unknown
+runtime imports make this narrow fixture unsupported. Preserve that
+source hash in the contract; a candidate dump with different defaults must not
+be relabeled as a predecessor fixture. A partial settings object would acquire
+defaults during replay and correctly fail preservation. Retain the predecessor
+schema version, onboarding state and a nonempty synthetic draft alongside those
+complete settings. Do not use Morgan's real data. The helper validates the
+frozen predecessor storage schema; unsupported migrations or unexpected row
+changes fail closed. Its deliberately narrow replay permits only changing the
+settings theme from `mythra` to `light-mythra`, preserving other fields/rows.
+
+Before candidate launch, with no database writer, capture the owned database:
+
+```sh
+node scripts/release-upgrade-snapshot.mjs /absolute/state/native-workers/darwin-aarch64/contract.json v1.22.1 native-storage:darwin-aarch64 before /absolute/state/evidence/upgrade-before.json
+```
+
+Use the actual native UI to select Light Mythra, save and close normally; reopen
+and verify persisted settings/draft as required by the selected check, then
+close normally again. Capture after the final owned process exits, before
+maintenance disposal or profile deletion:
+
+```sh
+node scripts/release-upgrade-snapshot.mjs /absolute/state/native-workers/darwin-aarch64/contract.json v1.22.1 native-storage:darwin-aarch64 after /absolute/state/evidence/upgrade-after.json /absolute/state/evidence/upgrade-before.json
+```
+
+Use the actual contract path produced by the runner. Capture output must be
+inside the release state. The helper copies the actual closed SQLite database,
+records event-prefix hashes and profile/run/PID linkage, and rejects linked
+files, active writers or pending WAL data. The after manifest is the upgrade
+observation; retain it, both SQLite snapshots and native events as hashed
+result evidence. The result's primary PID/run must identify that final accepted
+replay. Screenshots and matching UUID accessibility evidence remain required.
+
+Capture and qualified proof validation require Node 22.13 or newer with
+`node:sqlite`; preflight this capability before optional capture. Ordinary
+release commands retain the repository's existing Node support. Retain all
+source state and evidence after publication so the coverage exporter can
+independently revalidate it; never replace a missing snapshot with handwritten
+rows or a generic passed status.

@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync,
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { assertUpgradeDecision, coversHistoricalUpgrade, historicalCoverageReason } from './release-upgrade-coverage.mjs';
 import { assertReleaseVerification, expectedReceipts } from './verify-ci.mjs';
 
 export const PLATFORMS = ['darwin-aarch64', 'windows-x86_64'];
@@ -84,32 +85,37 @@ export function assertPlan(plan) {
   fixed.set('public', { kind: 'public', required: true, dependsOn: ['publish'] });
   if (!Array.isArray(plan.checks) || plan.checks.some((c) => !c || typeof c !== 'object')
     || !sameSet(plan.checks.map((c) => c.id), [...fixed.keys()])) throw new Error('Invalid release check inventory');
-  const unaffected = 'Unaffected cumulative source and shipped upgrade predecessors';
+  if (plan.upgradeCoverage !== undefined && !Array.isArray(plan.upgradeCoverage)) throw new Error('Invalid upgrade coverage inventory');
+  for (const decision of plan.upgradeCoverage ?? []) assertUpgradeDecision(decision, plan);
+  if (new Set((plan.upgradeCoverage ?? []).map((d) => `${d.predecessor.tag}:${d.platform}:${d.check}`)).size !== (plan.upgradeCoverage ?? []).length) throw new Error('Duplicate upgrade coverage');
   for (const check of plan.checks) {
     const contract = fixed.get(check.id);
+    const covered = (plan.upgradeCoverage ?? []).filter((d) => d.reusable && `${d.check}:${d.platform}` === check.id).map((d) => d.proofHash);
+    if (!sameSet(check.historicalCoverage ?? [], covered)) throw new Error('Historical coverage decision differs from selected check');
     const dependencies = check.id === 'draft' ? ['ci', ...plan.checks.filter((c) => c.required && (c.kind === 'native' || c.kind === 'audit')).map((c) => c.id)] : contract.dependsOn;
     if (check.kind !== contract.kind || check.platform !== contract.platform || typeof check.required !== 'boolean'
       || (contract.required && !check.required) || typeof check.reason !== 'string' || !check.reason.trim()
       || !Array.isArray(check.dependsOn) || !sameSet(check.dependsOn, dependencies)
       || check.dependsOn.some((id) => !plan.checks.some((c) => c.id === id && c.required))
-      || (check.kind === 'native' && check.required === (check.reason === unaffected))) throw new Error(`Invalid check contract: ${check.id}`);
+      || (check.kind === 'native' && check.required === (check.reason === historicalCoverageReason(plan.upgradeCoverage ?? [], check.id.split(':')[0], check.platform)))) throw new Error(`Invalid check contract: ${check.id}`);
   }
   // Additions/classifications can only add native gates. Keep their persisted
   // decisions consistent with required flags without duplicating the planner's
   // source-path classifier here. Exact fixed edges above also exclude cycles.
-  const additions = [...plan.knownIssues, ...plan.overrides, ...plan.boundaryHints];
+  const additions = [...plan.knownIssues, ...plan.overrides, ...plan.boundaryHints].map((item) => ({ item, predecessor: null }));
   for (const scope of [plan, ...plan.predecessors]) {
     if (!Array.isArray(scope.changedFiles) || (scope.classifications !== undefined && !Array.isArray(scope.classifications))
       || (scope.boundaryHints !== undefined && !Array.isArray(scope.boundaryHints))) throw new Error('Invalid release scope classification');
-    if (scope !== plan) additions.push(...(scope.boundaryHints ?? []));
+    if (scope !== plan) additions.push(...(scope.boundaryHints ?? []).map((item) => ({ item, predecessor: scope })));
     for (const c of scope.classifications ?? []) {
       if (!c || !scope.changedFiles.includes(c.path) || !c.reason || !c.evidence || !Array.isArray(c.boundaries)) throw new Error('Invalid release scope classification');
-      additions.push(...c.boundaries.map((check) => ({ check, reason: c.reason })));
+      additions.push(...c.boundaries.map((check) => ({ item: { check, reason: c.reason }, predecessor: scope !== plan ? scope : null })));
     }
   }
-  for (const item of additions) {
+  for (const { item, predecessor } of additions) {
     if (!item || !nativeIds.includes(item.check) || !item.reason || (item.platform && !PLATFORMS.includes(item.platform))) throw new Error('Invalid native-check addition');
     for (const platform of item.platform ? [item.platform] : PLATFORMS) {
+      if (predecessor && coversHistoricalUpgrade(plan, predecessor, item.check, platform)) continue;
       if (!plan.checks.find((c) => c.id === `${item.check}:${platform}`).required) throw new Error(`Required native addition omitted: ${item.check}:${platform}`);
     }
   }

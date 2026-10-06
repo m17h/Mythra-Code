@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertGate, assertReleaseVerification } from './verify-ci.mjs';
-import { atomicJson, objectHash, readJson, SHA } from './release-state.mjs';
+import { assertGate, assertReleaseVerification, downloadVerificationReceipts } from './verify-ci.mjs';
+import { atomicJson, objectHash, SHA } from './release-state.mjs';
 
 export const REPOSITORY = 'm17h/Mythra-Code';
 export function hostedWaiting(reason) { return Object.assign(new Error(reason), { status: 'waiting' }); }
@@ -39,9 +39,8 @@ export function verifyHostedEvidence({ root, commit, runId, execute = execFileSy
       const run = JSON.parse(gh(['api', `repos/${REPOSITORY}/actions/runs/${id}`]));
       if (run.head_sha === commit && run.status !== 'completed') throw hostedWaiting('Exact-source Verify has not completed');
       const jobs = JSON.parse(gh(['api', `repos/${REPOSITORY}/actions/runs/${id}/jobs?per_page=100`])).jobs;
-      gh(['run', 'download', String(id), '--repo', REPOSITORY, '--pattern', 'verification-*', '--dir', directory]);
-      const receipts = readdirSync(directory, { recursive: true }).filter((name) => /(?:^|[/\\])receipt-[^/\\]+\.json$/.test(name)).map((name) => readJson(resolve(directory, name)));
-      return assertHostedEvidence({ run, jobs, receipts }, commit);
+      const { receipts, artifacts } = downloadVerificationReceipts({ runId: id, head: commit, repository: REPOSITORY, directory, cwd: root, execute });
+      return { ...assertHostedEvidence({ run, jobs, receipts }, commit), artifacts };
     } catch (error) { if (error.status === 'waiting') throw error; failures.push(`${id}: ${error.message}`); }
     finally { rmSync(directory, { recursive: true, force: true }); }
   }
