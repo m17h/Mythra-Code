@@ -36,6 +36,19 @@ function rows(path, storageSchemaVersion) {
   } finally { db.close(); }
 }
 
+function knownDefaultsImports(text, allowed) {
+  const ast = require('@babel/core').parseSync(text, { configFile: false, babelrc: false, parserOpts: { plugins: ['typescript'] } });
+  const safe = (node) => {
+    if (Array.isArray(node)) return node.every(safe);
+    if (!node || typeof node !== 'object') return true;
+    if (node.type === 'ImportDeclaration' && node.importKind !== 'type' && !(node.specifiers.length && node.specifiers.every((s) => s.importKind === 'type')) && !allowed.includes(node.source.value)) return false;
+    if ((node.type === 'ExportAllDeclaration' || node.type === 'ExportNamedDeclaration') && node.source && node.exportKind !== 'type') return false;
+    if (node.type === 'ImportExpression' || node.type === 'TSImportEqualsDeclaration' || (node.type === 'CallExpression' && (node.callee?.type === 'Import' || node.callee?.name === 'require'))) return false;
+    return Object.values(node).every(safe);
+  };
+  return safe(ast);
+}
+
 export function sourceUpgradeSchema({ root, predecessorCommit, candidateCommit }) {
   const source = (commit, path) => execFileSync('git', ['show', `${commit}:${path}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   try {
@@ -46,8 +59,10 @@ export function sourceUpgradeSchema({ root, predecessorCommit, candidateCommit }
     const prior = source(predecessorCommit, 'src/lib/storage.ts'), current = source(candidateCommit, 'src/lib/storage.ts');
     const defaults = source(predecessorCommit, 'src/lib/appConfig.ts');
     if (!/export const DEFAULT_SETTINGS\b/.test(defaults) || defaults !== source(candidateCommit, 'src/lib/appConfig.ts')) return null;
+    const usageDefaults = source(predecessorCommit, 'src/lib/providerUsage.ts');
+    if (usageDefaults !== source(candidateCommit, 'src/lib/providerUsage.ts') || !knownDefaultsImports(defaults, ['./providerUsage']) || !knownDefaultsImports(usageDefaults, [])) return null;
     const version = (text) => Number(text.match(/export const STORAGE_SCHEMA_VERSION\s*=\s*(\d+)\s*;/)?.[1]);
-    return Number.isSafeInteger(version(prior)) && version(prior) > 0 && version(prior) === version(current) ? { version: version(prior), sourceSha256: digest(prior), defaultsSha256: digest(defaults) } : null;
+    return Number.isSafeInteger(version(prior)) && version(prior) > 0 && version(prior) === version(current) ? { version: version(prior), sourceSha256: digest(prior), defaultsSha256: digest(defaults), usageDefaultsSha256: digest(usageDefaults) } : null;
   } catch { return null; }
 }
 

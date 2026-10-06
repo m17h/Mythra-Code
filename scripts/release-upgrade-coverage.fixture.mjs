@@ -18,7 +18,7 @@ export function syntheticGit(root) {
   git(['remote', 'add', 'origin', 'https://github.com/m17h/Mythra-Code.git']);
   const put = (path, contents) => { mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), contents); };
   const commit = (message, tag) => { git(['add', '.']); git(['commit', '-m', message]); const sha = git(['rev-parse', 'HEAD']); if (tag) git(['tag', tag]); return sha; };
-  for (const path of ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs', 'scripts/release-native-check.mjs', 'scripts/release-upgrade-coverage.mjs', 'scripts/release-upgrade-snapshot.mjs', 'src-tauri/src/persistence.rs', 'src/lib/storage.ts', 'src/lib/appConfig.ts']) {
+  for (const path of ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs', 'scripts/release-native-check.mjs', 'scripts/release-upgrade-coverage.mjs', 'scripts/release-upgrade-snapshot.mjs', 'src-tauri/src/persistence.rs', 'src/lib/storage.ts', 'src/lib/appConfig.ts', 'src/lib/providerUsage.ts']) {
     put(path, readFileSync(join(import.meta.dirname, '..', path)));
   }
   put('src-tauri/src/release_qa.rs', 'pub(crate) const RELEASE_QA_CONTRACT_VERSION: u32 = 1; MYTHRA_RELEASE_QA_ROOT');

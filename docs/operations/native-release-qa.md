@@ -168,7 +168,9 @@ the case actually exercised. Ordinary native acceptance can omit this proof.
 The release agent prepares the maintained synthetic predecessor SQLite fixture
 in the owned QA root. First initialize complete settings through the owned QA
 UI and close normally only when the helper confirms its frozen defaults source
-(`src/lib/appConfig.ts`) is byte-identical to the predecessor. Preserve that
+(`src/lib/appConfig.ts` and its runtime default dependency
+`src/lib/providerUsage.ts`) is byte-identical to the predecessor. Unknown
+runtime imports make this narrow fixture unsupported. Preserve that
 source hash in the contract; a candidate dump with different defaults must not
 be relabeled as a predecessor fixture. A partial settings object would acquire
 defaults during replay and correctly fail preservation. Retain the predecessor

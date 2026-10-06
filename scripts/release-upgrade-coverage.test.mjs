@@ -296,6 +296,22 @@ describe('accepted historical native upgrade coverage', { timeout: 30_000 }, () 
     expect(sourceUpgradeSchema({ root: f.root, predecessorCommit: f.history.predecessor, candidateCommit: commit })).toBeNull();
   });
 
+  test('unversioned nested usage defaults changes cannot manufacture predecessor-compatible initialization', () => {
+    const f = fixture();
+    const source = sourceUpgradeSchema({ root: f.root, predecessorCommit: f.history.predecessor, candidateCommit: f.history.accepted });
+    expect(source.usageDefaultsSha256).toMatch(/^[a-f0-9]{64}$/);
+    f.history.put('src/lib/providerUsage.ts', 'export const DEFAULT_USAGE_DISPLAY = { changedWithoutSchemaVersion: true };');
+    const commit = f.history.commit('Synthetic unsupported nested usage defaults change');
+    expect(sourceUpgradeSchema({ root: f.root, predecessorCommit: f.history.predecessor, candidateCommit: commit })).toBeNull();
+  });
+
+  test.each(['src/lib/appConfig.ts', 'src/lib/providerUsage.ts'])('unknown runtime imports in %s invalidate even identical predecessor and candidate defaults', (path) => {
+    const f = fixture();
+    f.history.put(path, `${readFileSync(join(f.root, path), 'utf8')}\nimport './unknown-runtime-defaults';\n`);
+    const commit = f.history.commit('Synthetic unsupported defaults dependency');
+    expect(sourceUpgradeSchema({ root: f.root, predecessorCommit: commit, candidateCommit: commit })).toBeNull();
+  });
+
   test('fingerprints bind platform and executable inputs while tolerating CSS and version-only changes', () => {
     const f = fixture();
     expect(fingerprintUpgradeInputs(f.root, f.history.accepted, 'windows-x86_64')).toBe(fingerprintUpgradeInputs(f.root, f.history.current, 'windows-x86_64'));
