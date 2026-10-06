@@ -1,4 +1,6 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +74,46 @@ export function selectVerificationArtifacts(artifacts, { runId, head }) {
       || !/^sha256:[a-f0-9]{64}$/.test(latest.digest ?? '')) fail(`${name}: invalid latest artifact identity`);
     return latest;
   });
+}
+
+export function readVerificationArchive(artifact, archive) {
+  if (`sha256:${createHash('sha256').update(archive).digest('hex')}` !== artifact.digest) fail(`${artifact.name}: archive digest differs`);
+  const { unzipSync } = createRequire(import.meta.url)('fflate');
+  const id = artifact.name === 'verification-webkit' ? 'webkit-macOS' : artifact.name.slice('verification-'.length);
+  const name = `receipt-${id}.json`;
+  const entries = [];
+  const files = unzipSync(archive, { filter: (file) => {
+    if (/(?:^|\/)receipt-[^/]+\.json$/.test(file.name)) entries.push(file.name);
+    if (file.name === name && file.originalSize > 20 * 1024 * 1024) fail(`${name}: oversized receipt`);
+    return file.name === name;
+  } });
+  if (entries.length !== 1 || entries[0] !== name || !files[name]) fail(`${artifact.name}: missing, duplicate or unexpected receipt`);
+  const bytes = Buffer.from(files[name]);
+  const receipt = JSON.parse(bytes.toString('utf8'));
+  if (receipt.id !== id) fail(`${artifact.name}: receipt identity differs`);
+  return { name, bytes, receipt };
+}
+
+export function downloadVerificationReceipts({ runId, head, repository, directory, cwd = root, execute = execFileSync }) {
+  const options = { cwd, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] };
+  const pages = JSON.parse(execute('gh', ['api', '--paginate', '--slurp', `repos/${repository}/actions/runs/${runId}/artifacts?per_page=100`], { ...options, encoding: 'utf8' }));
+  const selected = selectVerificationArtifacts(pages.flatMap((page) => page.artifacts), { runId: Number(runId), head });
+  const retained = resolve(directory, 'verification-archives');
+  mkdirSync(retained, { recursive: true });
+  const receipts = [], proof = [];
+  for (const artifact of selected) {
+    // Download by immutable ID directly. download-artifact's ID mode first
+    // deduplicates by descending ID, which need not match upload chronology.
+    const archive = Buffer.from(execute('gh', ['api', `repos/${repository}/actions/artifacts/${artifact.id}/zip`], options));
+    const { name, bytes, receipt } = readVerificationArchive(artifact, archive);
+    writeFileSync(resolve(retained, `${artifact.id}.zip`), archive);
+    writeFileSync(resolve(directory, name), bytes);
+    receipts.push(receipt);
+    proof.push({ id: artifact.id, name: artifact.name, createdAt: artifact.created_at, digest: artifact.digest,
+      receiptId: receipt.id, receiptSha256: createHash('sha256').update(bytes).digest('hex') });
+  }
+  writeFileSync(resolve(retained, 'manifest.json'), `${JSON.stringify(proof, null, 2)}\n`);
+  return { receipts, artifacts: proof };
 }
 
 export function assertUnitInventory(inventory, trackedFiles) {
@@ -242,15 +284,12 @@ async function main(args) {
   if (mode === 'contract') {
     assertContract(readJson(resolve(root, 'package.json')).scripts);
     console.log('Local and hosted verification commands have complete coverage parity.');
-  } else if (mode === 'artifact-ids') {
-    const { execFileSync } = await import('node:child_process');
+  } else if (mode === 'artifacts') {
     const runId = Number(process.env.GITHUB_RUN_ID);
     const event = readJson(process.env.GITHUB_EVENT_PATH);
     const head = event.pull_request?.head?.sha ?? process.env.GITHUB_SHA;
-    const response = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}/artifacts?per_page=100`], { encoding: 'utf8' }));
-    const selected = selectVerificationArtifacts(response.flatMap((page) => page.artifacts), { runId, head });
-    writeFileSync(process.env.GITHUB_OUTPUT, `ids=${selected.map((a) => a.id).join(',')}\n`, { flag: 'a' });
-    console.log(JSON.stringify(selected.map(({ id, name, digest, created_at }) => ({ id, name, digest, created_at }))));
+    const collected = downloadVerificationReceipts({ runId, head, repository: process.env.GITHUB_REPOSITORY, directory: artifacts });
+    console.log(JSON.stringify(collected.artifacts));
   } else if (mode === 'gate') {
     assertContract(readJson(resolve(root, 'package.json')).scripts);
     const receipts = readdirSync(artifacts).filter((f) => /^receipt-.*\.json$/.test(f)).map((f) => readJson(resolve(artifacts, f)));

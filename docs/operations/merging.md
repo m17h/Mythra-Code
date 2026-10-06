@@ -59,8 +59,10 @@ locally on every merge. A contract check fails when the two command sets drift.
   diagnostic action. Keep logs and investigate recurring failures. Never turn
   retries into an automatic substitute for synchronization or containment.
 - Failed-lane reruns retain earlier uploads. The gate lists artifacts through
-  GitHub's REST API and downloads the newest exact lane artifact IDs, preserving
-  prior failed evidence. Missing, expired, ambiguous or foreign uploads fail;
+  GitHub's REST API and downloads the newest exact lane artifact IDs directly,
+  verifying ZIP digests before reading each exact receipt. The release evidence
+  collector uses the same path. Prior failed evidence is preserved. Missing,
+  expired, ambiguous or foreign uploads fail;
   there is no fallback to an older successful receipt. All existing receipt,
   head/base, inventory and lane-result validation remains mandatory.
 - Browser production-startup checks cover emitted modules, visible shell, lazy

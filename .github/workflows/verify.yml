@@ -162,19 +162,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
       # Reruns retain earlier artifacts. REST selection chooses the newest exact
       # lane upload; runtime-backend name selection can retain a failed attempt.
-      - name: Select exact verification artifact IDs
-        id: artifacts
-        run: node scripts/verify-ci.mjs artifact-ids
+      - name: Download exact verification artifacts and verify archive digests
+        run: node scripts/verify-ci.mjs artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          artifact-ids: ${{ steps.artifacts.outputs.ids }}
-          path: .test-artifacts/
-          merge-multiple: true
       - name: Require every lane, shard, report and matching commit input
         run: node scripts/verify-ci.mjs gate
         env:
