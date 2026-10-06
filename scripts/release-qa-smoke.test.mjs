@@ -9,14 +9,17 @@ import { assertSmokeSource, protectWindowsProfile, runQaSmoke } from './release-
 const roots = [], children = [];
 const temp = () => { const root = mkdtempSync(join(tmpdir(), 'mythra-smoke-fixture-')); roots.push(root); return root; };
 afterEach(() => { for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function fixture({ earlyExit = false, ignoredClose = false, wrongContract = false, wrongPid = false, failedClose = false, missingOpen = false } = {}) {
+function fixture({ earlyExit = false, ignoredClose = false, wrongContract = false, wrongPid = false, failedClose = false, missingOpen = false, controlDelayMs = 0, missingControl = false, wrongControlPid = false, wrongControlRun = false } = {}) {
   const root = temp(), script = join(root, 'fixture-child.mjs'), temporaryDirectory = join(root, 'profiles'), evidenceDirectory = join(root, 'evidence'); mkdirSync(temporaryDirectory);
   writeFileSync(script, `import{readFileSync,writeFileSync,appendFileSync,existsSync}from'node:fs';import{join}from'node:path';import{randomUUID}from'node:crypto';
 const root=process.env.MYTHRA_RELEASE_QA_ROOT;const marker=JSON.parse(readFileSync(join(root,'.mythra-release-qa.json'),'utf8'));const runId=randomUUID();
-const event=(kind,details={})=>appendFileSync(join(root,'events.jsonl'),JSON.stringify({schemaVersion:1,profileId:marker.profileId,pid:${wrongPid ? 'process.pid+1' : 'process.pid'},runId,kind,details})+'\\n');
+const event=(kind,details={})=>appendFileSync(join(root,'events.jsonl'),JSON.stringify({schemaVersion:1,profileId:marker.profileId,pid:${wrongPid ? 'process.pid+1' : wrongControlPid ? "kind==='control-ready'?process.pid+1:process.pid" : 'process.pid'},runId:${wrongControlRun ? "kind==='control-ready'?randomUUID():runId" : 'runId'},kind,details})+'\\n');
 ${missingOpen ? '' : `event('profile-open',{contractVersion:${wrongContract ? '2' : '1'},providers:'blocked',persistentWebview:true,webviewStoreId:randomUUID()});`}
 ${earlyExit ? "setTimeout(()=>process.exit(0),100);" : ''}
-const timer=setInterval(()=>{const request=join(root,'request.json');if(existsSync(request)){const r=JSON.parse(readFileSync(request));if(r.profileId!==marker.profileId||r.action!=='close')process.exit(8);${ignoredClose ? '' : `event('close-finish',{accepted:true,result:'${failedClose ? 'failed' : 'saved'}'});event('exit');clearInterval(timer);process.exit(0);`}}},10);`);
+// Match native install_control: a nonce present at installation is old debris.
+setTimeout(()=>{const request=join(root,'request.json');let lastNonce=existsSync(request)?JSON.parse(readFileSync(request)).nonce:null;
+${missingControl ? '' : "event('control-ready');"}
+const timer=setInterval(()=>{if(existsSync(request)){const r=JSON.parse(readFileSync(request));if(r.nonce===lastNonce)return;lastNonce=r.nonce;if(r.profileId!==marker.profileId||r.action!=='close')process.exit(8);${ignoredClose ? '' : `event('close-finish',{accepted:true,result:'${failedClose ? 'failed' : 'saved'}'});event('exit');clearInterval(timer);process.exit(0);`}}},10);},${controlDelayMs});`);
   let profileRoot, launches = 0, protections = 0;
   return { options: { root, commit: 'a'.repeat(40), binaryPath: process.execPath, platform: 'win32', livenessMs: 250, startupTimeoutMs: 500, closeTimeoutMs: 200, pollMs: 10, temporaryDirectory, evidenceDirectory,
     assertSourceSupport() { return { version: 1 }; }, descendantsAlive() { return false; },
@@ -105,4 +108,19 @@ test('exact HEAD guard rejects a different source before reading its QA contract
   const calls = [];
   expect(() => assertSmokeSource({ root: '/unused', plan: { commit: 'a'.repeat(40) }, execute: (_command, args) => { calls.push(args); return 'b'.repeat(40); } })).toThrow(/exact checkout HEAD/);
   expect(calls).toEqual([['rev-parse', 'HEAD']]);
+});
+
+
+test('delayed control installation beyond uptime snapshots old nonces before close is sent', async () => {
+  const f = fixture({ controlDelayMs: 400 }); f.options.startupTimeoutMs = 1_000; f.options.closeTimeoutMs = 700;
+  const result = await runQaSmoke(f.options);
+  expect(result.cleanupComplete).toBe(true); expect(result.elapsedMs).toBeGreaterThanOrEqual(400);
+  const events = readFileSync(join(result.evidenceDirectory, 'native-events.jsonl'), 'utf8');
+  expect(events.indexOf('control-ready')).toBeLessThan(events.indexOf('close-finish'));
+});
+
+test.each([{ missingControl: true }, { wrongControlPid: true }, { wrongControlRun: true }])('missing or mismatched control readiness blocks close %o', async (mode) => {
+  const f = fixture(mode);
+  await expect(runQaSmoke(f.options)).rejects.toThrow(/control readiness/);
+  expect(existsSync(f.profileRoot)).toBe(false);
 });

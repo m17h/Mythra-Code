@@ -74,8 +74,6 @@ $head = & git.exe -C $p.root rev-parse HEAD; if ($LASTEXITCODE -ne 0 -or $head -
 $dirty = & git.exe -C $p.root status --porcelain; if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Windows release checkout is dirty' }
 $origin = & git.exe -C $p.root remote get-url origin
 if ($LASTEXITCODE -ne 0 -or $origin -notmatch '^(https://github.com/|git@github.com:)m17h/Mythra-Code(\\.git)?$') { throw 'Wrong Windows repository' }
-Push-Location $p.root
-try { & npm.cmd ci; if ($LASTEXITCODE -ne 0) { throw 'Windows dependency setup failed' } } finally { Pop-Location }
 [void][IO.Directory]::CreateDirectory($p.incoming)
 @{ready=$true} | ConvertTo-Json -Compress`;
 
@@ -152,6 +150,7 @@ function validateHandoff(plan, local) {
 }
 
 function waiting(message) { return Object.assign(new Error(message), { status: 'waiting' }); }
+function blockedPartial() { return Object.assign(new Error('Windows handoff is incomplete; inspect preserved remote native worker ownership and results, then export a NEW handoff for manual merge. Automatic collection cannot refresh this terminal handoff and will not restart or rebuild the worker.'), { status: 'blocked' }); }
 
 export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () => {}, transport = createSshTransport(), pollMs = 5_000, timeoutMs = 2 * 60 * 60_000, sleep = delay }) {
   assertPlan(plan);
@@ -173,9 +172,13 @@ export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () =>
   const started = Date.now();
   try {
     if (record && record.planHash !== plan.planHash) throw new Error('Windows transport belongs to another release plan');
-    if (record?.status === 'failed') throw new Error(`Previous Windows worker failed: ${record.reason}; diagnose before creating a replacement`);
+    if (record?.status === 'failed') {
+      if (record.blocked) throw blockedPartial();
+      throw new Error(`Previous Windows worker failed: ${record.reason}; diagnose before creating a replacement`);
+    }
     if (record?.localHandoff && existsSync(resolve(record.localHandoff, 'handoff.json'))) {
-      validateHandoff(plan, record.localHandoff); return record.localHandoff;
+      if (!validateHandoff(plan, record.localHandoff)) throw blockedPartial();
+      return record.localHandoff;
     }
     const capability = await transport.preflight();
     if (!record?.paths) {
@@ -203,7 +206,8 @@ export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () =>
         const local = resolve(directory, `returned-${randomUUID()}`);
         await transport.download(paths.exportPath, local);
         const complete = validateHandoff(plan, local);
-        await update(complete ? 'complete' : 'waiting', { localHandoff: local, remote: observed });
+        await update(complete ? 'complete' : 'failed', { localHandoff: local, remote: observed, blocked: !complete });
+        if (!complete) throw blockedPartial();
         return local;
       }
       if (observed.status === 'running' && observed.alive === false) throw waiting(observed.descendantsAlive
@@ -219,7 +223,7 @@ export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () =>
     // SSH interruptions preserve remote ownership. Resume inspects the same PID;
     // it never guesses that a disconnected client means the builder stopped.
     const transient = error.status === 'waiting' || ['ETIMEDOUT', 'ECONNRESET', 'ENETUNREACH'].includes(error.code) || error.killed || (error.cmd?.startsWith('ssh ') && error.code === 255);
-    await update(transient ? 'waiting' : 'failed', { reason: transient ? 'Remote Windows transport interrupted; inspect worker status and resume collection' : error.message });
+    await update(transient ? 'waiting' : 'failed', { blocked: error.status === 'blocked', reason: transient ? 'Remote Windows transport interrupted; inspect worker status and resume collection' : error.message });
     throw error;
   } finally { release(); }
 }

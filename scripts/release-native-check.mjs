@@ -56,7 +56,7 @@ Use the final DMG app or NSIS payload verified by the integrity audit. Retain th
 
 Run exactly the selected contract checks, sharing healthy startup/save/close work across cases. Inspect actual native pixels plus AX; process liveness, render-ready events, DOM-only results and fixture module passes are insufficient. Use synthetic representative prior-version saved data; an empty folder with a marker is not existing-data coverage. Seed malformed data only in this isolated profile and preserve raw rows where the selected storage case requires it. No paid provider turn. No unrelated UI tour, fresh account, or hypothetical test expansion.
 
-Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, renderer-storage, render-ready, render-failed, close-finish, exit). Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. On Windows remove the owned disposable root only after process exit. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
+Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, control-ready, renderer-storage, render-ready, render-failed, close-finish, exit). Wait for matching control-ready for this exact launch BEFORE writing any control request; profile-open alone is too early. Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. On Windows remove the owned disposable root only after process exit. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
 
 Save actual screenshots, accessibility.json, process identity and relevant data/exit evidence under ${stateRoot}. Every result must include each observation ID listed by the contract, with a concrete evidence path. Record each evidence SHA256. On completion close only the owned candidate normally, confirm its host and descendants exited, and record cleanupComplete/restorationComplete (restoration means no real roots were touched). A native failure is failed; missing capability is blocked. Preserve evidence and leave publication untouched.
 
@@ -99,9 +99,20 @@ export function validateNativeResult(result, contract, stateRoot) {
     const eventsEvidence = entry.evidence.find((e) => /native-events\.jsonl$/.test(e.path));
     if (!eventsEvidence) throw new Error('Native result has no persistent app event evidence');
     const events = readFileSync(containedPath(stateRoot, eventsEvidence.path), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    for (const kind of ['profile-open', 'window-constructed', 'exit']) if (!events.some((e) => e.schemaVersion === 1 && e.profileId === contract.profile.profileId && e.pid === entry.pid && e.runId === entry.runId && e.kind === kind)) throw new Error(`Native profile identity or ${kind} event is absent`);
-    const opened = events.find((e) => e.profileId === contract.profile.profileId && e.pid === entry.pid && e.runId === entry.runId && e.kind === 'profile-open');
-    if (opened.details?.contractVersion !== 1) throw new Error('Running candidate did not confirm supported profile isolation');
+    const profileEvents = events.filter((e) => e.schemaVersion === 1 && e.profileId === contract.profile.profileId);
+    // The maintained recipe exposes no supported injected failure case. A
+    // worker's reported pass cannot override real failed app events, including
+    // a failed secondary launch presented as a negative test.
+    if (profileEvents.some((e) => ['render-failed', 'setup-failed', 'renderer-storage-failed', 'control-rejected'].includes(e.kind)
+      || (e.kind === 'close-finish' && e.details?.result === 'failed'))) throw new Error('Native app recorded a failure unsupported by the maintained recipe');
+    const primary = profileEvents.filter((e) => e.pid === entry.pid && e.runId === entry.runId);
+    for (const kind of ['profile-open', 'window-constructed', 'renderer-storage', 'render-ready', 'close-finish', 'exit']) if (!primary.some((e) => e.kind === kind)) throw new Error(`Native profile identity or ${kind} event is absent`);
+    const opened = primary.find((e) => e.kind === 'profile-open');
+    if (opened.details?.contractVersion !== 1 || opened.details.providers !== 'blocked' || opened.details.persistentWebview !== true) throw new Error('Running candidate did not confirm supported profile isolation');
+    if (!primary.some((e) => e.kind === 'renderer-storage' && e.details?.current === contract.profile.profileId
+      && (e.details.previous === null || e.details.previous === contract.profile.profileId))) throw new Error('Native renderer did not confirm this isolated persistent store');
+    const savedClose = primary.findIndex((e) => e.kind === 'close-finish' && e.details?.accepted === true && e.details.result === 'saved');
+    if (savedClose < 0 || primary.findIndex((e) => e.kind === 'exit') <= savedClose) throw new Error('Native primary run did not finish saved normal close before exit');
     if (contract.platform === 'darwin-aarch64') {
       const initialized = events.find((e) => e.profileId === contract.profile.profileId && e.kind === 'webview-maintenance-initialized'
         && e.details?.mainThread === true && e.details.persistent === false && e.details.url === 'about:blank');

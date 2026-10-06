@@ -16,7 +16,8 @@ For each frozen plan it creates a dedicated detached checkout under
 `%USERPROFILE%/Documents/MythraCode-Releases/<planHash>/checkout`. State, incoming
 files and returned evidence are sibling directories outside the builder's
 cleared output. It fetches the exact commit from `m17h/Mythra-Code`, checks the
-origin, commit and clean tree, then installs the pinned dependencies. Existing
+origin, commit and clean tree. The native Windows builder installs pinned
+dependencies once; transport preparation does not repeat that work. Existing
 application processes and profiles are preserved.
 
 The persisted Node runner invokes exactly:
@@ -28,9 +29,17 @@ node scripts/release-coordinator.mjs run --state <remote-state> --build
 That worker owns native build/check receipts. It exports its passed Windows
 checks on coordinator exit 0 or 2. Exit 2 can mean macOS or publication remains
 pending; Windows completion is determined from all required Windows checks and
-CI. Missing Windows receipts remain waiting. A blocked stage, invalid evidence
+CI. A terminal export missing required Windows receipts is explicitly blocked;
+it is never cached as a complete or automatically refreshable handoff. Inspect
+the existing remote ownership/results, export a new handoff and use the maintained
+manual merge command after diagnosing the missing receipt. Do not rebuild merely
+because collection was incomplete. A blocked stage, invalid evidence
 or another command exit records a failure. No automatic failure retry is
 performed.
+
+The release agent owns this diagnosis, safe export and merge; Morgan should not
+need to perform the recovery commands. This implementation does not claim an
+automatic collector for a terminal partial handoff.
 
 Local transport state lives in
 `<release-state>/remote/windows-x86_64/worker.json`. Remote ownership lives in
@@ -48,7 +57,7 @@ SSH and transfer/setup commands also have deadlines. A completed local handoff
 is revalidated and reused on resume without another transfer or builder.
 
 The API also accepts `transport`, `pollMs`, `timeoutMs` and `sleep` overrides for
-focused tests. Eleven tests exercise validated receipt roundtrips, resume,
+focused tests. The tests exercise validated receipt roundtrips, resume,
 transport interruptions, descendant preservation, deadlines, failures, evidence
 rejection, encoded arguments and an actual local child runner/export boundary.
 These fixtures do not prove a native Windows release. Live Windows transport,

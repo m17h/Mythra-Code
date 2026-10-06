@@ -123,6 +123,13 @@ export async function runQaSmoke({ root, binaryPath, commit, platform = process.
       if (launchError || !active(child)) throw new Error('Isolated candidate exited during five-second smoke');
       await sleep(Math.min(pollMs, Math.max(1, livenessMs - (performance.now() - started))));
     }
+    // Native control installation snapshots existing nonces as old debris.
+    // Wait for its event AFTER that snapshot before creating our fresh request.
+    while (!readEvents(profileRoot).some((event) => event.kind === 'control-ready' && matches(event, { profileId, pid: child.pid, runId }))) {
+      if (launchError || !active(child)) throw new Error('Isolated candidate exited before control readiness');
+      if (performance.now() >= startupDeadline) throw new Error('Candidate did not emit matching control readiness before startup deadline');
+      await sleep(pollMs);
+    }
     if (!active(child) || identifyProcess(child.pid) !== processStart || fileHash(executable) !== executableSha256) throw new Error('Isolated candidate changed before normal close');
     atomicJson(join(profileRoot, 'request.json'), { schemaVersion: 1, profileId, nonce: randomUUID(), action: 'close' });
     const closeDeadline = performance.now() + closeTimeoutMs;

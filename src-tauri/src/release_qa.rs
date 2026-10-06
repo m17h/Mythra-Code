@@ -603,6 +603,9 @@ pub(crate) fn install_control(app: &AppHandle) {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Request>(&bytes).ok())
             .map(|request| request.nonce);
+        // Hosts must wait for this launch's readiness before writing a fresh
+        // request, otherwise a slow window setup could snapshot it as stale.
+        record("control-ready", json!({}));
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             if !request_path.exists() {

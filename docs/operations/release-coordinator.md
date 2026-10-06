@@ -91,6 +91,8 @@ These flags record execution scope, not new human permission prompts. An agent
 with existing authorization should supply them and continue routine work. The
 runner performs local stages and launches the Windows worker over the configured
 trusted LAN once exact-source CI evidence is available. Native builds then overlap.
+The owned Mac build worker installs its frozen dependencies before packaging;
+the Windows builder owns its own dependency installation.
 Queued CI waits while eligible local stages proceed. Waiting is bounded to two
 hours per invocation; an owned remote worker can continue and be collected on
 resume. Exit code 0 means complete, 2 means an incomplete dependency, and other
@@ -165,8 +167,18 @@ selected behavioral observations and cleanup evidence are required. Final cleanu
 removes the owned isolated WebView store. Installer cases require an isolated OS
 environment when installer-wide process termination could affect the working app;
 profile isolation alone does not make that safe.
+The maintained recipe currently has no save-failure injection adapter. An
+affected close-failure case that needs one stops with that explicit limitation;
+healthy close evidence does not substitute for the missing failure replay.
 
 ## Resume and diagnose
+
+If workers may outlive the active chat turn, the release agent creates and
+verifies a supported follow-up heartbeat in that same chat, tied to the actual
+version and state directory. It checks worker ownership before resuming, stays
+quiet while nothing actionable changes, and pauses after public verification
+and the authorized completion notification. CLI commands alone are not proof
+that this follow-up exists.
 
 ```sh
 npm run release:status -- --state /absolute/release-state

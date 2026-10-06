@@ -72,6 +72,17 @@ agent must state any missing driver or unavailable machine explicitly. These
 commands alone are not proof that unattended native UI automation is installed;
 the operator runbook describes the supported adapters and their current limits.
 
+When workers may outlive the active chat turn, the agent creates and verifies a
+supported follow-up heartbeat in that same chat for the actual version and saved
+state. It checks ownership before resuming, stays quiet when nothing actionable
+changes, and pauses after public verification and the authorized notification.
+
+Some selected native cases still need capabilities beyond the current harness:
+save-failure injection and an isolated OS for installer tests are not implemented.
+A terminal partial Windows handoff needs the release agent to diagnose and
+collect its existing evidence. The agent owns those recovery commands; it should
+not hand routine export/merge work back to you or claim a missing adapter passed.
+
 There is one current Mac limitation: the computer-use tool can select the working
 app instead of a second copy with the same app identity, even when given the
 second copy's full path. A native check must verify the isolated window's unique

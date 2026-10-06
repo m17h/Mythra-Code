@@ -5,7 +5,7 @@ import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createPlan, changedSource } from './release-plan.mjs';
 import { acquireLease, assertPlan, atomicJson, containedPath, fileHash, leaseStatus, objectHash, readJson, reconcile, saveReceipt } from './release-state.mjs';
-import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, assertStateLocation, createReleaseWorkspace, runRelease } from './release-coordinator.mjs';
+import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, assertStateLocation, createReleaseWorkspace, prepareMacBuildDependencies, runRelease } from './release-coordinator.mjs';
 import { assertHostedEvidence, verifyHostedEvidence } from './release-evidence.mjs';
 import { assetNames, assertAssetMetadata, verifyMinisign } from './release-audit.mjs';
 import { expectedReceipts, lanes } from './verify-ci.mjs';
@@ -77,6 +77,12 @@ describe('release selection', () => {
   });
 });
 describe('durable receipts and resume', () => {
+  test('fresh Mac worker installs frozen dependencies into its owned checkout and stops on setup failure', () => {
+    const calls = [], root = temp();
+    expect(prepareMacBuildDependencies({ root, descriptor: 42, env: {}, execute: (...args) => { calls.push(args); return { status: 0 }; } }).exitCode).toBe(0);
+    expect(calls[0]).toEqual(['npm', ['ci', '--no-audit', '--no-fund'], { cwd: root, env: {}, stdio: ['ignore', 42, 42], timeout: 900_000 }]);
+    expect(() => prepareMacBuildDependencies({ root, descriptor: 42, execute: () => ({ status: 1 }) })).toThrow(/dependency setup failed/);
+  });
   test('a changed dependency receipt invalidates downstream evidence', () => {
     const p = plan(), root = temp();
     saveReceipt(root, p, receipt(p, root, 'build:darwin-aarch64'));

@@ -70,6 +70,13 @@ export function assertReadyToPublish(plan, stateRoot) {
   return readJson(receiptPath(stateRoot, 'draft'));
 }
 
+export function prepareMacBuildDependencies({ root, env, descriptor, execute = spawnSync }) {
+  const args = ['ci', '--no-audit', '--no-fund'];
+  const result = execute('npm', args, { cwd: root, env, stdio: ['ignore', descriptor, descriptor], timeout: 15 * 60 * 1000 });
+  if (result.status !== 0) throw new Error(`macOS dependency setup failed (${result.status ?? result.error?.code}); inspect preserved native build log`);
+  return { command: ['npm', ...args], exitCode: 0 };
+}
+
 function buildStage({ root, stateRoot, plan, check, allowBuild }) {
   if (!allowBuild) throw new Error('Build requires release authorization at kickoff (--build); status/plan never build');
   const startedAt = new Date().toISOString();
@@ -84,8 +91,11 @@ function buildStage({ root, stateRoot, plan, check, allowBuild }) {
   const command = process.platform === 'win32' ? 'powershell.exe' : npm;
   const args = process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', resolve(root, 'scripts/release-build-job.ps1')] : ['run', 'release:build'];
   const descriptor = openSync(log, 'wx', 0o600);
-  let result;
-  try { result = spawnSync(command, args, { cwd: root, env, stdio: ['ignore', descriptor, descriptor], timeout: 60 * 60 * 1000 }); }
+  let result, dependencySetup;
+  try {
+    if (check.platform === 'darwin-aarch64') dependencySetup = prepareMacBuildDependencies({ root, env, descriptor });
+    result = spawnSync(command, args, { cwd: root, env, stdio: ['ignore', descriptor, descriptor], timeout: 60 * 60 * 1000 });
+  }
   finally { closeSync(descriptor); }
   if (result.status !== 0) throw new Error(`Native build failed (${result.status ?? result.error?.code}); preserved log ${log}`);
   assertCheckout(root, plan);
@@ -99,7 +109,7 @@ function buildStage({ root, stateRoot, plan, check, allowBuild }) {
   for (const name of names) cpSync(resolve(output, name), resolve(stage, name), { errorOnExist: true, force: false });
   const packageName = check.platform === 'darwin-aarch64' ? `MythraCode_${plan.version}_aarch64.dmg` : `MythraCode_${plan.version}_x64-setup.exe`;
   const details = { packageSha256: fileHash(resolve(stage, packageName)), packagePath: relative(stateRoot, resolve(stage, packageName)).replaceAll('\\', '/'),
-    command: [npm, 'run', 'release:build'], exitCode: result.status, node: process.version, host: hostname() };
+    command: [npm, 'run', 'release:build'], exitCode: result.status, node: process.version, host: hostname(), ...(dependencySetup ? { dependencySetup } : {}) };
   return envelope(plan, check, startedAt, [log, ...names.map((name) => resolve(stage, name))], stateRoot, details);
 }
 

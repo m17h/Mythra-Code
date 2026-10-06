@@ -78,6 +78,10 @@ package. A development run does not prove that package or Windows behavior.
 
 ## Close and event schema
 
+Wait for this process's matching `control-ready` event (profileId, PID and
+runId) before sending a request. It follows the stale-nonce snapshot; sending
+earlier can misclassify a new request as one from the previous launch.
+
 Atomically replace `root/request.json` (0600/current owner on macOS; safe ACL
 and current owner on Windows) with exactly:
 

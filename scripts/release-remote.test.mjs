@@ -55,11 +55,24 @@ test('roundtrip collects typed receipts and resumes without launching or downloa
   expect(transport.launches).toBe(1); expect(transport.downloads).toBe(1);
 });
 
-test('exit 2 with missing Windows evidence remains waiting, even when remote says complete', async () => {
+test('an incomplete terminal handoff blocks diagnosis and preserves evidence without relaunch', async () => {
   const f = fixture(), transport = fakeTransport({ complete: false });
-  const local = await runWindowsWorker({ ...f, transport, sleep: async () => {} });
-  expect(existsSync(join(local, 'handoff.json'))).toBe(true);
-  expect(readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json')).status).toBe('waiting');
+  await expect(runWindowsWorker({ ...f, transport, sleep: async () => {} })).rejects.toMatchObject({ status: 'blocked', message: expect.stringMatching(/incomplete.*NEW handoff/) });
+  const record = readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json'));
+  expect(record).toMatchObject({ status: 'failed', blocked: true });
+  expect(existsSync(join(record.localHandoff, 'handoff.json'))).toBe(true);
+  await expect(runWindowsWorker({ ...f, transport })).rejects.toMatchObject({ status: 'blocked' });
+  expect(transport.launches).toBe(1); expect(transport.downloads).toBe(1);
+});
+
+test('a cached partial handoff from an earlier waiting export is never silently reused', async () => {
+  const f = fixture(), transport = fakeTransport(), directory = join(f.stateRoot, 'remote/windows-x86_64');
+  mkdirSync(directory, { recursive: true }); const localHandoff = join(directory, 'earlier-partial');
+  exportHandoff(f.stateRoot, localHandoff, 'windows-x86_64');
+  atomicJson(join(directory, 'worker.json'), { schemaVersion: 1, planHash: f.plan.planHash, status: 'waiting', localHandoff });
+  await expect(runWindowsWorker({ ...f, transport })).rejects.toMatchObject({ status: 'blocked' });
+  expect(readJson(join(directory, 'worker.json'))).toMatchObject({ status: 'failed', blocked: true, localHandoff });
+  expect(transport.launches).toBe(0); expect(transport.downloads).toBe(0);
 });
 
 test('SSH interruption preserves process ownership and resumes collection without a duplicate', async () => {
@@ -150,4 +163,16 @@ test('cached evidence is validated again before reuse', async () => {
   writeFileSync(join(local, 'MythraCode_1.2.3_x64-setup.exe'), 'changed after collection');
   await expect(runWindowsWorker({ ...f, transport })).rejects.toThrow(/invalid evidence/);
   expect(transport.launches).toBe(1);
+});
+
+
+test('remote preparation verifies the exact checkout without repeating builder dependency installation', async () => {
+  let program;
+  const transport = createSshTransport({ command: async (file, args) => {
+    expect(file).toBe('ssh'); program = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+    return { stdout: JSON.stringify({ ready: true }) };
+  } });
+  await transport.prepare({ directory: 'C:/fixture', root: 'C:/fixture/checkout', incoming: 'C:/fixture/incoming', commit: 'a'.repeat(40) });
+  expect(program).toContain('rev-parse HEAD'); expect(program).toContain('status --porcelain');
+  expect(program).not.toContain('npm.cmd ci'); expect(program).not.toContain('node_modules');
 });

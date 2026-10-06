@@ -16,7 +16,10 @@ function fixture() {
   writeFileSync(resolve(root, 'screen.png'), Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(40)]));
   const profileId = randomUUID(), runId = randomUUID(), pid = 4321;
   atomicJson(resolve(root, 'accessibility.json'), { role: 'window', title: `Mythra Code — Release QA ${profileId}` });
-  const events = ['profile-open', 'window-constructed', 'exit'].map((kind) => ({ schemaVersion: 1, profileId, pid, runId, kind, details: { contractVersion: 1 } }));
+  const events = ['profile-open', 'window-constructed', 'renderer-storage', 'render-ready', 'close-finish', 'exit'].map((kind) => ({ schemaVersion: 1, profileId, pid, runId, kind,
+    details: kind === 'profile-open' ? { contractVersion: 1, providers: 'blocked', persistentWebview: true }
+      : kind === 'renderer-storage' ? { current: profileId, previous: null }
+        : kind === 'close-finish' ? { accepted: true, result: 'saved' } : {} }));
   writeFileSync(resolve(root, 'native-events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
   const contract = { version: '1.2.3', executableSha256: fileHash(resolve(root, 'candidate/app')), profile: { profileId }, checks: [{ id: 'native-startup:darwin-aarch64', observations: ['visible-native-shell'] }] };
   const result = { status: 'passed', reason: '', capability: { verified: true, tool: 'cua', evidence: 'capability.json' }, cleanupComplete: true, restorationComplete: true,
@@ -24,6 +27,40 @@ function fixture() {
       observations: [{ id: 'visible-native-shell', evidence: 'screen.png' }], evidence: ['screen.png', 'accessibility.json', 'native-events.jsonl'].map((path) => ({ path, sha256: fileHash(resolve(root, path)) })) }] };
   return { root, result, contract, events };
 }
+function persistEvents(root, result, events) {
+  writeFileSync(resolve(root, 'native-events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
+  result.results[0].evidence.find((e) => e.path === 'native-events.jsonl').sha256 = fileHash(resolve(root, 'native-events.jsonl'));
+}
+test.each(['renderer-storage', 'render-ready', 'close-finish'])('native acceptance requires primary-run %s proof', (kind) => {
+  const { root, result, contract, events } = fixture();
+  persistEvents(root, result, events.filter((e) => e.kind !== kind));
+  expect(() => validateNativeResult(result, contract, root)).toThrow();
+});
+test.each(['render-failed', 'setup-failed', 'renderer-storage-failed', 'control-rejected'])('reported pass cannot override native %s', (kind) => {
+  const { root, result, contract, events } = fixture();
+  events.push({ ...events[0], kind, details: {} }); persistEvents(root, result, events);
+  expect(() => validateNativeResult(result, contract, root)).toThrow();
+});
+test.each(['failed', 'cancel'])('close result %s cannot substitute for saved close', (value) => {
+  const { root, result, contract, events } = fixture();
+  events.find((e) => e.kind === 'close-finish').details.result = value; persistEvents(root, result, events);
+  expect(() => validateNativeResult(result, contract, root)).toThrow();
+});
+test('another launch cannot supply missing healthy render evidence', () => {
+  const { root, result, contract, events } = fixture();
+  events.find((e) => e.kind === 'render-ready').runId = randomUUID(); persistEvents(root, result, events);
+  expect(() => validateNativeResult(result, contract, root)).toThrow();
+});
+test('foreign-profile failures do not contaminate this profile', () => {
+  const { root, result, contract, events } = fixture();
+  events.push({ ...events[0], profileId: randomUUID(), kind: 'render-failed' }); persistEvents(root, result, events);
+  expect(validateNativeResult(result, contract, root)).toBe(result);
+});
+test('unsupported failed secondary launches cannot be passed as a maintained negative case', () => {
+  const { root, result, contract, events } = fixture();
+  events.push({ ...events[0], pid: 4322, runId: randomUUID(), kind: 'setup-failed' }); persistEvents(root, result, events);
+  expect(() => validateNativeResult(result, contract, root)).toThrow();
+});
 test('typed native acceptance binds selected observations, package bytes and app launch identity', () => {
   const { root, result, contract } = fixture(); expect(validateNativeResult(result, contract, root)).toBe(result);
 });
