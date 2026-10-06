@@ -1,7 +1,7 @@
 # Windows worker transport
 
 `scripts/release-remote.mjs` exports `runWindowsWorker({ root, stateRoot, plan,
-onStatus })`. The publishing coordinator invokes it only within an already
+onStatus, onPrepared })`. The publishing coordinator invokes it only within an already
 approved release build. It returns a local directory containing the Windows
 portable handoff; the owning coordinator validates and merges it under its
 existing release lease. The transport never uploads or publishes release assets.
@@ -23,13 +23,16 @@ application processes and profiles are preserved.
 The persisted Node runner invokes exactly:
 
 ```text
-node scripts/release-coordinator.mjs run --state <remote-state> --build
+node scripts/release-coordinator.mjs run --state <remote-state> --build --native-only
 ```
 
 That worker owns native build/check receipts. It exports its passed Windows
 checks on coordinator exit 0 or 2. Exit 2 can mean macOS or publication remains
-pending; Windows completion is determined from all required Windows checks and
-CI. A terminal export missing required Windows receipts is explicitly blocked;
+pending; Windows completion is determined from all required Windows checks.
+The designated publisher owns CI collection, which may run concurrently with
+both native builds. Platform-only outgoing/returned handoffs exclude CI to avoid
+independently generated conflicting receipts. The full publication graph still
+requires that CI proof. A terminal export missing required Windows receipts is explicitly blocked;
 it is never cached as a complete or automatically refreshable handoff. Inspect
 the existing remote ownership/results, export a new handoff and use the maintained
 manual merge command after diagnosing the missing receipt. Do not rebuild merely
@@ -55,6 +58,12 @@ the deadline records waiting and releases the local transport lease; the remote
 worker keeps its ownership and can be collected by the next resume. Individual
 SSH and transfer/setup commands also have deadlines. A completed local handoff
 is revalidated and reused on resume without another transfer or builder.
+
+An optional `onPrepared` lifecycle callback runs after checkout preparation and
+before incoming-state transfer and launch. It receives the frozen plan, paths,
+capability and transport. Private machine setup may use it without importing
+personal operator code into this module. Callback failure prevents launch.
+Do not register the movable incoming directory as a permanent private state.
 
 The API also accepts `transport`, `pollMs`, `timeoutMs` and `sleep` overrides for
 focused tests. The tests exercise validated receipt roundtrips, resume,

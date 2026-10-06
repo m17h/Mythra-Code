@@ -4,7 +4,8 @@ import { acquireLease, assertPlan, atomicJson, containedPath, fileHash, leaseSta
 
 // Portable file handoffs contain no credentials, lease, active process state or
 // code to execute. Transfer through the authorized LAN mechanism, then merge.
-export function exportHandoff(source, destination, platform) {
+export function exportHandoff(source, destination, platform, { platformOnly = false } = {}) {
+  if (platformOnly && !platform) throw new Error('Platform-only handoff needs a platform');
   if (existsSync(destination)) throw new Error('Handoff destination must be new');
   const plan = assertPlan(readJson(resolve(source, 'plan.json')));
   const statuses = reconcile(plan, source);
@@ -13,6 +14,7 @@ export function exportHandoff(source, destination, platform) {
   const checks = [];
   for (const check of plan.checks) {
     if (statuses.find((s) => s.id === check.id).status !== 'passed' || (platform && check.platform && check.platform !== platform)
+      || (platformOnly && check.platform !== platform)
       || ['draft', 'publish', 'public'].includes(check.id)) continue;
     const receipt = readJson(receiptPath(source, check.id));
     for (const item of receipt.evidence) {
