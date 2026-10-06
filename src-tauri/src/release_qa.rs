@@ -112,7 +112,7 @@ fn validate_windows_owner(
     // Elevated Windows tokens create children owned by their default owner
     // (Administrators). Accept only that actual token owner or its user SID;
     // the protected root itself must remain owned by the user SID.
-    let script = "$i=[System.Security.Principal.WindowsIdentity]::GetCurrent(); $u=$i.User.Value; $t=$i.Owner.Value; $paths=@($env:MYTHRA_QA_OWNER_PATH); if($env:MYTHRA_QA_CHECK_TREE -eq '1'){$paths+=@(Get-ChildItem -LiteralPath $env:MYTHRA_QA_OWNER_PATH -Recurse -Force -ErrorAction Stop | ForEach-Object {$_.FullName})}; foreach($p in $paths){$a=Get-Acl -LiteralPath $p -ErrorAction Stop; $o=$a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; if(($o -ne $u -and (($env:MYTHRA_QA_REQUIRE_PROTECTED -eq '1' -and $p -eq $env:MYTHRA_QA_OWNER_PATH) -or $o -ne $t)) -or ($env:MYTHRA_QA_REQUIRE_PROTECTED -eq '1' -and $p -eq $env:MYTHRA_QA_OWNER_PATH -and -not $a.AreAccessRulesProtected)){exit 1}; foreach($r in $a.Access){$s=$r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if($r.AccessControlType -eq 'Allow' -and $s -notin @($u,'S-1-5-18','S-1-5-32-544')){exit 1}}}";
+    let script = "$ErrorActionPreference='Stop'; $i=[System.Security.Principal.WindowsIdentity]::GetCurrent(); $u=$i.User.Value; $t=$i.Owner.Value; $paths=@($env:MYTHRA_QA_OWNER_PATH); if($env:MYTHRA_QA_CHECK_TREE -eq '1'){$paths+=@([System.IO.Directory]::EnumerateFileSystemEntries($env:MYTHRA_QA_OWNER_PATH,'*',[System.IO.SearchOption]::AllDirectories))}; foreach($p in $paths){$item=if([System.IO.Directory]::Exists($p)){[System.IO.DirectoryInfo]::new($p)}else{[System.IO.FileInfo]::new($p)}; $item.Refresh(); if(-not $item.Exists -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0){exit 1}; $a=$item.GetAccessControl(); $o=$a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; if(($o -ne $u -and (($env:MYTHRA_QA_REQUIRE_PROTECTED -eq '1' -and $p -eq $env:MYTHRA_QA_OWNER_PATH) -or $o -ne $t)) -or ($env:MYTHRA_QA_REQUIRE_PROTECTED -eq '1' -and $p -eq $env:MYTHRA_QA_OWNER_PATH -and -not $a.AreAccessRulesProtected)){exit 1}; foreach($r in $a.Access){$s=$r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if($r.AccessControlType -eq 'Allow' -and $s -notin @($u,'S-1-5-18','S-1-5-32-544')){exit 1}}}";
     let system = env::var_os("SystemRoot").ok_or("Windows system directory unavailable")?;
     let status = crate::process_launch::background_std_command(
         PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
@@ -858,7 +858,7 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            let script = "$s=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $a=New-Object System.Security.AccessControl.DirectorySecurity; $a.SetOwner($s); $a.SetAccessRuleProtection($true,$false); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))); Set-Acl -LiteralPath $env:MYTHRA_QA_TEST_ROOT -AclObject $a";
+            let script = "$ErrorActionPreference='Stop'; $s=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $a=New-Object System.Security.AccessControl.DirectorySecurity; $a.SetOwner($s); $a.SetAccessRuleProtection($true,$false); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))); [System.IO.DirectoryInfo]::new($env:MYTHRA_QA_TEST_ROOT).SetAccessControl($a)";
             assert!(
                 crate::process_launch::background_std_command("powershell.exe")
                     .args(["-NoProfile", "-NonInteractive", "-Command", script])
@@ -905,7 +905,7 @@ mod tests {
         let profile = Profile::open(root.clone()).unwrap();
         drop(profile);
         let child = root.join("app-data");
-        let script = "$a=Get-Acl -LiteralPath $env:MYTHRA_QA_TEST_ROOT; $s=New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0'); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s,'Read','Allow'))); Set-Acl -LiteralPath $env:MYTHRA_QA_TEST_ROOT -AclObject $a";
+        let script = "$ErrorActionPreference='Stop'; $d=[System.IO.DirectoryInfo]::new($env:MYTHRA_QA_TEST_ROOT); $a=$d.GetAccessControl(); $s=New-Object System.Security.Principal.SecurityIdentifier('S-1-1-0'); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s,'Read','Allow'))); [System.IO.DirectoryInfo]::new($env:MYTHRA_QA_TEST_ROOT).SetAccessControl($a)";
         assert!(
             crate::process_launch::background_std_command("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])
@@ -930,7 +930,7 @@ mod tests {
             b"preserve fixture bytes"
         );
         fs::remove_file(root.join("shared")).unwrap();
-        let script = "$i=[System.Security.Principal.WindowsIdentity]::GetCurrent(); if($i.Owner.Value -ne $i.User.Value){$a=Get-Acl -LiteralPath $env:MYTHRA_QA_TEST_ROOT; $a.SetOwner($i.Owner); Set-Acl -LiteralPath $env:MYTHRA_QA_TEST_ROOT -AclObject $a; exit 2}";
+        let script = "$ErrorActionPreference='Stop'; $i=[System.Security.Principal.WindowsIdentity]::GetCurrent(); if($i.Owner.Value -ne $i.User.Value){$a=[System.IO.DirectoryInfo]::new($env:MYTHRA_QA_TEST_ROOT).GetAccessControl(); $a.SetOwner($i.Owner); [System.IO.DirectoryInfo]::new($env:MYTHRA_QA_TEST_ROOT).SetAccessControl($a); exit 2}";
         let result = crate::process_launch::background_std_command("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("MYTHRA_QA_TEST_ROOT", &root)
