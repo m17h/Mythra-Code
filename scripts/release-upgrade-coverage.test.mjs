@@ -54,7 +54,10 @@ function rehashState(stateRoot, plan) {
   }
 }
 
-describe('accepted historical native upgrade coverage', { timeout: 30_000 }, () => {
+// These fixtures create Git histories and repeatedly validate owned SQLite and
+// retained source/receipt chains. Windows subprocess/setup time is not native
+// acceptance or a performance budget; every semantic assertion still runs.
+describe('accepted historical native upgrade coverage', { timeout: process.platform === 'win32' ? 120_000 : 30_000 }, () => {
   test('CSS-only releases repeatedly select a withdrawn predecessor without accepted coverage', () => {
     const f = fixture();
     expect(f.input.changedFiles).toEqual(['src/components/UsageDashboard.css']);

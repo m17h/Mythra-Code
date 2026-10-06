@@ -7,6 +7,9 @@ import { processIdentity, readJson } from './release-state.mjs';
 import { assertSmokeSource, protectWindowsProfile, runQaSmoke } from './release-qa-smoke.mjs';
 
 const roots = [], children = [];
+// The ACL helper alone allows 15s; process identity also launches PowerShell.
+// Keep fixture behavior deadlines separate from integration setup and cleanup.
+const windowsIntegrationTimeout = process.platform === 'win32' ? 30_000 : 5_000;
 const temp = () => { const root = mkdtempSync(join(tmpdir(), 'mythra-smoke-fixture-')); roots.push(root); return root; };
 afterEach(() => { for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture({ earlyExit = false, ignoredClose = false, wrongContract = false, wrongPid = false, failedClose = false, missingOpen = false, controlDelayMs = 0, missingControl = false, wrongControlPid = false, wrongControlRun = false } = {}) {
@@ -36,7 +39,7 @@ test('fixture liveness uses private marker, exact child, normal save-close and r
   expect(existsSync(f.profileRoot)).toBe(false);
   expect(readFileSync(join(result.evidenceDirectory, 'native-events.jsonl'), 'utf8')).toContain('close-finish');
   expect(readJson(join(result.evidenceDirectory, 'result.json')).cleanupComplete).toBe(true);
-});
+}, windowsIntegrationTimeout);
 
 test('frozen unsupported source fails before profile creation and launch', async () => {
   const f = fixture(); f.options.assertSourceSupport = () => { throw new Error('unsupported frozen source'); };
@@ -54,7 +57,7 @@ test('ACL denial fails before launch and cleans only its owned temporary root', 
 test.each([{ wrongContract: true }, { wrongPid: true }, { missingOpen: true }])('rejects unsupported or missing process-bound profile proof %o', async (mode) => {
   const f = fixture(mode); await expect(runQaSmoke(f.options)).rejects.toThrow(/profile/);
   expect(existsSync(f.profileRoot)).toBe(false); expect(children.at(-1).exitCode !== null || children.at(-1).signalCode !== null).toBe(true);
-});
+}, windowsIntegrationTimeout);
 
 test('executable identity mismatch fails and stops only the owned fixture child', async () => {
   const f = fixture(), sentinel = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' }); children.push(sentinel);
@@ -62,7 +65,7 @@ test('executable identity mismatch fails and stops only the owned fixture child'
   await expect(runQaSmoke(f.options)).rejects.toThrow(/exact built executable/);
   expect(sentinel.exitCode).toBe(null); expect(sentinel.signalCode).toBe(null);
   expect(existsSync(f.profileRoot)).toBe(false);
-});
+}, windowsIntegrationTimeout);
 
 test('early exit fails the uptime requirement', async () => {
   const f = fixture({ earlyExit: true });
@@ -78,12 +81,12 @@ test('early exit fails the uptime requirement', async () => {
 test('close deadline fails and terminates only its isolated candidate', async () => {
   const f = fixture({ ignoredClose: true }); await expect(runQaSmoke(f.options)).rejects.toThrow(/bounded normal close/);
   const results = children.at(-1); expect(results.signalCode).not.toBe(null); expect(existsSync(f.profileRoot)).toBe(false);
-});
+}, windowsIntegrationTimeout);
 
 test('exit without successful production save-close evidence fails', async () => {
   const f = fixture({ failedClose: true }); await expect(runQaSmoke(f.options)).rejects.toThrow(/save\/exit evidence/);
   expect(existsSync(f.profileRoot)).toBe(false);
-});
+}, windowsIntegrationTimeout);
 
 test('protected Windows ACLs use encoded structured paths and verify the allowlist', () => {
   let observed;
@@ -102,14 +105,14 @@ test('protected Windows ACLs use encoded structured paths and verify the allowli
 test.runIf(process.platform === 'win32')('actual Windows private root and marker ACLs pass independent ownership verification', () => {
   const root = temp(), marker = join(root, '.mythra-release-qa.json'); writeFileSync(marker, JSON.stringify({ schemaVersion: 1, purpose: 'mythra-release-qa', profileId: 'f4444444-4444-4444-8444-444444444444' }));
   expect(protectWindowsProfile(root, marker)).toMatchObject({ protected: true, owner: expect.stringMatching(/^S-1-/) });
-});
+}, windowsIntegrationTimeout);
 
 
 test('remaining descendants fail bounded cleanup and preserve the private root', async () => {
   const f = fixture(); f.options.descendantsAlive = () => true;
   await expect(runQaSmoke(f.options)).rejects.toThrow(/descendants did not exit/);
   expect(children.at(-1).exitCode).toBe(0); expect(existsSync(f.profileRoot)).toBe(true);
-});
+}, windowsIntegrationTimeout);
 
 
 test('exact HEAD guard rejects a different source before reading its QA contract', () => {
@@ -125,10 +128,10 @@ test('delayed control installation beyond uptime snapshots old nonces before clo
   expect(result.cleanupComplete).toBe(true); expect(result.elapsedMs).toBeGreaterThanOrEqual(400);
   const events = readFileSync(join(result.evidenceDirectory, 'native-events.jsonl'), 'utf8');
   expect(events.indexOf('control-ready')).toBeLessThan(events.indexOf('close-finish'));
-});
+}, windowsIntegrationTimeout);
 
 test.each([{ missingControl: true }, { wrongControlPid: true }, { wrongControlRun: true }])('missing or mismatched control readiness blocks close %o', async (mode) => {
   const f = fixture(mode);
   await expect(runQaSmoke(f.options)).rejects.toThrow(/control readiness/);
   expect(existsSync(f.profileRoot)).toBe(false);
-});
+}, windowsIntegrationTimeout);

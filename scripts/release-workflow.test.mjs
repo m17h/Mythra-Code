@@ -354,6 +354,8 @@ describe('hosted proof and asset audit', () => {
   });
 });
 
+// Include real Git worktree and Windows process-identity/lease setup; retain the
+// coordinator's explicit 1000ms deadline and every resume assertion below.
 test('detached workspace preserves development edits; interrupted DAG resumes without repeating completed stages', async () => {
   const root = temp(), stateRoot = temp(), destination = join(temp(), 'release');
   const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -376,4 +378,4 @@ test('detached workspace preserves development edits; interrupted DAG resumes wi
   const resumed = await runRelease({ root: destination, stateRoot, handlers, resume: true, retryReason: 'Simulated network outage resolved' });
   expect(resumed.complete).toBe(true);
   expect(executed.slice(first.length)).toEqual(['draft', 'publish', 'public']);
-});
+}, process.platform === 'win32' ? 30_000 : 5_000);
