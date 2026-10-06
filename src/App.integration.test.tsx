@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
+import publishedPricingCatalog from "../model-pricing.json?raw";
 import type { SkillDependencyReport, Thread } from "./types";
 import { emptySkillDependencyReport } from "./lib/skillDependencies";
 import { skillDependencyFixture } from "./test/skillDependencyFixtures";
@@ -19,6 +20,8 @@ import type { GitWorkspaceRevertPreview } from "./lib/gitWorkspace";
  */
 
 const invokeMock = vi.fn();
+const appFetch = vi.fn<typeof fetch>();
+const pricingRequest = /^https:\/\/raw\.githubusercontent\.com\/m17h\/Mythra-Code\/main\/model-pricing\.json\?openkiwi=\d+$/;
 const settingsPrewarm = vi.hoisted(() => ({ schedule: vi.fn<(preload: () => void) => () => void>(() => () => {}) }));
 vi.mock("./lib/settingsPreload", () => ({ scheduleSettingsPreload: settingsPrewarm.schedule }));
 const tauriEvents = vi.hoisted(() => ({
@@ -403,6 +406,11 @@ async function renderApp() {
 }
 
 beforeEach(() => {
+  // Each App mount refreshes pricing. Keep the real refresh/parser but own its
+  // HTTP boundary: live requests can finish after unmount and write the next
+  // test's storage even though vi.resetModules() created a fresh module graph.
+  appFetch.mockReset().mockImplementation(async () => new Response(publishedPricingCatalog, { status: 200 }));
+  vi.spyOn(globalThis, "fetch").mockImplementation(appFetch);
   localStorage.clear();
   tauriEvents.handlers.clear();
   vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -480,8 +488,30 @@ afterEach(async () => {
   // storage while a slower runner is importing a fresh App instance.
   const { resetDraftStoreForTests } = await import("./components/Composer");
   resetDraftStoreForTests();
+  // An additional fetch needs an explicit fixture, never an accidental pricing
+  // response or a live network fallback hidden by an App error handler.
+  for (const [url, options] of appFetch.mock.calls) {
+    expect(url).toEqual(expect.stringMatching(pricingRequest));
+    expect(options).toEqual(expect.objectContaining({ cache: "no-store", signal: expect.any(AbortSignal) }));
+  }
   vi.doUnmock("./components/SettingsModal");
   vi.doUnmock("./components/WorkflowRunDialog");
+});
+
+describe("App pricing request isolation", () => {
+  it("settles the real startup refresh with the owned catalog before leaving the fixture", async () => {
+    const view = await renderApp();
+    const { pricingRefreshStatus, MODEL_PRICING_CATALOG_KEY } = await import("./lib/usageLedger");
+    await waitFor(() => expect(pricingRefreshStatus()).toMatchObject({ checking: false, checkedAt: expect.any(Number) }));
+    expect(appFetch).toHaveBeenCalledTimes(1);
+    expect(pricingRefreshStatus().error).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem(MODEL_PRICING_CATALOG_KEY) ?? "null").updatedAt)
+      .toBe(JSON.parse(publishedPricingCatalog).updatedAt);
+    view.unmount();
+    localStorage.removeItem(MODEL_PRICING_CATALOG_KEY);
+    await act(async () => {});
+    expect(localStorage.getItem(MODEL_PRICING_CATALOG_KEY)).toBeNull();
+  });
 });
 
 describe("skill file recovery messages", () => {
@@ -6179,7 +6209,8 @@ describe("Thread pull request integration", () => {
     await user.click(await screen.findByRole("button", { name: /^Pull requests for/ }));
     const reference = await screen.findByRole("textbox", { name: "Pull request number or link" });
     await user.type(reference, "#31");
-    expect(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" })).toBeEnabled();
+    // A numeric reference needs the asynchronously discovered repository.
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" })).toBeEnabled());
     await user.click(within(screen.getByRole("region", { name: "Pull request" })).getByRole("button", { name: "Attach" }));
     expect(await screen.findByText("Improve Alpha")).toBeInTheDocument();
     await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadPullRequests") || "{}")[THREAD_A.id]?.number).toBe(31));
