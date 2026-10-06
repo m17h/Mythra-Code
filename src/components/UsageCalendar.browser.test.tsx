@@ -427,7 +427,9 @@ describe("usage calendar", () => {
     await page.viewport(900, 460);
     const { cell, card, scroller } = mount({ width: 860, zoom: 1.25, height: 360 });
     const target = cell(dayAgo(1));
-    target.scrollIntoView({ block: "center" });
+    // Keep enough room above the grid for every weekday row. Centering
+    // yesterday can leave neither side enough room after the scroll.
+    target.scrollIntoView({ block: "end" });
     fireEvent.click(target);
     await waitFor(() => expect(card()).not.toBeNull());
     const shown = card()!;
@@ -456,7 +458,7 @@ describe("usage calendar", () => {
     // the attachment and clipping assertions below still test the behavior.
     expect(movement).toBeGreaterThan(20);
     expect(Math.abs(movement - (scroller.scrollTop - scrollBefore) * 1.25)).toBeLessThanOrEqual(1.25);
-    // Re-placed on the next frame, flipping below when the room above runs out.
+    // Re-placed on the next frame while remaining attached to the whole grid.
     await waitFor(() => { expect(attachedGap()).toBeGreaterThanOrEqual(0); expect(attachedGap()).toBeLessThan(3); });
     expectInViewport(shown);
     expect(getComputedStyle(shown).visibility).toBe("visible");

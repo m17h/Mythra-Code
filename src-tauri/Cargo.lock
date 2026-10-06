@@ -2326,6 +2326,8 @@ dependencies = [
  "getrandom 0.3.4",
  "keyring",
  "libc",
+ "objc2",
+ "objc2-web-kit",
  "pulldown-cmark",
  "reqwest",
  "rusqlite",

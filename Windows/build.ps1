@@ -40,20 +40,6 @@ if (-not (Test-Path $packagePath) -or -not (Test-Path $tauriConfigPath)) {
   throw "Run Windows/build.ps1 from a Mythra Code checkout."
 }
 
-# Clear the previous release before starting. This prevents a failed build from
-# leaving stale artifacts that could be mistaken for the current release.
-if (-not (Test-Path -LiteralPath $outputDirectory)) {
-  New-Item -ItemType Directory -Path $outputDirectory | Out-Null
-}
-$resolvedRepoRoot = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-$resolvedOutputDirectory = [System.IO.Path]::GetFullPath($outputDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-if (-not $resolvedOutputDirectory.StartsWith($resolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw "Refusing to clear release assets outside the repository: $resolvedOutputDirectory"
-}
-Get-ChildItem -LiteralPath $outputDirectory -Force |
-  Where-Object { $_.Name -ne "README.md" } |
-  Remove-Item -Recurse -Force
-
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path -LiteralPath $defaultUpdaterKeyPath -PathType Leaf)) {
   $env:TAURI_SIGNING_PRIVATE_KEY = $defaultUpdaterKeyPath
 }
@@ -105,9 +91,33 @@ if (-not $npm -or -not $npx) {
 if (-not $SkipInstall) {
   Invoke-Checked -Command $npm -Arguments @("ci")
 }
-if (-not $SkipVerify) {
+if ($env:MYTHRA_RELEASE_CI_RUN) {
+  if ($SkipVerify) { throw 'Do not combine a verification override with hosted evidence.' }
+  $proofPath = Join-Path ([System.IO.Path]::GetTempPath()) ("mythra-release-ci-" + [guid]::NewGuid().ToString('N') + '.json')
+  try {
+    # Re-fetch the run, complete job set and coverage receipts; an arbitrary
+    # cached JSON or green workflow label cannot replace local verification.
+    Invoke-Checked -Command 'node' -Arguments @('scripts/release-evidence.mjs', $head, $proofPath, $env:MYTHRA_RELEASE_CI_RUN)
+  } finally {
+    if (Test-Path -LiteralPath $proofPath) { Remove-Item -LiteralPath $proofPath }
+  }
+} elseif (-not $SkipVerify) {
   Invoke-Checked -Command $npm -Arguments @("run", "verify")
 }
+
+# Clear mutable staging only after all preflight and verification checks pass. This prevents a failed build from
+# leaving stale artifacts that could be mistaken for the current release.
+if (-not (Test-Path -LiteralPath $outputDirectory)) {
+  New-Item -ItemType Directory -Path $outputDirectory | Out-Null
+}
+$resolvedRepoRoot = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+$resolvedOutputDirectory = [System.IO.Path]::GetFullPath($outputDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+if (-not $resolvedOutputDirectory.StartsWith($resolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw "Refusing to clear release assets outside the repository: $resolvedOutputDirectory"
+}
+Get-ChildItem -LiteralPath $outputDirectory -Force |
+  Where-Object { $_.Name -ne "README.md" } |
+  Remove-Item -Recurse -Force
 
 $tauriArguments = @("tauri", "build", "--config", "src-tauri/tauri.windows.conf.json", "--bundles", "nsis")
 
@@ -176,18 +186,10 @@ if ($authenticodeStatus -ne "NotSigned") {
 }
 
 if (-not $SkipLaunchSmoke) {
-  $process = Start-Process -FilePath $binaryPath -PassThru
-  try {
-    Start-Sleep -Seconds 5
-    if ($process.HasExited) {
-      throw "Mythra Code exited during the Windows launch smoke test with code $($process.ExitCode)."
-    }
-  } finally {
-    if (-not $process.HasExited) {
-      Stop-Process -Id $process.Id -Force
-      Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
-    }
-  }
+  # The five-second native liveness check uses an owned, isolated QA profile.
+  # An older executable without the frozen isolation contract is never launched
+  # against the working user's data as a fallback.
+  Invoke-Checked -Command 'node' -Arguments @('scripts/release-qa-smoke.mjs', $binaryPath, $head)
 }
 
 Copy-Item -LiteralPath $sourceInstallerPath -Destination (Join-Path $outputDirectory $installerName)

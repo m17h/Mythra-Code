@@ -45,6 +45,7 @@ mod github_pr;
 mod openrouter_usage;
 mod persistence;
 mod pricing_sources;
+mod release_qa;
 mod process_launch;
 mod project_git;
 mod run_discovery;
@@ -1572,6 +1573,7 @@ where
 }
 
 async fn openrouter_key() -> Option<String> {
+    if release_qa::active() { return None; }
     bounded_keyring_read(&OPENROUTER_KEY_READ, KEYRING_READ_TIMEOUT, || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, OPENROUTER_ACCOUNT).ok()?;
         entry
@@ -1583,6 +1585,7 @@ async fn openrouter_key() -> Option<String> {
 }
 
 async fn lmstudio_key() -> Option<String> {
+    if release_qa::active() { return None; }
     bounded_keyring_read(&LMSTUDIO_KEY_READ, KEYRING_READ_TIMEOUT, || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT).ok()?;
         entry
@@ -2485,7 +2488,7 @@ async fn resolve_codex_runtime(
     // Prefer the official standalone installer location. This lets the
     // Updates pane move a machine away from a stale npm shim or an embedded
     // ChatGPT copy without relying on the sparse PATH of a GUI launch.
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         #[cfg(windows)]
         if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
             push_candidate(
@@ -2530,7 +2533,7 @@ async fn resolve_codex_runtime(
         push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/codex"));
     }
 
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         #[cfg(target_os = "macos")]
         push_candidate(
             &mut candidates,
@@ -2648,9 +2651,7 @@ fn codex_runtime_changed(
 }
 
 async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> CodexRuntimeStatus {
-    let data_home = app
-        .path()
-        .app_data_dir()
+    let data_home = crate::release_qa::app_data_dir(app)
         .ok()
         .map(|path| path.join("codex-home").to_string_lossy().into_owned());
     let running_runtime = state.server.lock().await.as_ref().map(|server| {
@@ -3290,7 +3291,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     // The native installer is Claude Code's recommended and auto-updating
     // location. Probe it before package-manager shims and GUI-style PATH.
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [".local/bin/claude", ".local/bin/claude.exe"] {
             push_candidate(&mut candidates, home.join(relative));
         }
@@ -3305,7 +3306,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
         push_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/claude"));
         push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/claude"));
     }
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [
             ".npm-global/bin/claude",
             ".bun/bin/claude",
@@ -3608,7 +3609,7 @@ fn claude_usage_failure_code(stderr: &[u8]) -> &'static str {
 #[tauri::command]
 async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
     let path = resolve_claude_binary(&app).await?;
-    let home = app.path().home_dir().ok();
+    let home = crate::release_qa::home_dir(&app).ok();
     let output = timeout(
         Duration::from_secs(10),
         subscription_only_command(&path, home.as_deref())
@@ -3660,9 +3661,7 @@ async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
 #[tauri::command]
 async fn claude_models(app: AppHandle) -> Result<Value, String> {
     let binary = resolve_claude_binary(&app).await?;
-    let cwd = app
-        .path()
-        .home_dir()
+    let cwd = crate::release_qa::home_dir(&app)
         .ok()
         .filter(|path| path.is_dir())
         .unwrap_or_else(env::temp_dir);
@@ -3769,7 +3768,7 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
 
     let version = runtime_version(&path).await;
     let warning = claude_runtime_warnings(version.as_deref(), warning);
-    let home = app.path().home_dir().ok();
+    let home = crate::release_qa::home_dir(app).ok();
     let auth = timeout(
         CLAUDE_AUTH_STATUS_TIMEOUT,
         subscription_only_command(&path, home.as_deref())
@@ -3859,7 +3858,7 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut command = interactive_command(&path);
-        let home = app.path().home_dir().ok();
+        let home = crate::release_qa::home_dir(&app).ok();
         configure_claude_subscription(&mut command, home.as_deref());
         command
             .args(["auth", "login"])
@@ -3907,9 +3906,7 @@ async fn save_pasted_image(
     if bytes.len() > 50 * 1024 * 1024 {
         return Err("The pasted image exceeds 50 MB".to_string());
     }
-    let directory = app
-        .path()
-        .app_data_dir()
+    let directory = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
         .join("message-images");
     tokio::fs::create_dir_all(&directory)
@@ -4109,9 +4106,7 @@ async fn persist_image_attachment(
     let extension = supported_preview_image_extension(&source)
         .ok_or_else(|| unsupported_image_format_error(&source))?;
     validate_image_attachment(&source).await?;
-    let directory = app
-        .path()
-        .app_data_dir()
+    let directory = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
         .join("message-images");
     tokio::fs::create_dir_all(&directory)
@@ -4489,7 +4484,7 @@ async fn claude_turn_start(
     }
 
     let turn_id = uuid::Uuid::new_v4().to_string();
-    let home = app.path().home_dir().ok();
+    let home = crate::release_qa::home_dir(&app).ok();
     let mut command = subscription_only_command(&binary, home.as_deref());
     command
         .current_dir(&options.cwd)
@@ -5376,9 +5371,7 @@ fn validated_export_path(app: &AppHandle, path: &str) -> Result<PathBuf, String>
     let parent = parent
         .canonicalize()
         .map_err(|error| format!("Could not open the export folder: {error}"))?;
-    let home = app
-        .path()
-        .home_dir()
+    let home = crate::release_qa::home_dir(app)
         .map_err(|error| format!("Could not resolve the home folder: {error}"))?;
     let home = home.canonicalize().unwrap_or(home);
     let relative = parent
@@ -5438,9 +5431,7 @@ async fn export_text_file(app: AppHandle, path: String, contents: String) -> Res
 
 #[tauri::command]
 async fn normal_chat_workspace(app: AppHandle) -> Result<String, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
+    let app_data = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     let workspace = app_data.join("normal-chats");
     tokio::fs::create_dir_all(&workspace)
@@ -5597,15 +5588,14 @@ impl CodexFirstAssistantDeltas {
 }
 
 async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppServer>, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
+    release_qa::require_providers()?;
+    let app_data = crate::release_qa::app_data_dir(app)
         .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
     let codex_home = app_data.join("codex-home");
 
     let codex_runtime = resolve_codex_runtime(app, state).await?;
     let codex_binary = codex_runtime.path.clone();
-    let home = app.path().home_dir().ok();
+    let home = crate::release_qa::home_dir(app).ok();
 
     let mut command = background_command(&codex_binary);
     command
@@ -6728,6 +6718,10 @@ fn shutdown_claude_on_exit(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = release_qa::initialize() {
+        eprintln!("mythra.release-qa rejected: {error}");
+        std::process::exit(78);
+    }
     // reqwest and the updater share the same provider-less rustls stack.
     // Install Ring before either subsystem creates its first HTTP client.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -6735,7 +6729,14 @@ pub fn run() {
     // Re-invoked as the cross-provider sub-agent bridge: act as a stdio MCP
     // server and exit without ever constructing the desktop app.
     let mut arguments = env::args().skip(1);
-    if arguments.next().as_deref() == Some(AGENT_BRIDGE_ARG) {
+    let first_argument = arguments.next();
+    let qa_dispose_only = first_argument.as_deref() == Some(release_qa::DISPOSE_ARG);
+    if qa_dispose_only && !release_qa::active() {
+        eprintln!("mythra.release-qa disposal requires an explicit owned QA profile");
+        std::process::exit(78);
+    }
+    if first_argument.as_deref() == Some(AGENT_BRIDGE_ARG) {
+        if release_qa::require_providers().is_err() { std::process::exit(78); }
         let session = arguments.next().unwrap_or_default();
         std::process::exit(run_agent_bridge(&session));
     }
@@ -6745,6 +6746,7 @@ pub fn run() {
     // for explicit construction, disabling only automatic creation in this
     // context copy (including the Windows-specific updater configuration).
     let mut context = tauri::generate_context!();
+    release_qa::configure_context(&mut context);
     let startup_windows = context.config().app.windows.clone();
     for window in &mut context.config_mut().app.windows {
         window.create = false;
@@ -6765,6 +6767,10 @@ pub fn run() {
                 .is_err()
             {
                 startup_guard::setup_failed(app.handle(), "updater");
+                return Ok(());
+            }
+            if qa_dispose_only {
+                release_qa::dispose_owned_store(app.handle());
                 return Ok(());
             }
             let db_path = match state_db_path(app.handle()) {
@@ -6797,6 +6803,7 @@ pub fn run() {
                             return Ok(());
                         }
                     };
+                let builder = release_qa::configure_window(builder);
                 let prepared = (window_config.label == "main")
                     .then(|| startup_guard::prepare(app.handle(), &window_config.label))
                     .flatten();
@@ -6817,6 +6824,7 @@ pub fn run() {
                     }
                 }
             }
+            release_qa::install_control(app.handle());
             Ok(())
         })
         .manage(RuntimeState::default())
@@ -6826,7 +6834,9 @@ pub fn run() {
         .manage(RunDiscoveryState::default())
         .manage(CloseGuardState::default())
         .manage(StartupGuardState::default())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
+                release_qa::release_qa_renderer_probe,
             close_guard_claim,
             close_guard_finish,
             startup_ready,
@@ -6959,7 +6969,21 @@ pub fn run() {
             run_discovery_start,
             run_discovery_cancel,
             run_discovery::generate_thread_title
-        ])
+            ]);
+            move |invoke: tauri::ipc::Invoke| {
+                if release_qa::active() {
+                    if let Some(value) = release_qa::offline_status(invoke.message.command()) {
+                        invoke.resolver.resolve(value);
+                        return true;
+                    }
+                    if !release_qa::allowed_command(invoke.message.command()) {
+                        invoke.resolver.reject("This action is unavailable in the credential-free release QA profile");
+                        return true;
+                    }
+                }
+                handler(invoke)
+            }
+        })
         .build(context);
     let application = match application {
         Ok(application) => application,
@@ -6988,6 +7012,8 @@ pub fn run() {
                 }
             }
         }
+        if release_qa::dispose_before_exit(app_handle, &event) { return; }
+        if matches!(event, tauri::RunEvent::Exit) { release_qa::record("exit", json!({})); }
         if matches!(
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit

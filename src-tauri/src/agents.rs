@@ -408,9 +408,7 @@ pub(super) struct ChildAgentSessionOptions {
 }
 
 fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
-    let directory = app
-        .path()
-        .app_data_dir()
+    let directory = crate::release_qa::app_data_dir(app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?
         .join("child-agents")
         .join(std::process::id().to_string());

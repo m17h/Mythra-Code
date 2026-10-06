@@ -398,7 +398,7 @@ impl CursorRuntime {
                 output.stdout
             }
             _ => {
-                let home = app.path().home_dir().map_err(|error| {
+                let home = crate::release_qa::home_dir(app).map_err(|error| {
                     format!("Could not locate the Cursor account configuration: {error}")
                 })?;
                 let path = home.join(".cursor/cli-config.json");
@@ -566,7 +566,7 @@ pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRunt
             super::push_candidate(&mut candidates, candidate);
         }
     }
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [
             ".local/bin/agent",
             ".local/bin/agent.exe",
@@ -1100,9 +1100,7 @@ fn model_config_id(setup: &Value) -> Option<String> {
 pub async fn cursor_models(app: AppHandle) -> Result<Vec<CursorModel>, String> {
     // The model catalog query needs a working directory but no project;
     // Mythra Code's own data folder avoids handing the agent a shared /tmp cwd.
-    let workspace = app
-        .path()
-        .app_data_dir()
+    let workspace = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     tokio::fs::create_dir_all(&workspace)
         .await

@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assertReleaseVerification } from "./verify-ci.mjs";
+import { acquireLease, assertPlan, leaseStatus, readJson } from './release-state.mjs';
+import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, markPublisherMutation } from './release-coordinator.mjs';
+import { auditAssets, assertDownloadedRemote, assertPlatformManifests, assertPublicationVersion, assertRemoteRelease, assertTagTarget } from './release-audit.mjs';
 
 const REPOSITORY = "m17h/Mythra-Code";
 const REQUIRED_PLATFORMS = ["darwin-aarch64", "windows-x86_64"];
@@ -21,17 +24,39 @@ function checked(command, args, label, options = {}) {
 const status = checked("git", ["status", "--porcelain"], "Working-tree check");
 if (status) throw new Error(`Refusing to finalize from a dirty working tree:\n${status}`);
 const head = checked("git", ["rev-parse", "HEAD"], "Release commit check");
+const stateRoot = process.env.MYTHRA_RELEASE_STATE;
+if (!stateRoot) throw new Error('Finalization requires MYTHRA_RELEASE_STATE with a frozen plan and complete validation receipts.');
+if (process.env.MYTHRA_RELEASE_OWNER) {
+  const lease = readJson(resolve(stateRoot, 'lease.json'));
+  if (lease.token !== process.env.MYTHRA_RELEASE_OWNER || leaseStatus(lease) !== 'running') throw new Error('Publishing coordinator does not own the active release lease.');
+} else {
+  const releaseLease = acquireLease(stateRoot);
+  process.once('exit', releaseLease);
+}
+const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
+if (plan.commit !== head || plan.version !== version) throw new Error('Validation plan does not match release source/version.');
+let publisherOwner = process.env.MYTHRA_RELEASE_PUBLISHER_OWNER;
+if (publisherOwner) {
+  assertPublisherOwner(plan, publisherOwner);
+} else {
+  const publisherLease = acquirePublisherLease(plan);
+  publisherOwner = publisherLease.token;
+  process.once('exit', publisherLease);
+}
+const draftReceipt = assertReadyToPublish(plan, stateRoot);
 
 checked("gh", ["auth", "status"], "GitHub authentication check");
 const release = JSON.parse(checked("gh", [
   "release", "view", tag,
   "--repo", REPOSITORY,
-  "--json", "isDraft,targetCommitish,assets",
+  "--json", "tagName,isDraft,isPrerelease,targetCommitish,assets,body",
 ], "Draft release check"));
 if (!release.isDraft) throw new Error(`${tag} is not a draft release.`);
 if (release.targetCommitish !== head) {
   throw new Error(`Draft ${tag} targets ${release.targetCommitish || "an unknown commit"}, not current HEAD ${head}.`);
 }
+assertRemoteRelease(release, plan, 'draft');
+assertTagTarget({ root, plan, phase: 'draft' });
 
 const runs = JSON.parse(checked("gh", [
   "run", "list",
@@ -61,6 +86,9 @@ if (!verifiedRun) {
 
 const temporary = mkdtempSync(join(tmpdir(), "mythra-code-finalize-"));
 try {
+  checked('gh', ['release', 'download', tag, '--repo', REPOSITORY, '--dir', temporary, '--clobber'], 'Fresh package download');
+  auditAssets({ root, directory: temporary, plan, expectedHashes: draftReceipt.details.hashes });
+  assertDownloadedRemote({ release, directory: temporary, plan, phase: 'draft' });
   checked("gh", [
     "release", "download", tag,
     "--repo", REPOSITORY,
@@ -76,6 +104,8 @@ try {
     "--clobber",
   ], "Release notes download");
   const manifest = JSON.parse(readFileSync(resolve(temporary, "latest.json"), "utf8"));
+  assertPlatformManifests({ manifest, version, candidates: Object.fromEntries(REQUIRED_PLATFORMS.map((platform) => [platform,
+    readJson(resolve(stateRoot, 'candidates', platform, 'latest.json'))])) });
   if (manifest.version !== version) {
     throw new Error(`Draft manifest version ${manifest.version} does not match package version ${version}.`);
   }
@@ -106,10 +136,19 @@ try {
   ]) {
     if (!assetNames.has(required)) throw new Error(`Draft ${tag} is missing required cross-platform asset ${required}.`);
   }
+  const after = JSON.parse(checked('gh', ['release', 'view', tag, '--repo', REPOSITORY,
+    '--json', 'tagName,isDraft,isPrerelease,targetCommitish,assets,body'], 'Draft stability check'));
+  assertDownloadedRemote({ release, after, directory: temporary, plan, phase: 'draft' });
+  assertTagTarget({ root, plan, phase: 'draft' });
+  const latest = JSON.parse(checked('gh', ['api', `repos/${REPOSITORY}/releases/latest`], 'Current public version check'));
+  assertPublicationVersion({ latest, plan });
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }
 
+// Standalone finalization also owns subprocess mutation. If this process dies
+// while gh survives, a replacement publisher must fail closed on recovery.
+markPublisherMutation(plan, publisherOwner);
 const publish = spawnSync("gh", [
   "release", "edit", tag,
   "--repo", REPOSITORY,

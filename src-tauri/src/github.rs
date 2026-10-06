@@ -8,7 +8,7 @@ use super::{find_on_path, find_with_login_shell, git_stdout, optional_git_stdout
 use crate::process_launch::background_command;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,7 +89,7 @@ pub(super) async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, St
             push_candidate(&mut candidates, root.join("Microsoft/WinGet/Links/gh.exe"));
         }
     }
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [".local/bin", ".cargo/bin", ".npm-global/bin"] {
             push_candidate(&mut candidates, home.join(relative).join(executable_name));
         }
