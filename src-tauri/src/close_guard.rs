@@ -278,6 +278,7 @@ pub(super) fn close_guard_finish(
     let _ = error;
     let action = state.with(|machine| machine.finish(window.label(), request_id, result));
     let accepted = action.is_some();
+    crate::release_qa::record("close-finish", serde_json::json!({"accepted":accepted,"result": match result { CloseResult::Saved=>"saved",CloseResult::Failed=>"failed",CloseResult::Cancel=>"cancel" }}));
     if let Some(action) = action {
         perform(window.app_handle(), action);
     }

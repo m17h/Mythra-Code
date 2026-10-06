@@ -10,7 +10,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::process_launch::background_std_command;
 
@@ -1162,9 +1162,7 @@ pub(super) async fn worktree_create(
     project_path: String,
     label: String,
 ) -> Result<CreatedWorktree, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
+    let app_data = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
     let guard = lock.lock_owned().await;
@@ -1213,9 +1211,7 @@ pub(super) async fn worktree_recreate(
     branch: String,
     label: String,
 ) -> Result<CreatedWorktree, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
+    let app_data = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?;
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
     let guard = lock.lock_owned().await;
@@ -2367,9 +2363,7 @@ pub(super) async fn worktree_remove(
     delete_branch: bool,
     expected_retained_branch_oid: Option<String>,
 ) -> Result<WorktreeRemoveResult, String> {
-    let managed_root = app
-        .path()
-        .app_data_dir()
+    let managed_root = crate::release_qa::app_data_dir(&app)
         .map_err(|error| format!("Could not locate Mythra Code's application data: {error}"))?
         .join("worktrees");
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;

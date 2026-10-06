@@ -175,6 +175,7 @@ pub(super) fn diagnostic(stage: &str, code: &str, elapsed_ms: u128) {
 pub(super) fn startup_ready(window: WebviewWindow, state: State<'_, StartupGuardState>) {
     if let Some(elapsed) = state.with(|machine| machine.ready(window.label())) {
         diagnostic("render", "ready", elapsed);
+        crate::release_qa::record("render-ready", serde_json::json!({"label":window.label(),"elapsedMs":elapsed}));
     }
 }
 
@@ -186,6 +187,7 @@ pub(super) fn startup_failed(
 ) {
     if let Some(elapsed) = state.with(|machine| machine.failed(window.label(), stage)) {
         diagnostic(stage.code(), "fallback-visible", elapsed);
+        crate::release_qa::record("render-failed", serde_json::json!({"stage":stage.code(),"elapsedMs":elapsed}));
     }
 }
 
@@ -230,6 +232,7 @@ pub(super) fn install(window: &WebviewWindow, prepared: PreparedStartup) {
     let app = window.app_handle().clone();
     let PreparedStartup { key, mut cancel } = prepared;
     diagnostic("native-window", "constructed", 0);
+    crate::release_qa::record("window-constructed", serde_json::json!({"label":window.label()}));
     let destroyed_app = app.clone();
     let destroyed_key = key.clone();
     window.on_window_event(move |event| {
@@ -277,6 +280,7 @@ pub(super) fn install(window: &WebviewWindow, prepared: PreparedStartup) {
 /// Never block setup or the event loop waiting for acknowledgment.
 pub(super) fn setup_failed(app: &AppHandle, stage: &'static str) {
     diagnostic(stage, "setup-failed", 0);
+    crate::release_qa::record("setup-failed", serde_json::json!({"stage":stage}));
     let callback_app = app.clone();
     app.dialog()
         .message(
