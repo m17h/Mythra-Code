@@ -22,8 +22,26 @@ user. macOS 14 or later is required. On Windows use a local drive path; set the
 current user's SID as owner, protect the root ACL from inheritance, and grant
 access only to that SID, SYSTEM, and/or Administrators. Child files/directories
 may inherit that safe ACL, but each must still be owned by the current user or the launching token's default owner SID (Administrators for an elevated token).
-Reused trees with foreign owners, broad grants, hardlinked files, or links fail
-closed. Do not copy provider homes or credentials into the profile.
+The Windows guard also recognizes the exact `lpacEdgeStableNetworkSandbox`
+capability that WebView2 creates, solely inside
+`webview/EBWebView/Default/{Cache,Network,Shared Dictionary}`. These browser
+storage subtrees may have the stable-channel network sandbox's read/write/
+execute/delete access. This capability is channel-wide, **not unique to this
+app or QA profile**. Application SQLite data, home and control files retain
+only the user/SYSTEM/Administrators rule. Never place credentials in QA browser
+storage or copy provider homes into the profile.
+
+The exception validates the exact named-capability SID and raw allow ACEs:
+anchor directories permit mask `0x001301bf` with no flags, and `0xe0010000`
+with `OI CI IO`; descendants permit `0x001301bf` with `ID`, plus directory-only
+`0xe0010000` with `OI CI IO ID`. It rejects other capability identities,
+locations, ACE types, masks and flags, including DACL/owner modification rights.
+Reused trees with foreign owners, other broad grants, hardlinked files or links
+fail closed. Do not strip or normalize browser-created ACLs to pass a check.
+A different runtime/channel ACL requires fresh diagnosis and review.
+
+This is a validation rule, not native acceptance: the exact package must still
+pass all selected UI, save, close, reopen and data-integrity checks.
 
 Run the candidate directly with this variable inherited by its process; do not
 use a launcher which drops the environment. The title is
