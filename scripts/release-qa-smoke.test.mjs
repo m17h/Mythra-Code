@@ -65,7 +65,13 @@ test('executable identity mismatch fails and stops only the owned fixture child'
 });
 
 test('early exit fails the uptime requirement', async () => {
-  const f = fixture({ earlyExit: true }); await expect(runQaSmoke(f.options)).rejects.toThrow(/five-second smoke/);
+  const f = fixture({ earlyExit: true });
+  // This regression exercises uptime after identity is obtained. Real Windows
+  // PowerShell identity lookup can outlive this intentionally 100ms child;
+  // the other fixtures retain the real OS identity lookup.
+  f.options.identifyProcess = (pid) => children.some((child) => child.pid === pid && child.exitCode === null && child.signalCode === null) ? `fixture:${pid}` : undefined;
+  f.options.inspectProcess = (pid) => ({ pid, processStart: f.options.identifyProcess(pid), executablePath: process.execPath });
+  await expect(runQaSmoke(f.options)).rejects.toThrow(/five-second smoke/);
   expect(existsSync(f.profileRoot)).toBe(false);
 });
 
@@ -85,6 +91,8 @@ test('protected Windows ACLs use encoded structured paths and verify the allowli
   const result = protectWindowsProfile(fakePath, `${fakePath}/marker`, { execute: (command, args) => {
     expect(command).toBe('powershell.exe'); const source = Buffer.from(args.at(-1), 'base64').toString('utf16le');
     expect(source).not.toContain(fakePath); expect(source).toContain('SetAccessRuleProtection($true, $false)'); expect(source).toContain('S-1-5-18'); expect(source).toContain('S-1-5-32-544');
+    expect(source).toContain('$directory.SetAccessControl($acl)'); expect(source).toContain('$file.SetAccessControl($markerAcl)'); expect(source).toContain('$item.GetAccessControl()');
+    expect(source).not.toMatch(/\b(?:Set-Acl|Get-Acl|Get-Item)\b/);
     observed = JSON.parse(Buffer.from(source.match(/FromBase64String\('([^']+)'\)/)[1], 'base64').toString());
     return JSON.stringify({ protected: true, owner: 'S-1-5-21-123' });
   } });

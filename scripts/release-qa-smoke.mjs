@@ -22,18 +22,21 @@ export function protectWindowsProfile(root, marker, { execute = execFileSync } =
   const program = `
 $i = [Security.Principal.WindowsIdentity]::GetCurrent(); $user = $i.User
 $allowed = @($user, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+# Use Windows PowerShell's .NET Framework ACL APIs directly. A pwsh parent can
+# supply a PSModulePath whose Security module is incompatible with powershell.exe.
+$directory = [IO.DirectoryInfo]::new($p.root); $file = [IO.FileInfo]::new($p.marker)
 $acl = [Security.AccessControl.DirectorySecurity]::new(); $acl.SetAccessRuleProtection($true, $false); $acl.SetOwner($user)
 foreach ($sid in $allowed) {
   $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'); $acl.AddAccessRule($rule)
 }
-Set-Acl -LiteralPath $p.root -AclObject $acl
+$directory.SetAccessControl($acl)
 $markerAcl = [Security.AccessControl.FileSecurity]::new(); $markerAcl.SetAccessRuleProtection($true, $false); $markerAcl.SetOwner($user)
 foreach ($sid in $allowed) { $markerAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow')) }
-Set-Acl -LiteralPath $p.marker -AclObject $markerAcl
-foreach ($path in @($p.root, $p.marker)) {
-  $item = Get-Item -LiteralPath $path -Force
+$file.SetAccessControl($markerAcl)
+foreach ($item in @($directory, $file)) {
+  $item.Refresh()
   if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'QA smoke profile has a reparse point' }
-  $check = Get-Acl -LiteralPath $path
+  $check = $item.GetAccessControl()
   if (!$check.AreAccessRulesProtected -or $check.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { throw 'QA smoke profile ACL ownership failed' }
   foreach ($rule in $check.Access) { if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin $allowed.Value) { throw 'QA smoke profile ACL permits another principal' } }
 }

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, join, relative, resolve } from 'node:path';
+import { basename, join, posix, relative, resolve } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { assertPlan, containedPath, fileHash, readJson, receiptPath } from './release-state.mjs';
 
@@ -63,7 +63,7 @@ export function inspectTar(bytes) {
     ensure(!entries.includes(normalized), 'Duplicate archive entry');
     entries.push(normalized);
     if (type === '2') {
-      const link = field(157, 100), target = resolve('/', path.split('/').slice(0, -1).join('/'), link);
+      const link = field(157, 100), target = posix.resolve('/', path.split('/').slice(0, -1).join('/'), link);
       ensure(link && !link.startsWith('/') && (target === '/Mythra Code.app' || target.startsWith('/Mythra Code.app/')), 'Archive symlink escapes application');
       symlinks.add(normalized);
     }
