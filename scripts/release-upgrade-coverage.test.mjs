@@ -4,13 +4,17 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { changedSource, createPlan, planFromCheckout } from './release-plan.mjs';
 import { assertPlan, atomicJson, digest, fileHash, objectHash, readJson, receiptPath, reconcile } from './release-state.mjs';
 import { exportUpgradeCoverage, fingerprintUpgradeInputs, revalidatePlanCoverage, resolveUpgradeCoverage } from './release-upgrade-coverage.mjs';
 import { syntheticGh, syntheticGit, syntheticPassedState } from './release-upgrade-coverage.fixture.mjs';
 import { captureUpgradeSnapshot, sourceUpgradeSchema, validateUpgradeObservation } from './release-upgrade-snapshot.mjs';
+
+// Load this Node 22 built-in at runtime; Vite's client transformer does not
+// recognize node:sqlite as external on the hosted Node 22 toolchain.
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 
 // Every release, executable, pixel, event, CI and public asset below is a
 // synthetic schema fixture. Passing this suite is not native acceptance.

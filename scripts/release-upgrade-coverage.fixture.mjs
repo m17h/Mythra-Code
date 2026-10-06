@@ -5,12 +5,16 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { assetNames } from './release-audit.mjs';
 import { assertHostedEvidence } from './release-evidence.mjs';
 import { createNativeContract, validateNativeResult } from './release-native-check.mjs';
 import { atomicJson, digest, fileHash, readJson, receiptPath, saveReceipt } from './release-state.mjs';
 import { expectedReceipts, lanes } from './verify-ci.mjs';
+
+// Load this Node 22 built-in at runtime; Vite's client transformer does not
+// recognize node:sqlite as external on the hosted Node 22 toolchain.
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 
 export function syntheticGit(root) {
   const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
