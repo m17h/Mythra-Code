@@ -1,7 +1,8 @@
 // Retain the owned profile's actual SQLite bytes around the maintained UI replay.
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, lstatSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { atomicJson, containedPath, digest, fileHash, objectHash, readJson } from './release-state.mjs';
@@ -34,6 +35,20 @@ function rows(path, storageSchemaVersion) {
       && Object.values(drafts).every((value) => typeof value === 'string' && value.length > 0), 'missing representative protected predecessor draft');
     return result;
   } finally { db.close(); }
+}
+
+function snapshotRows(path, sha256, storageSchemaVersion) {
+  unlinked(path);
+  // SQLite normally consults adjacent WAL/journal files. Query an owned copy of
+  // exactly the hashed main bytes so unretained sidecars cannot alter the proof.
+  const bytes = readFileSync(path);
+  ensure(digest(bytes) === sha256, 'SQLite snapshot bytes changed');
+  const directory = realpathSync(mkdtempSync(resolve(tmpdir(), 'mythra-retained-sqlite-')));
+  try {
+    const frozen = resolve(directory, 'snapshot.sqlite3');
+    writeFileSync(frozen, bytes, { flag: 'wx' });
+    return rows(frozen, storageSchemaVersion);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
 function knownDefaultsImports(text, allowed) {
@@ -89,7 +104,7 @@ export function validateUpgradeObservation({ proof, upgrade, entry, contract, st
   ensure(proof.fixtureBefore.path !== proof.fixtureAfter.path && proof.fixtureBefore.sha256 !== proof.fixtureAfter.sha256, 'same database cannot prove a persisted UI change');
   const readSnapshot = (snapshot) => {
     ensure(snapshot && entry.evidence.some((e) => e.path === snapshot.path && e.sha256 === snapshot.sha256), 'SQLite snapshot is not retained native evidence');
-    const path = containedPath(stateRoot, snapshot.path); ensure(fileHash(path) === snapshot.sha256, 'SQLite snapshot bytes changed'); return rows(path, upgrade.storageSchema.version);
+    return snapshotRows(containedPath(stateRoot, snapshot.path), snapshot.sha256, upgrade.storageSchema.version);
   };
   const prior = readSnapshot(proof.fixtureBefore), later = readSnapshot(proof.fixtureAfter);
   ensure(prior.length === later.length, 'prior rows were lost or added');
@@ -118,8 +133,11 @@ export function captureUpgradeSnapshot({ contractPath, predecessorTag, checkId, 
   const marker = readJson(markerPath);
   ensure(objectHash(marker) === objectHash({ schemaVersion: 1, purpose: 'mythra-release-qa', profileId: contract.profile.profileId }), 'owned profile marker differs');
   const database = resolve(profile, 'app-data/openkiwi.sqlite3'); unlinked(database);
-  if (existsSync(`${database}-wal`)) unlinked(`${database}-wal`);
-  ensure(!existsSync(`${database}-wal`) || lstatSync(`${database}-wal`).size === 0, 'active or uncheckpointed SQLite WAL');
+  for (const [suffix, label] of [['-wal', 'WAL'], ['-journal', 'rollback journal']]) {
+    const sidecar = `${database}${suffix}`;
+    if (existsSync(sidecar)) unlinked(sidecar);
+    ensure(!existsSync(sidecar) || lstatSync(sidecar).size === 0, `active or uncheckpointed SQLite ${label}`);
+  }
   const eventPath = resolve(profile, 'events.jsonl'); if (existsSync(eventPath)) unlinked(eventPath);
   const events = existsSync(eventPath) ? readFileSync(eventPath, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
   const launches = events.filter((e) => e.profileId === marker.profileId && e.kind === 'profile-open');

@@ -126,7 +126,11 @@ export function createPlan({ commit, version, baseline, changedFiles, predecesso
       // Only actual shipped predecessor differences add upgrade risk. Intermediate
       // never-shipped/reverted commits are review context, not automatic gates.
       const previous = predecessors.filter((p) => !coversHistoricalUpgrade(scope, p, id, platform)).flatMap((p) => p.changedFiles.filter((f) => !isTest(f) && appliesToPlatform(f, platform) && pattern.test(f)).map((f) => `${p.tag}:${f}`));
-      const additions = [...knownIssues, ...overrides, ...boundaryHints, ...predecessorAdditions, ...classifications.flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${c.path}: ${c.reason}` })))].filter((i) => i.check === id && (!i.platform || i.platform === platform) && (!i.predecessor || !coversHistoricalUpgrade(scope, i.predecessor, id, platform)));
+      // Provenance comes from the containing scope, never an input item's fields.
+      const additions = [...knownIssues, ...overrides, ...boundaryHints,
+        ...predecessorAdditions.filter((i) => !coversHistoricalUpgrade(scope, i.predecessor, id, platform)),
+        ...classifications.flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${c.path}: ${c.reason}` })))
+      ].filter((i) => i.check === id && (!i.platform || i.platform === platform));
       const triggers = [...current, ...previous, ...additions.map((a) => a.reason)];
       checks.push({ id: `${id}:${platform}`, kind: 'native', platform, required: triggers.length > 0,
         reason: triggers.length ? triggers.join('; ') : historicalCoverageReason(upgradeCoverage, id, platform),

@@ -102,20 +102,20 @@ export function assertPlan(plan) {
   // Additions/classifications can only add native gates. Keep their persisted
   // decisions consistent with required flags without duplicating the planner's
   // source-path classifier here. Exact fixed edges above also exclude cycles.
-  const additions = [...plan.knownIssues, ...plan.overrides, ...plan.boundaryHints];
+  const additions = [...plan.knownIssues, ...plan.overrides, ...plan.boundaryHints].map((item) => ({ item, predecessor: null }));
   for (const scope of [plan, ...plan.predecessors]) {
     if (!Array.isArray(scope.changedFiles) || (scope.classifications !== undefined && !Array.isArray(scope.classifications))
       || (scope.boundaryHints !== undefined && !Array.isArray(scope.boundaryHints))) throw new Error('Invalid release scope classification');
-    if (scope !== plan) additions.push(...(scope.boundaryHints ?? []).map((item) => ({ ...item, predecessor: scope })));
+    if (scope !== plan) additions.push(...(scope.boundaryHints ?? []).map((item) => ({ item, predecessor: scope })));
     for (const c of scope.classifications ?? []) {
       if (!c || !scope.changedFiles.includes(c.path) || !c.reason || !c.evidence || !Array.isArray(c.boundaries)) throw new Error('Invalid release scope classification');
-      additions.push(...c.boundaries.map((check) => ({ check, reason: c.reason, ...(scope !== plan ? { predecessor: scope } : {}) })));
+      additions.push(...c.boundaries.map((check) => ({ item: { check, reason: c.reason }, predecessor: scope !== plan ? scope : null })));
     }
   }
-  for (const item of additions) {
+  for (const { item, predecessor } of additions) {
     if (!item || !nativeIds.includes(item.check) || !item.reason || (item.platform && !PLATFORMS.includes(item.platform))) throw new Error('Invalid native-check addition');
     for (const platform of item.platform ? [item.platform] : PLATFORMS) {
-      if (item.predecessor && coversHistoricalUpgrade(plan, item.predecessor, item.check, platform)) continue;
+      if (predecessor && coversHistoricalUpgrade(plan, predecessor, item.check, platform)) continue;
       if (!plan.checks.find((c) => c.id === `${item.check}:${platform}`).required) throw new Error(`Required native addition omitted: ${item.check}:${platform}`);
     }
   }

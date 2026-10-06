@@ -7,10 +7,10 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { changedSource, createPlan, planFromCheckout } from './release-plan.mjs';
-import { atomicJson, digest, fileHash, objectHash, readJson, receiptPath, reconcile } from './release-state.mjs';
+import { assertPlan, atomicJson, digest, fileHash, objectHash, readJson, receiptPath, reconcile } from './release-state.mjs';
 import { exportUpgradeCoverage, fingerprintUpgradeInputs, revalidatePlanCoverage, resolveUpgradeCoverage } from './release-upgrade-coverage.mjs';
 import { syntheticGh, syntheticGit, syntheticPassedState } from './release-upgrade-coverage.fixture.mjs';
-import { captureUpgradeSnapshot, sourceUpgradeSchema } from './release-upgrade-snapshot.mjs';
+import { captureUpgradeSnapshot, sourceUpgradeSchema, validateUpgradeObservation } from './release-upgrade-snapshot.mjs';
 
 // Every release, executable, pixel, event, CI and public asset below is a
 // synthetic schema fixture. Passing this suite is not native acceptance.
@@ -71,6 +71,35 @@ describe('accepted historical native upgrade coverage', { timeout: 30_000 }, () 
     expect(() => revalidatePlanCoverage({ root: f.root, plan, execute: f.gh.execute })).not.toThrow();
     expect(f.gh.calls.some((args) => args[1].endsWith('/releases/tags/v1.2.3'))).toBe(true);
     expect(f.gh.calls.some((args) => args[1].endsWith('/git/ref/tags/v1.2.2'))).toBe(true);
+  });
+
+  test.each(['knownIssues', 'overrides', 'boundaryHints'])('current %s cannot masquerade as a covered predecessor addition', (field) => {
+    const f = fixture(), decisions = f.resolveProofs([f.storeProof(f.exportProof())]);
+    const plan = createPlan({ ...f.input, upgradeCoverage: decisions, [field]: [{ check: 'native-startup', platform: 'windows-x86_64', reason: 'Current runtime failure', predecessor: f.input.predecessors[0] }] });
+    expect(nativeIds(plan)).toContain('native-startup:windows-x86_64');
+    const frozen = structuredClone(createPlan({ ...f.input, upgradeCoverage: decisions }));
+    frozen[field] = plan[field];
+    const { planHash: _, ...body } = frozen; frozen.planHash = objectHash(body);
+    expect(() => assertPlan(frozen)).toThrow(/Required native addition omitted/);
+  });
+
+  test('retained SQLite proof ignores unhashed WAL rows and reads only hashed main bytes', () => {
+    const f = fixture(), directory = join(f.stateRoot, 'native-workers/windows-x86_64');
+    const contract = readJson(join(directory, 'contract.json')), result = readJson(join(directory, 'result.json'));
+    const entry = result.results[0], upgrade = contract.checks[0].upgradeCases[0];
+    const observation = entry.observations.find((o) => o.id === upgrade.id), proof = readJson(join(f.stateRoot, observation.evidence));
+    const afterPath = join(f.stateRoot, proof.fixtureAfter.path), db = new DatabaseSync(afterPath);
+    try {
+      db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;');
+      db.prepare('UPDATE app_state SET value=? WHERE key=?').run(JSON.stringify({ theme: 'mythra', unknownProtectedSetting: 'synthetic-preserved' }), 'kiwi.settings');
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      proof.fixtureAfter.sha256 = fileHash(afterPath);
+      entry.evidence.find((e) => e.path === proof.fixtureAfter.path).sha256 = proof.fixtureAfter.sha256;
+      db.prepare('UPDATE app_state SET value=? WHERE key=?').run(JSON.stringify({ theme: 'light-mythra', unknownProtectedSetting: 'synthetic-preserved' }), 'kiwi.settings');
+      expect(fileHash(afterPath)).toBe(proof.fixtureAfter.sha256);
+      const events = readFileSync(join(directory, 'native-events.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+      expect(() => validateUpgradeObservation({ proof, upgrade, entry, contract, stateRoot: f.stateRoot, events })).toThrow(/maintained settings replay is absent/);
+    } finally { db.close(); }
   });
 
   test('both native platforms require their own accepted upgrade evidence', () => {
@@ -256,6 +285,9 @@ describe('accepted historical native upgrade coverage', { timeout: 30_000 }, () 
     expect(after.fixtureBefore.sha256).toBe(before.fixtureBefore.sha256); expect(after.fixtureAfter.sha256).not.toBe(before.fixtureBefore.sha256);
     writeFileSync(`${database}-wal`, 'Synthetic uncheckpointed WAL');
     expect(() => captureUpgradeSnapshot({ ...args, phase: 'after', beforePath, output: `${output}.rejected` })).toThrow(/WAL/);
+    rmSync(`${database}-wal`);
+    writeFileSync(`${database}-journal`, 'Synthetic uncheckpointed rollback journal');
+    expect(() => captureUpgradeSnapshot({ ...args, phase: 'after', beforePath, output: `${output}.journal-rejected` })).toThrow(/rollback journal/);
   });
 
   test('macOS cleanup events after capture preserve the accepted UI replay while later ordinary launches invalidate it', () => {
