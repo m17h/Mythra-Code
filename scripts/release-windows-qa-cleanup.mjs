@@ -84,6 +84,7 @@ export function provisionWindowsQaProfile(contract, stateRoot, { system = os } =
 function readProvision(contract, p) {
   const provision = readJson(p.provisioning);
   if (provision.schemaVersion !== 1 || !equal(Object.fromEntries(Object.keys(binding(contract)).map((k) => [k, provision[k]])), binding(contract))) throw new Error('QA provisioning identity mismatch');
+  if (provision.host !== hostname()) throw new Error('QA provisioning host mismatch');
   if (!equal(provision.rootIdentity, identity(p.root)) || provision.markerSha256 !== fileHash(join(p.root, markerName))) throw new Error('Provisioned QA root or marker was replaced');
   assertMarker(p.root, contract);
   return provision;
@@ -145,7 +146,11 @@ export function cleanupSuccessfulWindowsQaProfile(result, contract, stateRoot, {
     const provision = readProvision(contract, p), captures = readJson(p.writers);
     if (!Array.isArray(captures) || !captures.length || captures.some((c) => c.contractHash !== contract.contractHash || !c.processes?.length)) throw new Error('Missing/stale captured process ownership');
     const eventsPath = join(p.root, 'events.jsonl'), events = nativeEvents(eventsPath, contract);
-    for (const opened of events.filter((e) => e.kind === 'profile-open')) {
+    const openedRuns = events.filter((e) => e.kind === 'profile-open');
+    const capturedRuns = captures.map((capture) => `${capture.pid}:${capture.runId}`);
+    const openedKeys = openedRuns.map((opened) => `${opened.pid}:${opened.runId}`);
+    if (!equal(capturedRuns.sort(), openedKeys.sort()) || new Set(capturedRuns).size !== captures.length) throw new Error('Every owned native run requires complete unique captured writers and events');
+    for (const opened of openedRuns) {
       const capture = captures.find((c) => c.pid === opened.pid && c.runId === opened.runId);
       const run = events.filter((e) => e.pid === opened.pid && e.runId === opened.runId);
       const saved = run.findLastIndex((e) => e.kind === 'close-finish' && e.details?.accepted === true && e.details.result === 'saved');
@@ -193,9 +198,11 @@ export function validateWindowsCleanupReceipt(result, contract, stateRoot) {
   const expected = binding(contract);
   const provision = readJson(join(directory, 'provisioning.json'));
   const worker = readJson(join(directory, 'worker-result.json'));
-  for (const record of [intent, provision]) if (!equal(Object.fromEntries(Object.keys(expected).map((k) => [k, record[k]])), expected)) throw new Error('Windows cleanup ownership binding changed');
+  for (const record of [intent, provision]) if (!equal(Object.fromEntries(Object.keys(expected).map((k) => [k, record[k]])), expected)
+    || typeof provision.host !== 'string' || !provision.host || record.host !== provision.host) throw new Error('Windows cleanup ownership binding changed');
   if (intent.workerResultSha256 !== objectHash(worker) || !equal(result, { ...worker, cleanupComplete: true })) throw new Error('Windows cleanup result does not match accepted worker evidence');
   if (!equal(Object.fromEntries(Object.keys(expected).map((k) => [k, receipt[k]])), expected) || receipt.cleanupComplete !== true || receipt.rootAbsent !== true
+    || receipt.host !== provision.host
     || receipt.intentSha256 !== fileHash(join(directory, 'cleanup-intent.json')) || receipt.provisioningSha256 !== fileHash(join(directory, 'provisioning.json'))
     || receipt.writersSha256 !== fileHash(join(directory, 'writers.json')) || !equal(receipt.evidence, intent.evidence)
     || receipt.processExit?.rootExists !== false || receipt.processExit?.processes?.length !== 0 || receipt.processExit?.ambiguousWebviewPids?.length !== 0) throw new Error('Windows owned cleanup receipt is missing or inconsistent');
@@ -204,6 +211,7 @@ export function validateWindowsCleanupReceipt(result, contract, stateRoot) {
 }
 export function verifyWindowsCleanupLive(contract, stateRoot, executable, { system = os } = {}) {
   const p = paths(contract, stateRoot), provision = readJson(p.provisioning), captures = readJson(p.writers);
+  if (provision.host !== hostname()) throw new Error('QA provisioning host mismatch');
   if (existsSync(p.root)) throw new Error('Windows QA root still exists');
   const probe = system.probe('inspect', contract, executable); assertNoWriters(probe, captures, provision);
   if (probe.rootExists !== false) throw new Error('Windows root absence could not be verified');

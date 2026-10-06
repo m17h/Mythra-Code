@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { atomicJson, fileHash, objectHash, readJson } from './release-state.mjs';
@@ -92,6 +92,19 @@ test('wrong provisioning identity prevents removal', () => {
   atomicJson(path, { ...record, profileId: randomUUID() });
   expect(() => f.cleanup()).toThrow(/provisioning identity/); expect(f.remove).not.toHaveBeenCalled();
 });
+test('a provisioning record from another host cannot authorize removal', () => {
+  const f = fixture(), path = join(f.directory, 'provisioning.json');
+  atomicJson(path, { ...readJson(path), host: `${hostname()}-other` });
+  expect(() => f.cleanup()).toThrow(/host/); expect(f.remove).not.toHaveBeenCalled();
+});
+test.each(['omitted', 'replaced by a duplicate'])('a captured launch %s in the retained events prevents removal', (mode) => {
+  const f = fixture(), path = join(f.directory, 'writers.json'), captures = readJson(path);
+  captures.push({ ...captures[0], pid: 4333, runId: randomUUID(),
+    processes: captures[0].processes.map((entry) => ({ ...entry, pid: entry.pid + 100 })) });
+  atomicJson(path, captures);
+  if (mode === 'replaced by a duplicate') f.persistEvents([...f.events, { ...f.events[0] }]);
+  expect(() => f.cleanup()).toThrow(/Every owned native run/); expect(f.remove).not.toHaveBeenCalled();
+});
 test.each([
   ['failed result', (f) => { f.result.status = 'failed'; }],
   ['missing selected observation', (f) => { f.result.results[0].observations = []; }],
@@ -177,6 +190,11 @@ test('a remover that leaves the root cannot report cleanup success', () => {
 test('forged cleanup binding cannot satisfy retained validation', () => {
   const f = fixture(); f.cleanup(); const path = join(f.directory, 'cleanup-receipt.json');
   atomicJson(path, { ...readJson(path), profileId: randomUUID() });
+  expect(() => validateWindowsCleanupReceipt({ ...f.result, cleanupComplete: true }, f.contract, f.state)).toThrow(/inconsistent/);
+});
+test('portable cleanup proof must preserve the original host binding', () => {
+  const f = fixture(); f.cleanup(); const path = join(f.directory, 'cleanup-receipt.json');
+  atomicJson(path, { ...readJson(path), host: `${hostname()}-other` });
   expect(() => validateWindowsCleanupReceipt({ ...f.result, cleanupComplete: true }, f.contract, f.state)).toThrow(/inconsistent/);
 });
 test('portable receipt validation does not substitute for actual root absence', () => {

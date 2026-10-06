@@ -4,6 +4,8 @@
 param([ValidateSet('provision','inspect')][string]$Action, [string]$Root, [string]$ProfileId,
       [int]$HostPid = 0, [string]$Executable = '')
 $ErrorActionPreference='Stop'
+# Node decodes the JSON pipe as UTF-8 even on legacy console codepages.
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $self=Get-Process -Id $PID
 $cursor=[IO.DirectoryInfo]::new($Root).Parent

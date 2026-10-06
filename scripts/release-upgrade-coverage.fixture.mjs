@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { assetNames } from './release-audit.mjs';
 import { assertHostedEvidence } from './release-evidence.mjs';
 import { createNativeContract, validateNativeResult } from './release-native-check.mjs';
-import { atomicJson, digest, fileHash, readJson, receiptPath, saveReceipt } from './release-state.mjs';
+import { atomicJson, digest, fileHash, objectHash, readJson, receiptPath, saveReceipt } from './release-state.mjs';
 import { expectedReceipts, lanes } from './verify-ci.mjs';
 
 // Load this Node 22 built-in at runtime; Vite's client transformer does not
@@ -85,7 +85,14 @@ function syntheticHosted(commit) {
 export function syntheticNative(root, plan, platform, checkout) {
   const directory = `native-workers/${platform}`;
   mkdirSync(join(root, directory), { recursive: true });
-  const contract = createNativeContract({ root: checkout, stateRoot: root, plan, platform });
+  let contract = createNativeContract({ root: checkout, stateRoot: root, plan, platform });
+  if (platform === 'windows-x86_64') {
+    // Historical schema proof deliberately models a frozen legacy Windows
+    // worker recipe. It is not prospective cleanup or current native acceptance.
+    const { contractHash: _hash, windowsCleanup: _cleanup, ...legacy } = contract;
+    const body = { ...legacy, syntheticFixture: 'historical-legacy-windows-native-schema' };
+    contract = { ...body, contractHash: objectHash(body) };
+  }
   const executablePath = join(root, `executables/${platform}/app`);
   mkdirSync(dirname(executablePath), { recursive: true }); writeFileSync(executablePath, `Synthetic executable ${platform}`);
   const paths = ['screen.png', 'accessibility.json', 'native-events.jsonl'].map((name) => `${directory}/${name}`);
@@ -126,7 +133,7 @@ export function syntheticNative(root, plan, platform, checkout) {
     return { checkId: check.id, executablePath, executableSha256: fileHash(executablePath), pid, processStart: 'synthetic-start', runId, windowIdentity: `Mythra Code — Release QA ${profileId}`, version: plan.version,
       observations, evidence: evidencePaths.map((path) => ({ path, sha256: fileHash(join(root, path)) })) };
   });
-  const result = { status: 'passed', reason: 'Synthetic schema fixture only', capability: { verified: true, tool: 'cua', evidence: capabilityPath }, cleanupComplete: true, restorationComplete: true, results };
+  const result = { status: 'passed', reason: platform === 'windows-x86_64' ? 'Synthetic historical legacy Windows schema fixture only; never current native acceptance' : 'Synthetic schema fixture only', capability: { verified: true, tool: 'cua', evidence: capabilityPath }, cleanupComplete: true, restorationComplete: true, results };
   atomicJson(join(root, contractPath), contract); atomicJson(join(root, resultPath), result);
   validateNativeResult(result, contract, root);
   return results.map((entry) => ({ ...entry, contract, result, evidence: [...entry.evidence, ...[contractPath, resultPath, capabilityPath].map((path) => ({ path, sha256: fileHash(join(root, path)) }))] }));
