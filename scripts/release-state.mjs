@@ -7,6 +7,8 @@ import { assertUpgradeDecision, coversHistoricalUpgrade, historicalCoverageReaso
 import { assertReleaseVerification, expectedReceipts } from './verify-ci.mjs';
 
 export const PLATFORMS = ['darwin-aarch64', 'windows-x86_64'];
+export const appliesToPlatform = (file, platform) => platform === 'windows-x86_64'
+  || (!file.startsWith('Windows/') && file !== 'src-tauri/tauri.windows.conf.json');
 export const SHA = /^[a-f0-9]{40}$/;
 export const HASH = /^[a-f0-9]{64}$/;
 export const readJson = (path) => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
@@ -109,12 +111,13 @@ export function assertPlan(plan) {
     if (scope !== plan) additions.push(...(scope.boundaryHints ?? []).map((item) => ({ item, predecessor: scope })));
     for (const c of scope.classifications ?? []) {
       if (!c || !scope.changedFiles.includes(c.path) || !c.reason || !c.evidence || !Array.isArray(c.boundaries)) throw new Error('Invalid release scope classification');
-      additions.push(...c.boundaries.map((check) => ({ item: { check, reason: c.reason }, predecessor: scope !== plan ? scope : null })));
+      additions.push(...c.boundaries.map((check) => ({ item: { check, reason: c.reason }, path: c.path, predecessor: scope !== plan ? scope : null })));
     }
   }
-  for (const { item, predecessor } of additions) {
+  for (const { item, path, predecessor } of additions) {
     if (!item || !nativeIds.includes(item.check) || !item.reason || (item.platform && !PLATFORMS.includes(item.platform))) throw new Error('Invalid native-check addition');
     for (const platform of item.platform ? [item.platform] : PLATFORMS) {
+      if (path && !appliesToPlatform(path, platform)) continue;
       if (predecessor && coversHistoricalUpgrade(plan, predecessor, item.check, platform)) continue;
       if (!plan.checks.find((c) => c.id === `${item.check}:${platform}`).required) throw new Error(`Required native addition omitted: ${item.check}:${platform}`);
     }

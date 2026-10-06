@@ -44,13 +44,62 @@ describe('native release scope safety', () => {
     expect(reviewed.reviewRequired).toEqual([]);
     expect(reviewed.checks.filter((c) => c.kind === 'native' && c.required)).toEqual([]);
   });
-  test.each(['Windows/build.ps1', 'Windows/installer.nsi', 'src-tauri/tauri.windows.conf.json'])(
+  test.each(['Windows/installer.nsi', 'Windows/installer.nsh', 'src-tauri/tauri.windows.conf.json'])(
     '%s selects native checks only on Windows, including shipped predecessors', (path) => {
       for (const scope of [{ changedFiles: [path] }, { predecessors: [{ tag: 'v1.2.2-withdrawn', commit: 'd'.repeat(40), reason: 'Installed withdrawn build', changedFiles: [path] }] }]) {
         const p = plan(scope);
         expect(required(p, 'native-installer')).toEqual(['windows-x86_64']);
         expect(p.checks.filter((c) => c.kind === 'native' && c.required).every((c) => c.platform === 'windows-x86_64')).toBe(true);
       }
+    });
+  test('Windows build changes require a reviewed installer decision in each cumulative scope', () => {
+    const path = 'Windows/build.ps1';
+    const classification = { path, boundaries: [], reason: 'Verification and staging only',
+      evidence: 'Reviewed hosted CI, asset staging and isolated executable smoke hunks; installer/update/recovery unchanged' };
+    const predecessor = { tag: 'v1.2.2-withdrawn', commit: 'd'.repeat(40), reason: 'Installed withdrawn build', changedFiles: [path] };
+    const pending = plan({ changedFiles: [path], predecessors: [predecessor] });
+    expect(pending.reviewRequired).toEqual([path, `${predecessor.tag}:${path}`]);
+    expect(required(pending, 'native-startup')).toEqual(['windows-x86_64']);
+    const currentReviewed = plan({ changedFiles: [path], classifications: [classification], predecessors: [predecessor] });
+    expect(currentReviewed.reviewRequired).toEqual([`${predecessor.tag}:${path}`]);
+    const reviewed = plan({ changedFiles: [path], classifications: [classification],
+      predecessors: [{ ...predecessor, classifications: [classification] }] });
+    expect(reviewed.reviewRequired).toEqual([]);
+    expect(required(reviewed, 'native-installer')).toEqual([]);
+    expect(required(reviewed, 'native-startup')).toEqual(['windows-x86_64']);
+    for (const id of ['ci', 'build:darwin-aarch64', 'build:windows-x86_64', 'audit:darwin-aarch64', 'audit:windows-x86_64', 'draft', 'publish', 'public']) {
+      expect(reviewed.checks.find((c) => c.id === id).required).toBe(true);
+    }
+  });
+  test.each([false, true])('reviewed Windows installer semantics retain their gate (predecessor: %s)', (historical) => {
+    const path = 'Windows/build.ps1';
+    const installer = { path, boundaries: ['native-installer'], reason: 'Installer invocation changed', evidence: 'Reviewed NSIS bundling arguments' };
+    const verification = { path, boundaries: [], reason: 'Verification only', evidence: 'Reviewed hosted CI retrieval' };
+    const p = plan(historical ? { changedFiles: [path], classifications: [verification], predecessors: [{
+      tag: 'v1.2.2-withdrawn', commit: 'd'.repeat(40), reason: 'Installed withdrawn build', changedFiles: [path], classifications: [installer],
+    }] } : { changedFiles: [path], classifications: [installer] });
+    expect(p.reviewRequired).toEqual([]);
+    expect(required(p, 'native-installer')).toEqual(['windows-x86_64']);
+    expect(required(p, 'native-startup')).toEqual(['windows-x86_64']);
+  });
+  test.each(['knownIssues', 'overrides', 'boundaryHints'])('reviewed Windows verification cannot suppress shared %s', (field) => {
+    const path = 'Windows/build.ps1';
+    const p = plan({ changedFiles: [path], classifications: [{ path, boundaries: [], reason: 'Verification only', evidence: 'Reviewed CI retrieval' }],
+      [field]: [{ check: 'native-installer', reason: 'Shared update/recovery needs replay', path }] });
+    expect(required(p, 'native-installer')).toEqual(both);
+  });
+  test('predecessor boundary hints remain shared despite a Windows verification classification', () => {
+    const path = 'Windows/build.ps1';
+    const p = plan({ predecessors: [{ tag: 'v1.2.2-withdrawn', commit: 'd'.repeat(40), reason: 'Installed withdrawn build', changedFiles: [path],
+      classifications: [{ path, boundaries: [], reason: 'Verification only', evidence: 'Reviewed CI retrieval' }],
+      boundaryHints: [{ check: 'native-installer', reason: 'Shared recovery changed', path }],
+    }] });
+    expect(required(p, 'native-installer')).toEqual(both);
+  });
+  test.each(['Windows/installer.nsi', 'Windows/installer.nsh', 'src-tauri/tauri.windows.conf.json', 'src-tauri/capabilities/default.json', 'src/lib/updater.ts'])(
+    'semantic classification cannot suppress fixed installer boundary %s', (path) => {
+      const p = plan({ changedFiles: [path], classifications: [{ path, boundaries: [], reason: 'Comment-only classification', evidence: 'Reviewed hunk' }] });
+      expect(required(p, 'native-installer')).toEqual(path.startsWith('Windows/') || path.endsWith('tauri.windows.conf.json') ? ['windows-x86_64'] : both);
     });
   test('shared Tauri config still selects both platform native checks', () => {
     const p = plan({ changedFiles: ['src-tauri/tauri.conf.json'] });
@@ -73,6 +122,32 @@ describe('native release scope safety', () => {
     expect(p.reviewRequired).toEqual([]);
     expect(required(p, 'native-close')).toEqual(both);
   });
+  test('checkout planning blocks unreviewed Windows build hunks in current and predecessor scopes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mythra-build-scope-')); roots.push(root);
+    const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const write = (file, text) => { mkdirSync(dirname(join(root, file)), { recursive: true }); writeFileSync(join(root, file), text); };
+    const commit = (message) => { git('add', '.'); git('commit', '-m', message); };
+    git('init'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid');
+    git('remote', 'add', 'origin', 'https://github.com/m17h/Mythra-Code.git');
+    for (const file of ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs', 'scripts/release-upgrade-coverage.mjs']) write(file, 'policy\n');
+    write('package.json', JSON.stringify({ version: '1.2.3' }));
+    write('Windows/build.ps1', 'npm run verify\n'); commit('shipped builder'); git('tag', 'v1.2.2-withdrawn'); git('tag', 'v1.2.2');
+    write('Windows/build.ps1', 'node scripts/release-evidence.mjs\n'); commit('builder verification');
+    const execute = (_command, args) => JSON.stringify(args[1].endsWith('/releases/latest')
+      ? { id: 123, tag_name: 'v1.2.2', draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' }
+      : { object: { type: 'commit', sha: git('rev-parse', 'v1.2.2^{commit}') } });
+    const input = { baseline: { tag: 'v1.2.2', reason: 'Accepted public baseline' } };
+    expect(() => planFromCheckout(root, input, { execute })).toThrow(/requires review notes for: Windows\/build\.ps1/);
+    const classification = { path: 'Windows/build.ps1', boundaries: [], reason: 'Verification only', evidence: 'Reviewed npm verification replacement' };
+    input.classifications = [classification];
+    const reviewed = planFromCheckout(root, input, { execute });
+    expect(required(reviewed, 'native-installer')).toEqual([]);
+    expect(required(reviewed, 'native-startup')).toEqual(['windows-x86_64']);
+    input.predecessors = [{ tag: 'v1.2.2-withdrawn', reason: 'Installed before accepted baseline' }];
+    expect(() => planFromCheckout(root, input, { execute })).toThrow(/v1.2.2-withdrawn:Windows\/build\.ps1/);
+    input.predecessors[0].classifications = [classification];
+    expect(planFromCheckout(root, input, { execute }).reviewRequired).toEqual([]);
+  }, 15_000);
   test('real shipped predecessor integration diffs add coverage even after their source was reverted', () => {
     const root = mkdtempSync(join(tmpdir(), 'mythra-predecessor-scope-')); roots.push(root);
     const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();

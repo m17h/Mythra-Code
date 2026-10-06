@@ -97,15 +97,80 @@ before every meaningful action. `close-and-dispose` requests deferred cleanup.
 The candidate invokes the normal window close/save guard. Reopening ignores a
 previous nonce; every close request needs a new one. Wrong identity/action,
 malformed requests, unsupported platforms, invalid ownership, and occupied
-locks fail with exit 78. No injected failure/authentication flag exists.
+locks fail with exit 78. The sole supported injected fault is the owned-profile
+close recipe below; no authentication override exists.
 
 `events.jsonl` contains objects with `schemaVersion:1`, `profileId`, a fresh
 per-process `runId`, native `pid`, `kind`, and `details`. `profile-open.details`
 contains `contractVersion:1`, `providers:"blocked"`, `persistentWebview:true`,
 and `webviewStoreId`. Render/storage/close events are scoped by all these
 identities; never combine unrelated launches. `render-failed`, `setup-failed`,
-`control-rejected`, `renderer-storage-failed`, `close-finish.result:"failed"`, and nonzero exit are failures.
+`control-rejected`, `renderer-storage-failed`, unexpected `close-finish.result:"failed"`, and nonzero exit are failures.
 `close-finish.result:"cancel"` is not a successful close.
+
+## One-shot native close save-failure recipe
+
+When the native contract declares `closeFailureScenario`, its nonce authorizes
+exactly one saved-result fault in an owned QA process. Require
+`profile-open.details.closeFailureVersion:1`, normal rendered UI, completed
+onboarding/settings save and matching `control-ready`. Atomically write:
+
+```json
+{"schemaVersion":1,"profileId":"MARKER-UUID","runId":"CURRENT-RUN-UUID","nonce":"CONTRACT-SCENARIO-NONCE","action":"close-save-failure-once"}
+```
+
+The production frontend performs its actual save/close protocol. Only its
+successful `saved` response is converted once into `failed` at the native close
+guard boundary, bound to that run, window generation and request ID. Actual
+frontend save errors are never relabelled as injected. Production profiles
+cannot arm the fault; a second arm in the same process is rejected.
+
+Capture the actual native **Close Mythra Code? — Release QA FULL-PROFILE-UUID** warning, its **Keep open**
+button and owned parent window through supported CUA pixels and accessibility.
+Choose **Keep open** explicitly. Require matching `close-prompt-answer` with
+`choice:"keep-open"`, `confirmed:false`, `accepted:true`, followed by
+`close-cancelled`. Capture the recovered owned window and confirm the saved
+theme/state through the UI and read-only SQLite checks above. Normal close
+with a fresh nonce must then emit accepted `saved` and exit. Reopen the same
+candidate/root, verify retained state and close normally again. This second,
+entirely healthy run supplies the primary PID/runId for every result entry.
+
+Retain the complete event stream and a `close-failure.json` observation:
+
+```json
+{
+  "schemaVersion": 1,
+  "nonce": "CONTRACT-SCENARIO-NONCE",
+  "kind": "save-failure-once",
+  "cause": "override-saved-result",
+  "profileId": "MARKER-UUID",
+  "pid": 123,
+  "runId": "INJECTED-RUN-UUID",
+  "requestId": 1,
+  "prompt": {"pid": 123, "runId": "INJECTED-RUN-UUID", "phase": "prompt", "screenshot": "prompt.png", "accessibility": "prompt-ax.json"},
+  "recovery": {"pid": 123, "runId": "INJECTED-RUN-UUID", "phase": "recovery", "screenshot": "recovery.png", "accessibility": "recovery-ax.json"}
+}
+```
+
+Paths are relative to the state directory; list this JSON and both distinct
+captures in the close result's hashed evidence. Point `affected-close-failure`
+at this JSON. The validator requires the declared nonce, exactly one arm/apply
+trace, matching failed request, real prompt/cancellation events, a successful
+subsequent close, exit and later healthy primary launch. Other setup, render,
+storage or close failures remain failures even in a different run of the same
+profile. Every additional native close prompt is unexpected, including timeout
+recovery in the reopened run. Capture records identify the injected PID/run and
+phase; both AX captures identify the owned parent window, and recovery must no
+longer show the warning. Distinct filenames with identical pixels or AX do not
+prove recovery. The healthy reopened renderer must report the existing profile
+UUID as its previous store marker on its first and every later storage probe;
+a reload must not hide a missing marker at reopen. Screenshots/AX and state checks must be real
+observations; event records alone do not prove visible behavior.
+
+This tests the native guard's SaveFailed prompt and cancellation/recovery path.
+It does not simulate disk-write failures, native deadlines or renderer crashes.
+A selected case or known issue requiring those behaviors still needs its own
+maintained recipe and actual replay; do not substitute this fault for it.
 
 ## Dispose after the final reopen
 
@@ -153,8 +218,9 @@ For existing-data fixtures, obtain a consistent SQLite online backup from a
 read-only source connection and copy only selected noncredential state files.
 Do not raw-copy a live database/WAL or an entire provider home. Preserve source
 metadata/hashes and never move/rename the source profile. This contract exposes
-no corruption, save-failure, installer, provider, or crash-injection hook;
-those cases require a maintained native recipe and evidence of the real
+no corruption, disk-write-failure, installer, provider, or crash-injection hook.
+The one-shot native close fault above is the only supported fault scenario;
+other cases require a maintained native recipe and evidence of the real
 boundary before they may be recorded as tested.
 
 ## Optional historical upgrade evidence

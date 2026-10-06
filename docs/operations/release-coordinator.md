@@ -26,6 +26,22 @@ explicit semantic classification with the reviewed symbols/hunks as evidence.
 Known failures and detected native integration changes cannot be suppressed by
 an unrelated-file classification.
 
+`Windows/build.ps1` retains its Windows startup path trigger and requires a
+semantic classification in every cumulative diff where it changes, including
+each shipped predecessor. Review its changed hunks for installer payload,
+NSIS invocation, updater/signing and install/update/recovery behavior. Include
+`native-installer` if any such boundary changes. Changes confined to hosted CI
+retrieval, asset staging or isolated executable smoke may use `boundaries: []`
+with a concrete reason and reviewed-hunk evidence; the startup check still runs.
+Missing classification blocks planning. A current-baseline classification does
+not classify a predecessor's different cumulative diff.
+
+This narrow build-script rule does not suppress fixed NSIS script, Tauri config,
+capability or updater source triggers. Classifications for Windows-only paths
+select Windows checks; shared known issues, overrides and integration hints
+retain their own platform scope. Package building, signing, hashes, provenance
+and combined/public audits remain mandatory regardless of this classification.
+
 ## Start a release
 
 First obtain the user's release authorization and finish the normal version PR
@@ -167,9 +183,14 @@ selected behavioral observations and cleanup evidence are required. Final cleanu
 removes the owned isolated WebView store. Installer cases require an isolated OS
 environment when installer-wide process termination could affect the working app;
 profile isolation alone does not make that safe.
-The maintained recipe currently has no save-failure injection adapter. An
-affected close-failure case that needs one stops with that explicit limitation;
-healthy close evidence does not substitute for the missing failure replay.
+Selected native close checks declare a one-shot saved-result fault in the owned
+QA profile. The native worker must observe the real SaveFailed dialog, explicitly
+choose Keep open, verify recovery, close normally and reopen for a separate
+healthy primary run. The validator binds the nonce, run/request identities,
+event sequence and prompt/recovery captures. This verifies native guard failure
+handling; it does not simulate disk-write failure, renderer death or timeout.
+Cases requiring those behaviors still stop for a missing maintained recipe;
+healthy close or the saved-result fault cannot substitute for their replay.
 
 ## Resume and diagnose
 
@@ -332,5 +353,5 @@ not a source fix or qualified historical proof.
 
 Legacy 1.22.2 evidence lacks this explicit predecessor fixture contract and does
 not qualify automatically. This feature does not supply the missing affected
-save-failure or isolated installer recipes, or solve macOS computer-use exact
+disk-write-failure, crash or isolated installer recipes, or solve macOS computer-use exact
 window targeting. Releases needing those checks retain their explicit blocker.
