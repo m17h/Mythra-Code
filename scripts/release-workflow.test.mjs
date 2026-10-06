@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createPlan, changedSource } from './release-plan.mjs';
-import { acquireLease, assertPlan, atomicJson, containedPath, fileHash, leaseStatus, objectHash, readJson, reconcile, saveReceipt } from './release-state.mjs';
-import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, assertStateLocation, createReleaseWorkspace, prepareMacBuildDependencies, runRelease } from './release-coordinator.mjs';
+import { acquireLease, assertPlan, atomicJson, containedPath, fileHash, leaseStatus, objectHash, processIdentity, readJson, reconcile, saveReceipt } from './release-state.mjs';
+import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, assertStateLocation, createReleaseWorkspace, markPublisherMutation, prepareMacBuildDependencies, runRelease } from './release-coordinator.mjs';
 import { assertHostedEvidence, verifyHostedEvidence } from './release-evidence.mjs';
 import { assetNames, assertAssetMetadata, verifyMinisign } from './release-audit.mjs';
 import { expectedReceipts, lanes } from './verify-ci.mjs';
@@ -129,6 +131,18 @@ describe('durable receipts and resume', () => {
     const resumed = acquireLease(root, { recover: true, identity }); resumed();
     expect(leaseStatus({ host: hostname(), pid: 10, processStart: 'old' }, identity)).toBe('orphaned');
   });
+  test('recovery validation runs against the reread lease under its lock and preserves rejected ownership', () => {
+    const root = temp(), path = join(root, 'lease.json'), guard = join(root, 'lease-recovery.lock');
+    const orphan = { host: hostname(), pid: 10, processStart: 'old', token: 'dead', mutationStarted: { stage: 'publish' } };
+    atomicJson(path, orphan);
+    expect(() => acquireLease(root, { recover: true, identity: () => 'current', validateRecovery: (old) => {
+      expect(existsSync(guard)).toBe(true); expect(old).toEqual(orphan);
+      throw new Error('Unresolved publisher children');
+    } })).toThrow(/Unresolved publisher children/);
+    expect(readJson(path)).toEqual(orphan); expect(existsSync(guard)).toBe(false);
+    const resumed = acquireLease(root, { recover: true, identity: () => 'current', validateRecovery: (old) => expect(old).toEqual(orphan) });
+    resumed();
+  });
   test.skipIf(process.platform === 'win32')('publisher exclusion spans distinct state directories and preserves designated host', () => {
     const registry = temp(), p = plan();
     const owner = acquirePublisherLease(p, { registry });
@@ -140,7 +154,98 @@ describe('durable receipts and resume', () => {
       expect(() => acquirePublisherLease({ ...p, publisherHost: 'another-host' }, { registry })).toThrow(/designated/);
     } finally { owner(); }
   });
+  test.skipIf(process.platform === 'win32')('mutation registration requires the live owner, retains its first marker and preserves another registration guard', () => {
+    const registry = temp(), p = plan(), directory = join(registry, objectHash({ repository: p.repository }));
+    const path = join(directory, 'lease.json'), guard = join(directory, 'lease-recovery.lock');
+    const owner = acquirePublisherLease(p, { registry });
+    try {
+      expect(() => markPublisherMutation(p, 'wrong', { registry })).toThrow(/matching live/);
+      expect(readJson(path).mutationStarted).toBeUndefined(); expect(existsSync(guard)).toBe(false);
+      writeFileSync(guard, 'another owner is registering');
+      expect(() => markPublisherMutation(p, owner.token, { registry })).toThrow(/EEXIST/);
+      expect(readFileSync(guard, 'utf8')).toBe('another owner is registering');
+      expect(readJson(path).mutationStarted).toBeUndefined(); rmSync(guard);
+      markPublisherMutation(p, owner.token, { registry, stage: 'draft' });
+      const marked = readJson(path);
+      expect(marked.mutationStarted.stage).toBe('draft');
+      expect(Number.isFinite(Date.parse(marked.mutationStarted.recordedAt))).toBe(true);
+      markPublisherMutation(p, owner.token, { registry });
+      expect(readJson(path)).toEqual(marked);
+      atomicJson(path, { ...marked, processStart: 'dead-parent' });
+      expect(() => markPublisherMutation(p, owner.token, { registry })).toThrow(/matching live/);
+      expect(() => acquirePublisherLease(p, { registry, recover: true })).toThrow(/Interrupted publisher mutation/);
+      expect(existsSync(guard)).toBe(false);
+      expect(readJson(path).mutationStarted).toEqual(marked.mutationStarted);
+    } finally { owner(); }
+    expect(existsSync(path)).toBe(false);
+  });
+  test.skipIf(process.platform === 'win32')('unmarked orphan recovery stays available and a replaced owner cannot register mutation', () => {
+    const registry = temp(), p = plan(), path = join(registry, objectHash({ repository: p.repository }), 'lease.json');
+    const original = acquirePublisherLease(p, { registry });
+    atomicJson(path, { ...readJson(path), processStart: 'dead-before-mutation' });
+    const replacementPlan = plan({ version: '1.2.4' });
+    const replacement = acquirePublisherLease(replacementPlan, { registry, recover: true });
+    try {
+      expect(() => markPublisherMutation(p, original.token, { registry })).toThrow(/matching live/);
+      expect(readJson(path).mutationStarted).toBeUndefined();
+      markPublisherMutation(replacementPlan, replacement.token, { registry });
+      original(); expect(readJson(path).token).toBe(replacement.token);
+    } finally { replacement(); }
+    expect(existsSync(path)).toBe(false);
+  });
 });
+
+test.skipIf(process.platform === 'win32')('a killed coordinator cannot release publisher exclusion while its finalizer survives', async () => {
+  const root = temp(), registry = join(root, 'registry'), p = plan();
+  const ready = join(root, 'ready.json'), proceed = join(root, 'proceed'), published = join(root, 'published');
+  const coordinatorModule = pathToFileURL(resolve(import.meta.dirname, 'release-coordinator.mjs')).href;
+  const stateModule = pathToFileURL(resolve(import.meta.dirname, 'release-state.mjs')).href;
+  const finalizer = join(root, 'finalizer.mjs'), coordinator = join(root, 'coordinator.mjs');
+  writeFileSync(finalizer, `import { existsSync, writeFileSync } from 'node:fs';
+import { assertPublisherOwner } from ${JSON.stringify(coordinatorModule)};
+assertPublisherOwner(${JSON.stringify(p)}, process.env.TEST_PUBLISHER_OWNER, { registry: ${JSON.stringify(registry)} });
+writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid }));
+while (!existsSync(${JSON.stringify(proceed)})) await new Promise((accept) => setTimeout(accept, 20));
+writeFileSync(${JSON.stringify(published)}, 'simulated publication');`);
+  writeFileSync(coordinator, `import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { acquirePublisherLease } from ${JSON.stringify(coordinatorModule)};
+import { atomicJson, objectHash, readJson } from ${JSON.stringify(stateModule)};
+const p = ${JSON.stringify(p)};
+const owner = acquirePublisherLease(p, { registry: ${JSON.stringify(registry)} });
+const leasePath = resolve(${JSON.stringify(registry)}, objectHash({ repository: p.repository }), 'lease.json');
+atomicJson(leasePath, { ...readJson(leasePath), mutationStarted: { stage: 'publish', recordedAt: new Date().toISOString() } });
+execFileSync(process.execPath, [${JSON.stringify(finalizer)}], { env: { ...process.env, TEST_PUBLISHER_OWNER: owner.token } });
+owner();`);
+  const parent = spawn(process.execPath, [coordinator], { detached: true, stdio: 'ignore' });
+  const parentExited = once(parent, 'exit');
+  let replacement, childPid;
+  const until = async (predicate) => {
+    const deadline = Date.now() + 5_000;
+    while (!predicate()) {
+      if (Date.now() >= deadline) throw new Error('Publisher fixture did not reach its expected state');
+      await new Promise((accept) => setTimeout(accept, 20));
+    }
+  };
+  try {
+    await until(() => existsSync(ready)); childPid = readJson(ready).pid;
+    process.kill(parent.pid, 'SIGKILL'); await parentExited;
+    expect(processIdentity(parent.pid)).toBeNull();
+    expect(processIdentity(childPid)).toBeTruthy();
+    expect(() => { replacement = acquirePublisherLease(plan({ version: '1.2.4' }), { registry, recover: true }); }).toThrow(/Interrupted publisher mutation/);
+    const leasePath = join(registry, objectHash({ repository: p.repository }), 'lease.json');
+    expect(readJson(leasePath).version).toBe('1.2.3');
+    expect(readJson(leasePath).mutationStarted.stage).toBe('publish');
+    writeFileSync(proceed, 'continue the controlled fixture');
+    await until(() => existsSync(published));
+    await until(() => processIdentity(childPid) === null);
+  } finally {
+    replacement?.();
+    try { process.kill(-parent.pid, 'SIGKILL'); } catch { /* Fixture group already exited. */ }
+    if (childPid) await until(() => processIdentity(childPid) === null);
+    parent.kill('SIGKILL'); await parentExited;
+  }
+}, 15_000);
 
 test('worker handoffs merge matching evidence once and reject changed bytes or another plan', () => {
   const p = plan(), source = temp(), destination = temp(), transfer = join(temp(), 'bundle');

@@ -202,7 +202,7 @@ export function workerTreeAlive(worker) {
   const rows = execFileSync('ps', ['-axo', 'pid=,pgid='], { encoding: 'utf8' }).trim().split('\n').map((line) => line.trim().split(/\s+/).map(Number));
   return rows.some(([, group]) => group === worker.pid);
 }
-export function acquireLease(root, { recover = false, identity = processIdentity } = {}) {
+export function acquireLease(root, { recover = false, identity = processIdentity, validateRecovery = () => {} } = {}) {
   mkdirSync(root, { recursive: true });
   const path = resolve(root, 'lease.json');
   const lease = { token: randomUUID(), host: hostname(), pid: process.pid, processStart: identity(process.pid), startedAt: new Date().toISOString() };
@@ -214,6 +214,9 @@ export function acquireLease(root, { recover = false, identity = processIdentity
       guardFd = openSync(guard, 'wx', 0o600);
       const old = readJson(path), status = leaseStatus(old, identity);
       if (!recover || status !== 'orphaned') throw new Error(`Release already has a ${status} owner; inspect status before resume`);
+      // The callback examines the reread owner under this same lock. Publisher
+      // recovery must not mistake a dead coordinator for exited mutation children.
+      validateRecovery(old);
       // Serialize recovery so another resumer cannot rename a newly owned lease.
       renameSync(path, resolve(root, `orphaned-lease-${objectHash(old)}.json`));
     } finally { if (guardFd !== undefined) { closeSync(guardFd); rmSync(guard, { force: true }); } }

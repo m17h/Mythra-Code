@@ -274,7 +274,7 @@ fn supported_platform() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         // Wry silently uses the default store below macOS 14. Reject first.
-        let output = std::process::Command::new("/usr/bin/sw_vers")
+        let output = crate::process_launch::background_std_command("/usr/bin/sw_vers")
             .arg("-productVersion")
             .output()
             .map_err(|_| "Cannot verify macOS WebView isolation support")?;

@@ -220,9 +220,9 @@ export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () =>
       observed = await transport.status(paths);
     }
   } catch (error) {
-    // SSH interruptions preserve remote ownership. Resume inspects the same PID;
+    // SSH/SCP interruptions preserve remote ownership. Resume inspects the same PID;
     // it never guesses that a disconnected client means the builder stopped.
-    const transient = error.status === 'waiting' || ['ETIMEDOUT', 'ECONNRESET', 'ENETUNREACH'].includes(error.code) || error.killed || (error.cmd?.startsWith('ssh ') && error.code === 255);
+    const transient = error.status === 'waiting' || ['ETIMEDOUT', 'ECONNRESET', 'ENETUNREACH'].includes(error.code) || error.killed || (/^(?:ssh|scp) /.test(error.cmd ?? '') && error.code === 255);
     await update(transient ? 'waiting' : 'failed', { blocked: error.status === 'blocked', reason: transient ? 'Remote Windows transport interrupted; inspect worker status and resume collection' : error.message });
     throw error;
   } finally { release(); }

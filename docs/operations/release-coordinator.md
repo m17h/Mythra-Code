@@ -194,8 +194,32 @@ This is deliberately a designated-host protocol, not a distributed lock. Moving
 publication to another host requires reviewed recovery and a new frozen plan;
 never steal a foreign host's lease or silently alter candidate evidence.
 
+Before the first draft upload or publication subprocess starts, the publisher
+records a mutation marker in its host-global lease. Registration and orphan
+recovery use the same lock. The marker remains for that owner's lifetime; a
+successful owner releases its lease normally. An owner that dies after mutation
+registration cannot be recovered automatically, even if its PID is gone: its
+finalizer or GitHub upload process may still run and change the remote release.
+`resume` blocks with `Interrupted publisher mutation`; `--retry-reason` does not
+clear this protection. Read-only public audits and owners interrupted before
+mutation registration retain normal orphan recovery.
+
+The release agent resolves this blocker within the authorized release scope.
+Inspect the preserved lease, process tree, logs and remote release state; prove
+the old coordinator, finalizer and every upload/publication descendant have
+exited. A dead coordinator PID alone is insufficient. If ownership is uncertain,
+keep the lease and report the blocker. Once all mutation processes are confirmed
+gone and no other coordinator is resuming, preserve that evidence and archive
+the orphaned host-global `lease.json` under
+`~/.mythra-release/publishers/<repository-hash>/` to a new recovery filename.
+Then resume the original frozen state and reconcile remote draft/public state
+before another mutation. Never erase the marker or replace the lease while an
+old publisher can still run. This manual recovery has no automatic subprocess
+collector; changing the publisher host is not a recovery shortcut.
+
 The worker lease records host, PID and process start identity. An orphaned local
-owner can be recovered; a live or foreign owner cannot be stolen. Native builds
+owner can be recovered subject to the publisher protection above; a live or
+foreign owner cannot be stolen. Native builds
 run in a child worker that owns its completion receipt so a coordinator restart
 does not require restarting packaging. Resume checks active worker identity and
 waits for its receipt. Preserve its logs and candidate files if recovery cannot

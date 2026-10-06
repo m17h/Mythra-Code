@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assertReleaseVerification } from "./verify-ci.mjs";
 import { acquireLease, assertPlan, leaseStatus, readJson } from './release-state.mjs';
-import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish } from './release-coordinator.mjs';
+import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, markPublisherMutation } from './release-coordinator.mjs';
 import { auditAssets, assertDownloadedRemote, assertPlatformManifests, assertPublicationVersion, assertRemoteRelease, assertTagTarget } from './release-audit.mjs';
 
 const REPOSITORY = "m17h/Mythra-Code";
@@ -35,10 +35,12 @@ if (process.env.MYTHRA_RELEASE_OWNER) {
 }
 const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
 if (plan.commit !== head || plan.version !== version) throw new Error('Validation plan does not match release source/version.');
-if (process.env.MYTHRA_RELEASE_PUBLISHER_OWNER) {
-  assertPublisherOwner(plan, process.env.MYTHRA_RELEASE_PUBLISHER_OWNER);
+let publisherOwner = process.env.MYTHRA_RELEASE_PUBLISHER_OWNER;
+if (publisherOwner) {
+  assertPublisherOwner(plan, publisherOwner);
 } else {
   const publisherLease = acquirePublisherLease(plan);
+  publisherOwner = publisherLease.token;
   process.once('exit', publisherLease);
 }
 const draftReceipt = assertReadyToPublish(plan, stateRoot);
@@ -144,6 +146,9 @@ try {
   rmSync(temporary, { recursive: true, force: true });
 }
 
+// Standalone finalization also owns subprocess mutation. If this process dies
+// while gh survives, a replacement publisher must fail closed on recovery.
+markPublisherMutation(plan, publisherOwner);
 const publish = spawnSync("gh", [
   "release", "edit", tag,
   "--repo", REPOSITORY,

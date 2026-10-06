@@ -87,6 +87,41 @@ test('SSH interruption preserves process ownership and resumes collection withou
   expect(transport.launches).toBe(1);
 });
 
+test('SCP upload disconnect resumes preparation without duplicate launch', async () => {
+  const f = fixture(), transport = fakeTransport(); const upload = transport.upload; let uploads = 0;
+  transport.upload = async (...args) => {
+    if (++uploads === 1) throw Object.assign(new Error('SCP upload disconnected'), { code: 255, cmd: 'scp -r outbound zeds-pc-ai:C:/incoming' });
+    return upload(...args);
+  };
+  await expect(runWindowsWorker({ ...f, transport })).rejects.toThrow('SCP upload disconnected');
+  expect(readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json')).status).toBe('waiting');
+  expect(transport.launches).toBe(0);
+  await runWindowsWorker({ ...f, transport, sleep: async () => {} });
+  expect(uploads).toBe(2); expect(transport.launches).toBe(1);
+});
+
+test('SCP download disconnect recollects the existing completed worker', async () => {
+  const f = fixture(), transport = fakeTransport(); const download = transport.download; let attempts = 0;
+  transport.download = async (...args) => {
+    if (++attempts === 1) throw Object.assign(new Error('SCP download disconnected'), { code: 255, cmd: 'scp -r zeds-pc-ai:C:/returned local' });
+    return download(...args);
+  };
+  await expect(runWindowsWorker({ ...f, transport, sleep: async () => {} })).rejects.toThrow('SCP download disconnected');
+  expect(readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json')).status).toBe('waiting');
+  const local = await runWindowsWorker({ ...f, transport, sleep: async () => {} });
+  expect(readJson(join(local, 'handoff.json')).checks).toEqual(['ci', 'build:windows-x86_64', 'audit:windows-x86_64']);
+  expect(attempts).toBe(2); expect(transport.launches).toBe(1);
+});
+
+test('SCP non-transport transfer failure remains blocked for diagnosis', async () => {
+  const f = fixture(), transport = fakeTransport(); let uploads = 0;
+  transport.upload = async () => { uploads++; throw Object.assign(new Error('SCP permission denied'), { code: 1, cmd: 'scp -r outbound zeds-pc-ai:C:/incoming' }); };
+  await expect(runWindowsWorker({ ...f, transport })).rejects.toThrow('SCP permission denied');
+  expect(readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json')).status).toBe('failed');
+  await expect(runWindowsWorker({ ...f, transport })).rejects.toThrow(/Previous Windows worker failed/);
+  expect(uploads).toBe(1); expect(transport.launches).toBe(0);
+});
+
 test('dead PID and descendants cannot silently trigger another builder', async () => {
   const f = fixture(), transport = fakeTransport({ result: { status: 'running', alive: false, descendantsAlive: true } });
   await expect(runWindowsWorker({ ...f, transport, sleep: async () => {} })).rejects.toMatchObject({ status: 'waiting' });

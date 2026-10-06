@@ -4,18 +4,36 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { atomicJson, readJson } from './release-state.mjs';
+import { atomicJson, processIdentity, readJson } from './release-state.mjs';
 import { collectNativeWorker, effectiveSession, launchNativeWorker, resolveCodexBinary } from './release-native-check.mjs';
 
 const roots = [];
+const fixtures = [];
 const temp = () => { const root = mkdtempSync(join(tmpdir(), 'mythra-native-launch-')); roots.push(root); return root; };
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+afterEach(async () => {
+  // A durable terminal result precedes wrapper exit. Windows retains its cwd
+  // until then; wait for the exact fixture owners, rather than retrying rmdir.
+  const deadline = Date.now() + 5_000;
+  for (const c of fixtures) {
+    const status = existsSync(c.statusPath) ? readJson(c.statusPath) : {};
+    const spawned = existsSync(`${c.statusPath}.spawn.json`) ? readJson(`${c.statusPath}.spawn.json`) : null;
+    const owners = [status.worker, status.childWorker, spawned].filter((owner) => owner?.processStart);
+    while (owners.some((owner) => processIdentity(owner.pid) === owner.processStart)) {
+      if (Date.now() >= deadline) throw new Error(`Native fixture owners did not exit; evidence preserved at ${c.root}`);
+      await new Promise((accept) => setTimeout(accept, 10));
+    }
+  }
+  fixtures.splice(0);
+  roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
+}, 15_000);
 const sessionId = '01a10d39-6aec-7721-9b90-ab146f5b533e';
 function config({ script, deadlineMs = 5_000 } = {}) {
   const root = temp(), cli = join(root, 'fixture-cli.mjs'), resultPath = join(root, 'result.json');
   writeFileSync(cli, script || `import {writeFileSync} from 'node:fs'; process.stdin.resume(); console.log(JSON.stringify({type:'thread.started',thread_id:'${sessionId}'})); setTimeout(()=>{writeFileSync(${JSON.stringify(resultPath)},'{}');console.log(JSON.stringify({type:'turn.completed'}));},200);`);
   const promptPath = join(root, 'prompt.txt'); writeFileSync(promptPath, 'Fixture only');
-  return { binary: process.execPath, args: [cli], root, promptPath, statusPath: join(root, 'status.json'), resultPath, eventsPath: join(root, 'events.jsonl'), errorsPath: join(root, 'stderr.log'), deadlineMs, terminationGraceMs: 10, contractHash: 'c'.repeat(64) };
+  const c = { binary: process.execPath, args: [cli], root, promptPath, statusPath: join(root, 'status.json'), resultPath, eventsPath: join(root, 'events.jsonl'), errorsPath: join(root, 'stderr.log'), deadlineMs, terminationGraceMs: 10, contractHash: 'c'.repeat(64) };
+  fixtures.push(c);
+  return c;
 }
 
 test('native binary resolution accepts executable bytes and rejects command shims', () => {

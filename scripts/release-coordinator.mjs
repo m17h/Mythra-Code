@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
-import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,12 +41,30 @@ export function acquirePublisherLease(plan, { recover = false, registry = publis
   if (plan.publisherHost !== hostname() || process.platform === 'win32') throw new Error('Only the frozen designated publisher host can upload, finalize or audit publication');
   const directory = publisherLeaseDirectory(plan, registry);
   let release;
-  try { release = acquireLease(directory, { recover }); }
+  try {
+    release = acquireLease(directory, { recover, validateRecovery: (old) => {
+      if (old.mutationStarted !== undefined) throw Object.assign(new Error('Interrupted publisher mutation has unresolved subprocess ownership; inspect preserved processes and remote release evidence, prove every publisher exited, and archive the orphaned lease before manual recovery'), { status: 'blocked' });
+    } });
+  }
   catch (error) { if (/already has a (running|foreign-host) owner/.test(error.message)) error.status = 'waiting'; throw error; }
   const lease = readJson(resolve(directory, 'lease.json'));
   atomicJson(resolve(directory, 'lease.json'), { ...lease, planHash: plan.planHash, commit: plan.commit, version: plan.version, repository: plan.repository });
   release.token = lease.token;
   return release;
+}
+export function markPublisherMutation(plan, ownerToken, { registry = publisherRegistry(), stage = 'publish' } = {}) {
+  if (!['draft', 'publish'].includes(stage)) throw new Error('Invalid publisher mutation stage');
+  const directory = publisherLeaseDirectory(plan, registry), guard = resolve(directory, 'lease-recovery.lock');
+  let guardFd;
+  try {
+    // Serialize registration with orphan recovery. A child whose coordinator
+    // died before registration cannot authorize mutation against a replaced lease.
+    guardFd = openSync(guard, 'wx', 0o600);
+    const lease = assertPublisherOwner(plan, ownerToken, { registry });
+    if (lease.mutationStarted === undefined) atomicJson(resolve(directory, 'lease.json'), {
+      ...lease, mutationStarted: { stage, recordedAt: new Date().toISOString() },
+    });
+  } finally { if (guardFd !== undefined) { closeSync(guardFd); rmSync(guard, { force: true }); } }
 }
 export function createReleaseWorkspace(root, destination, commit) {
   if (!SHA.test(commit) || existsSync(destination)) throw new Error('Workspace needs an exact commit and a new destination');
@@ -265,6 +283,7 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
         } else if (check.kind === 'build') receipt = await durableBuild({ root, stateRoot, plan, check });
         else if (check.id === 'draft' || check.id === 'public') {
           if (!publisherLease) publisherLease = acquirePublisherLease(plan, { recover: resume });
+          if (check.id === 'draft') markPublisherMutation(plan, publisherLease.token, { stage: 'draft' });
           receipt = remoteStage({ root, stateRoot, plan, check, allowUpload });
         }
         else if (check.id === 'publish') {
@@ -273,7 +292,10 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
           const remote = JSON.parse(gh(root, ['release', 'view', `v${plan.version}`, '--repo', REPOSITORY, '--json', 'isDraft,targetCommitish']));
           if (remote.targetCommitish !== plan.commit) throw new Error('Publication target changed');
           assertPublicationVersion({ latest: JSON.parse(gh(root, ['api', `repos/${REPOSITORY}/releases/latest`])), plan, alreadyPublished: !remote.isDraft });
-          if (remote.isDraft) execFileSync(process.execPath, [resolve(root, 'scripts/finalize-release.mjs')], { cwd: root, env: { ...process.env, MYTHRA_RELEASE_STATE: stateRoot, MYTHRA_RELEASE_OWNER: readJson(resolve(stateRoot, 'lease.json')).token, MYTHRA_RELEASE_PUBLISHER_OWNER: publisherLease.token }, stdio: 'inherit' });
+          if (remote.isDraft) {
+            markPublisherMutation(plan, publisherLease.token);
+            execFileSync(process.execPath, [resolve(root, 'scripts/finalize-release.mjs')], { cwd: root, env: { ...process.env, MYTHRA_RELEASE_STATE: stateRoot, MYTHRA_RELEASE_OWNER: readJson(resolve(stateRoot, 'lease.json')).token, MYTHRA_RELEASE_PUBLISHER_OWNER: publisherLease.token }, stdio: 'inherit' });
+          }
           const path = resolve(stateRoot, 'evidence', 'published.json');
           atomicJson(path, { commit: plan.commit, tag: `v${plan.version}`, publishedAt: new Date().toISOString() });
           receipt = envelope(plan, check, startedAt, [path], stateRoot, { tag: `v${plan.version}` });
