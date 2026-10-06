@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { atomicJson, fileHash, objectHash } from './release-state.mjs';
-import { assertNativeContract, assertQaSourceSupport, validateNativeResult } from './release-native-check.mjs';
+import { assertNativeContract, assertQaSourceSupport, validateNativeObservations, validateNativeResult } from './release-native-check.mjs';
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -62,6 +62,38 @@ function closeFaultFixture() {
 test('declared one-shot native close failure requires prompt cancellation, recovery and a healthy reopened primary', () => {
   const { root, result, contract } = closeFaultFixture();
   expect(validateNativeResult(result, contract, root)).toBe(result);
+});
+test('successful observations can be validated before cleanup without satisfying final native acceptance', () => {
+  const { root, result, contract } = closeFaultFixture();
+  result.cleanupComplete = false;
+  expect(validateNativeObservations(result, contract, root)).toBe(result);
+  expect(result.cleanupComplete).toBe(false);
+  expect(() => validateNativeResult(result, contract, root)).toThrow(/cleanup/);
+});
+test('observation validation preserves the existing macOS store-disposal evidence requirement', () => {
+  const { root, result, contract, events } = fixture();
+  contract.platform = 'darwin-aarch64';
+  result.cleanupComplete = false;
+  events[0].details.webviewStoreId = randomUUID();
+  persistEvents(root, result, events);
+  expect(() => validateNativeObservations(result, contract, root)).toThrow(/store cleanup/);
+});
+test.each([
+  ['blocked attempt', (f) => { f.result.status = 'blocked'; }],
+  ['unverified capability', (f) => { f.result.capability.verified = false; }],
+  ['incomplete restoration', (f) => { f.result.restorationComplete = false; }],
+  ['missing selected observation', (f) => { f.result.results[0].observations.pop(); }],
+  ['wrong executable', (f) => { f.result.results[0].executableSha256 = 'a'.repeat(64); }],
+  ['corrupted evidence', (f) => { f.result.results[0].evidence.find((e) => e.path === 'screen.png').sha256 = 'a'.repeat(64); }],
+  ['missing healthy render', (f) => { f.events = f.events.filter((e) => !(e.runId === f.result.results[0].runId && e.kind === 'render-ready')); }],
+  ['unexpected failure', (f) => { f.events.push({ ...f.events[0], kind: 'renderer-storage-failed' }); }],
+  ['missing fault recovery', (f) => { f.events = f.events.filter((e) => !(e.runId === f.proof.runId && e.kind === 'close-finish' && e.details.result === 'saved')); }],
+  ['fault as healthy primary', (f) => { f.result.results[0].runId = f.proof.runId; f.result.results[0].pid = f.proof.pid; }],
+])('pre-cleanup observation validation rejects %s', (_name, mutate) => {
+  const f = closeFaultFixture();
+  f.result.cleanupComplete = false;
+  mutate(f); persistEvents(f.root, f.result, f.events);
+  expect(() => validateNativeObservations(f.result, f.contract, f.root)).toThrow();
 });
 test('selected close replay cannot omit its declaration and substitute healthy-only evidence', () => {
   const f = closeFaultFixture();
