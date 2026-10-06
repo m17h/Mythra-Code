@@ -401,7 +401,9 @@ async function renderApp() {
   vi.resetModules();
   const { default: App } = await import("./App");
   const view = render(<App />);
-  await screen.findByRole("button", { name: PROJECT_B.name });
+  const sidebar = view.container.querySelector<HTMLElement>("aside.sidebar");
+  expect(sidebar).toBeInTheDocument();
+  await within(sidebar!).findByRole("button", { name: PROJECT_B.name });
   return view;
 }
 
@@ -3784,23 +3786,28 @@ describe("workspace switching during thread selection", () => {
     });
     await renderApp();
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
-    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
-    await user.type(screen.getByLabelText(/Commit message/i), "Saved after returning");
-    await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    const sidebar = within(document.querySelector<HTMLElement>("aside.sidebar")!);
+    const tools = within(await screen.findByRole("complementary", { name: "Project workspace tools" }));
+    await user.click(await tools.findByRole("tab", { name: "Git workspace tool" }));
+    let git = within(tools.getByRole("tabpanel", { name: "Git workspace tool" }));
+    await user.type(git.getByLabelText(/Commit message/i), "Saved after returning");
+    await user.click(git.getByRole("button", { name: "Commit all changes locally" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_commit", expect.objectContaining({ cwd: PROJECT_A.path, message: "Saved after returning" })));
-    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
-    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
-    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("Saved after returning");
-    expect(screen.getByRole("button", { name: "Committing…" })).toBeDisabled();
+    await user.click(sidebar.getByRole("button", { name: PROJECT_B.name }));
+    git = within(tools.getByRole("tabpanel", { name: "Git workspace tool" }));
+    expect(git.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    await user.click(sidebar.getByRole("button", { name: PROJECT_A.name }));
+    git = within(tools.getByRole("tabpanel", { name: "Git workspace tool" }));
+    expect(git.getByLabelText(/Commit message/i)).toHaveValue("Saved after returning");
+    expect(git.getByRole("button", { name: "Committing…" })).toBeDisabled();
     const readsBeforeCompletion = invokeMock.mock.calls.filter(([command, args]) => command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path).length;
     await act(async () => {
       pendingCommit.resolve({ exitCode: 0, stdout: "[main bbbbbbb] Saved after returning\n", stderr: "" });
       await pendingCommit.promise;
     });
-    expect(await screen.findByText(/“Saved after returning” was saved/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText(/Commit message/i)).toHaveValue(""));
-    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    expect(await git.findByText(/“Saved after returning” was saved/)).toBeInTheDocument();
+    await waitFor(() => expect(git.getByLabelText(/Commit message/i)).toHaveValue(""));
+    expect(git.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
     await waitFor(() => expect(invokeMock.mock.calls.filter(([command, args]) => command === "git_workspace_snapshot" && args?.cwd === PROJECT_A.path).length).toBeGreaterThan(readsBeforeCompletion));
     expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_commit")).toHaveLength(1);
   });
@@ -3812,11 +3819,15 @@ describe("workspace switching during thread selection", () => {
       ? pendingCommit.promise : { exitCode: 0, stdout: "", stderr: "" };
     await renderApp();
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
-    await user.click(await screen.findByRole("tab", { name: "Git workspace tool" }));
-    await user.type(screen.getByLabelText(/Commit message/i), "Saved while viewing Beta");
-    await user.click(screen.getByRole("button", { name: "Commit all changes locally" }));
+    const sidebar = within(document.querySelector<HTMLElement>("aside.sidebar")!);
+    const tools = within(await screen.findByRole("complementary", { name: "Project workspace tools" }));
+    await user.click(await tools.findByRole("tab", { name: "Git workspace tool" }));
+    let git = within(tools.getByRole("tabpanel", { name: "Git workspace tool" }));
+    await user.type(git.getByLabelText(/Commit message/i), "Saved while viewing Beta");
+    await user.click(git.getByRole("button", { name: "Commit all changes locally" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("git_workspace_commit", expect.objectContaining({ cwd: PROJECT_A.path, message: "Saved while viewing Beta" })));
-    await user.click(screen.getByRole("button", { name: PROJECT_B.name }));
+    await user.click(sidebar.getByRole("button", { name: PROJECT_B.name }));
+    git = within(tools.getByRole("tabpanel", { name: "Git workspace tool" }));
     await act(async () => {
       pendingCommit.resolve({ exitCode: 0, stdout: "[main bbbbbbb] Saved while viewing Beta\n", stderr: "" });
       await pendingCommit.promise;
@@ -3824,11 +3835,12 @@ describe("workspace switching during thread selection", () => {
     expect(screen.queryByText("Committed successfully")).not.toBeInTheDocument();
     expect(screen.queryByText("Changes committed locally")).not.toBeInTheDocument();
     expect(screen.queryByText(/Saved while viewing Beta/)).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/Commit message/i)).toHaveValue("");
-    await user.click(screen.getByRole("button", { name: PROJECT_A.name }));
-    expect(await screen.findByText(/“Saved while viewing Beta” was saved/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText(/Commit message/i)).toHaveValue(""));
-    expect(screen.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
+    expect(git.getByLabelText(/Commit message/i)).toHaveValue("");
+    await user.click(sidebar.getByRole("button", { name: PROJECT_A.name }));
+    git = within(tools.getByRole("tabpanel", { name: "Git workspace tool" }));
+    expect(await git.findByText(/“Saved while viewing Beta” was saved/)).toBeInTheDocument();
+    await waitFor(() => expect(git.getByLabelText(/Commit message/i)).toHaveValue(""));
+    expect(git.getByRole("button", { name: "Commit all changes locally" })).toBeEnabled();
     expect(invokeMock.mock.calls.filter(([command]) => command === "git_workspace_commit")).toHaveLength(1);
   });
 
@@ -6132,10 +6144,13 @@ describe("project checks", () => {
     };
     if (invokesSkill) localSkillsResolvePromptImpl = (params) => `resolved selected skill\n\n${String(params.message)}`;
     await renderApp();
-    await user.click(await screen.findByText("Alpha thread"));
+    const sidebar = within(document.querySelector<HTMLElement>("aside.sidebar")!);
+    await user.click(await sidebar.findByText("Alpha thread"));
     await user.click(screen.getByRole("button", { name: "Open workspace tools" }));
-    await user.click(await screen.findByRole("tab", { name: "Review workspace tool" }));
-    await user.click(await screen.findByRole("button", { name: "Run checks" }));
+    const tools = within(await screen.findByRole("complementary", { name: "Project workspace tools" }));
+    await user.click(await tools.findByRole("tab", { name: "Review workspace tool" }));
+    const review = within(tools.getByRole("tabpanel", { name: "Review workspace tool" }));
+    await user.click(await review.findByRole("button", { name: "Run checks" }));
 
     await waitFor(() => expect(executed.some((params) => (params.command as string[])[2] === "npm test")).toBe(true));
     const checkCall = executed.find((params) => (params.command as string[])[2] === "npm test")!;
@@ -6144,12 +6159,12 @@ describe("project checks", () => {
     expect(checkCall.sandboxPolicy).toEqual(expect.objectContaining({
       type: "workspaceWrite", writableRoots: ["/managed/worktrees/thread-a", "/projects/alpha/.git"],
     }));
-    expect(await screen.findByText("Checks failed · exit 2")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Output" }));
-    expect(screen.getByLabelText("Check output")).toHaveTextContent("1 test failed: important case");
+    expect(await review.findByText("Checks failed · exit 2")).toBeInTheDocument();
+    await user.click(review.getByRole("button", { name: "Output" }));
+    expect(review.getByLabelText("Check output")).toHaveTextContent("1 test failed: important case");
     expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(0);
 
-    await user.click(await screen.findByRole("button", { name: "Ask agent to fix" }));
+    await user.click(await review.findByRole("button", { name: "Ask agent to fix" }));
     const send = await screen.findByRole("button", { name: "Send feedback and optional prompt" });
     expect(send).toBeEnabled();
     expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "turn/start")).toHaveLength(0);
