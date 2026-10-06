@@ -1,0 +1,284 @@
+import { spawn, execFileSync } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { homedir, hostname } from 'node:os';
+import { join, relative, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { assertPlan, atomicJson, containedPath, digest, fileHash, HASH, objectHash, processIdentity, readJson, receiptPath, saveReceipt, workerTreeAlive } from './release-state.mjs';
+
+const observations = {
+  'native-startup': ['exact-package-identity', 'visible-native-shell', 'affected-startup-replay'],
+  'native-close': ['healthy-save-close-reopen', 'affected-close-failure', 'owned-processes-exited'],
+  'native-storage': ['representative-existing-data', 'save-close-reopen', 'affected-data-preserved'],
+  'native-onboarding': ['fresh-isolated-profile', 'affected-onboarding-flow'],
+  'native-installer': ['isolated-installer-environment', 'affected-install-update-recovery'],
+};
+export function assertQaSourceSupport({ root, plan, execute = execFileSync }) {
+  const source = (path) => execute('git', ['show', `${plan.commit}:${path}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  let module, integration, recipe;
+  try { module = source('src-tauri/src/release_qa.rs'); integration = source('src-tauri/src/lib.rs'); recipe = source('docs/operations/native-release-qa.md'); }
+  catch { throw new Error('Frozen candidate lacks the supported QA isolation contract; refusing to launch an older package against real user data'); }
+  if (!/RELEASE_QA_CONTRACT_VERSION\s*:\s*u32\s*=\s*1\s*;/.test(module) || !module.includes('MYTHRA_RELEASE_QA_ROOT')
+    || !/mod\s+release_qa\s*;/.test(integration) || !/release_qa::initialize\s*\(\s*\)/.test(integration)
+    || !integration.includes('release_qa::configure_context') || !integration.includes('release_qa::configure_window') || !recipe.trim()) throw new Error('Frozen candidate QA isolation is absent or unsupported; native launch is forbidden');
+  return { version: 1, moduleSha256: digest(module), integrationSha256: digest(integration), recipePath: 'docs/operations/native-release-qa.md', recipeSha256: digest(recipe) };
+}
+
+export function createNativeContract({ root, stateRoot, plan, platform }) {
+  assertPlan(plan);
+  const sourceCapability = assertQaSourceSupport({ root, plan });
+  const build = readJson(receiptPath(stateRoot, `build:${platform}`));
+  const audit = readJson(receiptPath(stateRoot, `audit:${platform}`));
+  if (!HASH.test(audit.details.executableSha256)) throw new Error('Native integrity audit must identify the packaged executable bytes');
+  const selected = plan.checks.filter((c) => c.kind === 'native' && c.required && c.platform === platform);
+  if (!selected.length) throw new Error('No native checks are required for this platform');
+  const profileId = randomUUID();
+  const contract = { schemaVersion: 1, planHash: plan.planHash, commit: plan.commit, version: plan.version, platform,
+    packagePath: build.details.packagePath, packageSha256: build.details.packageSha256,
+    executableSha256: audit.details.executableSha256,
+    sourceCapability,
+    profile: { root: resolve(stateRoot, 'qa-profiles', profileId), profileId, environment: 'MYTHRA_RELEASE_QA_ROOT' },
+    releaseScope: { changedFiles: plan.changedFiles, classifications: plan.classifications, boundaryHints: plan.boundaryHints, knownIssues: plan.knownIssues, predecessors: plan.predecessors },
+    checks: selected.map((c) => ({ id: c.id, reason: c.reason, observations: observations[c.id.split(':')[0]] })),
+    scope: { sourceReadOnly: true, noPublish: true, noRealProfile: true, noProviderRequests: true, normalComputerUseReview: true } };
+  return { ...contract, contractHash: objectHash(contract) };
+}
+
+export function nativePrompt(contract, contractPath, stateRoot) {
+  return `Execute the authorized Mythra Code native release validation contract at ${contractPath}.
+The human already authorized this release and bounded native QA. Read the exact contract and frozen repository instructions. Work only on its final package, disposable profile and evidence files under ${stateRoot}; never edit tracked source, rebuild, publish, stop the working user's app, or read/copy their application/provider profile or credentials.
+
+First preflight your actual supported computer-use capability. On Windows use the installed Windows/Sky skill and its normal review controls. On macOS use the available supported CUA surface. Inventory and capture the native surface through that tool. If unavailable or denied, return blocked with exact tool/capability evidence; do not invent a shell/UI fallback or treat a normal automatic review as rejection. Verify your actual model/high reasoning and danger-full-access/approval_policy never from session metadata without printing private context. This worker is persisted; no child agents.
+
+Read the frozen maintained recipe ${contract.sourceCapability?.recipePath}, and execute only its selected cases. The machine has already checked the exact source QA contract before launching you. Use supported MYTHRA_RELEASE_QA_ROOT isolation ONLY if the candidate actually implements it. Root ${contract.profile.root}; marker .mythra-release-qa.json must be {schemaVersion:1,purpose:"mythra-release-qa",profileId:"${contract.profile.profileId}"}. On Mac root0700/marker0600; on Windows protect ACL to current owner, SYSTEM, Administrators as required by the implementation. Never switch, junction, symlink or rename the user's real roots. The app must emit matching profile-open identity before acceptance. Verify provider/auth access is disabled by this supported profile.
+
+Use the final DMG app or NSIS payload verified by the integrity audit. Retain the extracted app/executable under the release state directory after cleanup, so its bytes can be independently rehashed. Resolve executable image path/hash/PID/start time and match version ${contract.version}, package hash ${contract.packageSha256}, foreground window and accessibility identity BEFORE interacting. The actual AX title MUST contain the FULL profileId ${contract.profile.profileId} in "Mythra Code — Release QA ${contract.profile.profileId}"; an app label, bundle path or launcher result alone does not establish this. If AX resolves the user's installed app, do not click/type there. A launcher returning an older registered copy is a failed launch: close only that explicitly owned idle test instance if authorized, and use the supported exact-path launcher; do not repeat the same failed method. A different directory does not isolate an NSIS global process-kill action: installer cases require a supported isolated OS environment, otherwise return blocked.
+
+Run exactly the selected contract checks, sharing healthy startup/save/close work across cases. Inspect actual native pixels plus AX; process liveness, render-ready events, DOM-only results and fixture module passes are insufficient. Use synthetic representative prior-version saved data; an empty folder with a marker is not existing-data coverage. Seed malformed data only in this isolated profile and preserve raw rows where the selected storage case requires it. No paid provider turn. No unrelated UI tour, fresh account, or hypothetical test expansion.
+
+Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, renderer-storage, render-ready, render-failed, close-finish, exit). Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. On Windows remove the owned disposable root only after process exit. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
+
+Save actual screenshots, accessibility.json, process identity and relevant data/exit evidence under ${stateRoot}. Every result must include each observation ID listed by the contract, with a concrete evidence path. Record each evidence SHA256. On completion close only the owned candidate normally, confirm its host and descendants exited, and record cleanupComplete/restorationComplete (restoration means no real roots were touched). A native failure is failed; missing capability is blocked. Preserve evidence and leave publication untouched.
+
+Continue routine already-authorized actions without asking the user again. For UI ambiguity, refresh once, inspect current state, and use the supported alternate once; if still unresolved return a precise blocked result. A real control rejection is not permission to bypass controls. Do not produce a generic passed JSON. Return the required structured result only after actual acceptance checks, with native executable/PID/window, session capability and evidence. Do not claim repair of native/GPU deadlocks beyond the changed behavior. Deadline: 25 minutes; finish with a terminal passed/failed/blocked result. Do not wait indefinitely for user input.`;
+}
+
+export const nativeResultSchema = {
+  type: 'object', additionalProperties: false,
+  required: ['status', 'reason', 'capability', 'cleanupComplete', 'restorationComplete', 'results'],
+  properties: {
+    status: { type: 'string', enum: ['passed', 'failed', 'blocked'] }, reason: { type: 'string' },
+    capability: { type: 'object', additionalProperties: false, required: ['tool', 'verified', 'evidence'], properties: { tool: { type: 'string' }, verified: { type: 'boolean' }, evidence: { type: 'string' } } },
+    cleanupComplete: { type: 'boolean' }, restorationComplete: { type: 'boolean' },
+    results: { type: 'array', items: { type: 'object', additionalProperties: false,
+      required: ['checkId', 'executablePath', 'executableSha256', 'pid', 'processStart', 'runId', 'windowIdentity', 'version', 'observations', 'evidence'],
+      properties: { checkId: { type: 'string' }, executablePath: { type: 'string' }, executableSha256: { type: 'string' }, pid: { type: 'integer' }, processStart: { type: 'string' }, runId: { type: 'string' }, windowIdentity: { type: 'string' }, version: { type: 'string' },
+        observations: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'evidence'], properties: { id: { type: 'string' }, evidence: { type: 'string' } } } },
+        evidence: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['path', 'sha256'], properties: { path: { type: 'string' }, sha256: { type: 'string' } } } } } } },
+  },
+};
+
+export function validateNativeResult(result, contract, stateRoot) {
+  if (result.status !== 'passed') throw new Error(`Native worker ${result.status}: ${result.reason}`);
+  if (!result.capability?.verified || !/cua|sky|computer.use/i.test(result.capability.tool) || !result.cleanupComplete || !result.restorationComplete) throw new Error('Native worker lacks verified computer use or completed cleanup');
+  if (objectHash(result.results?.map((r) => r.checkId).sort()) !== objectHash(contract.checks.map((c) => c.id).sort())) throw new Error('Native worker omitted or duplicated required checks');
+  const capabilityEvidence = readJson(containedPath(stateRoot, result.capability.evidence));
+  if (!capabilityEvidence || typeof capabilityEvidence !== 'object' || !Object.keys(capabilityEvidence).length) throw new Error('Computer-use capability evidence is empty');
+  for (const entry of result.results) {
+    const expected = contract.checks.find((c) => c.id === entry.checkId);
+    if (!Number.isInteger(entry.pid) || entry.pid < 1 || !entry.processStart || !/^[a-f0-9-]{36}$/.test(entry.runId) || !entry.windowIdentity?.includes(contract.profile.profileId) || entry.version !== contract.version || !HASH.test(entry.executableSha256)
+      || entry.executableSha256 !== contract.executableSha256) throw new Error('Native worker package/process identity mismatch');
+    if (fileHash(containedPath(stateRoot, relative(stateRoot, entry.executablePath))) !== entry.executableSha256) throw new Error('Native executable no longer matches observed bytes');
+    if (expected.observations.some((id) => !entry.observations.some((o) => o.id === id && entry.evidence.some((e) => e.path === o.evidence)))) throw new Error('Native acceptance observation lacks evidence');
+    if (!entry.evidence.some((e) => /\.(png|jpe?g)$/.test(e.path)) || !entry.evidence.some((e) => /(?:accessibility|ax)\.json$/.test(e.path))) throw new Error('Native result needs pixels and accessibility evidence');
+    for (const item of entry.evidence) if (!HASH.test(item.sha256) || fileHash(containedPath(stateRoot, item.path)) !== item.sha256) throw new Error('Native evidence hash mismatch');
+    const pixels = entry.evidence.filter((e) => /\.(png|jpe?g)$/.test(e.path)).map((e) => readFileSync(containedPath(stateRoot, e.path)));
+    if (!pixels.some((b) => b.length > 32 && (b.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) || b.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))))) throw new Error('Native screenshot is not encoded image evidence');
+    const ax = readJson(containedPath(stateRoot, entry.evidence.find((e) => /(?:accessibility|ax)\.json$/.test(e.path)).path));
+    if (!ax || typeof ax !== 'object' || !JSON.stringify(ax).includes(contract.profile.profileId)) throw new Error('Native accessibility evidence does not identify this isolated QA window');
+    const eventsEvidence = entry.evidence.find((e) => /native-events\.jsonl$/.test(e.path));
+    if (!eventsEvidence) throw new Error('Native result has no persistent app event evidence');
+    const events = readFileSync(containedPath(stateRoot, eventsEvidence.path), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const kind of ['profile-open', 'window-constructed', 'exit']) if (!events.some((e) => e.schemaVersion === 1 && e.profileId === contract.profile.profileId && e.pid === entry.pid && e.runId === entry.runId && e.kind === kind)) throw new Error(`Native profile identity or ${kind} event is absent`);
+    const opened = events.find((e) => e.profileId === contract.profile.profileId && e.pid === entry.pid && e.runId === entry.runId && e.kind === 'profile-open');
+    if (opened.details?.contractVersion !== 1) throw new Error('Running candidate did not confirm supported profile isolation');
+    if (contract.platform === 'darwin-aarch64') {
+      const initialized = events.find((e) => e.profileId === contract.profile.profileId && e.kind === 'webview-maintenance-initialized'
+        && e.details?.mainThread === true && e.details.persistent === false && e.details.url === 'about:blank');
+      if (!initialized || !opened.details.webviewStoreId || !events.some((e) => e.profileId === contract.profile.profileId && e.runId === initialized.runId && e.kind === 'webview-dispose-complete'
+        && e.details?.verifiedAbsent === true && e.details.webviewStoreId === opened.details.webviewStoreId)) throw new Error('Owned macOS WebView store cleanup was not verified');
+    }
+  }
+  return result;
+}
+
+export function effectiveSession(sessionId, { sessionsRoot = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions') } = {}) {
+  if (!/^[a-f0-9-]{36}$/i.test(sessionId)) throw new Error('Native worker session identity is invalid');
+  const file = readdirSync(sessionsRoot, { recursive: true }).find((name) => name.endsWith(`${sessionId}.jsonl`));
+  if (!file) throw new Error('Persisted native worker session is not readable');
+  let context;
+  // Resume can change the model, effort or permissions. Acceptance is bound to
+  // the newest persisted turn, never to the session's original defaults.
+  for (const line of readFileSync(resolve(sessionsRoot, file), 'utf8').split('\n')) {
+    if (!line) continue;
+    const event = JSON.parse(line);
+    if (event.type === 'turn_context') context = event.payload;
+  }
+  if (!context) throw new Error('Native worker runtime metadata not recorded');
+  if (context.model !== 'gpt-6.1-sol' || context.effort !== 'high' || context.approval_policy !== 'never' || context.sandbox_policy?.type !== 'danger-full-access') throw new Error('Native worker effective runtime differs from required Sol/high/Full Access contract');
+  return { model: context.model, reasoningEffort: context.effort, approvalPolicy: context.approval_policy, sandbox: context.sandbox_policy.type };
+}
+
+function nativeBinary(path, platform) {
+  let fd;
+  try {
+    const actual = realpathSync(path);
+    if (!statSync(actual).isFile() || /\.(cmd|bat|ps1|js)$/i.test(actual)) return null;
+    fd = openSync(actual, 'r'); const magic = Buffer.alloc(4); readSync(fd, magic, 0, 4, 0);
+    const hex = magic.toString('hex');
+    if (platform === 'win32' ? magic.subarray(0, 2).toString() !== 'MZ' : !['7f454c46', 'cffaedfe', 'feedfacf', 'cefaedfe', 'cafebabe', 'bebafeca'].includes(hex)) return null;
+    return actual;
+  } catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+export function resolveCodexBinary({ env = process.env, platform = process.platform } = {}) {
+  const directories = String(env.PATH || '').split(platform === 'win32' ? ';' : ':').filter(Boolean);
+  const requested = env.MYTHRA_CODEX_BINARY;
+  const candidates = requested ? [requested] : directories.map((path) => join(path, platform === 'win32' ? 'codex.exe' : 'codex'));
+  if (!requested && platform === 'win32') {
+    // npm installs a cmd shim. Resolve only the known Codex package's vendor
+    // executable, never run the shim with a shell or scan unrelated user data.
+    for (const directory of directories) for (const name of ['codex', 'codex-win32-x64', 'codex-win32-arm64']) {
+      for (const vendor of [join(directory, 'node_modules', '@openai', name, 'vendor'), join(directory, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', name, 'vendor')]) {
+        if (existsSync(vendor)) for (const file of readdirSync(vendor, { recursive: true })) if (/(?:^|[\\/])codex\.exe$/i.test(file)) candidates.push(join(vendor, file));
+      }
+    }
+  }
+  for (const path of candidates) { const binary = nativeBinary(path, platform); if (binary) return binary; }
+  throw new Error('Native Codex executable unavailable; install the supported CLI or set MYTHRA_CODEX_BINARY to its native binary (cmd/PowerShell shims are not workers)');
+}
+
+function sessionFromEvents(path) {
+  if (!existsSync(path)) return null;
+  for (const line of readFileSync(path, 'utf8').split('\n')) try {
+    const event = JSON.parse(line); if (event.type === 'thread.started' && typeof event.thread_id === 'string') return event.thread_id;
+  } catch { /* only complete JSONL events establish session identity */ }
+  return null;
+}
+
+export async function runNativeWorkerWrapper(config) {
+  const previous = readJson(config.statusPath);
+  const worker = { host: hostname(), pid: process.pid, processStart: processIdentity() };
+  const startedAt = previous.startedAt || new Date().toISOString();
+  const base = { ...previous, worker, status: 'running', startedAt };
+  const stdout = openSync(config.eventsPath, 'a', 0o600), stderr = openSync(config.errorsPath, 'a', 0o600);
+  let child, timer, forcedTimer, timedOut = false, childWorker;
+  try {
+    if (!worker.processStart) throw new Error('Cannot identify persisted native wrapper');
+    atomicJson(config.statusPath, base);
+    child = spawn(config.binary, config.args, { cwd: config.root, stdio: ['pipe', stdout, stderr], windowsHide: true });
+    const exit = new Promise((accept, reject) => { child.once('error', reject); child.once('exit', accept); });
+    // Establish the child identity before accepting its work. File-backed output
+    // continues even if the publishing coordinator disappears.
+    childWorker = { host: hostname(), pid: child.pid, processStart: Number.isInteger(child.pid) ? processIdentity(child.pid) : null };
+    if (!childWorker.processStart) { child.kill(); await exit.catch(() => {}); throw new Error('Cannot identify native Codex worker'); }
+    atomicJson(config.statusPath, { ...base, childWorker });
+    child.stdin.on('error', () => {}); child.stdin.end(readFileSync(config.promptPath));
+    timer = setTimeout(() => {
+      timedOut = true;
+      atomicJson(config.statusPath, { ...base, childWorker, status: 'blocked', reason: 'Native worker deadline exceeded; descendant ownership retained', sessionId: sessionFromEvents(config.eventsPath) });
+      child.kill('SIGTERM');
+      forcedTimer = setTimeout(() => child.kill('SIGKILL'), config.terminationGraceMs ?? 30_000);
+    }, config.deadlineMs);
+    const code = await exit;
+    const sessionId = sessionFromEvents(config.eventsPath);
+    if (timedOut || code !== 0 || !sessionId || !existsSync(config.resultPath)) throw new Error(`Native worker did not complete (${timedOut ? 'deadline exceeded' : code}); inspect preserved session evidence`);
+    atomicJson(config.statusPath, { ...base, childWorker, status: 'result-ready', sessionId, completedAt: new Date().toISOString() });
+  } catch (error) {
+    atomicJson(config.statusPath, { ...base, childWorker, status: 'blocked', reason: error.message, sessionId: sessionFromEvents(config.eventsPath), stoppedAt: new Date().toISOString() });
+  } finally { clearTimeout(timer); clearTimeout(forcedTimer); closeSync(stdout); closeSync(stderr); }
+}
+
+function nativeOwnershipAlive(status) {
+  return [status.worker, status.childWorker].filter(Boolean).some((worker) => workerTreeAlive(worker));
+}
+
+export async function collectNativeWorker(statusPath, { sleep = (ms) => new Promise((accept) => setTimeout(accept, ms)), pollMs = 1_000, timeoutMs = 27 * 60_000 } = {}) {
+  const start = Date.now();
+  for (;;) {
+    const status = readJson(statusPath);
+    if (status.status === 'result-ready' || status.status === 'passed') return status;
+    if (status.status === 'blocked') throw new Error(`Native worker blocked: ${status.reason}; inspect and preserve owned descendants before retry`);
+    if (!['queued', 'running'].includes(status.status)) throw new Error('Invalid native worker ownership status');
+    if (status.worker && !nativeOwnershipAlive(status)) throw Object.assign(new Error('Native wrapper ended without a terminal result; inspect preserved logs before retry'), { status: 'waiting' });
+    if (Date.now() - start >= timeoutMs) throw Object.assign(new Error('Native result collection deadline reached; owned worker can be collected on resume'), { status: 'waiting' });
+    await sleep(pollMs);
+  }
+}
+
+export async function launchNativeWorker(config, { modulePath = fileURLToPath(import.meta.url) } = {}) {
+  if (existsSync(config.statusPath)) return collectNativeWorker(config.statusPath);
+  // Exclusive launch lock protects direct callers as well as coordinator-owned
+  // calls. An interrupted queued launch is retained for diagnosis, not replaced.
+  const lockPath = `${config.statusPath}.launch-lock`;
+  const guard = openSync(lockPath, 'wx', 0o600);
+  try {
+    if (existsSync(config.statusPath)) return await collectNativeWorker(config.statusPath);
+    const configPath = `${config.statusPath}.launch.json`;
+    atomicJson(configPath, config);
+    atomicJson(config.statusPath, { status: 'queued', startedAt: new Date().toISOString(), contractHash: config.contractHash });
+    const log = openSync(`${config.statusPath}.wrapper.log`, 'a', 0o600);
+    try {
+      const wrapper = spawn(process.execPath, [modulePath, '--native-worker', configPath], { cwd: config.root, detached: true, windowsHide: true, stdio: ['ignore', log, log] });
+      const identity = { host: hostname(), pid: wrapper.pid, processStart: Number.isInteger(wrapper.pid) ? processIdentity(wrapper.pid) : null };
+      wrapper.on('error', (error) => atomicJson(config.statusPath, { ...readJson(config.statusPath), status: 'blocked', reason: error.message }));
+      if (!identity.processStart) throw new Error('Cannot identify native wrapper; preserve queued ownership');
+      // The wrapper alone advances status; a parent write after spawn could
+      // race its terminal result and regress ownership back to queued.
+      atomicJson(`${config.statusPath}.spawn.json`, identity);
+      wrapper.unref();
+    } finally { closeSync(log); }
+  } finally { closeSync(guard); rmSync(lockPath, { force: true }); }
+  return collectNativeWorker(config.statusPath);
+}
+
+export async function runNativeCheck({ root, stateRoot, plan, check }) {
+  const sourceCapability = assertQaSourceSupport({ root, plan });
+  const directory = resolve(stateRoot, 'workers', `native-${check.platform}`); mkdirSync(directory, { recursive: true });
+  const contractPath = join(directory, 'contract.json');
+  const contract = existsSync(contractPath) ? readJson(contractPath) : createNativeContract({ root, stateRoot, plan, platform: check.platform });
+  if (objectHash(contract.sourceCapability) !== objectHash(sourceCapability)) throw new Error('Native source capability contract changed');
+  if (contract.planHash !== plan.planHash || contract.packageSha256 !== readJson(receiptPath(stateRoot, `build:${check.platform}`)).details.packageSha256) throw new Error('Native worker contract became stale');
+  atomicJson(contractPath, contract);
+  const schemaPath = join(directory, 'result-schema.json'), resultPath = join(directory, 'result.json'), statusPath = join(directory, 'status.json');
+  atomicJson(schemaPath, nativeResultSchema);
+  let status;
+  if (existsSync(statusPath)) {
+    const previous = readJson(statusPath);
+    if (previous.contractHash !== contract.contractHash) throw new Error('Native worker ownership contract became stale');
+    status = ['result-ready', 'passed'].includes(previous.status) ? previous : await collectNativeWorker(statusPath); // no blind replacement
+  } else {
+    if (existsSync(resultPath)) throw new Error('Native result exists without a persisted worker owner; inspect before adoption');
+    const binary = resolveCodexBinary();
+    execFileSync(binary, ['exec', '--help'], { cwd: root, stdio: 'ignore', timeout: 10_000 });
+    const args = ['exec', '--model', 'gpt-6.1-sol', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'model_reasoning_effort="high"',
+      '--json', '--output-schema', schemaPath, '--output-last-message', resultPath, '--cd', root, '-'];
+    const promptPath = join(directory, 'prompt.txt'); writeFileSync(promptPath, nativePrompt(contract, contractPath, stateRoot), { mode: 0o600 });
+    status = await launchNativeWorker({ binary, args, root, promptPath, statusPath, resultPath, eventsPath: join(directory, 'events.jsonl'), errorsPath: join(directory, 'stderr.log'), deadlineMs: 25 * 60_000, contractHash: contract.contractHash }, { modulePath: resolve(root, 'scripts/release-native-check.mjs') });
+  }
+  if (!status.sessionId) throw new Error('Native result has no persisted worker session identity');
+  const runtime = effectiveSession(status.sessionId);
+  const result = validateNativeResult(readJson(resultPath), contract, stateRoot);
+  const startedAt = status.startedAt, completedAt = status.completedAt;
+  const receipts = result.results.map((r) => ({ schemaVersion: 1, checkId: r.checkId, status: 'passed', planHash: plan.planHash, commit: plan.commit,
+    platform: check.platform, packageSha256: contract.packageSha256, checkerVersion: 'native-check-v1', startedAt, completedAt,
+    evidence: [...r.evidence, ...[contractPath, resultPath, containedPath(stateRoot, result.capability.evidence)].map((path) => ({ path: relative(stateRoot, path).replaceAll('\\', '/'), sha256: fileHash(path) }))],
+    details: { ...r, workerContractHash: contract.contractHash, sessionId: status.sessionId, runtime, cleanupComplete: result.cleanupComplete, restorationComplete: result.restorationComplete } }));
+  for (const receipt of receipts) saveReceipt(stateRoot, plan, receipt);
+  atomicJson(statusPath, { ...status, status: 'passed', completedAt, contractHash: contract.contractHash });
+  return receipts.find((r) => r.checkId === check.id);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === '--native-worker') {
+  await runNativeWorkerWrapper(readJson(process.argv[3]));
+}

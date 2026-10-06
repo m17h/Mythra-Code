@@ -38,7 +38,11 @@
     "verify": "npm run verify:ci && npm run verify:release-config && npm run lint && npm run lint:rust && npm run check && npm run test:run && npm run test:browser && npm run test:rust && npm run build && npm run verify:startup && npm run verify:performance",
     "verify:ci": "node scripts/verify-ci.mjs contract",
     "release:finalize": "node scripts/finalize-release.mjs",
-    "verify:startup": "node scripts/verify-production-startup.mjs"
+    "verify:startup": "node scripts/verify-production-startup.mjs",
+    "release:plan": "node scripts/release-coordinator.mjs plan",
+    "release:status": "node scripts/release-coordinator.mjs status",
+    "release:run": "node scripts/release-coordinator.mjs run",
+    "release:resume": "node scripts/release-coordinator.mjs resume"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
