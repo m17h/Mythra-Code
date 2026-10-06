@@ -4839,6 +4839,63 @@ describe("workspace switching during thread selection", () => {
     }));
   });
 
+  it("discovers Codex threads when Claude becomes available first", async () => {
+    const pendingRuntime = deferred<unknown>();
+    const readyRuntime = stubInvoke("codex_runtime_status");
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "codex_runtime_status") return pendingRuntime.promise;
+      return stubInvoke(command, args);
+    });
+    await renderApp();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_transcript_list", { knownThreadIds: [] }));
+    await act(async () => {});
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "codex_rpc" && args?.method === "thread/list")).toBe(false);
+    await act(async () => { pendingRuntime.resolve(readyRuntime); await pendingRuntime.promise; });
+    expect(await screen.findByText("Alpha thread")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "thread/list", params: expect.objectContaining({ cwd: PROJECT_A.path }) }));
+  });
+
+  it("preserves an in-flight selection when Codex becomes available before Claude", async () => {
+    const user = userEvent.setup();
+    const pendingClaude = deferred<unknown>();
+    const readyClaude = claudeRuntimeStatusImpl();
+    claudeRuntimeStatusImpl = () => pendingClaude.promise;
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("codex_rpc", expect.objectContaining({ method: "thread/resume" })));
+    const { useTaskStore } = await import("./lib/taskStore");
+    expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+    await act(async () => { pendingClaude.resolve(readyClaude); await pendingClaude.promise; });
+    expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+    await act(async () => { pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } }); await pendingResume.promise; });
+    expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+    expect(await screen.findByRole("button", { name: /^Open Beta thread/ })).toBeInTheDocument();
+  });
+
+  it("returns to local discovery without clearing selection when Codex becomes unavailable", async () => {
+    // Expose the existing Settings callback without testing Settings navigation.
+    vi.doMock("./components/SettingsModal", () => ({ SettingsModal: ({ onRuntimeRequired }: { onRuntimeRequired: () => void }) =>
+      <button onClick={onRuntimeRequired}>Open runtime setup fixture</button> }));
+    const user = userEvent.setup();
+    resumeImpl = () => ({ thread: { ...THREAD_A, turns: [] } });
+    await renderApp();
+    await user.click(await screen.findByText("Alpha thread"));
+    const { useTaskStore } = await import("./lib/taskStore");
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+    const localListings = () => invokeMock.mock.calls.filter(([command]) => command === "local_transcript_list").length;
+    const codexListings = () => invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "thread/list").length;
+    const localBefore = localListings(), codexBefore = codexListings();
+    const readyRuntime = stubInvoke("codex_runtime_status") as Record<string, unknown>;
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "codex_runtime_status" ? { ...readyRuntime, available: false } : stubInvoke(command, args));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: "Open runtime setup fixture" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Connect the Codex runtime" })).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(localListings()).toBeGreaterThan(localBefore));
+    expect(codexListings()).toBe(codexBefore);
+    expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id);
+  });
+
   it("resumes an isolated thread with its execution cwd and shared Git metadata root", async () => {
     const user = userEvent.setup();
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
