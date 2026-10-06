@@ -163,7 +163,8 @@ recovery in the reopened run. Capture records identify the injected PID/run and
 phase; both AX captures identify the owned parent window, and recovery must no
 longer show the warning. Distinct filenames with identical pixels or AX do not
 prove recovery. The healthy reopened renderer must report the existing profile
-UUID as its previous store marker. Screenshots/AX and state checks must be real
+UUID as its previous store marker on its first and every later storage probe;
+a reload must not hide a missing marker at reopen. Screenshots/AX and state checks must be real
 observations; event records alone do not prove visible behavior.
 
 This tests the native guard's SaveFailed prompt and cancellation/recovery path.

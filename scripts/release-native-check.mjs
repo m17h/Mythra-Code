@@ -202,8 +202,8 @@ export function validateNativeResult(result, contract, stateRoot, { executablePa
     if (opened.details?.contractVersion !== 1 || opened.details.providers !== 'blocked' || opened.details.persistentWebview !== true) throw new Error('Running candidate did not confirm supported profile isolation');
     if (!primary.some((e) => e.kind === 'renderer-storage' && e.details?.current === contract.profile.profileId
       && (e.details.previous === null || e.details.previous === contract.profile.profileId))) throw new Error('Native renderer did not confirm this isolated persistent store');
-    if (expectedFault && !primary.some((e) => e.kind === 'renderer-storage' && e.details?.current === contract.profile.profileId
-      && e.details.previous === contract.profile.profileId)) throw new Error('Healthy reopen did not retain the isolated persistent store');
+    if (expectedFault && primary.filter((e) => e.kind === 'renderer-storage').some((e) => e.details?.current !== contract.profile.profileId
+      || e.details.previous !== contract.profile.profileId)) throw new Error('Healthy reopen did not retain the isolated persistent store');
     const savedClose = primary.findIndex((e) => e.kind === 'close-finish' && e.details?.accepted === true && e.details.result === 'saved');
     if (savedClose < 0 || primary.findIndex((e) => e.kind === 'exit') <= savedClose) throw new Error('Native primary run did not finish saved normal close before exit');
     for (const upgrade of expected.upgradeCases ?? []) {

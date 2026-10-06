@@ -102,6 +102,14 @@ test('healthy reopen cannot report a new renderer store after fault recovery', (
   persistEvents(f.root, f.result, f.events);
   expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow(/persistent store/);
 });
+test('a later renderer reload cannot conceal the healthy reopen losing its store marker', () => {
+  const f = closeFaultFixture();
+  const index = f.events.findIndex((e) => e.runId === f.result.results[0].runId && e.kind === 'renderer-storage');
+  const probe = f.events[index];
+  f.events.splice(index, 0, { ...probe, details: { ...probe.details, previous: null } });
+  persistEvents(f.root, f.result, f.events);
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow(/persistent store/);
+});
 test.each(['pid', 'runId', 'phase'])('recovery capture rejects wrong %s binding', (field) => {
   const f = closeFaultFixture();
   f.proof.recovery[field] = field === 'pid' ? f.proof.pid + 1 : field === 'runId' ? randomUUID() : 'prompt';
