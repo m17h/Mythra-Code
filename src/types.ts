@@ -115,9 +115,13 @@ export interface ThreadItem {
   id?: string;
   type: string;
   text?: string;
+  /** Native Codex channel; null/absent is unknown, never inferred from text. */
+  phase?: "commentary" | "final_answer" | null;
   questions?: AgentQuestion[] | null;
   content?: Array<{ type: string; text?: string; path?: string; name?: string }> | string[];
   command?: string;
+  /** Provider-native web search item query, retained for its activity row. */
+  query?: string;
   cwd?: string;
   status?: string;
   aggregatedOutput?: string | null;
@@ -199,6 +203,8 @@ export interface ChatMessage {
   skillsFolder?: string;
   skillDependencies?: SkillDependencyReport;
   streaming?: boolean;
+  /** Normalized provider channel. Older/local transcripts can omit it. */
+  phase?: "commentary" | "final";
   timelineOrder?: number;
   /** Runtime turn identity keeps steering inside the turn it belongs to. */
   turnId?: string;
@@ -214,6 +220,9 @@ export interface Activity {
   /** `compaction` marks where a provider summarised its own conversation
    * history. It is a landmark, not work: the visible transcript is unchanged. */
   kind: "command" | "file" | "reasoning" | "agent" | "warning" | "compaction";
+  /** Tool category attributed from provider-native identity rather than its
+   * display title, which may be a path or arbitrary user-facing prose. */
+  workType?: "research" | "files" | "commands";
   title: string;
   detail?: string;
   status?: string;

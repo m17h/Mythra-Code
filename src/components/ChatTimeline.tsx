@@ -1,7 +1,7 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, ListChecks, MessageSquare, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown, { type Options as MarkdownOptions } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -13,13 +13,16 @@ import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference }
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentControls } from "./SubAgentControls";
+import { activityTurnSegments, compactActivityPresentation, type CompactWorkState } from "../lib/compactActivity";
+import { ActivityStatus, describeLiveActivity, type LiveActivityDescriptor } from "./ActivityStatus";
+import { ActivityDetailsModal, workEntrySearchText, type ActivityDetailsRun } from "./ActivityDetailsModal";
 import { useFeedbackMessageSource } from "./FeedbackProvider";
 import { useTaskStore } from "../lib/taskStore";
 import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
 import { compactionState, compactionTitle } from "../lib/contextCompaction";
-import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts } from "../lib/subAgentActivity";
+import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts, type SubAgentWorker } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 import "./ChatTimeline.compaction.css";
@@ -35,9 +38,24 @@ export type WorkItemEntry =
   | { kind: "files"; value: Activity[] }
   | { kind: "spawns"; value: Activity[] };
 
+/** Routine work folded behind one quiet status line. `runKey` names the
+ * logical run (user direction plus everything it caused) so its details
+ * window survives row compaction, remounts and turn completion. */
+export type WorkTimelineEntry = {
+  kind: "work";
+  value: WorkItemEntry[];
+  state?: CompactWorkState;
+  runKey?: string;
+  /** Runtime turn the group belongs to, when the provider tagged one. */
+  turnId?: string;
+  /** Idle without terminal evidence for the current turn: neither live nor done. */
+  unconfirmed?: boolean;
+  live?: LiveActivityDescriptor;
+};
+
 export type TimelineEntry =
   | WorkItemEntry
-  | { kind: "work"; value: WorkItemEntry[] }
+  | WorkTimelineEntry
   | { kind: "thinking"; label: string }
   | { kind: "approval"; value: PendingApproval };
 
@@ -113,10 +131,11 @@ function groupToolRuns(entries: WorkItemEntry[]): WorkItemEntry[] {
       continue;
     }
     const previous = grouped.at(-1);
+    const sameTurn = previous && workItemTurnId(previous) === entry.value.turnId;
     if (entry.value.kind === "command") {
-      if (previous?.kind === "commands") previous.value.push(entry.value);
+      if (sameTurn && previous.kind === "commands") previous.value.push(entry.value);
       else grouped.push({ kind: "commands", value: [entry.value] });
-    } else if (previous?.kind === "files") {
+    } else if (sameTurn && previous.kind === "files") {
       previous.value.push(entry.value);
     } else {
       grouped.push({ kind: "files", value: [entry.value] });
@@ -252,6 +271,170 @@ export function compactCompletedTurns(entries: WorkItemEntry[], running: boolean
   });
 }
 
+function workItemIds(entry: WorkItemEntry): string[] {
+  return entry.kind === "message" || entry.kind === "activity" ? [entry.value.id] : entry.value.map((activity) => activity.id);
+}
+
+export interface TimelineRun { key: string; entries: WorkItemEntry[] }
+interface TimelineRuns { list: TimelineRun[]; byKey: Map<string, TimelineRun>; keyById: Map<string, string> }
+
+/** Key for a running turn that has not produced a transcript entry yet. */
+const LIVE_RUN_KEY = "live";
+
+interface ActivitySelection {
+  runKey: string;
+  memberIds: string[];
+  /** Actual runtime turn, so the run survives re-keyed or replaced entries. */
+  turnId?: string;
+  /** Opened from the live line; may adopt the current run until it resolves. */
+  live: boolean;
+  focusId?: string;
+}
+
+function selectionMembers(entries: WorkItemEntry[]): string[] {
+  const ids = entries.flatMap(workItemIds);
+  // A few member ids re-find the run if its first entry is re-keyed
+  // (optimistic prompt ids) or older history is prepended.
+  return ids.length <= 8 ? ids : [...ids.slice(0, 4), ...ids.slice(-4)];
+}
+
+function entryHasTurn(entry: WorkItemEntry, turnId: string): boolean {
+  return entry.kind === "message" || entry.kind === "activity"
+    ? entry.value.turnId === turnId
+    : entry.value.some((activity) => activity.turnId === turnId);
+}
+
+function runForTurn(runs: TimelineRuns, turnId: string | undefined): TimelineRun | undefined {
+  if (!turnId) return undefined;
+  for (let index = runs.list.length - 1; index >= 0; index -= 1) {
+    if (runs.list[index].entries.some((entry) => entryHasTurn(entry, turnId))) return runs.list[index];
+  }
+  return undefined;
+}
+
+function untagged(entry: WorkItemEntry): boolean {
+  return entry.kind === "message" || entry.kind === "activity" ? !entry.value.turnId : entry.value.every((activity) => !activity.turnId);
+}
+
+/** Starting a new request can precede its optimistic prompt/runtime id. A
+ * completed prior run must not become that new request's activity window. */
+function canBeStartingRun(run: TimelineRun): boolean {
+  const values = run.entries.flatMap((entry) => entry.kind === "message" || entry.kind === "activity" ? [entry.value] : entry.value);
+  // Child work may outlive its parent and stale tool statuses can survive
+  // hydration. Neither reopens an explicitly terminal parent turn.
+  if (runOutcome(run.entries) !== "unknown") return false;
+  if (values.some((value) => ("role" in value && value.streaming) || value.turnStatus === "inProgress"
+    || ("kind" in value && ["inProgress", "running", "started", "starting", "pending"].includes(value.status ?? "")))) return true;
+  return !values.some((value) => "role" in value && value.role === "assistant"
+    && Boolean(value.text.trim() || value.attachments?.length || value.questions?.length));
+}
+
+/**
+ * The run a live line belongs to. With a known turn, only that turn's run or
+ * a still-untagged (optimistic) last run qualifies; a previous turn's
+ * history is never relabeled as current work.
+ */
+function liveRunFor(runs: TimelineRuns, activeTurnId: string | undefined): TimelineRun | undefined {
+  const last = runs.list.at(-1);
+  const starting = last && canBeStartingRun(last) ? last : undefined;
+  if (!activeTurnId) return starting;
+  return runForTurn(runs, activeTurnId) ?? (starting?.entries.every(untagged) ? starting : undefined);
+}
+
+/** `navigate`: another surface (question, Settings, child thread) owns focus next. */
+type ActivityCloseReason = "user" | "approval" | "navigate";
+
+/**
+ * Logical runs in original order, segmented exactly like the presentation
+ * helper: user direction starts a run; same-turn steering stays inside it.
+ * The details window reads these, so hidden work that crossed a visible
+ * steer is shown back in its true chronology.
+ */
+export function timelineRuns(entries: WorkItemEntry[]): TimelineRuns {
+  const list: TimelineRun[] = activityTurnSegments(entries).map((segment, index) => ({
+    key: workItemId(segment[0]) ?? `run-${index}`, entries: segment,
+  }));
+  const byKey = new Map<string, TimelineRun>();
+  const keyById = new Map<string, string>();
+  for (const run of list) {
+    byKey.set(run.key, run);
+    for (const entry of run.entries) for (const id of workItemIds(entry)) keyById.set(id, run.key);
+  }
+  return { list, byKey, keyById };
+}
+
+/**
+ * Chat presentation: user direction, answers and safety stay in chat while
+ * each run's routine work folds behind one status line. The live line always
+ * sits at the end of the conversation, even before the run has any output.
+ */
+function presentTimeline(
+  ordered: WorkItemEntry[], runs: TimelineRuns, running: boolean, awaiting: "approval" | "input" | null, activeTurnId?: string,
+): TimelineEntry[] {
+  const output: TimelineEntry[] = [];
+  let liveWork: WorkTimelineEntry | undefined;
+  for (const entry of compactActivityPresentation(ordered, { running, activeTurnId })) {
+    if (entry.kind !== "work") {
+      output.push(entry);
+      continue;
+    }
+    const firstId = entry.value[0] ? workItemId(entry.value[0]) : undefined;
+    const runKey = (firstId && runs.keyById.get(firstId)) || runs.list.at(-1)?.key || LIVE_RUN_KEY;
+    // The helper keeps an idle-but-unfinished current turn as `unknown`
+    // work tagged with the actual turn; older unknown history is untagged
+    // by that identity and reads as plain settled activity.
+    const unconfirmed = !running && entry.state === "unknown" && Boolean(activeTurnId) && entry.turnId === activeTurnId;
+    const work: WorkTimelineEntry = { kind: "work", value: entry.value, state: entry.state, runKey, turnId: entry.turnId, unconfirmed };
+    if (entry.state === "running" && running) liveWork = work;
+    else output.push(work);
+  }
+  if (running) {
+    const run = liveWork?.runKey ? runs.byKey.get(liveWork.runKey) : liveRunFor(runs, activeTurnId);
+    const live: WorkTimelineEntry = liveWork ?? { kind: "work", value: [], state: "running", runKey: run?.key ?? LIVE_RUN_KEY, turnId: activeTurnId };
+    live.live = describeLiveActivity(run?.entries ?? [], { awaiting, activeTurnId });
+    output.push(live);
+  }
+  return output;
+}
+
+function countWorkItems(entries: WorkItemEntry[]): number {
+  return entries.reduce((total, entry) => total + (entry.kind === "message" || entry.kind === "activity" ? 1 : entry.value.length), 0);
+}
+
+function workSummary(entries: WorkItemEntry[]): string {
+  const parts = completedWorkParts(entries);
+  const durationMs = completedWorkDuration(entries);
+  return (durationMs === undefined ? parts : [`Worked for ${formatCompletedDuration(durationMs)}`, ...parts]).join(" · ");
+}
+
+function stepCountLabel(count: number): string {
+  return count ? `${count} step${count === 1 ? "" : "s"}` : "";
+}
+
+/** Outcome of a run with no folded work, from its own runtime metadata. */
+function runOutcome(entries: WorkItemEntry[]): CompactWorkState {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const status = workItemTurnStatus(entries[index]);
+    if (status === "completed" || status === "failed" || status === "interrupted") return status;
+  }
+  return "unknown";
+}
+
+const QUESTION_APPROVAL_METHODS = new Set(["item/tool/requestUserInput", "cursor/ask_question", "mcpServer/elicitation/request"]);
+
+/** Whether this thread is blocked on the user, so status never implies progress. */
+function awaitingUser(approvals: PendingApproval[] | undefined): "approval" | "input" | null {
+  let input = false;
+  for (const approval of approvals ?? []) {
+    if (approval.method === "item/tool/requestUserInput" && approval.params.isBlocking === false) continue;
+    const question = QUESTION_APPROVAL_METHODS.has(approval.method)
+      || (approval.method === "claude/can_use_tool" && approval.params.tool_name === "AskUserQuestion");
+    if (!question) return "approval";
+    input = true;
+  }
+  return input ? "input" : null;
+}
+
 function textFromCodeNode(node: ReactNode): string {
   const child = Children.toArray(node)[0];
   if (!isValidElement<{ children?: ReactNode }>(child)) return String(node ?? "");
@@ -369,7 +552,7 @@ const UserMessageMarkdown = memo(function UserMessageMarkdown({ text, references
  * newest completed render instead of falling back to plain text until the
  * whole response finishes.
  */
-function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
+export function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
   const [pacedText, setPacedText] = useState<string | null>(null);
   const [immediateText, setImmediateText] = useState<string | null>(null);
   const deferredText = useDeferredValue(pacedText ?? text);
@@ -430,7 +613,7 @@ function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming
   </FlushStreamingDisplay.Provider>;
 }
 
-const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
+export const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
   const skillNavigation = useContext(SkillNavigation);
   const dependencies = message.role === "user" && <SkillDependencyDetails report={message.skillDependencies} skills={skillNavigation?.skills} onOpenSkill={skillNavigation?.onOpenSkill} mode="history" />;
   const [copied, copy] = useCopyFeedback();
@@ -839,59 +1022,72 @@ export function formatCompletedDuration(durationMs: number): string {
   return minutes ? `${hourPart} ${minutes} minute${minutes === 1 ? "" : "s"}` : hourPart;
 }
 
+/** Details-window renderers: chat-quality Markdown (including working skill
+ * mentions) and sub-agent relay cards with their Open/Stop controls. */
+function renderActivityMessage(message: ChatMessage): ReactNode {
+  return message.role === "user"
+    ? <UserMessageMarkdown text={message.text} references={message.skillReferences} />
+    : <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />;
+}
+
+function renderActivitySubAgents(activities: Activity[]): ReactNode {
+  return activities.length === 1 ? <SubAgentRelayCard activity={activities[0]} /> : <SubAgentRelayManifest activities={activities} />;
+}
+
+/**
+ * Compatibility wrapper for a standalone completed-work group. The quiet line
+ * opens the details window; it never expands work inline in chat.
+ */
 export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ entries, reveal = false, skills, onOpenSkill }: { entries: WorkItemEntry[]; reveal?: boolean; skills?: LocalSkill[]; onOpenSkill?: (path: string) => void }) {
   const parentNavigation = useContext(SkillNavigation);
   const navigation = useMemo(() => skills ? { skills, onOpenSkill } : parentNavigation, [skills, onOpenSkill, parentNavigation]);
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    if (reveal) setExpanded(true);
+    if (reveal) setOpen(true);
   }, [reveal]);
-  const parts = completedWorkParts(entries);
-  const durationMs = completedWorkDuration(entries);
-  const summaryParts = durationMs === undefined
-    ? parts
-    : [`Worked for ${formatCompletedDuration(durationMs)}`, ...parts];
-  const description = summaryParts.join(", ") || `${entries.length} step${entries.length === 1 ? "" : "s"}`;
+  const close = useCallback(() => setOpen(false), []);
+  const summary = workSummary(entries) || stepCountLabel(countWorkItems(entries));
+  const run = useMemo<ActivityDetailsRun>(() => ({ entries, state: "completed", summary }), [entries, summary]);
   return (
-    <SkillNavigation.Provider value={navigation}><div className={`reasoning-disclosure completed-work-disclosure ${expanded ? "expanded" : "collapsed"} complete`}>
-      <button
-        type="button"
-        className="reasoning-toggle completed-work-toggle"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        aria-label={`${expanded ? "Hide" : "Show"} completed work: ${description}`}
-      >
-        <ChevronRight className="reasoning-chevron" size={13} />
-        <ListChecks size={13} />
-        <span>Work completed</span>
-        <small>{summaryParts.join(" · ")}</small>
-      </button>
-      <div className="reasoning-panel completed-work-panel" aria-hidden={!expanded}>
-        <div className="reasoning-panel-inner">
-          {expanded && (
-            <div className="completed-work-list">
-              {entries.flatMap((entry) => {
-                if (entry.kind === "message") {
-                  return [(
-                    <div className="completed-work-update" key={`update-${entry.value.id}`}>
-                      <MessageSquare size={13} />
-                      <div className="rich-markdown">
-                        {entry.value.role === "user" ? <UserMessageMarkdown text={entry.value.text} references={entry.value.skillReferences} /> : <MessageMarkdown text={entry.value.text} assistant />}
-                        {entry.value.role === "user" && <SkillDependencyDetails report={entry.value.skillDependencies} skills={navigation?.skills} onOpenSkill={navigation?.onOpenSkill} mode="history" />}
-                      </div>
-                    </div>
-                  )];
-                }
-                const activities = entry.kind === "activity" ? [entry.value] : entry.value;
-                return activities.map((activity) => <ActivityRow activity={activity} key={activity.id} />);
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </div></SkillNavigation.Provider>
+    <SkillNavigation.Provider value={navigation}>
+      <span ref={anchorRef} hidden />
+      <ActivityStatus state="completed" summary={summary} open={open} onOpen={() => setOpen(true)} />
+      {open && <ActivityDetailsModal run={run} sourceRef={anchorRef} renderMessage={renderActivityMessage} renderSubAgents={renderActivitySubAgents} onClose={close} />}
+    </SkillNavigation.Provider>
   );
 }, (previous, next) => previous.skills === next.skills && previous.onOpenSkill === next.onOpenSkill && (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
+
+const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, onOpenActivity }: {
+  entry: WorkTimelineEntry;
+  open: boolean;
+  searchMatches: number;
+  onOpenActivity: (entry: WorkTimelineEntry, opener: HTMLElement | null) => void;
+}) {
+  const state = entry.state ?? "completed";
+  const live = state === "running";
+  const entryRef = useRef(entry);
+  entryRef.current = entry;
+  const onOpen = useCallback((opener: HTMLButtonElement) => onOpenActivity(entryRef.current, opener), [onOpenActivity]);
+  const summary = live ? stepCountLabel(countWorkItems(entry.value)) : workSummary(entry.value) || stepCountLabel(countWorkItems(entry.value));
+  return <ActivityStatus
+    state={state}
+    label={live ? entry.live?.label : undefined}
+    category={entry.live?.category}
+    playful={entry.live?.playful}
+    unconfirmed={entry.unconfirmed}
+    seed={entry.runKey}
+    summary={summary}
+    searchMatches={searchMatches}
+    runKey={entry.runKey}
+    open={open}
+    onOpen={onOpen}
+  />;
+}, (previous, next) => previous.open === next.open && previous.searchMatches === next.searchMatches
+  && previous.onOpenActivity === next.onOpenActivity && previous.entry.state === next.entry.state
+  && previous.entry.unconfirmed === next.entry.unconfirmed && previous.entry.runKey === next.entry.runKey && previous.entry.live?.label === next.entry.live?.label
+  && previous.entry.live?.category === next.entry.live?.category && previous.entry.live?.playful === next.entry.live?.playful
+  && sameWorkItems(previous.entry.value, next.entry.value));
 
 export const TIMELINE_FOLLOW_REARM_THRESHOLD_PX = 40;
 export const TIMELINE_MOUNT_ROWS = 40;
@@ -911,8 +1107,25 @@ function TimelineHeader() {
 
 const NO_SEARCH_MATCHES: number[] = [];
 
+/** A request to mount, scroll to and focus one exact row (by entry key). */
+interface TimelineReveal { key: string; token: number }
+
+/** Timeline-scoped details selection, threaded to the virtualized rows. */
+interface ActivityRowControls {
+  openRunKey: string | null;
+  onOpen: (entry: WorkTimelineEntry, opener: HTMLElement | null) => void;
+}
+
+function matchingWorkItems(entries: WorkItemEntry[], query: string): number {
+  return entries.reduce((total, entry) => {
+    if (entry.kind === "message" || entry.kind === "activity") return total + (workEntrySearchText(entry).toLowerCase().includes(query) ? 1 : 0);
+    return total + entry.value.filter((activity) => `${activity.title} ${activity.detail ?? ""}`.toLowerCase().includes(query)).length;
+  }, 0);
+}
+
 function TimelineEntryContent({
   activeEntryIndex,
+  activity,
   entry,
   index,
   onApprovalRespond,
@@ -921,6 +1134,7 @@ function TimelineEntryContent({
   searchQuery,
 }: {
   activeEntryIndex: number;
+  activity: ActivityRowControls;
   entry: TimelineEntry;
   index: number;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
@@ -946,7 +1160,13 @@ function TimelineEntryContent({
     return row(`timeline-entry timeline-entry-activity${hitClass}`, <SubAgentRelayManifest activities={entry.value} />);
   }
   if (entry.kind === "work") {
-    return row(`timeline-entry timeline-entry-disclosure${hitClass}`, <CompletedWorkDisclosure entries={entry.value} reveal={index === activeEntryIndex && Boolean(searchQuery?.trim())} />);
+    const query = index === activeEntryIndex ? searchQuery?.trim().toLowerCase() : "";
+    return row(`timeline-entry timeline-entry-status${hitClass}`, <WorkStatusRow
+      entry={entry}
+      open={Boolean(entry.runKey) && activity.openRunKey === entry.runKey}
+      searchMatches={query ? matchingWorkItems(entry.value, query) : 0}
+      onOpenActivity={activity.onOpen}
+    />);
   }
   if (entry.kind === "approval") {
     return row(
@@ -959,6 +1179,8 @@ function TimelineEntryContent({
 
 export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   if (entry.kind === "thinking") return "thinking";
+  // One live line keeps its DOM through every status change of the run.
+  if (entry.kind === "work" && entry.state === "running") return "work-live";
   if (entry.kind === "work") return `work-${(entry.value[0] && workItemId(entry.value[0])) ?? index}`;
   if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") return `${entry.kind}-${entry.value[0]?.id ?? index}`;
   return `${entry.kind}-${entry.value.id}`;
@@ -976,6 +1198,7 @@ type PrependAnchor =
  */
 function FlowTimeline({
   activeEntryIndex,
+  activity,
   entries,
   liveSubAgentSummary,
   history,
@@ -983,10 +1206,13 @@ function FlowTimeline({
   onApprovalRespond,
   onEditMessage,
   provider,
+  reveal,
   searchQuery,
 }: {
   activeEntryIndex: number;
+  activity: ActivityRowControls;
   entries: TimelineEntry[];
+  reveal?: TimelineReveal | null;
   liveSubAgentSummary: string;
   history?: ThreadHistoryState;
   onLoadEarlier?: () => void;
@@ -996,6 +1222,8 @@ function FlowTimeline({
   searchQuery?: string;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const revealPendingRef = useRef<string | null>(null);
+  const revealFocusRef = useRef<(() => void) | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followingEndRef = useRef(true);
   const searchWasActiveRef = useRef(false);
@@ -1144,6 +1372,57 @@ function FlowTimeline({
     }
     loadEarlierFromServer();
   }, [hiddenPrefixCount, loadEarlierFromServer, revealEarlier]);
+
+  // Mount the requested row if it lies above the bounded suffix, without
+  // letting live follow pull the reader away from it.
+  useLayoutEffect(() => {
+    if (!reveal) return;
+    const index = entries.findIndex((entry, position) => timelineEntryKey(entry, position) === reveal.key);
+    if (index < 0) return;
+    revealPendingRef.current = reveal.key;
+    followingEndRef.current = false;
+    setShowScrollToLatest(true);
+    if (index < hiddenPrefixCount) setHiddenPrefixOverride(index);
+    else setHiddenPrefixOverride((current) => current ?? hiddenPrefixCount);
+    // Only a new request reveals; later entry changes must not re-scroll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal]);
+  useLayoutEffect(() => {
+    const key = revealPendingRef.current;
+    if (!key) return;
+    const row = Array.from(contentRef.current?.querySelectorAll<HTMLElement>("[data-entry-key]") ?? [])
+      .find((element) => element.dataset.entryKey === key);
+    if (!row) return;
+    revealPendingRef.current = null;
+    revealFocusRef.current?.();
+    row.scrollIntoView?.({ block: "center" });
+    const findField = () => row.querySelector<HTMLElement>(".agent-question-form input, .agent-question-form textarea, .agent-question-form button");
+    const field = findField();
+    if (field) {
+      field.focus({ preventScroll: true });
+      return;
+    }
+    // A freshly mounted question loads its form lazily. Hold focus on the
+    // timeline (never an unrelated control) and hand it over on arrival,
+    // unless the user has moved focus meanwhile.
+    const scroller = scrollerRef.current;
+    scroller?.focus({ preventScroll: true });
+    const observer = new MutationObserver(() => {
+      const next = findField();
+      if (!next) return;
+      stop();
+      if (document.activeElement === scroller || document.activeElement === document.body) next.focus({ preventScroll: true });
+    });
+    const timer = window.setTimeout(() => stop(), 5_000);
+    const stop = () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+      revealFocusRef.current = null;
+    };
+    revealFocusRef.current = stop;
+    observer.observe(row, { childList: true, subtree: true });
+  });
+  useEffect(() => () => revealFocusRef.current?.(), []);
 
   const jumpToLatest = useCallback(() => {
     restoredPrependScrollPendingRef.current = false;
@@ -1321,9 +1600,10 @@ function FlowTimeline({
         <div ref={contentRef} className="flow-timeline-list">
           {searchWindowStart !== null && searchWindowEnd !== null && entries.slice(searchWindowStart, searchWindowEnd).map((entry, offset) => {
             const index = searchWindowStart + offset;
-            return <div data-entry-index={index} data-entry-kind={entry.kind} key={timelineEntryKey(entry, index)}>
+            return <div data-entry-index={index} data-entry-kind={entry.kind} data-entry-key={timelineEntryKey(entry, index)} key={timelineEntryKey(entry, index)}>
               <TimelineEntryContent
                 activeEntryIndex={activeEntryIndex}
+                activity={activity}
                 entry={entry}
                 index={index}
                 onApprovalRespond={onApprovalRespond}
@@ -1338,9 +1618,10 @@ function FlowTimeline({
           )}
           {suffixEntries.map((entry, offset) => {
             const index = hiddenPrefixCount + offset;
-            return <div data-entry-index={index} data-entry-kind={entry.kind} key={timelineEntryKey(entry, index)}>
+            return <div data-entry-index={index} data-entry-kind={entry.kind} data-entry-key={timelineEntryKey(entry, index)} key={timelineEntryKey(entry, index)}>
               <TimelineEntryContent
                 activeEntryIndex={activeEntryIndex}
+                activity={activity}
                 entry={entry}
                 index={index}
                 onApprovalRespond={onApprovalRespond}
@@ -1372,7 +1653,7 @@ export function ChatTimeline({
   messages,
   activities,
   running,
-  thinkingLabel,
+  activeTurnId,
   approval,
   provider = "openai",
   searchQuery,
@@ -1388,6 +1669,9 @@ export function ChatTimeline({
   messages: ChatMessage[];
   activities: Activity[];
   running: boolean;
+  /** The task store's actual current turn; idle notifications may precede its end. */
+  activeTurnId?: string;
+  /** Retained for callers; the live status line now names concrete activity. */
   thinkingLabel: string;
   approval?: PendingApproval | null;
   provider?: Provider;
@@ -1402,37 +1686,24 @@ export function ChatTimeline({
   onOpenSkill?: (path: string) => void;
 }) {
   const skillNavigation = useMemo(() => ({ skills, onOpenSkill }), [skills, onOpenSkill]);
-  const entries = useMemo<TimelineEntry[]>(() => {
-    const next = compactCompletedTurns(orderedTimelineEntries(messages, activities), running);
-    const liveIndicatorPresent = activities.some((activity) =>
-      (activity.kind === "reasoning" || activity.kind === "compaction") && activity.status === "inProgress");
-    if (running && !approval && !messages.some((message) => message.streaming) && !liveIndicatorPresent) {
-      next.push({ kind: "thinking", label: thinkingLabel });
-    }
-    if (approval) next.push({ kind: "approval", value: approval });
-    return next;
-  }, [activities, approval, messages, running, thinkingLabel]);
+  const storeAwaiting = useTaskStore((state) => {
+    const threadId = state.activeThreadId;
+    return threadId ? awaitingUser(state.tasks[threadId]?.approvals) : null;
+  });
+  const awaiting = storeAwaiting ?? (approval ? "approval" : null);
+  const ordered = useMemo(() => orderedTimelineEntries(messages, activities), [messages, activities]);
+  const runs = useMemo(() => timelineRuns(ordered), [ordered]);
+  const presented = useMemo(() => presentTimeline(ordered, runs, running, awaiting, activeTurnId), [activeTurnId, awaiting, ordered, runs, running]);
+  const entries = useMemo<TimelineEntry[]>(() => approval ? [...presented, { kind: "approval", value: approval }] : presented, [approval, presented]);
 
   const matchIndices = useMemo(() => {
     const query = searchQuery?.trim().toLowerCase();
     if (!query) return NO_SEARCH_MATCHES;
     const hits: number[] = [];
     entries.forEach((entry, index) => {
-      const haystack = entry.kind === "message"
-        ? entry.value.text
-        : entry.kind === "activity"
-          ? `${entry.value.title} ${entry.value.detail ?? ""}`
-          : entry.kind === "commands"
-            ? entry.value.map((command) => `${command.title} ${command.detail ?? ""}`).join(" ")
-            : entry.kind === "files" || entry.kind === "spawns"
-              ? entry.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ")
-              : entry.kind === "work"
-                ? entry.value.map((item) => item.kind === "message"
-                  ? item.value.text
-                  : item.kind === "activity"
-                    ? `${item.value.title} ${item.value.detail ?? ""}`
-                    : item.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ")).join(" ")
-                : "";
+      const haystack = entry.kind === "work"
+        ? entry.value.map(workEntrySearchText).join(" ")
+        : entry.kind === "thinking" || entry.kind === "approval" ? "" : workEntrySearchText(entry);
       if (haystack.toLowerCase().includes(query)) hits.push(index);
     });
     return hits;
@@ -1448,10 +1719,184 @@ export function ChatTimeline({
     const spawns = activities.filter((activity) => activity.kind === "agent" && activity.agent?.action === "spawn");
     return spawns.length ? `Sub-agents: ${describeSubAgentActivity(subAgentCountsFromActivities(spawns))}` : "";
   }, [activities]);
+
+  // ---- Activity details: owned here, never by a (virtualized) row ----
+  const [selection, setSelection] = useState<ActivitySelection | null>(null);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
+  const openerRef = useRef<HTMLElement | null>(null);
+  const closeReasonRef = useRef<ActivityCloseReason>("user");
+  const lastRunKeyRef = useRef<string | null>(null);
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const openActivity = useCallback((entry: WorkTimelineEntry, opener: HTMLElement | null, focusId?: string) => {
+    const runKey = entry.runKey ?? LIVE_RUN_KEY;
+    const run = runsRef.current.byKey.get(runKey);
+    openerRef.current = opener;
+    closeReasonRef.current = "user";
+    lastRunKeyRef.current = runKey;
+    setSelection({
+      runKey,
+      memberIds: selectionMembers(run ? run.entries : entry.value),
+      turnId: entry.turnId,
+      live: entry.state === "running",
+      focusId: focusId ?? (entry.state === "running" || !entry.value[0] ? undefined : workItemId(entry.value[0])),
+    });
+  }, []);
+  const closeActivity = useCallback((reason: ActivityCloseReason = "user") => {
+    closeReasonRef.current = reason;
+    setSelection(null);
+  }, []);
+  const activityControls = useMemo<ActivityRowControls>(() => ({ openRunKey: selection?.runKey ?? null, onOpen: openActivity }), [openActivity, selection?.runKey]);
+
+  const selectedRun = useMemo<TimelineRun | undefined>(() => {
+    if (!selection) return undefined;
+    const direct = runs.byKey.get(selection.runKey);
+    if (direct) return direct;
+    for (const id of selection.memberIds) {
+      const key = runs.keyById.get(id);
+      if (key) return runs.byKey.get(key);
+    }
+    const byTurn = runForTurn(runs, selection.turnId);
+    if (byTurn) return byTurn;
+    // Opened before the run had (stable) entries: adopt the current run.
+    if (selection.live && running) return liveRunFor(runs, activeTurnId) ?? { key: LIVE_RUN_KEY, entries: [] };
+    return undefined;
+  }, [activeTurnId, running, runs, selection]);
+  // Latch the resolved run's identity as entries arrive, so completion (which
+  // ends the live fallback) or a re-keyed prompt never loses the window.
+  useEffect(() => {
+    if (!selection || !selectedRun || selectedRun.key === LIVE_RUN_KEY) return;
+    const memberIds = selectionMembers(selectedRun.entries);
+    const turnId = selection.turnId ?? (selection.live ? activeTurnId : undefined)
+      ?? selectedRun.entries.map(workItemTurnId).find(Boolean);
+    if (selectedRun.key === selection.runKey && turnId === selection.turnId
+      && memberIds.length === selection.memberIds.length && memberIds.every((id, index) => id === selection.memberIds[index])) return;
+    lastRunKeyRef.current = selectedRun.key;
+    setSelection((current) => current && { ...current, runKey: selectedRun.key, memberIds, turnId });
+  }, [activeTurnId, selectedRun, selection]);
+  // A run that no longer exists (thread history replaced) closes cleanly.
+  useEffect(() => {
+    if (selection && !selectedRun) closeActivity();
+  }, [closeActivity, selectedRun, selection]);
+
+  const details = useMemo(() => {
+    if (!selectedRun) return undefined;
+    const groups = presented.filter((entry): entry is WorkTimelineEntry => entry.kind === "work" && entry.runKey === selectedRun.key);
+    const hidden = groups.flatMap((group) => group.value);
+    const hiddenIds = new Set(hidden.flatMap(workItemIds));
+    const visibleIds = new Set(selectedRun.entries.flatMap(workItemIds).filter((id) => !hiddenIds.has(id)));
+    const liveGroup = groups.find((group) => group.state === "running");
+    const run: ActivityDetailsRun = liveGroup
+      ? { entries: selectedRun.entries, state: "running", label: liveGroup.live?.label, category: liveGroup.live?.category }
+      : {
+        entries: selectedRun.entries,
+        state: groups[0]?.state ?? runOutcome(selectedRun.entries),
+        summary: workSummary(hidden),
+        unconfirmed: groups.some((group) => group.unconfirmed),
+      };
+    return { run, visibleIds };
+  }, [presented, selectedRun]);
+
+  // A blocking approval outranks reading: close so its own surface is usable.
+  useEffect(() => {
+    if (approval) closeActivity("approval");
+  }, [approval, closeActivity]);
+  const isOpen = selection !== null;
+  useEffect(() => {
+    if (!isOpen) return;
+    let frame = 0;
+    const check = () => {
+      frame = 0;
+      if (document.querySelector("[data-approval-modal]")) closeActivity("approval");
+    };
+    check();
+    const observer = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(check); });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [closeActivity, isOpen]);
+
+  // After closing, return focus only if nothing else has claimed it. The
+  // opener may have remounted (the live line became a settled row).
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen) {
+      wasOpenRef.current = true;
+      return;
+    }
+    if (!wasOpenRef.current) return;
+    wasOpenRef.current = false;
+    const reason = closeReasonRef.current;
+    closeReasonRef.current = "user";
+    if (reason === "navigate") return;
+    if (reason === "approval") {
+      const modal = document.querySelector<HTMLElement>("[data-approval-modal]");
+      if (modal) {
+        (modal.querySelector<HTMLElement>("input, select, textarea") ?? modal).focus();
+        return;
+      }
+    }
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const opener = openerRef.current;
+    const replacement = Array.from(document.querySelectorAll<HTMLElement>("[data-activity-run]"))
+      .find((element) => element.dataset.activityRun === lastRunKeyRef.current);
+    const target = opener?.isConnected ? opener : replacement ?? document.querySelector<HTMLElement>("[data-testid='timeline-scroller']");
+    target?.focus({ preventScroll: true });
+  }, [isOpen]);
+
+  // Navigating search results onto folded work opens it at the match.
+  // Typing never opens the window; only explicit next/previous navigation.
+  const searchNavRef = useRef({ query: searchQuery?.trim() ?? "", match: searchActiveMatch ?? 0 });
+  useEffect(() => {
+    const previous = searchNavRef.current;
+    const query = searchQuery?.trim() ?? "";
+    const match = searchActiveMatch ?? 0;
+    searchNavRef.current = { query, match };
+    if (!query || previous.query !== query || previous.match === match) return;
+    const entry = entries[activeEntryIndex];
+    if (entry?.kind !== "work") return;
+    const needle = query.toLowerCase();
+    const hit = entry.value
+      .flatMap((item): Array<{ kind: "message"; value: ChatMessage } | { kind: "activity"; value: Activity }> => item.kind === "message" || item.kind === "activity"
+        ? [item] : item.value.map((value) => ({ kind: "activity" as const, value })))
+      .find((item) => workEntrySearchText(item).toLowerCase().includes(needle));
+    openActivity(entry, null, hit?.value.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchActiveMatch, searchQuery]);
+
+  // The question may sit above the mounted suffix of rows; the timeline
+  // mounts that exact row before scrolling to and focusing it.
+  const [reveal, setReveal] = useState<TimelineReveal | null>(null);
+  const answerQuestion = useCallback((message: ChatMessage) => {
+    closeActivity("navigate");
+    setReveal((current) => ({ key: `message-${message.id}`, token: (current?.token ?? 0) + 1 }));
+  }, [closeActivity]);
+  // Leaving for Settings or a child thread closes the window first so no
+  // native modal outlives its timeline or covers the destination.
+  const modalSkillNavigation = useMemo(() => ({
+    skills,
+    onOpenSkill: onOpenSkill && ((path: string) => { closeActivity("navigate"); onOpenSkill(path); }),
+  }), [closeActivity, onOpenSkill, skills]);
+  const subAgentControls = useContext(SubAgentControls);
+  const modalSubAgentControls = useMemo(() => subAgentControls && {
+    ...subAgentControls,
+    // Stay open until the child actually opens: a rejected open (for
+    // example an unresolved child conversation) reports in its relay card.
+    onOpen: async (worker: SubAgentWorker) => {
+      await subAgentControls.onOpen(worker);
+      closeActivity("navigate");
+    },
+  }, [closeActivity, subAgentControls]);
+
   return (
     <SkillNavigation.Provider value={skillNavigation}><FlowTimeline
       activeEntryIndex={activeEntryIndex}
+      activity={activityControls}
       entries={entries}
+      reveal={reveal}
       liveSubAgentSummary={liveSubAgentSummary}
       history={history}
       onLoadEarlier={onLoadEarlier}
@@ -1459,6 +1904,25 @@ export function ChatTimeline({
       onEditMessage={onEditMessage}
       provider={provider}
       searchQuery={searchQuery}
-    /></SkillNavigation.Provider>
+    />
+    {selection && details && <>
+      <span ref={anchorRef} hidden />
+      <SkillNavigation.Provider value={modalSkillNavigation}>
+        <SubAgentControls.Provider value={modalSubAgentControls}>
+          <ActivityDetailsModal
+            run={details.run}
+            visibleIds={details.visibleIds}
+            focusId={selection.focusId}
+            searchQuery={searchQuery}
+            sourceRef={anchorRef}
+            renderMessage={renderActivityMessage}
+            renderSubAgents={renderActivitySubAgents}
+            onAnswerQuestion={answerQuestion}
+            onClose={closeActivity}
+          />
+        </SubAgentControls.Provider>
+      </SkillNavigation.Provider>
+    </>}
+    </SkillNavigation.Provider>
   );
 }

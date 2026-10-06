@@ -218,6 +218,12 @@ const WorkflowRunDialog = lazy(() => import("./components/WorkflowRunDialog").th
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
 const loadChatTimeline = () => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline }));
 const ChatTimeline = lazy(loadChatTimeline);
+// An explicit, credential-free native QA replay. Vite removes this branch and
+// its fixture import from ordinary production builds; the fixture also verifies
+// the native isolated-profile identity before exposing any simulated activity.
+const ActivityDemo = import.meta.env.DEV && import.meta.env.VITE_MYTHRA_ACTIVITY_DEMO === "1"
+  ? lazy(() => import("./dev/ActivityDemo"))
+  : null;
 const ThreadPullRequestPanel = lazy(() => import("./components/ThreadPullRequestPanel").then((module) => ({ default: module.ThreadPullRequestPanel })));
 const ChecksControl = lazy(() => import("./components/ChecksControl").then((module) => ({ default: module.ChecksControl })));
 const loadStudioDock = () => import("./components/StudioDock").then((module) => ({ default: module.StudioDock }));
@@ -560,9 +566,10 @@ function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, appr
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
+  const activeTurnId = useTaskStore((state) => state.tasks[threadId]?.activeTurnId);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
-  return <Timeline key={threadId} messages={messages} activities={activities} running={running} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
+  return <Timeline key={threadId} messages={messages} activities={activities} running={running} activeTurnId={activeTurnId} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
 }
 
 export default function App() {
@@ -7245,6 +7252,7 @@ export default function App() {
         ) : (
           <>
             <section className="conversation">
+              {ActivityDemo ? <Suspense fallback={<div className="timeline-loading">Loading isolated activity preview…</div>}><ActivityDemo /></Suspense> : <>
               {activeThreadId && <ThreadOpenCommitMarker threadId={activeThreadId} commitToken={threadOpenCommitToken} />}
               {convSearchOpen && activeThreadId && (
                 <div className="conv-search-bar" role="search">
@@ -7398,6 +7406,7 @@ export default function App() {
                   </Suspense>
                 </ErrorBoundary>
               )}
+              </>}
             </section>
 
             {/* Ambient glow tints to the active provider and breathes while a turn runs. */}

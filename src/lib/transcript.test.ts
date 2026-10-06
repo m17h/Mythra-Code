@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { buildTranscriptMarkdown, mergeTranscriptHistory } from "./transcript";
 
 describe("transcript export", () => {
+  it("keeps provider phase evidence when fresher legacy text omits it", () => {
+    const merged = mergeTranscriptHistory(
+      [{ id: "answer", role: "assistant", text: "Old", phase: "final" }], [],
+      [{ id: "answer", role: "assistant", text: "Fresh" }], [],
+    );
+    expect(merged.messages[0]).toMatchObject({ text: "Fresh", phase: "final" });
+  });
+
+  it("retains provider tool attribution when fresher activity omits metadata", () => {
+    const activity = { id: "read", kind: "command" as const, title: "/project/file.ts" };
+    const merged = mergeTranscriptHistory([], [{ ...activity, workType: "research" }], [], [activity]);
+    expect(merged.activities[0].workType).toBe("research");
+  });
+
   it("combines complete durable history with fresher live entries", () => {
     const merged = mergeTranscriptHistory(
       [{ id: "old", role: "user", text: "Old", timelineOrder: 1 }, { id: "live", role: "assistant", text: "stale", timelineOrder: 2 }],

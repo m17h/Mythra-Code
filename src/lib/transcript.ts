@@ -21,9 +21,16 @@ export function mergeTranscriptHistory(
   liveActivities: Activity[],
 ): { messages: ChatMessage[]; activities: Activity[] } {
   const reconciled = reconcileUserMessages(durableMessages, liveMessages);
+  const durablePhases = new Map(durableMessages.filter((message) => message.phase).map((message) => [message.id, message.phase]));
+  const durableWorkTypes = new Map(durableActivities.filter((activity) => activity.workType).map((activity) => [activity.id, activity.workType]));
   return {
-    messages: mergeById(reconciled.messages, liveMessages.filter((message) => !reconciled.matchedIds.has(message.id)).map(sanitizeMessageSkillDependencies)),
-    activities: mergeById(durableActivities, liveActivities),
+    messages: mergeById(reconciled.messages, liveMessages.filter((message) => !reconciled.matchedIds.has(message.id)).map((message) => sanitizeMessageSkillDependencies({
+      ...message,
+      ...(message.phase === undefined && durablePhases.get(message.id) ? { phase: durablePhases.get(message.id) } : {}),
+    }))),
+    activities: mergeById(durableActivities, liveActivities.map((activity) => ({ ...activity,
+      ...(activity.workType === undefined && durableWorkTypes.get(activity.id) ? { workType: durableWorkTypes.get(activity.id) } : {}),
+    }))),
   };
 }
 

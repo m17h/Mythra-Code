@@ -362,6 +362,13 @@ function activityKind(name: string): "command" | "file" | "agent" {
   return "command";
 }
 
+function toolWorkType(name: string): Activity["workType"] {
+  if (/^(read|glob|grep|websearch|webfetch)$/i.test(name)) return "research";
+  if (/^(write|edit|notebookedit)$/i.test(name)) return "files";
+  if (/^bash$/i.test(name)) return "commands";
+  return undefined;
+}
+
 function activityTitle(name: string, input: JsonObject): string {
   if (/^bash$/i.test(name)) return text(input.command) || "Run command";
   if (/^(write|edit|notebookedit|read)$/i.test(name))
@@ -390,9 +397,11 @@ function finalizeTool(threadId: string, turnId: string, block: ClaudeBlock): voi
     input = { input: block.input };
   }
   const kind = activityKind(block.name);
+  const workType = toolWorkType(block.name);
   useTaskStore.getState().upsertActivity(threadId, {
     id: block.id,
     kind,
+    ...(workType ? { workType } : {}),
     title: activityTitle(block.name, input),
     detail: activityDetail(input),
     status: "inProgress",
@@ -644,20 +653,23 @@ export function routeClaudeEvent(
     const failed =
       !interrupted &&
       (Boolean(message.is_error) || subtype.toLowerCase().startsWith("error"));
-    // The result payload normally repeats the final answer. If an event was
-    // lost between Claude Code and the webview, recover that answer before
-    // deciding the turn was empty. Do not duplicate a response that already
-    // arrived through assistant/stream events.
+    // A successful result supplies authoritative final text. Earlier progress
+    // or tool output is not evidence that the final assistant event arrived.
+    // Reuse a matching last assistant message; otherwise recover the answer
+    // under a turn-scoped id without overwriting intermediate work.
     const resultText = text(message.result);
     let hasOutput = turnHasTimelineOutput(threadId, turnId);
-    if (!interrupted && !failed && !hasOutput && hasVisibleText(resultText)) {
-      // No assistant event means there is no trustworthy provider message id
-      // for this turn. A turn-scoped id prevents a delayed prior process from
-      // causing completeMessage to overwrite an older answer.
+    if (!interrupted && !failed && hasVisibleText(resultText)) {
+      const assistants = (useTaskStore.getState().tasks[threadId]?.messages ?? [])
+        .filter((entry) => entry.role === "assistant" && entry.turnId === turnId);
+      const lastAssistant = assistants.at(-1);
+      const matching = lastAssistant?.text.trim() === resultText.trim() ? lastAssistant : undefined;
       store.completeMessage(threadId, {
-        id: `claude-${turnId}`,
+        ...(matching ?? {}),
+        id: matching?.id ?? `claude-result-${turnId}`,
         role: "assistant",
-        text: resultText,
+        text: matching?.text ?? resultText,
+        phase: "final",
         turnId,
       });
       hasOutput = true;

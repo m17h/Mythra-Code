@@ -14,6 +14,16 @@ export interface ThreadTimelineOptions {
   includeContextCompaction?: boolean;
 }
 
+/** Native agent-message phase is evidence of terminal answer text. A plan is
+ * always interim work; providers without a phase remain unknown. */
+export function agentMessagePhase(item: ThreadItem): ChatMessage["phase"] {
+  if (item.type === "plan") return "commentary";
+  if (item.type !== "agentMessage") return undefined;
+  if (item.phase === "commentary") return "commentary";
+  if (item.phase === "final_answer") return "final";
+  return undefined;
+}
+
 function userText(item: ThreadItem): string {
   return (item.content ?? [])
     .filter((content): content is { type: string; text?: string } => typeof content !== "string" && content.type === "text")
@@ -42,7 +52,13 @@ function activityFromItem(
     return { id, kind: "command", title: item.command ?? "Run command", detail: item.aggregatedOutput ?? item.cwd, status: item.status, timelineOrder, turnId, turnStatus };
   }
   if (item.type === "fileChange") {
-    return { id, kind: "file", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, itemCount: item.changes?.length, status: item.status, timelineOrder, turnId, turnStatus };
+    return { id, kind: "file", workType: "files", title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`, itemCount: item.changes?.length, status: item.status, timelineOrder, turnId, turnStatus };
+  }
+  if (item.type === "webSearch") {
+    // History does not record the web-search item lifecycle. A live turn alone
+    // cannot prove an earlier search is still running after a reload.
+    return { id, kind: "command", workType: "research", title: "Web Search", detail: item.query,
+      status: item.status ?? (turnStatus === "completed" ? "completed" : undefined), timelineOrder, turnId, turnStatus };
   }
   if (item.type === "contextCompaction") {
     if (!options.includeContextCompaction) return null;
@@ -126,7 +142,9 @@ export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOpt
         return;
       }
       if (item.type === "agentMessage" || item.type === "plan") {
-        messages.push({ id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined, timelineOrder: order, turnId: turn.id, turnStatus });
+        const phase = agentMessagePhase(item);
+        messages.push({ id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined,
+          ...(phase ? { phase } : {}), timelineOrder: order, turnId: turn.id, turnStatus });
         return;
       }
       const activity = activityFromItem(item, id, order, turn.id, turnStatus, options);

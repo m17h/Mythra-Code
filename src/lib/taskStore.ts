@@ -221,7 +221,7 @@ interface TaskStoreState {
   removeMessage: (threadId: string, messageId: string) => void;
   startAssistantMessage: (threadId: string, message: ChatMessage) => void;
   queueAssistantDelta: (threadId: string, itemId: string, delta: string, turnId?: string) => void;
-  queueReasoningDelta: (threadId: string, itemId: string, delta: string, source: "summary" | "content") => void;
+  queueReasoningDelta: (threadId: string, itemId: string, delta: string, source: "summary" | "content", turnId?: string) => void;
   flushDeltas: () => void;
   completeMessage: (threadId: string, message: ChatMessage) => void;
   upsertActivity: (threadId: string, activity: Activity) => void;
@@ -263,7 +263,7 @@ interface PendingAssistantDelta {
 
 const pendingDeltas = new Map<string, Map<string, PendingAssistantDelta>>();
 const pendingReasoningItems = new Map<string, Set<string>>();
-const reasoningStreams = new Map<string, { summary: string; content: string }>();
+const reasoningStreams = new Map<string, { summary: string; content: string; turnId?: string }>();
 /** Activity statuses after which no further deltas belong to the row. */
 const TERMINAL_ACTIVITY_STATUSES = new Set(["completed", "cancelled", "interrupted", "failed", "error"]);
 
@@ -342,6 +342,7 @@ function estimateMessageBytes(message: ChatMessage): number {
     + (message.questions ? stringBytes(JSON.stringify(message.questions)) : 0)
     + stringBytes(message.turnId)
     + stringBytes(message.turnStatus)
+    + stringBytes(message.phase)
     + stringBytes(message.steerStatus)
     + stringBytes(message.skillsFolder)
     + estimateSkillDependencyBytes(message.skillDependencies)
@@ -359,6 +360,7 @@ function estimateActivityBytes(activity: Activity): number {
   return ACTIVITY_BASE_BYTES
     + stringBytes(activity.id)
     + stringBytes(activity.kind)
+    + stringBytes(activity.workType)
     + stringBytes(activity.title)
     + stringBytes(activity.detail)
     + stringBytes(activity.status)
@@ -516,6 +518,47 @@ function completedTurnStatus(status: TaskStatus): Turn["status"] {
   return "inProgress";
 }
 
+/** Only runtime completion or non-user records seal a turn; user echoes may
+ * carry completed while the provider is still working. */
+function terminalStatusForTurn(task: ThreadTaskState | undefined, turnId?: string): Activity["turnStatus"] {
+  if (!task || !turnId) return undefined;
+  if (task.lastCompletedTurnId === turnId && task.lastCompletedTurnStatus) {
+    const status = completedTurnStatus(task.lastCompletedTurnStatus);
+    if (status !== "inProgress") return status;
+  }
+  if (turnId === task.activeTurnId) return undefined;
+  for (const records of [task.activities, task.messages]) {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const record = records[index];
+      if (record.turnId !== turnId || ("role" in record && record.role === "user")) continue;
+      if (record.turnStatus && record.turnStatus !== "inProgress") return record.turnStatus;
+    }
+  }
+  return undefined;
+}
+
+/** A late new row stays inside its recorded turn, before the next prompt.
+ * Existing rows retain their original position in upsertActivity. */
+function historicalActivityOrder(task: ThreadTaskState, turnId?: string): number | undefined {
+  if (!turnId || turnId === task.activeTurnId) return undefined;
+  let last = -Infinity;
+  for (const records of [task.messages, task.activities]) {
+    for (const record of records) {
+      if (record.turnId === turnId && record.timelineOrder !== undefined) last = Math.max(last, record.timelineOrder);
+    }
+  }
+  if (!Number.isFinite(last)) return undefined;
+  let next = Infinity;
+  for (const records of [task.messages, task.activities]) {
+    for (const record of records) {
+      if (record.timelineOrder !== undefined && record.timelineOrder > last) next = Math.min(next, record.timelineOrder);
+    }
+  }
+  // Equal orders preserve arrival order in the stable timeline merge, and
+  // cannot round into the next prompt after many late rows.
+  return Number.isFinite(next) ? last : undefined;
+}
+
 function isFinalizedAssistantMessage(message: ChatMessage): boolean {
   return message.streaming === false
     || message.turnStatus === "completed"
@@ -561,10 +604,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   hydrateTask: (threadId, messages, activities, workspacePath, history) => set((state) => {
     const existing = state.tasks[threadId];
+    const existingMessagesById = new Map((existing?.messages ?? []).map((message) => [message.id, message]));
+    const existingActivitiesById = new Map((existing?.activities ?? []).map((activity) => [activity.id, activity]));
     const restoredMessages = restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
     const reconciled = reconcileUserMessages(restoredMessages, existing?.messages ?? []);
     const hydratedMessages = reconciled.messages.map((message) => withTimelineOrder({
       ...message,
+      ...(message.phase === undefined && existingMessagesById.get(message.id)?.phase
+        ? { phase: existingMessagesById.get(message.id)!.phase } : {}),
       turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
     }));
     // The turns-derived history excludes the incomplete turn's partially
@@ -585,6 +632,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => withTimelineOrder({
       ...restoreCompactionActivity(activity, existing),
+      ...(activity.workType === undefined && existingActivitiesById.get(activity.id)?.workType
+        ? { workType: existingActivitiesById.get(activity.id)!.workType } : {}),
       turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
     }));
     const hydratedActivityIds = new Set(hydratedActivities.map((activity) => activity.id));
@@ -752,8 +801,19 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   startAssistantMessage: (threadId, message) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     // A delta may have reached the renderer before item/started. In that case
-    // keep its text and original timeline position.
-    if (task.messages.some((entry) => entry.id === message.id)) return state;
+    // keep its text and original timeline position, but retain phase metadata
+    // from the start event. Replayed starts must not reopen a sealed message.
+    const existingIndex = task.messages.findIndex((entry) => entry.id === message.id);
+    if (existingIndex >= 0) {
+      const previous = task.messages[existingIndex];
+      const phase = message.phase ?? previous.phase;
+      if (phase === previous.phase) return state;
+      const next = { ...previous, phase };
+      const messages = [...task.messages];
+      messages[existingIndex] = next;
+      return { tasks: { ...state.tasks, [threadId]: { ...task, messages,
+        estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(next)) } } };
+    }
     const started = withTimelineOrder<ChatMessage>({ ...message, streaming: true, turnId: message.turnId ?? task.activeTurnId });
     const assistantOutputTurnId = task.status === "running"
       && Boolean(started.text)
@@ -795,15 +855,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     recordStreamingDelta(threadId, delta.length, performance.now(), deltaTurnId);
     scheduleDeltaFlush(get().flushDeltas);
   },
-  queueReasoningDelta: (threadId, itemId, delta, source) => {
+  queueReasoningDelta: (threadId, itemId, delta, source, turnId) => {
     const key = `${threadId}\0${itemId}`;
     const current = get().tasks[threadId];
+    const existing = current?.activities.find((activity) => activity.id === itemId);
+    const owner = turnId ?? existing?.turnId ?? current?.activeTurnId;
+    if (TERMINAL_ACTIVITY_STATUSES.has(existing?.status ?? "") || terminalStatusForTurn(current, owner)) return;
     const reasoningAlreadyKnown = reasoningStreams.has(key)
       || Boolean(current?.activities.some((activity) => (
         activity.id === itemId
         && (!current.activeTurnId || !activity.turnId || activity.turnId === current.activeTurnId)
       )));
-    if (delta && !reasoningAlreadyKnown && current?.activeTurnId && current.assistantOutputTurnId === current.activeTurnId) {
+    if (delta && !reasoningAlreadyKnown && current?.activeTurnId && owner === current.activeTurnId && current.assistantOutputTurnId === current.activeTurnId) {
       set((state) => {
         const task = state.tasks[threadId];
         if (!task || task.assistantOutputTurnId !== task.activeTurnId) return state;
@@ -815,7 +878,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         };
       });
     }
-    const stream = reasoningStreams.get(key) ?? { summary: "", content: "" };
+    const stream = reasoningStreams.get(key) ?? { summary: "", content: "", turnId: owner };
     stream[source] = `${stream[source]}${delta}`;
     reasoningStreams.set(key, stream);
     const items = pendingReasoningItems.get(threadId) ?? new Set<string>();
@@ -871,7 +934,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           const detail = (stream?.content || stream?.summary || "").trim();
           if (!detail) continue;
           const index = activities.findIndex((activity) => activity.id === itemId);
-          const activity: Activity = { id: itemId, kind: "reasoning", title: "Model thinking", detail, status: "inProgress", turnId: task.activeTurnId };
+          const owner = stream?.turnId ?? activities[index]?.turnId ?? task.activeTurnId;
+          if (TERMINAL_ACTIVITY_STATUSES.has(activities[index]?.status ?? "") || terminalStatusForTurn(task, owner)) continue;
+          const activity: Activity = { id: itemId, kind: "reasoning", title: "Model thinking", detail, status: "inProgress", turnId: owner,
+            timelineOrder: historicalActivityOrder(task, owner) };
           if (index < 0) {
             const nextActivity = withTimelineOrder(activity);
             activities = [...activities, nextActivity];
@@ -924,7 +990,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         skillDependencies: original.skillDependencies ?? normalized.skillDependencies }
       : {};
     const nextMessage = existingIndex >= 0
-      ? { ...original, ...normalized, ...display, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
+      ? { ...original, ...normalized, ...display,
+        ...(normalized.phase === undefined && original.phase ? { phase: original.phase } : {}),
+        streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
       : withTimelineOrder({ ...normalized, streaming: false, turnId: message.turnId ?? task.activeTurnId });
     const messages = existingIndex >= 0
       ? task.messages.map((entry, index) => index === existingIndex ? nextMessage : entry)
@@ -953,7 +1021,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const task = state.tasks[threadId] ?? emptyTask(threadId);
       const existingIndex = task.activities.findIndex((entry) => entry.id === activity.id);
       const exists = existingIndex >= 0;
-      const activityTurnId = activity.turnId ?? task.activeTurnId;
+      const activityTurnId = activity.turnId ?? task.activities[existingIndex]?.turnId ?? task.activeTurnId;
+      const terminal = terminalStatusForTurn(task, activityTurnId);
+      const liveChild = activity.kind === "agent" && activity.agent?.action === "spawn"
+        && activity.agent.threadIds?.some((childId) => ["starting", "running"].includes(state.statuses[childId] ?? "idle"));
+      const incoming = { ...activity, turnId: activityTurnId,
+        status: terminal && !liveChild && isActiveAgentRecord(activity.status ?? "") ? terminal : activity.status,
+        turnStatus: terminal ?? activity.turnStatus };
       const activities = exists
         ? task.activities.map((entry, index) => {
             if (index !== existingIndex) return entry;
@@ -969,17 +1043,18 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
               && childrenRemainTerminal;
             const preserveStopped = stoppedSpawn && childrenRemainTerminal;
             return {
-              ...activity,
+              ...incoming,
               // Stop can race final provider events. Once every represented
               // child task is terminal, a late event may enrich the card but
               // must never replace its explicit Stopped outcome.
-              status: lateReactivation || preserveStopped ? entry.status : activity.status,
-              turnId: activity.turnId ?? entry.turnId ?? task.activeTurnId,
-              turnStatus: activity.turnStatus ?? entry.turnStatus,
+              status: lateReactivation || preserveStopped ? entry.status : incoming.status,
+              ...(activity.workType === undefined && entry.workType ? { workType: entry.workType } : {}),
+              turnId: activityTurnId,
+              turnStatus: incoming.turnStatus ?? entry.turnStatus,
               timelineOrder: entry.timelineOrder,
             };
           })
-        : [...task.activities, withTimelineOrder({ ...activity, turnId: activity.turnId ?? task.activeTurnId })];
+        : [...task.activities, withTimelineOrder({ ...incoming, timelineOrder: activity.timelineOrder ?? historicalActivityOrder(task, activityTurnId) })];
       const beginsNewWork = !exists
         && activity.kind !== "warning"
         && activity.status !== "completed"
