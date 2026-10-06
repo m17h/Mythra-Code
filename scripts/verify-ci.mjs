@@ -56,6 +56,24 @@ export function expectedReceipts() {
   ]).concat('webkit-macOS');
 }
 
+export function selectVerificationArtifacts(artifacts, { runId, head }) {
+  if (!Number.isSafeInteger(runId) || runId < 1 || !shaPattern.test(head)) fail('Artifact selection requires exact workflow identity');
+  const names = expectedReceipts().map((id) => id === 'webkit-macOS' ? 'verification-webkit' : `verification-${id}`);
+  const relevant = artifacts.filter((a) => a.name?.startsWith('verification-'));
+  if (!equal([...new Set(relevant.map((a) => a.name))], names)) fail('Missing or unexpected verification artifacts');
+  return names.map((name) => {
+    const candidates = relevant.filter((a) => a.name === name).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    if (candidates.some((a) => !Number.isFinite(Date.parse(a.created_at)))
+      || (candidates[1] && Date.parse(candidates[0].created_at) === Date.parse(candidates[1].created_at))) fail(`${name}: ambiguous artifact chronology`);
+    const latest = candidates[0];
+    // Never fall back to an earlier success when the newest attempt is invalid.
+    if (!Number.isSafeInteger(latest.id) || latest.id < 1 || latest.expired !== false
+      || latest.workflow_run?.id !== runId || latest.workflow_run?.head_sha !== head
+      || !/^sha256:[a-f0-9]{64}$/.test(latest.digest ?? '')) fail(`${name}: invalid latest artifact identity`);
+    return latest;
+  });
+}
+
 export function assertUnitInventory(inventory, trackedFiles) {
   const trackedTests = trackedFiles.filter((file) => /\.(?:test|spec)\.(?:tsx?|jsx?|mjs)$/.test(file) && !file.includes('.browser.test.'));
   const omitted = trackedTests.filter((file) => !inventory.includes(file));
@@ -224,6 +242,15 @@ async function main(args) {
   if (mode === 'contract') {
     assertContract(readJson(resolve(root, 'package.json')).scripts);
     console.log('Local and hosted verification commands have complete coverage parity.');
+  } else if (mode === 'artifact-ids') {
+    const { execFileSync } = await import('node:child_process');
+    const runId = Number(process.env.GITHUB_RUN_ID);
+    const event = readJson(process.env.GITHUB_EVENT_PATH);
+    const head = event.pull_request?.head?.sha ?? process.env.GITHUB_SHA;
+    const response = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp', `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}/artifacts?per_page=100`], { encoding: 'utf8' }));
+    const selected = selectVerificationArtifacts(response.flatMap((page) => page.artifacts), { runId, head });
+    writeFileSync(process.env.GITHUB_OUTPUT, `ids=${selected.map((a) => a.id).join(',')}\n`, { flag: 'a' });
+    console.log(JSON.stringify(selected.map(({ id, name, digest, created_at }) => ({ id, name, digest, created_at }))));
   } else if (mode === 'gate') {
     assertContract(readJson(resolve(root, 'package.json')).scripts);
     const receipts = readdirSync(artifacts).filter((f) => /^receipt-.*\.json$/.test(f)).map((f) => readJson(resolve(artifacts, f)));
