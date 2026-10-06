@@ -22,8 +22,31 @@ user. macOS 14 or later is required. On Windows use a local drive path; set the
 current user's SID as owner, protect the root ACL from inheritance, and grant
 access only to that SID, SYSTEM, and/or Administrators. Child files/directories
 may inherit that safe ACL, but each must still be owned by the current user or the launching token's default owner SID (Administrators for an elevated token).
-Reused trees with foreign owners, broad grants, hardlinked files, or links fail
-closed. Do not copy provider homes or credentials into the profile.
+The Windows guard also recognizes the exact `lpacEdgeStableNetworkSandbox`
+capability that WebView2 creates, solely inside
+`webview/EBWebView/Default/{Cache,Network,Shared Dictionary}`. These browser
+storage subtrees may have the stable-channel network sandbox's read/write/
+execute/delete access. This capability is channel-wide, **not unique to this
+app or QA profile**. Application SQLite data, home and control files retain
+only the user/SYSTEM/Administrators rule. Never place credentials in QA browser
+storage or copy provider homes into the profile.
+
+The exception validates the exact named-capability SID and raw allow ACEs:
+anchor directories permit mask `0x001301bf` with no flags, and `0xe0010000`
+with `OI CI IO`; descendants permit `0x001301bf` with `ID`, plus directory-only
+`0xe0010000` with `OI CI IO ID`. It rejects other capability identities,
+locations, ACE types, masks and flags, including DACL/owner modification rights.
+Reused trees with foreign owners, other broad grants, hardlinked files or links
+fail closed. Do not strip or normalize browser-created ACLs to pass a check.
+A different runtime/channel ACL requires fresh diagnosis and review.
+
+This is a validation rule, not native acceptance: the exact package must still
+pass all selected UI, save, close, reopen and data-integrity checks.
+
+For new Windows coordinator contracts declaring `windowsCleanup.version:1`, the
+coordinator creates the UUID root and marker before launching the worker. Do not
+provision, replace or repair them in the worker. Existing roots and contracts
+without the maintained provisioning record are ineligible for this lifecycle.
 
 Run the candidate directly with this variable inherited by its process; do not
 use a launcher which drops the environment. The title is
@@ -199,6 +222,46 @@ success. Keep fixture data/diagnostics when cleanup fails. On Windows the
 maintenance process records `webview-dispose-deferred` with
 `maintenancePassRequired:false`, `rootRemovalRequired:true`; the persistent
 store is entirely under the root and must be removed after writers exit.
+
+### Prospective Windows coordinator cleanup
+
+For contracts declaring `windowsCleanup.version:1`, after **every** candidate
+launch reaches matching `control-ready`, capture its actual live host and
+persistent WebView writer identities before closing it:
+
+```text
+node scripts/release-windows-qa-cleanup.mjs capture-writers STATE_ROOT PID RETAINED_EXECUTABLE
+```
+
+Use this for both the injected-failure run and the healthy reopen. The command
+only captures process ownership; it does not launch, close or remove anything.
+Use the returned host `processStart` verbatim in the result. Keep the executable,
+all screenshots/AX, closed database proofs and complete newline-terminated
+`native-events.jsonl` outside the disposable profile, within retained state.
+After all selected observations pass and normal saved closes/owned exits are
+complete, return `status:"passed"` with **`cleanupComplete:false`**. This means
+observations are ready, not final release acceptance. Do not delete the root.
+
+The coordinator independently validates all existing observations, provisioning,
+marker/tree/ACLs, captured process identities, full copied events and retained
+hashes. It writes a durable intent and exclusive claim outside the target,
+rechecks writers/tree, then explicitly **permanently removes exactly that one
+newly provisioned successful profile**. Removal checks original entry identities,
+unlinks plain files and removes empty directories without force, recursive
+parent cleanup, ACL repair, process killing or fallback. A completion receipt
+requires actual root absence, fresh process inventory and unchanged retained
+hashes. Final acceptance verifies that receipt and live Windows absence again;
+portable historical validation checks the retained binding, not a foreign-OS
+filesystem path.
+
+Failed native observations, missing ownership, ambiguous/live writers, a denial,
+partial removal or changed evidence retain a failed receipt and remaining files.
+There is no automatic retry and no adoption of previously failed/denied roots.
+The actual removal remains subject to normal action review; this helper is not
+an alternative channel for a rejected action. An outside-root coordinator claim
+prevents competing maintained cleanup, but does not eliminate arbitrary
+same-user filesystem races. No held `profile.lock` is falsely claimed to survive
+its own deletion. Earlier frozen contracts keep their original recipe.
 
 Preserve receipts/events outside the root before deleting its owned tree.
 Never infer macOS cleanup from removing the root: named WebKit stores live

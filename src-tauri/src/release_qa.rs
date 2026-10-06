@@ -113,7 +113,7 @@ fn validate_windows_owner(
     // Elevated Windows tokens create children owned by their default owner
     // (Administrators). Accept only that actual token owner or its user SID;
     // the protected root itself must remain owned by the user SID.
-    let script = "$ErrorActionPreference='Stop'; $i=[System.Security.Principal.WindowsIdentity]::GetCurrent(); $u=$i.User.Value; $t=$i.Owner.Value; $paths=@($env:MYTHRA_QA_OWNER_PATH); if($env:MYTHRA_QA_CHECK_TREE -eq '1'){$paths+=@([System.IO.Directory]::EnumerateFileSystemEntries($env:MYTHRA_QA_OWNER_PATH,'*',[System.IO.SearchOption]::AllDirectories))}; foreach($p in $paths){$item=if([System.IO.Directory]::Exists($p)){[System.IO.DirectoryInfo]::new($p)}else{[System.IO.FileInfo]::new($p)}; $item.Refresh(); if(-not $item.Exists -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0){exit 1}; $a=$item.GetAccessControl(); $o=$a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; if(($o -ne $u -and (($env:MYTHRA_QA_REQUIRE_PROTECTED -eq '1' -and $p -eq $env:MYTHRA_QA_OWNER_PATH) -or $o -ne $t)) -or ($env:MYTHRA_QA_REQUIRE_PROTECTED -eq '1' -and $p -eq $env:MYTHRA_QA_OWNER_PATH -and -not $a.AreAccessRulesProtected)){exit 1}; foreach($r in $a.Access){$s=$r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; if($r.AccessControlType -eq 'Allow' -and $s -notin @($u,'S-1-5-18','S-1-5-32-544')){exit 1}}}";
+    let script = include_str!("release_qa_windows_acl.ps1");
     let system = env::var_os("SystemRoot").ok_or("Windows system directory unavailable")?;
     let status = crate::process_launch::background_std_command(
         PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
@@ -126,7 +126,7 @@ fn validate_windows_owner(
         if require_protected { "1" } else { "0" },
     )
     .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped())
     .spawn()
     .map_err(|_| "Cannot verify private Windows QA ownership")?;
     let mut child = status;
@@ -146,7 +146,15 @@ fn validate_windows_owner(
         std::thread::sleep(std::time::Duration::from_millis(25));
     };
     if !status.success() {
-        return Err("QA profile requires a protected ACL owned by the current user, granting access only to that user, SYSTEM, or Administrators".into());
+        use std::io::Read;
+        let mut reason = String::new();
+        if let Some(stderr) = child.stderr.take() {
+            let _ = stderr.take(256).read_to_string(&mut reason);
+        }
+        return Err(format!(
+            "QA profile Windows ownership/ACL validation failed: {}",
+            reason.trim()
+        ));
     }
     Ok(())
 }
@@ -961,6 +969,25 @@ mod tests {
         assert!(Profile::open(root.clone()).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
+    #[cfg(windows)]
+    #[test]
+    fn qa_windows_browser_network_acl_descriptor_regressions() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let output = crate::process_launch::background_std_command("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(manifest.join("tests/release_qa_windows_acl.ps1"))
+            .arg("-Checker")
+            .arg(manifest.join("src/release_qa_windows_acl.ps1"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Windows ACL descriptor fixtures failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn qa_windows_reused_child_acl_must_remain_private() {
