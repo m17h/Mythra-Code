@@ -451,7 +451,10 @@ export function ActivityDetailsModal({
     setTargetId(steps[index].id);
     followingRef.current = false;
     smoothScrollRef.current = false;
-    if (index < start || index >= end) setRange(rangeAround(index, steps.length));
+    if (index < start || index >= end) {
+      const nextRange = rangeAround(index, steps.length);
+      setRange({ ...nextRange, end: nextRange.end ?? steps.length });
+    }
     scrollRequestRef.current = { kind: "step", id: steps[index].id, block: "center" };
   };
 
@@ -465,17 +468,17 @@ export function ActivityDetailsModal({
 
   const showLater = () => {
     const next = end + ACTIVITY_STEP_WINDOW;
-    setRange({ start, end: next >= steps.length ? null : next });
+    setRange({ start, end: Math.min(next, steps.length) });
   };
 
   const jumpToLatest = () => {
     followingRef.current = true;
     setShowLatest(false);
     const behavior: ScrollBehavior = prefersReducedMotion() ? "auto" : "smooth";
-    if (hasLater) {
-      setRange(latestRange(steps.length));
-      scrollRequestRef.current = { kind: "end", behavior };
-    } else pinToEnd(behavior);
+    // Explicit Latest navigation owns both the scroll and the live endpoint,
+    // even when the frozen window currently happens to include the last step.
+    setRange(latestRange(steps.length));
+    scrollRequestRef.current = { kind: "end", behavior };
   };
 
   const stopFollowing = () => {

@@ -32,7 +32,7 @@ function turnId(entry: CompactWorkEntry): string | undefined {
   return id && items.every((item) => item.turnId === id) ? id : undefined;
 }
 
-function segmentsFor(entries: readonly CompactWorkEntry[]): CompactWorkEntry[][] {
+export function activityTurnSegments(entries: readonly CompactWorkEntry[]): CompactWorkEntry[][] {
   const segments: CompactWorkEntry[][] = [];
   let segment: CompactWorkEntry[] = [];
   let hasUser = false;
@@ -48,8 +48,15 @@ function segmentsFor(entries: readonly CompactWorkEntry[]): CompactWorkEntry[][]
       }
       hasUser = true;
       primaryTurnId = id;
-    } else if (hasUser && !primaryTurnId && id) {
-      primaryTurnId = id;
+    } else if (id) {
+      // A paginated history slice may begin after its user prompt. Explicit
+      // provider turn identities still separate each completed answer.
+      if (!hasUser && segment.length && primaryTurnId && id !== primaryTurnId) {
+        segments.push(segment);
+        segment = [];
+        hasUser = false;
+      }
+      if (!hasUser || !primaryTurnId) primaryTurnId = id;
     }
     segment.push(entry);
   }
@@ -123,7 +130,7 @@ export function compactActivityPresentation(
 ): CompactPresentationEntry[] {
   // A failed member must not expose hundreds of unrelated grouped operations.
   // Split presentation groups only; original activities/history stay intact.
-  const segments = segmentsFor(isolateImportantActivities(entries));
+  const segments = activityTurnSegments(isolateImportantActivities(entries));
   let activeSegment = -1;
   if (options.activeTurnId) {
     for (let index = segments.length - 1; index >= 0; index -= 1) {

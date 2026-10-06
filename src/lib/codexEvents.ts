@@ -3,6 +3,7 @@ import { agentMessagePhase, timelineFromTurns } from "./threadTimeline";
 import { isAuthenticationError } from "./errors";
 import type { CodexEvent, JsonObject } from "./codex";
 import type { ChatMessage, ThreadItem, Turn } from "../types";
+import { isActiveAgentRecord } from "./subAgentActivity";
 import { useTaskStore } from "./taskStore";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
@@ -123,6 +124,16 @@ export interface CodexEventContext {
   onNativeAgentDiscovered: (rootThreadId: string, childThreadId: string, details: { prompt?: string; path?: string }) => void;
 }
 
+function nativeChildStatus(threadId: string, itemId: string, childId: string, incoming: string): string {
+  const state = useTaskStore.getState();
+  const child = state.statuses[childId];
+  if (child === "starting" || child === "running") return child === "starting" ? "starting" : "inProgress";
+  if (!isActiveAgentRecord(incoming)) return incoming;
+  const parentStatus = state.tasks[threadId]?.activities.find((activity) => activity.id === itemId)?.turnStatus;
+  if (!parentStatus || parentStatus === "inProgress") return incoming;
+  return child === "error" ? "failed" : child === "interrupted" ? "interrupted" : parentStatus;
+}
+
 export function handleThreadItem(
   threadId: string,
   item: ThreadItem,
@@ -176,6 +187,7 @@ export function handleThreadItem(
   if (item.type === "commandExecution") {
     taskStore.upsertActivity(threadId, {
       id,
+      turnId,
       kind: "command",
       title: item.command ?? "Run command",
       detail: truncatedDetail(item.aggregatedOutput ?? item.cwd),
@@ -186,6 +198,7 @@ export function handleThreadItem(
   if (item.type === "fileChange") {
     taskStore.upsertActivity(threadId, {
       id,
+      turnId,
       kind: "file",
       workType: "files",
       title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`,
@@ -196,7 +209,7 @@ export function handleThreadItem(
   }
   if (item.type === "webSearch") {
     taskStore.upsertActivity(threadId, {
-      id, kind: "command", workType: "research", title: "Web Search", detail: item.query,
+      id, turnId, kind: "command", workType: "research", title: "Web Search", detail: item.query,
       status: item.status ?? (lifecycle === "started" ? "inProgress" : "completed"),
     });
     return;
@@ -206,7 +219,16 @@ export function handleThreadItem(
     const summary = (item.summary ?? []).join("\n\n").trim();
     const existing = taskStore.tasks[threadId]?.activities.find((activity) => activity.id === id);
     const detail = content || existing?.detail || summary;
-    if (detail) taskStore.upsertActivity(threadId, { id, kind: "reasoning", title: "Model thinking", detail, status: "completed" });
+    if (lifecycle === "started" && ["completed", "failed", "interrupted", "cancelled"].includes(existing?.status ?? "")) return;
+    if (detail) taskStore.upsertActivity(threadId, { id, turnId, kind: "reasoning", title: "Model thinking", detail,
+      status: lifecycle === "started" ? "inProgress" : "completed" });
+    if (lifecycle === "started" && !existing) {
+      // Seed the correct stream so subsequent deltas extend initial content
+      // rather than replacing it. Replayed starts must not append twice.
+      if (summary) taskStore.queueReasoningDelta(threadId, id, summary, "summary", turnId);
+      if (content) taskStore.queueReasoningDelta(threadId, id, content, "content", turnId);
+      taskStore.flushDeltas();
+    }
     return;
   }
   if (item.type === "collabAgentToolCall") {
@@ -226,6 +248,7 @@ export function handleThreadItem(
     } as const;
     taskStore.upsertActivity(threadId, {
       id,
+      turnId,
       kind: "agent",
       title: titles[item.tool ?? ""] ?? "Sub-agent activity",
       detail: item.prompt ?? undefined,
@@ -244,7 +267,7 @@ export function handleThreadItem(
         // otherwise add the root to its own worker list, where it holds a
         // concurrency slot and shows up in Live agents as a third agent.
         if (!childThreadId || childThreadId === threadId) continue;
-        taskStore.upsertAgent(threadId, { id: childThreadId, prompt: item.prompt ?? "Delegated task", status: item.status ?? "inProgress" });
+        taskStore.upsertAgent(threadId, { id: childThreadId, prompt: item.prompt ?? "Delegated task", status: nativeChildStatus(threadId, id, childThreadId, item.status ?? "inProgress") });
         ctx.onNativeAgentDiscovered(threadId, childThreadId, { prompt: item.prompt ?? undefined });
         taskStore.ensureTask(childThreadId, ctx.bindingFor(threadId));
       }
@@ -254,10 +277,11 @@ export function handleThreadItem(
   if (item.type === "subAgentActivity") {
     taskStore.upsertActivity(threadId, {
       id,
+      turnId,
       ...nativeSubAgentPresentation(item),
     });
     if (item.agentThreadId && item.agentThreadId !== threadId) {
-      taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: item.kind ?? "working", path: item.agentPath });
+      taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: nativeChildStatus(threadId, id, item.agentThreadId, item.kind ?? "working"), path: item.agentPath });
       ctx.onNativeAgentDiscovered(threadId, item.agentThreadId, { path: item.agentPath });
       taskStore.ensureTask(item.agentThreadId, ctx.bindingFor(threadId));
     }
@@ -328,6 +352,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
       String(params.itemId),
       String(params.delta ?? ""),
       method === "item/reasoning/textDelta" ? "content" : "summary",
+      typeof params.turnId === "string" ? params.turnId : undefined,
     );
     return;
   }

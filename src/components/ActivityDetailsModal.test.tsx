@@ -6,7 +6,7 @@ import type { Activity, ChatMessage, PendingApproval } from "../types";
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
 import { ChatTimeline, TIMELINE_MOUNT_ROWS } from "./ChatTimeline";
-import { ACTIVITY_STEP_WINDOW } from "./ActivityDetailsModal";
+import { ActivityDetailsModal, ACTIVITY_STEP_WINDOW } from "./ActivityDetailsModal";
 import { SubAgentControls } from "./SubAgentControls";
 import { AgentQuestionDelivery } from "../lib/agentQuestionContext";
 import type { SubAgentWorker } from "../lib/subAgentActivity";
@@ -82,11 +82,66 @@ function stepIds(dialog: HTMLElement): string[] {
   return Array.from(dialog.querySelectorAll<HTMLElement>("[data-step-id]")).map((step) => step.dataset.stepId!);
 }
 
+describe("Activity reader endpoints", () => {
+  it.each(["paging", "search"])("keeps a numeric endpoint after %s navigation while new steps arrive", (mode) => {
+    const entries = (count: number) => Array.from({ length: count }, (_, index) => ({ kind: "message" as const,
+      value: { id: `endpoint-${index}`, role: "assistant" as const, text: index === 3 || index === 150 ? "needle" : `Step ${index}` } }));
+    const modal = (count: number) => <ActivityDetailsModal run={{ state: "running", entries: entries(count) }}
+      sourceRef={{ current: null }} renderMessage={(message) => <p>{message.text}</p>} renderSubAgents={() => null} onClose={() => {}}
+      {...(mode === "search" ? { focusId: "endpoint-3", searchQuery: "needle" } : {})} />;
+    const view = render(modal(180));
+    const dialog = screen.getByRole("dialog");
+    if (mode === "search") fireEvent.click(within(dialog).getByRole("button", { name: "Next match" }));
+    else {
+      fireEvent.click(within(dialog).getByRole("button", { name: /earlier steps/ }));
+      view.rerender(modal(240));
+      fireEvent.click(within(dialog).getByRole("button", { name: /later steps/ }));
+    }
+    const count = dialog.querySelectorAll("[data-step-id]").length;
+    view.rerender(modal(1000));
+    expect(dialog.querySelectorAll("[data-step-id]")).toHaveLength(count);
+    expect(within(dialog).getByRole("button", { name: /later steps/ })).toBeInTheDocument();
+  });
+});
+
 describe("compact activity in the timeline", () => {
   const prompt: ChatMessage = { id: "prompt", role: "user", text: "Fix the bug", timelineOrder: 1, ...live };
   const command: Activity = { id: "command", kind: "command", title: "npm test", detail: "1 failing", status: "inProgress", timelineOrder: 2, ...live };
   const update: ChatMessage = { id: "update", role: "assistant", text: "Found the cause.", phase: "commentary", timelineOrder: 3, ...live };
   const answer: ChatMessage = { id: "answer", role: "assistant", text: "Fixed it.", phase: "final", streaming: true, timelineOrder: 4, ...live };
+
+  it("keeps promptless provider turns separate in their historical Activity windows", () => {
+    const messages: ChatMessage[] = [
+      { id: "old-update", role: "assistant", text: "Old recorded update", phase: "commentary", turnId: "old", turnStatus: "completed", timelineOrder: 1 },
+      { id: "old-answer", role: "assistant", text: "Old answer", turnId: "old", turnStatus: "completed", timelineOrder: 2 },
+      { id: "new-update", role: "assistant", text: "New interrupted update", phase: "commentary", turnId: "new", turnStatus: "failed", timelineOrder: 4 },
+    ];
+    const activities: Activity[] = [
+      { id: "old-tool", kind: "command", title: "Old tool", status: "completed", turnId: "old", turnStatus: "completed", timelineOrder: 0 },
+      { id: "new-tool", kind: "command", title: "New tool", status: "completed", turnId: "new", turnStatus: "failed", timelineOrder: 3 },
+    ];
+    const view = render(timeline(messages, activities, false));
+    expect(view.container).toHaveTextContent("Old answer");
+    let dialog = openActivity(/^Work completed\. View activity/);
+    expect(dialog).toHaveTextContent("Old recorded update");
+    expect(dialog).not.toHaveTextContent("New interrupted update");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close activity" }));
+    dialog = openActivity(/^Run failed\. View activity/);
+    expect(dialog).toHaveTextContent("New interrupted update");
+    expect(dialog).not.toHaveTextContent("Old recorded update");
+  });
+
+  it.each(["command", "file"] as const)("keeps adjacent cross-turn %s work out of the historical modal", (kind) => {
+    const activities: Activity[] = [
+      { id: "old-tool", kind, title: "Old operation", status: "completed", turnId: "old", turnStatus: "completed", timelineOrder: 1 },
+      { id: "new-tool", kind, title: "New failed operation", status: "failed", turnId: "new", turnStatus: "failed", timelineOrder: 2 },
+    ];
+    const view = render(timeline([], activities, false));
+    expect(view.container).toHaveTextContent("New failed operation");
+    const dialog = openActivity(/^Work completed\. View activity/);
+    expect(dialog).toHaveTextContent("Old operation");
+    expect(dialog).not.toHaveTextContent("New failed operation");
+  });
 
   it("shows one status line while running and keeps the window open through completion", () => {
     const view = render(timeline([prompt, update, answer], [command], true));

@@ -14,6 +14,19 @@ const visibleIds = (entries: ReturnType<typeof present>) => entries.filter((entr
   .flatMap((entry) => entry.kind === "message" || entry.kind === "activity" ? [entry.value.id] : entry.value.map((value) => value.id));
 
 describe("compact activity presentation", () => {
+  it("preserves each completed provider answer when paginated history lacks user prompts", () => {
+    const entries = [message("older", "Earlier answer", { turnId: "older-turn", turnStatus: "completed" }),
+      message("newer", "Latest answer", { turnId: "newer-turn", turnStatus: "completed" })];
+    expect(visibleIds(present(entries))).toEqual(["older", "newer"]);
+  });
+
+  it("keeps original user-turn steering inside work recovered under another runtime id", () => {
+    const entries = [user(), activity("old"), activity("recovered", { turnId: "recovery" }), user("steer")];
+    const result = present(entries, true, "recovery");
+    expect(result.filter((entry) => entry.kind === "work")).toHaveLength(1);
+    expect(visibleIds(result)).toEqual(["prompt", "steer"]);
+  });
+
   it("shows a single work disclosure for routine live text and tools, retaining every source object", () => {
     const entries = [user(), message("comment", "I am checking", { phase: "commentary" }), activity("tool"), message("unknown", "Still checking", { streaming: true })];
     const result = present(entries, true);

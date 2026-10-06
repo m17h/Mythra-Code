@@ -13,7 +13,7 @@ import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference }
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentControls } from "./SubAgentControls";
-import { compactActivityPresentation, type CompactWorkState } from "../lib/compactActivity";
+import { activityTurnSegments, compactActivityPresentation, type CompactWorkState } from "../lib/compactActivity";
 import { ActivityStatus, describeLiveActivity, type LiveActivityDescriptor } from "./ActivityStatus";
 import { ActivityDetailsModal, workEntrySearchText, type ActivityDetailsRun } from "./ActivityDetailsModal";
 import { useFeedbackMessageSource } from "./FeedbackProvider";
@@ -131,10 +131,11 @@ function groupToolRuns(entries: WorkItemEntry[]): WorkItemEntry[] {
       continue;
     }
     const previous = grouped.at(-1);
+    const sameTurn = previous && workItemTurnId(previous) === entry.value.turnId;
     if (entry.value.kind === "command") {
-      if (previous?.kind === "commands") previous.value.push(entry.value);
+      if (sameTurn && previous.kind === "commands") previous.value.push(entry.value);
       else grouped.push({ kind: "commands", value: [entry.value] });
-    } else if (previous?.kind === "files") {
+    } else if (sameTurn && previous.kind === "files") {
       previous.value.push(entry.value);
     } else {
       grouped.push({ kind: "files", value: [entry.value] });
@@ -350,25 +351,9 @@ type ActivityCloseReason = "user" | "approval" | "navigate";
  * steer is shown back in its true chronology.
  */
 export function timelineRuns(entries: WorkItemEntry[]): TimelineRuns {
-  const list: TimelineRun[] = [];
-  let current: WorkItemEntry[] = [];
-  let hasUser = false;
-  let primaryTurnId: string | undefined;
-  const flush = () => {
-    const first = current[0];
-    if (first) list.push({ key: workItemId(first) ?? `run-${list.length}`, entries: current });
-    current = [];
-  };
-  for (const entry of entries) {
-    const turnId = workItemTurnId(entry);
-    if (entry.kind === "message" && entry.value.role === "user") {
-      if (current.length && (!hasUser || !turnId || turnId !== primaryTurnId)) flush();
-      hasUser = true;
-      primaryTurnId = turnId;
-    } else if (hasUser && !primaryTurnId && turnId) primaryTurnId = turnId;
-    current.push(entry);
-  }
-  flush();
+  const list: TimelineRun[] = activityTurnSegments(entries).map((segment, index) => ({
+    key: workItemId(segment[0]) ?? `run-${index}`, entries: segment,
+  }));
   const byKey = new Map<string, TimelineRun>();
   const keyById = new Map<string, string>();
   for (const run of list) {

@@ -268,7 +268,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       const id = text(update.toolCallId) || crypto.randomUUID();
       const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
       const status = text(update.status);
-      const workType = toolWorkType(text(update.kind)) ?? existing?.workType;
+      const workType = toolWorkType(text(update.kind)) ?? existing?.workType ?? "commands";
       // A genuinely new tool after result is stale noise and would otherwise
       // appear below the final answer, detached from the completed turn. A
       // late status update for a tool we already showed may still refine it.

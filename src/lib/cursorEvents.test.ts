@@ -31,6 +31,11 @@ describe("Cursor event routing", () => {
     store.appendUserMessage("thread-1", { id: "user", role: "user", text: "Review the game" });
   });
 
+  it("uses a conservative category for unknown native kinds instead of their arbitrary title", () => {
+    sessionUpdate({ sessionUpdate: "tool_call", toolCallId: "unknown", kind: "other", title: "Read", status: "in_progress" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ workType: "commands" });
+  });
+
   it.each([
     ["read", "research"], ["search", "research"], ["fetch", "research"],
     ["edit", "files"], ["delete", "files"], ["move", "files"], ["execute", "commands"],

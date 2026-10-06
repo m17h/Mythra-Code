@@ -3,7 +3,7 @@ import { configure, fireEvent, render, screen, waitFor, within } from "@testing-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commands, userEvent } from "vitest/browser";
 import { ChatTimeline } from "./ChatTimeline";
-import { ACTIVITY_STEP_WINDOW } from "./ActivityDetailsModal";
+import { ActivityDetailsModal, ACTIVITY_STEP_WINDOW } from "./ActivityDetailsModal";
 import { ActivityStatus, ACTIVITY_STATUS_PHRASES } from "./ActivityStatus";
 import { ApprovalCenter } from "./ApprovalCenter";
 import { useAppShortcuts } from "../hooks/useAppShortcuts";
@@ -195,6 +195,53 @@ describe("compact activity in the real browser", () => {
     const orders = Array.from(steps(), (element) => element.getAttribute("data-step-id")!);
     expect(orders.indexOf("new-60")).toBeLessThan(orders.indexOf("new-179"));
     expect(view.container.querySelector(".flow-timeline")!.textContent).not.toContain("recorded operation");
+  });
+
+  it.each(["paging", "search"])("freezes the live endpoint after reader %s navigation", async (mode) => {
+    const updates = (count: number): ChatMessage[] => Array.from({ length: count }, (_, index) => ({
+      ...progress, id: `bounded-${index}`, timelineOrder: index + 2,
+      text: `Step ${index}: ${index === 3 || index === 150 ? "needle" : "recorded work"}\n\n${"Full retained output. ".repeat(12)}`,
+    }));
+    const modal = (count: number) => <ActivityDetailsModal run={{ state: "running", entries: updates(count).map((value) => ({ kind: "message", value })) }}
+      sourceRef={{ current: null }} renderMessage={(message) => <p>{message.text}</p>} renderSubAgents={() => null} onClose={() => {}}
+      {...(mode === "search" ? { focusId: "bounded-3", searchQuery: "needle" } : {})} />;
+    const view = render(modal(180));
+    const dialog = await screen.findByRole("dialog", { name: "Activity" });
+    const region = within(dialog).getByRole("region", { name: "Activity steps" });
+    if (mode === "search") {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Next match" }));
+      expect(dialog.querySelector(".is-current-match")).toHaveAttribute("data-step-id", "bounded-150");
+    } else {
+      fireEvent.click(within(dialog).getByRole("button", { name: /earlier steps/ }));
+      view.rerender(modal(240));
+      fireEvent.click(within(dialog).getByRole("button", { name: /later steps/ }));
+    }
+    // Output may arrive before the browser dispatches navigation scroll events.
+    const before = region.scrollTop;
+    const mountedBefore = dialog.querySelectorAll("[data-step-id]").length;
+    view.rerender(modal(500));
+    await settleFrames();
+    expect(dialog.querySelectorAll("[data-step-id]")).toHaveLength(mountedBefore);
+    expect(Math.abs(region.scrollTop - before)).toBeLessThanOrEqual(2);
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: /later steps/ })).toBeVisible());
+  });
+
+  it("resumes a live endpoint when Latest is followed immediately by new output", async () => {
+    await commands.setStreamTestReducedMotion(true);
+    const modal = (count: number) => <ActivityDetailsModal run={{ state: "running", entries: Array.from({ length: count }, (_, index) => ({ kind: "message",
+      value: { ...progress, id: `latest-${index}`, text: `Step ${index}: ${"Recorded output. ".repeat(30)}` } })) }}
+      sourceRef={{ current: null }} renderMessage={(message) => <p>{message.text}</p>} renderSubAgents={() => null} onClose={() => {}} />;
+    const view = render(modal(180));
+    const dialog = await screen.findByRole("dialog", { name: "Activity" });
+    const region = within(dialog).getByRole("region", { name: "Activity steps" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /earlier steps/ }));
+    fireEvent.pointerDown(region, { button: 0 });
+    region.scrollTop = 100;
+    fireEvent.scroll(region);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Latest activity" }));
+    view.rerender(modal(181));
+    await waitFor(() => expect(dialog.querySelector('[data-step-id="latest-180"]')).not.toBeNull());
+    await waitFor(() => expect(region.scrollHeight - region.scrollTop - region.clientHeight).toBeLessThanOrEqual(2));
   });
 
   it("keeps a reader's scrollbar position when live output grows, and respects reduced-motion Latest navigation", async () => {
