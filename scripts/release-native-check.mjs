@@ -24,7 +24,14 @@ export function assertQaSourceSupport({ root, plan, execute = execFileSync }) {
   if (!/RELEASE_QA_CONTRACT_VERSION\s*:\s*u32\s*=\s*1\s*;/.test(module) || !module.includes('MYTHRA_RELEASE_QA_ROOT')
     || !/mod\s+release_qa\s*;/.test(integration) || !/release_qa::initialize\s*\(\s*\)/.test(integration)
     || !integration.includes('release_qa::configure_context') || !integration.includes('release_qa::configure_window') || !recipe.trim()) throw new Error('Frozen candidate QA isolation is absent or unsupported; native launch is forbidden');
-  return { version: 1, moduleSha256: digest(module), integrationSha256: digest(integration), recipePath: 'docs/operations/native-release-qa.md', recipeSha256: digest(recipe) };
+  let closeFailure;
+  if (plan.checks?.some((c) => c.required && c.id.startsWith('native-close:'))) {
+    const guard = source('src-tauri/src/close_guard.rs');
+    if (!/RELEASE_QA_CLOSE_FAILURE_VERSION\s*:\s*u32\s*=\s*1\s*;/.test(module)
+      || !module.includes('close-save-failure-once') || !guard.includes('arm_qa_save_failure')) throw new Error('Selected close failure replay lacks the maintained one-shot QA recipe');
+    closeFailure = { version: 1, guardSha256: digest(guard) };
+  }
+  return { version: 1, ...(closeFailure ? { closeFailure } : {}), moduleSha256: digest(module), integrationSha256: digest(integration), recipePath: 'docs/operations/native-release-qa.md', recipeSha256: digest(recipe) };
 }
 
 export function createNativeContract({ root, stateRoot, plan, platform }) {
@@ -44,6 +51,9 @@ export function createNativeContract({ root, stateRoot, plan, platform }) {
     packagePath: build.details.packagePath, packageSha256: build.details.packageSha256,
     executableSha256: audit.details.executableSha256,
     sourceCapability,
+    ...(selected.some((c) => c.id.startsWith('native-close:')) ? { closeFailureScenario: {
+      schemaVersion: 1, nonce: randomUUID(), kind: 'save-failure-once', cause: 'override-saved-result',
+    } } : {}),
     profile: { root: resolve(stateRoot, 'qa-profiles', profileId), profileId, environment: 'MYTHRA_RELEASE_QA_ROOT' },
     releaseScope: { changedFiles: plan.changedFiles, classifications: plan.classifications, boundaryHints: plan.boundaryHints, knownIssues: plan.knownIssues, predecessors: plan.predecessors },
     checks: selected.map((c) => ({ id: c.id, reason: c.reason, observations: observations[c.id.split(':')[0]],
@@ -70,6 +80,8 @@ For each upgradeCases entry relevant to your selected case, retain the exact pre
 
 Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, control-ready, renderer-storage, render-ready, render-failed, close-finish, exit). Wait for matching control-ready for this exact launch BEFORE writing any control request; profile-open alone is too early. Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. On Windows remove the owned disposable root only after process exit. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
 
+If closeFailureScenario is present, execute the maintained one-shot save-failure recipe with its exact nonce and the first launch's runId. Capture the actual native failure dialog via CUA, choose Keep open, verify the window and saved state, then close normally. Reopen the SAME candidate/root and use this later completely healthy run as the primary PID/runId in EVERY check result. Store the typed close-failure.json plus prompt/recovery pixels and AX as specified by the recipe. This injects a saved-result failure at the native guard boundary; it does not prove actual disk failure, renderer crash or timeout behavior. Unexpected failures remain failed. Never use the injected run as the healthy primary.
+
 Save actual screenshots, accessibility.json, process identity and relevant data/exit evidence under ${stateRoot}. Every result must include each observation ID listed by the contract, with a concrete evidence path. Record each evidence SHA256. On completion close only the owned candidate normally, confirm its host and descendants exited, and record cleanupComplete/restorationComplete (restoration means no real roots were touched). A native failure is failed; missing capability is blocked. Preserve evidence and leave publication untouched.
 
 Continue routine already-authorized actions without asking the user again. For UI ambiguity, refresh once, inspect current state, and use the supported alternate once; if still unresolved return a precise blocked result. A real control rejection is not permission to bypass controls. Do not produce a generic passed JSON. Return the required structured result only after actual acceptance checks, with native executable/PID/window, session capability and evidence. Do not claim repair of native/GPU deadlocks beyond the changed behavior. Deadline: 25 minutes; finish with a terminal passed/failed/blocked result. Do not wait indefinitely for user input.`;
@@ -89,6 +101,57 @@ export const nativeResultSchema = {
         evidence: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['path', 'sha256'], properties: { path: { type: 'string' }, sha256: { type: 'string' } } } } } } },
   },
 };
+
+function acceptedCloseFault(events, result, contract, stateRoot, primaryEntry) {
+  const scenario = contract.closeFailureScenario;
+  if (!scenario) return null;
+  const reject = () => { throw new Error('Invalid maintained close failure replay'); };
+  const close = result.results.find((r) => r.checkId === `native-close:${contract.platform}`);
+  if (!close || contract.sourceCapability?.closeFailure?.version !== 1 || scenario.schemaVersion !== 1
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(scenario.nonce)
+    || scenario.kind !== 'save-failure-once' || scenario.cause !== 'override-saved-result') reject();
+  const observation = close.observations.find((o) => o.id === 'affected-close-failure');
+  const evidence = (path) => {
+    const item = close.evidence.find((e) => e.path === path);
+    if (!item || !HASH.test(item.sha256) || fileHash(containedPath(stateRoot, path)) !== item.sha256) reject();
+    return containedPath(stateRoot, path);
+  };
+  if (!observation) reject();
+  const proof = readJson(evidence(observation.evidence));
+  if (proof.schemaVersion !== 1 || proof.nonce !== scenario.nonce || proof.kind !== scenario.kind || proof.cause !== scenario.cause
+    || proof.profileId !== contract.profile.profileId || !Number.isInteger(proof.pid) || proof.pid < 1
+    || !/^[a-f0-9-]{36}$/.test(proof.runId) || proof.runId === primaryEntry.runId
+    || !Number.isSafeInteger(proof.requestId) || proof.requestId < 1) reject();
+  for (const [name, capture] of [['prompt', proof.prompt], ['recovery', proof.recovery]]) {
+    if (!capture || !/\.(png|jpe?g)$/.test(capture.screenshot ?? '') || !/\.json$/.test(capture.accessibility ?? '')) reject();
+    const pixels = readFileSync(evidence(capture.screenshot));
+    if (pixels.length <= 32 || !(pixels.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) || pixels.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')))) reject();
+    const ax = JSON.stringify(readJson(evidence(capture.accessibility)));
+    if (!ax.includes(contract.profile.profileId) || (name === 'prompt' && (!ax.includes(`Close Mythra Code? — Release QA ${contract.profile.profileId}`) || !ax.includes('Keep open')))) reject();
+  }
+  if (proof.prompt.screenshot === proof.recovery.screenshot || proof.prompt.accessibility === proof.recovery.accessibility) reject();
+  const run = events.filter((e) => e.pid === proof.pid && e.runId === proof.runId);
+  const once = (kind) => { const matches = run.filter((e) => e.kind === kind); if (matches.length !== 1) reject(); return matches[0]; };
+  const opened = once('profile-open'), rendered = once('render-ready');
+  if (opened.details?.closeFailureVersion !== 1) reject();
+  const armed = once('qa-close-fault-armed'), applied = once('qa-close-fault-applied');
+  if (events.filter((e) => e.kind.startsWith('qa-close-fault-')).length !== 2) reject();
+  for (const event of [armed, applied]) if (event.details?.nonce !== scenario.nonce || event.details.kind !== scenario.kind || event.details.cause !== scenario.cause) reject();
+  if (applied.details.originalResult !== 'saved' || applied.details.result !== 'failed') reject();
+  const failed = events.filter((e) => e.kind === 'close-finish' && e.details?.result === 'failed');
+  if (failed.length !== 1 || !run.includes(failed[0]) || failed[0].details.accepted !== true || failed[0].details.faultNonce !== scenario.nonce) reject();
+  const prompt = once('close-prompt'), answer = once('close-prompt-answer'), cancelled = once('close-cancelled');
+  for (const event of [applied, failed[0], prompt, answer, cancelled]) {
+    if (event.details?.requestId !== proof.requestId || event.details.label !== 'main') reject();
+  }
+  if (prompt.details.reason !== 'SaveFailed' || answer.details.accepted !== true || answer.details.confirmed !== false || answer.details.choice !== 'keep-open') reject();
+  const saved = run.filter((e) => e.kind === 'close-finish' && e.details?.accepted === true && e.details.result === 'saved');
+  if (saved.length !== 1 || saved[0].details.faultNonce != null || !Number.isSafeInteger(saved[0].details.requestId) || saved[0].details.requestId <= proof.requestId) reject();
+  const exit = once('exit'), reopened = events.find((e) => e.pid === primaryEntry.pid && e.runId === primaryEntry.runId && e.kind === 'profile-open');
+  const ordered = [opened, rendered, armed, applied, failed[0], prompt, answer, cancelled, saved[0], exit, reopened].map((e) => events.indexOf(e));
+  if (ordered.some((position, index) => position < 0 || (index > 0 && position <= ordered[index - 1]))) reject();
+  return failed[0];
+}
 
 export function validateNativeResult(result, contract, stateRoot, { executablePath = (entry) => containedPath(stateRoot, relative(stateRoot, entry.executablePath)) } = {}) {
   if (result.status !== 'passed') throw new Error(`Native worker ${result.status}: ${result.reason}`);
@@ -112,11 +175,11 @@ export function validateNativeResult(result, contract, stateRoot, { executablePa
     if (!eventsEvidence) throw new Error('Native result has no persistent app event evidence');
     const events = readFileSync(containedPath(stateRoot, eventsEvidence.path), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     const profileEvents = events.filter((e) => e.schemaVersion === 1 && e.profileId === contract.profile.profileId);
-    // The maintained recipe exposes no supported injected failure case. A
-    // worker's reported pass cannot override real failed app events, including
-    // a failed secondary launch presented as a negative test.
+    const expectedFailure = acceptedCloseFault(profileEvents, result, contract, stateRoot, entry);
+    // Only the declared one-shot fault with complete native recovery evidence
+    // is expected. All other failed events, including other runs, still fail.
     if (profileEvents.some((e) => ['render-failed', 'setup-failed', 'renderer-storage-failed', 'control-rejected'].includes(e.kind)
-      || (e.kind === 'close-finish' && e.details?.result === 'failed'))) throw new Error('Native app recorded a failure unsupported by the maintained recipe');
+      || (e.kind === 'close-finish' && e.details?.result === 'failed' && e !== expectedFailure))) throw new Error('Native app recorded a failure unsupported by the maintained recipe');
     const primary = profileEvents.filter((e) => e.pid === entry.pid && e.runId === entry.runId);
     for (const kind of ['profile-open', 'window-constructed', 'renderer-storage', 'render-ready', 'close-finish', 'exit']) if (!primary.some((e) => e.kind === kind)) throw new Error(`Native profile identity or ${kind} event is absent`);
     const opened = primary.find((e) => e.kind === 'profile-open');

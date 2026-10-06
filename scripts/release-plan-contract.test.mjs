@@ -67,6 +67,17 @@ describe('fixed release plan contract', () => {
       expect(() => assertPlan(rehash(p))).not.toThrow();
     }
   });
+  test.each([false, true])('Windows build installer classification remains enforced by persisted contract (predecessor: %s)', (historical) => {
+    const c = { path: 'Windows/build.ps1', boundaries: ['native-installer'], reason: 'Installer invocation changed', evidence: 'Reviewed NSIS arguments' };
+    const p = plan(historical ? { predecessors: [{ tag: 'v1.2.2-withdrawn', commit: 'd'.repeat(40), reason: 'Previously shipped', changedFiles: [c.path], classifications: [c] }] }
+      : { changedFiles: [c.path], classifications: [c] });
+    expect(check(p, 'native-installer:darwin-aarch64').required).toBe(false);
+    expect(() => assertPlan(p)).not.toThrow();
+    const leaf = check(p, 'native-installer:windows-x86_64');
+    leaf.required = false; leaf.reason = 'Unaffected cumulative source and shipped upgrade predecessors';
+    check(p, 'draft').dependsOn = check(p, 'draft').dependsOn.filter((id) => id !== leaf.id);
+    expect(() => assertPlan(rehash(p))).toThrow(/Required native addition omitted/);
+  });
   test('freezes the default publisher identity at plan creation', () => {
     expect(plan().publisherHost).toBe(hostname());
     expect(plan({ publisherHost: 'release-host.example' }).publisherHost).toBe('release-host.example');

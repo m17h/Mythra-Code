@@ -77,8 +77,11 @@ supported follow-up heartbeat in that same chat for the actual version and saved
 state. It checks ownership before resuming, stays quiet when nothing actionable
 changes, and pauses after public verification and the authorized notification.
 
-Some selected native cases still need capabilities beyond the current harness:
-save-failure injection and an isolated OS for installer tests are not implemented.
+The maintained QA recipe can inject one successful-save result failure at the
+native close guard and verify its real dialog, Keep open and healthy recovery.
+Actual disk-write failure, renderer crash/timeout injection and an isolated OS
+for installer tests are not implemented.
+
 A terminal partial Windows handoff needs the release agent to diagnose and
 collect its existing evidence. The agent owns those recovery commands; it should
 not hand routine export/merge work back to you or claim a missing adapter passed.

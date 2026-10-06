@@ -31,6 +31,58 @@ function persistEvents(root, result, events) {
   writeFileSync(resolve(root, 'native-events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
   result.results[0].evidence.find((e) => e.path === 'native-events.jsonl').sha256 = fileHash(resolve(root, 'native-events.jsonl'));
 }
+function closeFaultFixture() {
+  const f = fixture(), { root, contract, result, events } = f;
+  const nonce = randomUUID(), runId = randomUUID(), profileId = contract.profile.profileId, pid = 4320, requestId = 1;
+  contract.platform = 'windows-x86_64';
+  contract.sourceCapability = { closeFailure: { version: 1 } };
+  contract.closeFailureScenario = { schemaVersion: 1, nonce, kind: 'save-failure-once', cause: 'override-saved-result' };
+  contract.checks = [{ id: 'native-close:windows-x86_64', observations: ['healthy-save-close-reopen', 'affected-close-failure', 'owned-processes-exited'] }];
+  const entry = result.results[0]; entry.checkId = contract.checks[0].id;
+  entry.observations = contract.checks[0].observations.map((id) => ({ id, evidence: id === 'affected-close-failure' ? 'close-failure.json' : 'screen.png' }));
+  const event = (kind, details = {}) => ({ schemaVersion: 1, profileId, pid, runId, kind, details });
+  const fault = { nonce, kind: 'save-failure-once', cause: 'override-saved-result' }, key = { label: 'main', requestId };
+  events.unshift(event('profile-open', { closeFailureVersion: 1 }), event('render-ready'),
+    event('qa-close-fault-armed', fault), event('qa-close-fault-applied', { ...fault, ...key, originalResult: 'saved', result: 'failed' }),
+    event('close-finish', { ...key, accepted: true, result: 'failed', faultNonce: nonce }),
+    event('close-prompt', { ...key, reason: 'SaveFailed' }), event('close-prompt-answer', { ...key, accepted: true, confirmed: false, choice: 'keep-open' }),
+    event('close-cancelled', key), event('close-finish', { label: 'main', requestId: 2, accepted: true, result: 'saved', faultNonce: null }), event('exit'));
+  const proof = { schemaVersion: 1, ...fault, profileId, pid, runId, requestId,
+    prompt: { screenshot: 'prompt.png', accessibility: 'prompt-ax.json' }, recovery: { screenshot: 'recovery.png', accessibility: 'recovery-ax.json' } };
+  atomicJson(resolve(root, 'close-failure.json'), proof);
+  for (const path of ['prompt.png', 'recovery.png']) writeFileSync(resolve(root, path), Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(40)]));
+  atomicJson(resolve(root, 'prompt-ax.json'), { title: `Mythra Code — Release QA ${profileId}`, dialog: `Close Mythra Code? — Release QA ${profileId}`, button: 'Keep open' });
+  atomicJson(resolve(root, 'recovery-ax.json'), { title: `Mythra Code — Release QA ${profileId}`, theme: 'Light Mythra' });
+  entry.evidence.push(...['close-failure.json', 'prompt.png', 'recovery.png', 'prompt-ax.json', 'recovery-ax.json'].map((path) => ({ path, sha256: fileHash(resolve(root, path)) })));
+  persistEvents(root, result, events);
+  return { ...f, proof };
+}
+test('declared one-shot native close failure requires prompt cancellation, recovery and a healthy reopened primary', () => {
+  const { root, result, contract } = closeFaultFixture();
+  expect(validateNativeResult(result, contract, root)).toBe(result);
+});
+test.each([
+  ['missing declaration', (f) => { delete f.contract.closeFailureScenario; }],
+  ['wrong nonce', (f) => { f.events.find((e) => e.kind === 'qa-close-fault-applied').details.nonce = randomUUID(); }],
+  ['wrong fault run', (f) => { f.events.find((e) => e.kind === 'qa-close-fault-applied').runId = randomUUID(); }],
+  ['wrong close request', (f) => { f.events.find((e) => e.kind === 'close-prompt').details.requestId++; }],
+  ['missing native prompt', (f) => { f.events = f.events.filter((e) => e.kind !== 'close-prompt'); }],
+  ['missing cancellation', (f) => { f.events = f.events.filter((e) => e.kind !== 'close-cancelled'); }],
+  ['discard choice', (f) => { f.events.find((e) => e.kind === 'close-prompt-answer').details.confirmed = true; }],
+  ['implicit dialog dismissal', (f) => { f.events.find((e) => e.kind === 'close-prompt-answer').details.choice = 'other'; }],
+  ['real save failure', (f) => { f.events.find((e) => e.kind === 'qa-close-fault-applied').details.originalResult = 'failed'; }],
+  ['repeated failure', (f) => { f.events.push({ ...f.events.find((e) => e.kind === 'close-finish' && e.details.result === 'failed') }); }],
+  ['repeated arming', (f) => { f.events.push({ ...f.events.find((e) => e.kind === 'qa-close-fault-armed') }); }],
+  ['missing healthy recovery', (f) => { f.events = f.events.filter((e) => !(e.runId === f.proof.runId && e.kind === 'close-finish' && e.details.result === 'saved')); }],
+  ['fault as primary', (f) => { f.result.results[0].runId = f.proof.runId; f.result.results[0].pid = f.proof.pid; }],
+  ['unexpected setup failure', (f) => { f.events.push({ ...f.events[0], kind: 'setup-failed' }); }],
+  ['unexpected render failure', (f) => { f.events.push({ ...f.events[0], kind: 'render-failed' }); }],
+  ['unexpected storage failure', (f) => { f.events.push({ ...f.events[0], kind: 'renderer-storage-failed' }); }],
+  ['failed healthy primary', (f) => { f.events.find((e) => e.runId === f.result.results[0].runId && e.kind === 'close-finish').details.result = 'failed'; }],
+])('maintained negative recipe rejects %s even with updated evidence hashes', (_name, mutate) => {
+  const f = closeFaultFixture(); mutate(f); persistEvents(f.root, f.result, f.events);
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow();
+});
 test.each(['renderer-storage', 'render-ready', 'close-finish'])('native acceptance requires primary-run %s proof', (kind) => {
   const { root, result, contract, events } = fixture();
   persistEvents(root, result, events.filter((e) => e.kind !== kind));

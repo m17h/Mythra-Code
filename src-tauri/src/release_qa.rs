@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 use uuid::Uuid;
 
 pub(crate) const RELEASE_QA_CONTRACT_VERSION: u32 = 1;
+pub(crate) const RELEASE_QA_CLOSE_FAILURE_VERSION: u32 = 1;
 pub(crate) const ENV: &str = "MYTHRA_RELEASE_QA_ROOT";
 pub(crate) const DISPOSE_ARG: &str = "--release-qa-dispose-store";
 const MARKER: &str = ".mythra-release-qa.json";
@@ -412,13 +413,19 @@ pub(crate) fn initialize() -> Result<(), String> {
     let profile = PROFILE.get().expect("initialized QA profile");
     record(
         "profile-open",
-        json!({"contractVersion":RELEASE_QA_CONTRACT_VERSION,"providers":"blocked","persistentWebview":true,"webviewStoreId":profile.store_id}),
+        json!({"contractVersion":RELEASE_QA_CONTRACT_VERSION,"closeFailureVersion":RELEASE_QA_CLOSE_FAILURE_VERSION,"providers":"blocked","persistentWebview":true,"webviewStoreId":profile.store_id}),
     );
     Ok(())
 }
 
 pub(crate) fn active() -> bool {
     PROFILE.get().is_some()
+}
+pub(crate) fn close_dialog_title() -> String {
+    PROFILE
+        .get()
+        .map(|p| format!("Close Mythra Code? — Release QA {}", p.id))
+        .unwrap_or_else(|| "Close Mythra Code?".into())
 }
 pub(crate) fn record(kind: &str, details: Value) {
     if let Some(profile) = PROFILE.get() {
@@ -588,6 +595,21 @@ struct Request {
     profile_id: Uuid,
     nonce: Uuid,
     action: String,
+    run_id: Option<Uuid>,
+}
+
+impl Request {
+    fn valid_for(&self, profile_id: Uuid, run_id: Uuid) -> bool {
+        self.schema_version == 1
+            && self.profile_id == profile_id
+            && self.nonce.get_version_num() == 4
+            && matches!(
+                self.action.as_str(),
+                "focus" | "close" | "close-and-dispose" | "close-save-failure-once"
+            )
+            && (self.action != "close-save-failure-once" || self.run_id == Some(run_id))
+            && self.run_id.is_none_or(|id| id == run_id)
+    }
 }
 
 pub(crate) fn install_control(app: &AppHandle) {
@@ -631,14 +653,7 @@ pub(crate) fn install_control(app: &AppHandle) {
                 app.exit(78);
                 return;
             }
-            if request.schema_version != 1
-                || request.profile_id != profile.id
-                || request.nonce.get_version_num() != 4
-                || !matches!(
-                    request.action.as_str(),
-                    "focus" | "close" | "close-and-dispose"
-                )
-            {
+            if !request.valid_for(profile.id, profile.run_id) {
                 record("control-rejected", json!({"reason":"identity-or-action"}));
                 app.exit(78);
                 return;
@@ -682,13 +697,40 @@ pub(crate) fn install_control(app: &AppHandle) {
             if request.action == "close-and-dispose" {
                 profile.dispose_requested.store(true, Ordering::Release);
             }
+            let fault_nonce =
+                (request.action == "close-save-failure-once").then(|| request.nonce.to_string());
             record("close-request", json!({"nonce":request.nonce}));
             let close_app = app.clone();
-            let _ = app.run_on_main_thread(move || {
+            let scheduled = app.run_on_main_thread(move || {
                 if let Some(window) = close_app.get_webview_window("main") {
-                    let _ = window.close();
+                    if let Some(nonce) = fault_nonce {
+                        if !crate::close_guard::arm_qa_save_failure(&window, nonce) {
+                            record(
+                                "control-rejected",
+                                json!({"reason":"close-fault-unavailable"}),
+                            );
+                            return;
+                        }
+                    }
+                    if window.close().is_err() {
+                        record(
+                            "control-rejected",
+                            json!({"reason":"close-dispatch-failed"}),
+                        );
+                    }
+                } else {
+                    record(
+                        "control-rejected",
+                        json!({"reason":"close-window-unavailable"}),
+                    );
                 }
             });
+            if scheduled.is_err() {
+                record(
+                    "control-rejected",
+                    json!({"reason":"close-main-thread-unavailable"}),
+                );
+            }
         }
     });
 }
@@ -844,6 +886,28 @@ fn remove_initialized_store(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_fault_request_requires_exact_owned_profile_and_live_run() {
+        let profile_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let mut request = Request {
+            schema_version: 1,
+            profile_id,
+            nonce: Uuid::new_v4(),
+            action: "close-save-failure-once".into(),
+            run_id: Some(run_id),
+        };
+        assert!(request.valid_for(profile_id, run_id));
+        assert!(!request.valid_for(Uuid::new_v4(), run_id));
+        assert!(!request.valid_for(profile_id, Uuid::new_v4()));
+        request.run_id = None;
+        assert!(!request.valid_for(profile_id, run_id));
+        request.action = "close".into();
+        assert!(request.valid_for(profile_id, run_id));
+        request.nonce = Uuid::nil();
+        assert!(!request.valid_for(profile_id, run_id));
+    }
     fn root() -> PathBuf {
         let root = fs::canonicalize(env::temp_dir())
             .unwrap()

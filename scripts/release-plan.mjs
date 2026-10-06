@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertPlan, atomicJson, objectHash, PLATFORMS, SHA } from './release-state.mjs';
+import { appliesToPlatform, assertPlan, atomicJson, objectHash, PLATFORMS, SHA } from './release-state.mjs';
 
 import { coversHistoricalUpgrade, historicalCoverageReason, isVerifiedUpgradeCoverage, resolveUpgradeCoverage } from './release-upgrade-coverage.mjs';
 
@@ -12,7 +12,7 @@ const boundaries = {
   'native-close': /^src\/(hooks\/useFlushOnClose\.|lib\/(storage|localTranscriptPersistence|transcriptSaveScheduler)\.)|^src-tauri\/src\/(close_guard)\.rs/,
   'native-storage': /^src\/(hooks\/usePersistedState\.|lib\/(storage|startupData|localTranscriptPersistence|transcriptSaveScheduler|taskStore)\.)|^src-tauri\/src\/persistence\.rs/,
   'native-onboarding': /^src\/.*[Oo]nboarding[^/]*\.(tsx?|css)$|^src-tauri\/src\/profile[^/]*\.rs$/,
-  'native-installer': /^Windows\/(build\.ps1|.*\.(nsi|nsh))$|^src-tauri\/(tauri[^/]*\.json|capabilities\/)|^scripts\/(build-release|prepare-release)\.mjs$|^src\/.*[Uu]pdat[^/]*\.(tsx?|js)$/,
+  'native-installer': /^Windows\/.*\.(nsi|nsh)$|^src-tauri\/(tauri[^/]*\.json|capabilities\/)|^scripts\/(build-release|prepare-release)\.mjs$|^src\/.*[Uu]pdat[^/]*\.(tsx?|js)$/,
 };
 const isTest = (file) => /\.(test|spec)\.|^scripts\/native-close-fixture\//.test(file);
 const metadata = new Set(['package.json', 'package-lock.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json']);
@@ -51,10 +51,11 @@ export function verifyPublicBaseline({ root, baseline, predecessors = [], execut
     latestCommit: latest.tag_name === baseline.tag ? commit : taggedCommit(latest.tag_name), verifiedAt: new Date().toISOString() };
 }
 const validFiles = (files) => Array.isArray(files) && files.every((f) => typeof f === 'string' && !f.startsWith('/') && !f.includes('..'));
-const appliesToPlatform = (file, platform) => platform === 'windows-x86_64'
-  || (!file.startsWith('Windows/') && file !== 'src-tauri/tauri.windows.conf.json');
 function needsReview(file, classifications) {
   if (isTest(file) || classifications.some((c) => c.path === file)) return false;
+  // This script mixes verification/staging with installer behavior. Require a
+  // reviewed installer decision even though its conservative startup rule matches.
+  if (file === 'Windows/build.ps1') return true;
   if (file === 'src-tauri/src/lib.rs' || file === 'src/App.tsx' || /^(package(-lock)?\.json|src-tauri\/Cargo\.(toml|lock))$/.test(file)) return true;
   if (Object.values(boundaries).some((pattern) => pattern.test(file))) return false;
   // Unfamiliar shared helpers and hooks can own startup, lifecycle or durable
@@ -114,9 +115,6 @@ export function createPlan({ commit, version, baseline, changedFiles, predecesso
   for (const scope of [{ changedFiles, classifications }, ...predecessors]) {
     for (const c of scope.classifications ?? []) if (!scope.changedFiles.includes(c.path) || !c.reason || !c.evidence || !Array.isArray(c.boundaries) || c.boundaries.some((b) => !allowedIds.includes(b))) throw new Error('Invalid semantic classification');
   }
-  const predecessorAdditions = predecessors.flatMap((p) => [
-    ...(p.boundaryHints ?? []).map((i) => ({ ...i, predecessor: p })), ...(p.classifications ?? []).flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${p.tag}:${c.path}: ${c.reason}`, predecessor: p }))),
-  ]);
   const checks = [{ id: 'ci', kind: 'ci', required: true, reason: 'Complete Verify gate for exact merged source', dependsOn: [] }];
   for (const platform of PLATFORMS) {
     checks.push({ id: `build:${platform}`, kind: 'build', platform, required: true, reason: 'Native package with exact production startup and platform signing', dependsOn: [] });
@@ -128,8 +126,11 @@ export function createPlan({ commit, version, baseline, changedFiles, predecesso
       const previous = predecessors.filter((p) => !coversHistoricalUpgrade(scope, p, id, platform)).flatMap((p) => p.changedFiles.filter((f) => !isTest(f) && appliesToPlatform(f, platform) && pattern.test(f)).map((f) => `${p.tag}:${f}`));
       // Provenance comes from the containing scope, never an input item's fields.
       const additions = [...knownIssues, ...overrides, ...boundaryHints,
-        ...predecessorAdditions.filter((i) => !coversHistoricalUpgrade(scope, i.predecessor, id, platform)),
-        ...classifications.flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${c.path}: ${c.reason}` })))
+        ...predecessors.filter((p) => !coversHistoricalUpgrade(scope, p, id, platform)).flatMap((p) => [
+          ...(p.boundaryHints ?? []), ...(p.classifications ?? []).filter((c) => appliesToPlatform(c.path, platform))
+            .flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${p.tag}:${c.path}: ${c.reason}` }))),
+        ]),
+        ...classifications.filter((c) => appliesToPlatform(c.path, platform)).flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${c.path}: ${c.reason}` })))
       ].filter((i) => i.check === id && (!i.platform || i.platform === platform));
       const triggers = [...current, ...previous, ...additions.map((a) => a.reason)];
       checks.push({ id: `${id}:${platform}`, kind: 'native', platform, required: triggers.length > 0,

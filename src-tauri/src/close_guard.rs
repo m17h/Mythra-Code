@@ -58,14 +58,71 @@ struct GuardedWindow {
     pending: Option<Pending>,
 }
 
+struct QaCloseFault {
+    nonce: String,
+    key: Key,
+}
+
 #[derive(Default)]
 struct Machine {
     next_instance: u64,
     next_request: u64,
     windows: HashMap<String, GuardedWindow>,
+    qa_fault: Option<QaCloseFault>,
+    qa_fault_armed: bool,
 }
 
 impl Machine {
+    fn arm_qa_fault(&mut self, label: &str, nonce: String) -> bool {
+        let Some(window) = self.windows.get(label) else {
+            return false;
+        };
+        if self.qa_fault_armed || window.pending.is_some() || window.display_exited {
+            return false;
+        }
+        self.qa_fault_armed = true;
+        self.qa_fault = Some(QaCloseFault {
+            nonce,
+            key: Key {
+                label: label.to_owned(),
+                instance: window.instance,
+                request_id: 0,
+            },
+        });
+        true
+    }
+
+    fn take_qa_fault(&mut self, label: &str, request_id: u64) -> Option<String> {
+        let fault = self.qa_fault.as_ref()?;
+        if fault.key.label != label
+            || fault.key.request_id != request_id
+            || !self.matches(&fault.key, Phase::AwaitingFrontend)
+        {
+            return None;
+        }
+        self.qa_fault.take().map(|fault| fault.nonce)
+    }
+
+    fn qa_result(
+        &mut self,
+        label: &str,
+        request_id: u64,
+        result: CloseResult,
+    ) -> (CloseResult, Option<String>) {
+        let nonce = if matches!(result, CloseResult::Saved) {
+            self.take_qa_fault(label, request_id)
+        } else {
+            None
+        };
+        (
+            if nonce.is_some() {
+                CloseResult::Failed
+            } else {
+                result
+            },
+            nonce,
+        )
+    }
     // Live labels are unique in Tauri. Repeated installation on that window is
     // a no-op; Destroyed removes the entry before a replacement can bind it.
     fn bind(&mut self, label: &str) -> Option<u64> {
@@ -126,6 +183,14 @@ impl Machine {
             request_id: key.request_id,
             phase,
         });
+        if let Some(fault) = self.qa_fault.as_mut() {
+            if fault.key.label == key.label
+                && fault.key.instance == key.instance
+                && fault.key.request_id == 0
+            {
+                fault.key = key.clone();
+            }
+        }
         Some(if window.display_exited {
             Action::Prompt(key, Reason::DisplayExited)
         } else {
@@ -257,6 +322,25 @@ pub(super) enum CloseResult {
     Cancel,
 }
 
+// The only caller is the validated, owned QA control channel. Production
+// processes have no profile and cannot arm this one-shot native-boundary fault.
+pub(crate) fn arm_qa_save_failure(window: &WebviewWindow, nonce: String) -> bool {
+    if !crate::release_qa::active() || window.label() != "main" {
+        return false;
+    }
+    let armed = window
+        .app_handle()
+        .state::<CloseGuardState>()
+        .with(|machine| machine.arm_qa_fault(window.label(), nonce.clone()));
+    if armed {
+        crate::release_qa::record(
+            "qa-close-fault-armed",
+            json!({"nonce":nonce,"kind":"save-failure-once","cause":"override-saved-result"}),
+        );
+    }
+    armed
+}
+
 #[tauri::command]
 pub(super) fn close_guard_claim(
     window: WebviewWindow,
@@ -276,9 +360,19 @@ pub(super) fn close_guard_finish(
     // Persist only the structured native reason, not arbitrary frontend text
     // that could contain user data.
     let _ = error;
-    let action = state.with(|machine| machine.finish(window.label(), request_id, result));
+    let (action, result, fault_nonce) = state.with(|machine| {
+        // A genuine frontend failure is never relabelled as an expected fault.
+        let (result, nonce) = machine.qa_result(window.label(), request_id, result);
+        if let Some(nonce) = &nonce {
+            crate::release_qa::record("qa-close-fault-applied", json!({"nonce":nonce,"kind":"save-failure-once","cause":"override-saved-result","label":window.label(),"requestId":request_id,"originalResult":"saved","result":"failed"}));
+        }
+        (machine.finish(window.label(), request_id, result), result, nonce)
+    });
     let accepted = action.is_some();
-    crate::release_qa::record("close-finish", serde_json::json!({"accepted":accepted,"result": match result { CloseResult::Saved=>"saved",CloseResult::Failed=>"failed",CloseResult::Cancel=>"cancel" }}));
+    crate::release_qa::record(
+        "close-finish",
+        serde_json::json!({"accepted":accepted,"requestId":request_id,"label":window.label(),"faultNonce":fault_nonce,"result": match result { CloseResult::Saved=>"saved",CloseResult::Failed=>"failed",CloseResult::Cancel=>"cancel" }}),
+    );
     if let Some(action) = action {
         perform(window.app_handle(), action);
     }
@@ -315,6 +409,10 @@ fn perform(app: &AppHandle, action: Action) {
                 return;
             }
             if let Some(window) = app.get_webview_window(&key.label) {
+                crate::release_qa::record(
+                    "close-cancelled",
+                    json!({"label":key.label,"requestId":key.request_id}),
+                );
                 let _ = window.emit(
                     CANCELLED_EVENT,
                     CloseRequest {
@@ -364,8 +462,9 @@ fn perform(app: &AppHandle, action: Action) {
                     "Mythra Code could not confirm that pending changes were saved."
                 };
                 let message = format!("{explanation}\n\nClosing may lose recent unsaved changes and stop running tasks. Close without saving?");
+                crate::release_qa::record("close-prompt", json!({"label":key.label,"requestId":key.request_id,"reason":format!("{reason:?}")}));
                 app_.dialog().message(message)
-                    .title("Close Mythra Code?")
+                    .title(crate::release_qa::close_dialog_title())
                     .kind(MessageDialogKind::Warning)
                     // The first button is the safe default on Windows. The
                     // third Cancel label is also non-destructive: the dialog
@@ -374,8 +473,10 @@ fn perform(app: &AppHandle, action: Action) {
                     .buttons(MessageDialogButtons::YesNoCancelCustom("Keep open".into(), DISCARD_LABEL.into(), "Cancel".into()))
                     .parent(&window)
                     .show_with_result(move |result| {
+                        let choice = if matches!(&result, MessageDialogResult::Custom(label) if label == "Keep open") { "keep-open" } else { "other" };
                         let confirmed = explicitly_confirmed_discard(result);
                         let action = app_.state::<CloseGuardState>().with(|machine| machine.answer(&key, confirmed));
+                        crate::release_qa::record("close-prompt-answer", json!({"label":key.label,"requestId":key.request_id,"confirmed":confirmed,"choice":choice,"accepted":action.is_some()}));
                         if let Some(action) = action { perform(&app_, action); }
                     });
             });
@@ -487,6 +588,68 @@ mod tests {
             panic!("expected awaiting close");
         };
         key
+    }
+
+    #[test]
+    fn qa_fault_is_bound_once_and_exercises_real_prompt_cancel_recovery() {
+        let (mut machine, instance) = fixture();
+        assert!(machine.arm_qa_fault("main", "nonce".into()));
+        assert!(!machine.arm_qa_fault("main", "again".into()));
+        let key = pending(&mut machine, instance);
+        assert!(machine
+            .qa_result("other", key.request_id, CloseResult::Saved)
+            .1
+            .is_none());
+        assert!(machine
+            .qa_result("main", key.request_id + 1, CloseResult::Saved)
+            .1
+            .is_none());
+        let (result, nonce) = machine.qa_result("main", key.request_id, CloseResult::Saved);
+        assert_eq!(nonce.as_deref(), Some("nonce"));
+        assert_eq!(
+            machine.finish("main", key.request_id, result),
+            Some(Action::Prompt(key.clone(), Reason::SaveFailed))
+        );
+        assert_eq!(machine.answer(&key, false), Some(Action::Cancel(key)));
+        let next = pending(&mut machine, instance);
+        let (result, nonce) = machine.qa_result("main", next.request_id, CloseResult::Saved);
+        assert!(nonce.is_none());
+        assert_eq!(
+            machine.finish("main", next.request_id, result),
+            Some(Action::Destroy(next))
+        );
+        assert!(!machine.arm_qa_fault("main", "again".into()));
+    }
+
+    #[test]
+    fn qa_fault_does_not_relabel_real_failure_or_follow_replaced_window() {
+        let (mut machine, instance) = fixture();
+        assert!(machine.arm_qa_fault("main", "nonce".into()));
+        let key = pending(&mut machine, instance);
+        let (result, nonce) = machine.qa_result("main", key.request_id, CloseResult::Failed);
+        assert!(matches!(result, CloseResult::Failed));
+        assert!(nonce.is_none());
+        machine.finish("main", key.request_id, result);
+        assert!(machine
+            .qa_result("main", key.request_id, CloseResult::Saved)
+            .1
+            .is_none());
+        machine.remove("main", instance);
+        let replacement = machine.bind("main").unwrap();
+        let next = pending(&mut machine, replacement);
+        let (result, nonce) = machine.qa_result("main", next.request_id, CloseResult::Saved);
+        assert!(matches!(result, CloseResult::Saved));
+        assert!(nonce.is_none());
+    }
+
+    #[test]
+    fn qa_fault_cannot_arm_during_close_or_after_display_failure() {
+        let (mut machine, instance) = fixture();
+        pending(&mut machine, instance);
+        assert!(!machine.arm_qa_fault("main", "nonce".into()));
+        let (mut machine, instance) = fixture();
+        machine.display_failed("main", instance);
+        assert!(!machine.arm_qa_fault("main", "nonce".into()));
     }
 
     #[test]
