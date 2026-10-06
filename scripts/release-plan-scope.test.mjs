@@ -118,5 +118,7 @@ describe('native release scope safety', () => {
     const upgraded = planFromCheckout(root, { ...uiInput, predecessors: [{ tag: 'v1.2.3-withdrawn', reason: 'Installed withdrawn integration',
       classifications: [{ path: 'src/App.tsx', boundaries: [], reason: 'Integration reverted', evidence: 'Reviewed reverted App call symbols' }] }] }, { execute });
     for (const check of ['native-startup', 'native-close', 'native-storage']) expect(required(upgraded, check)).toEqual(both);
-  });
+    // This integration creates six real Git commits and evaluates seven release plans.
+    // Windows hosted process startup took 5.8s; keep all assertions with a bounded budget.
+  }, 15_000);
 });

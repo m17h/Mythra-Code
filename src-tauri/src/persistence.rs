@@ -18,7 +18,7 @@ pub(super) struct StateDb {
 }
 
 pub(super) fn state_db_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data = crate::release_qa::app_data_dir(&app)
+    let app_data = crate::release_qa::app_data_dir(app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     std::fs::create_dir_all(&app_data)
         .map_err(|error| format!("Could not create Mythra Code app data: {error}"))?;

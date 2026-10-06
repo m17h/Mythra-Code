@@ -398,7 +398,7 @@ impl CursorRuntime {
                 output.stdout
             }
             _ => {
-                let home = crate::release_qa::home_dir(&app).map_err(|error| {
+                let home = crate::release_qa::home_dir(app).map_err(|error| {
                     format!("Could not locate the Cursor account configuration: {error}")
                 })?;
                 let path = home.join(".cursor/cli-config.json");
@@ -566,7 +566,7 @@ pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRunt
             super::push_candidate(&mut candidates, candidate);
         }
     }
-    if let Ok(home) = crate::release_qa::home_dir(&app) {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [
             ".local/bin/agent",
             ".local/bin/agent.exe",

@@ -1287,7 +1287,7 @@ pub(super) fn sync_skill_runtime(
     folder: &Path,
     configs: Vec<SkillBridgeConfig>,
 ) -> Result<PathBuf, String> {
-    let app_data = crate::release_qa::app_data_dir(&app)
+    let app_data = crate::release_qa::app_data_dir(app)
         .map_err(|error| format!("Could not resolve Mythra Code app data: {error}"))?;
     let runtime_root = app_data.join("skill-runtime");
     sync_skill_runtime_at(&runtime_root, folder, configs)?;

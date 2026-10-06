@@ -89,7 +89,7 @@ pub(super) async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, St
             push_candidate(&mut candidates, root.join("Microsoft/WinGet/Links/gh.exe"));
         }
     }
-    if let Ok(home) = crate::release_qa::home_dir(&app) {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [".local/bin", ".cargo/bin", ".npm-global/bin"] {
             push_candidate(&mut candidates, home.join(relative).join(executable_name));
         }

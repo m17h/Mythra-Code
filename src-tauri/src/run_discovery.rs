@@ -1737,7 +1737,7 @@ fn record_native_failure(
     stderr: &[u8],
     error: &str,
 ) {
-    let Ok(directory) = crate::release_qa::app_data_dir(&app) else {
+    let Ok(directory) = crate::release_qa::app_data_dir(app) else {
         return;
     };
     let body = native_failure_log_body(options, status, stdout.len(), stderr.len(), error, stderr);
@@ -2880,14 +2880,14 @@ async fn execute_native_request<T>(
     if guard.request.cancelled.load(Ordering::Acquire) {
         return Err("Run command discovery was cancelled.".into());
     }
-    let home = crate::release_qa::home_dir(&app).ok();
+    let home = crate::release_qa::home_dir(app).ok();
     let mut command: Command = match options.provider.as_str() {
         "openai" => {
             let runtime =
                 await_or_cancel(&guard.request, resolve_codex_runtime(app, runtime_state))
                     .await??;
             let mut command = background_command(&runtime.path);
-            let codex_home = crate::release_qa::app_data_dir(&app)
+            let codex_home = crate::release_qa::app_data_dir(app)
                 .map_err(|error| format!("Could not resolve app data directory: {error}"))?
                 .join("codex-home");
             command

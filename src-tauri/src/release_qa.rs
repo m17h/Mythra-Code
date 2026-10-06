@@ -283,7 +283,7 @@ fn supported_platform() -> Result<(), String> {
             .split('.')
             .next()
             .and_then(|v| v.parse::<u32>().ok());
-        if !output.status.success() || !major.is_some_and(|v| v >= 14) {
+        if !output.status.success() || major.is_none_or(|v| v < 14) {
             return Err(
                 "Release QA requires macOS 14 or later for a separate persistent WebView store"
                     .into(),

@@ -2488,7 +2488,7 @@ async fn resolve_codex_runtime(
     // Prefer the official standalone installer location. This lets the
     // Updates pane move a machine away from a stale npm shim or an embedded
     // ChatGPT copy without relying on the sparse PATH of a GUI launch.
-    if let Ok(home) = crate::release_qa::home_dir(&app) {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         #[cfg(windows)]
         if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
             push_candidate(
@@ -2533,7 +2533,7 @@ async fn resolve_codex_runtime(
         push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/codex"));
     }
 
-    if let Ok(home) = crate::release_qa::home_dir(&app) {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         #[cfg(target_os = "macos")]
         push_candidate(
             &mut candidates,
@@ -2651,7 +2651,7 @@ fn codex_runtime_changed(
 }
 
 async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> CodexRuntimeStatus {
-    let data_home = crate::release_qa::app_data_dir(&app)
+    let data_home = crate::release_qa::app_data_dir(app)
         .ok()
         .map(|path| path.join("codex-home").to_string_lossy().into_owned());
     let running_runtime = state.server.lock().await.as_ref().map(|server| {
@@ -3291,7 +3291,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     // The native installer is Claude Code's recommended and auto-updating
     // location. Probe it before package-manager shims and GUI-style PATH.
-    if let Ok(home) = crate::release_qa::home_dir(&app) {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [".local/bin/claude", ".local/bin/claude.exe"] {
             push_candidate(&mut candidates, home.join(relative));
         }
@@ -3306,7 +3306,7 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
         push_candidate(&mut candidates, PathBuf::from("/opt/homebrew/bin/claude"));
         push_candidate(&mut candidates, PathBuf::from("/usr/local/bin/claude"));
     }
-    if let Ok(home) = crate::release_qa::home_dir(&app) {
+    if let Ok(home) = crate::release_qa::home_dir(app) {
         for relative in [
             ".npm-global/bin/claude",
             ".bun/bin/claude",
@@ -3768,7 +3768,7 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
 
     let version = runtime_version(&path).await;
     let warning = claude_runtime_warnings(version.as_deref(), warning);
-    let home = crate::release_qa::home_dir(&app).ok();
+    let home = crate::release_qa::home_dir(app).ok();
     let auth = timeout(
         CLAUDE_AUTH_STATUS_TIMEOUT,
         subscription_only_command(&path, home.as_deref())
@@ -5371,7 +5371,7 @@ fn validated_export_path(app: &AppHandle, path: &str) -> Result<PathBuf, String>
     let parent = parent
         .canonicalize()
         .map_err(|error| format!("Could not open the export folder: {error}"))?;
-    let home = crate::release_qa::home_dir(&app)
+    let home = crate::release_qa::home_dir(app)
         .map_err(|error| format!("Could not resolve the home folder: {error}"))?;
     let home = home.canonicalize().unwrap_or(home);
     let relative = parent
@@ -5589,13 +5589,13 @@ impl CodexFirstAssistantDeltas {
 
 async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppServer>, String> {
     release_qa::require_providers()?;
-    let app_data = crate::release_qa::app_data_dir(&app)
+    let app_data = crate::release_qa::app_data_dir(app)
         .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
     let codex_home = app_data.join("codex-home");
 
     let codex_runtime = resolve_codex_runtime(app, state).await?;
     let codex_binary = codex_runtime.path.clone();
-    let home = crate::release_qa::home_dir(&app).ok();
+    let home = crate::release_qa::home_dir(app).ok();
 
     let mut command = background_command(&codex_binary);
     command
