@@ -88,10 +88,24 @@ if (-not $npm -or -not $npx) {
   throw "Node.js/npm is not installed or is not available on PATH."
 }
 
+$provisionalCandidate = [bool]$env:MYTHRA_RELEASE_CANDIDATE_STATE
+if ($env:MYTHRA_RELEASE_CANDIDATE_STATE) {
+  $candidateFlags = @()
+  if ($AllowDirty) { $candidateFlags += '--allow-dirty' }
+  if ($SkipInstall) { $candidateFlags += '--skip-install' }
+  if ($SkipVerify) { $candidateFlags += '--skip-verify' }
+  if ($SkipLaunchSmoke) { $candidateFlags += '--skip-launch-smoke' }
+  # A frozen plan and matching LIVE coordinator/native process ancestry allow
+  # provisional packaging while hosted CI runs. This grants no upload authority.
+  Invoke-Checked -Command 'node' -Arguments (@('scripts/release-candidate-contract.mjs', $repoRoot) + $candidateFlags)
+}
 if (-not $SkipInstall) {
   Invoke-Checked -Command $npm -Arguments @("ci")
 }
-if ($env:MYTHRA_RELEASE_CI_RUN) {
+if ($provisionalCandidate) {
+  # Candidate ownership was checked before installation. Native package,
+  # updater signing and isolated launch-smoke checks below still all execute.
+} elseif ($env:MYTHRA_RELEASE_CI_RUN) {
   if ($SkipVerify) { throw 'Do not combine a verification override with hosted evidence.' }
   $proofPath = Join-Path ([System.IO.Path]::GetTempPath()) ("mythra-release-ci-" + [guid]::NewGuid().ToString('N') + '.json')
   try {

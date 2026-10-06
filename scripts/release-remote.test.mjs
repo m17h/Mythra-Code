@@ -8,7 +8,6 @@ import { createPlan } from './release-plan.mjs';
 import { atomicJson, fileHash, readJson, saveReceipt } from './release-state.mjs';
 import { exportHandoff, mergeHandoff } from './release-handoff.mjs';
 import { createSshTransport, encodedPowerShell, runWindowsWorker, windowsRunnerSource } from './release-remote.mjs';
-import { expectedReceipts } from './verify-ci.mjs';
 
 const roots = [];
 const temp = () => { const root = mkdtempSync(join(tmpdir(), 'mythra-transport-')); roots.push(root); return root; };
@@ -26,8 +25,6 @@ function windowsEvidence(p, root) {
       ...(id.includes('windows-x86_64') ? { platform: 'windows-x86_64' } : {}), startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:01Z', evidence,
       details: typeof details === 'function' ? details(evidence[0]) : details });
   };
-  const jobs = ['WebKit (macOS 15)', 'Verify gate', ...['macos-latest', 'windows-latest'].flatMap((os) => [`Rust (${os})`, `Renderer (${os})`, `Unit (${os}, 1/2)`, `Unit (${os}, 2/2)`])];
-  put('ci', { repository: p.repository, commit: p.commit, runId: 123, input: { checkout: p.commit, head: p.commit, event: 'push' }, receiptHashes: expectedReceipts().map((id) => ({ id, sha256: 'd'.repeat(64) })), jobs: jobs.map((name) => ({ name, status: 'completed', conclusion: 'success' })) });
   put('build:windows-x86_64', (item) => ({ packageSha256: item.sha256, packagePath: item.path, command: ['npm.cmd', 'run', 'release:build'], exitCode: 0, node: 'v24', host: 'ZEDS-PC' }));
   put('audit:windows-x86_64', { packageSha256: fileHash(join(root, `MythraCode_${p.version}_x64-setup.exe`)), executableSha256: 'e'.repeat(64), payloadPe: { machine: 0x8664, subsystem: 'WindowsGui' }, payloadVersion: p.version, authenticodeStatus: 'NotSigned' }, 'native-integrity-v1');
 }
@@ -39,7 +36,7 @@ function fakeTransport({ result, complete = true } = {}) {
     async download(_remote, local) {
       downloads++; const p = plan(), source = temp();
       if (complete) windowsEvidence(p, source); else atomicJson(join(source, 'plan.json'), p);
-      exportHandoff(source, local, 'windows-x86_64');
+      exportHandoff(source, local, 'windows-x86_64', { platformOnly: true });
     }, get launches() { return launches; }, get downloads() { return downloads; }, set worker(value) { worker = value; } };
   return t;
 }
@@ -49,13 +46,49 @@ test('roundtrip collects typed receipts and resumes without launching or downloa
   const local = await runWindowsWorker({ ...f, transport, sleep: async () => {}, onStatus: (s) => updates.push(s.status) });
   expect(updates).toEqual(['queued', 'queued', 'running', 'complete']);
   expect(transport.launches).toBe(1);
-  expect(readJson(join(local, 'handoff.json')).checks).toEqual(['ci', 'build:windows-x86_64', 'audit:windows-x86_64']);
-  expect(mergeHandoff(local, f.stateRoot).imported).toHaveLength(3);
+  expect(readJson(join(local, 'handoff.json')).checks).toEqual(['build:windows-x86_64', 'audit:windows-x86_64']);
+  expect(existsSync(join(local, 'receipts/ci.json'))).toBe(false);
+  expect(mergeHandoff(local, f.stateRoot).imported).toHaveLength(2);
   expect(await runWindowsWorker({ ...f, transport })).toBe(local);
   expect(transport.launches).toBe(1); expect(transport.downloads).toBe(1);
   // This integration retains native process identity checks for three real leases.
   // Hosted Windows PowerShell queries took 11s under shard load; bound it locally.
 }, 30_000);
+
+test('private lifecycle preparation is awaited on the exact checkout before launch, and collection does not repeat it', async () => {
+  const f = fixture(), transport = fakeTransport(), order = [];
+  transport.prepare = async () => { order.push('prepare'); };
+  transport.upload = async () => { order.push('upload'); };
+  const start = transport.start;
+  transport.start = async (paths) => { order.push('start'); return start(paths); };
+  const onPrepared = async ({ paths, plan: p, transport: t }) => {
+    expect(paths.root).toBe(`${capability.base}/${p.planHash}/checkout`); expect(t).toBe(transport);
+    await Promise.resolve(); order.push('private-prepared');
+  };
+  await runWindowsWorker({ ...f, transport, onPrepared, sleep: async () => {} });
+  expect(order).toEqual(['prepare', 'private-prepared', 'upload', 'start']);
+  await runWindowsWorker({ ...f, transport, onPrepared });
+  expect(order).toHaveLength(4);
+});
+
+test('private preparation failure prevents upload and remote worker launch', async () => {
+  const f = fixture(), transport = fakeTransport(); let uploads = 0;
+  transport.upload = async () => { uploads++; };
+  await expect(runWindowsWorker({ ...f, transport, onPrepared: async () => { throw new Error('Private cache incompatible'); } })).rejects.toThrow(/cache incompatible/);
+  expect(uploads).toBe(0); expect(transport.launches).toBe(0);
+});
+
+test('stopping a collector preserves the launched Windows worker for collection on resume', async () => {
+  const f = fixture(), transport = fakeTransport(), controller = new AbortController();
+  await expect(runWindowsWorker({ ...f, transport, signal: controller.signal,
+    sleep: async () => { controller.abort(); },
+  })).rejects.toMatchObject({ status: 'waiting' });
+  expect(transport.launches).toBe(1);
+  expect(readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json')).status).toBe('waiting');
+  const handoff = await runWindowsWorker({ ...f, transport, sleep: async () => {} });
+  expect(readJson(join(handoff, 'handoff.json')).checks).not.toContain('ci');
+  expect(transport.launches).toBe(1);
+});
 
 test('an incomplete terminal handoff blocks diagnosis and preserves evidence without relaunch', async () => {
   const f = fixture(), transport = fakeTransport({ complete: false });
@@ -109,7 +142,7 @@ test('SCP download disconnect recollects the existing completed worker', async (
   await expect(runWindowsWorker({ ...f, transport, sleep: async () => {} })).rejects.toThrow('SCP download disconnected');
   expect(readJson(join(f.stateRoot, 'remote/windows-x86_64/worker.json')).status).toBe('waiting');
   const local = await runWindowsWorker({ ...f, transport, sleep: async () => {} });
-  expect(readJson(join(local, 'handoff.json')).checks).toEqual(['ci', 'build:windows-x86_64', 'audit:windows-x86_64']);
+  expect(readJson(join(local, 'handoff.json')).checks).toEqual(['build:windows-x86_64', 'audit:windows-x86_64']);
   expect(attempts).toBe(2); expect(transport.launches).toBe(1);
 });
 
@@ -180,9 +213,48 @@ test('persistent runner executes the real child/export boundary using a local fi
   atomicJson(workerFile, { schemaVersion: 1, status: 'queued', planHash: p.planHash });
   const runner = join(directory, 'runner.mjs'); writeFileSync(runner, windowsRunnerSource({ root, stateRoot, workerFile, exportPath }));
   execFileSync(process.execPath, [runner]);
-  expect(readJson(join(directory, 'args.json'))).toEqual(['run', '--state', stateRoot, '--build']);
-  expect(readJson(workerFile)).toMatchObject({ status: 'waiting', exitCode: 2, planHash: p.planHash, pid: expect.any(Number), processStart: expect.any(String) });
+  expect(readJson(join(directory, 'args.json'))).toEqual(['run', '--state', stateRoot, '--build', '--native-only']);
+  expect(readJson(workerFile)).toMatchObject({ status: 'waiting', exitCode: 2, planHash: p.planHash, pid: expect.any(Number), processStart: expect.any(String), childPid: expect.any(Number) });
+  expect(readJson(workerFile)).toHaveProperty('childProcessStart');
   expect(readJson(join(exportPath, 'handoff.json')).checks).toEqual([]);
+});
+
+test('persistent runner declares completed Windows native evidence without any CI receipt', () => {
+  const root = temp(), stateRoot = temp(), directory = temp(), p = plan();
+  mkdirSync(join(root, 'scripts'));
+  for (const name of ['release-state.mjs', 'release-handoff.mjs']) {
+    const module = pathToFileURL(resolve(import.meta.dirname, name)).href;
+    writeFileSync(join(root, 'scripts', name), `export * from ${JSON.stringify(module)};`);
+  }
+  writeFileSync(join(root, 'scripts/release-coordinator.mjs'), 'process.exitCode=2;');
+  windowsEvidence(p, stateRoot);
+  const workerFile = join(directory, 'worker.json'), exportPath = join(directory, 'returned');
+  atomicJson(workerFile, { schemaVersion: 1, status: 'queued', planHash: p.planHash });
+  const runner = join(directory, 'runner.mjs'); writeFileSync(runner, windowsRunnerSource({ root, stateRoot, workerFile, exportPath }));
+  execFileSync(process.execPath, [runner]);
+  expect(readJson(workerFile)).toMatchObject({ status: 'complete', pending: [], exitCode: 2, childPid: expect.any(Number) });
+  expect(readJson(workerFile)).toHaveProperty('childProcessStart');
+  expect(readJson(join(exportPath, 'handoff.json')).checks).toEqual(['build:windows-x86_64', 'audit:windows-x86_64']);
+  expect(existsSync(join(exportPath, 'receipts/ci.json'))).toBe(false);
+});
+
+test('failed persistent runner retains its real child ancestor PID and captured process identity', () => {
+  const root = temp(), stateRoot = temp(), directory = temp(), p = plan();
+  mkdirSync(join(root, 'scripts'));
+  const state = pathToFileURL(resolve(import.meta.dirname, 'release-state.mjs')).href;
+  writeFileSync(join(root, 'scripts/release-state.mjs'), `export * from ${JSON.stringify(state)}; export const processIdentity = (pid = process.pid) => 'controlled-start-' + pid;`);
+  const handoff = pathToFileURL(resolve(import.meta.dirname, 'release-handoff.mjs')).href;
+  writeFileSync(join(root, 'scripts/release-handoff.mjs'), `export * from ${JSON.stringify(handoff)};`);
+  const childPid = join(directory, 'child.json');
+  writeFileSync(join(root, 'scripts/release-coordinator.mjs'), `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(childPid)},JSON.stringify({pid:process.pid})); process.exitCode=1;`);
+  atomicJson(join(stateRoot, 'plan.json'), p);
+  const workerFile = join(directory, 'worker.json'), exportPath = join(directory, 'returned');
+  atomicJson(workerFile, { schemaVersion: 1, status: 'queued', planHash: p.planHash });
+  const runner = join(directory, 'runner.mjs'); writeFileSync(runner, windowsRunnerSource({ root, stateRoot, workerFile, exportPath }));
+  expect(() => execFileSync(process.execPath, [runner], { stdio: 'pipe' })).toThrow();
+  const terminal = readJson(workerFile), child = readJson(childPid);
+  expect(terminal).toMatchObject({ status: 'failed', childPid: child.pid, childProcessStart: `controlled-start-${child.pid}` });
+  expect(existsSync(exportPath)).toBe(false);
 });
 
 

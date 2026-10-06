@@ -37,15 +37,20 @@ atomicJson(c.workerFile, record);
 if (!record.processStart) { atomicJson(c.workerFile, { ...record, status: 'failed', reason: 'Cannot establish Windows runner process identity' }); throw new Error('Cannot establish Windows runner process identity'); }
 const log = openSync(resolve(c.stateRoot, 'transport-worker.log'), 'a', 0o600);
 try {
-  const child = spawn(process.execPath, [resolve(c.root, 'scripts/release-coordinator.mjs'), 'run', '--state', c.stateRoot, '--build'], { cwd: c.root, stdio: ['ignore', log, log], windowsHide: true });
-  atomicJson(c.workerFile, { ...record, childPid: child.pid });
-  const exitCode = await new Promise((accept, reject) => { child.once('error', reject); child.once('exit', accept); });
+  const child = spawn(process.execPath, [resolve(c.root, 'scripts/release-coordinator.mjs'), 'run', '--state', c.stateRoot, '--build', '--native-only'], { cwd: c.root, stdio: ['ignore', log, log], windowsHide: true });
+  const exited = new Promise((accept, reject) => { child.once('error', reject); child.once('exit', accept); });
+  // Retain child identity in every later terminal record. Cleanup needs this
+  // ancestor even when the runner/coordinator exited before native descendants.
+  record.childPid = child.pid;
+  record.childProcessStart = Number.isInteger(child.pid) ? processIdentity(child.pid) : null;
+  atomicJson(c.workerFile, record);
+  const exitCode = await exited;
   const stages = reconcile(plan, c.stateRoot);
-  const needed = plan.checks.filter((s) => s.required && (s.id === 'ci' || s.platform === 'windows-x86_64'));
+  const needed = plan.checks.filter((s) => s.required && s.platform === 'windows-x86_64');
   const pending = needed.map((s) => stages.find((r) => r.id === s.id)).filter((s) => s.status !== 'passed');
   const active = existsSync(resolve(c.stateRoot, 'active-stage.json')) ? readJson(resolve(c.stateRoot, 'active-stage.json')) : null;
   if (![0, 2].includes(exitCode) || pending.some((s) => s.status === 'invalid') || active?.status === 'blocked') throw new Error('Windows stage failed; inspect preserved transport-worker.log and active-stage.json');
-  exportHandoff(c.stateRoot, c.exportPath, 'windows-x86_64');
+  exportHandoff(c.stateRoot, c.exportPath, 'windows-x86_64', { platformOnly: true });
   atomicJson(c.workerFile, { ...record, status: pending.length ? 'waiting' : 'complete', exitCode, pending, exportPath: c.exportPath, completedAt: new Date().toISOString() });
 } catch (error) {
   atomicJson(c.workerFile, { ...record, status: 'failed', reason: error.message, stoppedAt: new Date().toISOString() });
@@ -145,14 +150,14 @@ function validateHandoff(plan, local) {
   const manifest = readJson(resolve(local, 'handoff.json'));
   if (manifest.planHash !== plan.planHash || manifest.schemaVersion !== 1 || !Array.isArray(manifest.checks)
     || new Set(manifest.checks).size !== manifest.checks.length
-    || manifest.checks.some((id) => statuses.find((s) => s.id === id)?.status !== 'passed' || ['draft', 'publish', 'public'].includes(id))) throw new Error('Returned Windows handoff has invalid evidence');
-  return plan.checks.filter((c) => c.required && (c.id === 'ci' || c.platform === PLATFORM)).every((c) => manifest.checks.includes(c.id) && statuses.find((s) => s.id === c.id)?.status === 'passed');
+    || manifest.checks.some((id) => statuses.find((s) => s.id === id)?.status !== 'passed' || plan.checks.find((c) => c.id === id)?.platform !== PLATFORM)) throw new Error('Returned Windows handoff has invalid evidence');
+  return plan.checks.filter((c) => c.required && c.platform === PLATFORM).every((c) => manifest.checks.includes(c.id) && statuses.find((s) => s.id === c.id)?.status === 'passed');
 }
 
 function waiting(message) { return Object.assign(new Error(message), { status: 'waiting' }); }
 function blockedPartial() { return Object.assign(new Error('Windows handoff is incomplete; inspect preserved remote native worker ownership and results, then export a NEW handoff for manual merge. Automatic collection cannot refresh this terminal handoff and will not restart or rebuild the worker.'), { status: 'blocked' }); }
 
-export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () => {}, transport = createSshTransport(), pollMs = 5_000, timeoutMs = 2 * 60 * 60_000, sleep = delay }) {
+export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () => {}, onPrepared = async () => {}, signal, transport = createSshTransport(), pollMs = 5_000, timeoutMs = 2 * 60 * 60_000, sleep = delay }) {
   assertPlan(plan);
   if (readJson(resolve(stateRoot, 'plan.json')).planHash !== plan.planHash) throw new Error('Windows transport plan differs from coordinator state');
   if (!Number.isFinite(pollMs) || pollMs < 1 || !Number.isFinite(timeoutMs) || timeoutMs < 1) throw new Error('Windows transport needs a bounded polling interval and timeout');
@@ -170,7 +175,9 @@ export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () =>
     atomicJson(recordPath, record); await onStatus(record);
   };
   const started = Date.now();
+  const assertCollecting = () => { if (signal?.aborted) throw waiting('Coordinator collection stopped; preserve the owned Windows worker and resume collection'); };
   try {
+    assertCollecting();
     if (record && record.planHash !== plan.planHash) throw new Error('Windows transport belongs to another release plan');
     if (record?.status === 'failed') {
       if (record.blocked) throw blockedPartial();
@@ -192,13 +199,18 @@ export async function runWindowsWorker({ root, stateRoot, plan, onStatus = () =>
     if (observed.status === 'absent') {
       if (record.launchedAt) throw waiting('Windows launch was recorded but its remote ownership file is missing; inspect before restarting');
       const outbound = resolve(directory, `outbound-${randomUUID()}`);
-      exportHandoff(stateRoot, outbound, PLATFORM);
+      exportHandoff(stateRoot, outbound, PLATFORM, { platformOnly: true });
       await transport.prepare({ ...paths, commit: plan.commit });
+      assertCollecting();
+      await onPrepared({ root, stateRoot, plan, paths, capability, transport });
+      assertCollecting();
       await transport.upload(outbound, paths.incoming);
+      assertCollecting();
       await update('queued', { launchedAt: new Date().toISOString() });
       observed = await transport.start({ ...paths, planHash: plan.planHash, node: capability.node, source: windowsRunnerSource(paths) });
     }
     for (;;) {
+      assertCollecting();
       if (observed.planHash && observed.planHash !== plan.planHash) throw new Error('Remote worker changed its frozen release plan');
       if (observed.status === 'failed') throw new Error(observed.reason || 'Windows worker failed; inspect preserved remote logs');
       if (['complete', 'waiting'].includes(observed.status) && observed.exportPath) {

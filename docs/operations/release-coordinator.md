@@ -114,12 +114,31 @@ hours per invocation; an owned remote worker can continue and be collected on
 resume. Exit code 0 means complete, 2 means an incomplete dependency, and other
 failures need diagnosis. The CLI never treats a queued request as a live worker.
 
-The Windows builder consumes `MYTHRA_RELEASE_CI_RUN` supplied by the coordinator.
-It freshly retrieves the canonical final-source run, every required job and all
-nine coverage receipts, validating the same complete gate contract as CI. Only
-then does it reuse hosted verification instead of repeating the full local
-suite. With no such proof it keeps the normal full local verification. Do not
-use `SkipVerify`; the actual Windows production build/startup still runs.
+The designated publisher collects exact-source hosted CI in a separate durable
+worker (`ci-worker.json`). Mac and Windows candidates can build while that
+verification is pending. CI cannot overwrite native `active-stage.json`, and
+publication stages still depend on complete successful CI and platform audits.
+An interrupted coordinator preserves worker identities; resume never infers
+that a disconnected parent means a native builder stopped.
+
+The coordinated Windows builder validates a provisional-candidate contract:
+the frozen clean source/version, live coordinator and native worker identities,
+matching process commands and actual ancestry must agree. This authorizes
+packaging only, not upload or publication. It avoids repeating full local
+verification while the publisher gathers the required hosted evidence. Skip,
+dirty, install and launch-smoke overrides are rejected in candidate mode.
+Production renderer/startup, signing and package checks still execute.
+
+Standalone builds retain their existing behavior: `MYTHRA_RELEASE_CI_RUN`
+freshly validates the exact run, every job and coverage receipt; with neither
+verified hosted evidence nor an owned candidate contract, full local verification
+still runs. Do not use `SkipVerify` as a release optimization.
+
+`RELEASE_OVERLAP_VERSION=1` identifies this frozen coordinator capability.
+Optional `lifecycle.remotePrepared` is awaited after remote checkout preparation
+and before state transfer/worker launch; a failure prevents launch. Operators
+can use it for private setup without publishing their local policies in source.
+Local housekeeping is not a release stage and cannot modify acceptance receipts.
 
 ## Work across native machines
 

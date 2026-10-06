@@ -379,3 +379,106 @@ test('detached workspace preserves development edits; interrupted DAG resumes wi
   expect(resumed.complete).toBe(true);
   expect(executed.slice(first.length)).toEqual(['draft', 'publish', 'public']);
 }, process.platform === 'win32' ? 30_000 : 5_000);
+
+function coordinatorFixture(workerSource = '') {
+  const root = temp(), stateRoot = temp();
+  const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(['init']); git(['config', 'user.name', 'Test']); git(['config', 'user.email', 'test@example.invalid']);
+  git(['remote', 'add', 'origin', 'https://github.com/m17h/Mythra-Code.git']);
+  writeFileSync(join(root, 'source'), 'frozen');
+  if (workerSource) { mkdirSync(join(root, 'scripts')); writeFileSync(join(root, 'scripts/release-coordinator.mjs'), workerSource); }
+  git(['add', '.']); git(['commit', '-m', 'fixture']);
+  const p = plan({ commit: git(['rev-parse', 'HEAD']) }); atomicJson(join(stateRoot, 'plan.json'), p);
+  const handlers = Object.fromEntries(p.checks.filter((c) => c.required).map((check) => [check.id, () => receipt(p, stateRoot, check.id)]));
+  return { root, stateRoot, p, handlers, git };
+}
+
+test('native-only invocation cannot publish, run on the publisher, or take ownership of source CI', async () => {
+  const f = coordinatorFixture(); let calls = 0;
+  f.handlers.ci = () => { calls++; return receipt(f.p, f.stateRoot, 'ci'); };
+  for (const options of [{ allowBuild: false }, { allowBuild: true, allowUpload: true }, { allowBuild: true, allowPublish: true }, { allowBuild: true }]) {
+    await expect(runRelease({ ...f, handlers: f.handlers, nativeOnly: true, ...options })).rejects.toThrow(/Native-only/);
+  }
+  expect(calls).toBe(0); expect(existsSync(join(f.stateRoot, 'ci-worker.json'))).toBe(false);
+});
+
+test('native builds proceed while the CI handler remains unresolved and draft waits for exact-source CI', async () => {
+  const f = coordinatorFixture(), order = [];
+  let acceptCI;
+  f.handlers.ci = async () => { order.push('ci-pending'); await new Promise((accept) => { acceptCI = accept; }); order.push('ci-passed'); return receipt(f.p, f.stateRoot, 'ci'); };
+  f.handlers['build:darwin-aarch64'] = () => { order.push('mac-build'); return receipt(f.p, f.stateRoot, 'build:darwin-aarch64'); };
+  f.handlers['build:windows-x86_64'] = () => { order.push('windows-build'); acceptCI(); return receipt(f.p, f.stateRoot, 'build:windows-x86_64'); };
+  f.handlers.draft = () => { order.push('draft'); expect(reconcile(f.p, f.stateRoot).find((s) => s.id === 'ci').status).toBe('passed'); return receipt(f.p, f.stateRoot, 'draft'); };
+  expect((await runRelease({ ...f, handlers: f.handlers, waitMs: 10 })).complete).toBe(true);
+  expect(order.indexOf('mac-build')).toBeLessThan(order.indexOf('ci-passed'));
+  expect(order.indexOf('windows-build')).toBeLessThan(order.indexOf('ci-passed'));
+  expect(order.indexOf('draft')).toBeGreaterThan(order.indexOf('ci-passed'));
+});
+
+test('failed source CI preserves completed candidates and prevents draft handlers or automatic retry', async () => {
+  const f = coordinatorFixture(); let rejectCI, uploads = 0;
+  f.handlers.ci = async () => { await new Promise((_accept, reject) => { rejectCI = reject; }); return receipt(f.p, f.stateRoot, 'ci'); };
+  f.handlers['build:darwin-aarch64'] = () => { const r = receipt(f.p, f.stateRoot, 'build:darwin-aarch64'); rejectCI(new Error('Exact-source Verify failed')); return r; };
+  f.handlers.draft = () => { uploads++; return receipt(f.p, f.stateRoot, 'draft'); };
+  await expect(runRelease({ ...f, handlers: f.handlers, waitMs: 10 })).rejects.toThrow(/Verify failed/);
+  expect(uploads).toBe(0);
+  expect(reconcile(f.p, f.stateRoot).find((s) => s.id === 'build:darwin-aarch64').status).toBe('passed');
+  expect(readJson(join(f.stateRoot, 'active-stage.json')).checkId).not.toBe('ci');
+  await expect(runRelease({ ...f, handlers: f.handlers, resume: true })).rejects.toThrow(/no blind retries/);
+});
+
+test.skipIf(process.platform !== 'darwin')('remote Windows starts while source CI is pending and handoff cannot replace the publisher CI receipt', async () => {
+  const f = coordinatorFixture(), remote = temp(), order = []; let acceptCI;
+  atomicJson(join(remote, 'plan.json'), f.p);
+  for (const c of f.p.checks.filter((c) => c.required && c.platform === 'windows-x86_64')) saveReceipt(remote, f.p, receipt(f.p, remote, c.id));
+  const handoff = join(temp(), 'returned'); exportHandoff(remote, handoff, 'windows-x86_64', { platformOnly: true });
+  f.handlers.ci = async () => { order.push('ci-pending'); await new Promise((accept) => { acceptCI = accept; }); return receipt(f.p, f.stateRoot, 'ci'); };
+  for (const c of f.p.checks.filter((c) => c.platform === 'windows-x86_64')) delete f.handlers[c.id];
+  const prepared = async () => {};
+  const remoteWorker = async ({ onPrepared }) => { expect(onPrepared).toBe(prepared); order.push('windows-start'); acceptCI(); return handoff; };
+  const result = await runRelease({ ...f, handlers: f.handlers, remoteWorker, allowBuild: true, lifecycle: { remotePrepared: prepared }, waitMs: 10 });
+  expect(result.complete).toBe(true); expect(order).toEqual(['ci-pending', 'windows-start']);
+  expect(readJson(join(f.stateRoot, 'receipts/ci.json')).details.runId).toBe(hosted().run.id);
+  expect(readJson(join(handoff, 'handoff.json')).checks).not.toContain('ci');
+});
+
+test.skipIf(process.platform === 'win32')('durable source CI finishes after coordinator interruption, preserves native state and resumes without another CI worker', async () => {
+  const coordinator = pathToFileURL(resolve(import.meta.dirname, 'release-coordinator.mjs')).href;
+  const state = pathToFileURL(resolve(import.meta.dirname, 'release-state.mjs')).href;
+  const source = `import { existsSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { runHostedCIWorker } from ${JSON.stringify(coordinator)};
+import { readJson } from ${JSON.stringify(state)};
+const args=process.argv.slice(2), stateRoot=args[args.indexOf('--state')+1], token=args[args.indexOf('--owner')+1];
+while (!existsSync(resolve(stateRoot,'ci-worker.json')) || readJson(resolve(stateRoot,'ci-worker.json')).worker?.pid !== process.pid) await new Promise(r=>setTimeout(r,10));
+writeFileSync(resolve(stateRoot,'ci-started'),String(process.pid));
+await runHostedCIWorker({root:resolve(import.meta.dirname,'..'),stateRoot,token,waitMs:20,deadlineMs:5000,verify:()=>{
+ if(!existsSync(resolve(stateRoot,'ci-accept'))) throw Object.assign(new Error('Exact-source Verify pending'),{status:'waiting'});
+ return readJson(resolve(stateRoot,'expected-ci.json'));
+}});`;
+  const f = coordinatorFixture(source), ci = receipt(f.p, f.stateRoot, 'ci');
+  atomicJson(join(f.stateRoot, 'expected-ci.json'), ci); delete f.handlers.ci;
+  const until = async (predicate) => {
+    const deadline = Date.now() + 5_000;
+    while (!predicate()) { if (Date.now() >= deadline) throw new Error('Controlled CI worker did not progress'); await new Promise((accept) => setTimeout(accept, 20)); }
+  };
+  f.handlers['build:darwin-aarch64'] = async () => { await until(() => existsSync(join(f.stateRoot, 'ci-started'))); return receipt(f.p, f.stateRoot, 'build:darwin-aarch64'); };
+  f.handlers['audit:darwin-aarch64'] = () => { throw new Error('Controlled native audit interrupted'); };
+  let worker;
+  try {
+    await expect(runRelease({ ...f, handlers: f.handlers, waitMs: 20 })).rejects.toThrow(/audit interrupted/);
+    worker = readJson(join(f.stateRoot, 'ci-worker.json')).worker;
+    expect(processIdentity(worker.pid)).toBe(worker.processStart);
+    expect(existsSync(join(f.stateRoot, 'lease.json'))).toBe(false);
+    expect(readJson(join(f.stateRoot, 'active-stage.json'))).toMatchObject({ checkId: 'audit:darwin-aarch64', status: 'blocked' });
+    writeFileSync(join(f.stateRoot, 'ci-accept'), 'allow valid fixture proof');
+    await until(() => existsSync(join(f.stateRoot, 'receipts/ci.json')));
+    const ciHash = fileHash(join(f.stateRoot, 'receipts/ci.json'));
+    expect(readJson(join(f.stateRoot, 'active-stage.json')).checkId).toBe('audit:darwin-aarch64');
+    f.handlers['audit:darwin-aarch64'] = () => receipt(f.p, f.stateRoot, 'audit:darwin-aarch64');
+    expect((await runRelease({ ...f, handlers: f.handlers, resume: true, retryReason: 'Controlled native audit restored', waitMs: 20 })).complete).toBe(true);
+    expect(fileHash(join(f.stateRoot, 'receipts/ci.json'))).toBe(ciHash);
+    expect(readJson(join(f.stateRoot, 'ci-worker.json')).worker.pid).toBe(worker.pid);
+    await until(() => !processIdentity(worker.pid));
+  } finally { if (worker && processIdentity(worker.pid)) { try { process.kill(-worker.pid, 'SIGKILL'); } catch { /* Already exited. */ } } }
+}, 10_000);

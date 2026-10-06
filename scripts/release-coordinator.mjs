@@ -12,8 +12,10 @@ import { uploadPlatformDraft } from './release-draft.mjs';
 import { exportHandoff, mergeHandoff } from './release-handoff.mjs';
 import { runNativeCheck } from './release-native-check.mjs';
 import { runWindowsWorker } from './release-remote.mjs';
+import { candidateProcesses } from './release-candidate-contract.mjs';
 
 const checkoutRoot = resolve(import.meta.dirname, '..');
+export const RELEASE_OVERLAP_VERSION = 1;
 const platform = process.platform === 'darwin' ? 'darwin-aarch64' : process.platform === 'win32' ? 'windows-x86_64' : null;
 const git = (root, args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 const gh = (root, args) => execFileSync('gh', args, { cwd: root, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
@@ -106,6 +108,12 @@ function buildStage({ root, stateRoot, plan, check, allowBuild }) {
   const env = { ...process.env };
   const proofPath = receiptPath(stateRoot, 'ci');
   if (existsSync(proofPath)) env.MYTHRA_RELEASE_CI_RUN = String(readJson(proofPath).details.runId);
+  if (check.platform === 'windows-x86_64') {
+    env.MYTHRA_RELEASE_CANDIDATE_STATE = stateRoot;
+    env.MYTHRA_RELEASE_CANDIDATE_OWNER = readJson(resolve(stateRoot, 'lease.json')).token;
+    env.MYTHRA_RELEASE_CANDIDATE_WORKER_PID = String(process.pid);
+    env.MYTHRA_RELEASE_CANDIDATE_WORKER_START = processIdentity();
+  }
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const command = process.platform === 'win32' ? 'powershell.exe' : npm;
   const args = process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', resolve(root, 'scripts/release-build-job.ps1')] : ['run', 'release:build'];
@@ -140,11 +148,88 @@ async function durableBuild({ root, stateRoot, plan, check }) {
   const processStart = Number.isInteger(child.pid) ? processIdentity(child.pid) : null;
   if (!processStart) { child.kill(); throw new Error('Cannot establish native build worker identity'); }
   atomicJson(resolve(stateRoot, 'active-stage.json'), { checkId: check.id, status: 'running', startedAt,
-    worker: { host: hostname(), pid: child.pid, processStart }, ownerToken: token });
+    worker: { host: hostname(), pid: child.pid, processStart }, ownerToken: token, planHash: plan.planHash, commit: plan.commit, root: realPath(root) });
   await new Promise((accept, reject) => { child.once('error', reject); child.once('exit', (code) => code === 0 ? accept() : reject(new Error(`Native build worker exited ${code}; inspect active-stage.json and preserved logs`))); });
   // The worker owns its completion receipt, so it can finish after a coordinator
   // interruption. Returning it never invokes the builder a second time.
   return readJson(receiptPath(stateRoot, check.id));
+}
+
+const ciWorkerPath = (stateRoot) => resolve(stateRoot, 'ci-worker.json');
+const pause = (ms) => new Promise((accept) => setTimeout(accept, ms));
+function hostedReceipt({ root, stateRoot, plan, check, startedAt }) {
+  const proof = verifyHostedEvidence({ root, commit: plan.commit });
+  const path = resolve(stateRoot, 'evidence', `ci-${proof.runId}.json`); atomicJson(path, proof);
+  return envelope(plan, check, startedAt, [path], stateRoot, proof);
+}
+
+// CI owns a separate durable record and lease. It can finish after the parent
+// exits, and cannot overwrite the current native stage or publish anything.
+export async function runHostedCIWorker({ root, stateRoot, token, waitMs = 15_000, deadlineMs = 2 * 60 * 60_000, verify = hostedReceipt }) {
+  if (!Number.isFinite(waitMs) || waitMs < 1 || !Number.isFinite(deadlineMs) || deadlineMs < 1) throw new Error('CI worker needs a bounded polling interval and deadline');
+  const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json'))), path = ciWorkerPath(stateRoot);
+  const old = readJson(path);
+  if (plan.publisherHost !== hostname() || old.token !== token || old.planHash !== plan.planHash || old.root !== realPath(root)
+    || old.worker?.pid !== process.pid || leaseStatus(old.worker) !== 'running') throw new Error('CI worker has no matching designated publisher contract');
+  assertCheckout(root, plan);
+  const release = acquireLease(resolve(stateRoot, 'ci-worker-owner'), { recover: true });
+  const check = plan.checks.find((c) => c.id === 'ci'), startedAt = old.startedAt, deadline = Date.now() + deadlineMs;
+  try {
+    while (true) {
+      try {
+        assertCheckout(root, plan);
+        const receipt = await verify({ root, stateRoot, plan, check, startedAt });
+        saveReceipt(stateRoot, plan, receipt);
+        atomicJson(path, { ...old, status: 'passed', completedAt: receipt.completedAt });
+        recordEvent(stateRoot, { kind: 'check-passed', checkId: 'ci', startedAt, completedAt: receipt.completedAt });
+        return receipt;
+      } catch (error) {
+        if (error.status !== 'waiting') throw error;
+        atomicJson(path, { ...old, status: 'waiting', reason: error.message, updatedAt: new Date().toISOString() });
+        if (Date.now() >= deadline) return null;
+        await pause(Math.min(waitMs, deadline - Date.now()));
+      }
+    }
+  } catch (error) {
+    atomicJson(path, { ...old, status: 'blocked', stoppedAt: new Date().toISOString(), reason: error.message });
+    recordEvent(stateRoot, { kind: 'check-blocked', checkId: 'ci', reason: error.message });
+    throw error;
+  } finally { release(); }
+}
+
+async function durableCI({ root, stateRoot, plan, waitMs, deadline, retryReason, signal }) {
+  const path = ciWorkerPath(stateRoot);
+  let previous = existsSync(path) ? readJson(path) : null;
+  if (previous && (previous.planHash !== plan.planHash || previous.root !== realPath(root))) throw new Error('CI worker belongs to another frozen checkout/plan');
+  if (!previous?.worker || !workerTreeAlive(previous.worker)) {
+    if (previous?.status === 'blocked' && !retryReason.trim()) throw new Error(`Previous ci failed: ${previous.reason}. Resume needs --retry-reason; no blind retries.`);
+    if (previous && previous.status !== 'waiting' && !retryReason.trim()) throw new Error('Interrupted CI worker has no completion receipt; inspect its ownership and record a retry reason');
+    if (previous) atomicJson(resolve(stateRoot, 'recovery', `ci-retry-${Date.now()}.json`), { previous, reason: retryReason || 'Resume exact-source CI after its bounded waiting deadline', recordedAt: new Date().toISOString() });
+    const token = readJson(resolve(stateRoot, 'lease.json')).token;
+    // Registration precedes the worker handshake. A lost parent leaves either
+    // a recorded PID or an ambiguous queued record, never an automatic restart.
+    previous = { checkId: 'ci', planHash: plan.planHash, root: realPath(root), token, status: 'queued', startedAt: new Date().toISOString() };
+    atomicJson(path, previous);
+    const child = spawn(process.execPath, [resolve(root, 'scripts/release-coordinator.mjs'), 'ci-worker', '--state', stateRoot, '--owner', token, '--wait-ms', String(waitMs), '--deadline-ms', String(Math.max(1, deadline - Date.now()))],
+      { cwd: root, stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true });
+    child.on('error', (error) => atomicJson(path, { ...previous, status: 'blocked', reason: error.message }));
+    const processStart = Number.isInteger(child.pid) ? processIdentity(child.pid) : null;
+    if (!processStart) { child.kill(); throw new Error('Cannot establish CI worker identity'); }
+    previous = { ...previous, status: 'running', worker: { host: hostname(), pid: child.pid, processStart } };
+    atomicJson(path, previous); child.unref();
+  }
+  while (!signal.aborted) {
+    if (existsSync(receiptPath(stateRoot, 'ci'))) return readJson(receiptPath(stateRoot, 'ci'));
+    const record = readJson(path);
+    if (record.status === 'blocked') throw new Error(`Hosted CI failed: ${record.reason}; native candidates and owned workers are preserved`);
+    if (!record.worker || !workerTreeAlive(record.worker)) {
+      if (record.status === 'waiting') throw Object.assign(new Error(record.reason || 'Hosted CI remains incomplete'), { status: 'waiting' });
+      throw new Error('CI worker exited without a completion receipt; inspect ci-worker.json before retry');
+    }
+    if (Date.now() >= deadline) throw Object.assign(new Error('CI collection deadline reached; owned CI worker is preserved for resume'), { status: 'waiting' });
+    await pause(Math.min(waitMs, Math.max(1, deadline - Date.now())));
+  }
+  return null;
 }
 
 function remoteStage({ root, stateRoot, plan, check, allowUpload }) {
@@ -197,9 +282,12 @@ function remoteStage({ root, stateRoot, plan, check, allowUpload }) {
   return envelope(plan, check, startedAt, [report, ...assetNames(plan.version).map((name) => resolve(directory, name))], stateRoot, result);
 }
 
-export async function runRelease({ root, stateRoot, allowBuild = false, allowUpload = false, allowPublish = false, resume = false, retryReason = '', handlers = {}, remoteWorker = runWindowsWorker, waitMs = 15_000, deadlineMs = 2 * 60 * 60_000 }) {
+export async function runRelease({ root, stateRoot, allowBuild = false, allowUpload = false, allowPublish = false, nativeOnly = false, resume = false, retryReason = '', handlers = {}, remoteWorker = runWindowsWorker, lifecycle = {}, waitMs = 15_000, deadlineMs = 2 * 60 * 60_000 }) {
+  if (!Number.isFinite(waitMs) || waitMs < 1 || !Number.isFinite(deadlineMs) || deadlineMs < 1) throw new Error('Release coordinator needs a bounded polling interval and deadline');
   assertStateLocation(root, stateRoot);
   const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
+  if (nativeOnly && (!allowBuild || allowUpload || allowPublish || hostname() === plan.publisherHost || platform !== 'windows-x86_64')) throw new Error('Native-only coordination is restricted to the non-publisher Windows build host, without upload/publication');
+  if (!nativeOnly && hostname() !== plan.publisherHost) throw new Error('Only the designated publisher coordinates source CI; remote Windows uses --native-only');
   assertCheckout(root, plan);
   // Remote native workers consume the frozen selection only. The designated
   // publisher reopens historical evidence before any orchestration/publication.
@@ -224,12 +312,19 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
   for (const check of plan.checks.filter((c) => c.kind === 'native' && c.platform === platform && c.required)) {
     if (!handlers[check.id]) handlers = { ...handlers, [check.id]: runNativeCheck };
   }
+  const coordinatorCommand = allowBuild ? candidateProcesses().find((p) => p.pid === process.pid)?.command : undefined;
+  if (allowBuild && !coordinatorCommand) throw new Error('Cannot establish the native coordinator launch command');
   const releaseLease = acquireLease(stateRoot, { recover: resume });
   let publisherLease;
-  const ownerToken = readJson(resolve(stateRoot, 'lease.json')).token;
+  const ownerLease = readJson(resolve(stateRoot, 'lease.json'));
+  atomicJson(resolve(stateRoot, 'lease.json'), { ...ownerLease, root: realPath(root), planHash: plan.planHash, commit: plan.commit, allowBuild,
+    ...(coordinatorCommand ? { coordinatorCommand } : {}) });
+  const ownerToken = ownerLease.token;
   const waiting = new Map();
   const deadline = Date.now() + deadlineMs;
   let remoteTask = null, remoteResult = null, remoteError = null, remoteCollected = false, remoteNextAt = 0;
+  let ciTask = null, ciResult = null, ciError = null;
+  const ciAbort = new AbortController();
   try {
     recordEvent(stateRoot, { kind: 'coordinator-started', resume, planHash: plan.planHash });
     if (allowUpload || allowPublish) {
@@ -247,13 +342,39 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
       const stages = reconcile(plan, stateRoot);
       const invalid = stages.filter((s) => s.status === 'invalid');
       if (invalid.length) throw new Error(`Evidence invalidated; inspect before rerunning: ${JSON.stringify(invalid)}`);
-      // Windows starts once complete CI can replace its duplicate local verify.
-      // It then builds concurrently with the Mac package/native stages.
+      // Start exact-source CI in its own owned process before scheduling native
+      // work. Neither pending CI nor its network reads block candidate builds.
+      if (!nativeOnly && !ciTask && stages.find((s) => s.id === 'ci')?.status === 'pending'
+        && (!waiting.has('ci') || (Date.now() < deadline && Date.now() >= waiting.get('ci').retryAt))) {
+        const previousCI = existsSync(ciWorkerPath(stateRoot)) ? readJson(ciWorkerPath(stateRoot)) : null;
+        if (previousCI?.status === 'blocked' && !retryReason.trim()) throw new Error(`Previous ci failed: ${previousCI.reason}. Resume needs --retry-reason; no blind retries.`);
+        if (handlers.ci && previousCI?.status === 'blocked') atomicJson(resolve(stateRoot, 'recovery', `ci-retry-${Date.now()}.json`), { previous: previousCI, reason: retryReason, recordedAt: new Date().toISOString() });
+        const check = plan.checks.find((c) => c.id === 'ci'), startedAt = new Date().toISOString();
+        recordEvent(stateRoot, { kind: 'check-started', checkId: 'ci', startedAt });
+        const attempt = async () => {
+          if (handlers.ci) {
+            atomicJson(ciWorkerPath(stateRoot), { checkId: 'ci', planHash: plan.planHash, root: realPath(root), startedAt, status: 'running' });
+            const receipt = await handlers.ci({ root, stateRoot, plan, check });
+            saveReceipt(stateRoot, plan, receipt);
+            atomicJson(ciWorkerPath(stateRoot), { checkId: 'ci', planHash: plan.planHash, root: realPath(root), startedAt, status: 'passed', completedAt: receipt.completedAt });
+            return receipt;
+          }
+          return durableCI({ root, stateRoot, plan, waitMs, deadline, retryReason, signal: ciAbort.signal });
+        };
+        ciTask = attempt().then((receipt) => { ciResult = receipt; }, (error) => { ciError = error; });
+      }
       if (!remoteTask && Date.now() >= remoteNextAt && Date.now() < deadline && platform === 'darwin-aarch64' && allowBuild && !handlers['build:windows-x86_64']
-        && stages.find((s) => s.id === 'ci')?.status === 'passed'
         && stages.some((s) => s.id.endsWith(':windows-x86_64') && !['passed', 'not-required'].includes(s.status))) {
-        remoteTask = remoteWorker({ root, stateRoot, plan, onStatus: (status) => atomicJson(resolve(stateRoot, 'remote-status.json'), status) })
+        remoteTask = remoteWorker({ root, stateRoot, plan, signal: ciAbort.signal, onPrepared: lifecycle.remotePrepared, onStatus: (status) => atomicJson(resolve(stateRoot, 'remote-status.json'), status) })
           .then((path) => { remoteResult = path; }, (error) => { remoteError = error; });
+      }
+      if (ciResult) { waiting.delete('ci'); ciResult = null; }
+      if (ciError) {
+        if (handlers.ci) atomicJson(ciWorkerPath(stateRoot), { checkId: 'ci', planHash: plan.planHash, root: realPath(root), status: ciError.status === 'waiting' ? 'waiting' : 'blocked', reason: ciError.message });
+        if (ciError.status !== 'waiting') throw ciError;
+        waiting.set('ci', { checkId: 'ci', reason: ciError.message, retryAt: Date.now() + waitMs });
+        recordEvent(stateRoot, { kind: 'check-waiting', checkId: 'ci', reason: ciError.message });
+        ciError = null; ciTask = null;
       }
       if (remoteError) {
         if (remoteError.status !== 'waiting') throw remoteError;
@@ -267,10 +388,11 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
         continue;
       }
       const ready = stages.filter((s) => s.status === 'pending' && (!waiting.has(s.id) || (Date.now() < deadline && Date.now() >= waiting.get(s.id).retryAt))).map((s) => plan.checks.find((c) => c.id === s.id));
-      const check = ready.find((c) => handlers[c.id] || c.kind === 'ci' || (c.kind === 'build' && c.platform === platform && allowBuild)
-        || (c.id === 'draft' && allowUpload) || (c.id === 'publish' && allowPublish) || (c.id === 'public' && plan.publisherHost === hostname() && process.platform !== 'win32'));
+      const check = ready.find((c) => c.kind !== 'ci' && (!nativeOnly || c.platform === platform) && (handlers[c.id] || (c.kind === 'build' && c.platform === platform && allowBuild)
+        || (c.id === 'draft' && allowUpload) || (c.id === 'publish' && allowPublish) || (c.id === 'public' && plan.publisherHost === hostname() && process.platform !== 'win32')));
       if (!check) {
-        if (remoteTask && !remoteCollected) { await remoteTask; continue; }
+        const pendingTasks = [ciTask && !ciResult && !ciError && stages.find((s) => s.id === 'ci')?.status !== 'passed' ? ciTask : null, remoteTask && !remoteCollected ? remoteTask : null].filter(Boolean);
+        if (pendingTasks.length && Date.now() < deadline) { await Promise.race([...pendingTasks, pause(Math.min(waitMs, Math.max(1, deadline - Date.now())))]); continue; }
         if (waiting.size && Date.now() < deadline) { await new Promise((accept) => setTimeout(accept, Math.min(waitMs, deadline - Date.now()))); continue; }
         return { complete: stages.every((s) => ['passed', 'not-required'].includes(s.status)), stages, waiting: [...waiting.values()] };
       }
@@ -280,11 +402,7 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
       let receipt;
       try {
         if (handlers[check.id]) receipt = await handlers[check.id]({ root, stateRoot, plan, check });
-        else if (check.kind === 'ci') {
-          const proof = verifyHostedEvidence({ root, commit: plan.commit });
-          const path = resolve(stateRoot, 'evidence', `ci-${proof.runId}.json`); atomicJson(path, proof);
-          receipt = envelope(plan, check, startedAt, [path], stateRoot, proof);
-        } else if (check.kind === 'build') receipt = await durableBuild({ root, stateRoot, plan, check });
+        else if (check.kind === 'build') receipt = await durableBuild({ root, stateRoot, plan, check });
         else if (check.id === 'draft' || check.id === 'public') {
           if (!publisherLease) publisherLease = acquirePublisherLease(plan, { recover: resume });
           if (check.id === 'draft') markPublisherMutation(plan, publisherLease.token, { stage: 'draft' });
@@ -326,6 +444,7 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
   } finally {
     // A detached remote worker keeps ownership and can be collected on resume.
     // It cannot upload or publish, and a lost parent never authorizes a rebuild.
+    ciAbort.abort();
     releaseLease();
     publisherLease?.();
   }
@@ -337,10 +456,22 @@ async function main(args) {
   const stateRoot = option('--state') && resolve(option('--state'));
   if (!stateRoot) throw new Error('Specify --state <absolute release state directory outside builder staging>');
   assertStateLocation(checkoutRoot, stateRoot);
-  if (command === 'build-worker') {
+  if (command === 'build-worker' || command === 'ci-worker') {
+    const registration = command === 'build-worker' ? resolve(stateRoot, 'active-stage.json') : ciWorkerPath(stateRoot);
+    const deadline = Date.now() + 30_000;
+    while (!(existsSync(registration) && readJson(registration).worker?.pid === process.pid)) {
+      if (Date.now() >= deadline) throw new Error('Worker registration handshake timed out; inspect preserved ownership');
+      await pause(20);
+    }
+  }
+  if (command === 'ci-worker') {
+    await runHostedCIWorker({ root: checkoutRoot, stateRoot, token: option('--owner'), waitMs: Number(option('--wait-ms') ?? 15_000), deadlineMs: Number(option('--deadline-ms') ?? 2 * 60 * 60_000) });
+  } else if (command === 'build-worker') {
     const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
     const check = plan.checks.find((c) => c.id === option('--check') && c.kind === 'build' && c.platform === platform);
-    if (!check || readJson(resolve(stateRoot, 'lease.json')).token !== option('--owner')) throw new Error('Native worker has no matching coordinator contract');
+    const lease = readJson(resolve(stateRoot, 'lease.json')), active = readJson(resolve(stateRoot, 'active-stage.json'));
+    if (!check || lease.token !== option('--owner') || leaseStatus(lease) !== 'running' || lease.planHash !== plan.planHash
+      || active.ownerToken !== lease.token || active.planHash !== plan.planHash || active.worker.pid !== process.pid || leaseStatus(active.worker) !== 'running') throw new Error('Native worker has no matching live coordinator contract');
     assertCheckout(checkoutRoot, plan);
     try {
       const receipt = buildStage({ root: checkoutRoot, stateRoot, plan, check, allowBuild: true });
@@ -368,7 +499,7 @@ async function main(args) {
   } else if (command === 'merge') {
     console.log(JSON.stringify(mergeHandoff(resolve(option('--from')), stateRoot), null, 2));
   } else if (command === 'run' || command === 'resume') {
-    const result = await runRelease({ root: checkoutRoot, stateRoot, allowBuild: rest.includes('--build'), allowUpload: rest.includes('--upload'), allowPublish: rest.includes('--publish'), resume: command === 'resume', retryReason: option('--retry-reason') ?? '' });
+    const result = await runRelease({ root: checkoutRoot, stateRoot, allowBuild: rest.includes('--build'), allowUpload: rest.includes('--upload'), allowPublish: rest.includes('--publish'), nativeOnly: rest.includes('--native-only'), resume: command === 'resume', retryReason: option('--retry-reason') ?? '' });
     console.log(JSON.stringify(result, null, 2));
     if (!result.complete) process.exitCode = 2;
   } else throw new Error('Commands: plan, workspace, status, export, merge, run, resume');
