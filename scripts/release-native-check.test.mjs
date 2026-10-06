@@ -3,8 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { atomicJson, fileHash } from './release-state.mjs';
-import { assertQaSourceSupport, validateNativeResult } from './release-native-check.mjs';
+import { atomicJson, fileHash, objectHash } from './release-state.mjs';
+import { assertNativeContract, assertQaSourceSupport, validateNativeResult } from './release-native-check.mjs';
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -41,6 +41,7 @@ function closeFaultFixture() {
   const entry = result.results[0]; entry.checkId = contract.checks[0].id;
   entry.observations = contract.checks[0].observations.map((id) => ({ id, evidence: id === 'affected-close-failure' ? 'close-failure.json' : 'screen.png' }));
   const event = (kind, details = {}) => ({ schemaVersion: 1, profileId, pid, runId, kind, details });
+  events.find((e) => e.kind === 'renderer-storage').details.previous = profileId;
   const fault = { nonce, kind: 'save-failure-once', cause: 'override-saved-result' }, key = { label: 'main', requestId };
   events.unshift(event('profile-open', { closeFailureVersion: 1 }), event('render-ready'),
     event('qa-close-fault-armed', fault), event('qa-close-fault-applied', { ...fault, ...key, originalResult: 'saved', result: 'failed' }),
@@ -48,9 +49,10 @@ function closeFaultFixture() {
     event('close-prompt', { ...key, reason: 'SaveFailed' }), event('close-prompt-answer', { ...key, accepted: true, confirmed: false, choice: 'keep-open' }),
     event('close-cancelled', key), event('close-finish', { label: 'main', requestId: 2, accepted: true, result: 'saved', faultNonce: null }), event('exit'));
   const proof = { schemaVersion: 1, ...fault, profileId, pid, runId, requestId,
-    prompt: { screenshot: 'prompt.png', accessibility: 'prompt-ax.json' }, recovery: { screenshot: 'recovery.png', accessibility: 'recovery-ax.json' } };
+    prompt: { pid, runId, phase: 'prompt', screenshot: 'prompt.png', accessibility: 'prompt-ax.json' },
+    recovery: { pid, runId, phase: 'recovery', screenshot: 'recovery.png', accessibility: 'recovery-ax.json' } };
   atomicJson(resolve(root, 'close-failure.json'), proof);
-  for (const path of ['prompt.png', 'recovery.png']) writeFileSync(resolve(root, path), Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(40)]));
+  for (const [index, path] of ['prompt.png', 'recovery.png'].entries()) writeFileSync(resolve(root, path), Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(40, index)]));
   atomicJson(resolve(root, 'prompt-ax.json'), { title: `Mythra Code — Release QA ${profileId}`, dialog: `Close Mythra Code? — Release QA ${profileId}`, button: 'Keep open' });
   atomicJson(resolve(root, 'recovery-ax.json'), { title: `Mythra Code — Release QA ${profileId}`, theme: 'Light Mythra' });
   entry.evidence.push(...['close-failure.json', 'prompt.png', 'recovery.png', 'prompt-ax.json', 'recovery-ax.json'].map((path) => ({ path, sha256: fileHash(resolve(root, path)) })));
@@ -60,6 +62,52 @@ function closeFaultFixture() {
 test('declared one-shot native close failure requires prompt cancellation, recovery and a healthy reopened primary', () => {
   const { root, result, contract } = closeFaultFixture();
   expect(validateNativeResult(result, contract, root)).toBe(result);
+});
+test('selected close replay cannot omit its declaration and substitute healthy-only evidence', () => {
+  const f = closeFaultFixture();
+  delete f.contract.closeFailureScenario;
+  f.events = f.events.filter((e) => e.runId !== f.proof.runId);
+  f.result.results[0].observations.find((o) => o.id === 'affected-close-failure').evidence = 'screen.png';
+  persistEvents(f.root, f.result, f.events);
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow(/declaration/);
+});
+test('persisted native contract rejects changed content retaining an old ownership hash', () => {
+  const { contract } = closeFaultFixture();
+  contract.contractHash = objectHash(contract);
+  expect(() => assertNativeContract(contract)).not.toThrow();
+  delete contract.closeFailureScenario;
+  expect(() => assertNativeContract(contract)).toThrow(/hash/);
+});
+test('healthy reopen rejects undeclared timeout prompt recovery before a later saved close', () => {
+  const f = closeFaultFixture(), primary = f.events.find((e) => e.runId === f.result.results[0].runId);
+  const index = f.events.findIndex((e) => e.runId === primary.runId && e.kind === 'close-finish');
+  f.events.splice(index, 0, ...[
+    ['close-prompt', { reason: 'Deadline' }],
+    ['close-prompt-answer', { accepted: true, confirmed: false, choice: 'keep-open' }],
+    ['close-cancelled', {}],
+  ].map(([kind, details]) => ({ ...primary, kind, details: { label: 'main', requestId: 1, ...details } })));
+  persistEvents(f.root, f.result, f.events);
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow(/prompt/);
+});
+test('renamed prompt captures cannot stand in for the recovered owned window', () => {
+  const f = closeFaultFixture(), entry = f.result.results[0];
+  writeFileSync(resolve(f.root, 'recovery.png'), Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(40)]));
+  atomicJson(resolve(f.root, 'recovery-ax.json'), { title: `Mythra Code — Release QA ${f.contract.profile.profileId}`, dialog: `Close Mythra Code? — Release QA ${f.contract.profile.profileId}`, button: 'Keep open' });
+  for (const e of entry.evidence) e.sha256 = fileHash(resolve(f.root, e.path));
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow();
+});
+test('healthy reopen cannot report a new renderer store after fault recovery', () => {
+  const f = closeFaultFixture();
+  f.events.find((e) => e.runId === f.result.results[0].runId && e.kind === 'renderer-storage').details.previous = null;
+  persistEvents(f.root, f.result, f.events);
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow(/persistent store/);
+});
+test.each(['pid', 'runId', 'phase'])('recovery capture rejects wrong %s binding', (field) => {
+  const f = closeFaultFixture();
+  f.proof.recovery[field] = field === 'pid' ? f.proof.pid + 1 : field === 'runId' ? randomUUID() : 'prompt';
+  atomicJson(resolve(f.root, 'close-failure.json'), f.proof);
+  f.result.results[0].evidence.find((e) => e.path === 'close-failure.json').sha256 = fileHash(resolve(f.root, 'close-failure.json'));
+  expect(() => validateNativeResult(f.result, f.contract, f.root)).toThrow();
 });
 test.each([
   ['missing declaration', (f) => { delete f.contract.closeFailureScenario; }],

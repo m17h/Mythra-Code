@@ -102,9 +102,17 @@ export const nativeResultSchema = {
   },
 };
 
+export function assertNativeContract(contract) {
+  const { contractHash, ...body } = contract;
+  if (!HASH.test(contractHash) || objectHash(body) !== contractHash) throw new Error('Native worker contract hash differs from its content');
+}
+
 function acceptedCloseFault(events, result, contract, stateRoot, primaryEntry) {
   const scenario = contract.closeFailureScenario;
-  if (!scenario) return null;
+  if (!scenario) {
+    if (contract.checks.some((c) => c.id.startsWith('native-close:'))) throw new Error('Selected close replay lacks its fault declaration');
+    return null;
+  }
   const reject = () => { throw new Error('Invalid maintained close failure replay'); };
   const close = result.results.find((r) => r.checkId === `native-close:${contract.platform}`);
   if (!close || contract.sourceCapability?.closeFailure?.version !== 1 || scenario.schemaVersion !== 1
@@ -122,14 +130,21 @@ function acceptedCloseFault(events, result, contract, stateRoot, primaryEntry) {
     || proof.profileId !== contract.profile.profileId || !Number.isInteger(proof.pid) || proof.pid < 1
     || !/^[a-f0-9-]{36}$/.test(proof.runId) || proof.runId === primaryEntry.runId
     || !Number.isSafeInteger(proof.requestId) || proof.requestId < 1) reject();
+  const captures = [];
   for (const [name, capture] of [['prompt', proof.prompt], ['recovery', proof.recovery]]) {
-    if (!capture || !/\.(png|jpe?g)$/.test(capture.screenshot ?? '') || !/\.json$/.test(capture.accessibility ?? '')) reject();
+    if (!capture || capture.pid !== proof.pid || capture.runId !== proof.runId || capture.phase !== name
+      || !/\.(png|jpe?g)$/.test(capture.screenshot ?? '') || !/\.json$/.test(capture.accessibility ?? '')) reject();
     const pixels = readFileSync(evidence(capture.screenshot));
     if (pixels.length <= 32 || !(pixels.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) || pixels.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')))) reject();
     const ax = JSON.stringify(readJson(evidence(capture.accessibility)));
-    if (!ax.includes(contract.profile.profileId) || (name === 'prompt' && (!ax.includes(`Close Mythra Code? — Release QA ${contract.profile.profileId}`) || !ax.includes('Keep open')))) reject();
+    const dialogTitle = `Close Mythra Code? — Release QA ${contract.profile.profileId}`;
+    if (!ax.includes(`Mythra Code — Release QA ${contract.profile.profileId}`)
+      || (name === 'prompt' && (!ax.includes(dialogTitle) || !ax.includes('Keep open')))
+      || (name === 'recovery' && ax.includes(dialogTitle))) reject();
+    captures.push({ pixels, ax });
   }
   if (proof.prompt.screenshot === proof.recovery.screenshot || proof.prompt.accessibility === proof.recovery.accessibility) reject();
+  if (captures[0].pixels.equals(captures[1].pixels) || captures[0].ax === captures[1].ax) reject();
   const run = events.filter((e) => e.pid === proof.pid && e.runId === proof.runId);
   const once = (kind) => { const matches = run.filter((e) => e.kind === kind); if (matches.length !== 1) reject(); return matches[0]; };
   const opened = once('profile-open'), rendered = once('render-ready');
@@ -150,7 +165,7 @@ function acceptedCloseFault(events, result, contract, stateRoot, primaryEntry) {
   const exit = once('exit'), reopened = events.find((e) => e.pid === primaryEntry.pid && e.runId === primaryEntry.runId && e.kind === 'profile-open');
   const ordered = [opened, rendered, armed, applied, failed[0], prompt, answer, cancelled, saved[0], exit, reopened].map((e) => events.indexOf(e));
   if (ordered.some((position, index) => position < 0 || (index > 0 && position <= ordered[index - 1]))) reject();
-  return failed[0];
+  return { failure: failed[0], prompt };
 }
 
 export function validateNativeResult(result, contract, stateRoot, { executablePath = (entry) => containedPath(stateRoot, relative(stateRoot, entry.executablePath)) } = {}) {
@@ -175,17 +190,20 @@ export function validateNativeResult(result, contract, stateRoot, { executablePa
     if (!eventsEvidence) throw new Error('Native result has no persistent app event evidence');
     const events = readFileSync(containedPath(stateRoot, eventsEvidence.path), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     const profileEvents = events.filter((e) => e.schemaVersion === 1 && e.profileId === contract.profile.profileId);
-    const expectedFailure = acceptedCloseFault(profileEvents, result, contract, stateRoot, entry);
+    const expectedFault = acceptedCloseFault(profileEvents, result, contract, stateRoot, entry);
     // Only the declared one-shot fault with complete native recovery evidence
     // is expected. All other failed events, including other runs, still fail.
     if (profileEvents.some((e) => ['render-failed', 'setup-failed', 'renderer-storage-failed', 'control-rejected'].includes(e.kind)
-      || (e.kind === 'close-finish' && e.details?.result === 'failed' && e !== expectedFailure))) throw new Error('Native app recorded a failure unsupported by the maintained recipe');
+      || (e.kind === 'close-finish' && e.details?.result === 'failed' && e !== expectedFault?.failure))) throw new Error('Native app recorded a failure unsupported by the maintained recipe');
+    if (profileEvents.some((e) => e.kind === 'close-prompt' && e !== expectedFault?.prompt)) throw new Error('Native app recorded an undeclared close prompt');
     const primary = profileEvents.filter((e) => e.pid === entry.pid && e.runId === entry.runId);
     for (const kind of ['profile-open', 'window-constructed', 'renderer-storage', 'render-ready', 'close-finish', 'exit']) if (!primary.some((e) => e.kind === kind)) throw new Error(`Native profile identity or ${kind} event is absent`);
     const opened = primary.find((e) => e.kind === 'profile-open');
     if (opened.details?.contractVersion !== 1 || opened.details.providers !== 'blocked' || opened.details.persistentWebview !== true) throw new Error('Running candidate did not confirm supported profile isolation');
     if (!primary.some((e) => e.kind === 'renderer-storage' && e.details?.current === contract.profile.profileId
       && (e.details.previous === null || e.details.previous === contract.profile.profileId))) throw new Error('Native renderer did not confirm this isolated persistent store');
+    if (expectedFault && !primary.some((e) => e.kind === 'renderer-storage' && e.details?.current === contract.profile.profileId
+      && e.details.previous === contract.profile.profileId)) throw new Error('Healthy reopen did not retain the isolated persistent store');
     const savedClose = primary.findIndex((e) => e.kind === 'close-finish' && e.details?.accepted === true && e.details.result === 'saved');
     if (savedClose < 0 || primary.findIndex((e) => e.kind === 'exit') <= savedClose) throw new Error('Native primary run did not finish saved normal close before exit');
     for (const upgrade of expected.upgradeCases ?? []) {
@@ -347,6 +365,7 @@ export async function runNativeCheck({ root, stateRoot, plan, check }) {
   const directory = resolve(stateRoot, 'workers', `native-${check.platform}`); mkdirSync(directory, { recursive: true });
   const contractPath = join(directory, 'contract.json');
   const contract = existsSync(contractPath) ? readJson(contractPath) : createNativeContract({ root, stateRoot, plan, platform: check.platform });
+  assertNativeContract(contract);
   if (objectHash(contract.sourceCapability) !== objectHash(sourceCapability)) throw new Error('Native source capability contract changed');
   if (contract.planHash !== plan.planHash || contract.packageSha256 !== readJson(receiptPath(stateRoot, `build:${check.platform}`)).details.packageSha256) throw new Error('Native worker contract became stale');
   atomicJson(contractPath, contract);

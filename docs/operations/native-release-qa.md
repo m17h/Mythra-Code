@@ -147,8 +147,8 @@ Retain the complete event stream and a `close-failure.json` observation:
   "pid": 123,
   "runId": "INJECTED-RUN-UUID",
   "requestId": 1,
-  "prompt": {"screenshot": "prompt.png", "accessibility": "prompt-ax.json"},
-  "recovery": {"screenshot": "recovery.png", "accessibility": "recovery-ax.json"}
+  "prompt": {"pid": 123, "runId": "INJECTED-RUN-UUID", "phase": "prompt", "screenshot": "prompt.png", "accessibility": "prompt-ax.json"},
+  "recovery": {"pid": 123, "runId": "INJECTED-RUN-UUID", "phase": "recovery", "screenshot": "recovery.png", "accessibility": "recovery-ax.json"}
 }
 ```
 
@@ -158,8 +158,13 @@ at this JSON. The validator requires the declared nonce, exactly one arm/apply
 trace, matching failed request, real prompt/cancellation events, a successful
 subsequent close, exit and later healthy primary launch. Other setup, render,
 storage or close failures remain failures even in a different run of the same
-profile. Screenshots/AX and state checks must be real observations; event records
-alone do not prove visible behavior.
+profile. Every additional native close prompt is unexpected, including timeout
+recovery in the reopened run. Capture records identify the injected PID/run and
+phase; both AX captures identify the owned parent window, and recovery must no
+longer show the warning. Distinct filenames with identical pixels or AX do not
+prove recovery. The healthy reopened renderer must report the existing profile
+UUID as its previous store marker. Screenshots/AX and state checks must be real
+observations; event records alone do not prove visible behavior.
 
 This tests the native guard's SaveFailed prompt and cancellation/recovery path.
 It does not simulate disk-write failures, native deadlines or renderer crashes.
