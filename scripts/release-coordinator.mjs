@@ -1,3 +1,4 @@
+import { revalidatePlanCoverage } from './release-upgrade-coverage.mjs';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
@@ -200,6 +201,9 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
   assertStateLocation(root, stateRoot);
   const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
   assertCheckout(root, plan);
+  // Remote native workers consume the frozen selection only. The designated
+  // publisher reopens historical evidence before any orchestration/publication.
+  if (hostname() === plan.publisherHost) revalidatePlanCoverage({ root, plan });
   if (plan.reviewRequired?.length) throw new Error('Resolve semantic classification before running the release');
   const activePath = resolve(stateRoot, 'active-stage.json');
   if (existsSync(activePath)) {

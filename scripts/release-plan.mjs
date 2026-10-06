@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPlan, atomicJson, objectHash, PLATFORMS, SHA } from './release-state.mjs';
 
+import { coversHistoricalUpgrade, historicalCoverageReason, isVerifiedUpgradeCoverage, resolveUpgradeCoverage } from './release-upgrade-coverage.mjs';
+
 export const POLICY_VERSION = 1;
 const boundaries = {
   'native-startup': /^(index\.html|vite\.config\.ts|public\/bootstrap\.|src\/(main\.tsx|lib\/(startApplication|startup|startupData)\.)|src-tauri\/src\/(startup_guard)\.rs|src-tauri\/tauri[^/]*\.json|scripts\/(build-release|prepare-release)\.mjs|Windows\/build\.ps1)/,
@@ -99,10 +101,12 @@ export function changedSource(root, from, to) {
   });
 }
 
-export function createPlan({ commit, version, baseline, changedFiles, predecessors = [], knownIssues = [], overrides = [], policyHash, classifications = [], boundaryHints = [], publisherHost = hostname() }) {
+export function createPlan({ commit, version, baseline, changedFiles, predecessors = [], knownIssues = [], overrides = [], policyHash, classifications = [], boundaryHints = [], publisherHost = hostname(), upgradeCoverage = [] }) {
   if (!SHA.test(commit) || !SHA.test(baseline?.commit) || !baseline.tag || !baseline.reason || !policyHash) throw new Error('Plan requires exact source, accepted public baseline and policy fingerprint');
   if (!validFiles(changedFiles)) throw new Error('Invalid cumulative diff');
   for (const predecessor of predecessors) if (!SHA.test(predecessor.commit) || !predecessor.tag || !predecessor.reason || !validFiles(predecessor.changedFiles)) throw new Error('Each shipped predecessor needs commit, tag, reason and cumulative diff');
+  if (!Array.isArray(upgradeCoverage) || upgradeCoverage.some((d) => !isVerifiedUpgradeCoverage(d))) throw new Error('Upgrade coverage must be resolved from accepted coordinator evidence');
+  const scope = { upgradeCoverage };
   const allowedIds = Object.keys(boundaries);
   for (const item of [...knownIssues, ...overrides, ...boundaryHints, ...predecessors.flatMap((p) => p.boundaryHints ?? [])]) {
     if (!allowedIds.includes(item.check) || !item.reason || (item.platform && !PLATFORMS.includes(item.platform))) throw new Error('Invalid native-check addition');
@@ -111,7 +115,7 @@ export function createPlan({ commit, version, baseline, changedFiles, predecesso
     for (const c of scope.classifications ?? []) if (!scope.changedFiles.includes(c.path) || !c.reason || !c.evidence || !Array.isArray(c.boundaries) || c.boundaries.some((b) => !allowedIds.includes(b))) throw new Error('Invalid semantic classification');
   }
   const predecessorAdditions = predecessors.flatMap((p) => [
-    ...(p.boundaryHints ?? []), ...(p.classifications ?? []).flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${p.tag}:${c.path}: ${c.reason}` }))),
+    ...(p.boundaryHints ?? []).map((i) => ({ ...i, predecessor: p })), ...(p.classifications ?? []).flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${p.tag}:${c.path}: ${c.reason}`, predecessor: p }))),
   ]);
   const checks = [{ id: 'ci', kind: 'ci', required: true, reason: 'Complete Verify gate for exact merged source', dependsOn: [] }];
   for (const platform of PLATFORMS) {
@@ -121,11 +125,12 @@ export function createPlan({ commit, version, baseline, changedFiles, predecesso
       const current = changedFiles.filter((f) => !isTest(f) && appliesToPlatform(f, platform) && pattern.test(f));
       // Only actual shipped predecessor differences add upgrade risk. Intermediate
       // never-shipped/reverted commits are review context, not automatic gates.
-      const previous = predecessors.flatMap((p) => p.changedFiles.filter((f) => !isTest(f) && appliesToPlatform(f, platform) && pattern.test(f)).map((f) => `${p.tag}:${f}`));
-      const additions = [...knownIssues, ...overrides, ...boundaryHints, ...predecessorAdditions, ...classifications.flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${c.path}: ${c.reason}` })))].filter((i) => i.check === id && (!i.platform || i.platform === platform));
+      const previous = predecessors.filter((p) => !coversHistoricalUpgrade(scope, p, id, platform)).flatMap((p) => p.changedFiles.filter((f) => !isTest(f) && appliesToPlatform(f, platform) && pattern.test(f)).map((f) => `${p.tag}:${f}`));
+      const additions = [...knownIssues, ...overrides, ...boundaryHints, ...predecessorAdditions, ...classifications.flatMap((c) => c.boundaries.map((check) => ({ check, reason: `${c.path}: ${c.reason}` })))].filter((i) => i.check === id && (!i.platform || i.platform === platform) && (!i.predecessor || !coversHistoricalUpgrade(scope, i.predecessor, id, platform)));
       const triggers = [...current, ...previous, ...additions.map((a) => a.reason)];
       checks.push({ id: `${id}:${platform}`, kind: 'native', platform, required: triggers.length > 0,
-        reason: triggers.length ? triggers.join('; ') : 'Unaffected cumulative source and shipped upgrade predecessors', dependsOn: [`audit:${platform}`] });
+        reason: triggers.length ? triggers.join('; ') : historicalCoverageReason(upgradeCoverage, id, platform),
+        ...(upgradeCoverage.some((d) => d.reusable && d.check === id && d.platform === platform) ? { historicalCoverage: upgradeCoverage.filter((d) => d.reusable && d.check === id && d.platform === platform).map((d) => d.proofHash) } : {}), dependsOn: [`audit:${platform}`] });
     }
   }
   const nativePrerequisites = checks.filter((c) => c.required && (c.kind === 'native' || c.kind === 'audit')).map((c) => c.id);
@@ -135,11 +140,11 @@ export function createPlan({ commit, version, baseline, changedFiles, predecesso
   const reviewRequired = [...changedFiles.filter((f) => needsReview(f, classifications)),
     ...predecessors.flatMap((p) => p.changedFiles.filter((f) => needsReview(f, p.classifications ?? [])).map((f) => `${p.tag}:${f}`))];
   const payload = { schemaVersion: 1, policyVersion: POLICY_VERSION, policyHash, repository: 'm17h/Mythra-Code', publisherHost, commit, version,
-    baseline, predecessors, changedFiles: [...changedFiles].sort(), knownIssues, overrides, classifications, boundaryHints, reviewRequired, checks };
+    baseline, predecessors, ...(upgradeCoverage.length ? { upgradeCoverage } : {}), changedFiles: [...changedFiles].sort(), knownIssues, overrides, classifications, boundaryHints, reviewRequired, checks };
   return assertPlan({ ...payload, planHash: objectHash(payload) });
 }
 
-export function planFromCheckout(root, { baseline, predecessors = [], knownIssues = [], overrides = [], classifications = [], reviewNotes = '' }, { execute = execFileSync } = {}) {
+export function planFromCheckout(root, { baseline, predecessors = [], knownIssues = [], overrides = [], classifications = [], reviewNotes = '', upgradeCoverage = [] }, { execute = execFileSync } = {}) {
   const commit = git(root, ['rev-parse', 'HEAD']);
   if (git(root, ['status', '--porcelain'])) throw new Error('Freeze a clean release checkout before planning');
   const origin = git(root, ['remote', 'get-url', 'origin']);
@@ -149,18 +154,24 @@ export function planFromCheckout(root, { baseline, predecessors = [], knownIssue
   git(root, ['merge-base', '--is-ancestor', baselineCommit, commit]);
   const publicEvidence = verifyPublicBaseline({ root, baseline: { ...baseline, commit: baselineCommit }, predecessors, execute });
   const packageInfo = JSON.parse(git(root, ['show', `${commit}:package.json`]));
-  const policyFiles = ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs'];
+  const policyFiles = ['AGENTS.md', '.github/workflows/verify.yml', 'scripts/verify-ci.mjs', 'scripts/release-plan.mjs', 'scripts/release-state.mjs', 'scripts/release-upgrade-coverage.mjs'];
   const policyHash = objectHash(policyFiles.map((file) => ({ file, contents: git(root, ['show', `${commit}:${file}`]) })));
   const boundaryHints = nativeIntegrationHints(root, baselineCommit, commit);
+  const preparedPredecessors = predecessors.map((p) => {
+    const sha = git(root, ['rev-parse', `${p.tag}^{commit}`]);
+    if (p.commit && p.commit !== sha) throw new Error(`Predecessor tag moved: ${p.tag}`);
+    if (p.tag === publicEvidence.latestTag && sha !== publicEvidence.latestCommit) throw new Error(`Public predecessor tag differs from the local source tag: ${p.tag}`);
+    return { ...p, commit: sha, changedFiles: changedSource(root, sha, commit), boundaryHints: nativeIntegrationHints(root, sha, commit, p.tag) };
+  });
+  const coverage = resolveUpgradeCoverage({ root, proofPaths: upgradeCoverage, baseline: { ...baseline, commit: baselineCommit }, commit, predecessors: preparedPredecessors, execute });
+  for (const p of preparedPredecessors) {
+    const inherited = coverage.filter((d) => d.reusable && d.predecessor.tag === p.tag).flatMap((d) => d.historicalClassifications);
+    const classifications = [...(p.classifications ?? [])];
+    for (const c of inherited) if (p.changedFiles.includes(c.path) && !classifications.some((existing) => existing.path === c.path)) classifications.push(c);
+    p.classifications = classifications;
+  }
   const plan = createPlan({ commit, version: packageInfo.version, baseline: { ...baseline, commit: baselineCommit, publicEvidence },
-    changedFiles: changedSource(root, baselineCommit, commit),
-    predecessors: predecessors.map((p) => {
-      const sha = git(root, ['rev-parse', `${p.tag}^{commit}`]);
-      if (p.commit && p.commit !== sha) throw new Error(`Predecessor tag moved: ${p.tag}`);
-      if (p.tag === publicEvidence.latestTag && sha !== publicEvidence.latestCommit) throw new Error(`Public predecessor tag differs from the local source tag: ${p.tag}`);
-      return { ...p, commit: sha, changedFiles: changedSource(root, sha, commit),
-        boundaryHints: nativeIntegrationHints(root, sha, commit, p.tag) };
-    }),
+    changedFiles: changedSource(root, baselineCommit, commit), predecessors: preparedPredecessors, upgradeCoverage: coverage,
     knownIssues, overrides, classifications, boundaryHints, policyHash });
   if (plan.reviewRequired.length) throw new Error(`Release classification requires review notes for: ${plan.reviewRequired.join(', ')}`);
   const { planHash: _hash, ...payload } = plan;

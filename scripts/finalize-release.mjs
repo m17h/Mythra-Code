@@ -1,3 +1,4 @@
+import { revalidatePlanCoverage } from './release-upgrade-coverage.mjs';
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -43,6 +44,7 @@ if (publisherOwner) {
   publisherOwner = publisherLease.token;
   process.once('exit', publisherLease);
 }
+revalidatePlanCoverage({ root, plan });
 const draftReceipt = assertReadyToPublish(plan, stateRoot);
 
 checked("gh", ["auth", "status"], "GitHub authentication check");
