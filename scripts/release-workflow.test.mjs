@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPlan, changedSource } from './release-plan.mjs';
 import { acquireLease, assertPlan, atomicJson, containedPath, fileHash, leaseStatus, objectHash, processIdentity, readJson, reconcile, saveReceipt } from './release-state.mjs';
+import * as releaseState from './release-state.mjs';
 import { acquirePublisherLease, assertPublisherOwner, assertReadyToPublish, assertStateLocation, createReleaseWorkspace, markPublisherMutation, prepareMacBuildDependencies, runRelease } from './release-coordinator.mjs';
 import { assertHostedEvidence, verifyHostedEvidence } from './release-evidence.mjs';
 import { assetNames, assertAssetMetadata, verifyMinisign } from './release-audit.mjs';
@@ -256,12 +257,22 @@ test('worker handoffs merge matching evidence once and reject changed bytes or a
   saveReceipt(source, p, receipt(p, source, 'build:windows-x86_64'));
   saveReceipt(source, p, receipt(p, source, 'audit:windows-x86_64'));
   expect(exportHandoff(source, transfer, 'windows-x86_64').checks.length).toBe(3);
-  expect(mergeHandoff(transfer, destination).imported.length).toBe(3);
-  expect(mergeHandoff(transfer, destination).imported.length).toBe(3);
-  writeFileSync(join(transfer, 'build_windows-x86_64.txt'), 'tampered');
-  expect(() => mergeHandoff(transfer, destination)).toThrow(/invalid stage/);
-  atomicJson(join(transfer, 'plan.json'), plan({ version: '1.2.4' }));
-  expect(() => mergeHandoff(transfer, destination)).toThrow(/another release/);
+  // This content/idempotency fixture keeps real file leasing while isolating
+  // the OS process lookup; process identity and lease recovery have own tests.
+  const realAcquireLease = releaseState.acquireLease;
+  const lease = vi.spyOn(releaseState, 'acquireLease').mockImplementation((root, options) => realAcquireLease(root, { ...options, identity: () => 'handoff-fixture' }));
+  try {
+    expect(mergeHandoff(transfer, destination).imported.length).toBe(3);
+    expect(existsSync(join(destination, 'lease.json'))).toBe(false);
+    expect(mergeHandoff(transfer, destination).imported.length).toBe(3);
+    expect(existsSync(join(destination, 'lease.json'))).toBe(false);
+    writeFileSync(join(transfer, 'build_windows-x86_64.txt'), 'tampered');
+    expect(() => mergeHandoff(transfer, destination)).toThrow(/invalid stage/);
+    atomicJson(join(transfer, 'plan.json'), plan({ version: '1.2.4' }));
+    expect(() => mergeHandoff(transfer, destination)).toThrow(/another release/);
+    expect(lease).toHaveBeenCalledTimes(2);
+    expect(lease.mock.calls.map(([root]) => root)).toEqual([destination, destination]);
+  } finally { lease.mockRestore(); }
 });
 
 test('version-only metadata is excluded while dependency changes remain in release scope', () => {

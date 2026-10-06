@@ -11,6 +11,7 @@ import { assertPlan, atomicJson, digest, fileHash, objectHash, readJson, receipt
 import { exportUpgradeCoverage, fingerprintUpgradeInputs, revalidatePlanCoverage, resolveUpgradeCoverage } from './release-upgrade-coverage.mjs';
 import { syntheticGh, syntheticGit, syntheticPassedState } from './release-upgrade-coverage.fixture.mjs';
 import { captureUpgradeSnapshot, sourceUpgradeSchema, validateUpgradeObservation } from './release-upgrade-snapshot.mjs';
+import { assertNativeContract, createNativeContract, validateNativeObservations, validateNativeResult } from './release-native-check.mjs';
 
 // Load this Node 22 built-in at runtime; Vite's client transformer does not
 // recognize node:sqlite as external on the hosted Node 22 toolchain.
@@ -78,6 +79,26 @@ describe('accepted historical native upgrade coverage', { timeout: process.platf
     expect(() => revalidatePlanCoverage({ root: f.root, plan, execute: f.gh.execute })).not.toThrow();
     expect(f.gh.calls.some((args) => args[1].endsWith('/releases/tags/v1.2.3'))).toBe(true);
     expect(f.gh.calls.some((args) => args[1].endsWith('/git/ref/tags/v1.2.2'))).toBe(true);
+  });
+
+  test('hashed legacy Windows fixtures cannot satisfy a new cleanup contract without its proof', () => {
+    const f = fixture(), directory = join(f.stateRoot, 'native-workers/windows-x86_64');
+    const legacy = readJson(join(directory, 'contract.json')), result = readJson(join(directory, 'result.json'));
+    expect(legacy.syntheticFixture).toBe('historical-legacy-windows-native-schema');
+    expect(legacy).not.toHaveProperty('windowsCleanup');
+    expect(result.reason).toContain('never current native acceptance');
+    expect(() => assertNativeContract(legacy)).not.toThrow();
+    expect(() => validateNativeResult(result, legacy, f.stateRoot)).not.toThrow();
+
+    const generated = createNativeContract({ root: f.root, stateRoot: f.stateRoot, plan: f.acceptedPlan, platform: 'windows-x86_64' });
+    expect(generated.windowsCleanup).toEqual({ version: 1, lifecycle: 'coordinator-owned-success-only' });
+    // Bind the current contract to the same synthetic observations so rejection
+    // proves missing cleanup evidence, rather than mismatched profile identity.
+    const { contractHash: _hash, ...body } = { ...generated, profile: legacy.profile };
+    const current = { ...body, contractHash: objectHash(body) };
+    expect(() => assertNativeContract(current)).not.toThrow();
+    expect(() => validateNativeObservations(result, current, f.stateRoot)).not.toThrow();
+    expect(() => validateNativeResult(result, current, f.stateRoot)).toThrow(/cleanup-receipt\.json/);
   });
 
   test.each(['knownIssues', 'overrides', 'boundaryHints'])('current %s cannot masquerade as a covered predecessor addition', (field) => {

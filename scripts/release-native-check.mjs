@@ -8,6 +8,8 @@ import { assertPlan, atomicJson, containedPath, digest, fileHash, HASH, objectHa
 
 import { sourceUpgradeSchema, validateUpgradeObservation } from './release-upgrade-snapshot.mjs';
 
+import { windowsCleanupContract, provisionWindowsQaProfile, cleanupSuccessfulWindowsQaProfile, validateWindowsCleanupReceipt, verifyWindowsCleanupLive } from './release-windows-qa-cleanup.mjs';
+
 const observations = {
   'native-startup': ['exact-package-identity', 'visible-native-shell', 'affected-startup-replay'],
   'native-close': ['healthy-save-close-reopen', 'affected-close-failure', 'owned-processes-exited'],
@@ -51,6 +53,7 @@ export function createNativeContract({ root, stateRoot, plan, platform }) {
     packagePath: build.details.packagePath, packageSha256: build.details.packageSha256,
     executableSha256: audit.details.executableSha256,
     sourceCapability,
+    ...(windowsCleanupContract(platform) ? { windowsCleanup: windowsCleanupContract(platform) } : {}),
     ...(selected.some((c) => c.id.startsWith('native-close:')) ? { closeFailureScenario: {
       schemaVersion: 1, nonce: randomUUID(), kind: 'save-failure-once', cause: 'override-saved-result',
     } } : {}),
@@ -70,7 +73,7 @@ The human already authorized this release and bounded native QA. Read the exact 
 
 First preflight your actual supported computer-use capability. On Windows use the installed Windows/Sky skill and its normal review controls. On macOS use the available supported CUA surface. Inventory and capture the native surface through that tool. If unavailable or denied, return blocked with exact tool/capability evidence; do not invent a shell/UI fallback or treat a normal automatic review as rejection. Verify your actual model/high reasoning and danger-full-access/approval_policy never from session metadata without printing private context. This worker is persisted; no child agents.
 
-Read the frozen maintained recipe ${contract.sourceCapability?.recipePath}, and execute only its selected cases. The machine has already checked the exact source QA contract before launching you. Use supported MYTHRA_RELEASE_QA_ROOT isolation ONLY if the candidate actually implements it. Root ${contract.profile.root}; marker .mythra-release-qa.json must be {schemaVersion:1,purpose:"mythra-release-qa",profileId:"${contract.profile.profileId}"}. On Mac root0700/marker0600; on Windows protect ACL to current owner, SYSTEM, Administrators as required by the implementation. Never switch, junction, symlink or rename the user's real roots. The app must emit matching profile-open identity before acceptance. Verify provider/auth access is disabled by this supported profile.
+Read the frozen maintained recipe ${contract.sourceCapability?.recipePath}, and execute only its selected cases. The machine has already checked the exact source QA contract before launching you. Use supported MYTHRA_RELEASE_QA_ROOT isolation ONLY if the candidate actually implements it. Root ${contract.profile.root}; marker .mythra-release-qa.json must be {schemaVersion:1,purpose:"mythra-release-qa",profileId:"${contract.profile.profileId}"}. On Mac root0700/marker0600. For a Windows contract with windowsCleanup, the coordinator has already provisioned the root and marker: verify them, never recreate/repair/adopt a root. Other Windows contracts retain their frozen provisioning recipe. The implementation permits only its exact reviewed Edge Stable network capability and raw ACE shapes in the three documented WebView browser-storage subtrees; this capability is channel-wide, not QA-profile-specific. Never add that grant yourself or normalize runtime ACLs to pass validation. Never switch, junction, symlink or rename the user's real roots. The app must emit matching profile-open identity before acceptance. Verify provider/auth access is disabled by this supported profile.
 
 Use the final DMG app or NSIS payload verified by the integrity audit. Retain the extracted app/executable under the release state directory after cleanup, so its bytes can be independently rehashed. Resolve executable image path/hash/PID/start time and match version ${contract.version}, package hash ${contract.packageSha256}, foreground window and accessibility identity BEFORE interacting. The actual AX title MUST contain the FULL profileId ${contract.profile.profileId} in "Mythra Code — Release QA ${contract.profile.profileId}"; an app label, bundle path or launcher result alone does not establish this. If AX resolves the user's installed app, do not click/type there. A launcher returning an older registered copy is a failed launch: close only that explicitly owned idle test instance if authorized, and use the supported exact-path launcher; do not repeat the same failed method. A different directory does not isolate an NSIS global process-kill action: installer cases require a supported isolated OS environment, otherwise return blocked.
 
@@ -78,11 +81,11 @@ Run exactly the selected contract checks, sharing healthy startup/save/close wor
 
 For each upgradeCases entry relevant to your selected case, retain the exact predecessor tag/commit fixture before launch and after the accepted replay using the maintained recipe's historical-coverage format. An upgrade observation is optional for ordinary package acceptance; report it only when that exact predecessor replay actually occurred. Never turn a fresh profile or marker-only folder into historical coverage. Missing upgrade proof means future releases must retain their native upgrade check.
 
-Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, control-ready, renderer-storage, render-ready, render-failed, close-finish, exit). Wait for matching control-ready for this exact launch BEFORE writing any control request; profile-open alone is too early. Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. On Windows remove the owned disposable root only after process exit. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
+Supported events.jsonl records schemaVersion/profileId/pid/runId/kind (profile-open, window-constructed, control-ready, renderer-storage, render-ready, render-failed, close-finish, exit). Wait for matching control-ready for this exact launch BEFORE writing any control request; profile-open alone is too early. Normal close may use actual UI or the supported atomic request.json {schemaVersion:1,profileId,nonce:UUIDv4,action:"close"}; it invokes the production close guard. Remove an old request before reopening. Retain the exact runId for each observed candidate process. These events complement real pixels/AX, never replace them. Final cleanup on Mac requires normal owned-process exit followed by a separate headless launch of the SAME candidate with MYTHRA_RELEASE_QA_ROOT and the documented --release-qa-dispose-store argument. Require successful store-absence verification; an in-process deferred disposal is not cleanup. For prospective Windows contracts (windowsCleanup version 1), NEVER remove the profile yourself: after every launch reaches control-ready, run: node scripts/release-windows-qa-cleanup.mjs capture-writers "${stateRoot}" PID RETAINED_EXECUTABLE to capture the live host and persistent WebView identities. Capture every launch, including the injected run and healthy reopen, before closing it. Copy the exact processStart from that capture into results. After successful selected observations and normal exits, return status passed with cleanupComplete:false; the coordinator validates all observations, preserves the evidence, explicitly permanently removes this one newly owned successful profile, independently verifies absence/writer exit, and finalizes cleanup. Any failed/denied cleanup is retained without fallback. Legacy Windows contracts keep their frozen recipe. Copy native events to permanent native-events.jsonl evidence before deleting the owned root. Never delete the extracted executable or evidence.
 
 If closeFailureScenario is present, execute the maintained one-shot save-failure recipe with its exact nonce and the first launch's runId. Capture the actual native failure dialog via CUA, choose Keep open, verify the window and saved state, then close normally. Reopen the SAME candidate/root and use this later completely healthy run as the primary PID/runId in EVERY check result. Store the typed close-failure.json plus prompt/recovery pixels and AX as specified by the recipe. This injects a saved-result failure at the native guard boundary; it does not prove actual disk failure, renderer crash or timeout behavior. Unexpected failures remain failed. Never use the injected run as the healthy primary.
 
-Save actual screenshots, accessibility.json, process identity and relevant data/exit evidence under ${stateRoot}. Every result must include each observation ID listed by the contract, with a concrete evidence path. Record each evidence SHA256. On completion close only the owned candidate normally, confirm its host and descendants exited, and record cleanupComplete/restorationComplete (restoration means no real roots were touched). A native failure is failed; missing capability is blocked. Preserve evidence and leave publication untouched.
+Save actual screenshots, accessibility.json, process identity and relevant data/exit evidence under ${stateRoot}. Every result must include each observation ID listed by the contract, with a concrete evidence path. Record each evidence SHA256. On completion close only the owned candidate normally, confirm its host and descendants exited, and record cleanupComplete/restorationComplete (restoration means no real roots were touched; prospective Windows workers MUST leave cleanupComplete:false for the coordinator). A native failure is failed; missing capability is blocked. Preserve evidence and leave publication untouched.
 
 Continue routine already-authorized actions without asking the user again. For UI ambiguity, refresh once, inspect current state, and use the supported alternate once; if still unresolved return a precise blocked result. A real control rejection is not permission to bypass controls. Do not produce a generic passed JSON. Return the required structured result only after actual acceptance checks, with native executable/PID/window, session capability and evidence. Do not claim repair of native/GPU deadlocks beyond the changed behavior. Deadline: 25 minutes; finish with a terminal passed/failed/blocked result. Do not wait indefinitely for user input.`;
 }
@@ -168,9 +171,9 @@ function acceptedCloseFault(events, result, contract, stateRoot, primaryEntry) {
   return { failure: failed[0], prompt };
 }
 
-export function validateNativeResult(result, contract, stateRoot, { executablePath = (entry) => containedPath(stateRoot, relative(stateRoot, entry.executablePath)) } = {}) {
+export function validateNativeObservations(result, contract, stateRoot, { executablePath = (entry) => containedPath(stateRoot, relative(stateRoot, entry.executablePath)) } = {}) {
   if (result.status !== 'passed') throw new Error(`Native worker ${result.status}: ${result.reason}`);
-  if (!result.capability?.verified || !/cua|sky|computer.use/i.test(result.capability.tool) || !result.cleanupComplete || !result.restorationComplete) throw new Error('Native worker lacks verified computer use or completed cleanup');
+  if (!result.capability?.verified || !/cua|sky|computer.use/i.test(result.capability.tool) || !result.restorationComplete) throw new Error('Native worker lacks verified computer use or completed restoration');
   if (objectHash(result.results?.map((r) => r.checkId).sort()) !== objectHash(contract.checks.map((c) => c.id).sort())) throw new Error('Native worker omitted or duplicated required checks');
   const capabilityEvidence = readJson(containedPath(stateRoot, result.capability.evidence));
   if (!capabilityEvidence || typeof capabilityEvidence !== 'object' || !Object.keys(capabilityEvidence).length) throw new Error('Computer-use capability evidence is empty');
@@ -220,6 +223,13 @@ export function validateNativeResult(result, contract, stateRoot, { executablePa
         && e.details?.verifiedAbsent === true && e.details.webviewStoreId === opened.details.webviewStoreId)) throw new Error('Owned macOS WebView store cleanup was not verified');
     }
   }
+  return result;
+}
+
+export function validateNativeResult(result, contract, stateRoot, options = {}) {
+  validateNativeObservations(result, contract, stateRoot, options);
+  validateWindowsCleanupReceipt(result, contract, stateRoot);
+  if (!result.cleanupComplete) throw new Error('Native worker lacks completed cleanup');
   return result;
 }
 
@@ -378,6 +388,7 @@ export async function runNativeCheck({ root, stateRoot, plan, check }) {
     status = ['result-ready', 'passed'].includes(previous.status) ? previous : await collectNativeWorker(statusPath); // no blind replacement
   } else {
     if (existsSync(resultPath)) throw new Error('Native result exists without a persisted worker owner; inspect before adoption');
+    if (contract.windowsCleanup) provisionWindowsQaProfile(contract, stateRoot);
     const binary = resolveCodexBinary();
     execFileSync(binary, ['exec', '--help'], { cwd: root, stdio: 'ignore', timeout: 10_000 });
     const args = ['exec', '--model', 'gpt-6.1-sol', '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"', '-c', 'model_reasoning_effort="high"',
@@ -387,11 +398,23 @@ export async function runNativeCheck({ root, stateRoot, plan, check }) {
   }
   if (!status.sessionId) throw new Error('Native result has no persisted worker session identity');
   const runtime = effectiveSession(status.sessionId);
-  const result = validateNativeResult(readJson(resultPath), contract, stateRoot);
+  let result = readJson(resultPath);
+  if (contract.windowsCleanup) {
+    validateNativeObservations(result, contract, stateRoot);
+    const workerResultPath = join(directory, 'worker-result.json');
+    if (!existsSync(workerResultPath)) writeFileSync(workerResultPath, `${JSON.stringify(result, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    const cleanupReceiptPath = join(directory, 'cleanup-receipt.json');
+    if (!existsSync(cleanupReceiptPath)) cleanupSuccessfulWindowsQaProfile(result, contract, stateRoot);
+    result = { ...result, cleanupComplete: true };
+    validateWindowsCleanupReceipt(result, contract, stateRoot);
+    verifyWindowsCleanupLive(contract, stateRoot, result.results[0].executablePath);
+    atomicJson(resultPath, result);
+  }
+  result = validateNativeResult(result, contract, stateRoot);
   const startedAt = status.startedAt, completedAt = status.completedAt;
   const receipts = result.results.map((r) => ({ schemaVersion: 1, checkId: r.checkId, status: 'passed', planHash: plan.planHash, commit: plan.commit,
     platform: check.platform, packageSha256: contract.packageSha256, checkerVersion: 'native-check-v1', startedAt, completedAt,
-    evidence: [...r.evidence, ...[r.executablePath, contractPath, resultPath, containedPath(stateRoot, result.capability.evidence)].map((path) => ({ path: relative(stateRoot, path).replaceAll('\\', '/'), sha256: fileHash(path) }))],
+    evidence: [...r.evidence, ...[r.executablePath, contractPath, resultPath, containedPath(stateRoot, result.capability.evidence), ...(contract.windowsCleanup ? ['provisioning.json', 'writers.json', 'cleanup-intent.json', 'cleanup-receipt.json', 'worker-result.json'].map((name) => join(directory, name)) : [])].map((path) => ({ path: relative(stateRoot, path).replaceAll('\\', '/'), sha256: fileHash(path) }))],
     details: { ...r, portableExecutablePath: relative(stateRoot, r.executablePath).replaceAll('\\', '/'), workerContractHash: contract.contractHash, sessionId: status.sessionId, runtime, cleanupComplete: result.cleanupComplete, restorationComplete: result.restorationComplete } }));
   for (const receipt of receipts) saveReceipt(stateRoot, plan, receipt);
   atomicJson(statusPath, { ...status, status: 'passed', completedAt, contractHash: contract.contractHash });
