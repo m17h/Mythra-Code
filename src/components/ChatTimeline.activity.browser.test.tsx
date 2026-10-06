@@ -147,7 +147,7 @@ describe("compact activity in the real browser", () => {
     expect(main().textContent).not.toContain(progress.text);
     expect(screen.getByRole("dialog", { name: "Activity" })).toBe(dialog);
     expect(dialog.open).toBe(true);
-    expect(within(dialog).getByText("Work completed")).toBeVisible();
+    await waitFor(() => expect(within(dialog).getByText("Work completed")).toBeVisible());
     expect(main().querySelectorAll(".activity-status.live")).toHaveLength(0);
   });
 
