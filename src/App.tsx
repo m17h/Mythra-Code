@@ -3362,25 +3362,30 @@ export default function App() {
   }, [claudeStatus?.available, claudeStatus?.loggedIn, refreshClaudeModels]);
 
   // Workspace-change side effects are keyed on the workspace *path* and
-  // runtime availability, with refreshTools read through a ref. Depending on
+  // discovery inputs, with refreshTools read through a ref. Depending on
   // the callback identities here used to reset the open conversation whenever
   // an unrelated setting (skills, project pinning) changed.
   const refreshToolsRef = useRef(refreshTools);
   refreshToolsRef.current = refreshTools;
-  const workspaceEffectRef = useRef<{ path: string | null; available: boolean } | null>(null);
+  const workspaceEffectRef = useRef<{ path: string | null; available: boolean; codexAvailable: boolean; runtimeHome: string | null | undefined } | null>(null);
   useEffect(() => {
     const path = activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : null;
-    const available = Boolean(runtimeStatus?.available || claudeStatus?.available || cursorStatus?.available);
+    const codexAvailable = Boolean(runtimeStatus?.available);
+    const available = Boolean(codexAvailable || claudeStatus?.available || cursorStatus?.available);
+    const runtimeHome = runtimeStatus?.dataHome;
     const previous = workspaceEffectRef.current;
-    if (previous && previous.path === path && previous.available === available) return;
-    workspaceEffectRef.current = { path, available };
+    // Local-provider readiness must not hide a later Codex transition: listing
+    // and ownership filtering also depend on Codex readiness and its data home.
+    if (previous && previous.path === path && previous.available === available
+      && previous.codexAvailable === codexAvailable && previous.runtimeHome === runtimeHome) return;
+    workspaceEffectRef.current = { path, available, codexAvailable, runtimeHome };
     if (available) {
       void loadThreads(activeWorkspace);
     } else {
       setThreads([]);
     }
     void refreshToolsRef.current(activeWorkspace);
-    if (previous && previous.path === path) return; // Only availability changed — keep the open conversation.
+    if (previous && previous.path === path) return; // Discovery changed — keep the open conversation.
     // Invalidate any in-flight thread selection: a slow thread/resume issued
     // from the previous workspace must not re-install its thread here.
     selectThreadRequestRef.current += 1;
@@ -3395,7 +3400,7 @@ export default function App() {
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
-  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, projectDefaultProvider, runtimeStatus?.available]);
+  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, projectDefaultProvider, runtimeStatus?.available, runtimeStatus?.dataHome]);
 
   // Every surfaced error also lands in the diagnostics ring buffer/audit log.
   useEffect(() => {
