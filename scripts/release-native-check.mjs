@@ -214,14 +214,21 @@ function nativeOwnershipAlive(status) {
   return [status.worker, status.childWorker].filter(Boolean).some((worker) => workerTreeAlive(worker));
 }
 
-export async function collectNativeWorker(statusPath, { sleep = (ms) => new Promise((accept) => setTimeout(accept, ms)), pollMs = 1_000, timeoutMs = 27 * 60_000 } = {}) {
+export async function collectNativeWorker(statusPath, { sleep = (ms) => new Promise((accept) => setTimeout(accept, ms)), pollMs = 1_000, timeoutMs = 27 * 60_000, ownershipAlive = nativeOwnershipAlive } = {}) {
   const start = Date.now();
   for (;;) {
     const status = readJson(statusPath);
     if (status.status === 'result-ready' || status.status === 'passed') return status;
     if (status.status === 'blocked') throw new Error(`Native worker blocked: ${status.reason}; inspect and preserve owned descendants before retry`);
     if (!['queued', 'running'].includes(status.status)) throw new Error('Invalid native worker ownership status');
-    if (status.worker && !nativeOwnershipAlive(status)) throw Object.assign(new Error('Native wrapper ended without a terminal result; inspect preserved logs before retry'), { status: 'waiting' });
+    if (status.worker && !ownershipAlive(status)) {
+      // A synchronous Windows ownership probe can outlast wrapper completion.
+      // Read its durable terminal record again before treating the owner as lost.
+      const latest = readJson(statusPath);
+      if (latest.status === 'result-ready' || latest.status === 'passed') return latest;
+      if (latest.status === 'blocked') throw new Error(`Native worker blocked: ${latest.reason}; inspect and preserve owned descendants before retry`);
+      throw Object.assign(new Error('Native wrapper ended without a terminal result; inspect preserved logs before retry'), { status: 'waiting' });
+    }
     if (Date.now() - start >= timeoutMs) throw Object.assign(new Error('Native result collection deadline reached; owned worker can be collected on resume'), { status: 'waiting' });
     await sleep(pollMs);
   }

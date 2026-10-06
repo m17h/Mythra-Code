@@ -53,7 +53,9 @@ test('roundtrip collects typed receipts and resumes without launching or downloa
   expect(mergeHandoff(local, f.stateRoot).imported).toHaveLength(3);
   expect(await runWindowsWorker({ ...f, transport })).toBe(local);
   expect(transport.launches).toBe(1); expect(transport.downloads).toBe(1);
-});
+  // This integration retains native process identity checks for three real leases.
+  // Hosted Windows PowerShell queries took 11s under shard load; bound it locally.
+}, 30_000);
 
 test('an incomplete terminal handoff blocks diagnosis and preserves evidence without relaunch', async () => {
   const f = fixture(), transport = fakeTransport({ complete: false });

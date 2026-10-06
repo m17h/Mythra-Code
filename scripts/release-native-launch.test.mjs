@@ -54,6 +54,34 @@ test('coordinator exit leaves native worker logging and collection available', a
   const result = await collectNativeWorker(c.statusPath, { pollMs: 10, timeoutMs: 5_000 });
   expect(result.status).toBe('result-ready');
   expect(existsSync(c.resultPath)).toBe(true); expect(readFileSync(c.eventsPath, 'utf8')).toContain('turn.completed');
+}, 15_000);
+
+test.each(['result-ready', 'passed'])('collection rereads %s written while the ownership query finishes', async (terminal) => {
+  const root = temp(), statusPath = join(root, 'status.json');
+  const running = { status: 'running', worker: { pid: 42, processStart: 'fixture' }, contractHash: 'c'.repeat(64) };
+  atomicJson(statusPath, running);
+  const finished = { ...running, status: terminal, sessionId };
+  let probes = 0;
+  expect(await collectNativeWorker(statusPath, { timeoutMs: 10, ownershipAlive(status) {
+    expect(status).toEqual(running); probes++; atomicJson(statusPath, finished); return false;
+  } })).toEqual(finished);
+  expect(probes).toBe(1);
+});
+
+test('collection retains a blocker written during the ownership query', async () => {
+  const root = temp(), statusPath = join(root, 'status.json');
+  atomicJson(statusPath, { status: 'running', worker: { pid: 42, processStart: 'fixture' } });
+  await expect(collectNativeWorker(statusPath, { ownershipAlive() {
+    atomicJson(statusPath, { status: 'blocked', reason: 'invalid native result' }); return false;
+  } })).rejects.toThrow(/blocked: invalid native result/);
+});
+
+test('a dead owner without a terminal record stays fail closed and preserves evidence', async () => {
+  const root = temp(), statusPath = join(root, 'status.json');
+  const running = { status: 'running', worker: { pid: 42, processStart: 'fixture' } };
+  atomicJson(statusPath, running);
+  await expect(collectNativeWorker(statusPath, { ownershipAlive: () => false })).rejects.toMatchObject({ status: 'waiting', message: expect.stringMatching(/without a terminal result/) });
+  expect(readJson(statusPath)).toEqual(running);
 });
 
 test('deadline blocks and preserves worker identities; no automatic duplicate', async () => {
