@@ -11,10 +11,12 @@ import {
   shouldCancelTimelineFollowForWheel,
 } from "./ChatTimeline";
 
+// User direction always stays in chat, so these rows exercise flow and
+// scrolling independently of how assistant work is compacted.
 function transcript(count: number, streaming = false): ChatMessage[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `message-${index}`,
-    role: "assistant" as const,
+    role: "user" as const,
     text: `Answer ${index}`,
     timelineOrder: index + 1,
     streaming: streaming && index === count - 1,
@@ -178,7 +180,7 @@ describe("ChatTimeline flow scroll state", () => {
     );
     const older = Array.from({ length: 50 }, (_, index): ChatMessage => ({
       id: `older-${index}`,
-      role: "assistant",
+      role: "user",
       text: `Older answer ${index}`,
       timelineOrder: index - 50,
     }));
@@ -263,13 +265,14 @@ describe("ChatTimeline flow scroll state", () => {
     const { rerender } = renderTimeline(messages);
     const { scroller } = configureScroller();
     fireEvent.wheel(scroller, { deltaY: -120 });
-    expect(document.querySelector<HTMLElement>("[data-entry-index]")).toHaveAttribute("data-entry-index", "60");
+    // 100 rows plus the one live activity line.
+    expect(document.querySelector<HTMLElement>("[data-entry-index]")).toHaveAttribute("data-entry-index", "61");
 
     rerender(
       <ChatTimeline
         messages={[...messages, {
           id: "message-100",
-          role: "assistant",
+          role: "user",
           text: "A newly appended entry",
           timelineOrder: 101,
           streaming: true,
@@ -280,7 +283,8 @@ describe("ChatTimeline flow scroll state", () => {
       />,
     );
 
-    expect(document.querySelector<HTMLElement>("[data-entry-index]")).toHaveAttribute("data-entry-index", "60");
+    // 100 rows plus the one live activity line.
+    expect(document.querySelector<HTMLElement>("[data-entry-index]")).toHaveAttribute("data-entry-index", "61");
     expect(screen.getByText("A newly appended entry")).toBeInTheDocument();
   });
 
@@ -296,7 +300,7 @@ describe("ChatTimeline flow scroll state", () => {
       <ChatTimeline
         messages={[...messages, {
           id: "message-100",
-          role: "assistant",
+          role: "user",
           text: "Latest bounded entry",
           timelineOrder: 101,
           streaming: true,
@@ -308,7 +312,7 @@ describe("ChatTimeline flow scroll state", () => {
     );
 
     expect(document.querySelectorAll("[data-entry-index]")).toHaveLength(TIMELINE_MOUNT_ROWS);
-    expect(document.querySelector<HTMLElement>("[data-entry-index]")).toHaveAttribute("data-entry-index", "61");
+    expect(document.querySelector<HTMLElement>("[data-entry-index]")).toHaveAttribute("data-entry-index", "62");
   });
 
   it("re-arms follow when a free-scrolling reader reaches the bottom band", () => {

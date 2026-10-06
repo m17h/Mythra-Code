@@ -1,16 +1,24 @@
-import { StrictMode } from "react";
+import { StrictMode, useRef, useState } from "react";
 import { act, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ChatTimeline } from "./ChatTimeline";
+import { AssistantMessageMarkdown } from "./ChatTimeline";
+import { ActivityDetailsModal } from "./ActivityDetailsModal";
 import trace from "../test/fixtures/haiku45-stream-cadence.json";
 import "../styles.css";
 
 const chunks = trace.events;
 
 function Shell({ text, streaming = true }: { text: string; streaming?: boolean }) {
+  const sourceRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(true);
   return <StrictMode><div className="app-shell" data-theme="kiwi" style={{ height: 300, width: 720 }}>
-    <ChatTimeline messages={[{ id: "live", role: "assistant", text, streaming }]} activities={[]}
-      running={streaming} thinkingLabel="Working" provider="claude" />
+    <div ref={sourceRef} />
+    {open && <ActivityDetailsModal sourceRef={sourceRef} onClose={() => setOpen(false)}
+      run={{ state: streaming ? "running" : "completed", entries: [{ kind: "message", value: {
+        id: "live", role: "assistant", phase: "final", text, streaming,
+      } }] }}
+      renderMessage={(message) => <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />}
+      renderSubAgents={() => null} />}
   </div></StrictMode>;
 }
 
@@ -24,7 +32,7 @@ describe("stream cadence replay", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
     const view = render(<Shell text={chunks[0].text} />);
     const body = view.container.querySelector<HTMLElement>(".rich-markdown")!;
-    const scroller = view.container.querySelector<HTMLElement>(".flow-timeline")!;
+    const scroller = view.container.querySelector<HTMLElement>(".activity-details-scroll")!;
     let index = 1; let text = chunks[0].text; let previousLength = body.textContent!.length; let previousInk = previousLength; let previousScroll = scroller.scrollTop;
     const samples: Array<{ at: number; added: number; ink: number; scroll: number }> = [];
     for (let elapsed = 0; elapsed < chunks.at(-1)!.at + 700; elapsed += 1000 / 60) {
@@ -52,6 +60,10 @@ describe("stream cadence replay", () => {
     // These are repeatable perceptual proxies, not a claim that software can
     // decide whether an animation feels pleasant. Include immediate completion
     // on the last delta so the final tail cannot evade the burst limit.
+    expect(view.container.querySelector<HTMLDialogElement>("dialog")?.open).toBe(true);
+    expect(view.container.querySelector(".rich-markdown")).toBe(body);
+    expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
+    expect(samples.some((sample) => sample.scroll > 0)).toBe(true);
     expect(Math.max(...samples.map(s => s.added))).toBeLessThanOrEqual(35);
     expect(Math.max(...samples.map(s => s.ink))).toBeLessThanOrEqual(45);
     expect(Math.max(...samples.map(s => Math.abs(s.scroll)))).toBeLessThanOrEqual(50);

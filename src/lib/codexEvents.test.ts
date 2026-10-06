@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RUNTIME_THREAD_ID, decodeBase64Utf8, routeCodexEvent, runtimeMessage, type CodexEventContext } from "./codexEvents";
 import { resetTaskStore, useTaskStore } from "./taskStore";
 import { openRouterReportedCost, usageTotals } from "./usageLedger";
+import { compactActivityPresentation } from "./compactActivity";
 
 function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventContext {
   return {
@@ -27,6 +28,62 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
 
 describe("routeCodexEvent", () => {
   beforeEach(() => { localStorage.clear(); resetTaskStore(); });
+
+  it("attributes native web searches from their item type and actual event lifecycle", () => {
+    const ctx = makeContext();
+    const item = { id: "search", type: "webSearch", query: "provider protocol" };
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", items: [] } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.activities[0]).toMatchObject({ workType: "research", detail: "provider protocol", status: "inProgress" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.activities[0]).toMatchObject({ workType: "research", status: "completed" });
+  });
+
+  it("keeps native commentary separate from a streamed final answer across completion and reload", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", items: [] } } }, ctx);
+    for (const [id, phase, answer] of [["progress", "commentary", "Checking"], ["answer", "final_answer", "Done"]]) {
+      routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item: { id, type: "agentMessage", text: "", phase } } }, ctx);
+      routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread", turnId: "turn", itemId: id, delta: answer } }, ctx);
+      useTaskStore.getState().flushDeltas();
+      expect(useTaskStore.getState().tasks.thread.messages.at(-1)).toMatchObject({ phase: phase === "final_answer" ? "final" : "commentary", streaming: true });
+      // An older completion writer may omit phase; known start metadata survives.
+      routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id, type: "agentMessage", text: answer } } }, ctx);
+    }
+    useTaskStore.getState().completeTurn("thread", "turn", "completed");
+    const messages = useTaskStore.getState().tasks.thread.messages;
+    expect(messages.map((message) => [message.id, message.phase, message.turnStatus])).toEqual([
+      ["progress", "commentary", "completed"], ["answer", "final", "completed"],
+    ]);
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask("thread", messages, []);
+    expect(useTaskStore.getState().tasks.thread.messages.map((message) => message.phase)).toEqual(["commentary", "final"]);
+  });
+
+  it("retains a late native phase after deltas arrived before item-started", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread", turnId: "turn", itemId: "answer", delta: "Preserved draft" } }, ctx);
+    useTaskStore.getState().flushDeltas();
+    const order = useTaskStore.getState().tasks.thread.messages[0].timelineOrder;
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "", phase: "final_answer" } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ text: "Preserved draft", phase: "final", streaming: true, timelineOrder: order });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "Completed draft", phase: "final_answer" } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "", phase: "final_answer" } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ text: "Completed draft", phase: "final", streaming: false });
+  });
+
+  it.each([undefined, null, "future_phase", "final"])("leaves unsupported native phase %s unknown", (phase) => {
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", item: { id: "unknown", type: "agentMessage", text: "Text", phase } } }, makeContext());
+    expect(useTaskStore.getState().tasks.thread.messages[0].phase).toBeUndefined();
+  });
+
+  it("keeps a plan-only successful turn as commentary even if it carries an answer-like phase", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", items: [] } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "plan", type: "plan", text: "Inspect then test", phase: "final_answer" } } }, ctx);
+    useTaskStore.getState().completeTurn("thread", "turn", "completed");
+    expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ phase: "commentary", turnStatus: "completed" });
+  });
 
   it("keeps cache counters omitted by the runtime unknown, not verified zero", () => {
     const ctx = makeContext();
@@ -237,6 +294,44 @@ describe("routeCodexEvent", () => {
     expect(useTaskStore.getState().statuses["thread-a"]).toBe("running");
     routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread-a", status: { type: "systemError" } } }, ctx);
     expect(useTaskStore.getState().statuses["thread-a"]).toBe("error");
+  });
+
+  it.each(["started", "completed"])("keeps a %s final item hidden when idle arrives before turn completion", (lifecycle) => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", items: [] } } }, ctx);
+    useTaskStore.getState().appendUserMessage("thread", { id: "prompt", role: "user", text: "Check it", turnId: "turn" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "progress", type: "agentMessage", text: "Checking", phase: "commentary" } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "", phase: "final_answer" } } }, ctx);
+    routeCodexEvent({ method: "item/agentMessage/delta", params: { threadId: "thread", turnId: "turn", itemId: "answer", delta: "Done" } }, ctx);
+    useTaskStore.getState().flushDeltas();
+    if (lifecycle === "completed") routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: { id: "answer", type: "agentMessage", text: "Done", phase: "final_answer" } } }, ctx);
+    const visibleIds = () => {
+      const task = useTaskStore.getState().tasks.thread;
+      return compactActivityPresentation(task.messages.map((value) => ({ kind: "message" as const, value })), {
+        running: task.status === "running" || task.status === "starting", activeTurnId: task.activeTurnId,
+      }).filter((entry) => entry.kind === "message").map((entry) => entry.value.id);
+    };
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "thread", status: { type: "idle" } } }, ctx);
+    expect(visibleIds()).toEqual(["prompt"]);
+    expect(useTaskStore.getState().tasks.thread.status).toBe("idle");
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "thread", turn: { id: "turn", status: "completed", items: [] } } }, ctx);
+    expect(visibleIds()).toEqual(["prompt", "answer"]);
+    expect(useTaskStore.getState().tasks.thread.activeTurnId).toBeUndefined();
+  });
+
+  it.each(["optimistic", "runtime"])("keeps the prior final visible at the %s start boundary before new entries arrive", (start) => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "prior", items: [] } } }, ctx);
+    useTaskStore.getState().appendUserMessage("thread", { id: "prompt", role: "user", text: "Check it", turnId: "prior" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "prior", item: { id: "answer", type: "agentMessage", text: "Done", phase: "final_answer" } } }, ctx);
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "thread", turn: { id: "prior", status: "completed", items: [] } } }, ctx);
+    if (start === "optimistic") useTaskStore.getState().setTaskStatus("thread", "starting");
+    else routeCodexEvent({ method: "turn/started", params: { threadId: "thread", turn: { id: "next", items: [] } } }, ctx);
+    const task = useTaskStore.getState().tasks.thread;
+    const visible = compactActivityPresentation(task.messages.map((value) => ({ kind: "message" as const, value })), {
+      running: task.status === "running" || task.status === "starting", activeTurnId: task.activeTurnId,
+    }).filter((entry) => entry.kind === "message").map((entry) => entry.value.id);
+    expect(visible).toEqual(["prompt", "answer"]);
   });
 
   it("seals queued assistant text when the runtime reports a system error", () => {

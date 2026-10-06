@@ -342,6 +342,7 @@ function estimateMessageBytes(message: ChatMessage): number {
     + (message.questions ? stringBytes(JSON.stringify(message.questions)) : 0)
     + stringBytes(message.turnId)
     + stringBytes(message.turnStatus)
+    + stringBytes(message.phase)
     + stringBytes(message.steerStatus)
     + stringBytes(message.skillsFolder)
     + estimateSkillDependencyBytes(message.skillDependencies)
@@ -359,6 +360,7 @@ function estimateActivityBytes(activity: Activity): number {
   return ACTIVITY_BASE_BYTES
     + stringBytes(activity.id)
     + stringBytes(activity.kind)
+    + stringBytes(activity.workType)
     + stringBytes(activity.title)
     + stringBytes(activity.detail)
     + stringBytes(activity.status)
@@ -561,10 +563,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   hydrateTask: (threadId, messages, activities, workspacePath, history) => set((state) => {
     const existing = state.tasks[threadId];
+    const existingMessagesById = new Map((existing?.messages ?? []).map((message) => [message.id, message]));
+    const existingActivitiesById = new Map((existing?.activities ?? []).map((activity) => [activity.id, activity]));
     const restoredMessages = restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
     const reconciled = reconcileUserMessages(restoredMessages, existing?.messages ?? []);
     const hydratedMessages = reconciled.messages.map((message) => withTimelineOrder({
       ...message,
+      ...(message.phase === undefined && existingMessagesById.get(message.id)?.phase
+        ? { phase: existingMessagesById.get(message.id)!.phase } : {}),
       turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
     }));
     // The turns-derived history excludes the incomplete turn's partially
@@ -585,6 +591,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => withTimelineOrder({
       ...restoreCompactionActivity(activity, existing),
+      ...(activity.workType === undefined && existingActivitiesById.get(activity.id)?.workType
+        ? { workType: existingActivitiesById.get(activity.id)!.workType } : {}),
       turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
     }));
     const hydratedActivityIds = new Set(hydratedActivities.map((activity) => activity.id));
@@ -752,8 +760,19 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   startAssistantMessage: (threadId, message) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     // A delta may have reached the renderer before item/started. In that case
-    // keep its text and original timeline position.
-    if (task.messages.some((entry) => entry.id === message.id)) return state;
+    // keep its text and original timeline position, but retain phase metadata
+    // from the start event. Replayed starts must not reopen a sealed message.
+    const existingIndex = task.messages.findIndex((entry) => entry.id === message.id);
+    if (existingIndex >= 0) {
+      const previous = task.messages[existingIndex];
+      const phase = message.phase ?? previous.phase;
+      if (phase === previous.phase) return state;
+      const next = { ...previous, phase };
+      const messages = [...task.messages];
+      messages[existingIndex] = next;
+      return { tasks: { ...state.tasks, [threadId]: { ...task, messages,
+        estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(next)) } } };
+    }
     const started = withTimelineOrder<ChatMessage>({ ...message, streaming: true, turnId: message.turnId ?? task.activeTurnId });
     const assistantOutputTurnId = task.status === "running"
       && Boolean(started.text)
@@ -924,7 +943,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         skillDependencies: original.skillDependencies ?? normalized.skillDependencies }
       : {};
     const nextMessage = existingIndex >= 0
-      ? { ...original, ...normalized, ...display, streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
+      ? { ...original, ...normalized, ...display,
+        ...(normalized.phase === undefined && original.phase ? { phase: original.phase } : {}),
+        streaming: false, turnId: message.turnId ?? task.messages[existingIndex].turnId ?? task.activeTurnId, turnStatus: message.turnStatus ?? task.messages[existingIndex].turnStatus, timelineOrder: task.messages[existingIndex].timelineOrder }
       : withTimelineOrder({ ...normalized, streaming: false, turnId: message.turnId ?? task.activeTurnId });
     const messages = existingIndex >= 0
       ? task.messages.map((entry, index) => index === existingIndex ? nextMessage : entry)
@@ -974,6 +995,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
               // child task is terminal, a late event may enrich the card but
               // must never replace its explicit Stopped outcome.
               status: lateReactivation || preserveStopped ? entry.status : activity.status,
+              ...(activity.workType === undefined && entry.workType ? { workType: entry.workType } : {}),
               turnId: activity.turnId ?? entry.turnId ?? task.activeTurnId,
               turnStatus: activity.turnStatus ?? entry.turnStatus,
               timelineOrder: entry.timelineOrder,

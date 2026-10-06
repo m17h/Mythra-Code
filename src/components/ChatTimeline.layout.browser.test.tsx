@@ -1,4 +1,4 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ChatTimeline } from "./ChatTimeline";
 import type { Activity, ChatMessage } from "../types";
@@ -195,8 +195,14 @@ describe("ChatTimeline browser layout", () => {
     const view = render(<Shell messages={[]} activities={activities} running={false} />);
     await settle();
 
-    const ordinary = document.querySelector<HTMLElement>(".activity-row");
-    const working = document.querySelector<HTMLElement>(".subagent-relay-card");
+    // Routine relays now live in the activity window, alongside the original
+    // warning context. Measure the real card at its new production boundary.
+    expect(document.querySelector(".subagent-relay-card")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /View activity/ }));
+    await settle();
+    const dialog = screen.getByRole("dialog", { name: "Activity" });
+    const ordinary = dialog.querySelector<HTMLElement>(".kind-warning .activity-step-body");
+    const working = dialog.querySelector<HTMLElement>(".subagent-relay-card");
     expect(ordinary).not.toBeNull();
     expect(working).not.toBeNull();
     expect(Math.round(working!.getBoundingClientRect().left)).toBe(Math.round(ordinary!.getBoundingClientRect().left));

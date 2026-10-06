@@ -1,5 +1,5 @@
 import { saveQuestionRequest } from "./agentQuestionRecords";
-import { timelineFromTurns } from "./threadTimeline";
+import { agentMessagePhase, timelineFromTurns } from "./threadTimeline";
 import { isAuthenticationError } from "./errors";
 import type { CodexEvent, JsonObject } from "./codex";
 import type { ChatMessage, ThreadItem, Turn } from "../types";
@@ -166,7 +166,9 @@ export function handleThreadItem(
     return;
   }
   if (item.type === "agentMessage" || item.type === "plan") {
-    const message: ChatMessage = { id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined, turnId };
+    const phase = agentMessagePhase(item);
+    const message: ChatMessage = { id, role: "assistant", text: item.text ?? "", questions: item.questions ?? undefined,
+      ...(phase ? { phase } : {}), turnId };
     if (lifecycle === "started") taskStore.startAssistantMessage(threadId, message);
     else taskStore.completeMessage(threadId, message);
     return;
@@ -185,9 +187,17 @@ export function handleThreadItem(
     taskStore.upsertActivity(threadId, {
       id,
       kind: "file",
+      workType: "files",
       title: `${item.changes?.length ?? 0} file change${item.changes?.length === 1 ? "" : "s"}`,
       itemCount: item.changes?.length,
       status: item.status,
+    });
+    return;
+  }
+  if (item.type === "webSearch") {
+    taskStore.upsertActivity(threadId, {
+      id, kind: "command", workType: "research", title: "Web Search", detail: item.query,
+      status: item.status ?? (lifecycle === "started" ? "inProgress" : "completed"),
     });
     return;
   }

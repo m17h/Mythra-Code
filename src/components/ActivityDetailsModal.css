@@ -1,0 +1,213 @@
+/* ---- Activity details: an in-app reading window about Settings' size ----
+   Dark-neutral sheet, one quiet rail, squircle step nodes. Only the entrance
+   and the live mark move; reduced motion removes both. */
+
+.activity-details-dialog {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: min(920px, calc((100vw - 48px) / var(--ui-scale, 1)));
+  height: min(720px, calc((100vh - 48px) / var(--ui-scale, 1)));
+  height: min(720px, calc((100dvh - 48px) / var(--ui-scale, 1)));
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-xl);
+  color: var(--text);
+  background: var(--panel, #292d32);
+  box-shadow: var(--shadow);
+  font-family: var(--font-sans);
+  line-height: 1.45;
+}
+.activity-details-dialog[open] { display: flex; flex-direction: column; }
+.activity-details-dialog::backdrop { background: rgb(0 0 0 / 52%); }
+.activity-details-fallback { position: fixed; top: 0; left: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .52); touch-action: none; }
+.activity-details-dialog-fallback { position: relative; inset: auto; margin: 0; display: flex; flex-direction: column; }
+
+.activity-details-frame { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; }
+
+.activity-details-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 14px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.activity-details-heading { min-width: 0; flex: 1; }
+.activity-details-heading h2 { margin: 0; color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-tight); }
+.activity-details-status { min-width: 0; display: flex; align-items: baseline; gap: 8px; margin-top: 3px; font-size: var(--fs-meta); }
+.activity-details-state { flex: 0 0 auto; color: var(--ink-2); font-weight: 560; }
+.activity-details-state.state-running { color: color-mix(in srgb, var(--green) 70%, var(--ink-2)); }
+.activity-details-state.state-failed { color: var(--red); }
+.activity-details-state.state-interrupted { color: var(--orange); }
+.activity-details-state.unconfirmed { color: var(--muted); }
+.activity-details-meta { min-width: 0; overflow: hidden; color: var(--muted-2); font-variant-numeric: tabular-nums; white-space: nowrap; text-overflow: ellipsis; }
+
+.activity-details-search { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; padding: 2px 2px 2px 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--field); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+.activity-details-search > span { margin-right: 4px; }
+.activity-details-search button,
+.activity-details-close { display: grid; place-items: center; padding: 0; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.activity-details-search button { width: 24px; height: 24px; border-radius: 7px; }
+.activity-details-search button:disabled { opacity: .4; cursor: default; }
+.activity-details-close { flex: 0 0 auto; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 10px; background: var(--field); }
+.activity-details-search button:hover:not(:disabled),
+.activity-details-close:hover { color: var(--text); background: var(--line-quiet); }
+.activity-details-close:hover { border-color: var(--line-strong); }
+.activity-details-search button:focus-visible,
+.activity-details-close:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.activity-details-scroll {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 16px 22px 28px;
+}
+.activity-details-scroll:focus-visible { outline: none; box-shadow: inset var(--ring); }
+
+/* One rail runs through the step nodes. */
+.activity-details-steps { position: relative; display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.activity-step {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  padding: 5px 8px 5px 0;
+  border-radius: 10px;
+}
+.activity-step::before { content: ""; position: absolute; top: 0; bottom: -4px; left: 10.5px; width: 1px; background: var(--line); }
+.activity-step:first-child::before { top: 14px; }
+.activity-step:last-child::before { bottom: calc(100% - 14px); }
+.activity-step:only-child::before { display: none; }
+.activity-step-node {
+  position: relative;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--panel, #292d32);
+}
+.activity-step.kind-command .activity-step-node { color: var(--ink-2); }
+.activity-step.kind-file .activity-step-node { color: color-mix(in srgb, var(--green) 72%, var(--muted)); }
+.activity-step.kind-reasoning .activity-step-node,
+.activity-step.kind-agents .activity-step-node,
+.activity-step.kind-agent .activity-step-node { color: var(--info); }
+.activity-step.kind-warning .activity-step-node { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 32%, var(--line)); }
+.activity-step.from-user .activity-step-node { color: var(--text); background: var(--field); }
+
+.activity-step-body { min-width: 0; padding-top: 2px; }
+.activity-step-head { min-width: 0; min-height: 20px; display: flex; align-items: center; gap: 8px; }
+.activity-step-title { min-width: 0; overflow: hidden; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 520; white-space: nowrap; text-overflow: ellipsis; }
+.activity-step-title.mono { font: 11.5px/1.45 var(--font-mono); }
+.activity-step-kind { color: var(--muted); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.activity-step-toggle { min-width: 0; display: inline-flex; align-items: center; gap: 4px; margin-left: -2px; padding: 1px 4px 1px 2px; border: 0; border-radius: 6px; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.activity-step-toggle:hover { background: var(--line-quiet); }
+.activity-step-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
+.activity-step-chevron { flex: 0 0 auto; color: var(--muted-2); transition: transform var(--t-mid) var(--ease); }
+.activity-step-toggle[aria-expanded="true"] .activity-step-chevron { transform: rotate(90deg); }
+.activity-step-chip { flex: 0 0 auto; padding: 1px 7px; border-radius: 6px; color: var(--muted-2); background: var(--line-quiet); font-size: var(--fs-micro); font-weight: 560; }
+.activity-step-chip.tone-live { color: color-mix(in srgb, var(--green) 80%, var(--ink-2)); background: var(--green-soft); }
+.activity-step-chip.tone-bad { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.activity-step-chip.tone-stopped { color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
+
+.activity-step-output,
+.activity-step-thought {
+  max-height: 320px;
+  overflow: auto;
+  margin: 6px 0 4px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-quiet);
+  border-radius: 9px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  font: 11px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.activity-step-thought { font: 12px/1.6 var(--font-sans); }
+.activity-step-preview { display: -webkit-box; overflow: hidden; margin: 3px 0 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.activity-step-note { margin: 2px 0 0; color: var(--muted-2); font-size: var(--fs-meta); }
+.activity-step.kind-warning .activity-step-output { color: var(--ink-2); border-color: color-mix(in srgb, var(--orange) 24%, var(--line)); white-space: pre-wrap; font-family: var(--font-sans); font-size: var(--fs-meta); }
+
+/* Agent prose reads at chat size so long updates are comfortable. */
+.activity-step-message { margin-top: 3px; color: var(--ink-2); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-ui); line-height: 1.62; overflow-wrap: anywhere; }
+.activity-step-message .message-text > :first-child { margin-top: 0; }
+.activity-step-message .message-text > :last-child { margin-bottom: 0; }
+.activity-step.in-chat .activity-step-message,
+.activity-step.from-user .activity-step-message { color: var(--muted); }
+.activity-step-action { margin-top: 6px; padding: 4px 10px; border: 1px solid var(--green-line); border-radius: 8px; color: var(--text); background: var(--green-soft); font: 560 var(--fs-meta)/1.3 var(--font-sans); cursor: pointer; }
+.activity-step-action:focus-visible { outline: none; box-shadow: var(--ring); }
+.activity-step.kind-agents .subagent-relay-card,
+.activity-step.kind-agents .subagent-relay-manifest { margin: 0; }
+
+.activity-step.is-match { background: color-mix(in srgb, var(--orange) 5%, transparent); }
+.activity-step.is-current-match { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orange) 55%, transparent); background: color-mix(in srgb, var(--orange) 9%, transparent); }
+.activity-step.is-target:not(.is-current-match) { animation: activity-step-target 1.6s var(--ease) 1 both; }
+
+/* Bounded step window: older or later steps are one quiet click away. */
+.activity-details-window { display: flex; justify-content: center; margin: 2px 0 10px; }
+.activity-details-window.later { margin: 10px 0 2px; }
+.activity-details-window button { padding: 4px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--field); font: 520 var(--fs-meta)/1.3 var(--font-sans); cursor: pointer; }
+.activity-details-window button:hover { border-color: var(--line-strong); color: var(--text); }
+.activity-details-window button:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.activity-details-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 60%; color: var(--muted); text-align: center; }
+.activity-details-empty p { margin: 0; font-size: var(--fs-ui); }
+.activity-details-empty-mark { position: relative; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; color: color-mix(in srgb, var(--green) 75%, var(--ink-2)); background: var(--green-soft); }
+.activity-details-empty-mark.live::after { content: ""; position: absolute; inset: -4px; border: 1.5px solid transparent; border-top-color: color-mix(in srgb, var(--green) 65%, transparent); border-radius: 50%; animation: activity-details-orbit 1.1s linear infinite; }
+
+.activity-details-latest {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--menu-surface, var(--panel));
+  box-shadow: var(--elev-2, 0 6px 18px rgba(0,0,0,.28));
+  font: 560 var(--fs-meta)/1.2 var(--font-sans);
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+.activity-details-latest:focus-visible { outline: none; box-shadow: var(--ring); }
+
+@supports (corner-shape: squircle) {
+  .activity-details-dialog { border-radius: 24px; corner-shape: squircle; }
+  .activity-step-node { border-radius: 9px; corner-shape: squircle; }
+  .activity-details-close, .activity-details-latest, .activity-details-search { border-radius: 13px; corner-shape: squircle; }
+}
+
+.app-shell[data-theme][data-color-scheme] .activity-details-dialog { border-color: var(--lm-island-edge, var(--line-strong)); border-radius: 22px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .activity-details-dialog[open], .activity-details-dialog-fallback { animation: activity-details-in 240ms cubic-bezier(.2,.86,.24,1) both; }
+  .activity-details-dialog[open]::backdrop { animation: activity-details-backdrop-in 200ms ease both; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-step-chevron { transition: none; }
+  .activity-step.is-target:not(.is-current-match), .activity-details-empty-mark.live::after { animation: none; }
+}
+@media (max-width: 600px) {
+  .activity-details-dialog { width: calc((100vw - 16px) / var(--ui-scale, 1)); height: calc((100vh - 16px) / var(--ui-scale, 1)); height: calc((100dvh - 16px) / var(--ui-scale, 1)); }
+  .activity-details-header { padding: 12px 12px 10px 16px; }
+  .activity-details-scroll { padding: 12px 14px 24px; }
+}
+
+@keyframes activity-details-in { from { opacity: 0; transform: translateY(14px) scale(.975); } to { opacity: 1; transform: none; } }
+@keyframes activity-details-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes activity-details-orbit { to { transform: rotate(360deg); } }
+@keyframes activity-step-target { from { background: var(--green-soft); } to { background: transparent; } }

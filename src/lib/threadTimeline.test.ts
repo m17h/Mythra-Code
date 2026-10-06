@@ -2,6 +2,28 @@ import { describe, expect, it } from "vitest";
 import { timelineFromTurns } from "./threadTimeline";
 
 describe("timelineFromTurns", () => {
+  it("retains native web-search attribution through reload without inventing its live lifecycle", () => {
+    const item = { id: "search", type: "webSearch", query: "provider protocol" };
+    const completed = timelineFromTurns([{ id: "turn", status: "completed", items: [item] }]);
+    expect(completed.activities[0]).toMatchObject({ workType: "research", title: "Web Search", detail: "provider protocol", status: "completed" });
+    const active = timelineFromTurns([{ id: "turn", status: "inProgress", items: [item] }]);
+    expect(active.activities[0].workType).toBe("research");
+    expect(active.activities[0].status).toBeUndefined();
+  });
+
+  it("restores native phases and keeps plans as commentary without promoting unknown phases", () => {
+    const snapshot = timelineFromTurns([{ id: "turn", items: [
+      { id: "progress", type: "agentMessage", text: "Checking", phase: "commentary" },
+      { id: "plan", type: "plan", text: "Plan", phase: "final_answer" },
+      { id: "legacy", type: "agentMessage", text: "Legacy" },
+      { id: "unknown", type: "agentMessage", text: "Unknown", phase: null },
+      { id: "answer", type: "agentMessage", text: "Done", phase: "final_answer" },
+    ] }]);
+    expect(snapshot.messages.map((message) => [message.id, message.phase])).toEqual([
+      ["progress", "commentary"], ["plan", "commentary"], ["legacy", undefined], ["unknown", undefined], ["answer", "final"],
+    ]);
+  });
+
   it("preserves message and command chronology when a thread is resumed", () => {
     const snapshot = timelineFromTurns([{ id: "turn-1", items: [
       { id: "user", type: "userMessage", content: [{ type: "text", text: "inspect it" }] },

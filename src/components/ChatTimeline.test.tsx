@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -122,7 +122,11 @@ describe("ChatTimeline", () => {
   it("preserves assistant line breaks during streaming and after reopening a completed reply", async () => {
     const messages = [{ id: "answer", role: "assistant" as const, text: "First line\nSecond line", timelineOrder: 1 }];
     const view = render(<ChatTimeline messages={[{ ...messages[0], streaming: true }]} activities={[]} running thinkingLabel="Thinking" />);
-    await waitFor(() => expect(view.container.querySelector(".message.assistant p br")).not.toBeNull());
+    // Live assistant text stays out of chat; the activity window shows it.
+    expect(view.container.querySelector(".message.assistant")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /View activity/ }));
+    await waitFor(() => expect(screen.getByRole("dialog").querySelector(".activity-step-message p br")).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Close activity" }));
 
     view.rerender(<ChatTimeline messages={messages} activities={[]} running={false} thinkingLabel="Thinking" />);
     await waitFor(() => expect(view.container.querySelector(".message.assistant p br")).not.toBeNull());
@@ -268,11 +272,16 @@ describe("ChatTimeline", () => {
     }));
     render(<ChatTimeline messages={[]} activities={activities} running thinkingLabel="Working" />);
 
-    expect(screen.getAllByRole("status")).toHaveLength(1);
-    expect(screen.getByRole("status")).toHaveTextContent("Sub-agents: 1 working · 1 done");
-    expect(screen.getByLabelText("Sub-agent wave: 1 working · 1 done")).toBeInTheDocument();
-    expect(screen.getByRole("article", { name: /Parser audit/ })).toBeInTheDocument();
-    expect(screen.getByRole("article", { name: /UI audit/ })).toBeInTheDocument();
+    // One wave summary plus the single live activity line; relays fold away.
+    const statuses = screen.getAllByRole("status").map((status) => status.textContent);
+    expect(statuses).toEqual(["Sub-agents: 1 working · 1 done", "Coordinating agents"]);
+    expect(screen.queryByRole("article", { name: /Parser audit/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Coordinating agents\. View activity/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Sub-agent wave: 1 working · 1 done")).toBeInTheDocument();
+    expect(within(dialog).getByRole("article", { name: /Parser audit/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("article", { name: /UI audit/ })).toBeInTheDocument();
   });
 
   it("places command activity between the messages that surround it", () => {
@@ -454,6 +463,8 @@ describe("ChatTimeline", () => {
         thinkingLabel="Thinking"
       />,
     );
+    // The live reply is read in the activity window until the run completes.
+    fireEvent.click(screen.getByRole("button", { name: /View activity/ }));
 
     rerender(
       <ChatTimeline
@@ -590,8 +601,8 @@ describe("ChatTimeline", () => {
     expect(screen.queryByText("npm test")).not.toBeInTheDocument();
   });
 
-  it("lets the live compaction seam replace the generic thinking row", () => {
-    render(
+  it("keeps the live compaction seam visible and names it in the one live status line", () => {
+    const view = render(
       <ChatTimeline
         messages={[{ id: "user", role: "user", text: "Keep going", timelineOrder: 1, turnId: "turn-1" }]}
         activities={[{ id: "compaction", kind: "compaction", title: "Compacting context", status: "inProgress", timelineOrder: 2, turnId: "turn-1" }]}
@@ -600,7 +611,9 @@ describe("ChatTimeline", () => {
       />,
     );
 
-    expect(screen.getByText("Compacting context").closest('[role="status"]')).not.toBeNull();
+    expect(view.container.querySelector(".context-compaction.active")).toHaveAttribute("role", "status");
+    expect(view.container.querySelectorAll(".activity-status")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /^Compacting context\. View activity/ })).toBeInTheDocument();
     expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
@@ -788,7 +801,7 @@ describe("ChatTimeline", () => {
     expect(entries.map((entry) => entry.kind)).toEqual(["message", "commands", "message", "work", "message"]);
   });
 
-  it("keeps completed work collapsed until the user opens the audit trail", () => {
+  it("keeps completed work out of chat until the user opens the activity window", () => {
     const work: WorkItemEntry[] = [
       { kind: "commands", value: [{ id: "test", kind: "command", title: "npm test", detail: "Tests passed", status: "completed" }] },
       { kind: "message", value: { id: "update", role: "assistant", text: "I found the **cause**." } },
@@ -796,26 +809,31 @@ describe("ChatTimeline", () => {
     ];
     const { rerender } = render(<CompletedWorkDisclosure entries={work} />);
 
-    const toggle = screen.getByRole("button", { name: "Show completed work: 1 command, 1 file change, 1 other step" });
+    const toggle = screen.getByRole("button", { name: "Work completed. View activity: 1 command · 1 file change · 1 other step" });
+    expect(toggle).toHaveAttribute("aria-haspopup", "dialog");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Tests passed")).not.toBeInTheDocument();
     expect(screen.queryByText(/I found the/)).not.toBeInTheDocument();
 
     rerender(<CompletedWorkDisclosure entries={work} reveal />);
-    expect(screen.getByRole("button", { name: "Hide completed work: 1 command, 1 file change, 1 other step" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("npm test")).toBeInTheDocument();
-    expect(screen.getByText("cause").tagName).toBe("STRONG");
-    expect(screen.getByText("Updated")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("npm test")).toBeInTheDocument();
+    expect(within(dialog).getByText("cause").tagName).toBe("STRONG");
+    // Tool output stays folded inside the window until asked for.
+    expect(within(dialog).queryByText("Updated")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Show details: src/App.tsx" }));
+    expect(within(dialog).getByText("Updated")).toBeInTheDocument();
   });
 
   it("preserves line breaks in a completed assistant work update", () => {
     const entries: WorkItemEntry[] = [
       { kind: "message", value: { id: "update", role: "assistant", text: "First line\nSecond **line**" } },
     ];
-    const view = render(<CompletedWorkDisclosure entries={entries} />);
-    fireEvent.click(screen.getByRole("button", { name: /Show completed work/ }));
-    expect(view.container.querySelectorAll(".completed-work-update p br")).toHaveLength(1);
-    expect(view.container.querySelector(".completed-work-update strong")?.textContent).toBe("line");
+    render(<CompletedWorkDisclosure entries={entries} />);
+    fireEvent.click(screen.getByRole("button", { name: /Work completed\. View activity/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelectorAll(".activity-step-message p br")).toHaveLength(1);
+    expect(dialog.querySelector(".activity-step-message strong")?.textContent).toBe("line");
   });
 
   it("summarizes how long a completed run worked alongside its activity counts", () => {
@@ -831,7 +849,7 @@ describe("ChatTimeline", () => {
 
     expect(screen.getByText("Worked for 10 minutes · 2 commands · 9 file changes · 1 other step")).toBeInTheDocument();
     expect(screen.getByRole("button", {
-      name: "Show completed work: Worked for 10 minutes, 2 commands, 9 file changes, 1 other step",
+      name: "Work completed. View activity: Worked for 10 minutes · 2 commands · 9 file changes · 1 other step",
     })).toBeInTheDocument();
   });
 

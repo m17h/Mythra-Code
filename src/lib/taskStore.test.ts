@@ -18,6 +18,27 @@ describe("task store", () => {
     resetTaskStore();
   });
 
+  it("retains known assistant phase when a stale history page omits the metadata", () => {
+    const store = useTaskStore.getState();
+    store.completeMessage("thread", { id: "answer", role: "assistant", text: "Done", phase: "final" });
+    store.hydrateTask("thread", [{ id: "answer", role: "assistant", text: "Done" }], []);
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.messages[0].phase).toBe("final");
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+  });
+
+  it("retains provider work attribution when a later update or stale history omits it", () => {
+    const store = useTaskStore.getState();
+    const activity = { id: "read", kind: "command" as const, title: "/project/file.ts", status: "inProgress" };
+    store.upsertActivity("thread", { ...activity, workType: "research" });
+    store.upsertActivity("thread", { ...activity, status: "completed" });
+    expect(useTaskStore.getState().tasks.thread.activities[0].workType).toBe("research");
+    store.hydrateTask("thread", [], [activity]);
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.activities[0].workType).toBe("research");
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+  });
+
   it.each(["error", "interrupted", "idle", "completed"] as const)("stops a compaction animation when the thread becomes %s without a turn-completed event", (status) => {
     const store = useTaskStore.getState();
     store.setActiveTurn("compact-thread", "turn-1");

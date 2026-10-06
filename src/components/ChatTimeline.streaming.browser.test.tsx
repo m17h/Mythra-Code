@@ -1,9 +1,17 @@
-import { StrictMode } from "react";
+import { StrictMode, useRef, useState } from "react";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatTimeline } from "./ChatTimeline";
+import { AssistantMessageMarkdown, ChatTimeline, MessageRow } from "./ChatTimeline";
+import { ActivityDetailsModal } from "./ActivityDetailsModal";
+import { commands } from "vitest/browser";
 import type { ChatMessage, Provider } from "../types";
 import "../styles.css";
+
+declare module "vitest/internal/browser" {
+  interface BrowserCommands {
+    setStreamTestReducedMotion(reduced: boolean): Promise<void>;
+  }
+}
 
 const highlights = () => [...CSS.highlights.entries()].filter(([name]) => name.startsWith("mythra-stream-"));
 const fadedText = () => highlights().flatMap(([, highlight]) => [...highlight].map((range) => (range as Range).toString())).join("");
@@ -31,18 +39,94 @@ function Shell({ text, streaming = true, provider = "claude", history = [] }: {
   text: string; streaming?: boolean; provider?: Provider; history?: ChatMessage[];
 }) {
   return <StrictMode><div className="app-shell" data-theme="kiwi" style={{ height: 600 }}>
-    <ChatTimeline provider={provider} activities={[]} running={streaming} thinkingLabel="Working"
-      messages={[...history, { id: "live", role: "assistant", text, streaming, timelineOrder: 999, turnId: "turn", turnStatus: streaming ? "inProgress" : "completed" }]} />
+    {/* Renderer-boundary fixture: main chat intentionally no longer mounts
+        routine live prose. Keep its actual production row/copy controls under
+        StrictMode rather than disabling streaming to recover old assertions. */}
+    {history.map((message) => <MessageRow key={message.id} message={message} provider={provider} />)}
+    <MessageRow message={{ id: "live", role: "assistant", text, streaming }} provider={provider} />
   </div></StrictMode>;
 }
 
-afterEach(() => {
+function ActivityShell({ text, streaming = true, history = [] }: {
+  text: string; streaming?: boolean; history?: ChatMessage[];
+}) {
+  const sourceRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(true);
+  return <StrictMode><div ref={sourceRef} className="app-shell" data-theme="kiwi">
+    {open && <ActivityDetailsModal sourceRef={sourceRef} onClose={() => setOpen(false)}
+      run={{ state: streaming ? "running" : "completed", entries: [...history,
+        { id: "live", role: "assistant" as const, text, streaming, phase: "final" as const },
+      ].map((value) => ({ kind: "message" as const, value })) }}
+      renderMessage={(message) => message.role === "assistant"
+        ? <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
+        : <MessageRow message={message} provider="claude" />}
+      renderSubAgents={() => null} />}
+  </div></StrictMode>;
+}
+
+const liveBody = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-step-id="live"] .rich-markdown')!;
+
+afterEach(async () => {
   cleanup();
   expect(highlights()).toHaveLength(0);
   expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
+  await commands.setStreamTestReducedMotion(false);
 });
 
 describe("live Markdown paint integration", () => {
+  it("hides routine and final-channel live text in chat while its real modal stays live through completion", async () => {
+    const history: ChatMessage[] = [
+      { id: "prompt", role: "user", text: "Build it", timelineOrder: 1, turnId: "turn" },
+      { id: "progress", role: "assistant", text: "Preparing the changes", phase: "commentary", timelineOrder: 2, turnId: "turn" },
+    ];
+    function TimelineShell({ text, streaming, completed = false }: { text: string; streaming: boolean; completed?: boolean }) {
+      return <StrictMode><div className="app-shell" data-theme="kiwi" style={{ height: 600 }}>
+        <ChatTimeline provider="claude" activities={[]} running={!completed} thinkingLabel="Working"
+          messages={[...history, { id: "live", role: "assistant", phase: "final", text, streaming,
+            timelineOrder: 3, turnId: "turn", turnStatus: completed ? "completed" : "inProgress" }]} />
+      </div></StrictMode>;
+    }
+    const view = render(<TimelineShell text="The result" streaming />);
+    const main = view.container.querySelector<HTMLElement>(".flow-timeline")!;
+    expect(main.querySelectorAll(".message.assistant")).toHaveLength(0);
+    expect(main.textContent).not.toContain("Preparing the changes");
+    expect(main.textContent).not.toContain("The result");
+    expect(main.querySelectorAll(".activity-status.live")).toHaveLength(1);
+    fireEvent.click(main.querySelector<HTMLButtonElement>(".activity-status-pill")!);
+    const body = liveBody(view.container);
+    expect(body.textContent).toBe("The result");
+    const prefix = body.querySelector("p")!.firstChild;
+    view.rerender(<TimelineShell text="The result is ready" streaming />);
+    await vi.waitFor(() => expect(body.textContent).toBe("The result is ready"));
+    expect(view.container.querySelector<HTMLDialogElement>("dialog")?.open).toBe(true);
+    expect(main.querySelectorAll(".message.assistant")).toHaveLength(0);
+    // Item-level streaming can end before the provider confirms the turn.
+    view.rerender(<TimelineShell text="The result is ready now." streaming={false} />);
+    expect(main.querySelectorAll(".message.assistant")).toHaveLength(0);
+    view.rerender(<TimelineShell text="The result is ready now." streaming={false} completed />);
+    expect(main.querySelectorAll(".message.assistant")).toHaveLength(1);
+    expect(main.querySelector(".message.assistant .rich-markdown")?.textContent).toBe("The result is ready now.");
+    expect(liveBody(view.container)).toBe(body);
+    expect(body.querySelector("p")!.firstChild).toBe(prefix);
+    expect(view.container.querySelector('[data-step-id="progress"]')).not.toBeNull();
+    await vi.waitFor(() => expect(body.textContent).toBe("The result is ready now."));
+  });
+
+  it("presents the full live modal text immediately without decoration under reduced motion", async () => {
+    await commands.setStreamTestReducedMotion(true);
+    const view = render(<ActivityShell text="Existing" />);
+    const body = liveBody(view.container);
+    const appended = `Existing ${"new words ".repeat(80)}`;
+    view.rerender(<ActivityShell text={appended} />);
+    expect(liveBody(view.container)).toBe(body);
+    expect(body.textContent).toBe(appended.trimEnd());
+    expect(highlights()).toHaveLength(0);
+    expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
+    view.rerender(<ActivityShell text={`${appended}done.`} streaming={false} />);
+    expect(body.textContent).toBe(`${appended}done.`);
+    expect(highlights()).toHaveLength(0);
+  });
+
   it.each(["claude", "openai"] as const)("lays out authored assistant lines separately with %s", (provider) => {
     const view = render(<Shell provider={provider} text={"A short first line\nA short second line"} streaming={false} />);
     const paragraph = view.container.querySelector(".message.assistant .rich-markdown p")!;
@@ -138,19 +222,19 @@ describe("live Markdown paint integration", () => {
     const history: ChatMessage[] = Array.from({ length: 20 }, (_, index) => ({
       id: `old-${index}`, role: "user", text: `History ${index}: ${"words ".repeat(80)}`, timelineOrder: index,
     }));
-    const view = render(<Shell history={history} text="Live " />);
+    const view = render(<ActivityShell history={history} text="Live " />);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const scroller = view.container.querySelector<HTMLElement>(".flow-timeline")!;
+    const scroller = view.container.querySelector<HTMLElement>(".activity-details-scroll")!;
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
     fireEvent.wheel(scroller, { deltaY: -300 });
     scroller.scrollTop = 150;
     fireEvent.scroll(scroller);
-    view.rerender(<Shell history={history} text={`Live ${"new words ".repeat(80)}`} />);
+    view.rerender(<ActivityShell history={history} text={`Live ${"new words ".repeat(80)}`} />);
     await vi.waitFor(() => expect(highlights().length).toBeGreaterThan(0));
-    await vi.waitFor(() => expect(view.container.querySelector(".message.assistant .rich-markdown")?.textContent).toBe(`Live ${"new words ".repeat(80)}`.trimEnd()));
+    await vi.waitFor(() => expect(liveBody(view.container)?.textContent).toBe(`Live ${"new words ".repeat(80)}`.trimEnd()));
     await vi.waitFor(() => expect(highlights()).toHaveLength(0));
     expect(scroller.scrollTop).toBe(150);
-    const rows = [...scroller.querySelectorAll<HTMLElement>(".timeline-entry")].map((row) => row.getBoundingClientRect());
+    const rows = [...scroller.querySelectorAll<HTMLElement>(".activity-step")].map((row) => row.getBoundingClientRect());
     for (let index = 1; index < rows.length; index++) expect(rows[index].top).toBeGreaterThanOrEqual(rows[index - 1].bottom - 1);
   });
 
@@ -181,23 +265,23 @@ describe("live Markdown paint integration", () => {
     expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
   });
 
-  it("keeps the final answer mounted when completed-turn compaction hides progress updates", async () => {
+  it("keeps the modal answer mounted through the completed turn's bounded tail", async () => {
     const clock = frameClock();
     const history: ChatMessage[] = [
       { id: "prompt", role: "user", text: "Build it", timelineOrder: 1, turnId: "turn" },
       { id: "progress", role: "assistant", text: "Preparing the changes", timelineOrder: 2, turnId: "turn" },
     ];
-    const view = render(<Shell history={history} text="The result" />);
-    view.rerender(<Shell history={history} text="The result is ready" />);
+    const view = render(<ActivityShell history={history} text="The result" />);
+    view.rerender(<ActivityShell history={history} text="The result is ready" />);
     await clock.advance(120);
     expect(highlights().length).toBeGreaterThan(0);
     const active = highlights();
     const activeText = fadedText();
-    const body = view.container.querySelectorAll(".message.assistant .rich-markdown")[1];
+    const body = liveBody(view.container);
     expect(body).toBeDefined();
-    view.rerender(<Shell history={history} text="The result is ready now." streaming={false} />);
-    expect(view.container.querySelectorAll(".message.assistant .rich-markdown")).toHaveLength(1);
-    expect(view.container.querySelector(".message.assistant .rich-markdown")).toBe(body);
+    view.rerender(<ActivityShell history={history} text="The result is ready now." streaming={false} />);
+    expect(view.container.querySelector('[data-step-id="progress"]')).not.toBeNull();
+    expect(liveBody(view.container)).toBe(body);
     expect(highlights().length).toBeGreaterThan(0);
     for (const [name, highlight] of active) expect(CSS.highlights.get(name)).toBe(highlight);
     expect(fadedText()).toBe(activeText);
@@ -229,10 +313,10 @@ describe("live Markdown paint integration", () => {
       { id: "prompt", role: "user", text: "Build it", timelineOrder: 1, turnId: "turn" },
       { id: "progress", role: "assistant", text: "Preparing the changes", timelineOrder: 2, turnId: "turn" },
     ];
-    const view = render(<Shell history={history} text="The result" />);
-    view.rerender(<Shell history={history} text="The result is ready" />);
+    const view = render(<ActivityShell history={history} text="The result" />);
+    view.rerender(<ActivityShell history={history} text="The result is ready" />);
     await vi.waitFor(() => expect(paints.some((paint) => paint.connected && paint.text.length > 0)).toBe(true));
-    const body = view.container.querySelectorAll(".message.assistant .rich-markdown")[1];
+    const body = liveBody(view.container);
     const prefix = body.querySelector("p")!.firstChild;
     // The provider may finish after the previous 140ms decoration has ended.
     await vi.waitFor(() => {
@@ -240,9 +324,9 @@ describe("live Markdown paint integration", () => {
       expect(highlights()).toHaveLength(0);
     });
     completed = true;
-    view.rerender(<Shell history={history} text="The result is ready now." streaming={false} />);
-    expect(view.container.querySelectorAll(".message.assistant .rich-markdown")).toHaveLength(1);
-    expect(view.container.querySelector(".message.assistant .rich-markdown")).toBe(body);
+    view.rerender(<ActivityShell history={history} text="The result is ready now." streaming={false} />);
+    expect(view.container.querySelector('[data-step-id="progress"]')).not.toBeNull();
+    expect(liveBody(view.container)).toBe(body);
     expect(body.querySelector("p")!.firstChild).toBe(prefix);
     expect(body.textContent).toBe("The result is ready");
     await vi.waitFor(() => expect(body.textContent).toBe("The result is ready now."));

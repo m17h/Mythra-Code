@@ -5,6 +5,7 @@ import { resetTaskStore, useTaskStore } from "./taskStore";
 import { markProviderStopIntent } from "./providerStopIntent";
 import { usageTotals } from "./usageLedger";
 import { useClaudeContinuationStore } from "./claudeContinuation";
+import { compactActivityPresentation } from "./compactActivity";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 
@@ -31,6 +32,92 @@ describe("Claude event routing", () => {
     resetTaskStore();
     useClaudeContinuationStore.setState({ byThread: {} });
     vi.clearAllMocks();
+  });
+
+  it("recovers authoritative successful result text after progress and tools when the final assistant event is lost", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "progress", content: [
+      { type: "text", text: "I will inspect the file." },
+      { type: "tool_use", id: "read", name: "Read", input: { file_path: "file.ts" } },
+    ] } });
+    const result = { type: "result", subtype: "success", is_error: false, result: "The file is correct.", usage: { input_tokens: 10, output_tokens: 5 } };
+    send(result);
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.messages.map((message) => [message.id, message.text, message.phase])).toEqual([
+      ["progress", "I will inspect the file.", undefined],
+      ["claude-result-turn-1", "The file is correct.", "final"],
+    ]);
+    const presentation = compactActivityPresentation([
+      ...task.messages.map((value) => ({ kind: "message" as const, value })),
+      ...task.activities.map((value) => ({ kind: "activity" as const, value })),
+    ].sort((left, right) => (left.value.timelineOrder ?? 0) - (right.value.timelineOrder ?? 0)), { running: false });
+    expect(presentation.filter((entry) => entry.kind === "message").map((entry) => entry.value.text)).toEqual(["The file is correct."]);
+    expect(presentation.some((entry) => entry.kind === "work" && entry.value.some((item) => item.kind === "message" && item.value.id === "progress"))).toBe(true);
+    const usage = task.usage;
+    const totals = usageTotals();
+    send(result);
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toEqual(task.messages);
+    expect(useTaskStore.getState().tasks["thread-1"].usage).toEqual(usage);
+    expect(usageTotals()).toEqual(totals);
+    const saved = JSON.parse(JSON.stringify(task.messages));
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask("thread-1", saved, []);
+    expect(useTaskStore.getState().tasks["thread-1"].messages.at(-1)).toMatchObject({ phase: "final", turnStatus: "completed" });
+  });
+
+  it("marks the matching last assistant as final without duplicating it", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "progress", content: [{ type: "text", text: "Checking" }] } });
+    send({ type: "assistant", message: { id: "answer", content: [{ type: "text", text: "Done" }] } });
+    send({ type: "result", subtype: "success", result: "Done" });
+    expect(useTaskStore.getState().tasks["thread-1"].messages.map((message) => [message.id, message.phase])).toEqual([
+      ["progress", undefined], ["answer", "final"],
+    ]);
+  });
+
+  it.each([
+    { subtype: "error_during_execution", is_error: true, result: "Tool failed" },
+    { subtype: "interrupted", result: "Stopped" },
+    { subtype: "success", result: { text: "Not a string result" } },
+  ])("does not manufacture final text for $subtype with an untrusted result", (result) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "progress", content: [{ type: "text", text: "Checking" }] } });
+    send({ type: "result", ...result });
+    expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(1);
+    expect(useTaskStore.getState().tasks["thread-1"].messages[0].phase).toBeUndefined();
+  });
+
+  it.each([
+    ["Read", "research"], ["Glob", "research"], ["Grep", "research"], ["WebSearch", "research"], ["WebFetch", "research"],
+    ["Write", "files"], ["Edit", "files"], ["NotebookEdit", "files"], ["Bash", "commands"],
+  ])("attributes %s using the actual tool identity and retains it through result/reload", (name, workType) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "tool-message", content: [{ type: "tool_use", id: "tool", name,
+      input: { file_path: "/project/ResearchCommands.ts", command: "npm test" } }] } });
+    const activity = useTaskStore.getState().tasks["thread-1"].activities[0];
+    expect(activity).toMatchObject({ workType, status: "inProgress" });
+    send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool", content: "done" }] } });
+    send({ type: "result", subtype: "success", result: "" });
+    const snapshot = JSON.parse(JSON.stringify(useTaskStore.getState().tasks["thread-1"].activities));
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask("thread-1", [], snapshot);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ workType, status: "completed" });
+  });
+
+  it("keeps tool-separated assistant messages phase-unknown until the successful result identifies the answer", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "progress", content: [
+      { type: "text", text: "I will inspect the file." },
+      { type: "tool_use", id: "read", name: "Read", input: { file_path: "file.ts" } },
+    ] } });
+    expect(useTaskStore.getState().tasks["thread-1"].messages[0]).toMatchObject({ text: "I will inspect the file.", streaming: false });
+    expect(useTaskStore.getState().tasks["thread-1"].messages[0].phase).toBeUndefined();
+    send({ type: "assistant", message: { id: "answer", content: [{ type: "text", text: "The file is correct." }] } });
+    send({ type: "result", subtype: "success", is_error: false, result: "The file is correct." });
+    const messages = useTaskStore.getState().tasks["thread-1"].messages;
+    expect(messages.map((message) => [message.id, message.phase, message.turnStatus])).toEqual([
+      ["progress", undefined, "completed"], ["answer", "final", "completed"],
+    ]);
   });
 
   it("keeps a partial result remainder unpriced even when modelUsage has complete-looking cache zeros", () => {
@@ -397,7 +484,7 @@ describe("Claude event routing", () => {
     const task = useTaskStore.getState().tasks["thread-1"];
     expect(task.status).toBe("completed");
     expect(task.messages).toMatchObject([{
-      id: "claude-turn-1",
+      id: "claude-result-turn-1",
       role: "assistant",
       text: "Recovered answer",
       turnId: "turn-1",
@@ -528,7 +615,7 @@ describe("Claude event routing", () => {
     expect(task.status).toBe("completed");
     expect(task.messages).toMatchObject([
       { id: "message-a", text: "Answer A", turnId: "turn-a" },
-      { id: "claude-turn-b", text: "Recovered B", turnId: "turn-b", turnStatus: "completed" },
+      { id: "claude-result-turn-b", text: "Recovered B", turnId: "turn-b", turnStatus: "completed" },
     ]);
   });
 

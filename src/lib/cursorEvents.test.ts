@@ -31,6 +31,21 @@ describe("Cursor event routing", () => {
     store.appendUserMessage("thread-1", { id: "user", role: "user", text: "Review the game" });
   });
 
+  it.each([
+    ["read", "research"], ["search", "research"], ["fetch", "research"],
+    ["edit", "files"], ["delete", "files"], ["move", "files"], ["execute", "commands"],
+  ])("attributes ACP %s by its kind and retains it through kindless update/reload", (kind, workType) => {
+    sessionUpdate({ sessionUpdate: "tool_call", toolCallId: "tool", kind, title: "An arbitrary operation title", status: "in_progress" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ workType, status: "inProgress" });
+    sessionUpdate({ sessionUpdate: "tool_call_update", toolCallId: "tool", status: "completed", rawOutput: "done" });
+    const activity = useTaskStore.getState().tasks["thread-1"].activities[0];
+    expect(activity).toMatchObject({ workType, status: "completed" });
+    const snapshot = JSON.parse(JSON.stringify([activity]));
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask("thread-1", [], snapshot);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ workType, status: "completed" });
+  });
+
   it("updates running state only on the first streaming event and stays quiet in the background", () => {
     useTaskStore.getState().ensureTask("foreground");
     useTaskStore.getState().setActiveThread("foreground");
@@ -84,6 +99,9 @@ describe("Cursor event routing", () => {
     const assistants = task.messages.filter((message) => message.role === "assistant");
     expect(assistants).toHaveLength(2);
     expect(assistants.map((message) => message.streaming)).toEqual([false, false]);
+    // ACP does not report message phase; only the terminal turn may choose
+    // its last text segment as a compatibility answer.
+    expect(assistants.map((message) => message.phase)).toEqual([undefined, undefined]);
     expect(assistants[1]).toMatchObject({ text: "Start with **talents** next.", turnStatus: "completed" });
     expect(assistants[0].timelineOrder).toBeLessThan(task.activities[0].timelineOrder!);
     expect(task.activities[0].timelineOrder).toBeLessThan(assistants[1].timelineOrder!);

@@ -1,5 +1,6 @@
 import type { CursorEvent } from "./cursor";
 import type { JsonObject } from "./codex";
+import type { Activity } from "../types";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { consumeProviderStopIntent } from "./providerStopIntent";
@@ -90,6 +91,13 @@ function activityKind(kind: string): "command" | "file" | "agent" {
   if (/edit|delete|move|write/i.test(kind)) return "file";
   if (/agent|search/i.test(kind)) return "agent";
   return "command";
+}
+
+function toolWorkType(kind: string): Activity["workType"] {
+  if (/^(read|search|fetch)$/i.test(kind)) return "research";
+  if (/^(edit|delete|move|write)$/i.test(kind)) return "files";
+  if (/^execute$/i.test(kind)) return "commands";
+  return undefined;
 }
 
 function detailFor(value: unknown): string | undefined {
@@ -260,6 +268,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       const id = text(update.toolCallId) || crypto.randomUUID();
       const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
       const status = text(update.status);
+      const workType = toolWorkType(text(update.kind)) ?? existing?.workType;
       // A genuinely new tool after result is stale noise and would otherwise
       // appear below the final answer, detached from the completed turn. A
       // late status update for a tool we already showed may still refine it.
@@ -267,6 +276,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
         store.upsertActivity(threadId, {
           id,
           kind: activityKind(text(update.kind) || existing?.kind || "tool"),
+          ...(workType ? { workType } : {}),
           title: text(update.title) || existing?.title || "Cursor tool",
           detail: detailFor(update.rawOutput ?? update.rawInput ?? update.content) || existing?.detail,
           status: status === "completed" ? "completed" : status === "failed" ? "failed" : "inProgress",

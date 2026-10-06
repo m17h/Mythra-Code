@@ -20,6 +20,22 @@ describe("local transcript persistence adapters", () => {
     resetLocalTranscriptPersistenceForTests();
   });
 
+  it.each(["claude", "cursor"] as const)("retains normalized %s work categories through snapshot saving and history loading", async (provider) => {
+    const transcript = { thread: { ...thread, modelProvider: provider }, cursorSessionId: "cursor-session", messages: [completed], activities: [{
+      id: "read", kind: "command" as const, title: "/project/file.ts", workType: "research" as const,
+      status: "completed", turnId: "turn-old", turnStatus: "completed" as const, timelineOrder: 2,
+    }] };
+    tauri.invoke.mockResolvedValueOnce({ ...writeState(1), rewrittenChunks: 1, totalChunks: 1 });
+    await (provider === "claude" ? saveClaudeTranscript(transcript) : saveCursorTranscript(transcript));
+    expect(tauri.invoke).toHaveBeenCalledWith("local_transcript_snapshot_write", expect.objectContaining({
+      provider, value: expect.objectContaining({ activities: transcript.activities }),
+    }));
+    resetLocalTranscriptPersistenceForTests();
+    tauri.invoke.mockResolvedValueOnce(JSON.parse(JSON.stringify(transcript))).mockResolvedValueOnce(writeState(1));
+    const loaded = await (provider === "claude" ? loadClaudeTranscript(thread.id) : loadCursorTranscript(thread.id));
+    expect(loaded?.activities[0]).toMatchObject({ workType: "research", title: "/project/file.ts" });
+  });
+
   it.each(["claude", "cursor"] as const)("renames an unopened %s thread without writing a snapshot or empty session ID", async (provider) => {
     tauri.invoke.mockResolvedValue(undefined);
     await renameLocalTranscript(provider, thread.id, "Renamed");
