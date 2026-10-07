@@ -6213,7 +6213,12 @@ describe("Thread pull request integration", () => {
     const user = userEvent.setup();
     await renderApp();
     await user.click(screen.getByRole("button", { name: /^Pull requests/ }));
-    await user.click(await screen.findByRole("button", { name: /#31 Improve Alpha.*Open details/ }));
+    // The shortcut crosses two lazy views plus account/repository readiness.
+    // Observe those setup boundaries before testing the late merge owner.
+    const tools = within(await screen.findByRole("complementary", { name: "Project workspace tools" }));
+    const pulls = within(await tools.findByRole("tabpanel", { name: "Pull requests" }));
+    await pulls.findByRole("searchbox", { name: "Search pull requests" });
+    await user.click(await pulls.findByRole("button", { name: /#31 Improve Alpha.*Open details/ }));
     await user.click(await screen.findByRole("button", { name: "Merge on GitHub…" }));
     await user.click(within(screen.getByRole("group", { name: "Confirm merge" })).getByRole("button", { name: "Merge #31 on GitHub" }));
     await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "github_pr_merge")).toBe(true));
