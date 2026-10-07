@@ -19,6 +19,8 @@ const codex = vi.hoisted(() => ({
 vi.mock("../lib/codex", () => codex);
 const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
 vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
   getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
 }));
 

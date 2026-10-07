@@ -539,7 +539,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 : { prompt: await current.resolveSkillPrompt(prompt), systemPrompt: resolvedSystemPrompt };
               // Every agent step is a new turn in the workflow's stored
               // project, independent of the visible project and run snapshot.
-              const systemPrompt = appendCurrentLearnedPreferences(resolved.systemPrompt, workflow.projectId);
+              const systemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, workflow.projectId);
               const providerPrompt = resolved.prompt;
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";

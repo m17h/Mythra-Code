@@ -130,7 +130,7 @@ export async function startChildAgentTurn(
   // Resolution is asynchronous disk work, not permission to start after Stop
   // or root deletion. Check before creating any transcript/provider thread.
   assertCanStart();
-  const learnedSystemPrompt = appendCurrentLearnedPreferences(resolved.systemPrompt, context.projectId ?? null);
+  const learnedSystemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, context.projectId ?? null);
   assertCanStart();
   const run = { ...childRunSettings(target, context), systemPrompt: learnedSystemPrompt };
   const systemPrompt = withMythraCodeCompletionInstructions(learnedSystemPrompt);

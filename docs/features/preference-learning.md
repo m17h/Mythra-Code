@@ -10,6 +10,9 @@ Learned preferences let Mythra Code remember how you like to work, using
 selected conversation messages. Learning is off by default for every scope.
 When enabled, accepted updates are saved automatically and a toast identifies
 the scope that changed. The updated instructions apply to future turns.
+Turn preparation waits for the initial saved-preference read. If that read
+fails, the turn reports an error before model dispatch; the next attempt retries
+the read rather than silently dropping enabled instructions.
 
 ## Enable learning
 

@@ -18,6 +18,8 @@ vi.mock("../lib/claude", () => ({ startClaudeTurn: runtime.claude, saveClaudeTra
 vi.mock("../lib/cursor", () => ({ startCursorTurn: runtime.cursor, saveCursorTranscript: runtime.saveCursor, killCursorTurn: runtime.killCursor }));
 const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
 vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
   getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
 }));
 beforeEach(() => { preferences.scopes = {}; });

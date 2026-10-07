@@ -779,7 +779,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // Learned documents never enter authored skill resolution or saved
       // settings/child baselines. Read the captured target's current documents
       // once for this new turn; steering keeps its running policy frozen.
-      resolvedSystemPrompt = appendCurrentLearnedPreferences(resolvedSystemPrompt, activeProject?.id ?? null);
+      resolvedSystemPrompt = await appendCurrentLearnedPreferences(resolvedSystemPrompt, activeProject?.id ?? null);
       assertCanStart();
       let executionPath = activeWorkspace.path;
       if (!activeThread && draftThreadIsolated && activeProject) {

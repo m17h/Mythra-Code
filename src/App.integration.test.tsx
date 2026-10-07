@@ -218,6 +218,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   };
   if (command === "git_project_file_diff") return { path: args?.path, area: args?.area, text: "@@ -1 +1 @@\n-old\n+new\n", binary: false, truncated: false };
   if (command === "git_project_history") return { entries: [], hasMore: false, nextOffset: 0, headOid: "a".repeat(40), truncated: false };
+  if (command === "preference_learning_list") return { scopes: [], creationRevision: 0 };
   if (command === "github_pr_list") return [];
   if (command === "git_workspace_snapshot") return {
     branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 0,

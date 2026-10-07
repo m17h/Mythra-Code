@@ -8,6 +8,8 @@ vi.mock("./claude", () => claude);
 vi.mock("./cursor", () => cursor);
 const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
 vi.mock("./preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
   getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
 }));
 

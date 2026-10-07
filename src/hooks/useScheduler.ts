@@ -111,7 +111,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       const resolved: ResolvedSkillPrompts = current.resolveSkillPrompts
         ? await current.resolveSkillPrompts(scheduled.prompt, run.systemPrompt)
         : { prompt: await current.resolveSkillPrompt(scheduled.prompt), systemPrompt: run.systemPrompt };
-      const systemPrompt = appendCurrentLearnedPreferences(resolved.systemPrompt, scheduled.projectId);
+      const systemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, scheduled.projectId);
       await current.ensureSkillRoots();
       const providerPrompt = resolved.prompt;
       let runtimeRun = { ...run, systemPrompt };

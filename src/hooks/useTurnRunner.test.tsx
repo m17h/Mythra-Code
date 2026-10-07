@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { PendingTurnStarts } from "../lib/pendingTurnStarts";
@@ -42,11 +42,13 @@ const childSessions = vi.hoisted(() => ({
   cacheChildAgentPolicy: vi.fn(),
   releaseChildAgentSession: vi.fn(),
 }));
-const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+const preferences = vi.hoisted(() => ({ hydrated: true, load: vi.fn(async () => {}), scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
 vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => preferences.hydrated,
+  loadPreferenceLearning: () => preferences.load(),
   getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
 }));
-beforeEach(() => { preferences.scopes = {}; });
+beforeEach(() => { preferences.scopes = {}; preferences.hydrated = true; preferences.load.mockReset().mockImplementation(async () => { preferences.hydrated = true; }); });
 
 vi.mock("../lib/codex", () => codex);
 vi.mock("../lib/claude", () => claude);
@@ -436,6 +438,40 @@ describe("useTurnRunner", () => {
     expect(start.mock.calls.at(-1)![0].systemPrompt).toContain("Updated project preference");
     expect(start.mock.calls.at(-1)![0].systemPrompt).not.toContain("Old preference");
     expect(deps.effectiveSettings.systemPrompt).toBe("Authored @policy");
+  });
+
+  it.each([false, true])("holds model dispatch during preference hydration and honors Stop (%s)", async (stop) => {
+    preferences.hydrated = false;
+    let release!: () => void;
+    preferences.load.mockImplementation(() => new Promise<void>((resolve) => { release = () => { preferences.hydrated = true; resolve(); }; }));
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Resolved authored policy" }));
+    const deps = context({ resolveSkillPrompts });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("Hello"); });
+    expect(preferences.load).toHaveBeenCalledOnce();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    if (stop) { deps.running = true; await act(async () => { await result.current.stopTurn(); }); }
+    preferences.scopes.app = { enabled: true, markdown: "Keep @trap literal" };
+    await act(async () => { release(); expect(await delivered).toBe(!stop); });
+    if (stop) expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    else expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: expect.stringContaining("Keep ＠trap literal") }));
+    expect(resolveSkillPrompts).toHaveBeenCalledOnce();
+    expect(resolveSkillPrompts.mock.calls[0][0]).toBe("Hello");
+  });
+
+  it("reports preference hydration failure without dispatch and retries on the next send", async () => {
+    preferences.hydrated = false;
+    preferences.load.mockRejectedValueOnce(new Error("Saved preferences unreadable"));
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Hello")).toBe(false); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("Saved preferences unreadable"));
+    preferences.scopes.app = { enabled: true, markdown: "Recovered preference" };
+    await act(async () => { expect(await result.current.sendMessage("Try again")).toBe(true); });
+    expect(preferences.load).toHaveBeenCalledTimes(2);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: expect.stringContaining("Recovered preference") }));
   });
 
   it("records accepted authored input and skips generated reviews and child input", async () => {
@@ -970,7 +1006,7 @@ describe("useTurnRunner", () => {
     let delivered: boolean | undefined;
     await act(async () => {
       const sent = result.current.sendMessage("build it").then((value) => { delivered = value; });
-      await Promise.resolve();
+      await waitFor(() => expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledOnce());
       // What `setStartingDraftTurn(true)` does in the app: the composer now
       // reports a running draft turn, which is the state Stop reads.
       deps.running = true;
@@ -1080,7 +1116,7 @@ describe("useTurnRunner", () => {
       await Promise.resolve();
     });
 
-    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" }));
+    await waitFor(() => expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" })));
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
   });
 
