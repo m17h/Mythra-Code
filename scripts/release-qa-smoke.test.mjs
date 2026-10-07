@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,14 +69,36 @@ test('executable identity mismatch fails and stops only the owned fixture child'
 }, windowsIntegrationTimeout);
 
 test('early exit fails the uptime requirement', async () => {
-  const f = fixture({ earlyExit: true });
-  // This regression exercises uptime after identity is obtained. Real Windows
-  // PowerShell identity lookup can outlive this intentionally 100ms child;
-  // the other fixtures retain the real OS identity lookup.
-  f.options.identifyProcess = (pid) => children.some((child) => child.pid === pid && child.exitCode === null && child.signalCode === null) ? `fixture:${pid}` : undefined;
+  const f = fixture();
+  let now = 0;
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242, exitCode: null, signalCode: null,
+    kill(signal) { this.signalCode = signal; return true; },
+  });
+  // Drive this negative uptime branch with an owned fake process and clock.
+  // A real child's startup can exhaust 250ms before its own 100ms exit timer
+  // starts. Other fixtures retain actual process/identity/normal-close checks.
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  f.options.identifyProcess = (pid) => pid === child.pid ? 'fixture:4242' : undefined;
   f.options.inspectProcess = (pid) => ({ pid, processStart: f.options.identifyProcess(pid), executablePath: process.execPath });
-  await expect(runQaSmoke(f.options)).rejects.toThrow(/five-second smoke/);
-  expect(existsSync(f.profileRoot)).toBe(false);
+  f.options.spawnCandidate = () => {
+    const marker = readJson(join(f.profileRoot, '.mythra-release-qa.json'));
+    const runId = 'f4444444-4444-4444-8444-444444444444';
+    const event = (kind, details = {}) => ({ schemaVersion: 1, profileId: marker.profileId, pid: child.pid, runId, kind, details });
+    writeFileSync(join(f.profileRoot, 'events.jsonl'), [
+      event('profile-open', { contractVersion: 1, providers: 'blocked', persistentWebview: true, webviewStoreId: runId }),
+      event('control-ready'),
+    ].map((value) => JSON.stringify(value) + '\n').join(''));
+    children.push(child);
+    return child;
+  };
+  f.options.sleep = async (ms) => { now += ms; if (now >= 100) child.exitCode = 0; };
+  try {
+    await expect(runQaSmoke(f.options)).rejects.toThrow(/five-second smoke/);
+    expect(now).toBeLessThan(f.options.livenessMs);
+    expect(child.exitCode).toBe(0);
+    expect(existsSync(f.profileRoot)).toBe(false);
+  } finally { clock.mockRestore(); }
 });
 
 test('close deadline fails and terminates only its isolated candidate', async () => {
