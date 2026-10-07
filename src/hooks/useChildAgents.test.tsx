@@ -204,6 +204,17 @@ describe("useChildAgents", () => {
       expect(runContext.policy.permission).toBe("read-only");
     });
 
+    it("binds learned preferences to the root's saved project before resolving its worktree", async () => {
+      const projectIdForThread = vi.fn((threadId: string) => threadId === "root-1" ? "root-project" : "other-project");
+      const view = await mount({ projectIdForThread });
+      await view.send(request({ arguments: { target: "terra", prompt: "Review my change." } }));
+      expect(projectIdForThread).toHaveBeenCalledExactlyOnceWith("root-1");
+      expect(childRun.startChildAgentTurn.mock.calls[0][2]).toMatchObject({
+        projectId: "root-project", executionPath: "/tmp/project/.worktrees/a", systemPrompt: "Global then Codex",
+      });
+      expect(POLICY.systemPrompt).toBe("Be careful.");
+    });
+
     it("passes the OpenRouter context window through for an OpenRouter destination", async () => {
       const view = await mount();
       await view.send(request({ arguments: { target: "grok", prompt: "Do the work." } }));

@@ -5,12 +5,20 @@ import type { AppUpdater } from "../lib/appUpdater";
 import { SettingsModal } from "./SettingsModal";
 import type { RuntimeModel } from "./ModelPowerControl";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
+import { preferenceLearningFixture } from "../test/preferenceLearningFixture";
+import { getPreferenceLearningScope, loadPreferenceLearning } from "../lib/preferenceLearningStore";
 import { resetUsageLedgerCache, USAGE_LEDGER_KEY } from "../lib/usageLedger";
 import type { LocalSkill } from "../lib/skills";
 import { emptySkillDependencyReport } from "../lib/skillDependencies";
 import type { SkillDependencyReport } from "../types";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+const nativeInvoke = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@tauri-apps/api/core")>();
+  nativeInvoke.mockImplementation(original.invoke);
+  return { ...original, invoke: nativeInvoke };
+});
 
 const updater: AppUpdater = {
   phase: "idle",
@@ -1536,7 +1544,7 @@ describe("SettingsModal", () => {
   it("explains that global provider instruction files are not inherited", () => {
     render(<SettingsModal {...modalProps({ initialSection: "prompts" })} />);
 
-    const notice = screen.getByRole("note");
+    const notice = screen.getByText("Global instruction files are not inherited.").closest('[role="note"]');
     expect(notice).toHaveTextContent("Global instruction files are not inherited");
     expect(notice).toHaveTextContent("CLAUDE.md");
     expect(notice).toHaveTextContent("AGENTS.md");
@@ -1818,4 +1826,17 @@ it("edits app sub-agent defaults without creating a preset", () => {
   fireEvent.click(within(editor).getByRole("switch", { name: "Allow sub-agent spawning" }));
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
   expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ subagentsEnabled: true, childAgentPresets: [] }));
+});
+
+it("uses provider model IDs for learning when runtime catalog row IDs differ", async () => {
+  const fixture = preferenceLearningFixture();
+  fixture.reset();
+  nativeInvoke.mockImplementation(fixture.invoke);
+  await loadPreferenceLearning();
+  render(<SettingsModal {...modalProps({ initialSection: "prompts", runtimeModels: [{ ...runtimeModel("catalog-row-luna", "Live Luna"), model: "gpt-6.1-luna" }] })} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preference learning model" }));
+  expect(screen.getByRole("menuitemradio", { name: /Automatic/ })).toHaveTextContent("gpt-6.1-luna");
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /Live Luna/ }));
+  await waitFor(() => expect(getPreferenceLearningScope("app").model).toBe("gpt-6.1-luna"));
+  expect(fixture.calls.find((call) => call.command === "preference_learning_save")?.args?.value).toEqual(expect.objectContaining({ model: "gpt-6.1-luna" }));
 });

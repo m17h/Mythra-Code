@@ -17,6 +17,12 @@ const codex = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/codex", () => codex);
+const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
+}));
 
 import { useScheduler, type SchedulerDeps } from "./useScheduler";
 
@@ -67,6 +73,7 @@ async function flushMicrotasks(count = 12): Promise<void> {
 
 describe("useScheduler", () => {
   beforeEach(() => {
+    preferences.scopes = {};
     resetTaskStore();
     vi.useFakeTimers();
     codex.rpc.mockReset();
@@ -75,6 +82,28 @@ describe("useScheduler", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each([null, "project-1"])("uses live app and target-project preferences for deferred schedule %s", async (projectId) => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- App preference with @trap" },
+      "project:project-1": { enabled: true, markdown: "- Target project preference" },
+      "project:other": { enabled: true, markdown: "- Unrelated project preference" },
+    };
+    const runs: ScheduleRunRecord[] = [];
+    const run = { ...scheduleRunSnapshot(DEFAULT_SETTINGS), systemPrompt: "Saved @authored" };
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Resolved authored policy" }));
+    codex.rpc.mockImplementation(async (method: string) => method.startsWith("thread/") ? { thread: { id: "thread-1" } } : {});
+    const deps = testSchedulerDeps(testSchedule({ projectId, run }), runs, { resolveSkillPrompts });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Run the checks", "Saved @authored");
+    const instructions = codex.rpc.mock.calls.find(([method]) => method === "turn/start")![1].collaborationMode.settings.developer_instructions;
+    expect(instructions).toContain("Resolved authored policy");
+    expect(instructions).toContain("App preference with ＠trap");
+    expect(instructions.includes("Target project preference")).toBe(projectId !== null);
+    expect(instructions).not.toContain("Unrelated project preference");
+    expect(run.systemPrompt).toBe("Saved @authored");
   });
 
   it("starts a due schedule and records the run", async () => {

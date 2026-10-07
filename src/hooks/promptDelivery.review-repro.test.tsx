@@ -15,6 +15,11 @@ const runtime = vi.hoisted(() => ({
   killClaude: vi.fn(async () => {}), killCursor: vi.fn(async () => {}),
 }));
 vi.mock("../lib/codex", () => ({ rpc: runtime.rpc, auditEvent: runtime.auditEvent }));
+vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "" }),
+}));
 vi.mock("../lib/claude", () => ({ startClaudeTurn: runtime.claude, saveClaudeTranscript: runtime.saveClaude, killClaudeTurn: runtime.killClaude }));
 vi.mock("../lib/cursor", () => ({ startCursorTurn: runtime.cursor, saveCursorTranscript: runtime.saveCursor, killCursorTurn: runtime.killCursor }));
 import { useWorkflowEngine } from "./useWorkflowEngine";

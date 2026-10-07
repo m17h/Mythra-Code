@@ -1153,11 +1153,11 @@ export interface AuxiliaryUsage {
  * Recent execution identities survive reload. Unreported tokens are never invented. */
 export function recordAuxiliaryUsage(entry: AuxiliaryUsage): boolean {
   if (!entry.executionId || entry.executionId.length > 200 || !USAGE_PROVIDERS.includes(entry.provider)
-    || !entry.model || entry.model.length > 160 || !["thread-title", "run-discovery", "check-discovery"].includes(entry.purpose)) return false;
+    || !entry.model || entry.model.length > 160 || !["thread-title", "run-discovery", "check-discovery", "preference-learning"].includes(entry.purpose)) return false;
   const groups = ledger().filter((record) => record.kind === "auxiliary");
   if (groups.some((record) => record.eventIds?.includes(entry.executionId))) return false;
   const modelGroup = `openkiwi:auxiliary:${entry.provider}:${entry.purpose}:${entry.model}`;
-  // At most 128 model groups plus fifteen provider/purpose overflow groups.
+  // At most 128 model groups plus twenty provider/purpose overflow groups.
   const threadId = groups.some((record) => record.threadId === modelGroup) || groups.length < MAX_AUXILIARY_MODEL_GROUPS
     ? modelGroup : `openkiwi:auxiliary:${entry.provider}:${entry.purpose}:overflow`;
   let accepted = false;

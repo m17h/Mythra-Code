@@ -58,6 +58,8 @@ import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { HarnessSettings } from "./HarnessSettings";
+import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
+import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { SkillLibrary } from "./SkillLibrary";
 import { SkillPromptEditor } from "./SkillPromptEditor";
 import type { McpView } from "./StudioDock";
@@ -126,7 +128,7 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
       { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
       { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
-      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread: the global prompt first, then the selected subscription\u2019s own prompt.", keywords: "prompt system instructions agents.md claude.md guidance context profile global memory" },
+      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread, plus optional automatically learned preferences.", keywords: "prompt system instructions agents.md claude.md guidance context profile global memory learning learned preferences history" },
       { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Thread cleanup and reusable sub-agent setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew" },
     ],
   },
@@ -429,6 +431,10 @@ export function SettingsModal({
   onRemoveSkill,
   onRestoreSkill,
   onOpenOnboarding,
+  onLearnPastConversations,
+  onCancelPreferenceLearning,
+  preferenceHistoryProgress,
+  onPreferenceLearningChanged,
 }: {
   open: boolean;
   initialSection: SettingsSection;
@@ -532,6 +538,10 @@ export function SettingsModal({
   onRemoveSkill: (path: string, deleteSource: boolean) => Promise<boolean>;
   onRestoreSkill: (path: string) => Promise<boolean>;
   onOpenOnboarding: () => void;
+  onLearnPastConversations?: (scopeKey: string) => Promise<void>;
+  onCancelPreferenceLearning?: (scopeKey: string) => void;
+  preferenceHistoryProgress?: PreferenceHistoryProgress | null;
+  onPreferenceLearningChanged?: (message: string) => void;
 }) {
   const managedDeveloperRuntimeUpdater = useDeveloperRuntimeUpdater(onClaudeRefresh, !injectedDeveloperRuntimeUpdater);
   const developerRuntimeUpdater = injectedDeveloperRuntimeUpdater ?? managedDeveloperRuntimeUpdater;
@@ -569,6 +579,7 @@ export function SettingsModal({
     openRouterModels,
     lmStudioModels,
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+
   const defaultModelOptions = useMemo<AppSelectOption[]>(
     () => modelOptionsForProvider(local.provider, local.model, modelCatalogs),
     [local.model, local.provider, modelCatalogs],
@@ -604,6 +615,12 @@ export function SettingsModal({
       detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+
+  // Learning's automatic default must use the live catalog, never the picker fallback.
+  const learningModelCatalogs = useMemo(() => ({
+    ...subAgentModelCatalogs,
+    openai: runtimeModels.map((entry) => ({ id: entry.model || entry.id, label: entry.displayName || entry.model, detail: entry.description || entry.model })),
+  }), [runtimeModels, subAgentModelCatalogs]);
 
   const defaultModelHelp = local.provider === "openrouter"
     ? "Search the live OpenRouter catalog. New threads will start with this model."
@@ -1266,6 +1283,7 @@ export function SettingsModal({
 
           {settingsSection === "prompts" &&
           <section className="settings-section">
+            <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
             <div className="set-group">
               <h4>Project instructions</h4>
               <div className="set-card">

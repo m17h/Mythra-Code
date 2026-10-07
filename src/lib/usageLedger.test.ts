@@ -9,6 +9,7 @@ import {
   parseModelPricingCatalog,
   pricingForModel,
   recordCumulativeUsage,
+  recordAuxiliaryUsage,
   recordUsageDelta,
   refreshModelPricingCatalog,
   resetUsageLedgerCache,
@@ -46,6 +47,15 @@ describe("usage ledger", () => {
   beforeEach(() => {
     resetUsageLedgerCache();
     localStorage.clear();
+  });
+  it("counts preference learning once as auxiliary usage across reload", () => {
+    const entry = { executionId: "preferences-one", provider: "openai" as const, model: "gpt-6-luna", purpose: "preference-learning", usage: usage(100, 10) };
+    expect(recordAuxiliaryUsage(entry)).toBe(true);
+    expect(recordAuxiliaryUsage(entry)).toBe(false);
+    expect(usageTotals()).toMatchObject({ threads: 0, auxiliaryRequests: 1 });
+    flushUsageLedger(); resetUsageLedgerCache();
+    expect(recordAuxiliaryUsage(entry)).toBe(false);
+    expect(usageTotals()).toMatchObject({ threads: 0, auxiliaryRequests: 1 });
   });
 
   it("folds stale thread records into one archive record with identical totals", () => {

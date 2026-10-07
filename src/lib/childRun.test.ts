@@ -6,6 +6,12 @@ const cursor = vi.hoisted(() => ({ startCursorTurn: vi.fn(), saveCursorTranscrip
 vi.mock("./codex", () => codex);
 vi.mock("./claude", () => claude);
 vi.mock("./cursor", () => cursor);
+const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+vi.mock("./preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
+}));
 
 import { childRunSettings, startChildAgentTurn, type ChildRunContext } from "./childRun";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
@@ -69,6 +75,7 @@ describe("childRunSettings", () => {
 
 describe("startChildAgentTurn", () => {
   beforeEach(() => {
+    preferences.scopes = {};
     vi.clearAllMocks();
     claude.saveClaudeTranscript.mockResolvedValue(undefined);
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
@@ -79,6 +86,27 @@ describe("startChildAgentTurn", () => {
     codex.rpc.mockImplementation(async (method: string) => (method === "thread/start"
       ? { thread: { id: "thread-child", name: null, preview: "", cwd: "/tmp", updatedAt: 0, modelProvider: "openai" } }
       : { turn: { id: "turn-codex", items: [] } }));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("uses current root-project preferences after authored skills for a %s child", async (provider) => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- App style with @trap" },
+      "project:root-project": { enabled: true, markdown: "- Root project style" },
+      "project:other": { enabled: true, markdown: "- Unrelated project style" },
+    };
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Resolved inherited policy" }));
+    const ctx = context({ projectId: "root-project", resolveSkillPrompts });
+    await startChildAgentTurn(target({ provider }), "Review this", ctx);
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Review this", "Be careful.");
+    const instructions = provider === "claude" ? claude.startClaudeTurn.mock.calls[0][0].systemPrompt
+      : provider === "cursor" ? cursor.startCursorTurn.mock.calls[0][0].systemPrompt
+        : codex.rpc.mock.calls.find(([method]) => method === "turn/start")![1].collaborationMode.settings.developer_instructions;
+    expect(instructions).toContain("Resolved inherited policy");
+    expect(instructions).toContain("App style with ＠trap");
+    expect(instructions).toContain("Root project style");
+    expect(instructions).not.toContain("Unrelated project style");
+    expect(ctx.systemPrompt).toBe("Be careful.");
+    expect(ctx.policy.systemPrompt).toBe("Be careful.");
   });
 
   it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("does not start a %s child stopped while skill preparation waits", async (provider) => {

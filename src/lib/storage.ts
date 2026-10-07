@@ -61,7 +61,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 28;
+export const STORAGE_SCHEMA_VERSION = 29;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
@@ -275,6 +275,9 @@ export function migrateStorage(readRaw: (key: string) => string | null = readSto
   // pricing source. Older snapshots infer it until their next successful read.
   // Version 28 adds optional thread-local spawning switches. Missing entries
   // retain existing threads' legacy opt-ins; fresh threads explicitly store off.
+  // Version 29 adds optional user-created prompt profiles to project overrides.
+  // Existing active prompts remain authoritative and need no eager rewrite.
+  // Learned preferences live in their separately versioned native registry.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

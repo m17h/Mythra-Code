@@ -5,7 +5,7 @@ import { recordAuxiliaryUsage } from "./usageLedger";
 
 export const BACKGROUND_USAGE_EVENT = "background-helper-usage";
 const PROVIDERS: Provider[] = ["openai", "claude", "cursor", "openrouter", "lmstudio"];
-const PURPOSES = ["thread-title", "run-discovery", "check-discovery"] as const;
+const PURPOSES = ["thread-title", "run-discovery", "check-discovery", "preference-learning"] as const;
 const SOURCES = ["reported", "requested", "unknown"] as const;
 const OUTCOMES = ["completed", "failed", "cancelled", "timed-out", "unknown"] as const;
 const TOKEN_KEYS = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "cacheWrite1hInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"] as const;

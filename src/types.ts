@@ -25,6 +25,14 @@ export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
+/** A user-authored snapshot of this project's instructions and layering choice. */
+export interface ProjectPromptProfile {
+  id: string;
+  name: string;
+  prompt: string;
+  mode: ProjectPromptMode;
+}
+
 export interface ProjectDefaults {
   provider: Provider;
   model: string;
@@ -64,6 +72,9 @@ export interface ProjectOverrides {
   systemPrompt?: string;
   /** Existing projects default to replace; append layers app instructions first. */
   systemPromptMode?: ProjectPromptMode;
+  systemPromptProfiles?: ProjectPromptProfile[];
+  /** A label for matching active instructions; systemPrompt remains authoritative. */
+  systemPromptProfileId?: string;
   /** Complete project-local delegation settings; absent means inherit global. */
   subagents?: ProjectSubagentSettings;
 }

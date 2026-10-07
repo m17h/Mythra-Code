@@ -1,0 +1,40 @@
+.preference-learning-scope {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.preference-learning-scope > .app-select { flex: 1; }
+.preference-learning-controls {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.preference-learning-controls:disabled { opacity: .65; }
+.preference-learning-disclosure { padding: 12px 16px; }
+.preference-learning-disclosure p + p { margin-top: 8px; }
+.preference-learning-editor { width: 100%; resize: vertical; min-height: 130px; }
+.preference-learning-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.preference-learning-unavailable { padding: 0 16px 12px; }
+.preference-learning-status:empty { display: none; }
+.preference-learning-status [role="alert"] { color: var(--danger); }
+.preference-learning-history-state { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
+.preference-learning-history-state > .pixel-working-mark,
+.preference-learning-history-state > svg { flex: 0 0 auto; }
+.preference-learning-history-state > span { min-width: 0; overflow-wrap: anywhere; }
+.preference-learning-history-state.complete { color: var(--green); }
+.preference-learning-history-coverage { color: var(--muted-2); }
+.preference-learning-history-progress { margin: 10px 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-3); }
+.preference-learning-history-progress p { margin: 0; }
+.preference-learning-history-progress p + p { margin-top: 6px; }
+.preference-learning-experimental { margin: 0 0 8px; }
+.preference-learning-info { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--muted-2); font-size: var(--fs-meta); cursor: pointer; }
+.preference-learning-info:hover,
+.preference-learning-info[aria-expanded="true"] { color: var(--ink-2); background: var(--panel-3); }
+.preference-learning-info:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+/* In-flow help stays readable inside the Settings scroller at every app scale. */
+.preference-learning-info-message { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-3); color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }

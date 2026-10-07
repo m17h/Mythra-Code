@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
-  CircleDashed,
   Folder,
   GitBranch,
   GitMerge,
@@ -15,6 +14,7 @@ import type { Provider } from "../types";
 import { ThreadTitle } from "./ThreadTitle";
 import { ProviderLogo } from "./BrandLogos";
 import { ScheduledCountBadge } from "./ScheduledCountBadge";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 
 /** Only what a card can show. Deliberately not the whole pull request: the
  *  inbox renders hundreds of these, and a card that accepted the full object
@@ -47,7 +47,7 @@ function WorkingDuration({ startedAt }: { startedAt: number }) {
   return <span className="thread-card-duration">{formatWorkingDuration(Date.now() - startedAt)}</span>;
 }
 
-function ThreadInboxStatus({ threadId }: { threadId: string }) {
+function ThreadInboxStatus({ threadId, id }: { threadId: string; id: string }) {
   const status = useTaskStore((state) => state.statuses[threadId] ?? "idle");
   const startedAt = useTaskStore((state) => state.tasks[threadId]?.workingStartedAt);
   const approvalCount = useTaskStore((state) => state.tasks[threadId]?.approvals.length ?? 0);
@@ -55,25 +55,25 @@ function ThreadInboxStatus({ threadId }: { threadId: string }) {
 
   if (approvalCount > 0) {
     return (
-      <span className="thread-card-status approval" role="status">
+      <span id={id} className="thread-card-status approval" role="status">
         Needs approval
       </span>
     );
   }
   if (status === "starting" || status === "running") {
     return (
-      <span className="thread-card-status working" role="status">
-        <CircleDashed className="thread-card-spinner" size={14} />
+      <span id={id} className="thread-card-status working" role="status">
+        <PixelWorkingMark className="thread-card-working-mark" />
         <span>{status === "starting" ? "Starting" : "Working"}</span>
         {status === "running" && startedAt !== undefined && <WorkingDuration startedAt={startedAt} />}
       </span>
     );
   }
   if (status === "error") {
-    return <span className="thread-card-status error" role="status">Failed</span>;
+    return <span id={id} className="thread-card-status error" role="status">Failed</span>;
   }
   if (unread) {
-    return <span className="thread-card-status done" role="status">Done</span>;
+    return <span id={id} className="thread-card-status done" role="status">Done</span>;
   }
   return null;
 }
@@ -159,6 +159,7 @@ export function ThreadInboxCard({
   scheduledPromptCount = 0,
   onOpen,
 }: ThreadInboxCardProps) {
+  const statusId = useId();
   const lifecycle = useTaskStore((state) => threadCardLifecycle(
     state.statuses[threadId] ?? "idle",
     Boolean(state.tasks[threadId]?.unread),
@@ -174,13 +175,13 @@ export function ThreadInboxCard({
     ? `${baseLabel} · ${scheduledPromptCount} scheduled prompt${scheduledPromptCount === 1 ? "" : "s"} in this thread`
     : baseLabel;
   return (
-    <button className={`thread-card ${lifecycle} provider-${provider}`} onClick={onOpen} aria-label={label}>
+    <button className={`thread-card ${lifecycle} provider-${provider}`} onClick={onOpen} aria-label={label} aria-describedby={lifecycle ? statusId : undefined}>
       <span className="thread-card-context">
         <span className="thread-card-workspace" title={directory}>
           {isolated ? <GitBranch size={14} /> : <Folder size={14} />}
           <span>{isolated ? branch || "Isolated" : workspaceName}</span>
         </span>
-        <ThreadInboxStatus threadId={threadId} />
+        <ThreadInboxStatus threadId={threadId} id={statusId} />
       </span>
       <ThreadTitle className="thread-card-title" title={title} pending={titlePending} />
       <span className="thread-card-meta">

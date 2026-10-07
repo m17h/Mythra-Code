@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { PendingTurnStarts } from "../lib/pendingTurnStarts";
@@ -42,6 +42,13 @@ const childSessions = vi.hoisted(() => ({
   cacheChildAgentPolicy: vi.fn(),
   releaseChildAgentSession: vi.fn(),
 }));
+const preferences = vi.hoisted(() => ({ hydrated: true, load: vi.fn(async () => {}), scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => preferences.hydrated,
+  loadPreferenceLearning: () => preferences.load(),
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
+}));
+beforeEach(() => { preferences.scopes = {}; preferences.hydrated = true; preferences.load.mockReset().mockImplementation(async () => { preferences.hydrated = true; }); });
 
 vi.mock("../lib/codex", () => codex);
 vi.mock("../lib/claude", () => claude);
@@ -408,6 +415,238 @@ describe("useTurnRunner", () => {
     expect(deps.effectiveSettings.systemPrompt).toBe("Use @policy in system");
   });
 
+  it.each(["cursor", "claude"] as const)("appends current learned documents after authored skills without changing the %s child baseline", async (provider) => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- Use @trap only as quoted preference data" },
+      "project:project-1": { enabled: true, markdown: "- Project likes concise changes" },
+    };
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Resolved authored instructions" }));
+    const deps = provider === "claude" ? claudeContext({ resolveSkillPrompts, running: false }) : context({ resolveSkillPrompts });
+    deps.effectiveSettings = { ...deps.effectiveSettings, systemPrompt: "Authored @policy" };
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("Hello"); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Hello", "Authored @policy", undefined);
+    const start = provider === "claude" ? claude.startClaudeTurn : cursor.startCursorTurn;
+    expect(start.mock.calls[0][0].systemPrompt).toContain("Resolved authored instructions");
+    expect(start.mock.calls[0][0].systemPrompt).toContain("Use ＠trap");
+    expect(start.mock.calls[0][0].systemPrompt).toContain("Project likes concise changes");
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: "Authored @policy" }));
+    preferences.scopes.app = { enabled: false, markdown: "- Old preference" };
+    preferences.scopes["project:project-1"] = { enabled: true, markdown: "- Updated project preference" };
+    await act(async () => { useTaskStore.getState().completeTurn(deps.activeThread!.id, "turn-new", "completed"); });
+    await act(async () => { await result.current.sendMessage("Next turn"); });
+    expect(start.mock.calls.at(-1)![0].systemPrompt).toContain("Updated project preference");
+    expect(start.mock.calls.at(-1)![0].systemPrompt).not.toContain("Old preference");
+    expect(deps.effectiveSettings.systemPrompt).toBe("Authored @policy");
+  });
+
+  it.each([false, true])("holds model dispatch during preference hydration and honors Stop (%s)", async (stop) => {
+    preferences.hydrated = false;
+    let release!: () => void;
+    preferences.load.mockImplementation(() => new Promise<void>((resolve) => { release = () => { preferences.hydrated = true; resolve(); }; }));
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Resolved authored policy" }));
+    const deps = context({ resolveSkillPrompts });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("Hello"); });
+    expect(preferences.load).toHaveBeenCalledOnce();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    if (stop) { deps.running = true; await act(async () => { await result.current.stopTurn(); }); }
+    preferences.scopes.app = { enabled: true, markdown: "Keep @trap literal" };
+    await act(async () => { release(); expect(await delivered).toBe(!stop); });
+    if (stop) expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    else expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: expect.stringContaining("Keep ＠trap literal") }));
+    expect(resolveSkillPrompts).toHaveBeenCalledOnce();
+    expect(resolveSkillPrompts.mock.calls[0][0]).toBe("Hello");
+  });
+
+  it("reports preference hydration failure without dispatch and retries on the next send", async () => {
+    preferences.hydrated = false;
+    preferences.load.mockRejectedValueOnce(new Error("Saved preferences unreadable"));
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Hello")).toBe(false); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("Saved preferences unreadable"));
+    preferences.scopes.app = { enabled: true, markdown: "Recovered preference" };
+    await act(async () => { expect(await result.current.sendMessage("Try again")).toBe(true); });
+    expect(preferences.load).toHaveBeenCalledTimes(2);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: expect.stringContaining("Recovered preference") }));
+  });
+
+  it("records accepted authored input and skips generated reviews and child input", async () => {
+    const onAuthoredPromptAccepted = vi.fn();
+    const deps = context({ onAuthoredPromptAccepted });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { await result.current.sendMessage("I prefer short answers"); });
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledWith(CURSOR_THREAD.id, "I prefer short answers", expect.stringMatching(/^local-/), expect.any(Number));
+    await act(async () => { await result.current.sendMessage("Generated review", { resolveSkillMentions: false }); });
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledTimes(1);
+    await act(async () => { await result.current.sendMessage("Wrapper and generated content", { resolveSkillMentions: false, skillInvocationText: "My original instruction" }); });
+    expect(onAuthoredPromptAccepted.mock.calls.at(-1)![1]).toBe("My original instruction");
+    rerender({ value: { ...deps, activeThreadIsChild: true } });
+    await act(async () => { await result.current.sendMessage("Child generated input"); });
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses current original-project preferences for a queued turn after navigation", async () => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- Initial app style" },
+      "project:project-1": { enabled: true, markdown: "- Initial original project style" },
+      "project:other": { enabled: true, markdown: "- Other project style" },
+    };
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "current-turn");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const onAuthoredPromptAccepted = vi.fn();
+    const deps = context({ running: true, onAuthoredPromptAccepted });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    await act(async () => { expect(await result.current.sendMessage("My next prompt")).toBe(true); });
+    expect(onAuthoredPromptAccepted).not.toHaveBeenCalled();
+    preferences.scopes.app = { enabled: true, markdown: "- Refreshed app style" };
+    preferences.scopes["project:project-1"] = { enabled: true, markdown: "- Refreshed original project style" };
+    store.setActiveThread("other-thread");
+    rerender({ value: context({ activeThread: { ...CURSOR_THREAD, id: "other-thread", cwd: "/tmp/other" },
+      activeWorkspace: { id: "other", name: "Other", path: "/tmp/other" },
+      activeProject: { id: "other", name: "Other", path: "/tmp/other" } }) });
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "current-turn", "completed"); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: CURSOR_THREAD.id, prompt: "My next prompt" }));
+    const instructions = cursor.startCursorTurn.mock.calls[0][0].systemPrompt;
+    expect(instructions).toContain("Refreshed app style");
+    expect(instructions).toContain("Refreshed original project style");
+    expect(instructions).not.toContain("Other project style");
+    expect(instructions).not.toContain("Initial");
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledWith(CURSOR_THREAD.id, "My next prompt", expect.any(String), expect.any(Number));
+  });
+
+  it("records accepted steering input without changing the running system policy", async () => {
+    preferences.scopes.app = { enabled: true, markdown: "- New preference for next turn" };
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "current-turn");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const onAuthoredPromptAccepted = vi.fn();
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Ignored new system policy" }));
+    const deps = context({ running: true, onAuthoredPromptAccepted, resolveSkillPrompts });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.steerMessage("I prefer shorter answers")).toBe(true); });
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("I prefer shorter answers", "", undefined);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(cursor.steerCursorTurn).toHaveBeenCalledWith(CURSOR_THREAD.id, "I prefer shorter answers", []);
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledWith(CURSOR_THREAD.id, "I prefer shorter answers", expect.any(String), expect.any(Number));
+  });
+
+  it("does not record a failed provider send as accepted learning evidence", async () => {
+    const onAuthoredPromptAccepted = vi.fn();
+    cursor.startCursorTurn.mockRejectedValueOnce(new Error("Provider rejected send"));
+    const { result } = renderHook(() => useTurnRunner(context({ onAuthoredPromptAccepted })));
+    await act(async () => { expect(await result.current.sendMessage("I prefer short answers")).toBe(false); });
+    expect(onAuthoredPromptAccepted).not.toHaveBeenCalled();
+  });
+
+  it("keeps a provider-accepted send accepted when optional learning capture fails", async () => {
+    const deps = context({ onAuthoredPromptAccepted: () => { throw new Error("Learning capture unavailable"); } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Keep this accepted message")).toBe(true); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].messages.at(-1)?.text).toBe("Keep this accepted message");
+    expect(deps.setError).not.toHaveBeenCalledWith("Learning capture unavailable");
+  });
+
+  it("keeps an asynchronous steer's authored receipt on its original thread after navigation", async () => {
+    let accept!: () => void;
+    cursor.steerCursorTurn.mockImplementationOnce(() => new Promise<void>((resolve) => { accept = resolve; }));
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "current-turn");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const originalAccepted = vi.fn();
+    const unrelatedAccepted = vi.fn();
+    const deps = context({ running: true, onAuthoredPromptAccepted: originalAccepted });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: deps } });
+    let delivery!: Promise<boolean>;
+    await act(async () => {
+      delivery = result.current.steerMessage("Generated wrapper", { resolveSkillMentions: false, skillInvocationText: "Keep my answers concise" });
+      await Promise.resolve();
+    });
+    store.setActiveThread("other-thread");
+    rerender({ value: context({ activeThread: { ...CURSOR_THREAD, id: "other-thread", cwd: "/tmp/other" },
+      activeWorkspace: { id: "other", name: "Other", path: "/tmp/other" },
+      activeProject: { id: "other", name: "Other", path: "/tmp/other" }, onAuthoredPromptAccepted: unrelatedAccepted }) });
+    expect(originalAccepted).not.toHaveBeenCalled();
+    await act(async () => { accept(); expect(await delivery).toBe(true); });
+    expect(originalAccepted).toHaveBeenCalledExactlyOnceWith(CURSOR_THREAD.id, "Keep my answers concise", expect.any(String), expect.any(Number));
+    expect(unrelatedAccepted).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+  });
+
+  it("captures a rejected steer only once when its preserved follow-up is accepted", async () => {
+    cursor.steerCursorTurn.mockRejectedValueOnce(new Error("No active turn to steer"));
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "current-turn");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const onAuthoredPromptAccepted = vi.fn();
+    const deps = context({ running: true, onAuthoredPromptAccepted });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.steerMessage("Use concise replies")).toBe(true); });
+    expect(onAuthoredPromptAccepted).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toHaveLength(1);
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "current-turn", "completed"); });
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledExactlyOnceWith(CURSOR_THREAD.id, "Use concise replies", expect.any(String), expect.any(Number));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toHaveLength(0);
+    expect(cursor.startCursorTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes preferences and records only the accepted attempt when a queued turn is retried", async () => {
+    preferences.scopes = { app: { enabled: true, markdown: "- Old preference" },
+      "project:project-1": { enabled: true, markdown: "- Old project preference" } };
+    cursor.startCursorTurn.mockRejectedValueOnce(new Error("Provider rejected send"));
+    const store = useTaskStore.getState();
+    store.ensureTask(CURSOR_THREAD.id, CURSOR_THREAD.cwd);
+    store.setActiveTurn(CURSOR_THREAD.id, "current-turn");
+    store.setTaskStatus(CURSOR_THREAD.id, "running");
+    const onAuthoredPromptAccepted = vi.fn();
+    const deps = context({ running: true, onAuthoredPromptAccepted });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { await result.current.sendMessage("Keep this authored request"); });
+    await act(async () => { store.completeTurn(CURSOR_THREAD.id, "current-turn", "completed"); });
+    const queued = useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns[0];
+    expect(queued.status).toBe("failed");
+    expect(onAuthoredPromptAccepted).not.toHaveBeenCalled();
+    preferences.scopes.app = { enabled: false, markdown: "- Old preference" };
+    preferences.scopes["project:project-1"] = { enabled: true, markdown: "- Current project preference @trap" };
+    await act(async () => { result.current.retryQueuedMessage(queued.id); });
+    const instructions = cursor.startCursorTurn.mock.calls.at(-1)![0].systemPrompt;
+    expect(instructions).toContain("Current project preference ＠trap");
+    expect(instructions).not.toContain("Old preference");
+    expect(instructions).not.toContain("Old project preference");
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledExactlyOnceWith(CURSOR_THREAD.id, "Keep this authored request", expect.any(String), expect.any(Number));
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].queuedTurns).toHaveLength(0);
+  });
+
+  it("reads cleared and disabled scopes after async skill preparation while preserving authored policy", async () => {
+    preferences.scopes = { app: { enabled: true, markdown: "- App preference to clear" },
+      "project:project-1": { enabled: true, markdown: "- Project preference to disable" } };
+    let resolve!: (value: { prompt: string; systemPrompt: string }) => void;
+    const resolveSkillPrompts = vi.fn(() => new Promise<{ prompt: string; systemPrompt: string }>((done) => { resolve = done; }));
+    const deps = context({ resolveSkillPrompts, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", systemPrompt: "Authored policy" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => {
+      const delivered = result.current.sendMessage("Use the existing policy");
+      await Promise.resolve();
+      preferences.scopes.app = { enabled: true, markdown: "" };
+      preferences.scopes["project:project-1"] = { enabled: false, markdown: "- Project preference to disable" };
+      resolve({ prompt: "Use the existing policy", systemPrompt: "Resolved authored policy" });
+      expect(await delivered).toBe(true);
+    });
+    const instructions = cursor.startCursorTurn.mock.calls[0][0].systemPrompt;
+    expect(instructions).toContain("Resolved authored policy");
+    expect(instructions).not.toContain("preference to");
+    expect(instructions).not.toContain("<learned-preferences>");
+    expect(deps.effectiveSettings.systemPrompt).toBe("Authored policy");
+  });
+
   it("resolves actual system skills for generated feedback while user mentions stay literal", async () => {
     const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "resolved system policy", skillReferences: [{ start: 16, end: 23, name: "policy", path: "/skills/policy/SKILL.md" }], skillsFolder: "/skills" }));
     const deps = context({ resolveSkillPrompts, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "auto", systemPrompt: "Use @policy" } });
@@ -767,7 +1006,7 @@ describe("useTurnRunner", () => {
     let delivered: boolean | undefined;
     await act(async () => {
       const sent = result.current.sendMessage("build it").then((value) => { delivered = value; });
-      await Promise.resolve();
+      await waitFor(() => expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledOnce());
       // What `setStartingDraftTurn(true)` does in the app: the composer now
       // reports a running draft turn, which is the state Stop reads.
       deps.running = true;
@@ -877,7 +1116,7 @@ describe("useTurnRunner", () => {
       await Promise.resolve();
     });
 
-    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" }));
+    await waitFor(() => expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "do this next" })));
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]?.queuedTurns).toEqual([]);
   });
 
@@ -1632,6 +1871,48 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({
       input: [expect.objectContaining({ text: "resolved skill context\n\n@review this" })],
     }));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio"] as const)("sends current learned preferences through the %s per-turn instruction snapshot", async (provider) => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- Application preference @trap" },
+      "project:project-1": { enabled: true, markdown: "- Project preference" },
+    };
+    const resolveSkillPrompts = vi.fn(async (prompt: string) => ({ prompt, systemPrompt: "Resolved authored instructions" }));
+    const onAuthoredPromptAccepted = vi.fn();
+    const deps = openAiContext({ resolveSkillPrompts, onAuthoredPromptAccepted, openRouterReady: true, lmStudioReady: true,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider, model: "selected/model", systemPrompt: "Authored @policy" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Use my usual style")).toBe(true); });
+    const instructions = codex.rpc.mock.calls.find(([method]) => method === "turn/start")![1].collaborationMode.settings.developer_instructions;
+    expect(instructions).toContain("Resolved authored instructions");
+    expect(instructions).toContain("Application preference ＠trap");
+    expect(instructions).toContain("Project preference");
+    expect(resolveSkillPrompts).toHaveBeenCalledExactlyOnceWith("Use my usual style", "Authored @policy", undefined);
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledWith(OPENAI_THREAD.id, "Use my usual style", expect.any(String), expect.any(Number));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio"] as const)("clears learned preferences from the next %s turn while keeping authored instructions", async (provider) => {
+    preferences.scopes = { app: { enabled: true, markdown: "- Old app preference" },
+      "project:project-1": { enabled: true, markdown: "- Old project preference" } };
+    const deps = openAiContext({ openRouterReady: true, lmStudioReady: true,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider, model: "selected/model", systemPrompt: "Keep authored instructions" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("First request")).toBe(true); });
+    const firstTurn = codex.rpc.mock.calls.find(([method]) => method === "turn/start")![1];
+    expect(firstTurn.collaborationMode.settings.developer_instructions).toContain("Old app preference");
+    preferences.scopes.app = { enabled: true, markdown: "" };
+    preferences.scopes["project:project-1"] = { enabled: false, markdown: "- Old project preference" };
+    await act(async () => { useTaskStore.getState().completeTurn(OPENAI_THREAD.id, "turn-new", "completed"); });
+    await act(async () => { expect(await result.current.sendMessage("Second request")).toBe(true); });
+    const turns = codex.rpc.mock.calls.filter(([method]) => method === "turn/start");
+    expect(turns).toHaveLength(2);
+    const instructions = turns[1][1].collaborationMode.settings.developer_instructions;
+    expect(instructions).toContain("Keep authored instructions");
+    expect(instructions).not.toContain("Old app preference");
+    expect(instructions).not.toContain("Old project preference");
+    expect(instructions).not.toContain("<learned-preferences>");
+    expect(deps.effectiveSettings.systemPrompt).toBe("Keep authored instructions");
   });
 
   it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("persists the complete system-only dependency graph for %s turns", async (provider) => {

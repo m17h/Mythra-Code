@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import {
@@ -71,6 +71,47 @@ describe("ThreadInboxCard", () => {
     expect(screen.getByText("Needs approval")).toBeInTheDocument();
     expect(screen.queryByText("Working")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Pinned")).toBeInTheDocument();
+  });
+
+  it("uses the shared working mark only while starting or running and removes it on approval and completion", () => {
+    const store = useTaskStore.getState();
+    store.setTaskStatus("thread-1", "starting");
+    const view = render(<ThreadInboxCard threadId="thread-1" title="Review changes"
+      workspaceName="Project" directory="/projects/app" provider="openai" providerName="OpenAI"
+      pinned={false} onOpen={() => {}} />);
+    const expectWorkingMark = (label: string) => {
+      const status = screen.getByRole("status");
+      expect(status).toHaveTextContent(label);
+      const mark = status.querySelector(".pixel-working-mark.live");
+      expect(mark).toHaveAttribute("aria-hidden", "true");
+      expect(mark?.querySelectorAll("i")).toHaveLength(9);
+      expect(status.querySelector("svg")).toBeNull();
+    };
+    expectWorkingMark("Starting");
+    expect(screen.getByRole("button")).toHaveAccessibleDescription("Starting");
+    act(() => store.setTaskStatus("thread-1", "running"));
+    expectWorkingMark("Working");
+    expect(screen.getByRole("button")).toHaveAccessibleDescription(/Working/);
+
+    act(() => store.enqueueApproval({ id: 1, method: "item/commandExecution/requestApproval",
+      params: {}, threadId: "thread-1", receivedAt: 1 }));
+    expect(screen.getByRole("status")).toHaveTextContent("Needs approval");
+    expect(screen.getByRole("button")).toHaveAccessibleDescription("Needs approval");
+    expect(view.container.querySelector(".pixel-working-mark")).toBeNull();
+    act(() => store.resolveApproval("thread-1", 1));
+    expectWorkingMark("Working");
+
+    act(() => store.setTaskStatus("thread-1", "completed"));
+    expect(screen.getByRole("status")).toHaveTextContent("Done");
+    expect(screen.getByRole("button")).toHaveAccessibleDescription("Done");
+    expect(view.container.querySelector(".pixel-working-mark")).toBeNull();
+    act(() => store.clearUnread("thread-1"));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("button")).not.toHaveAccessibleDescription();
+    act(() => store.setTaskStatus("thread-1", "error"));
+    expect(screen.getByRole("status")).toHaveTextContent("Failed");
+    expect(screen.getByRole("button")).toHaveAccessibleDescription("Failed");
+    expect(view.container.querySelector(".pixel-working-mark")).toBeNull();
   });
 
   it("formats compact paths and elapsed time defensively", () => {

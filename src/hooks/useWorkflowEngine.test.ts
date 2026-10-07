@@ -18,6 +18,11 @@ const codex = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/codex", () => codex);
+vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningHydrated: () => true,
+  loadPreferenceLearning: async () => {},
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "" }),
+}));
 
 import { useWorkflowEngine, waitForWorkflowTurn } from "./useWorkflowEngine";
 

@@ -103,7 +103,7 @@ it.each(THEMES)("supports creation and visibility at 150% in the narrow $name do
   await userEvent.keyboard("{Enter}");
   expect(input.onGitHubCreate).toHaveBeenCalledWith("a-readable-repository-name", "private");
   await page.getByRole("button", { name: "Repository visibility" }).click();
-  const menu = screen.getByRole("menu", { name: "Repository visibility choices" }).getBoundingClientRect();
+  const menu = (await screen.findByRole("menu", { name: "Repository visibility choices" })).getBoundingClientRect();
   expect(menu.top).toBeGreaterThanOrEqual(0);
   expect(menu.bottom).toBeLessThanOrEqual(window.innerHeight + 1);
   await page.getByRole("menuitemradio", { name: "Public" }).click();

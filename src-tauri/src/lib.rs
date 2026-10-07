@@ -49,6 +49,7 @@ mod release_qa;
 mod process_launch;
 mod project_git;
 mod run_discovery;
+mod preference_learning;
 mod skills;
 mod startup_guard;
 mod workspace_folder;
@@ -6832,6 +6833,7 @@ pub fn run() {
         .manage(CursorState::default())
         .manage(ChildAgentState::default())
         .manage(RunDiscoveryState::default())
+        .manage(preference_learning::PreferenceLearningState::default())
         .manage(CloseGuardState::default())
         .manage(StartupGuardState::default())
         .invoke_handler({
@@ -6968,7 +6970,11 @@ pub fn run() {
             restart_runtime,
             run_discovery_start,
             run_discovery_cancel,
-            run_discovery::generate_thread_title
+            run_discovery::generate_thread_title,
+            run_discovery::analyze_user_preferences,
+            preference_learning::preference_learning_list,
+            preference_learning::preference_learning_save,
+            preference_learning::preference_learning_forget
             ]);
             move |invoke: tauri::ipc::Invoke| {
                 if release_qa::active() {

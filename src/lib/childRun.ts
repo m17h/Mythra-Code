@@ -11,6 +11,7 @@ import type { ChildAgentPolicy } from "./childAgents";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { ChildAgentTarget, ScheduleRunSettings, SkillDependencyReport, SkillReference, Thread, Turn } from "../types";
 import type { ResolvedSkillPrompts } from "./skills";
+import { appendCurrentLearnedPreferences } from "./currentLearnedPreferences";
 
 /**
  * Starting a cross-provider child.
@@ -29,6 +30,8 @@ export interface ChildRunContext {
   executionPath: string;
   additionalWorkspaceRoots: string[];
   systemPrompt: string;
+  /** Stable saved-project identity of the root; null means ordinary Chats. */
+  projectId?: string | null;
   projectInstructionsEnabled: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
@@ -127,8 +130,10 @@ export async function startChildAgentTurn(
   // Resolution is asynchronous disk work, not permission to start after Stop
   // or root deletion. Check before creating any transcript/provider thread.
   assertCanStart();
-  const run = { ...childRunSettings(target, context), systemPrompt: resolved.systemPrompt };
-  const systemPrompt = withMythraCodeCompletionInstructions(resolved.systemPrompt);
+  const learnedSystemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, context.projectId ?? null);
+  assertCanStart();
+  const run = { ...childRunSettings(target, context), systemPrompt: learnedSystemPrompt };
+  const systemPrompt = withMythraCodeCompletionInstructions(learnedSystemPrompt);
   const providerPrompt = resolved.prompt;
   const provenance = { skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
 
@@ -225,7 +230,7 @@ export async function startChildAgentTurn(
       buildTurnInput(providerPrompt, []),
       context.additionalWorkspaceRoots,
       true,
-      { systemPrompt: resolved.systemPrompt, model: runtimeModel },
+      { systemPrompt: learnedSystemPrompt, model: runtimeModel },
     );
     modelTurnRequested = true;
     turn = await rpc<{ turn: Turn }>("turn/start", params);

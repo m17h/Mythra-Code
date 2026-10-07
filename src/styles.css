@@ -443,9 +443,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-status.approval { color: var(--orange); }
 .thread-card-status.error { color: var(--red); }
 .thread-card-status.done { color: var(--green); }
-.thread-card-spinner { flex: 0 0 auto; animation: spin 1.2s linear infinite; }
+.thread-card-working-mark { color: var(--text); }
 .thread-card-duration { font-weight: 520; opacity: .9; }
-@media (prefers-reduced-motion: reduce) { .thread-card-spinner { animation: none; } }
 
 /* Compact legacy row remains for archived threads. */
 .thread-row { display: flex; align-items: center; gap: var(--s-2); width: 100%; min-width: 0; height: 32px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); padding: 0 var(--s-2); font-size: var(--fs-ui); letter-spacing: var(--track-tight); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }

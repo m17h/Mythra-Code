@@ -340,9 +340,14 @@ describe('accepted historical native upgrade coverage', { timeout: process.platf
 
   test('unsupported frontend storage migrations cannot manufacture an optional upgrade case', () => {
     const f = fixture();
-    expect(sourceUpgradeSchema({ root: f.root, predecessorCommit: f.history.predecessor, candidateCommit: f.history.accepted })?.version).toBe(28);
     const storagePath = join(f.root, 'src/lib/storage.ts');
-    writeFileSync(storagePath, readFileSync(storagePath, 'utf8').replace('STORAGE_SCHEMA_VERSION = 28;', 'STORAGE_SCHEMA_VERSION = 29;'));
+    const storage = readFileSync(storagePath, 'utf8');
+    const version = Number(storage.match(/STORAGE_SCHEMA_VERSION\s*=\s*(\d+)/)?.[1]);
+    expect(version).toBeGreaterThan(0);
+    expect(sourceUpgradeSchema({ root: f.root, predecessorCommit: f.history.predecessor, candidateCommit: f.history.accepted })?.version).toBe(version);
+    const changed = storage.replace(/STORAGE_SCHEMA_VERSION\s*=\s*\d+;/, `STORAGE_SCHEMA_VERSION = ${version + 1};`);
+    expect(changed).not.toBe(storage);
+    writeFileSync(storagePath, changed);
     const commit = f.history.commit('Synthetic unsupported frontend storage migration');
     expect(sourceUpgradeSchema({ root: f.root, predecessorCommit: f.history.predecessor, candidateCommit: commit })).toBeNull();
   });

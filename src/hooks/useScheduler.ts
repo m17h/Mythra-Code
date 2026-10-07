@@ -5,6 +5,7 @@ import { scheduleRunSnapshot, threadResumeParams, threadStartParams, turnStartPa
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { SkillDependencyError } from "../lib/skillDependencies";
+import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
 export interface SchedulerDeps {
@@ -110,9 +111,10 @@ export function useScheduler(deps: SchedulerDeps): void {
       const resolved: ResolvedSkillPrompts = current.resolveSkillPrompts
         ? await current.resolveSkillPrompts(scheduled.prompt, run.systemPrompt)
         : { prompt: await current.resolveSkillPrompt(scheduled.prompt), systemPrompt: run.systemPrompt };
+      const systemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, scheduled.projectId);
       await current.ensureSkillRoots();
       const providerPrompt = resolved.prompt;
-      let runtimeRun = { ...run, systemPrompt: resolved.systemPrompt };
+      let runtimeRun = { ...run, systemPrompt };
       const modelContextWindow = run.provider === "lmstudio"
         ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
         : undefined;
@@ -156,7 +158,7 @@ export function useScheduler(deps: SchedulerDeps): void {
         const model = started.model;
         const params = turnStartParams(runtimeRun, started.thread.id, project.path, [
           { type: "text", text: providerPrompt, text_elements: [] },
-        ], [], false, { systemPrompt: resolved.systemPrompt, model: typeof model === "string" ? model : undefined });
+        ], [], false, { systemPrompt, model: typeof model === "string" ? model : undefined });
         // Preparation and parameter validation can fail without a request.
         // Append only when dispatch is next, so history never claims delivery.
         useTaskStore.getState().appendUserMessage(started.thread.id, { id: `scheduled-${crypto.randomUUID()}`, role: "user", text: scheduled.prompt, skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies });

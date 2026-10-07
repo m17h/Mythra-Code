@@ -16,6 +16,10 @@ const fixture = () => ({
 beforeEach(() => { mocks.listen.mockReset(); mocks.record.mockReset().mockReturnValue(true); });
 
 describe("background helper usage metadata", () => {
+  it("records preference learning as bounded auxiliary usage", () => {
+    expect(recordBackgroundUsage({ ...fixture(), purpose: "preference-learning" })).toBe(true);
+    expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ purpose: "preference-learning" }));
+  });
   it("keeps the CLI's missing cache writes unknown and requested Fast estimated", () => {
     expect(recordBackgroundUsage(fixture())).toBe(true);
     expect(mocks.record).toHaveBeenCalledWith(expect.objectContaining({ executionId: fixture().executionId, purpose: "thread-title",

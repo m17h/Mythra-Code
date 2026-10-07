@@ -218,6 +218,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   };
   if (command === "git_project_file_diff") return { path: args?.path, area: args?.area, text: "@@ -1 +1 @@\n-old\n+new\n", binary: false, truncated: false };
   if (command === "git_project_history") return { entries: [], hasMore: false, nextOffset: 0, headOid: "a".repeat(40), truncated: false };
+  if (command === "preference_learning_list") return { scopes: [], creationRevision: 0 };
   if (command === "github_pr_list") return [];
   if (command === "git_workspace_snapshot") return {
     branch: "main", headOid: "a".repeat(40), branches: [], stagedFiles: 0,
@@ -400,7 +401,10 @@ async function renderApp() {
   // be reset after seeding storage for each test.
   vi.resetModules();
   const { default: App } = await import("./App");
-  const view = render(<App />);
+  // Own the immediate startup Promise/effect commits before behavioral queries.
+  // Deliberately deferred requests stay pending; no thread list is fabricated.
+  let view!: ReturnType<typeof render>;
+  await act(async () => { view = render(<App />); });
   const sidebar = view.container.querySelector<HTMLElement>("aside.sidebar");
   expect(sidebar).toBeInTheDocument();
   await within(sidebar!).findByRole("button", { name: PROJECT_B.name });
@@ -4643,7 +4647,7 @@ describe("workspace switching during thread selection", () => {
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
     await renderApp();
 
-    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByText("Alpha thread"));
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("1"));
   });
 
@@ -6213,7 +6217,12 @@ describe("Thread pull request integration", () => {
     const user = userEvent.setup();
     await renderApp();
     await user.click(screen.getByRole("button", { name: /^Pull requests/ }));
-    await user.click(await screen.findByRole("button", { name: /#31 Improve Alpha.*Open details/ }));
+    // The shortcut crosses two lazy views plus account/repository readiness.
+    // Observe those setup boundaries before testing the late merge owner.
+    const tools = within(await screen.findByRole("complementary", { name: "Project workspace tools" }));
+    const pulls = within(await tools.findByRole("tabpanel", { name: "Pull requests" }));
+    await pulls.findByRole("searchbox", { name: "Search pull requests" });
+    await user.click(await pulls.findByRole("button", { name: /#31 Improve Alpha.*Open details/ }));
     await user.click(await screen.findByRole("button", { name: "Merge on GitHub…" }));
     await user.click(within(screen.getByRole("group", { name: "Confirm merge" })).getByRole("button", { name: "Merge #31 on GitHub" }));
     await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "github_pr_merge")).toBe(true));
