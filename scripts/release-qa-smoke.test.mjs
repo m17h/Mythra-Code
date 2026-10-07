@@ -107,9 +107,50 @@ test('close deadline fails and terminates only its isolated candidate', async ()
 }, windowsIntegrationTimeout);
 
 test('exit without successful production save-close evidence fails', async () => {
-  const f = fixture({ failedClose: true }); await expect(runQaSmoke(f.options)).rejects.toThrow(/save\/exit evidence/);
-  expect(existsSync(f.profileRoot)).toBe(false);
-}, windowsIntegrationTimeout);
+  const f = fixture();
+  let now = 0, event;
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242, exitCode: null, signalCode: null, kill: vi.fn(),
+  });
+  // Reach the failed-save evidence branch deterministically. Real-process
+  // successful close and bounded close timeout remain separate integration tests.
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  f.options.identifyProcess = (pid) => pid === child.pid ? 'fixture:4242' : undefined;
+  f.options.inspectProcess = (pid) => ({ pid, processStart: f.options.identifyProcess(pid), executablePath: process.execPath });
+  f.options.spawnCandidate = () => {
+    const marker = readJson(join(f.profileRoot, '.mythra-release-qa.json'));
+    const runId = 'f4444444-4444-4444-8444-444444444444';
+    event = (kind, details = {}) => ({ schemaVersion: 1, profileId: marker.profileId, pid: child.pid, runId, kind, details });
+    writeFileSync(join(f.profileRoot, 'events.jsonl'), [
+      event('profile-open', { contractVersion: 1, providers: 'blocked', persistentWebview: true, webviewStoreId: runId }),
+      event('control-ready'),
+    ].map((value) => JSON.stringify(value) + '\n').join(''));
+    children.push(child);
+    return child;
+  };
+  f.options.sleep = async (ms) => {
+    now += ms;
+    const requestPath = join(f.profileRoot, 'request.json');
+    if (!existsSync(requestPath)) return;
+    expect(readJson(requestPath)).toMatchObject({ schemaVersion: 1, profileId: event('exit').profileId, action: 'close' });
+    const eventsPath = join(f.profileRoot, 'events.jsonl');
+    writeFileSync(eventsPath, readFileSync(eventsPath, 'utf8') + [
+      event('close-finish', { accepted: true, result: 'failed' }), event('exit'),
+    ].map((value) => JSON.stringify(value) + '\n').join(''));
+    child.exitCode = 0;
+  };
+  try {
+    await expect(runQaSmoke(f.options)).rejects.toThrow(/save\/exit evidence/);
+    expect(child.exitCode).toBe(0); expect(child.signalCode).toBe(null);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(existsSync(f.profileRoot)).toBe(false);
+    const output = join(f.options.evidenceDirectory, event('exit').profileId);
+    const evidence = readFileSync(join(output, 'native-events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(evidence).toContainEqual(event('close-finish', { accepted: true, result: 'failed' }));
+    expect(evidence).toContainEqual(event('exit'));
+    expect(readJson(join(output, 'result.json'))).toMatchObject({ passed: false, forced: false, cleanupComplete: true });
+  } finally { clock.mockRestore(); }
+});
 
 test('protected Windows ACLs use encoded structured paths and verify the allowlist', () => {
   let observed;
