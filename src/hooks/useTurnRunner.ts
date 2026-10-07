@@ -61,6 +61,7 @@ import { normalizedProjectPath } from "../lib/paths";
 import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
+import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
@@ -286,6 +287,8 @@ export interface TurnRunnerContext {
   onThreadTitlePending?: (threadId: string, prompt: string) => void;
   onThreadTitleCancelled?: (threadId: string) => void;
   onThreadTitleRequested?: (threadId: string, prompt: string) => void;
+  /** Only direct human-authored input accepted by a provider is learning evidence. */
+  onAuthoredPromptAccepted?: (threadId: string, text: string, messageId: string, capturedAt?: number) => void;
   /** Live archive ownership. Existing threads must not start provider work
    * while their archive operation is awaiting cleanup or persistence. */
   isThreadArchiving?: (threadId: string) => boolean;
@@ -365,6 +368,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
     onUnavailableSteer?: () => void,
     onResolutionFailure?: (reason: unknown) => void,
   ): Promise<boolean> => {
+    const capturedAt = Date.now();
+    const recordAuthoredPrompt = (threadId: string, messageId: string) => {
+      // Generated reviews/handoffs explicitly disable mention resolution. A
+      // wrapper may instead supply its original authored source separately.
+      if (ctx.activeThreadIsChild || (ctx.resolveSkillMentions === false && ctx.skillInvocationText === undefined)) return;
+      const authoredText = ctx.skillInvocationText ?? text;
+      if (!authoredText.trim()) return;
+      try {
+        ctx.onAuthoredPromptAccepted?.(threadId, authoredText, messageId, capturedAt);
+      } catch {
+        // Optional learning capture cannot turn a successful provider send
+        // into an undelivered draft or remove an already accepted steer.
+      }
+    };
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
       effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels, lmStudioModels = [],
@@ -505,6 +522,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           });
         }
         useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
+        recordAuthoredPrompt(activeThread.id, steerMessageId);
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
         setTransientStatus("Steer accepted by the active turn");
         return true;
@@ -709,6 +727,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         attachments: messageImageAttachments(sentAttachments),
       });
       const result = await strategy.startTurn(thread);
+      recordAuthoredPrompt(thread.id, sentMessageId);
       // Provider events can race ahead of the start RPC response. If a very
       // short turn already delivered its result, reinstalling it here would
       // resurrect the completed thread as permanently running.
@@ -757,6 +776,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
         providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
         userSkillMetadata = ctx.resolveSkillMentions === false ? { skillReferences: [] } : ctx.getSkillReferences?.(text, ctx.skillInvocationText) ?? {};
       }
+      // Learned documents never enter authored skill resolution or saved
+      // settings/child baselines. Read the captured target's current documents
+      // once for this new turn; steering keeps its running policy frozen.
+      resolvedSystemPrompt = appendCurrentLearnedPreferences(resolvedSystemPrompt, activeProject?.id ?? null);
       assertCanStart();
       let executionPath = activeWorkspace.path;
       if (!activeThread && draftThreadIsolated && activeProject) {
@@ -973,6 +996,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           checkButton,
         ),
       }));
+      recordAuthoredPrompt(threadId, sentMessageId);
       const resultTurnId = result.turn?.id;
       const completedBeforeStartReturned = Boolean(
         resultTurnId

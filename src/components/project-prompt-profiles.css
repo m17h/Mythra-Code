@@ -1,0 +1,7 @@
+.project-prompt-popover:has(.project-prompt-profiles) { box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }
+.project-prompt-profiles { margin: 10px 0; padding: 9px; border: 1px solid var(--line); border-radius: 7px; }
+.project-prompt-profiles summary { color: var(--ink-2); cursor: pointer; font-size: var(--fs-ui); }
+.project-prompt-profiles > small { display: block; margin-top: 6px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.4; }
+.project-prompt-profiles .inline-create { grid-template-columns: minmax(0, 1fr) auto; }
+.project-prompt-profile-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+@media (max-width: 480px) { .project-prompt-profiles .inline-create { grid-template-columns: minmax(0, 1fr); } }

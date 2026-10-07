@@ -467,6 +467,9 @@ pub(crate) fn allowed_command(command: &str) -> bool {
             | "state_read_raw"
             | "state_write"
             | "state_delete"
+            | "preference_learning_list"
+            | "preference_learning_save"
+            | "preference_learning_forget"
             | "local_transcript_list"
             | "local_transcript_metadata_write"
             | "local_transcript_page_read"
@@ -1144,6 +1147,7 @@ mod tests {
             "save_openrouter_key",
             "has_lmstudio_key",
             "run_discovery_start",
+            "analyze_user_preferences",
             "export_text_file",
             "worktree_create",
             "local_skills_scan",
@@ -1154,6 +1158,9 @@ mod tests {
         for command in [
             "state_read_raw",
             "state_write",
+            "preference_learning_list",
+            "preference_learning_save",
+            "preference_learning_forget",
             "local_transcript_snapshot_write",
             "startup_ready",
             "close_guard_finish",

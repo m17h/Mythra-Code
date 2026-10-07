@@ -74,6 +74,22 @@ describe("durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadSubagentCapabilities");
   });
 
+  it("upgrades project prompt-profile storage without rewriting existing authored prompts", () => {
+    const projects = [{ id: "one", name: "One", path: "/one", overrides: {
+      systemPrompt: "Keep this exact active prompt",
+      systemPromptProfiles: [{ id: "mine", name: "Mine", prompt: "Keep this exact active prompt", mode: "replace" }],
+      systemPromptProfileId: "mine",
+    } }];
+    const raw = JSON.stringify(projects);
+    localStorage.setItem("kiwi.schemaVersion", "28");
+    localStorage.setItem("kiwi.projects", raw);
+
+    migrateStorage();
+
+    expect(loadStored("kiwi.schemaVersion", 0)).toBe(STORAGE_SCHEMA_VERSION);
+    expect(localStorage.getItem("kiwi.projects")).toBe(raw);
+  });
+
   it("clears legacy cumulative context pressure without losing usage history", async () => {
     localStorage.setItem("kiwi.schemaVersion", "15");
     localStorage.setItem("kiwi.usageLedger", JSON.stringify([{

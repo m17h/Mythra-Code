@@ -60,6 +60,7 @@ import type { GitRoute, ProjectGitInspection, ProjectPullRequestAccess } from ".
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
 import { ThreadPullRequestChip } from "./components/ThreadPullRequestChip";
 import { useAutomaticThreadTitles } from "./hooks/useAutomaticThreadTitles";
+import { usePreferenceLearning } from "./hooks/usePreferenceLearning";
 import { useThreadPullRequest } from "./hooks/useThreadPullRequest";
 import { acquirePullRequestMutation, releasePullRequestMutation, isPullRequestMutationRunning } from "./lib/pullRequestOperations";
 import {
@@ -163,6 +164,7 @@ import { runtimeModelProviderId } from "./lib/providerIds";
 import { primaryModifierLabel } from "./lib/platform";
 import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
+import { EMPTY_PROJECT_PROMPT_PROFILES, updateProjectPromptOverrides, type ProjectPromptProfileState } from "./lib/projectPromptProfiles";
 import { sanitizeThreadSubagentSettings, settingsForThreadSubagents } from "./lib/threadSubagentSettings";
 import { sanitizePendingHandoff } from "./lib/providerHandoff";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
@@ -1702,20 +1704,11 @@ export default function App() {
   }, [activeProject, projectsRef, setProjects]);
 
   const persistActiveProjectPrompt = useCallback(
-    (systemPrompt: string | undefined, mode: ProjectPromptMode) => {
+    (systemPrompt: string | undefined, mode: ProjectPromptMode, profileState?: ProjectPromptProfileState) => {
       if (!activeProject) return;
       setProjects((current) => current.map((project) => {
         if (project.id !== activeProject.id) return project;
-        const overrides = { ...(project.overrides ?? {}) };
-        if (systemPrompt?.trim()) {
-          overrides.systemPrompt = systemPrompt.trim();
-          if (mode === "append") overrides.systemPromptMode = "append";
-          else delete overrides.systemPromptMode;
-        } else {
-          delete overrides.systemPrompt;
-          delete overrides.systemPromptMode;
-        }
-        return { ...project, overrides: Object.keys(overrides).length ? overrides : undefined };
+        return { ...project, overrides: updateProjectPromptOverrides(project.overrides, systemPrompt, mode, profileState) };
       }));
     },
     [activeProject, setProjects],
@@ -4455,6 +4448,51 @@ export default function App() {
       setActiveThread((entry) => entry?.id === id ? { ...entry, name } : entry);
     },
   });
+  const preferenceLearning = usePreferenceLearning({
+    // Learning's automatic choice must come from the live catalog, not the
+    // convenience fallbacks used by the normal model picker.
+    catalogs: { ...runDiscoveryCatalogs, openai: runtimeModels.map((model) => ({ id: model.model || model.id, label: model.displayName })) },
+    lmStudioBaseUrl: settings.lmStudioBaseUrl,
+    getThread: (id) => knownThreadsRef.current?.[id],
+    getProjectId: (thread) => {
+      const path = threadProjectBindingsRef.current?.[thread.id] || thread.cwd;
+      return projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(path))?.id ?? null;
+    },
+    isScopeValid: (scopeKey) => scopeKey === "app" || projectsRef.current.some((project) => scopeKey === `project:${project.id}`),
+    isEligibleThread: (thread) => !isSubAgentThread(thread, childThreadLinksRef.current)
+      && !useTaskStore.getState().workflowOwners[thread.id]
+      && !workflowRuns.some((run) => run.threadId === thread.id),
+    getHistoryThreads: async (scopeKey) => {
+      const project = scopeKey === "app" ? undefined : projectsRef.current.find((entry) => scopeKey === `project:${entry.id}`);
+      if (scopeKey !== "app" && !project) return [];
+      const found = new Map<string, Thread>();
+      for (const thread of Object.values(knownThreadsRef.current ?? {})) found.set(thread.id, thread);
+      for (const archived of archivedThreads) {
+        if (!archived.provider || found.has(archived.id)) continue;
+        found.set(archived.id, { id: archived.id, name: archived.label, preview: "", cwd: archived.path,
+          updatedAt: Math.floor(archived.archivedAt / 1000), modelProvider: archived.provider });
+      }
+      for (const thread of await listLocalTranscriptThreads()) found.set(thread.id, thread);
+      if (runtimeStatus?.available) {
+        let cursor: string | null = null;
+        const cursors = new Set<string>();
+        // Metadata only. The learner separately pages bounded authored text
+        // after the user explicitly asks to examine past conversations.
+        for (let page = 0; page < 3; page += 1) {
+          const result: { data: Thread[]; nextCursor?: string | null } = await rpc("thread/list", { ...(project ? { cwd: project.path } : {}), limit: 100, cursor });
+          for (const thread of result.data ?? []) found.set(thread.id, thread);
+          cursor = result.nextCursor ?? null;
+          if (!cursor || cursors.has(cursor)) break;
+          cursors.add(cursor);
+        }
+      }
+      return [...found.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    },
+    onUpdated: (scopeKey) => {
+      const project = projectsRef.current.find((entry) => scopeKey === `project:${entry.id}`);
+      showToast(project ? `Learned preferences updated for ${project.name}` : "App-wide learned preferences updated", "info");
+    },
+  });
   const {
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
@@ -4502,6 +4540,7 @@ export default function App() {
     onThreadTitlePending: automaticTitles.prepareTitle,
     onThreadTitleCancelled: (id) => { void automaticTitles.cancel(id); },
     onThreadTitleRequested: automaticTitles.requestTitle,
+    onAuthoredPromptAccepted: (threadId, text, messageId, capturedAt) => preferenceLearning.captureUserPrompt(threadId, messageId, text, capturedAt),
     isThreadArchiving: (id) => archivingThreadIdsRef.current.has(id),
     onThreadCreated: handleThreadCreated,
     persistThreadModel,
@@ -4648,6 +4687,10 @@ export default function App() {
     lmStudioBaseUrl: settings.lmStudioBaseUrl,
     readiness: childAgentReadiness,
     projectPathForThread: (threadId) => threadProjectBindingsRef.current?.[threadId],
+    projectIdForThread: (threadId) => {
+      const path = threadProjectBindingsRef.current?.[threadId] || knownThreadsRef.current?.[threadId]?.cwd;
+      return path ? projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(path))?.id ?? null : null;
+    },
     executionPathFor,
     isolationGitDirFor: (threadId) => threadWorktreesRef.current[threadId]?.gitDir,
     serviceNameFor: (threadId) => {
@@ -7134,13 +7177,15 @@ export default function App() {
                 key={activeProject.id}
                 projectName={activeProject.name}
                 projectPrompt={activeProject.overrides?.systemPrompt}
+                profiles={activeProject.overrides?.systemPromptProfiles ?? EMPTY_PROJECT_PROMPT_PROFILES}
+                selectedProfileId={activeProject.overrides?.systemPromptProfileId}
                 promptMode={activeProject.overrides?.systemPromptMode ?? "replace"}
                 appPrompt={resolveProviderSystemPrompt(settings.systemPrompt, effectiveSettings.provider, settings.codexSystemPrompt, settings.claudeSystemPrompt)}
                 provider={effectiveSettings.provider}
                 threadStarted={Boolean(activeThread)}
-                onSave={(prompt, mode) => {
+                onSave={(prompt, mode, profileState) => {
                   const changed = prompt !== activeProject.overrides?.systemPrompt || mode !== (activeProject.overrides?.systemPromptMode ?? "replace");
-                  persistActiveProjectPrompt(prompt, mode);
+                  persistActiveProjectPrompt(prompt, mode, profileState);
                   if (changed && skillPromptRepair?.message === error && skillPromptRepair.targets.some((target) => target.layer === "project")) {
                     setError(null);
                     setSkillPromptRepair(null);
@@ -7866,6 +7911,10 @@ export default function App() {
         onGitHubClone={cloneGitHubProject}
         onError={setError}
         profiles={promptProfiles}
+        onLearnPastConversations={preferenceLearning.requestHistory}
+        onCancelPreferenceLearning={preferenceLearning.cancelScope}
+        preferenceHistoryProgress={preferenceLearning.historyProgress}
+        onPreferenceLearningChanged={(message) => showToast(message, "info")}
         agents={customAgents}
         actions={projectActions}
         schedules={scheduledTasks}

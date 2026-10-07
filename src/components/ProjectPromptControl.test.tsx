@@ -146,4 +146,71 @@ describe("ProjectPromptControl", () => {
     expect(screen.getByRole("switch", { name: "Run the app-wide prompt first" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByText("No app-wide prompt is set, so only this project prompt runs.")).toBeInTheDocument();
   });
+
+  it("saves a named snapshot with its layering mode in the existing save transaction", () => {
+    const onSave = vi.fn();
+    render(<ProjectPromptControl projectName="Mythra" projectPrompt="Use @review" promptMode="append" appPrompt="Global"
+      provider="openai" threadStarted={false} profiles={[]} onSave={onSave} onAppPromptSettings={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Project instructions:/ }));
+    fireEvent.click(screen.getByText("Saved project profiles"));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project profile name" }), { target: { value: "Review" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save as profile" }));
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save project prompt" }));
+    expect(onSave).toHaveBeenCalledWith("Use @review", "append", {
+      profiles: [{ id: expect.any(String), name: "Review", prompt: "Use @review", mode: "append" }], selectedProfileId: expect.any(String),
+    });
+  });
+
+  it("selects, updates, renames and deletes snapshots without clearing current instructions", () => {
+    const onSave = vi.fn();
+    const profiles = [{ id: "review", name: "Review", prompt: "Use @review", mode: "append" as const }];
+    render(<ProjectPromptControl projectName="Mythra" projectPrompt="Current" promptMode="replace" appPrompt="Global"
+      provider="openai" threadStarted onSave={onSave} onAppPromptSettings={vi.fn()} profiles={profiles} />);
+    fireEvent.click(screen.getByRole("button", { name: /Project instructions:/ }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Saved project profile" }), { target: { value: "review" } });
+    const editor = screen.getByRole("textbox", { name: "Prompt for Mythra" });
+    expect(editor).toHaveValue("Use @review");
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(editor, { target: { value: "New instructions" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update profile" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project profile name" }), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename profile" }));
+    expect(screen.getByRole("option", { name: "Renamed" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete profile" }));
+    expect(editor).toHaveValue("New instructions");
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Save project prompt" }));
+    expect(onSave).toHaveBeenCalledWith("New instructions", "append", { profiles: [], selectedProfileId: undefined });
+  });
+
+  it("Cancel discards profile switches and deletion, and legacy instructions reopen intact", () => {
+    const onSave = vi.fn();
+    render(<ProjectPromptControl projectName="Mythra" projectPrompt="Legacy instructions" promptMode="replace" appPrompt="Global"
+      provider="openai" threadStarted onSave={onSave} onAppPromptSettings={vi.fn()}
+      profiles={[{ id: "review", name: "Review", prompt: "Other instructions", mode: "append" }]} />);
+    const trigger = screen.getByRole("button", { name: /Project instructions:/ });
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "review" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete profile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(trigger);
+    expect(screen.getByRole("textbox", { name: "Prompt for Mythra" })).toHaveValue("Legacy instructions");
+    expect(screen.getByRole("option", { name: "Review" })).toBeInTheDocument();
+  });
+
+  it("preserves existing large instructions while bounding new saved snapshots", () => {
+    const onSave = vi.fn();
+    const prompt = "p".repeat(120001);
+    render(<ProjectPromptControl projectName="Mythra" projectPrompt={prompt} promptMode="replace" appPrompt=""
+      provider="openai" threadStarted={false} profiles={[]} onSave={onSave} onAppPromptSettings={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Project instructions:/ }));
+    fireEvent.click(screen.getByText("Saved project profiles"));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project profile name" }), { target: { value: "Large" } });
+    expect(screen.getByRole("button", { name: "Save as profile" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Prompt for Mythra" })).not.toHaveAttribute("maxlength");
+    fireEvent.click(screen.getByRole("button", { name: "Save project prompt" }));
+    expect(onSave).toHaveBeenCalledWith(prompt, "replace", { profiles: [], selectedProfileId: undefined });
+  });
 });

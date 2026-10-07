@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { auditEvent, rpc } from "../lib/codex";
 import { startClaudeTurn, killClaudeTurn, saveClaudeTranscript } from "../lib/claude";
 import { startCursorTurn, killCursorTurn, saveCursorTranscript } from "../lib/cursor";
@@ -536,6 +537,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               const resolved: ResolvedSkillPrompts = current.resolveSkillPrompts
                 ? await current.resolveSkillPrompts(prompt, workflow.run.systemPrompt, mentionSource)
                 : { prompt: await current.resolveSkillPrompt(prompt), systemPrompt: resolvedSystemPrompt };
+              // Every agent step is a new turn in the workflow's stored
+              // project, independent of the visible project and run snapshot.
+              const systemPrompt = appendCurrentLearnedPreferences(resolved.systemPrompt, workflow.projectId);
               const providerPrompt = resolved.prompt;
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";
@@ -567,7 +571,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                     model: workflow.run.model || (workflow.run.provider === "claude" ? DEFAULT_CLAUDE_MODEL : DEFAULT_CURSOR_MODEL),
                     effort: workflow.run.ultra ? "ultra" as const : workflow.run.reasoningEffort,
                     permission: workflow.run.permission,
-                    systemPrompt: withMythraCodeCompletionInstructions(resolved.systemPrompt, false),
+                    systemPrompt: withMythraCodeCompletionInstructions(systemPrompt, false),
                     attachments: [], interactive: source === "manual",
                   };
                   if (workflow.run.provider === "claude") {
@@ -591,13 +595,13 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   }
                 } else {
                   const params = turnStartParams(
-                    { ...providerRun, systemPrompt: resolved.systemPrompt },
+                    { ...providerRun, systemPrompt },
                     threadId,
                     project.path,
                     [{ type: "text", text: providerPrompt, text_elements: [] }],
                     [],
                     source === "manual",
-                    { systemPrompt: resolved.systemPrompt, model: appServerModel },
+                    { systemPrompt, model: appServerModel },
                   );
                   if (active.stopRequested) throw new WorkflowStoppedError();
                   // Validate parameters before append; no await separates the

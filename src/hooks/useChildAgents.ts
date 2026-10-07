@@ -66,6 +66,8 @@ export interface ChildAgentContext {
   readiness: ChildAgentReadiness;
   /** Logical project path a thread is bound to, before worktree resolution. */
   projectPathForThread: (threadId: string) => string | undefined;
+  /** Saved-project scope for a root, never the currently selected project. */
+  projectIdForThread?: (threadId: string) => string | null;
   executionPathFor: (threadId: string | null | undefined, logicalPath: string) => string;
   /** Shared Git directory of a thread's isolated worktree, when it has one. */
   isolationGitDirFor: (threadId: string) => string | undefined;
@@ -401,6 +403,7 @@ export function useChildAgents(context: ChildAgentContext): {
         executionPath,
         additionalWorkspaceRoots: gitDir ? [gitDir] : [],
         systemPrompt: targetSystemPrompt ?? policy.systemPrompt,
+        projectId: ctx.projectIdForThread?.(rootThreadId) ?? null,
         projectInstructionsEnabled: policy.projectInstructionsEnabled,
         reasoningEffort,
         serviceTier: policy.serviceTier,

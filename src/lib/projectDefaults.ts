@@ -1,6 +1,7 @@
 import type { Project, ProjectDefaults, Provider } from "../types";
 import { EFFORT_SLIDER_STYLES, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, THEMES } from "./appConfig";
 import { modelForProvider } from "./threadProvider";
+import { sanitizeProjectPromptProfileOverrides } from "./projectPromptProfiles";
 
 const PROJECT_DEFAULT_PROVIDERS: Provider[] = ["openai", "claude", "cursor", "openrouter", "lmstudio"];
 
@@ -41,7 +42,7 @@ export function sanitizeProjectDefaults(value: unknown): ProjectDefaults | null 
 export function sanitizeProjectDefaultOverrides(projects: Project[]): Project[] {
   return projects.map((project) => {
     if (!project.overrides) return project;
-    const overrides = { ...project.overrides } as Record<string, unknown>;
+    const overrides = sanitizeProjectPromptProfileOverrides(project.overrides) as Record<string, unknown>;
     delete overrides.model;
     delete overrides.permission;
     const defaults = sanitizeProjectDefaults(overrides.defaults);

@@ -16,6 +16,11 @@ const runtime = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn(async () => 
 vi.mock("../lib/codex", () => ({ rpc: runtime.rpc, auditEvent: runtime.auditEvent }));
 vi.mock("../lib/claude", () => ({ startClaudeTurn: runtime.claude, saveClaudeTranscript: runtime.saveClaude, killClaudeTurn: runtime.killClaude }));
 vi.mock("../lib/cursor", () => ({ startCursorTurn: runtime.cursor, saveCursorTranscript: runtime.saveCursor, killCursorTurn: runtime.killCursor }));
+const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
+}));
+beforeEach(() => { preferences.scopes = {}; });
 import { useWorkflowEngine } from "./useWorkflowEngine";
 
 type Deps = Parameters<typeof useWorkflowEngine>[0];
@@ -76,6 +81,36 @@ describe.each(["claude", "cursor"] as const)("%s saved workflows", (provider) =>
     expect(messages.filter((message) => message.role === "user").every((message) => message.skillReferences?.[0].path === "/skills/review.md" && message.skillsFolder === "/skills")).toBe(true);
     expect(messages.filter((message) => message.role === "user").every((message) => message.skillDependencies?.roots[0].channel === "system")).toBe(true);
     expect(workflow.run.systemPrompt).toBe("Always use @careful");
+  });
+
+  it("refreshes learned preferences at each step without including them in authored skill resolution", async () => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- Initial app preference @trap" },
+      "project:p": { enabled: true, markdown: "- Stored workflow project preference" },
+      "project:other": { enabled: true, markdown: "- Visible unrelated project preference" },
+    };
+    const resolveSkillPrompts = vi.fn(async (prompt: string, _systemPrompt: string) => ({ prompt, systemPrompt: "Resolved authored policy" }));
+    const { deps, workflow } = setup(provider, { resolveSkillPrompts });
+    workflow.run.systemPrompt = "Use @authored";
+    const start = provider === "claude" ? runtime.claude : runtime.cursor;
+    let sequence = 0;
+    start.mockImplementation(async ({ threadId }: { threadId: string }) => {
+      const turnId = `learning-${++sequence}`;
+      preferences.scopes.app = { enabled: true, markdown: "- Refreshed app preference" };
+      finish(threadId, turnId);
+      return { turnId, cursorSessionId: "learning-session" };
+    });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("recipe"); });
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start.mock.calls[0][0].systemPrompt).toContain("Initial app preference ＠trap");
+    expect(start.mock.calls[1][0].systemPrompt).toContain("Refreshed app preference");
+    for (const [options] of start.mock.calls) {
+      expect(options.systemPrompt).toContain("Stored workflow project preference");
+      expect(options.systemPrompt).not.toContain("Visible unrelated project preference");
+    }
+    expect(resolveSkillPrompts.mock.calls.every((call) => call[1] === "Use @authored")).toBe(true);
+    expect(workflow.run.systemPrompt).toBe("Use @authored");
   });
 
   it("stops before creating a workflow thread when an authored system skill cannot resolve", async () => {

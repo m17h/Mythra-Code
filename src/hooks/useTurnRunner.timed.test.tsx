@@ -33,6 +33,10 @@ const childSessions = vi.hoisted(() => ({
 const worktrees = vi.hoisted(() => ({
   createThreadWorktree: vi.fn(async () => ({ path: "/tmp/new-isolated-worktree", branch: "new", baseCommit: "base", gitDir: "/tmp/project/.git/worktrees/new" })),
 }));
+const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+vi.mock("../lib/preferenceLearningStore", () => ({
+  getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
+}));
 
 vi.mock("../lib/codex", () => codex);
 vi.mock("../lib/confirmDialog", () => ({ confirmDialog: vi.fn(async () => true) }));
@@ -124,6 +128,7 @@ function queue() {
 }
 
 beforeEach(() => {
+  preferences.scopes = {};
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
   vi.setSystemTime(NOW);
   localStorage.clear();
@@ -137,6 +142,33 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("timed prompts in a thread", () => {
+  it("uses fresh original-project preferences when a timed prompt starts while another project is visible", async () => {
+    preferences.scopes = {
+      app: { enabled: true, markdown: "- Initial app style" },
+      "project:project-1": { enabled: true, markdown: "- Original project style" },
+      "project:other": { enabled: true, markdown: "- Other project style" },
+    };
+    const onAuthoredPromptAccepted = vi.fn();
+    const ctx = context({ onAuthoredPromptAccepted });
+    const { result, rerender } = renderHook(({ value }) => useTurnRunner(value), { initialProps: { value: ctx } });
+    await act(async () => { await result.current.scheduleMessage("Use my usual style", NOW + MINUTE); });
+    expect(onAuthoredPromptAccepted).not.toHaveBeenCalled();
+    preferences.scopes.app = { enabled: true, markdown: "- Current app style @trap" };
+    preferences.scopes["project:project-1"] = { enabled: true, markdown: "- Current original project style" };
+    useTaskStore.getState().setActiveThread("other-thread");
+    rerender({ value: context({ activeThread: { ...THREAD, id: "other-thread", cwd: "/tmp/other" },
+      activeWorkspace: { id: "other", name: "Other", path: "/tmp/other" },
+      activeProject: { id: "other", name: "Other", path: "/tmp/other" } }) });
+    await advance(MINUTE + 10);
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD.id, prompt: "Use my usual style" }));
+    const instructions = (cursor.startCursorTurn.mock.calls[0] as unknown as [{ systemPrompt: string }])[0].systemPrompt;
+    expect(instructions).toContain("Current app style ＠trap");
+    expect(instructions).toContain("Current original project style");
+    expect(instructions).not.toContain("Other project style");
+    expect(instructions).not.toContain("Initial app style");
+    expect(onAuthoredPromptAccepted).toHaveBeenCalledWith(THREAD.id, "Use my usual style", expect.any(String), expect.any(Number));
+  });
+
   it("lets a regular prompt start immediately instead of waiting behind a future timed prompt", async () => {
     const { result } = renderHook(() => useTurnRunner(context()));
     await act(async () => { expect(await result.current.scheduleMessage("tomorrow's check", NOW + 24 * 60 * MINUTE)).toBe(true); });

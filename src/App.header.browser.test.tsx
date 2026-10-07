@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands, page, userEvent as browserUserEvent } from "vitest/browser";
 import { sanitizeTheme } from "./lib/appConfig";
 import type { Project } from "./types";
+import { preferenceLearningFixture } from "./test/preferenceLearningFixture";
 
 /*
  * Real-App header regression for the Lumen experiment.
@@ -42,6 +43,9 @@ vi.mock("./components/XtermPanel", () => ({ XtermPanel: () => null }));
 function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   const runtime = { available: true, source: "Codex CLI", path: "/usr/local/bin/codex", runningPath: "/usr/local/bin/codex", dataHome: "/tmp/codex-home", version: "99.0.0", runningVersion: "99.0.0", runningCommands: 0, runtimeChanged: false, compatible: true, warning: null };
   switch (command) {
+    case "preference_learning_list":
+    case "preference_learning_forget":
+    case "preference_learning_save": return learnedFixture.invoke(command, args);
     case "open_workspace_folder": return folderOpen(args?.path);
     case "codex_runtime_status":
     case "codex_runtime_status_refresh": return runtime;
@@ -75,7 +79,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       if (method === "thread/list") return { data: inboxThreads.filter((thread) => thread.cwd === (args?.params as Record<string, unknown>)?.cwd), nextCursor: null };
       if (method === "account/read") return { account: { type: "chatgpt", email: "fixture@example.com", planType: "pro" }, requiresOpenaiAuth: true };
       if (method === "account/rateLimits/read") return { rateLimits: {} };
-      if (method === "model/list") return { data: [] };
+      if (method === "model/list") return { data: liveModels };
       if (method === "fs/readDirectory") return { entries: [] };
       if (method === "fuzzyFileSearch") return { files: [] };
       if (method === "gitDiffToRemote") return { diff: "" };
@@ -89,12 +93,40 @@ let appInstance = 0;
 let claudeSignedIn = false;
 let inboxThreads: { id: string; name: string; preview: string; cwd: string; updatedAt: number; modelProvider: string }[] = [];
 const folderOpen = vi.fn<(path: unknown) => unknown>(() => null);
+const learnedFixture = preferenceLearningFixture();
+let liveModels: Record<string, unknown>[] = [];
 
 beforeEach(() => {
   localStorage.clear();
   claudeSignedIn = false;
   inboxThreads = [];
   folderOpen.mockReset().mockReturnValue(null);
+  learnedFixture.reset();
+  liveModels = [];
+});
+
+it("wires learned preference settings to live models and exact project scopes in the real App", async () => {
+  await commands.setStreamTestReducedMotion(true);
+  liveModels = [{ id: "gpt-6.1-luna", model: "gpt-6.1-luna", displayName: "GPT-6.1 Luna", description: "", supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: false }];
+  const view = await renderApp({ theme: "mythra", provider: "openai" });
+  await browserUserEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await browserUserEvent.click(await screen.findByRole("button", { name: /^Prompts/ }));
+  const toggle = await screen.findByRole("switch", { name: "Automatically learn preferences" });
+  await waitFor(() => expect(toggle).not.toBeDisabled());
+  await browserUserEvent.click(screen.getByRole("button", { name: "Preference learning model" }));
+  expect(await screen.findByRole("menuitemradio", { name: /Automatic/ })).toHaveTextContent("gpt-6.1-luna");
+  await browserUserEvent.keyboard("{Escape}");
+  await browserUserEvent.click(screen.getByRole("button", { name: "Preference learning scope" }));
+  await browserUserEvent.click(screen.getByRole("menuitemradio", { name: /Mythra Code/ }));
+  await browserUserEvent.click(screen.getByRole("switch", { name: "Automatically learn preferences" }));
+  await waitFor(() => expect(learnedFixture.states.get(`project:${PROJECT.id}`)?.enabled).toBe(true));
+  await browserUserEvent.fill(screen.getByRole("textbox", { name: "Learned instructions for Mythra Code" }), "- Prefer concise progress updates");
+  await browserUserEvent.click(screen.getByRole("button", { name: "Save learned instructions" }));
+  await waitFor(() => expect(learnedFixture.states.get(`project:${PROJECT.id}`)?.markdown).toBe("- Prefer concise progress updates"));
+  expect(learnedFixture.states.get("app")?.markdown).toBe("");
+  expect(learnedFixture.calls.filter((call) => call.command === "preference_learning_save").every((call) => call.args?.scopeKey === `project:${PROJECT.id}`)).toBe(true);
+  await page.screenshot({ path: "../test-results/preference-learning-real-app.png" });
+  view.unmount();
 });
 
 afterEach(async () => {
