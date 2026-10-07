@@ -1,7 +1,7 @@
 /* ---- Compact agent activity: one quiet line per run ----
    The line sits in the assistant column, reads as metadata rather than a
-   message, and only the live line ever animates (a compositor-only rotation
-   plus a short label fade). Settled history rows are fully static. */
+   message, and only the live line ever animates (the dot-matrix mark's
+   opacity chase plus a short label fade). Settled history rows are static. */
 
 .timeline-entry-status { padding-bottom: var(--s-3); }
 
@@ -40,8 +40,8 @@
 .activity-status-pill[aria-expanded="true"] { border-color: color-mix(in srgb, var(--activity-tone) 34%, var(--line)); }
 .activity-status.live .activity-status-pill { color: var(--ink-2); }
 
-/* A small squircle carrying the operation glyph. The orbit is a single
-   rotating arc; nothing else repaints while a run is live. */
+/* A small squircle carrying a static semantic glyph (waiting or settled).
+   A working run shows the bare dot-matrix mark in the same footprint. */
 .activity-status-mark {
   position: relative;
   flex: 0 0 auto;
@@ -54,15 +54,8 @@
   background: color-mix(in srgb, var(--activity-tone) 11%, transparent);
 }
 .activity-status.state-unknown .activity-status-mark { color: var(--muted); background: var(--line-quiet); }
-.activity-status-orbit {
-  position: absolute;
-  inset: -3px;
-  border: 1.5px solid transparent;
-  border-top-color: color-mix(in srgb, var(--activity-tone) 70%, transparent);
-  border-radius: 50%;
-  animation: activity-status-orbit 1.1s linear infinite;
-  will-change: transform;
-}
+/* Neutral foreground, like terminal text: readable on light and dark. */
+.activity-status-mark.working { color: var(--text); background: none; }
 
 .activity-status-text { min-width: 0; display: inline-flex; align-items: baseline; overflow: hidden; white-space: nowrap; }
 .activity-status-label { overflow: hidden; text-overflow: ellipsis; }
@@ -104,7 +97,6 @@
 .app-shell[data-theme][data-color-scheme] .activity-status-pill { border-radius: var(--r-control, 10px); background: var(--panel); }
 .app-shell[data-theme][data-color-scheme] .activity-status-pill:hover { background: var(--panel-2); }
 
-@keyframes activity-status-orbit { to { transform: rotate(360deg); } }
 @keyframes activity-status-label-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 640px) {
@@ -112,7 +104,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-status-orbit { animation: none; border-color: color-mix(in srgb, var(--activity-tone) 40%, transparent); }
   .activity-status.live .activity-status-label { animation: none; }
   .activity-status-pill, .activity-status-chevron { transition: none; }
 }

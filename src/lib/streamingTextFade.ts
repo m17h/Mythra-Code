@@ -5,12 +5,27 @@ export interface StreamingTextFade {
   dispose(): void;
 }
 
+export interface StreamingTextFadeOptions {
+  /**
+   * "lines" pairs with a pacer that publishes only complete rendered lines,
+   * headings or table rows: each publish fades as one unit (every color in it
+   * shares one birth) or, if that cannot be represented, appears normally.
+   * The default "smooth" grouping is the original time-bucketed fade.
+   */
+  grouping?: "smooth" | "lines";
+}
+
 const NO_FADE: StreamingTextFade = { update() {}, finish() {}, dispose() {} };
 const DURATION = 140;
 const BUCKET_MS = 20;
 const START_OPACITY = 30;
+// A whole line arrives at once, so it starts lower and settles a little longer.
+const LINE_DURATION = 200;
+const LINE_START_OPACITY = 12;
 const MAX_COHORTS = 24;
 const MAX_RANGES = 64;
+// One table row contributes a range per cell text node.
+const MAX_LINE_RANGES = 128;
 const MAX_STYLE_READS = 64;
 const MAX_SOURCE = 48_000;
 const MAX_TEXT = 32_768;
@@ -50,11 +65,11 @@ function snapshot(root: HTMLElement): Snapshot | null {
  * establishes a baseline, including when revisiting an already-streaming row.
  * Unsupported browsers retain exactly the existing, fully visible rendering.
  */
-export function createStreamingTextFade(root: HTMLElement): StreamingTextFade {
-  try { return createSupportedFade(root); } catch { return NO_FADE; }
+export function createStreamingTextFade(root: HTMLElement, options: StreamingTextFadeOptions = {}): StreamingTextFade {
+  try { return createSupportedFade(root, options.grouping === "lines"); } catch { return NO_FADE; }
 }
 
-function createSupportedFade(root: HTMLElement): StreamingTextFade {
+function createSupportedFade(root: HTMLElement, lines: boolean): StreamingTextFade {
   const doc = root.ownerDocument;
   const view = doc.defaultView as (Window & typeof globalThis) | null;
   if (!view?.CSS?.highlights || typeof view.Highlight !== "function" || typeof Intl.Segmenter !== "function"
@@ -65,6 +80,9 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const policy = view.matchMedia("(prefers-reduced-motion: reduce), (forced-colors: active)");
   const owner = `mythra-stream-${++nextOwner}-`;
+  const duration = lines ? LINE_DURATION : DURATION;
+  const startOpacity = lines ? LINE_START_OPACITY : START_OPACITY;
+  const maxRanges = lines ? MAX_LINE_RANGES : MAX_RANGES;
   let previous: { source: string; text: string } | null = null;
   let cohorts: Cohort[] = [];
   let frame: number | null = null;
@@ -123,13 +141,13 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
   };
   const paint = (now: number) => {
     for (const cohort of cohorts) {
-      const elapsed = Math.max(0, (now - cohort.born) / DURATION);
+      const elapsed = Math.max(0, (now - cohort.born) / duration);
       if (elapsed >= 1) remove(cohort);
       // Highlight inheritance is separate from element inheritance. currentColor
       // here compounds alpha through ancestors and can also lose the text hue.
-      else rules[cohort.slot].style.color = `color-mix(in srgb, ${cohort.color} ${START_OPACITY + (100 - START_OPACITY) * (1 - (1 - elapsed) ** 3)}%, transparent)`;
+      else rules[cohort.slot].style.color = `color-mix(in srgb, ${cohort.color} ${startOpacity + (100 - startOpacity) * (1 - (1 - elapsed) ** 3)}%, transparent)`;
     }
-    cohorts = cohorts.filter((cohort) => now - cohort.born < DURATION);
+    cohorts = cohorts.filter((cohort) => now - cohort.born < duration);
   };
   const tick = (now: number) => {
     frame = null;
@@ -219,11 +237,20 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
             }
             newColors.add(color);
           }
+          // A line, heading or row fades together or not at all: never let a
+          // slot shortage fade some of its colors and pop the rest.
+          if (lines && cohorts.length + [...newColors].filter((color) => !cohorts.some((cohort) => !cohort.sealed
+            && cohort.color === color && cohort.born === now)).length > MAX_COHORTS) {
+            newColors.clear();
+            cohorts.forEach((cohort) => { cohort.sealed = true; });
+          }
           for (const color of newColors) {
             // Bucket by time, not commit count: 120 Hz updates must not force
             // half-faded text to full opacity. Birth times never move backward.
+            // Lines share a cohort only within one instant, so a later line
+            // never joins an already partly faded one.
             const reusable = cohorts.find((cohort) => !cohort.sealed && cohort.color === color
-              && Math.floor(cohort.born / BUCKET_MS) === Math.floor(now / BUCKET_MS));
+              && (lines ? cohort.born === now : Math.floor(cohort.born / BUCKET_MS) === Math.floor(now / BUCKET_MS)));
             if (reusable) { reusable.end = current.text.length; continue; }
             // Unusually colorful output may use ordinary rendering for new
             // text, but must not interrupt fades that are already in progress.
@@ -254,7 +281,7 @@ function createSupportedFade(root: HTMLElement): StreamingTextFade {
               const color = colorOf(part.node);
               if (color === null) return null;
               if (color !== cohort.color) continue;
-              if (++rangeCount > MAX_RANGES) return null;
+              if (++rangeCount > maxRanges) return null;
               ranges.push({ node: part.node, from: from - part.start, to: to - part.start });
             }
             plan.push({ cohort, ranges });

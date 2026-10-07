@@ -19,7 +19,26 @@ const QA_MARKER_KEY = "mythra.releaseQa.profile";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COMPLETE_MS = 24_000;
 const TURN_ID = "activity-preview-live-turn";
-const ANSWER = "The compact status now follows the current action. Earlier commands, edits, and reasoning stay together in Work, so the conversation remains easy to scan.";
+// Match the real store's immutable transcript updates: already-settled messages
+// retain their identity while the current turn changes. Rebuilding historical
+// objects on every fixture tick would look like a history hydration instead.
+const EARLIER_MESSAGES: ChatMessage[] = [
+  { id: "preview-earlier-user", role: "user", text: "Review the activity layout. (Simulated preview)", timelineOrder: 1, turnId: "preview-earlier-turn", turnStatus: "completed" },
+  { id: "preview-earlier-answer", role: "assistant", text: "The layout is ready for a compact live status and a detailed Work view.", timelineOrder: 4, turnId: "preview-earlier-turn", turnStatus: "completed", turnDurationMs: 6200 },
+];
+const ANSWER = [
+  "## A calmer way to read the answer",
+  "The complete response is ready before it appears here. Its lines settle into view quickly, while the conversation stays where you were reading. This is simulated preview content: no prompt was sent to a provider.",
+  "### Keep the useful details",
+  "Headings, links, code, and tables keep their original Markdown formatting. The presentation changes only how new text appears, not what the model wrote. Earlier commands, edits, and reasoning remain available in Work history.",
+  "| Detail | What happens |\n| --- | --- |\n| Answer | Complete lines fade into view |\n| Tables | A whole row appears together |\n| Reading position | The chat does not jump to the answer's end |\n| Work history | Earlier activity stays available |",
+  "### Stay in control",
+  "You can keep reading the beginning, scroll at your own pace, or explicitly choose Latest when you want the end. Searching and copying still work with the complete answer. Reduced motion skips the decorative reveal.",
+  "### A little less visual noise",
+  "The small working indicator uses crisp pixels rather than a sparkle icon or a circular spinner. Its colors follow the active theme, and its animation stops when the task finishes.",
+  "### Nothing hidden or discarded",
+  "This preview uses the actual conversation components in an isolated development profile. It does not create scheduled prompts, queue a real task, access subscription credentials, or use your model limits. All of this text is available as soon as the response completes.",
+].join("\n\n");
 
 export interface ActivityDemoEnvironment {
   dev: boolean;
@@ -74,8 +93,7 @@ export function activityDemoSnapshot(elapsed: number, startedWallTime = 0): Acti
   const turnStatus = finished ? "completed" as const : "inProgress" as const;
   const live = { turnId: TURN_ID, turnStatus };
   const messages: ChatMessage[] = [
-    { id: "preview-earlier-user", role: "user", text: "Review the activity layout. (Simulated preview)", timelineOrder: 1, turnId: "preview-earlier-turn", turnStatus: "completed" },
-    { id: "preview-earlier-answer", role: "assistant", text: "The layout is ready for a compact live status and a detailed Work view.", timelineOrder: 4, turnId: "preview-earlier-turn", turnStatus: "completed", turnDurationMs: 6200 },
+    ...EARLIER_MESSAGES,
     { id: "preview-current-user", role: "user", text: "Show how the compact activity changes as work progresses. (Simulated preview)", timelineOrder: 5, ...live },
   ];
   const activities: Activity[] = [

@@ -7,6 +7,7 @@ import { adoptPortalTheme, effectiveZoom } from "../lib/floatingLayer";
 import { prefersReducedMotion } from "../lib/flipRoster";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatusCategory } from "./ActivityStatus";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import "./ActivityDetailsModal.css";
 
 /** Searchable text for one transcript entry, shared with timeline search. */
@@ -103,12 +104,14 @@ function stepElement(region: HTMLElement | null, id: string | undefined): HTMLEl
   return null;
 }
 
-const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, current, target, renderMessage, renderSubAgents, onAnswerQuestion }: {
+const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, current, target, live, renderMessage, renderSubAgents, onAnswerQuestion }: {
   step: ActivityStep;
   inChat: boolean;
   match: boolean;
   current: boolean;
   target: boolean;
+  /** The run itself is live; only then may an in-progress step animate. */
+  live: boolean;
   renderMessage: (message: ChatMessage) => ReactNode;
   renderSubAgents: (activities: Activity[]) => ReactNode;
   onAnswerQuestion?: (message: ChatMessage) => void;
@@ -166,8 +169,9 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   const title = reasoning ? "Thinking" : activity.title;
   const mono = activity.kind === "command" || activity.kind === "file";
   const toggleLabel = reasoning ? "thinking" : activity.kind === "command" ? "output" : "details";
+  const thinkingNow = reasoning && live && statusTone(activity.status) === "live";
   return <li className={`activity-step kind-${activity.kind}${flags}`} data-step-id={step.id}>
-    <span className="activity-step-node" aria-hidden="true"><Icon size={11} /></span>
+    <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <PixelWorkingMark /> : <Icon size={11} />}</span>
     <div className="activity-step-body">
       <div className="activity-step-head">
         {collapsible ? (
@@ -184,7 +188,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
       {showDetail && (reasoning ? <div className="activity-step-thought">{detail}</div> : <pre className="activity-step-output">{detail}</pre>)}
     </div>
   </li>;
-}, (previous, next) => previous.inChat === next.inChat && previous.match === next.match
+}, (previous, next) => previous.inChat === next.inChat && previous.match === next.match && previous.live === next.live
   && previous.current === next.current && previous.target === next.target
   && previous.renderMessage === next.renderMessage && previous.renderSubAgents === next.renderSubAgents
   && previous.onAnswerQuestion === next.onAnswerQuestion && sameStep(previous.step, next.step));
@@ -564,6 +568,7 @@ export function ActivityDetailsModal({
             match={matchIds.has(step.id)}
             current={step.id === currentMatchId}
             target={step.id === targetId && step !== steps[0]}
+            live={live}
             renderMessage={renderMessage}
             renderSubAgents={renderSubAgents}
             onAnswerQuestion={onAnswerQuestion}
@@ -577,7 +582,7 @@ export function ActivityDetailsModal({
       )}
       {stepCount === 0 && (
         <div className="activity-details-empty">
-          <span className={`activity-details-empty-mark${live ? " live" : ""}`} aria-hidden="true"><Sparkles size={13} /></span>
+          <span className={`activity-details-empty-mark${live ? " live" : ""}`} aria-hidden="true">{live ? <PixelWorkingMark /> : <Sparkles size={13} />}</span>
           <p>{live ? "Steps will appear here as the agent works." : "No steps were recorded for this run."}</p>
         </div>
       )}

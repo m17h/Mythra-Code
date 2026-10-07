@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from "react";
-import { Check, ChevronRight, CircleDashed, CircleStop, FilePenLine, FoldVertical, ListChecks, Pencil, Search, ShieldAlert, Sparkles, TerminalSquare, TriangleAlert, UsersRound, type LucideIcon } from "lucide-react";
+import { Check, ChevronRight, CircleDashed, CircleStop, ListChecks, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
 import { latestCompactActivity, type CompactWorkEntry, type CompactWorkState } from "../lib/compactActivity";
+import { PixelWorkingMark } from "./PixelWorkingMark";
 import "./ActivityStatus.css";
 
 export type ActivityStatusCategory =
@@ -88,18 +89,6 @@ function usePlayfulLabel(label: string, enabled: boolean, seed: string): string 
   return enabled && phrase ? phrase : label;
 }
 
-const CATEGORY_ICONS: Record<ActivityStatusCategory, LucideIcon> = {
-  research: Search,
-  files: FilePenLine,
-  commands: TerminalSquare,
-  thinking: Sparkles,
-  writing: Pencil,
-  agents: UsersRound,
-  compaction: FoldVertical,
-  approval: ShieldAlert,
-  working: Sparkles,
-};
-
 const SETTLED_ICONS: Record<Exclude<CompactWorkState, "running">, LucideIcon> = {
   completed: Check,
   failed: TriangleAlert,
@@ -140,8 +129,9 @@ export interface ActivityStatusProps {
 }
 
 /**
- * A single, small, deliberately quiet line. Live runs get one animated mark;
- * settled rows are static so long histories never animate or tick.
+ * A single, small, deliberately quiet line. A live run gets the one animated
+ * dot-matrix mark (its label names the operation); waiting and settled rows
+ * keep a static semantic icon so long histories never animate or tick.
  */
 export const ActivityStatus = memo(function ActivityStatus({
   state, label, category = "working", summary, playful = false, unconfirmed = false, seed = "", searchMatches = 0, runKey, open = false, onOpen,
@@ -151,7 +141,7 @@ export const ActivityStatus = memo(function ActivityStatus({
   const pending = !live && unconfirmed;
   const semanticLabel = live ? label || "Working" : label || (pending ? UNCONFIRMED_ACTIVITY_LABEL : SETTLED_ACTIVITY_LABELS[state]);
   const shownLabel = usePlayfulLabel(semanticLabel, live && playful && !waiting, seed);
-  const Icon = live ? CATEGORY_ICONS[category] : pending ? CircleDashed : SETTLED_ICONS[state];
+  const Icon = waiting ? ShieldAlert : live ? null : pending ? CircleDashed : SETTLED_ICONS[state];
   const matchText = searchMatches > 0 ? `${searchMatches} match${searchMatches === 1 ? "" : "es"}` : "";
   const accessibleSummary = [summary, matchText].filter(Boolean).join(", ");
   return (
@@ -175,9 +165,8 @@ export const ActivityStatus = memo(function ActivityStatus({
           onOpen(event.currentTarget);
         }}
       >
-        <span className="activity-status-mark" aria-hidden="true">
-          <Icon size={11} strokeWidth={2.2} />
-          {live && !waiting && <i className="activity-status-orbit" />}
+        <span className={`activity-status-mark${Icon ? "" : " working"}`} aria-hidden="true">
+          {Icon ? <Icon size={11} strokeWidth={2.2} /> : <PixelWorkingMark />}
         </span>
         <span className="activity-status-text" aria-hidden="true">
           <span className={`activity-status-label${shownLabel !== semanticLabel ? " playful" : ""}`} key={shownLabel}>{shownLabel}</span>
