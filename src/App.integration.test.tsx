@@ -400,7 +400,10 @@ async function renderApp() {
   // be reset after seeding storage for each test.
   vi.resetModules();
   const { default: App } = await import("./App");
-  const view = render(<App />);
+  // Own the immediate startup Promise/effect commits before behavioral queries.
+  // Deliberately deferred requests stay pending; no thread list is fabricated.
+  let view!: ReturnType<typeof render>;
+  await act(async () => { view = render(<App />); });
   const sidebar = view.container.querySelector<HTMLElement>("aside.sidebar");
   expect(sidebar).toBeInTheDocument();
   await within(sidebar!).findByRole("button", { name: PROJECT_B.name });
@@ -4643,7 +4646,7 @@ describe("workspace switching during thread selection", () => {
     resumeImpl = (params) => ({ thread: { ...THREAD_A, id: String(params.threadId), turns: [] } });
     await renderApp();
 
-    await user.click(await screen.findByText("Alpha thread"));
+    await user.click(screen.getByText("Alpha thread"));
     await waitFor(() => expect(screen.getByRole("slider", { name: "Reasoning effort" })).toHaveValue("1"));
   });
 
