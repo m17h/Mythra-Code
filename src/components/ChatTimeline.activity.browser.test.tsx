@@ -72,6 +72,7 @@ async function openDetails(button = screen.getByRole("button", { name: /View act
   // That old event must not dismiss the reopened native dialog.
   expect(dialog.isConnected).toBe(true);
   expect((dialog as HTMLDialogElement).open).toBe(true);
+  await waitFor(() => expect(dialog).toBeVisible());
   return dialog as HTMLDialogElement;
 }
 
@@ -387,8 +388,9 @@ describe("compact activity in the real browser", () => {
     const prefix = "Distinct searchable prefix before the long output";
     const detail = `${prefix}\n${Array.from({ length: 180 }, (_, index) => `Output line ${index}: the recorded command continued normally.`).join("\n")}\nComplete output tail`;
     expect(detail.length).toBeGreaterThan(4000);
-    render(strictShell({ running: false, messages: [prompt, { ...final, streaming: false }].map((message) => ({ ...message, turnStatus: "completed" })),
-      activities: [{ ...tool, detail, turnStatus: "completed" }], searchQuery: prefix }));
+    // Keep the normal entrance hidden beyond two frames to challenge readiness.
+    render(<><style>{".activity-details-dialog[open] { animation-delay: 180ms; }"}</style>{strictShell({ running: false, messages: [prompt, { ...final, streaming: false }].map((message) => ({ ...message, turnStatus: "completed" })),
+      activities: [{ ...tool, detail, turnStatus: "completed" }], searchQuery: prefix })}</>);
     const button = screen.getByRole("button", { name: /View activity/ });
     expect(button).toHaveAccessibleName(/1 match/);
     const dialog = await openDetails(button);
