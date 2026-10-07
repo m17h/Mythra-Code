@@ -20,7 +20,7 @@ describe("bounded preference history", () => {
       { id: "running", status: "inProgress", items: [{ id: "bad", type: "userMessage", text: "Not settled" }] },
     ], nextCursor: "older" });
     const page = await readPreferenceHistoryPage(thread);
-    expect(page.messages).toEqual([{ id: "u", role: "user", text: "Use examples." }, { id: "a", role: "assistant", text: "Okay" }]);
+    expect(page.messages).toEqual([{ id: "u", role: "user", text: "Use examples.", turnId: "turn" }, { id: "a", role: "assistant", text: "Okay", turnId: "turn" }]);
     expect(page.nextCursor).toBe("older");
     expect(invoke).toHaveBeenLastCalledWith("codex_rpc", expect.objectContaining({ method: "thread/turns/list", params: expect.objectContaining({ itemsView: "summary", limit: 12 }) }));
   });

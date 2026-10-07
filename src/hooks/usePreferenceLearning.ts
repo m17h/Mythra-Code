@@ -24,7 +24,7 @@ export interface PreferenceLearningOptions {
   /** Test seam; production waits for the conversation to settle for one minute. */
   debounceMs?: number;
 }
-interface Source extends PreferenceSourceMessage { threadId: string; messageId?: string; transcriptFingerprint?: string }
+interface Source extends PreferenceSourceMessage { turnId?: string; threadId: string; messageId?: string; transcriptFingerprint?: string }
 interface Receipt { id: string; text: string; capturedAt: number; transcriptFingerprint: string; scopeKeys: string[] }
 interface Job { scopeKey: string; requestId: string; sources: Source[]; history: boolean; historyRunId?: string; cancelled: boolean; revision?: number; readyAt: number }
 interface HistoryRun { scopeKey: string; id: string; cancelled: boolean; settingsInvalidated?: boolean; progress: PreferenceHistoryProgress }
@@ -103,6 +103,18 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         && message.turnStatus === "completed"
         && preferenceSourceFingerprint({ id: "", role: "user", text: message.text }) === source.transcriptFingerprint))), [validScope, belongs]);
 
+  const checkpointFingerprints = useCallback((source: Source) => {
+    const current = source.role === "user" ? taskStore.getState().tasks[source.threadId]?.messages.find((message) =>
+      message.role === "user" && (message.id === source.messageId || message.clientMessageId === source.messageId
+        || preferenceSourceId(source.threadId, message.id) === source.id)) : undefined;
+    // Evidence IDs stay fixed for the provider response. Deduplication also
+    // follows the optimistic/durable aliases, including echoes after a save.
+    const turnId = source.turnId ?? current?.turnId;
+    return [...new Set([...(turnId ? [preferenceSourceId(source.threadId, JSON.stringify(["completed-turn", turnId]))] : []),
+      source.id, ...[current?.id, current?.clientMessageId].filter((id): id is string => Boolean(id)).map((id) => preferenceSourceId(source.threadId, id))])]
+      .map((id) => preferenceSourceFingerprint({ ...source, id }));
+  }, []);
+
   const pump = useCallback(async () => {
     if (active.current) return;
     while (alive.current && queue.current.length) {
@@ -115,7 +127,7 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         let state = getPreferenceLearningScope(job.scopeKey);
         const sourceById = new Map(job.sources.map((source) => [source.id, source]));
         const candidates = job.sources.filter((source) => source.role === "assistant"
-          || !preferenceCheckpointEntries(state.checkpoints[source.threadId]).includes(preferenceSourceFingerprint(source)));
+          || !checkpointFingerprints(source).some((token) => preferenceCheckpointEntries(state.checkpoints[source.threadId]).includes(token)));
         const payload = buildPreferenceAnalysisPayload(boundPreferenceSourceMessages(candidates), state.markdown);
         const bounded = (JSON.parse(payload) as { messages: PreferenceSourceMessage[] }).messages;
         const userSources = bounded.filter((source) => source.role === "user");
@@ -148,8 +160,12 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         const preferences = parsePreferenceAnalysis(response, bounded, state.markdown);
         const checkpoints: Record<string, string> = {};
         for (const message of userSources) {
-          const threadId = sourceById.get(message.id)!.threadId;
-          const tokens = [...preferenceCheckpointEntries(checkpoints[threadId] ?? state.checkpoints[threadId]), preferenceSourceFingerprint(message)];
+          const source = sourceById.get(message.id)!;
+          const threadId = source.threadId;
+          // Persist one canonical token per message so a full 40-message history
+          // pass still fits the bounded checkpoint. Other aliases are read-only
+          // compatibility with earlier message-ID checkpoints.
+          const tokens = [...preferenceCheckpointEntries(checkpoints[threadId] ?? state.checkpoints[threadId]), checkpointFingerprints(source)[0]];
           // Native values are bounded at 2,000 characters. Retain newest IDs.
           while (tokens.length > 64 || JSON.stringify(tokens).length > 2000) tokens.shift();
           checkpoints[threadId] = JSON.stringify([...new Set(tokens)]);
@@ -185,7 +201,7 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         if (active.current === job) active.current = null;
       }
     }
-  }, [currentJob, finishHistory, updateHistory]);
+  }, [currentJob, finishHistory, updateHistory, checkpointFingerprints]);
 
   const enqueue = useCallback((scopeKey: string, sources: Source[], historyRunId?: string) => {
     const history = Boolean(historyRunId);
@@ -227,16 +243,22 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
 
   const requestHistory = useCallback(async (scopeKey: string) => {
     if (!validScope(scopeKey) || !getPreferenceLearningScope(scopeKey).enabled || !opts.current.getHistoryThreads || historyRun.current) return;
+    const start = getPreferenceLearningScope(scopeKey);
     const runId = crypto.randomUUID();
-    const progress: PreferenceHistoryProgress = { scopeKey, runId, status: "reading", threads: 0, pages: 0, messages: 0, skipped: 0, limited: false };
+    const progress: PreferenceHistoryProgress = { scopeKey, runId, status: "reading", threads: 0, pages: 0, messages: 0, skipped: 0, limited: false,
+      provider: start.provider, model: resolvePreferenceLearningModel(start.provider, start.model, opts.current.catalogs) ?? undefined };
     const run: HistoryRun = { scopeKey, id: runId, cancelled: false, progress }; historyRun.current = run;
     let handedOff = false;
-    const start = getPreferenceLearningScope(scopeKey);
     scopes.current.set(scopeKey, start);
     setHistoryProgress(progress);
     setPreferenceLearningJob(scopeKey, { status: "running", historyRunId: runId, message: "Reading recent past conversations…" });
     const check = () => alive.current && historyRun.current === run && !run.cancelled && validScope(scopeKey) && getPreferenceLearningScope(scopeKey).enabled && getPreferenceLearningScope(scopeKey).revision === start.revision;
     try {
+      if ((start.analysisRequestsAt ?? []).filter((timestamp) => timestamp > Date.now() - 86_400_000).length >= 12) {
+        updateHistory(runId, { status: "error", message: "History analysis paused: daily request limit reached." });
+        setPreferenceLearningJob(scopeKey, { status: "error", historyRunId: runId, message: "Learning paused: daily request limit reached." });
+        return;
+      }
       const discovered = await opts.current.getHistoryThreads(scopeKey);
       if (!check()) return;
       const threads = discovered.filter((thread) => preferenceHistoryThreadEligible(thread) && opts.current.isEligibleThread(thread)
@@ -269,7 +291,7 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         updateHistory(runId, { ...progress });
       }
       if (!check()) return;
-      const unprocessed = sources.filter((source) => source.role === "assistant" || !preferenceCheckpointEntries(start.checkpoints[source.threadId]).includes(preferenceSourceFingerprint(source)));
+      const unprocessed = sources.filter((source) => source.role === "assistant" || !checkpointFingerprints(source).some((token) => preferenceCheckpointEntries(start.checkpoints[source.threadId]).includes(token)));
       const selected = boundPreferenceSourceMessages(unprocessed);
       progress.messages = selected.filter((source) => source.role === "user").length;
       progress.limited ||= selected.length < unprocessed.length;
@@ -281,14 +303,27 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
           message: "No new eligible authored messages were found in this bounded history pass." });
       }
     } catch {
-      if (check()) { updateHistory(runId, { status: "error", message: "History could not be read. No partial analysis was submitted." }); setPreferenceLearningJob(scopeKey, { status: "error", historyRunId: runId, message: "History could not be read." }); }
+      if (check()) {
+        // Genuine failed reads count toward the daily attempt bound. Missing or
+        // empty history returns above without reserving an attempt.
+        ownWrites.current.add(scopeKey);
+        try {
+          const reserved = await reservePreferenceLearningAnalysis(scopeKey, start.revision);
+          if (reserved) scopes.current.set(scopeKey, reserved);
+        } catch { /* Preserve the original read error if accounting fails. */ }
+        finally { ownWrites.current.delete(scopeKey); }
+        if (alive.current && historyRun.current === run && !run.cancelled) {
+          updateHistory(runId, { status: "error", message: "History could not be read. No partial analysis was submitted." });
+          setPreferenceLearningJob(scopeKey, { status: "error", historyRunId: runId, message: "History could not be read." });
+        }
+      }
     } finally {
       if (!handedOff && historyRun.current === run) {
         updateHistory(runId, { status: "cancelled", message: "History analysis cancelled because its sources or settings changed." });
         if (alive.current) setPreferenceLearningJob(scopeKey, { status: "idle", historyRunId: runId });
       }
     }
-  }, [validScope, belongs, enqueue, updateHistory]);
+  }, [validScope, belongs, enqueue, updateHistory, checkpointFingerprints]);
 
   useEffect(() => {
     alive.current = true;
@@ -317,7 +352,7 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
           if (!accepted.length) continue;
           const sources: Source[] = accepted.map((receipt) => {
             const message = task.messages.find((entry) => entry.role === "user" && (entry.id === receipt.id || entry.clientMessageId === receipt.id))!;
-            return { id: preferenceSourceId(threadId, message.id), messageId: message.id, role: "user", text: receipt.text, transcriptFingerprint: receipt.transcriptFingerprint, threadId };
+            return { id: preferenceSourceId(threadId, message.id), messageId: message.id, turnId: message.turnId, role: "user", text: receipt.text, transcriptFingerprint: receipt.transcriptFingerprint, threadId };
           });
           // Assistant output is bounded context, never evidence. Preserve nearby final responses only.
           const firstUser = task.messages.findIndex((message) => message.id === sources[0].messageId);

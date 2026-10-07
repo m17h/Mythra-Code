@@ -307,10 +307,19 @@ fn prune_generated(root: &Path, registry: &Registry) -> Result<(), String> {
     Ok(())
 }
 
+struct RegistryLock(fs::File);
+impl Drop for RegistryLock {
+    fn drop(&mut self) {
+        // Closing our descriptor alone can leave a forked child's duplicate
+        // holding the same flock until exec. Release at the transaction boundary.
+        let _ = self.0.unlock();
+    }
+}
+
 // Keep the inode in place permanently: unlinking a lock file could allow two
 // processes to lock different inodes. OS locks release on exit, including a crash.
 // Refuse contention promptly rather than blocking the app's event thread.
-fn lock_registry(root: &Path) -> Result<fs::File, String> {
+fn lock_registry(root: &Path) -> Result<RegistryLock, String> {
     for ancestor in root.ancestors() {
         if !safe_existing(ancestor, true)? {
             return Err(error());
@@ -335,7 +344,7 @@ fn lock_registry(root: &Path) -> Result<fs::File, String> {
     let file = options.open(path).map_err(|_| error())?;
     safe_file(&file)?;
     file.try_lock().map_err(|_| conflict())?;
-    Ok(file)
+    Ok(RegistryLock(file))
 }
 
 fn read_registry(root: &Path) -> Result<Registry, String> {
@@ -442,6 +451,7 @@ fn replace(source: &Path, destination: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn save(
     root: &Path,
     scope_key: String,
@@ -451,6 +461,7 @@ fn save(
     save_with_commit(root, scope_key, expected_revision, value, replace)
 }
 
+#[cfg(test)]
 fn save_with_commit(
     root: &Path,
     scope_key: String,
@@ -468,10 +479,34 @@ fn save_with_commit(
     )
 }
 
+#[cfg(test)]
 fn save_with_post_commit(
     root: &Path,
     scope_key: String,
     expected_revision: u64,
+    value: PreferenceValue,
+    commit: impl FnOnce(&Path, &Path) -> Result<(), String>,
+    post_commit: impl FnOnce(&Path, &Registry) -> Result<(), String>,
+) -> Result<ScopeState, String> {
+    // Test callers explicitly read a fresh creation snapshot. Production must
+    // use the token captured by the renderer's earlier list operation.
+    let creation_revision = read_registry(root)?.last_revision;
+    save_with_snapshot(
+        root,
+        scope_key,
+        expected_revision,
+        Some(creation_revision),
+        value,
+        commit,
+        post_commit,
+    )
+}
+
+fn save_with_snapshot(
+    root: &Path,
+    scope_key: String,
+    expected_revision: u64,
+    expected_creation_revision: Option<u64>,
     value: PreferenceValue,
     commit: impl FnOnce(&Path, &Path) -> Result<(), String>,
     post_commit: impl FnOnce(&Path, &Registry) -> Result<(), String>,
@@ -487,7 +522,9 @@ fn save_with_post_commit(
         .iter()
         .position(|entry| entry.state.scope_key == scope_key);
     let current_revision = index.map_or(0, |index| registry.scopes[index].state.revision);
-    if current_revision != expected_revision {
+    if current_revision != expected_revision
+        || (index.is_none() && expected_creation_revision != Some(registry.last_revision))
+    {
         return Err(conflict());
     }
     if (index.is_none()
@@ -596,18 +633,29 @@ fn finish_commit(
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreferenceSnapshot {
+    scopes: Vec<ScopeState>,
+    creation_revision: u64,
+}
+
 #[tauri::command]
 pub(crate) fn preference_learning_list(
     app: AppHandle,
     state: State<'_, PreferenceLearningState>,
-) -> Result<Vec<ScopeState>, String> {
+) -> Result<PreferenceSnapshot, String> {
     let _guard = state.lock.lock().map_err(|_| error())?;
     let root = prepare_root(&crate::release_qa::app_data_dir(&app).map_err(|_| error())?)?;
-    Ok(read_registry(&root)?
-        .scopes
-        .into_iter()
-        .map(|entry| entry.state)
-        .collect())
+    let registry = read_registry(&root)?;
+    Ok(PreferenceSnapshot {
+        creation_revision: registry.last_revision,
+        scopes: registry
+            .scopes
+            .into_iter()
+            .map(|entry| entry.state)
+            .collect(),
+    })
 }
 
 #[tauri::command]
@@ -616,11 +664,20 @@ pub(crate) fn preference_learning_save(
     state: State<'_, PreferenceLearningState>,
     scope_key: String,
     expected_revision: u64,
+    expected_creation_revision: Option<u64>,
     value: PreferenceValue,
 ) -> Result<ScopeState, String> {
     let _guard = state.lock.lock().map_err(|_| error())?;
     let root = prepare_root(&crate::release_qa::app_data_dir(&app).map_err(|_| error())?)?;
-    save(&root, scope_key, expected_revision, value)
+    save_with_snapshot(
+        &root,
+        scope_key,
+        expected_revision,
+        expected_creation_revision,
+        value,
+        replace,
+        prune_generated,
+    )
 }
 
 #[tauri::command]
@@ -807,6 +864,22 @@ mod tests {
         symlink(&root, other.0.join("private-preferences")).unwrap();
         assert!(prepare_root(&other.0).is_err());
     }
+    #[cfg(unix)]
+    #[test]
+    fn preference_registry_releases_lock_with_an_inherited_descriptor() {
+        let temp = Temp::new();
+        let root = prepare_root(&temp.0).unwrap();
+        let lock = lock_registry(&root).unwrap();
+        // A forked child shares this open-file description until it execs. A
+        // duplicate makes that lifetime deterministic without spawning a child.
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(lock_registry(&root).is_err());
+        drop(lock);
+        let next = lock_registry(&root)
+            .expect("transaction releases its lock even while a child retains the descriptor");
+        drop(next);
+        drop(inherited);
+    }
     #[test]
     fn preference_registry_respects_another_instance_lock() {
         let temp = Temp::new();
@@ -857,7 +930,7 @@ mod tests {
         save(&root, "project:test".into(), 0, value()).unwrap();
         let other = Temp::new();
         let redirected = other.0.join("private-preferences");
-        let status = std::process::Command::new("cmd.exe")
+        let status = crate::process_launch::background_std_command("cmd.exe")
             .args(["/c", "mklink", "/j"])
             .arg(&redirected)
             .arg(&root)
@@ -941,6 +1014,37 @@ mod tests {
         let after_empty = save(&root, "project:0".into(), 0, value()).unwrap();
         assert!(after_empty.revision > recreated.revision);
         assert!(save(&root, "project:0".into(), recreated.revision, value()).is_err());
+    }
+    #[test]
+    fn preference_registry_rejects_stale_absence_after_create_and_forget() {
+        let temp = Temp::new();
+        let root = prepare_root(&temp.0).unwrap();
+        let captured = read_registry(&root).unwrap().last_revision;
+        let first = save(&root, "project:removed".into(), 0, value()).unwrap();
+        forget(&root, "project:removed", first.revision).unwrap();
+        assert!(save_with_snapshot(
+            &root,
+            "project:removed".into(),
+            0,
+            Some(captured),
+            value(),
+            replace,
+            prune_generated
+        )
+        .is_err());
+        assert!(read_registry(&root).unwrap().scopes.is_empty());
+        let fresh = read_registry(&root).unwrap().last_revision;
+        let recreated = save_with_snapshot(
+            &root,
+            "project:removed".into(),
+            0,
+            Some(fresh),
+            value(),
+            replace,
+            prune_generated,
+        )
+        .unwrap();
+        assert!(recreated.revision > first.revision);
     }
     #[test]
     fn preference_registry_upgrade_derives_highwater_from_existing_states() {

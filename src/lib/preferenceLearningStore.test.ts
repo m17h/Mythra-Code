@@ -44,6 +44,30 @@ function removableFixture() {
     external: (state: PreferenceLearningScopeState | null) => { native = state; if (state) highWater = Math.max(highWater, state.revision); } };
 }
 describe("native preference learning store", () => {
+  it("rejects a stale absent snapshot after another instance creates and forgets the scope", async () => {
+    let native: PreferenceLearningScopeState | null = null;
+    let highWater = 0;
+    const transport: PreferenceLearningTransport = {
+      list: async () => ({ scopes: native ? [native] : [], creationRevision: highWater }),
+      save: async (scopeKey, revision, value, creationRevision) => {
+        if (revision !== (native?.revision ?? 0) || (!native && creationRevision !== highWater)) throw new Error("Revision conflict");
+        native = { scopeKey, revision: ++highWater, ...value }; return native;
+      },
+      forget: async (_scopeKey, revision) => { if (revision !== native?.revision) throw new Error("Revision conflict"); native = null; },
+    };
+    const oldInstance = createPreferenceLearningStore(transport);
+    const otherInstance = createPreferenceLearningStore(transport);
+    await oldInstance.load(); await otherInstance.load();
+    await otherInstance.configure("project:removed", { enabled: true });
+    await otherInstance.forget("project:removed", otherInstance.get("project:removed").revision);
+    await expect(oldInstance.configure("project:removed", { enabled: true })).rejects.toThrow("Revision conflict");
+    expect(native).toBeNull();
+    expect(oldInstance.getSavedScopeKeys()).toEqual([]);
+    expect(oldInstance.get("project:removed").enabled).toBe(false);
+    // Conflict reload provides a fresh token; a new explicit action may recreate.
+    await oldInstance.configure("project:removed", { enabled: true });
+    expect(oldInstance.get("project:removed").revision).toBeGreaterThan(1);
+  });
   it("exposes stable disabled snapshots before hydration and makes no writes", async () => {
     const { store, writes } = fixture();
     expect(store.get("app")).toBe(store.get("app"));

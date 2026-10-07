@@ -79,7 +79,8 @@ not claim the completed save was cancelled. Later changes remain authoritative.
 Every analysis selects at most 40 messages and 24,000 characters of conversation
 text, skipping individual messages above 4,000 characters. Each scope allows at
 most 12 analysis requests in a rolling 24 hours, including history requests and
-failed provider attempts. App and project analysis are separate requests when
+failed provider attempts and genuine history-read failures. Missing or empty
+history does not consume an attempt. App and project analysis are separate requests when
 both scopes are enabled. A full queue can skip a conversation; this feature is
 best-effort learning, not a complete archive analysis.
 

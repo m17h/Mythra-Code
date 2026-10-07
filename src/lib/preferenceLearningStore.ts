@@ -3,9 +3,10 @@ import { useSyncExternalStore } from "react";
 import { defaultPreferenceLearningScope, mergeLearnedPreferences, preferenceDocumentInstructions } from "./preferenceLearning";
 import { PREFERENCE_LEARNING_LIMITS as LIMITS, type LearnedPreference, type PreferenceLearningConfigPatch, type PreferenceLearningJob, type PreferenceLearningScopeState, type PreferenceLearningValue } from "./preferenceLearningTypes";
 
+export interface PreferenceLearningSnapshot { scopes: PreferenceLearningScopeState[]; creationRevision: number }
 export interface PreferenceLearningTransport {
-  list: () => Promise<PreferenceLearningScopeState[]>;
-  save: (scopeKey: string, expectedRevision: number, value: PreferenceLearningValue) => Promise<PreferenceLearningScopeState>;
+  list: () => Promise<PreferenceLearningScopeState[] | PreferenceLearningSnapshot>;
+  save: (scopeKey: string, expectedRevision: number, value: PreferenceLearningValue, expectedCreationRevision?: number) => Promise<PreferenceLearningScopeState>;
   forget?: (scopeKey: string, expectedRevision: number) => Promise<void>;
 }
 export interface PreferenceAnalysisCommit {
@@ -78,6 +79,7 @@ export function createPreferenceLearningStore(transport: PreferenceLearningTrans
   let loading: Promise<void> | null = null;
   let error: string | null = null;
   let deletionEpoch = 0;
+  let creationRevision = 0;
   let savedScopeKeys: readonly string[] = Object.freeze([]);
   const emit = () => {
     const keys = [...scopes.keys()].sort();
@@ -107,10 +109,15 @@ export function createPreferenceLearningStore(transport: PreferenceLearningTrans
     const startedAt = deletionEpoch;
     const startingScopes = new Map(scopes);
     loading = Promise.resolve().then(() => transport.list()).then((payload: unknown) => {
-      if (!Array.isArray(payload) || payload.length > 128) throw new Error("Invalid preference settings returned by the app");
-      // Validate the whole response before publishing any enabled scope.
-      const states = payload.map(validateNativeScope);
+      const snapshot = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+      const rows = Array.isArray(payload) ? payload : snapshot?.scopes;
+      const token = Array.isArray(payload) ? Math.max(0, ...payload.map((state) => state?.revision)) : snapshot?.creationRevision;
+      if (!Array.isArray(rows) || rows.length > 128 || !validTime(token)) throw new Error("Invalid preference settings returned by the app");
+      // Validate the whole response before publishing any enabled scope/token.
+      const states = rows.map(validateNativeScope);
+      if (states.some((state) => state.revision > token)) throw new Error("Invalid preference creation snapshot returned by the app");
       if (new Set(states.map((state) => state.scopeKey)).size !== states.length) throw new Error("Duplicate preference scopes returned by the app");
+      creationRevision = Math.max(creationRevision, token);
       // Keep a newer successful local CAS when an older list arrives late.
       for (const state of states) {
         validateScopeKey(state.scopeKey);
@@ -149,13 +156,14 @@ export function createPreferenceLearningStore(transport: PreferenceLearningTrans
     return operation;
   };
   const save = async (state: PreferenceLearningScopeState, value: PreferenceLearningValue,
-    onNativeSaved?: (state: PreferenceLearningScopeState) => void): Promise<PreferenceLearningScopeState> => {
+    onNativeSaved?: (state: PreferenceLearningScopeState) => void, expectedCreationRevision = creationRevision): Promise<PreferenceLearningScopeState> => {
     const startingDeletion = deletedAt.get(state.scopeKey) ?? 0;
     try {
-      const next = validateNativeScope(await transport.save(state.scopeKey, state.revision, value));
+      const next = validateNativeScope(await transport.save(state.scopeKey, state.revision, value, expectedCreationRevision));
       // New scopes receive a native high-water revision, including after a
       // previous incarnation was forgotten. Existing scopes still advance one.
       if (next.scopeKey !== state.scopeKey || (state.revision === 0 ? next.revision <= 0 : next.revision !== state.revision + 1)) throw new Error("Invalid preference revision returned by the app");
+      creationRevision = Math.max(creationRevision, next.revision);
       onNativeSaved?.(next);
       if ((deletedAt.get(state.scopeKey) ?? 0) !== startingDeletion) throw new Error("These saved project preferences were removed while this update was running.");
       if (next.revision <= (deletedRevisions.get(next.scopeKey) ?? -1)) throw new Error("Invalid recreated preference revision returned by the app");
@@ -179,13 +187,14 @@ export function createPreferenceLearningStore(transport: PreferenceLearningTrans
   const mutate = (scopeKey: string, action: (current: PreferenceLearningScopeState) => PreferenceLearningValue) => {
     validateScopeKey(scopeKey);
     const forgetGeneration = forgetGenerations.get(scopeKey) ?? 0;
+    const expectedCreationRevision = hydrated ? creationRevision : undefined;
     pendingMutations.set(scopeKey, (pendingMutations.get(scopeKey) ?? 0) + 1);
     invalidate(scopeKey);
     return enqueue(scopeKey, async () => {
       if (!hydrated) await load();
       if (forgetGeneration !== (forgetGenerations.get(scopeKey) ?? 0)) throw new Error("These saved project preferences were removed. Review the latest settings before saving.");
       const current = getNative(scopeKey);
-      return save(current, action(current));
+      return save(current, action(current), undefined, expectedCreationRevision);
     }).finally(() => {
       const count = (pendingMutations.get(scopeKey) ?? 1) - 1;
       if (count) pendingMutations.set(scopeKey, count); else pendingMutations.delete(scopeKey);
@@ -285,7 +294,7 @@ export function createPreferenceLearningStore(transport: PreferenceLearningTrans
 
 const store = createPreferenceLearningStore({
   list: () => invoke("preference_learning_list"),
-  save: (scopeKey, expectedRevision, value) => invoke("preference_learning_save", { scopeKey, expectedRevision, value }),
+  save: (scopeKey, expectedRevision, value, expectedCreationRevision) => invoke("preference_learning_save", { scopeKey, expectedRevision, expectedCreationRevision, value }),
   forget: (scopeKey, expectedRevision) => invoke("preference_learning_forget", { scopeKey, expectedRevision }),
 });
 export const loadPreferenceLearning = store.load;

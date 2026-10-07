@@ -259,6 +259,19 @@ describe("automatic preference learning runner", () => {
     const view = renderHook(() => usePreferenceLearning({ ...options, getHistoryThreads: async () => { throw new Error("metadata offline"); } })); await act(async () => {});
     await act(async () => { await view.result.current.requestHistory("app"); });
     expect(view.result.current.historyProgress?.status).toBe("error"); expect(bridge.invoke).not.toHaveBeenCalled();
+    expect(bridge.store!.get("app").analysisRequestsAt).toHaveLength(1);
+  });
+  it("bounds genuine history read failures before attempting another read", async () => {
+    const { options } = fixture();
+    const getHistoryThreads = vi.fn(async () => { throw new Error("metadata offline"); });
+    const view = renderHook(() => usePreferenceLearning({ ...options, getHistoryThreads })); await act(async () => {});
+    for (let attempt = 0; attempt < 13; attempt += 1) {
+      await act(async () => { await view.result.current.requestHistory("app"); });
+    }
+    expect(getHistoryThreads).toHaveBeenCalledTimes(12);
+    expect(bridge.store!.get("app").analysisRequestsAt).toHaveLength(12);
+    expect(view.result.current.historyProgress?.message).toContain("daily request limit");
+    expect(bridge.invoke).not.toHaveBeenCalled();
   });
   it("hydrates on mount but never scans old completed tasks", async () => {
     const { options } = fixture(); addTurn(); useTaskStore.getState().completeTurn("t", "turn", "completed");
@@ -440,12 +453,29 @@ describe("automatic preference learning runner", () => {
     const request = bridge.invoke.mock.calls.find(([command]) => command === "analyze_user_preferences")![1];
     expect(request.payload).not.toContain("Private old conversation");
   });
-  it("keeps accepted sources when a late provider echo replaces their optimistic IDs", async () => {
-    const { options, onUpdated } = fixture(); const view = renderHook(() => usePreferenceLearning(options)); await act(async () => {});
+  it.each([
+    { echoTiming: "before save", historyText: "Keep answers brief.", historyTurn: "turn", expectedCalls: 0 },
+    { echoTiming: "after save", historyText: "Keep answers brief.", historyTurn: "turn", expectedCalls: 0 },
+    { echoTiming: "after save", historyText: "Keep answers detailed.", historyTurn: "turn", expectedCalls: 1 },
+    { echoTiming: "after save", historyText: "Keep answers brief.", historyTurn: "new-turn", expectedCalls: 1 },
+  ])("deduplicates a late provider echo $echoTiming without suppressing $historyTurn / $historyText", async ({ echoTiming, historyText, historyTurn, expectedCalls }) => {
+    const { options, onUpdated } = fixture(); const view = renderHook(() => usePreferenceLearning({ ...options, getHistoryThreads: async () => [thread()] })); await act(async () => {});
     addTurn(); act(() => { view.result.current.captureUserPrompt("t", "local-u", "Keep answers brief."); useTaskStore.getState().completeTurn("t", "turn", "completed"); });
+    if (echoTiming === "after save") await settle();
     act(() => useTaskStore.getState().completeMessage("t", { id: "provider-u", role: "user", text: "Keep answers brief.", turnId: "turn" }));
     expect(useTaskStore.getState().tasks.t.messages.find((message) => message.role === "user")).toMatchObject({ id: "provider-u", clientMessageId: "local-u" });
     await settle(); expect(onUpdated).toHaveBeenCalledExactlyOnceWith("app");
+    useTaskStore.setState({ tasks: {}, statuses: {} });
+    const analyze = vi.fn(async () => ({ preferences: [] }));
+    bridge.invoke.mockImplementation((command: string, args: { method?: string }) => {
+      if (command === "codex_rpc" && args.method === "thread/read") return Promise.resolve({ thread: thread() });
+      if (command === "codex_rpc") return Promise.resolve({ data: [{ id: historyTurn, status: "completed", items: [{ id: "provider-u", type: "userMessage", text: historyText }] }], nextCursor: null });
+      return command === "analyze_user_preferences" ? analyze() : Promise.resolve(undefined);
+    });
+    await act(async () => { await view.result.current.requestHistory("app"); });
+    expect(analyze).toHaveBeenCalledTimes(expectedCalls);
+    expect(bridge.store!.get("app").analysisRequestsAt).toHaveLength(1 + expectedCalls);
+    expect(view.result.current.historyProgress).toMatchObject({ status: "complete", messages: expectedCalls });
   });
   it("collects a successful terminal transition after an earlier error for the same turn", async () => {
     const { options, onUpdated } = fixture(); const view = renderHook(() => usePreferenceLearning(options)); await act(async () => {});

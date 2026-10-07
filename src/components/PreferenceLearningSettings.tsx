@@ -44,8 +44,8 @@ function LearningExperimentalNotice() {
     const close = () => { setOpen(false); setPinned(false); };
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) close(); };
     const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (pinned || root.current?.contains(document.activeElement)) { event.preventDefault(); event.stopPropagation(); }
+      if (event.key !== "Escape" || document.querySelector('[data-approval-modal], [data-skill-remove-modal], [role="alertdialog"][aria-modal="true"]')) return;
+      event.preventDefault(); event.stopPropagation();
       close();
     };
     document.addEventListener("pointerdown", outside);
@@ -212,6 +212,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
   const historyStatus = <div className="preference-learning-history-progress" aria-live="polite">
     {!historyWorking && !history && <p className="preference-learning-history-state">{historyActiveElsewhere ? "Another history analysis is running. Select that scope to view its progress." : removedProject ? "History analysis is unavailable for this removed project." : scope.enabled ? "Ready to analyze recent conversations." : "Enable this scope to analyze recent conversations."}</p>}
     {historyWorking && <p className="preference-learning-history-state" data-history-status={history?.status ?? "reading"}><PixelWorkingMark /><span>{historyPhase}</span></p>}
+    {historyWorking && <p>{providerDisplayName(analysisProvider)} · {analysisModel ?? "No available learning model"}</p>}
     {historyFinished && <p className="preference-learning-history-state complete" data-history-status={history?.status}><Check size={16} aria-hidden="true" /><span>{completion}</span></p>}
     {historyFinished && <p className="preference-learning-history-coverage">This bounded history pass does not cover all history.</p>}
     {history?.status === "cancelled" && <p className="preference-learning-history-state" data-history-status="cancelled">Preference learning cancelled.</p>}

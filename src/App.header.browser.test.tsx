@@ -113,6 +113,14 @@ it("wires learned preference settings to live models and exact project scopes in
   await browserUserEvent.click(await screen.findByRole("button", { name: /^Prompts/ }));
   const toggle = await screen.findByRole("switch", { name: "Automatically learn preferences" });
   await waitFor(() => expect(toggle).not.toBeDisabled());
+  const authoredField = screen.getByRole("textbox", { name: "Global Mythra Code prompt" });
+  authoredField.focus();
+  await browserUserEvent.hover(screen.getByRole("button", { name: "About experimental preference learning" }));
+  expect(screen.getByRole("tooltip")).toBeVisible();
+  await browserUserEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  expect(authoredField).toHaveFocus();
   await browserUserEvent.click(screen.getByRole("button", { name: "Preference learning model" }));
   expect(await screen.findByRole("menuitemradio", { name: /Automatic/ })).toHaveTextContent("gpt-6.1-luna");
   await browserUserEvent.keyboard("{Escape}");
@@ -574,7 +582,9 @@ it.each([
     await browserUserEvent.click(provider);
     const claude = screen.getByRole("menuitemradio", { name: /Claude Code subscription/ });
     await expectReachable(claude);
-    await new Promise(requestAnimationFrame);
+    // Menu opening moves focus asynchronously. Assert that transition before
+    // testing Tab from the selected row, rather than racing one animation frame.
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: /ChatGPT subscription/ })).toHaveFocus());
     await browserUserEvent.keyboard("{Tab}");
     expect(dialog.contains(document.activeElement)).toBe(true);
     expect(claude).toHaveFocus();

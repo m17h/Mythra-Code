@@ -51,6 +51,21 @@ describe("preference learning in the browser", () => {
     await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
     expect(fixture.calls.some((call) => call.command === "preference_learning_save")).toBe(false);
   });
+  it("dismisses hover help with Escape while keeping Settings focus and content", async () => {
+    const view = mount();
+    const closeSettings = vi.fn();
+    document.addEventListener("keydown", closeSettings);
+    try {
+      view.getByRole("textbox").focus();
+      await userEvent.hover(page.getByRole("button", { name: "About experimental preference learning" }));
+      await expect.element(page.getByRole("tooltip")).toBeVisible();
+      await userEvent.keyboard("{Escape}");
+      await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
+      expect(closeSettings).not.toHaveBeenCalled();
+      expect(view.getByRole("textbox")).toHaveFocus();
+      expect(view.getByRole("heading", { name: "Learned preferences" })).toBeVisible();
+    } finally { document.removeEventListener("keydown", closeSettings); }
+  });
   it("shows a historical save receipt without claiming a later-cleared document was updated", async () => {
     await configurePreferenceLearning("app", { enabled: true, model: "gpt-6-luna" });
     await editPreferenceLearning("app", "- Earlier saved result");

@@ -56,6 +56,30 @@ describe("learned preference controls", () => {
     expect(saveCalls()).toHaveLength(0);
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
   });
+  it("consumes Escape for a hovered notice while focus stays elsewhere in Settings", () => {
+    render(<PreferenceLearningSettings {...props} />);
+    const closeSettings = vi.fn();
+    document.addEventListener("keydown", closeSettings);
+    try {
+      screen.getByRole("textbox").focus();
+      fireEvent.mouseEnter(screen.getByRole("button", { name: "About experimental preference learning" }));
+      expect(screen.getByRole("tooltip")).toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(closeSettings).not.toHaveBeenCalled();
+      expect(screen.getByRole("textbox")).toHaveFocus();
+    } finally { document.removeEventListener("keydown", closeSettings); }
+  });
+  it("leaves Escape to a skill removal surface stacked above a pinned notice", () => {
+    const closeApproval = vi.fn();
+    render(<><PreferenceLearningSettings {...props} /><div data-skill-remove-modal="true" onKeyDown={(event) => { if (event.key === "Escape") closeApproval(); }}><button>Approval choice</button></div></>);
+    fireEvent.click(screen.getByRole("button", { name: "About experimental preference learning" }));
+    const choice = screen.getByRole("button", { name: "Approval choice" }); choice.focus();
+    fireEvent.keyDown(choice, { key: "Escape" });
+    expect(closeApproval).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+  });
   it("starts off, explains disclosure before enable, and saves immediately using the live automatic model", async () => {
     const onChanged = vi.fn();
     render(<PreferenceLearningSettings {...props} onChanged={onChanged} />);
@@ -242,6 +266,7 @@ describe("learned preference controls", () => {
     ] as const) {
       view.rerender(<PreferenceLearningSettings {...props} onLearnPastConversations={onLearn} onCancelLearning={onCancel} historyProgress={{ ...progress, status, provider: "openai", model: "gpt-6-luna" }} />);
       expect(screen.getByText(label)).toBeInTheDocument();
+      expect(screen.getByText("OpenAI · gpt-6-luna", { exact: true })).toBeInTheDocument();
       expect(view.container.querySelectorAll(".preference-learning-history-state .pixel-working-mark > i")).toHaveLength(9);
       expect(view.container.querySelector(".preference-learning-history-state.complete")).toBeNull();
       expect(screen.getByRole("button", { name: "Analyze recent past conversations" })).toBeDisabled();

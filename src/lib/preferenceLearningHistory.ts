@@ -4,7 +4,8 @@ import type { PreferenceSourceMessage } from "./preferenceLearningTypes";
 import { normalizeThreadTurnsPage } from "./threadHistory";
 
 export const PREFERENCE_HISTORY_LIMITS = { threads: 8, pagesPerThread: 3, turnsPerPage: 12, localPageBytes: 40 * 1024 } as const;
-export interface PreferenceHistoryPage { messages: PreferenceSourceMessage[]; nextCursor: string | null; skipped: number }
+export interface PreferenceHistorySource extends PreferenceSourceMessage { turnId?: string }
+export interface PreferenceHistoryPage { messages: PreferenceHistorySource[]; nextCursor: string | null; skipped: number }
 const START = "<mythra_code_invoked_skills>\n";
 
 /** Only unwrap the generated envelope's authored field. Never expose skills or attachments. */
@@ -52,12 +53,12 @@ function missingNativeMetadata(reason: unknown, threadId: string): boolean {
 export async function readPreferenceHistoryPage(thread: Thread, cursor: string | null = null,
   acceptMetadata: (metadata: Thread) => boolean = () => true): Promise<PreferenceHistoryPage> {
   const local = thread.modelProvider === "claude" || thread.modelProvider === "cursor";
-  const messages: PreferenceSourceMessage[] = [];
+  const messages: PreferenceHistorySource[] = [];
   let skipped = 0;
-  const append = (id: string | undefined, role: "user" | "assistant", raw: string) => {
+  const append = (id: string | undefined, role: "user" | "assistant", raw: string, turnId?: string) => {
     const text = role === "user" ? preferenceAuthoredHistoryText(raw) : raw;
     if (!id || !text?.trim()) { skipped += 1; return; }
-    messages.push({ id, role, text });
+    messages.push({ id, role, text, ...(turnId ? { turnId } : {}) });
   };
   if (local) {
     const page = await invoke<{ thread: Thread; messages: ChatMessage[]; nextCursor: string | null } | null>("local_transcript_page_read", {
@@ -69,7 +70,7 @@ export async function readPreferenceHistoryPage(thread: Thread, cursor: string |
       if (message.streaming || message.turnStatus !== "completed") { skipped += 1; continue; }
       if (message.role === "user" && !/^local-/.test(message.clientMessageId ?? message.id)) { skipped += 1; continue; }
       if (message.role === "assistant" && message.phase === "commentary") continue;
-      append(message.id, message.role, message.text);
+      append(message.id, message.role, message.text, message.turnId);
     }
     return { messages, nextCursor: page.nextCursor, skipped };
   }
@@ -90,8 +91,8 @@ export async function readPreferenceHistoryPage(thread: Thread, cursor: string |
   for (const turn of [...page.data].reverse()) {
     if (turn.status !== "completed") { skipped += turn.items.length; continue; }
     for (const item of turn.items) {
-      if (item.type === "userMessage") append(item.id, "user", itemText(item));
-      else if (item.type === "agentMessage" && item.phase !== "commentary") append(item.id, "assistant", itemText(item));
+      if (item.type === "userMessage") append(item.id, "user", itemText(item), turn.id);
+      else if (item.type === "agentMessage" && item.phase !== "commentary") append(item.id, "assistant", itemText(item), turn.id);
     }
   }
   return { messages, nextCursor: page.nextCursor, skipped };

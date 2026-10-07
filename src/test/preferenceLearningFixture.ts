@@ -18,12 +18,12 @@ export function preferenceLearningFixture() {
   };
   const invoke = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
     calls.push({ command, args });
-    if (command === "preference_learning_list") return [...states.values()].map((state) => ({ ...state }));
+    if (command === "preference_learning_list") return { scopes: [...states.values()].map((state) => ({ ...state })), creationRevision: highWaterRevision };
     if (command !== "preference_learning_save" && command !== "preference_learning_forget") throw new Error(`Unexpected fixture command: ${command}`);
     if (pending) await pending();
     const scopeKey = args!.scopeKey as string;
     const current = states.get(scopeKey) ?? defaultPreferenceLearningScope(scopeKey);
-    if (current.revision !== args!.expectedRevision) throw new Error("Fixture preference revision conflict");
+    if (current.revision !== args!.expectedRevision || (command === "preference_learning_save" && current.revision === 0 && args!.expectedCreationRevision !== highWaterRevision)) throw new Error("Fixture preference revision conflict");
     if (command === "preference_learning_forget") {
       if (!scopeKey.startsWith("project:") || current.revision === 0) throw new Error("Only saved project preferences can be removed");
       highWaterRevision = Math.max(highWaterRevision, current.revision);
