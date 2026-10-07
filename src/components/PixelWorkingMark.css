@@ -1,0 +1,59 @@
+/* Dot-matrix working mark: nine round dots on a whole-pixel grid. While live,
+   only opacity animates (a 120ms-per-cell clockwise comet and a center pulse,
+   both on one 960ms cycle). No glow, badge or transform. */
+.pixel-working-mark {
+  --pixel-size: 2px;
+  --pixel-gap: 1px;
+  --pixel-tone: currentColor;
+  --pixel-cycle: 960ms;
+  flex: 0 0 auto;
+  display: inline-grid;
+  grid-template-columns: repeat(3, var(--pixel-size));
+  grid-auto-rows: var(--pixel-size);
+  gap: var(--pixel-gap);
+  vertical-align: middle;
+  line-height: 0;
+  contain: layout paint style;
+}
+.pixel-working-mark > i {
+  display: block;
+  border-radius: 50%;
+  background: var(--pixel-tone);
+  opacity: var(--pixel-rest, 0);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pixel-working-mark.live > i {
+    animation: pixel-working-ring var(--pixel-cycle) linear infinite;
+    /* Negative delays start each dot mid-cycle: head reaches dot n at n×120ms. */
+    animation-delay: calc(var(--pixel-step, 0) * var(--pixel-cycle) / 8 - var(--pixel-cycle));
+  }
+  .pixel-working-mark.live > i.core { animation-name: pixel-working-core; animation-delay: 0s; }
+}
+@media (forced-colors: active) {
+  .pixel-working-mark > i {
+    forced-color-adjust: none;
+    background: CanvasText;
+    /* A system color scheme is static; outranks the live rule above. */
+    animation: none !important;
+  }
+}
+
+/* Head 1, trail .75 / .5 / .25, then dark until the head returns. */
+@keyframes pixel-working-ring {
+  0% { opacity: 1; }
+  12.5% { opacity: .75; }
+  25% { opacity: .5; }
+  37.5% { opacity: .25; }
+  50% { opacity: 0; }
+  87.5% { opacity: 0; }
+  100% { opacity: 1; }
+}
+/* .3 + .45 × (½ + ½ cos 2πt), sampled per step like the ring. */
+@keyframes pixel-working-core {
+  0%, 100% { opacity: .75; }
+  12.5%, 87.5% { opacity: .684; }
+  25%, 75% { opacity: .525; }
+  37.5%, 62.5% { opacity: .366; }
+  50% { opacity: .3; }
+}

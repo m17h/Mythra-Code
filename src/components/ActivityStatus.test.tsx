@@ -134,4 +134,31 @@ describe("ActivityStatus", () => {
     fireEvent.click(button);
     expect(onOpen).toHaveBeenCalledWith(button);
   });
+
+  it("marks live work with the dot-matrix mark only, and waiting or settled rows with a static icon", () => {
+    const onOpen = vi.fn();
+    for (const category of ["thinking", "working", "research", "files", "commands", "writing", "agents", "compaction"] as const) {
+      const view = render(<ActivityStatus state="running" label="Working" category={category} onOpen={onOpen} />);
+      const mark = view.container.querySelector(".activity-status-mark")!;
+      expect(mark.querySelector(".pixel-working-mark.live")).not.toBeNull();
+      expect(mark.querySelectorAll(".pixel-working-mark > i")).toHaveLength(9);
+      expect(mark.querySelectorAll(".pixel-working-mark > i.core")).toHaveLength(1);
+      expect(mark.querySelector("svg")).toBeNull();
+      expect(view.container.querySelector(".lucide-sparkles, .activity-status-orbit")).toBeNull();
+      expect(screen.getByRole("status")).toHaveTextContent("Working");
+      fireEvent.click(screen.getByRole("button", { name: /^Working\. View activity/ }));
+      view.unmount();
+    }
+    expect(onOpen).toHaveBeenCalledTimes(8);
+    for (const element of [
+      <ActivityStatus state="running" label="Waiting for approval" category="approval" onOpen={onOpen} />,
+      <ActivityStatus state="completed" onOpen={onOpen} />,
+      <ActivityStatus state="unknown" unconfirmed onOpen={onOpen} />,
+    ]) {
+      const view = render(element);
+      expect(view.container.querySelector(".pixel-working-mark")).toBeNull();
+      expect(view.container.querySelector(".activity-status-mark svg")).not.toBeNull();
+      view.unmount();
+    }
+  });
 });

@@ -16,6 +16,7 @@
     "benchmark:threads": "node scripts/benchmark-thread-loading.mjs",
     "performance:scorecard": "node scripts/performance-scorecard.mjs",
     "performance:native": "node scripts/native-performance.mjs",
+    "performance:isolated": "node performance-lab/run.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "release:build": "node scripts/release-dispatch.mjs build",
     "release:publish": "node scripts/release-dispatch.mjs publish",

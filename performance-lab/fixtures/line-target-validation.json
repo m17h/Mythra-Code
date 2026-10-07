@@ -1,0 +1,40 @@
+{
+  "model": "none",
+  "source": "synthetic-line-target-validation-only; not comparative performance evidence",
+  "eventFormat": "delta",
+  "events": [
+    {
+      "at": 0,
+      "text": "# Validation replay\n\n"
+    },
+    {
+      "at": 50,
+      "text": "This is a deliberately long plain paragraph for the isolated renderer check. It contains enough words to wrap onto several visual lines in the fixed message host, allowing the actual production line controller to create and retire its layout probe. "
+    },
+    {
+      "at": 100,
+      "text": "The paragraph continues with ordinary prose while the captured local timeline supplies another source update, then closes naturally.\n\n"
+    },
+    {
+      "at": 150,
+      "text": "- list item\n1. ordered item\n\n"
+    },
+    {
+      "at": 200,
+      "text": "An &amp; entity is formatted.\n\nInline <b>markup</b> is formatted.\n\n"
+    },
+    {
+      "at": 250,
+      "text": "Repeated line.\n\n"
+    },
+    {
+      "at": 300,
+      "text": "Repeated line.\n\n"
+    },
+    {
+      "at": 350,
+      "text": "A unique final prose line completes the local validation.\n\n"
+    }
+  ],
+  "finalText": "# Validation replay\n\nThis is a deliberately long plain paragraph for the isolated renderer check. It contains enough words to wrap onto several visual lines in the fixed message host, allowing the actual production line controller to create and retire its layout probe. The paragraph continues with ordinary prose while the captured local timeline supplies another source update, then closes naturally.\n\n- list item\n1. ordered item\n\nAn &amp; entity is formatted.\n\nInline <b>markup</b> is formatted.\n\nRepeated line.\n\nRepeated line.\n\nA unique final prose line completes the local validation.\n\n"
+}

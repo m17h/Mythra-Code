@@ -29,6 +29,8 @@ import "./ChatTimeline.compaction.css";
 import "./ChatTimeline.skills.css";
 import { SkillDependencyDetails } from "./SkillDependencyDetails";
 import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
+import { createLineStreamingTextPacer } from "../lib/lineStreamingTextPacer";
+import { createCompletionReveal, type CompletionReveal } from "../lib/completionReveal";
 import { MessageImagePreview } from "./MessageImagePreview";
 
 export type WorkItemEntry =
@@ -397,6 +399,80 @@ function presentTimeline(
   return output;
 }
 
+/** What one commit showed of the live (or unconfirmed) run. */
+interface LiveSnapshot {
+  hidden: ReadonlySet<string>;
+  turns: ReadonlySet<string>;
+  visible: ReadonlySet<string>;
+  /** Identity witnesses: hydration/paging replaces history and message objects. */
+  history?: ThreadHistoryState;
+  sample?: ChatMessage;
+  /** Ids seen in a replaced transcript during this run; never fresh. */
+  settled: ReadonlySet<string>;
+}
+const NO_IDS: ReadonlySet<string> = new Set();
+const NO_LIVE: LiveSnapshot = { hidden: NO_IDS, turns: NO_IDS, visible: NO_IDS, settled: NO_IDS };
+
+/**
+ * A completion only reseals the finished turn's own messages; the store's
+ * hydrateTask/full-read fallback rebuilds every message object (and usually
+ * the history state). Such a commit carries history, not a new answer.
+ */
+function replacedTranscript(messages: ChatMessage[], history: ThreadHistoryState | undefined, previous: LiveSnapshot): boolean {
+  if (previous === NO_LIVE) return false;
+  if (history !== previous.history) return true;
+  const sample = previous.sample;
+  return Boolean(sample && messages.find((message) => message.id === sample.id) !== sample);
+}
+
+function liveSnapshot(presented: TimelineEntry[], messages: ChatMessage[], history: ThreadHistoryState | undefined, previous: LiveSnapshot): LiveSnapshot {
+  const live = presented.filter((entry): entry is WorkTimelineEntry => entry.kind === "work" && (entry.state === "running" || Boolean(entry.unconfirmed)));
+  if (!live.length) return NO_LIVE;
+  const hidden = new Set<string>();
+  const turns = new Set<string>();
+  for (const work of live) {
+    if (work.turnId) turns.add(work.turnId);
+    for (const item of work.value) if (item.kind === "message" && item.value.role === "assistant") hidden.add(item.value.id);
+  }
+  const visible = new Set<string>();
+  for (const entry of presented) if (entry.kind === "message") visible.add(entry.value.id);
+  // The oldest message outside the live turns is untouched by its completion.
+  const sample = messages.find((message) => !message.turnId || !turns.has(message.turnId));
+  const settled = replacedTranscript(messages, history, previous) ? new Set([...previous.settled, ...hidden]) : previous.settled;
+  return { hidden, turns, visible, history, sample, settled };
+}
+
+/** Genuine completed-answer evidence; untagged legacy answers stay eligible. */
+function completedFinalAnswer(message: ChatMessage): boolean {
+  if (message.role !== "assistant" || message.streaming || (message.phase && message.phase !== "final")) return false;
+  return message.turnStatus === "completed" || (message.turnStatus === undefined && message.turnId === undefined);
+}
+
+/**
+ * Output that the previous commit kept inside the live run (or that arrives
+ * sealed for a turn that was live) and is now shown in chat. Every arrival
+ * pauses following; only completed final answers also get the reveal.
+ * Replaced (hydrated or paged) history never animates. If it also delivers
+ * the answer to the run the reader was watching, it still pauses following.
+ */
+interface Arrivals { arrived: ReadonlySet<string>; reveal: ReadonlySet<string> }
+const NO_ARRIVALS: Arrivals = { arrived: NO_IDS, reveal: NO_IDS };
+
+function liveArrivals(presented: TimelineEntry[], messages: ChatMessage[], history: ThreadHistoryState | undefined, previous: LiveSnapshot): Arrivals {
+  if (previous === NO_LIVE) return NO_ARRIVALS;
+  const replaced = replacedTranscript(messages, history, previous);
+  const arrived = new Set<string>();
+  const reveal = new Set<string>();
+  for (const entry of presented) {
+    if (entry.kind !== "message" || entry.value.role !== "assistant" || entry.value.streaming) continue;
+    const { id, turnId } = entry.value;
+    if (!previous.hidden.has(id) && !(turnId && previous.turns.has(turnId) && !previous.visible.has(id))) continue;
+    arrived.add(id);
+    if (!replaced && !previous.settled.has(id) && completedFinalAnswer(entry.value)) reveal.add(id);
+  }
+  return arrived.size ? { arrived, reveal } : NO_ARRIVALS;
+}
+
 function countWorkItems(entries: WorkItemEntry[]): number {
   return entries.reduce((total, entry) => total + (entry.kind === "message" || entry.kind === "activity" ? 1 : entry.value.length), 0);
 }
@@ -495,6 +571,15 @@ function MarkdownLink({ href, children, node }: { href?: string; children?: Reac
 }
 
 const FlushStreamingDisplay = createContext<(() => void) | undefined>(undefined);
+export type StreamingPresentation = "smooth" | "lines";
+/**
+ * Set only around the Work history window: its assistant messages reveal
+ * complete lines. While a search is active they show everything received at
+ * once, so matches always refer to text that is actually on screen.
+ */
+const WorkHistoryStreaming = createContext<{ presentation: StreamingPresentation; immediate: boolean } | undefined>(undefined);
+const WORK_HISTORY_STREAMING = { presentation: "lines", immediate: false } as const;
+const WORK_HISTORY_SEARCHING = { presentation: "lines", immediate: true } as const;
 const SkillNavigation = createContext<{ skills: LocalSkill[]; onOpenSkill?: (path: string) => void } | undefined>(undefined);
 const NO_SKILLS: LocalSkill[] = [];
 
@@ -551,18 +636,57 @@ const UserMessageMarkdown = memo(function UserMessageMarkdown({ text, references
  * faster than the Markdown tree can be built, while still presenting the
  * newest completed render instead of falling back to plain text until the
  * whole response finishes.
+ *
+ * `presentation` defaults to "smooth" except inside Work history ("lines").
+ * `revealOnMount` (main chat only) plays the one-shot completion reveal when
+ * this component first mounts with a freshly completed answer.
+ * `revealImmediate` shows a running reveal in full at once (search, copy).
  */
-export function AssistantMessageMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
+export function AssistantMessageMarkdown({ text, streaming, presentation, revealOnMount = false, revealImmediate = false }: {
+  text: string; streaming: boolean; presentation?: StreamingPresentation; revealOnMount?: boolean; revealImmediate?: boolean;
+}) {
+  const workHistory = useContext(WorkHistoryStreaming);
+  const mode = presentation ?? workHistory?.presentation ?? "smooth";
+  const immediate = workHistory?.immediate ?? false;
+  const receiving = streaming && !immediate;
   const [pacedText, setPacedText] = useState<string | null>(null);
   const [immediateText, setImmediateText] = useState<string | null>(null);
   const deferredText = useDeferredValue(pacedText ?? text);
-  const presenting = streaming || pacedText !== null;
-  const shownText = immediateText === text ? text : presenting ? deferredText : text;
+  const presenting = !immediate && (streaming || pacedText !== null);
+  const candidateText = immediate || immediateText === text ? text : presenting ? deferredText : text;
+  // Leaving search hands display back to a new pacer whose deferred first
+  // render can trail what search showed; never rewind already-shown text.
+  const lastShown = useRef("");
+  const shownText = (mode === "lines" || workHistory) && candidateText.length < lastShown.current.length
+    && lastShown.current.startsWith(candidateText) && text.startsWith(lastShown.current) ? lastShown.current : candidateText;
   const rootRef = useRef<HTMLDivElement>(null);
   const pacerRef = useRef<StreamingTextPacer | null>(null);
   const fadeRef = useRef<StreamingTextFade | null>(null);
+  const pacerMode = useRef<StreamingPresentation>(mode);
+  const fadeMode = useRef<StreamingPresentation>(mode);
   const wasStreaming = useRef(false);
   const wasReceiving = useRef(false);
+  // Latched at mount: later renders (and StrictMode's effect replay, which
+  // keeps this state) can neither start nor replay a reveal.
+  const [revealAtMount] = useState(() => revealOnMount && !streaming);
+  const revealRef = useRef<CompletionReveal | null>(null);
+  const revealText = useRef(text);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!revealAtMount || !root) return;
+    const reveal = createCompletionReveal(root, () => root.closest("[data-flow-timeline]")?.getBoundingClientRect() ?? null);
+    revealRef.current = reveal;
+    return () => {
+      reveal.dispose();
+      if (revealRef.current === reveal) revealRef.current = null;
+    };
+  }, [revealAtMount]);
+  // Search, copy or an authoritative correction must show the complete text
+  // now. (Losing fresh eligibility on a later render does not end it.)
+  useLayoutEffect(() => {
+    if (revealImmediate || text !== revealText.current) revealRef.current?.finish();
+  }, [revealImmediate, text]);
+  const finishReveal = useCallback(() => revealRef.current?.finish(), []);
   useLayoutEffect(() => () => {
     pacerRef.current?.dispose();
     pacerRef.current = null;
@@ -572,33 +696,44 @@ export function AssistantMessageMarkdown({ text, streaming }: { text: string; st
     wasReceiving.current = false;
   }, []);
   useLayoutEffect(() => {
-    if (streaming && rootRef.current) {
-      if (!wasReceiving.current) {
+    if (receiving && rootRef.current) {
+      if (!wasReceiving.current || pacerMode.current !== mode) {
         pacerRef.current?.dispose();
         setPacedText(text);
-        pacerRef.current = createStreamingTextPacer(rootRef.current, text, setPacedText, () => setPacedText(null));
+        pacerMode.current = mode;
+        pacerRef.current = (mode === "lines" ? createLineStreamingTextPacer : createStreamingTextPacer)(rootRef.current, text, setPacedText, () => setPacedText(null));
       } else pacerRef.current?.update(text);
-    } else if (wasReceiving.current) {
+    } else if (wasReceiving.current && !immediate) {
       // The provider/task is already finished. Let only its bounded visual
       // tail drain, avoiding a final block-sized jump; stored/copy text is full.
       pacerRef.current?.update(text);
       pacerRef.current?.finish();
     } else {
+      // Includes search starting mid-stream: drop the held tail, show all.
       pacerRef.current?.dispose();
       pacerRef.current = null;
       setPacedText(null);
     }
-    wasReceiving.current = streaming;
-  }, [text, streaming]);
+    wasReceiving.current = receiving;
+  }, [text, streaming, receiving, immediate, mode]);
   useLayoutEffect(() => {
-    if (presenting && !wasStreaming.current && rootRef.current) {
+    lastShown.current = shownText;
+    if (immediate) {
+      // A search reveal is not an arrival; nothing fades during search.
       fadeRef.current?.dispose();
-      fadeRef.current = createStreamingTextFade(rootRef.current);
+      fadeRef.current = null;
+      wasStreaming.current = false;
+      return;
+    }
+    if (presenting && (!wasStreaming.current || fadeMode.current !== mode) && rootRef.current) {
+      fadeRef.current?.dispose();
+      fadeMode.current = mode;
+      fadeRef.current = createStreamingTextFade(rootRef.current, mode === "lines" ? { grouping: "lines" } : undefined);
     }
     wasStreaming.current = presenting;
     fadeRef.current?.update(shownText);
     if (!presenting) fadeRef.current?.finish();
-  }, [shownText, presenting]);
+  }, [shownText, presenting, immediate, mode]);
   const flushForCopy = useCallback(() => {
     flushSync(() => {
       pacerRef.current?.flush();
@@ -608,21 +743,28 @@ export function AssistantMessageMarkdown({ text, streaming }: { text: string; st
   }, [text, streaming]);
   // Keep the same Markdown DOM through the bounded completion tail. History
   // mounts create no controllers and show their complete text immediately.
-  return <FlushStreamingDisplay.Provider value={presenting ? flushForCopy : undefined}>
+  return <FlushStreamingDisplay.Provider value={presenting ? flushForCopy : finishReveal}>
     <MessageMarkdown text={shownText} rootRef={rootRef} assistant />
   </FlushStreamingDisplay.Provider>;
 }
 
-export const MessageRow = memo(function MessageRow({ message, provider, onEdit }: { message: ChatMessage; provider: Provider; onEdit?: (text: string) => void }) {
+export const MessageRow = memo(function MessageRow({ message, provider, onEdit, revealOnMount = false, searching = false }: {
+  message: ChatMessage; provider: Provider; onEdit?: (text: string) => void; revealOnMount?: boolean; searching?: boolean;
+}) {
   const skillNavigation = useContext(SkillNavigation);
   const dependencies = message.role === "user" && <SkillDependencyDetails report={message.skillDependencies} skills={skillNavigation?.skills} onOpenSkill={skillNavigation?.onOpenSkill} mode="history" />;
   const [copied, copy] = useCopyFeedback();
+  // Copying the whole reply also ends its completion reveal.
+  const [copiedOnce, setCopiedOnce] = useState(false);
   const openFeedback = useFeedbackMessageSource(message);
   const attachments = message.role === "user" ? message.attachments ?? [] : [];
   const actions = !message.streaming && (
     <div className="message-actions">
       <button
-        onClick={() => copy(message.text)}
+        onClick={() => {
+          setCopiedOnce(true);
+          copy(message.text);
+        }}
         title="Copy message"
       >
         {copied ? <Check size={11} /> : <Clipboard size={11} />}
@@ -694,7 +836,7 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit }
           // One stable wrapper keeps the Markdown DOM (and its completion tail)
           // intact when a finished reply becomes a feedback source.
           ? <div className="message-feedback-source" data-feedback-message={openFeedback ? message.id : undefined}>
-            <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
+            <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} revealOnMount={revealOnMount} revealImmediate={searching || copiedOnce} />
           </div>
           : <UserMessageMarkdown text={message.text} references={message.skillReferences} />}
         {message.role === "assistant" && message.questions?.length ? <AsyncAgentQuestions message={message} /> : null}
@@ -1053,7 +1195,9 @@ export const CompletedWorkDisclosure = memo(function CompletedWorkDisclosure({ e
     <SkillNavigation.Provider value={navigation}>
       <span ref={anchorRef} hidden />
       <ActivityStatus state="completed" summary={summary} open={open} onOpen={() => setOpen(true)} />
-      {open && <ActivityDetailsModal run={run} sourceRef={anchorRef} renderMessage={renderActivityMessage} renderSubAgents={renderActivitySubAgents} onClose={close} />}
+      {open && <WorkHistoryStreaming.Provider value={WORK_HISTORY_STREAMING}>
+        <ActivityDetailsModal run={run} sourceRef={anchorRef} renderMessage={renderActivityMessage} renderSubAgents={renderActivitySubAgents} onClose={close} />
+      </WorkHistoryStreaming.Provider>}
     </SkillNavigation.Provider>
   );
 }, (previous, next) => previous.skills === next.skills && previous.onOpenSkill === next.onOpenSkill && (previous.reveal ?? false) === (next.reveal ?? false) && sameWorkItems(previous.entries, next.entries));
@@ -1127,6 +1271,7 @@ function TimelineEntryContent({
   activeEntryIndex,
   activity,
   entry,
+  revealIds,
   index,
   onApprovalRespond,
   onEditMessage,
@@ -1136,6 +1281,8 @@ function TimelineEntryContent({
   activeEntryIndex: number;
   activity: ActivityRowControls;
   entry: TimelineEntry;
+  /** Completed answers that arrived in this commit (see ChatTimeline). */
+  revealIds: ReadonlySet<string>;
   index: number;
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   onEditMessage?: (text: string) => void;
@@ -1145,7 +1292,8 @@ function TimelineEntryContent({
   const hitClass = index === activeEntryIndex ? " search-hit" : "";
   const row = (className: string, content: ReactNode) => <div className={className}>{content}</div>;
   if (entry.kind === "message") {
-    return row(`timeline-entry timeline-entry-message${hitClass}`, <MessageRow message={entry.value} provider={provider} onEdit={onEditMessage} />);
+    return row(`timeline-entry timeline-entry-message${hitClass}`, <MessageRow message={entry.value} provider={provider} onEdit={onEditMessage}
+      revealOnMount={revealIds.has(entry.value.id) && !searchQuery?.trim()} searching={Boolean(searchQuery?.trim())} />);
   }
   if (entry.kind === "activity") {
     return row(`timeline-entry timeline-entry-activity${hitClass}`, <ActivityRow activity={entry.value} />);
@@ -1200,6 +1348,7 @@ function FlowTimeline({
   activeEntryIndex,
   activity,
   entries,
+  arrivals,
   liveSubAgentSummary,
   history,
   onLoadEarlier,
@@ -1212,6 +1361,8 @@ function FlowTimeline({
   activeEntryIndex: number;
   activity: ActivityRowControls;
   entries: TimelineEntry[];
+  /** Output that just left the live run in this commit (see ChatTimeline). */
+  arrivals: Arrivals;
   reveal?: TimelineReveal | null;
   liveSubAgentSummary: string;
   history?: ThreadHistoryState;
@@ -1238,10 +1389,23 @@ function FlowTimeline({
   const [hiddenPrefixOverride, setHiddenPrefixOverride] = useState<number | null>(null);
   const [anchoring, setAnchoring] = useState(false);
   const [windowAnnouncement, setWindowAnnouncement] = useState("");
+  // A completed answer arrives below a reader who may be following the live
+  // status. Completion pauses following exactly where they are ("pinned"):
+  // nothing they can see moves, and only their own navigation or Latest
+  // resumes following.
+  const handledArrivalsRef = useRef(arrivals);
+  const committedHiddenPrefixRef = useRef<number | null>(null);
+  const completionPinnedRef = useRef(false);
+  const completing = arrivals.arrived.size > 0 && arrivals !== handledArrivalsRef.current;
   const automaticHiddenPrefix = Math.max(0, entries.length - TIMELINE_MOUNT_ROWS);
-  const hiddenPrefixCount = hiddenPrefixOverride === null
+  const naturalHiddenPrefix = hiddenPrefixOverride === null
     ? automaticHiddenPrefix
     : Math.min(Math.max(0, hiddenPrefixOverride), automaticHiddenPrefix);
+  // The commit that adds a completed answer must not also unmount the oldest
+  // row, which would shift everything the reader can see.
+  const hiddenPrefixCount = completing && hiddenPrefixOverride === null && committedHiddenPrefixRef.current !== null
+    ? Math.min(naturalHiddenPrefix, committedHiddenPrefixRef.current)
+    : naturalHiddenPrefix;
   const suffixEntries = entries.slice(hiddenPrefixCount);
   const searching = Boolean(searchQuery?.trim()) && activeEntryIndex >= 0;
   const searchWindowStart = searching && activeEntryIndex < hiddenPrefixCount
@@ -1265,13 +1429,22 @@ function FlowTimeline({
     }
   }, []);
 
+  const releaseCompletion = useCallback(() => {
+    completionPinnedRef.current = false;
+  }, []);
+
   const stopFollowing = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller || scroller.scrollHeight <= scroller.clientHeight + 1) return;
+    releaseCompletion();
     followingEndRef.current = false;
     setHiddenPrefixOverride((current) => current ?? hiddenPrefixCount);
     setShowScrollToLatest(true);
-  }, [hiddenPrefixCount]);
+  }, [hiddenPrefixCount, releaseCompletion]);
+
+  useLayoutEffect(() => {
+    committedHiddenPrefixRef.current = hiddenPrefixCount;
+  });
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -1312,8 +1485,21 @@ function FlowTimeline({
       return;
     }
     if (anchor) return;
+    if (completing) {
+      handledArrivalsRef.current = arrivals;
+      if (scroller && followingEndRef.current && !smoothScrollPendingRef.current) {
+        // The rows above are unchanged in this commit (the mount window is
+        // held), so leaving scrollTop alone keeps every visible row in place,
+        // however short or long the answer and whatever is queued after it.
+        completionPinnedRef.current = true;
+        followingEndRef.current = false;
+        setHiddenPrefixOverride((current) => current ?? hiddenPrefixCount);
+        setShowScrollToLatest(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 1);
+        return;
+      }
+    }
     if (followingEndRef.current && !smoothScrollPendingRef.current) scrollToLatest();
-  }, [entries, firstEntryKey, hiddenPrefixCount, history?.loading, scrollToLatest]);
+  }, [arrivals, completing, entries, firstEntryKey, hiddenPrefixCount, history?.loading, scrollToLatest]);
 
   const revealEarlier = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1330,12 +1516,13 @@ function FlowTimeline({
         expectHiddenPrefix: nextHiddenPrefix,
       };
     }
+    releaseCompletion();
     followingEndRef.current = false;
     setShowScrollToLatest(true);
     setAnchoring(true);
     setHiddenPrefixOverride(nextHiddenPrefix);
     setWindowAnnouncement(`Showing ${entries.length - nextHiddenPrefix} of ${entries.length} loaded timeline entries.`);
-  }, [entries.length, hiddenPrefixCount]);
+  }, [entries.length, hiddenPrefixCount, releaseCompletion]);
 
   const loadEarlierFromServer = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1354,11 +1541,12 @@ function FlowTimeline({
         };
       }
     }
+    releaseCompletion();
     followingEndRef.current = false;
     setHiddenPrefixOverride(0);
     setShowScrollToLatest(true);
     onLoadEarlier?.();
-  }, [firstEntryKey, history?.loading, onLoadEarlier]);
+  }, [firstEntryKey, history?.loading, onLoadEarlier, releaseCompletion]);
 
   const activateHistoryControl = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     if (hiddenPrefixCount > 0) {
@@ -1380,6 +1568,7 @@ function FlowTimeline({
     const index = entries.findIndex((entry, position) => timelineEntryKey(entry, position) === reveal.key);
     if (index < 0) return;
     revealPendingRef.current = reveal.key;
+    releaseCompletion();
     followingEndRef.current = false;
     setShowScrollToLatest(true);
     if (index < hiddenPrefixCount) setHiddenPrefixOverride(index);
@@ -1428,6 +1617,7 @@ function FlowTimeline({
     restoredPrependScrollPendingRef.current = false;
     restoredPrependScrollTopRef.current = null;
     restoredPrependScrollUserIntentRef.current = false;
+    releaseCompletion();
     followingEndRef.current = true;
     smoothScrollPendingRef.current = true;
     setHiddenPrefixOverride(null);
@@ -1436,13 +1626,19 @@ function FlowTimeline({
       scrollToLatest("smooth");
       smoothScrollPendingRef.current = false;
     });
-  }, [scrollToLatest]);
+  }, [releaseCompletion, scrollToLatest]);
 
   useEffect(() => {
     const content = contentRef.current;
     if (!content || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       if (followingEndRef.current && !smoothScrollPendingRef.current) scrollToLatest();
+      else if (completionPinnedRef.current) {
+        // Growth below a completion pause (late reflow, a queued next turn)
+        // never moves the reader; it only offers the way down.
+        const scroller = scrollerRef.current;
+        if (scroller) setShowScrollToLatest(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 1);
+      }
     });
     observer.observe(content);
     return () => observer.disconnect();
@@ -1467,6 +1663,7 @@ function FlowTimeline({
   useEffect(() => {
     if (activeEntryIndex >= 0) {
       searchWasActiveRef.current = true;
+      releaseCompletion();
       followingEndRef.current = false;
       setShowScrollToLatest(true);
       contentRef.current
@@ -1482,7 +1679,7 @@ function FlowTimeline({
       setHiddenPrefixOverride(null);
       setShowScrollToLatest(false);
     }
-  }, [activeEntryIndex]);
+  }, [activeEntryIndex, releaseCompletion]);
 
   return (
     <div className="timeline-shell" data-scroll-mode={followingEndRef.current ? "following-end" : "free-scrolling"}>
@@ -1506,6 +1703,7 @@ function FlowTimeline({
           if (!event.target.closest(".agent-question-form")) return;
           // Keep the question in place while the user answers, even as new
           // output grows below it or the transcript window advances.
+          releaseCompletion();
           followingEndRef.current = false;
           setHiddenPrefixOverride((current) => current ?? hiddenPrefixCount);
           setShowScrollToLatest(true);
@@ -1516,6 +1714,13 @@ function FlowTimeline({
           // and immediately discard the newly revealed window.
           if (anchoring || prependAnchorRef.current || restoringPrependScrollRef.current) return;
           const scroller = event.currentTarget;
+          // Only the reader's own navigation ends a completion pause, so the
+          // programmatic scroll that showed the answer's start cannot re-arm
+          // following and carry them to its end.
+          if (completionPinnedRef.current) {
+            setShowScrollToLatest(true);
+            return;
+          }
           if (restoredPrependScrollPendingRef.current) {
             const restoredTop = restoredPrependScrollTopRef.current;
             const movedAfterIntent = restoredPrependScrollUserIntentRef.current
@@ -1540,6 +1745,7 @@ function FlowTimeline({
         }}
         onWheel={(event) => {
           restoredPrependScrollUserIntentRef.current = true;
+          completionPinnedRef.current = false;
           if (shouldCancelTimelineFollowForWheel(event.deltaY, event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1)) stopFollowing();
         }}
         onTouchMove={() => {
@@ -1549,7 +1755,10 @@ function FlowTimeline({
         onPointerDown={(event) => {
           // Child pointer input (copy buttons, links, selection) is not a new
           // scroll gesture and must not expose a delayed restoration event.
-          if (event.target === event.currentTarget) restoredPrependScrollUserIntentRef.current = true;
+          if (event.target === event.currentTarget) {
+            restoredPrependScrollUserIntentRef.current = true;
+            completionPinnedRef.current = false;
+          }
           if (event.button === 0 && event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 1) {
             pointerNavigationPendingRef.current = true;
           }
@@ -1568,6 +1777,7 @@ function FlowTimeline({
             || ((event.key === " " || event.key === "Spacebar") && !targetIsControl)
           ) {
             restoredPrependScrollUserIntentRef.current = true;
+            completionPinnedRef.current = false;
           }
           if (
             event.key === "PageUp"
@@ -1605,6 +1815,7 @@ function FlowTimeline({
                 activeEntryIndex={activeEntryIndex}
                 activity={activity}
                 entry={entry}
+                revealIds={NO_IDS}
                 index={index}
                 onApprovalRespond={onApprovalRespond}
                 onEditMessage={onEditMessage}
@@ -1623,6 +1834,7 @@ function FlowTimeline({
                 activeEntryIndex={activeEntryIndex}
                 activity={activity}
                 entry={entry}
+                revealIds={arrivals.reveal}
                 index={index}
                 onApprovalRespond={onApprovalRespond}
                 onEditMessage={onEditMessage}
@@ -1694,6 +1906,15 @@ export function ChatTimeline({
   const ordered = useMemo(() => orderedTimelineEntries(messages, activities), [messages, activities]);
   const runs = useMemo(() => timelineRuns(ordered), [ordered]);
   const presented = useMemo(() => presentTimeline(ordered, runs, running, awaiting, activeTurnId), [activeTurnId, awaiting, ordered, runs, running]);
+  // What the previous commit folded into the live run. Exposing its answer
+  // pauses following even during hydration; only a genuine new completion
+  // animates. Replaced history, thread switches (a new instance), search,
+  // copy and ordinary rerenders never start a reveal.
+  const liveSnapshotRef = useRef<LiveSnapshot>(NO_LIVE);
+  const arrivals = useMemo(() => liveArrivals(presented, messages, history, liveSnapshotRef.current), [history, messages, presented]);
+  useLayoutEffect(() => {
+    liveSnapshotRef.current = liveSnapshot(presented, messages, history, liveSnapshotRef.current);
+  }, [history, messages, presented]);
   const entries = useMemo<TimelineEntry[]>(() => approval ? [...presented, { kind: "approval", value: approval }] : presented, [approval, presented]);
 
   const matchIndices = useMemo(() => {
@@ -1896,6 +2117,7 @@ export function ChatTimeline({
       activeEntryIndex={activeEntryIndex}
       activity={activityControls}
       entries={entries}
+      arrivals={arrivals}
       reveal={reveal}
       liveSubAgentSummary={liveSubAgentSummary}
       history={history}
@@ -1909,17 +2131,19 @@ export function ChatTimeline({
       <span ref={anchorRef} hidden />
       <SkillNavigation.Provider value={modalSkillNavigation}>
         <SubAgentControls.Provider value={modalSubAgentControls}>
-          <ActivityDetailsModal
-            run={details.run}
-            visibleIds={details.visibleIds}
-            focusId={selection.focusId}
-            searchQuery={searchQuery}
-            sourceRef={anchorRef}
-            renderMessage={renderActivityMessage}
-            renderSubAgents={renderActivitySubAgents}
-            onAnswerQuestion={answerQuestion}
-            onClose={closeActivity}
-          />
+          <WorkHistoryStreaming.Provider value={searchQuery?.trim() ? WORK_HISTORY_SEARCHING : WORK_HISTORY_STREAMING}>
+            <ActivityDetailsModal
+              run={details.run}
+              visibleIds={details.visibleIds}
+              focusId={selection.focusId}
+              searchQuery={searchQuery}
+              sourceRef={anchorRef}
+              renderMessage={renderActivityMessage}
+              renderSubAgents={renderActivitySubAgents}
+              onAnswerQuestion={answerQuestion}
+              onClose={closeActivity}
+            />
+          </WorkHistoryStreaming.Provider>
         </SubAgentControls.Provider>
       </SkillNavigation.Provider>
     </>}

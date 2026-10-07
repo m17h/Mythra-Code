@@ -97,7 +97,9 @@ describe("live Markdown paint integration", () => {
     expect(body.textContent).toBe("The result");
     const prefix = body.querySelector("p")!.firstChild;
     view.rerender(<TimelineShell text="The result is ready" streaming />);
-    await vi.waitFor(() => expect(body.textContent).toBe("The result is ready"));
+    // Work history holds an unfinished short line for at most 1000ms; allow
+    // the next browser frame and React commit beyond that deliberate deadline.
+    await vi.waitFor(() => expect(body.textContent).toBe("The result is ready"), { timeout: 1500 });
     expect(view.container.querySelector<HTMLDialogElement>("dialog")?.open).toBe(true);
     expect(main.querySelectorAll(".message.assistant")).toHaveLength(0);
     // Item-level streaming can end before the provider confirms the turn.

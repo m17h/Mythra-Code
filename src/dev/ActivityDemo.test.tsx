@@ -50,6 +50,11 @@ describe("activity preview isolation", () => {
     expect(frames.at(-1)?.activities.filter((activity) => activity.turnId === "activity-preview-live-turn").every((activity) => activity.turnStatus === "completed" && activity.status === "completed")).toBe(true);
     expect(frames.at(-1)?.workers[0]?.status).toBe("completed");
     expect(frames[2].workers[0]?.status).toBe("working");
+    // Settled history must not masquerade as repeated transcript hydration.
+    for (const frame of frames.slice(1)) {
+      expect(frame.messages[0]).toBe(frames[0].messages[0]);
+      expect(frame.messages[1]).toBe(frames[0].messages[1]);
+    }
     expect(localStorage.length).toBe(before);
     expect(native.invoke).not.toHaveBeenCalled();
     expect(activityDemoSnapshot(Number.NaN).elapsedMs).toBe(0);

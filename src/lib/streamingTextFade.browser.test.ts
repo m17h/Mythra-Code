@@ -396,3 +396,87 @@ describe("paint-only streaming text fade", () => {
     expect(opacityOf(name, root.querySelector("p")!)).toBeLessThan(1);
   });
 });
+
+describe("complete-line streaming fade grouping", () => {
+  function lines(html: string, source: string) {
+    const root = document.createElement("div");
+    root.style.cssText = "width: 320px; color: rgb(20, 40, 60); font: 16px/24px sans-serif";
+    root.innerHTML = html;
+    document.body.append(root);
+    const controller = createStreamingTextFade(root, { grouping: "lines" });
+    controller.update(source);
+    cleanups.push(() => { controller.dispose(); root.remove(); });
+    return { root, controller, commit(next: string, nextSource: string) { root.innerHTML = next; controller.update(nextSource); } };
+  }
+  const opacities = () => highlights().map(([name, highlight]) => opacityOf(name, ((([...highlight][0]) as Range).startContainer.parentElement!)));
+
+  it("fades a whole table row, including differently colored cells, as one unit", () => {
+    const clock = frameClock();
+    const head = "<table><thead><tr><th>Name</th><th>Link</th></tr></thead><tbody>";
+    const { root, commit } = lines(`${head}</tbody></table>`, "| Name | Link |\n|---|---|\n");
+    expect(highlights()).toHaveLength(0);
+    commit(`${head}<tr><td>alpha <code style="color: rgb(200, 0, 0)">a</code></td><td><a style="color: rgb(0, 0, 255)">site</a></td></tr></tbody></table>`,
+      "| Name | Link |\n|---|---|\n| alpha `a` | [site](x) |\n");
+    expect(highlightedText().split("").sort().join("")).toBe("alpha asite".split("").sort().join(""));
+    expect(new Set(opacities())).toEqual(new Set([0.12]));
+    expect(root.querySelectorAll("td")).toHaveLength(2);
+    expect(root.querySelector("td")!.childNodes).toHaveLength(2);
+    clock.advance(60);
+    const mid = opacities();
+    expect(new Set(mid).size).toBe(1);
+    expect(mid[0]).toBeGreaterThan(0.12);
+    expect(mid[0]).toBeLessThan(1);
+    clock.advance(140);
+    expect(highlights()).toHaveLength(0);
+    expect(clock.pending()).toBe(0);
+  });
+
+  it("never lets a later line join a partly faded earlier line", () => {
+    const clock = frameClock();
+    const { commit } = lines("<h2>Heading</h2>", "## Heading\n");
+    commit("<h2>Heading</h2>\n<p>First complete line</p>", "## Heading\nFirst complete line\n");
+    clock.advance(10);
+    commit("<h2>Heading</h2>\n<p>First complete line<br>\nSecond line</p>", "## Heading\nFirst complete line\nSecond line\n");
+    expect(highlights()).toHaveLength(2);
+    const [older, newer] = highlights().map(([name, highlight]) => ({ name, text: [...highlight].map((range) => (range as Range).toString()).join("") }));
+    expect(older.text).toBe("\nFirst complete line");
+    expect(newer.text).toBe("\nSecond line");
+    const [olderOpacity, newerOpacity] = opacities();
+    expect(newerOpacity).toBeCloseTo(0.12);
+    expect(olderOpacity).toBeGreaterThan(newerOpacity);
+  });
+
+  it("shows a line normally rather than fading only some of its colors when slots run out", () => {
+    const clock = frameClock();
+    const { root, controller } = lines("<p>old</p>", "old");
+    const paragraph = root.querySelector("p")!;
+    let source = "old";
+    for (let index = 0; index < 23; index++) {
+      clock.advance(1);
+      const span = document.createElement("span");
+      span.style.color = `rgb(${index}, 20, 30)`;
+      span.textContent = "x";
+      paragraph.append(span);
+      controller.update(source += "x");
+    }
+    expect(highlights()).toHaveLength(23);
+    const before = highlights().map(([, highlight]) => highlight);
+    clock.advance(1);
+    for (const color of ["rgb(250, 0, 0)", "rgb(0, 250, 0)"]) {
+      const span = document.createElement("span");
+      span.style.color = color;
+      span.textContent = "y";
+      paragraph.append(span);
+    }
+    controller.update(source += "yy");
+    expect(highlights().map(([, highlight]) => highlight)).toEqual(before);
+    expect(highlightedText()).not.toContain("y");
+  });
+
+  it("leaves the default grouping on the original smooth timing", () => {
+    frameClock();
+    const { append, paragraph } = fixture("old ");
+    append("old new");
+    expect(opacityOf(highlights()[0][0], paragraph)).toBeCloseTo(0.3);
+  });
+});
