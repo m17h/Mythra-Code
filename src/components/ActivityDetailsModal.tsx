@@ -104,6 +104,18 @@ function stepElement(region: HTMLElement | null, id: string | undefined): HTMLEl
   return null;
 }
 
+/** Settled thinking longer than this opens at a bounded height with Show all;
+ * shorter thinking is simply shown. Live thinking is never cut off. */
+const THOUGHT_CLAMP_CHARS = 1100;
+const THOUGHT_CLAMP_LINES = 14;
+
+function longThought(text: string): boolean {
+  if (text.length > THOUGHT_CLAMP_CHARS) return true;
+  let lines = 1;
+  for (const character of text) if (character === "\n" && (lines += 1) > THOUGHT_CLAMP_LINES) return true;
+  return false;
+}
+
 const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, current, target, live, renderMessage, renderSubAgents, onAnswerQuestion }: {
   step: ActivityStep;
   inChat: boolean;
@@ -116,9 +128,16 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   renderSubAgents: (activities: Activity[]) => ReactNode;
   onAnswerQuestion?: (message: ChatMessage) => void;
 }) {
-  const [expanded, setExpanded] = useState(match);
+  // Thinking is the readable account of the work, so it opens expanded;
+  // commands and other operations keep their output folded until asked.
+  const [expanded, setExpanded] = useState(() => match || (step.kind === "activity" && step.value.kind === "reasoning"));
+  const [fullThought, setFullThought] = useState(match);
   // A search hit must show its matching text, not just a collapsed title.
-  useEffect(() => { if (match) setExpanded(true); }, [match]);
+  useEffect(() => {
+    if (!match) return;
+    setExpanded(true);
+    setFullThought(true);
+  }, [match]);
   const flags = `${match ? " is-match" : ""}${current ? " is-current-match" : ""}${target ? " is-target" : ""}${inChat ? " in-chat" : ""}`;
 
   if (step.kind === "spawns") {
@@ -166,11 +185,18 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   const collapsible = Boolean(detail) && !warning;
   const showDetail = Boolean(detail) && (!collapsible || expanded);
   const word = statusWord(activity.status);
+  const tone = statusTone(activity.status);
   const title = reasoning ? "Thinking" : activity.title;
   const mono = activity.kind === "command" || activity.kind === "file";
   const toggleLabel = reasoning ? "thinking" : activity.kind === "command" ? "output" : "details";
-  const thinkingNow = reasoning && live && statusTone(activity.status) === "live";
-  return <li className={`activity-step kind-${activity.kind}${flags}`} data-step-id={step.id}>
+  const thinkingNow = reasoning && live && tone === "live";
+  // Live thinking keeps growing at its end, so it is never cut short.
+  const clampable = reasoning && !thinkingNow && longThought(detail);
+  const clamped = clampable && !fullThought;
+  const label = reasoning
+    ? <span className="activity-step-kind">{title}</span>
+    : <span className={`activity-step-title${mono ? " mono" : ""}`}>{title}</span>;
+  return <li className={`activity-step kind-${activity.kind}${tone === "bad" ? " is-failed" : ""}${flags}`} data-step-id={step.id}>
     <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <PixelWorkingMark /> : <Icon size={11} />}</span>
     <div className="activity-step-body">
       <div className="activity-step-head">
@@ -178,14 +204,22 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
           <button type="button" className="activity-step-toggle" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}
             aria-label={`${expanded ? "Hide" : "Show"} ${toggleLabel}: ${title}`}>
             <ChevronRight className="activity-step-chevron" size={12} aria-hidden="true" />
-            <span className={`activity-step-title${mono ? " mono" : ""}`}>{title}</span>
+            {label}
           </button>
-        ) : <span className={`activity-step-title${mono ? " mono" : ""}`}>{title}</span>}
+        ) : label}
         {activity.itemCount && activity.itemCount > 1 ? <span className="activity-step-chip">{activity.itemCount} items</span> : null}
-        {word && <span className={`activity-step-chip tone-${statusTone(activity.status) || "quiet"}`}>{word}</span>}
+        {word && <span className={`activity-step-chip tone-${tone || "quiet"}`}>{word}</span>}
       </div>
       {!showDetail && reasoning && detail && <p className="activity-step-preview">{detail.slice(0, 220)}</p>}
-      {showDetail && (reasoning ? <div className="activity-step-thought">{detail}</div> : <pre className="activity-step-output">{detail}</pre>)}
+      {showDetail && (reasoning ? <>
+        <div className={`activity-step-thought${clamped ? " is-clamped" : ""}`}>{detail}</div>
+        {clampable && (
+          <button type="button" className="activity-step-more" aria-expanded={!clamped} aria-label={clamped ? "Show all thinking" : "Show less thinking"}
+            onClick={() => setFullThought((value) => !value)}>
+            {clamped ? "Show all" : "Show less"}
+          </button>
+        )}
+      </> : <pre className="activity-step-output">{detail}</pre>)}
     </div>
   </li>;
 }, (previous, next) => previous.inChat === next.inChat && previous.match === next.match && previous.live === next.live

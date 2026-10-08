@@ -209,15 +209,29 @@
   background: var(--field);
 }
 .app-shell[data-theme][data-color-scheme] .file-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
-/* The terminal stays dark in every theme, as before; Lumen rounds it into a
-   slab with a lit top edge. */
-.app-shell[data-theme][data-color-scheme] .xterm-host {
-  border: 1px solid var(--line);
+/* Terminal window: theme chrome around a screen that stays dark in every
+   theme. The panel gives back some bottom padding so the window reaches
+   nearer the dock's edge. */
+.app-shell[data-theme][data-color-scheme] .studio-panel.fill { padding-bottom: 14px; }
+.app-shell[data-theme][data-color-scheme] .terminal-panel { gap: 10px; }
+.app-shell[data-theme][data-color-scheme] .terminal-window {
+  border-color: var(--line);
   border-radius: var(--r-lg);
-  background: #070a10;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04), 0 18px 40px -26px rgba(0, 0, 0, .8);
+  background: var(--panel);
+  box-shadow: 0 18px 40px -30px rgba(0, 0, 0, .7);
 }
-.app-shell[data-theme][data-color-scheme] .terminal-input { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .terminal-bar,
+.app-shell[data-theme][data-color-scheme] .terminal-elsewhere { border-bottom-color: var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .terminal-input { border-top-color: var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .terminal-shell { border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .terminal-tool,
+.app-shell[data-theme][data-color-scheme] .terminal-run { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .terminal-tool:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .terminal-run:hover:not(:disabled) { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .terminal-run.stop:hover { background: rgba(255, 120, 120, .1); }
+/* Lumen's global focus ring is accent coloured; this control keeps the
+   neutral one. In a rule of its own (see tokens.css on :focus-visible). */
+.app-shell[data-theme][data-color-scheme] .terminal-run:focus-visible { outline: 1.5px solid var(--muted); outline-offset: 1px; }
 
 /* Git workspace pieces that live in git-workflow.css. */
 .app-shell[data-theme][data-color-scheme] .git-view-tabs { padding: 3px; border-radius: var(--r-md); background: var(--field); }

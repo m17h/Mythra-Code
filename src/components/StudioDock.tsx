@@ -392,7 +392,9 @@ export function StudioDock(props: {
         ))}
         <span className="studio-tab-indicator" aria-hidden="true" />
       </div>
-      <div className="studio-panel" role="tabpanel" id={panelId} aria-labelledby={tabId(props.tab)} tabIndex={0}>
+      {/* The terminal sizes to the dock instead of the window, so its panel
+          lays out as a column the terminal can flex into. */}
+      <div className={`studio-panel${props.tab === "terminal" ? " fill" : ""}`} role="tabpanel" id={panelId} aria-labelledby={tabId(props.tab)} tabIndex={0}>
         {props.tab === "files" && <>
           <PanelHeader icon={FilePlus2} title="Project files" subtitle="Search, preview, and attach local context" onClose={props.onClose} />
           {props.projectPath ? <FileBrowser root={props.projectPath} onAttach={props.onAttachPath} /> : <Empty icon={FilePlus2} title="No project folder" text="Open a project to browse its files." />}

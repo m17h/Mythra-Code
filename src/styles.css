@@ -165,7 +165,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-color-scheme="light"] .diff-line-hunk { color: #14639f; }
 /* Outlined actions keep the accent on ink and edge; on white the ink is
    deepened toward --text so label contrast stays at AA. */
-.app-shell[data-color-scheme="light"] :where(.primary-button, .git-commit-button, .github-create-button, .send-button, .terminal-input button) { color: color-mix(in srgb, var(--green) 76%, var(--text)); }
+.app-shell[data-color-scheme="light"] :where(.primary-button, .git-commit-button, .github-create-button, .send-button) { color: color-mix(in srgb, var(--green) 76%, var(--text)); }
 .app-shell[data-color-scheme="light"] .secondary-button { color: #3c443c; }
 .app-shell[data-color-scheme="light"] .new-thread-button { color: #333b33; background: rgba(0,0,0,.025); }
 .app-shell[data-color-scheme="light"] .workspace-row, .app-shell[data-color-scheme="light"] .thread-row { color: #4c544c; }
@@ -2236,8 +2236,6 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .diff-summary small { color: var(--muted-2); }
 .diff-view, .git-screen { overflow: auto; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; color: #aeb5b0; background: #202327; font: 10.5px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: pre-wrap; }
 .diff-view { min-height: 290px; max-height: calc(100vh - 160px); }
-.xterm-host { height: calc(100vh - 155px); padding: 9px 4px 8px 9px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #202327; }
-.xterm-host .xterm { height: 100%; }
 .file-browser { height: calc(100vh - 86px); display: flex; flex-direction: column; min-height: 0; }
 .file-browser-toolbar { min-height: 29px; display: grid; grid-template-columns: 27px minmax(0,1fr) 27px; align-items: center; gap: 4px; margin-bottom: 6px; }
 .file-nav-button { width: 27px; height: 27px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.018); cursor: pointer; }
@@ -2316,15 +2314,74 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .github-create-button:disabled { opacity: .4; cursor: default; }
 
 .manager-status { margin-top: 6px; padding: 7px 8px; border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
-.terminal-origin { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-bottom: var(--s-2); padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: rgba(255,255,255,.02); font-size: var(--fs-meta); }
-.terminal-origin.other { color: var(--muted-2); border-style: dashed; }
-.terminal-origin code { overflow: hidden; max-width: 34ch; color: var(--ink-2); font: 10.5px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.terminal-input { display: grid; grid-template-columns: 13px minmax(0,1fr) 32px; align-items: center; gap: 6px; margin-top: var(--s-2); color: var(--green); font-family: var(--font-mono); }
-.terminal-input input, .dock-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: 11px var(--font-mono); transition: border-color var(--t-fast) ease; }
-.terminal-input input:focus, .dock-field input:focus { border-color: var(--green-line); }
-.terminal-input input::placeholder, .dock-field input::placeholder { color: var(--muted-2); }
-.terminal-input button { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--green) 42%, var(--line-strong)); border-radius: var(--r-sm); color: var(--green); background: color-mix(in srgb, var(--green) 7%, transparent); cursor: pointer; transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
-.terminal-input button:hover { border-color: color-mix(in srgb, var(--green) 64%, var(--line-strong)); background: color-mix(in srgb, var(--green) 12%, transparent); }
+/* Workspace terminal: one window (status bar, screen, command line) that
+   flexes to fill the dock rather than guessing from the viewport height. */
+.studio-panel.fill { display: flex; flex-direction: column; }
+.studio-panel.fill > .studio-header { flex: none; }
+.terminal-panel { flex: 1 1 auto; min-height: 300px; display: flex; flex-direction: column; gap: var(--s-2); }
+.terminal-panel > .terminal-notice { flex: none; margin: 0; }
+.terminal-window { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); }
+.terminal-bar { flex: none; display: flex; align-items: center; gap: var(--s-2); min-height: 36px; padding: 0 5px 0 12px; border-bottom: 1px solid var(--line); }
+.terminal-status { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--fs-meta); }
+.terminal-status-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.terminal-status-text strong { color: var(--text); font-weight: 600; }
+.terminal-status-text code { color: var(--ink-2); font: 10.5px var(--font-mono); }
+.terminal-status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--green); opacity: .8; }
+.terminal-window.running .terminal-status .terminal-status-dot { background: var(--amber, #e2a869); opacity: 1; }
+.terminal-shell { margin-left: 4px; padding: 1px 6px; border-radius: var(--r-xs); color: var(--muted-2); background: var(--panel-2); font: 10px var(--font-mono); }
+.terminal-tool { flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.terminal-tool:hover { color: var(--text); background: var(--panel-2); }
+.terminal-elsewhere { flex: none; display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-micro); }
+.terminal-elsewhere .terminal-status-dot { border: 1px solid var(--amber, #e2a869); background: transparent; }
+.terminal-elsewhere strong { color: var(--ink-2); font-weight: 600; }
+/* The screen stays dark in every theme. Its colour matches xterm's own
+   background (TERMINAL_BACKGROUND in XtermPanel.tsx), and the padding lives
+   here rather than on .xterm-host: the fit addon sizes the grid from the
+   host's full box, so padding there pushed the last row out of view. */
+.terminal-screen { flex: 1 1 auto; min-height: 140px; padding: 8px 2px 6px 10px; background: #15171b; }
+.xterm-host { width: 100%; height: 100%; overflow: hidden; }
+.xterm-host .xterm { height: 100%; }
+/* xterm.css paints the viewport black, which showed as a band in the space
+   below the last whole row. The screen behind it already has the colour. */
+.xterm-host .xterm .xterm-viewport { background-color: transparent; }
+/* Link hints get a reserved, fixed-height line under the screen: they never
+   cover output, and changing the message never changes the grid size. */
+.terminal-link-strip { flex: none; height: 24px; display: flex; align-items: center; padding: 0 10px; overflow: hidden; border-top: 1px solid rgba(255,255,255,.06); color: #7f8995; background: #15171b; font-size: 10.5px; line-height: 1; white-space: nowrap; }
+.terminal-link-message { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.terminal-link-message > span, .terminal-link-message > code { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.terminal-link-message > svg { flex: none; color: #6f7a87; }
+.terminal-link-message code { color: #b8e6fb; font: 10.5px var(--font-mono); }
+.terminal-link-strip[data-state="hover"] { color: #aab3bf; }
+.terminal-link-strip[data-state="hover"] svg { color: #8fd2f2; }
+.terminal-link-strip[data-state="error"] { color: #ef8a87; }
+.terminal-link-strip[data-state="error"] svg { color: #ef8a87; }
+.terminal-link-strip[data-state="hover"] .terminal-link-message > span:first-of-type,
+.terminal-link-strip[data-state="error"] .terminal-link-message > span:first-of-type { flex: none; }
+.terminal-link-strip[data-state="error"] .terminal-link-detail { color: #d3d9e0; }
+/* The address shrinks first so the reason for the failure stays readable. */
+.terminal-link-strip[data-state="error"] code { flex-shrink: 1000; color: #8e98a4; }
+.terminal-input { flex: none; display: grid; grid-template-columns: 14px minmax(0,1fr) 26px; align-items: center; gap: 8px; padding: 5px 6px 5px 12px; border-top: 1px solid var(--line); color: var(--muted-2); transition: background var(--t-fast) ease, color var(--t-fast) ease; }
+.terminal-input:focus-within { color: var(--green); background: var(--field); box-shadow: inset 0 1px 0 var(--green-line); }
+.terminal-input input { width: 100%; min-width: 0; height: 28px; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font: 11.5px var(--font-mono); }
+.terminal-input input:focus-visible { outline: 0; }
+.terminal-input input::placeholder { color: var(--muted-2); }
+/* Run and Stop are quiet icon controls, like Clear in the bar: no outline,
+   tile or accent fill at rest. Ink carries the state (neutral Run, red Stop)
+   and hover only lays a faint surface under the glyph. */
+.terminal-run { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; box-shadow: none; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease, opacity var(--t-fast) ease; }
+.terminal-run:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,.06); }
+.terminal-run:disabled { color: var(--muted-2); background: transparent; opacity: .45; cursor: default; }
+.terminal-run.stop { color: var(--red); }
+.terminal-run.stop:hover { color: var(--red); background: rgba(239,138,135,.1); }
+/* Keyboard focus stays visible but neutral, never an accent ring. */
+.terminal-run:focus-visible { outline: 1.5px solid var(--muted); outline-offset: 1px; border-radius: var(--r-sm); }
+.app-shell[data-color-scheme="light"] .terminal-run:hover:not(:disabled) { background: rgba(0,0,0,.05); }
+@media (prefers-reduced-motion: no-preference) {
+  .terminal-window.running .terminal-status .terminal-status-dot { animation: project-run-pulse 1.4s ease-in-out infinite; }
+}
+.dock-field input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: 11px var(--font-mono); transition: border-color var(--t-fast) ease; }
+.dock-field input:focus { border-color: var(--green-line); }
+.dock-field input::placeholder { color: var(--muted-2); }
 /* Stat tiles: label first as a quiet caption, then the value at display size.
    column-reverse keeps the value first in the DOM so it is read out first. */
 .metric-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s-1); margin-bottom: var(--s-3); }

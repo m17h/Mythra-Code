@@ -34,6 +34,26 @@ describe("Claude event routing", () => {
     vi.clearAllMocks();
   });
 
+  it("keeps a failed Bash command after Claude compaction in details while a retry runs", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "compact_boundary", uuid: "boundary", compact_metadata: { trigger: "auto", pre_tokens: 12320 } });
+    send({ type: "assistant", message: { id: "tools", content: [
+      { type: "tool_use", id: "failed-bash", name: "Bash", input: { command: "npm test" } },
+    ] } });
+    send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "failed-bash", is_error: true, content: "Command exited with code 1" }] } });
+    send({ type: "assistant", message: { id: "retry-tools", content: [
+      { type: "tool_use", id: "retry-bash", name: "Bash", input: { command: "npm run check" } },
+    ] } });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.activities.find((activity) => activity.id === "failed-bash")).toMatchObject({ kind: "command", status: "failed", detail: "Command exited with code 1" });
+    const entries = task.activities.map((value) => ({ kind: "activity" as const, value }));
+    const presentation = compactActivityPresentation(entries, { running: true, activeTurnId: "turn-1" });
+    expect(presentation.filter((entry) => entry.kind === "activity").map((entry) => entry.value.kind)).toEqual(["compaction"]);
+    expect(presentation.filter((entry) => entry.kind === "work").flatMap((entry) => entry.value)).toEqual(
+      entries.filter((entry) => entry.value.kind === "command"),
+    );
+  });
+
   it("recovers authoritative successful result text after progress and tools when the final assistant event is lost", () => {
     send({ type: "system", subtype: "init" });
     send({ type: "assistant", message: { id: "progress", content: [

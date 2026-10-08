@@ -1,6 +1,9 @@
 /* ---- Activity details: an in-app reading window about Settings' size ----
    Dark-neutral sheet, one quiet rail, squircle step nodes. Only the entrance
-   and the live mark move; reduced motion removes both. */
+   and the live mark move; reduced motion removes both.
+   Reading order: the agent's thinking and updates are the primary text, at
+   chat size and full contrast with room around them. Commands and other
+   operations are a quiet, compact secondary layer whose output stays folded. */
 
 .activity-details-dialog {
   position: fixed;
@@ -71,16 +74,19 @@
 .activity-details-scroll:focus-visible { outline: none; box-shadow: inset var(--ring); }
 
 /* One rail runs through the step nodes. */
-.activity-details-steps { position: relative; display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.activity-details-steps { position: relative; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .activity-step {
   position: relative;
   min-width: 0;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 10px;
-  padding: 5px 8px 5px 0;
+  padding: 4px 8px 4px 0;
   border-radius: 10px;
 }
+/* Prose steps get real breathing room; operations stay tight. */
+.activity-step.kind-reasoning,
+.activity-step.kind-message { padding-top: 10px; padding-bottom: 12px; }
 .activity-step::before { content: ""; position: absolute; top: 0; bottom: -4px; left: 10.5px; width: 1px; background: var(--line); }
 .activity-step:first-child::before { top: 14px; }
 .activity-step:last-child::before { bottom: calc(100% - 14px); }
@@ -97,20 +103,29 @@
   color: var(--muted);
   background: var(--panel, #292d32);
 }
-.activity-step.kind-command .activity-step-node { color: var(--ink-2); }
+.activity-step.kind-command .activity-step-node { color: var(--muted); }
 .activity-step.kind-file .activity-step-node { color: color-mix(in srgb, var(--green) 72%, var(--muted)); }
 .activity-step.kind-reasoning .activity-step-node,
 .activity-step.kind-agents .activity-step-node,
 .activity-step.kind-agent .activity-step-node { color: var(--info); }
 .activity-step.kind-warning .activity-step-node { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 32%, var(--line)); }
+/* A failed operation is flagged on its node and keeps a readable title. */
+.activity-step.is-failed .activity-step-node { color: var(--red); border-color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
 /* Thinking that is happening now shows the working mark, not a glyph. */
 .activity-step.kind-reasoning .activity-step-node.working { color: var(--text); }
 .activity-step.from-user .activity-step-node { color: var(--text); background: var(--field); }
 
 .activity-step-body { min-width: 0; padding-top: 2px; }
 .activity-step-head { min-width: 0; min-height: 20px; display: flex; align-items: center; gap: 8px; }
-.activity-step-title { min-width: 0; overflow: hidden; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 520; white-space: nowrap; text-overflow: ellipsis; }
-.activity-step-title.mono { font: 11.5px/1.45 var(--font-mono); }
+/* Operation titles are secondary: neutral, smaller, still legible. Plain
+   --muted sits just under AA on the darkest panels at this size, so it is
+   lifted a little toward --ink-2 (still well below the prose). */
+.activity-step-title { min-width: 0; overflow: hidden; color: var(--muted-2); color: color-mix(in srgb, var(--muted) 70%, var(--ink-2)); font-size: var(--fs-meta); font-weight: 450; white-space: nowrap; text-overflow: ellipsis; }
+.activity-step-title.mono { font: 11px/1.45 var(--font-mono); }
+.activity-step-toggle:hover .activity-step-title,
+.activity-step-toggle[aria-expanded="true"] .activity-step-title,
+.activity-step.is-failed .activity-step-title,
+.activity-step.kind-warning .activity-step-title { color: var(--ink-2); }
 .activity-step-kind { color: var(--muted); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
 .activity-step-toggle { min-width: 0; display: inline-flex; align-items: center; gap: 4px; margin-left: -2px; padding: 1px 4px 1px 2px; border: 0; border-radius: 6px; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .activity-step-toggle:hover { background: var(--line-quiet); }
@@ -118,12 +133,13 @@
 .activity-step-chevron { flex: 0 0 auto; color: var(--muted-2); transition: transform var(--t-mid) var(--ease); }
 .activity-step-toggle[aria-expanded="true"] .activity-step-chevron { transform: rotate(90deg); }
 .activity-step-chip { flex: 0 0 auto; padding: 1px 7px; border-radius: 6px; color: var(--muted-2); background: var(--line-quiet); font-size: var(--fs-micro); font-weight: 560; }
+/* Routine "Done" is a word, not a badge; live and failed states keep theirs. */
+.activity-step-chip.tone-quiet { padding: 1px 2px; background: transparent; font-weight: 500; }
 .activity-step-chip.tone-live { color: color-mix(in srgb, var(--green) 80%, var(--ink-2)); background: var(--green-soft); }
 .activity-step-chip.tone-bad { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 .activity-step-chip.tone-stopped { color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent); }
 
-.activity-step-output,
-.activity-step-thought {
+.activity-step-output {
   max-height: 320px;
   overflow: auto;
   margin: 6px 0 4px;
@@ -136,13 +152,34 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.activity-step-thought { font: 12px/1.6 var(--font-sans); }
-.activity-step-preview { display: -webkit-box; overflow: hidden; margin: 3px 0 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+/* Thinking reads like the agent's updates: plain prose, no box. */
+.activity-step-thought {
+  max-width: 72ch;
+  margin: 6px 0 0;
+  color: var(--text);
+  font-family: var(--chat-font, var(--font-sans));
+  font-size: var(--fs-body);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Long settled thinking opens at a bounded height, fading out above Show all. */
+.activity-step-thought.is-clamped {
+  max-height: calc(1.65em * 12);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 3em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 3em), transparent);
+}
+.activity-step-more { margin: 4px 0 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font: 560 var(--fs-meta)/1.3 var(--font-sans); cursor: pointer; }
+.activity-step-more:hover { color: var(--text); background: var(--line-quiet); }
+.activity-step-more:focus-visible { outline: none; box-shadow: var(--ring); }
+/* Collapsed thinking keeps one readable line, not a dim fragment. */
+.activity-step-preview { display: -webkit-box; overflow: hidden; max-width: 72ch; margin: 4px 0 0; color: var(--muted); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-ui); line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
 .activity-step-note { margin: 2px 0 0; color: var(--muted-2); font-size: var(--fs-meta); }
 .activity-step.kind-warning .activity-step-output { color: var(--ink-2); border-color: color-mix(in srgb, var(--orange) 24%, var(--line)); white-space: pre-wrap; font-family: var(--font-sans); font-size: var(--fs-meta); }
 
-/* Agent prose reads at chat size so long updates are comfortable. */
-.activity-step-message { margin-top: 3px; color: var(--ink-2); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-ui); line-height: 1.62; overflow-wrap: anywhere; }
+/* Agent prose reads at chat size and full contrast so updates come first. */
+.activity-step-message { max-width: 72ch; margin-top: 6px; color: var(--text); font-family: var(--chat-font, var(--font-sans)); font-size: var(--fs-body); line-height: 1.65; overflow-wrap: anywhere; }
 .activity-step-message .message-text > :first-child { margin-top: 0; }
 .activity-step-message .message-text > :last-child { margin-bottom: 0; }
 .activity-step.in-chat .activity-step-message,

@@ -78,6 +78,47 @@ async function openDetails(button = screen.getByRole("button", { name: /View act
 
 afterEach(async () => { await commands.setStreamTestReducedMotion(false); });
 
+it("keeps failed commands in work history after compaction, during work and after reloading", async () => {
+  await commands.setStreamTestReducedMotion(true);
+  const failedTools: Activity[] = ["failed", "error", "interrupted", "cancelled"].map((status, index) => ({
+    ...tool, id: `failed-command-${index}`, title: `cd "C:/Projects/demo"; command-${index}`,
+    detail: `Recorded command output ${index}`, status, timelineOrder: index + 3,
+  }));
+  const landmark: Activity = { ...tool, id: "compacted", kind: "compaction", title: "Context compacted", timelineOrder: 2 };
+  const warning: Activity = { ...tool, id: "warning", kind: "warning", title: "Approval is needed before writing", timelineOrder: 7 };
+  const activities = [landmark, ...failedTools, warning];
+  const view = render(strictShell({ messages: [prompt], activities, activeTurnId: "turn" }));
+  const assertQuietChat = () => {
+    expect(view.container.querySelectorAll(".command-activity, .command-disclosure")).toHaveLength(0);
+    for (const command of failedTools) expect(within(view.container).queryByText(command.title)).not.toBeInTheDocument();
+    expect(within(view.container).getByText("Context compacted")).toBeVisible();
+    expect(within(view.container).getByText(warning.title)).toBeVisible();
+  };
+  assertQuietChat();
+  const dialog = await openDetails();
+  for (const command of failedTools) {
+    expect(within(dialog).getByText(command.title)).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: `Show output: ${command.title}` }));
+    expect(within(dialog).getByText(command.detail!)).toBeVisible();
+  }
+  expect(within(dialog).getAllByText("Failed")).toHaveLength(2);
+  await userEvent.click(within(dialog).getByRole("button", { name: "Close activity" }));
+  assertQuietChat();
+  view.rerender(strictShell({ running: false, messages: [{ ...prompt, turnStatus: "completed" },
+    { ...final, streaming: false, turnStatus: "completed", timelineOrder: 8 }],
+    activities: activities.map((activity) => ({ ...activity, turnStatus: "completed" })), activeTurnId: "turn" }));
+  assertQuietChat();
+  expect(screen.getByText(final.text)).toBeVisible();
+  view.unmount();
+  // Historical hydration has no active runtime identity, but the same rule applies.
+  const restored = render(strictShell({ running: false, messages: [{ ...prompt, turnStatus: "failed" }],
+    activities: activities.map((activity) => ({ ...activity, turnStatus: "failed" })) }));
+  expect(restored.container.querySelectorAll(".command-activity, .command-disclosure")).toHaveLength(0);
+  const historical = await openDetails();
+  for (const command of failedTools) expect(within(historical).getByText(command.title)).toBeVisible();
+  restored.unmount();
+});
+
 describe("compact activity in the real browser", () => {
   it("rotates thinking phrases every five seconds and immediately yields to concrete work", async () => {
     const status = (researching = false) => <StrictMode>
