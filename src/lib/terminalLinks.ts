@@ -209,11 +209,16 @@ export function linksAtBufferRow(buffer: TerminalBufferReader, row: number): Ter
   }
 
   const links: TerminalBufferLink[] = [];
+  // With a missing prefix, the first token belongs to unseen text. A scheme
+  // anywhere in that token may be inside the path of the original URL. Only
+  // a real delimiter establishes a fresh candidate boundary.
+  const firstDelimiter = missingPrefix ? text.search(DELIMITER) : 0;
+  const completeStart = firstDelimiter < 0 ? text.length : firstDelimiter;
   for (const match of findTerminalLinks(text)) {
     // The retained/bounded window can begin or end mid-token. A candidate at
     // either incomplete edge might be a suffix of another address or lack
     // the rest of its path/query. Never open a different, truncated URL.
-    if ((missingPrefix && match.start === 0) || (missingSuffix && match.candidateEnd === text.length)) continue;
+    if (match.start < completeStart || (missingSuffix && match.candidateEnd === text.length)) continue;
     const head = cells[match.start];
     const tail = cells[match.end - 1];
     if (!head || !tail || tail.y < row || head.y > row) continue;

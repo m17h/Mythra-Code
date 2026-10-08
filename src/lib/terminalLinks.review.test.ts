@@ -24,6 +24,17 @@ describe("terminal link independent review", () => {
     expect(linksAtBufferRow(wrappedBuffer("localhost:5173/path", 40, true), 0)).toEqual([]);
   });
 
+  it("rejects an embedded URL anywhere inside the first incomplete token", () => {
+    expect(linksAtBufferRow(wrappedBuffer("/https://evil.example/path", 40, true), 0)).toEqual([]);
+    const printed = `https://trusted.example/${"a".repeat(1200)}/https://evil.example/path`;
+    expect(linksAtBufferRow(wrappedBuffer(printed, 40), 31)).toEqual([]);
+  });
+
+  it("accepts complete URLs after a delimiter in a retained continuation", () => {
+    const reader = wrappedBuffer("/https://evil.example/path https://good.example/", 80, true);
+    expect(linksAtBufferRow(reader, 0).map((link) => link.url)).toEqual(["https://good.example/"]);
+  });
+
   it("rejects a cut-off target even when its last scanned character is punctuation", () => {
     const firstWindow = `localhost:5173/${"a".repeat(984)}?`;
     expect(firstWindow).toHaveLength(1000);
