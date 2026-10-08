@@ -1372,7 +1372,7 @@ mod tests {
         .unwrap();
         let hover = budget_payload(hover, LanguageQueryOperation::Hover).unwrap();
         let wrapper = json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":serde_json::to_string(&hover).unwrap()}],"isError":false}});
-        assert!(serde_json::to_vec(&wrapper).unwrap().len() + 1 <= MAX_BRIDGE_RESULT);
+        assert!(serde_json::to_vec(&wrapper).unwrap().len() < MAX_BRIDGE_RESULT);
         assert_eq!(hover["truncated"], true);
         let mut arguments = query(LanguageQueryOperation::Symbols, None, None);
         arguments.max_results = Some(1000);

@@ -2185,7 +2185,7 @@ mod tests {
         assert_eq!(text, payload.to_string());
         assert!(!response["result"]["isError"].as_bool().unwrap());
         assert!(
-            response.to_string().len() + 1 <= super::super::language_queries::MAX_BRIDGE_RESULT
+            response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
         );
         // An inner payload can fit while double escaping exceeds the envelope.
         let escapes = json!({"result": "\"".repeat(100_000)});
@@ -2193,7 +2193,7 @@ mod tests {
         let response = mcp_call_response(json!("id"), TOOL_LANGUAGE_QUERY, &escapes, false);
         assert_eq!(response["result"]["isError"], true);
         assert!(
-            response.to_string().len() + 1 <= super::super::language_queries::MAX_BRIDGE_RESULT
+            response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
         );
         for tool in [
             TOOL_LANGUAGE_QUERY,
@@ -2203,7 +2203,7 @@ mod tests {
             let response =
                 mcp_call_response(json!(1), tool, &json!({"error":"x".repeat(300_000)}), true);
             assert!(
-                response.to_string().len() + 1 <= super::super::language_queries::MAX_BRIDGE_RESULT
+                response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
             );
             assert_eq!(response["result"]["isError"], true);
         }
