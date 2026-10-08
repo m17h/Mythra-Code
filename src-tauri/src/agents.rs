@@ -25,15 +25,14 @@
 //! URL and bearer token live inside that file and never reach argv, a model
 //! prompt, a transcript, an audit record, or a project file.
 //!
-//! Depth is structurally capped at one: a bridge is only ever attached to a
-//! root thread's runtime, so a child runtime is started without delegation
-//! tools and cannot spawn grandchildren.
+//! Depth is structurally capped at one: child project runtimes receive only
+//! language-tool status/setup, never delegation or project-control tools.
 
 use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
     io::Write as _,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -71,6 +70,9 @@ const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
 /// feature rather than a sub-agent one.
 const TOOL_SET_RUN: &str = "set_project_run_command";
 const TOOL_SET_CHECK: &str = "set_project_check_command";
+const TOOL_LANGUAGE_STATUS: &str = "language_tools_status";
+const TOOL_LANGUAGE_INSTALL: &str = "install_language_tool";
+const TOOL_LANGUAGE_QUERY: &str = "language_tool_query";
 pub(super) const AGENT_BRIDGE_TOOLS: [&str; 7] = [
     TOOL_SPAWN,
     TOOL_STATUS,
@@ -266,9 +268,38 @@ struct ChildAgentSession {
     session_token: String,
     targets: Vec<ChildAgentTarget>,
     max_concurrent: usize,
+    project_path: Option<PathBuf>,
+    permission: String,
+    child_thread: bool,
+    provider: String,
     directory: PathBuf,
     runtime: Arc<Mutex<SessionRuntime>>,
     ended: watch::Sender<bool>,
+    /// Queries belong to one registration's path and permission. Unlike child
+    /// accounting, they must never survive token/context rotation.
+    query_ended: watch::Sender<bool>,
+}
+
+fn rearm_query_cancellation(previous: Option<&watch::Sender<bool>>) -> watch::Sender<bool> {
+    if let Some(previous) = previous {
+        previous.send_replace(true);
+    }
+    watch::channel(false).0
+}
+
+async fn await_language_query<T>(
+    query: impl std::future::Future<Output = Result<T, String>>,
+    query_ended: &watch::Sender<bool>,
+) -> Result<T, String> {
+    let mut ended = query_ended.subscribe();
+    if *ended.borrow() {
+        return Err("This language-tool registration has ended.".into());
+    }
+    tokio::select! {
+        biased;
+        _ = ended.changed() => Err("This language-tool registration has ended.".into()),
+        result = query => result,
+    }
 }
 
 impl ChildAgentSession {
@@ -375,6 +406,8 @@ struct BridgeSessionFile {
     url: String,
     session_token: String,
     session_id: String,
+    #[serde(default)]
+    instructions: String,
 }
 
 /// Everything a provider runtime needs to launch the bridge. Deliberately
@@ -405,6 +438,20 @@ pub(super) struct ChildAgentSessionOptions {
     known_children: Vec<String>,
     #[serde(default)]
     finished_children: Vec<String>,
+    /// Set by the app's project execution context, never by tool arguments.
+    #[serde(default)]
+    project_path: Option<String>,
+    #[serde(default = "default_bridge_permission")]
+    permission: String,
+    #[serde(default)]
+    child_thread: bool,
+    /// Actual provider supplied by the app, not by model tool arguments.
+    #[serde(default)]
+    provider: String,
+}
+
+fn default_bridge_permission() -> String {
+    "ask".into()
 }
 
 fn bridge_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -651,6 +698,15 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
             },
         },
     ]);
+    debug_assert_eq!(
+        catalog
+            .as_array()
+            .expect("catalog is an array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>(),
+        AGENT_BRIDGE_TOOLS.to_vec(),
+    );
     if targets.is_empty() {
         return Value::Array(
             catalog
@@ -670,6 +726,193 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
     catalog
 }
 
+/// Registration and tools/list derive from the same session scope. Child
+/// threads keep language support without acquiring delegation authority.
+fn scoped_tool_catalog(
+    targets: &[ChildAgentTarget],
+    max_concurrent: usize,
+    project: bool,
+    child: bool,
+    permission: &str,
+) -> Value {
+    let mut tools = if child {
+        Vec::new()
+    } else {
+        tool_catalog(targets, max_concurrent)
+            .as_array()
+            .expect("tool catalog is an array")
+            .clone()
+    };
+    if project {
+        tools.extend([
+            json!({
+                "name": TOOL_LANGUAGE_STATUS,
+                "title": "Check managed language tools",
+                "description": "Read stored availability and last verified health for relevant curated language tools without starting servers. With no arguments, inspect languages detected in this project; select id or an existing project-relative file path for a narrower view. fullCatalog explicitly lists every curated tool. verify performs a fresh relevant health check; it cannot be combined with fullCatalog. This never installs software.",
+                "inputSchema": {"type": "object", "properties": {
+                    "id": {"type": "string", "enum": super::language_tools::LANGUAGE_TOOL_IDS},
+                    "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "fullCatalog": {"type": "boolean", "default": false},
+                    "verify": {"type": "boolean", "default": false},
+                }, "additionalProperties": false},
+            }),
+            json!({
+                "name": TOOL_LANGUAGE_INSTALL,
+                "title": "Set up a managed language tool",
+                "description": "Install one curated language tool into Mythra Code's private managed environment. Requires full access, automatic setup enabled, and this tool enabled in Settings > Tools & MCP > Language tools. Read-only cannot install. Ask mode requires the user to install manually in Settings; this tool cannot approve itself. Accepts only a curated tool ID, never packages, commands, or paths. Installed enabled servers become available to language_tool_query immediately; Claude's built-in LSP integration updates on the next turn.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string", "enum": super::language_tools::LANGUAGE_TOOL_IDS}},
+                    "required": ["id"],
+                    "additionalProperties": false,
+                },
+            }),
+            json!({
+                "name": TOOL_LANGUAGE_QUERY,
+                "title": "Query project language intelligence",
+                "description": "Query an installed, enabled language server for definition, references, hover, or file symbols in this thread's project. Available to all providers and child threads. Ask and read-only can query TypeScript/JavaScript, Python, HTML/CSS/JSON and YAML; framework/native language servers require Full access because their project configuration can execute code. The path must name an existing file relative to the project folder; absolute paths and traversal are rejected. Definition, references and hover require one-based line and column; columns count UTF-16 code units. Symbols requires only path and operation. Results are bounded and project-scoped. This cannot edit files, install tools, or send arbitrary language-server requests. Use language_tools_status if the matching server is unavailable.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["definition", "references", "hover", "symbols"]},
+                        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                        "line": {"type": "integer", "minimum": 1, "maximum": 4294967295u64},
+                        "column": {"type": "integer", "minimum": 1, "maximum": 4294967295u64},
+                        "maxResults": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 50},
+                        "pathFilter": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Definitions, references and symbols only: keep returned locations whose project-relative path contains this text. Maximum 256 UTF-8 bytes; no control characters."},
+                        "nameFilter": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Symbols only: keep symbol names containing this text. Maximum 256 UTF-8 bytes; no control characters."},
+                    },
+                    "required": ["operation", "path"],
+                    "additionalProperties": false,
+                },
+            }),
+        ]);
+    }
+    if permission != "full" {
+        tools.retain(|tool| tool["name"] != TOOL_LANGUAGE_INSTALL);
+    }
+    Value::Array(tools)
+}
+
+/// Keep the first paragraph useful on its own, including for language-only
+/// children. Every subsequent direction names an actually advertised tool.
+fn bridge_instructions(catalog: &Value, provider: &str) -> String {
+    let has = |name: &str| {
+        catalog
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
+    };
+    let mut instructions = Vec::new();
+    if has(TOOL_LANGUAGE_QUERY) {
+        instructions.push("Use language_tool_query for project definitions, references, hover and file symbols. Paths are project-relative; lines and UTF-16 columns are one-based. Default output is 50 results; use maxResults, pathFilter, or symbols-only nameFilter to narrow it. language_tools_status reads relevant stored state; verify checks health. Results report truncation and omit external locations.".to_string());
+        if provider == "claude" {
+            instructions.push("Prefer Claude's native LSP tool when the installed server is loaded and its file mapping is supported; it also provides native diagnostics. Use language_tool_query for newly installed servers this turn, unsupported native mappings, and extensionless Dockerfiles. New installs load into Claude's native LSP on the next turn. This preference does not limit or merge native server processes.".into());
+        }
+        if has(TOOL_LANGUAGE_INSTALL) {
+            instructions.push("install_language_tool accepts a curated id and obeys current Settings enablement and automatic setup policy.".into());
+        } else {
+            instructions.push("Missing tools can be installed manually in Settings > Tools & MCP > Language tools.".into());
+        }
+    }
+    if has(TOOL_PROPOSE_SETTINGS) {
+        instructions.push("Use propose_agent_settings for requested crew changes; a proposal is applied only after user approval.".into());
+    }
+    if has(TOOL_SPAWN) {
+        instructions.push("spawn_mythra_agent is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.".into());
+    }
+    if has(TOOL_SET_RUN) {
+        instructions.push("Use set_project_run_command for the project's Run button; use run: true when asked to run, start, or serve the project in the app's Terminal panel.".into());
+    }
+    if has(TOOL_SET_CHECK) {
+        instructions.push("Use set_project_check_command for the full relevant project-relative verification command; saving never executes it.".into());
+    }
+    instructions.join(" ")
+}
+
+fn validate_language_install_permission(permission: &str) -> Result<(), String> {
+    match permission {
+        "full" => Ok(()),
+        "read-only" => Err("This thread is read-only and cannot install language tools. You can install them manually in Settings > Tools & MCP > Language tools.".into()),
+        _ => Err("Language-tool installation needs approval. Ask mode cannot approve this managed installation; ask the user to install it in Settings > Tools & MCP > Language tools.".into()),
+    }
+}
+
+fn valid_relative_language_path(relative: &str) -> bool {
+    !relative.trim().is_empty()
+        && relative.len() <= 4096
+        && !relative.contains(['\\', ':'])
+        && Path::new(relative)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+}
+
+fn status_file(project: &Path, relative: &str) -> Result<PathBuf, String> {
+    if !valid_relative_language_path(relative) {
+        return Err("Use an existing project-relative file path without traversal.".into());
+    }
+    let root = std::fs::canonicalize(project)
+        .map_err(|_| "The thread's project folder is unavailable.")?;
+    let mut candidate = root.clone();
+    for component in Path::new(relative).components() {
+        candidate.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&candidate)
+            .map_err(|_| "The requested project file is unavailable.")?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+            {
+                return Err("Language status cannot follow redirected project files.".into());
+            }
+        }
+        if metadata.file_type().is_symlink() {
+            return Err("Language status cannot follow project symlinks.".into());
+        }
+    }
+    let file = std::fs::canonicalize(candidate)
+        .map_err(|_| "The requested project file is unavailable.")?;
+    if !status_path_contained(&file, &root) || !file.is_file() {
+        return Err("Language status requires a file inside this thread's project.".into());
+    }
+    Ok(file)
+}
+
+fn status_path_contained(file: &Path, project: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let normalized = |path: &Path| {
+            PathBuf::from(super::language_tools::child_path(path))
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+                .collect::<Vec<_>>()
+        };
+        normalized(file).starts_with(&normalized(project))
+    }
+    #[cfg(not(windows))]
+    {
+        file.starts_with(project)
+    }
+}
+
+fn status_ids(project: &Path, arguments: &Value) -> Result<Option<Vec<String>>, String> {
+    if arguments["fullCatalog"] == true {
+        return Ok(None);
+    }
+    let mut ids = if let Some(relative) = arguments["path"].as_str() {
+        super::language_tools::tool_ids_for_file(&status_file(project, relative)?)
+    } else if let Some(id) = arguments["id"].as_str() {
+        vec![id.to_string()]
+    } else {
+        super::language_tools::detected_tools(project)?
+    };
+    if let Some(id) = arguments["id"].as_str() {
+        ids.retain(|candidate| candidate == id);
+    }
+    Ok(Some(ids))
+}
+
 /// Reject a malformed or out-of-policy call before any thread is started.
 /// Pure so the whole matrix is unit-testable without a runtime.
 pub(super) fn validate_tool_call(
@@ -683,6 +926,76 @@ pub(super) fn validate_tool_call(
         .ok_or_else(|| "Tool arguments must be an object.".to_string())?;
     let text = |key: &str| object.get(key).and_then(Value::as_str).unwrap_or_default();
     match tool {
+        TOOL_LANGUAGE_STATUS => {
+            if object
+                .keys()
+                .any(|key| !["id", "path", "fullCatalog", "verify"].contains(&key.as_str()))
+                || object.get("id").is_some_and(|value| {
+                    !value
+                        .as_str()
+                        .is_some_and(super::language_tools::is_known_tool)
+                })
+                || object
+                    .get("path")
+                    .is_some_and(|value| !value.as_str().is_some_and(valid_relative_language_path))
+                || ["fullCatalog", "verify"]
+                    .iter()
+                    .any(|key| object.get(*key).is_some_and(|value| !value.is_boolean()))
+                || (object.get("fullCatalog").and_then(Value::as_bool) == Some(true)
+                    && (object.contains_key("id")
+                        || object.contains_key("path")
+                        || object.get("verify").and_then(Value::as_bool) == Some(true)))
+            {
+                return Err("Language-tool status accepts curated id, project-relative file path, fullCatalog, and verify. fullCatalog cannot be combined with a filter or verify.".into());
+            }
+            Ok(())
+        }
+        TOOL_LANGUAGE_INSTALL => {
+            if object.len() != 1 || !super::language_tools::is_known_tool(text("id")) {
+                return Err("Language-tool setup accepts only one curated `id`; packages, commands, and paths are not accepted.".into());
+            }
+            Ok(())
+        }
+        TOOL_LANGUAGE_QUERY => {
+            if object.keys().any(|key| {
+                ![
+                    "operation",
+                    "path",
+                    "line",
+                    "column",
+                    "maxResults",
+                    "pathFilter",
+                    "nameFilter",
+                ]
+                .contains(&key.as_str())
+            }) || text("path").trim().is_empty()
+                || text("path").len() > 4096
+                || !["definition", "references", "hover", "symbols"].contains(&text("operation"))
+            {
+                return Err("Language queries accept operation, project-relative path, one-based line/column, maxResults, pathFilter and symbols-only nameFilter.".into());
+            }
+            let query = serde_json::from_value::<super::language_queries::LanguageToolQuery>(
+                arguments.clone(),
+            )
+            .map_err(|_| "The language query arguments are invalid.".to_string())?;
+            super::language_queries::validate_filters(&query)?;
+            let position = |key| {
+                object
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| value > 0 && value <= u32::MAX as u64)
+            };
+            if text("operation") == "symbols" {
+                if object.contains_key("line") || object.contains_key("column") {
+                    return Err("File symbols accepts no line or column.".into());
+                }
+            } else if !position("line") || !position("column") {
+                return Err(
+                    "This language query requires one-based line and UTF-16 column.".into(),
+                );
+            }
+            Ok(())
+        }
         TOOL_SPAWN => {
             let target = text("target");
             if target.is_empty() {
@@ -976,11 +1289,88 @@ async fn dispatch_tool(
     tool: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    let catalog = scoped_tool_catalog(
+        &session.targets,
+        session.max_concurrent,
+        session.project_path.is_some(),
+        session.child_thread,
+        &session.permission,
+    );
+    if !catalog
+        .as_array()
+        .expect("catalog is an array")
+        .iter()
+        .any(|entry| entry["name"] == tool)
+    {
+        return Err("This tool is not available in this thread.".into());
+    }
     {
         let runtime = session.runtime.lock().await;
         validate_tool_call(&session.targets, &runtime.known, tool, &arguments)?;
     }
 
+    if tool == TOOL_LANGUAGE_QUERY {
+        let project_path = session
+            .project_path
+            .as_deref()
+            .ok_or("Language queries require a project thread.")?;
+        let query = serde_json::from_value(arguments)
+            .map_err(|_| "The language query arguments are invalid.".to_string())?;
+        return await_language_query(
+            super::language_queries::query(&state.app, project_path, query, &session.permission),
+            &session.query_ended,
+        )
+        .await;
+    }
+    if matches!(tool, TOOL_LANGUAGE_STATUS | TOOL_LANGUAGE_INSTALL) {
+        let project_path = session
+            .project_path
+            .as_deref()
+            .ok_or("Language-tool status and setup require a project thread.")?;
+        let snapshot = if tool == TOOL_LANGUAGE_INSTALL {
+            validate_language_install_permission(&session.permission)?;
+            super::language_tools::install_for_agent(
+                &state.app,
+                arguments["id"]
+                    .as_str()
+                    .expect("validated language tool ID"),
+                project_path,
+                &session.permission,
+            )
+            .await?
+        } else {
+            let ids = status_ids(project_path, &arguments)?;
+            await_language_query(
+                async {
+                    if arguments["verify"] == true {
+                        super::language_tools::refresh_for_agent_filtered(
+                            &state.app,
+                            project_path,
+                            &session.permission,
+                            ids.as_deref(),
+                        )
+                        .await
+                    } else {
+                        super::language_tools::snapshot_for_agent_filtered(
+                            &state.app,
+                            project_path,
+                            &session.permission,
+                            ids.as_deref(),
+                        )
+                        .await
+                    }
+                },
+                &session.query_ended,
+            )
+            .await?
+        };
+        return Ok(json!({
+            "languageTools": snapshot,
+            "threadPermission": session.permission,
+            "builtinLspProvider": "claude",
+            "activation": "Installed enabled servers are available to language_tool_query for all providers. Claude's built-in LSP integration updates on the next turn.",
+        }));
+    }
     if tool != TOOL_SPAWN {
         return relay_to_app(state, session, tool, arguments).await;
     }
@@ -1111,10 +1501,16 @@ async fn handle_bridge_request(
     };
 
     match request.method.as_str() {
-        "describe" => json_response(
-            StatusCode::OK,
-            json!({ "ok": true, "result": { "tools": tool_catalog(&session.targets, session.max_concurrent) } }),
-        ),
+        "describe" => json_response(StatusCode::OK, {
+            let tools = scoped_tool_catalog(
+                &session.targets,
+                session.max_concurrent,
+                session.project_path.is_some(),
+                session.child_thread,
+                &session.permission,
+            );
+            json!({ "ok": true, "result": { "instructions": bridge_instructions(&tools, &session.provider), "tools": tools } })
+        }),
         "call" => match dispatch_tool(&state, &session, &request.tool, request.arguments).await {
             Ok(result) => json_response(StatusCode::OK, json!({ "ok": true, "result": result })),
             Err(error) => json_response(StatusCode::OK, json!({ "ok": false, "error": error })),
@@ -1183,6 +1579,32 @@ pub(super) async fn child_agent_session_start(
         return Err("A sub-agent session needs a session identity.".into());
     }
     validate_targets(&options.targets)?;
+    if !matches!(options.permission.as_str(), "ask" | "read-only" | "full") {
+        return Err("Unknown language-tool permission mode.".into());
+    }
+    if options.child_thread && !options.targets.is_empty() {
+        return Err("A child thread cannot acquire delegation tools.".into());
+    }
+    if !options.provider.is_empty()
+        && !agent_bridge_providers().contains(&options.provider.as_str())
+    {
+        return Err("Unknown language-tool provider.".into());
+    }
+    let project_path = options
+        .project_path
+        .as_deref()
+        .map(|path| {
+            std::fs::canonicalize(path)
+                .map_err(|_| "The project execution folder is unavailable.".to_string())
+                .and_then(|path| {
+                    if path.is_dir() {
+                        Ok(path)
+                    } else {
+                        Err("The project execution folder must be a directory.".into())
+                    }
+                })
+        })
+        .transpose()?;
     let max_concurrent = options.max_concurrent.clamp(1, MAX_CONCURRENT_CEILING);
 
     let (url, _) = ensure_bridge_server(&app, &state).await?;
@@ -1198,10 +1620,18 @@ pub(super) async fn child_agent_session_start(
     }
 
     let session_path = directory.join("session.json");
+    let catalog = scoped_tool_catalog(
+        &options.targets,
+        max_concurrent,
+        project_path.is_some(),
+        options.child_thread,
+        &options.permission,
+    );
     let session_file = serde_json::to_string(&BridgeSessionFile {
         url,
         session_token: session_token.clone(),
         session_id: options.session_id.clone(),
+        instructions: bridge_instructions(&catalog, &options.provider),
     })
     .map_err(|error| format!("Could not encode the sub-agent bridge session: {error}"))?;
     write_private_file(&session_path, &session_file)?;
@@ -1216,18 +1646,12 @@ pub(super) async fn child_agent_session_start(
         command: executable.clone(),
         args: vec![AGENT_BRIDGE_ARG.to_string(), session_argument.clone()],
         config_path: directory.join("mcp.json").to_string_lossy().to_string(),
-        tool_names: if options.targets.is_empty() {
-            vec![
-                TOOL_PROPOSE_SETTINGS.to_string(),
-                TOOL_SET_RUN.to_string(),
-                TOOL_SET_CHECK.to_string(),
-            ]
-        } else {
-            AGENT_BRIDGE_TOOLS
-                .iter()
-                .map(|tool| (*tool).to_string())
-                .collect()
-        },
+        tool_names: catalog
+            .as_array()
+            .expect("catalog is an array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect(),
     };
     let mcp_config = json!({
         "mcpServers": {
@@ -1261,6 +1685,11 @@ pub(super) async fn child_agent_session_start(
         .get(&options.session_id)
         .map(|session| session.ended.clone())
         .unwrap_or_else(|| watch::channel(false).0);
+    let query_ended = rearm_query_cancellation(
+        sessions
+            .get(&options.session_id)
+            .map(|session| &session.query_ended),
+    );
     let previous = sessions.insert(
         options.session_id.clone(),
         Arc::new(ChildAgentSession {
@@ -1268,9 +1697,14 @@ pub(super) async fn child_agent_session_start(
             session_token,
             targets: options.targets,
             max_concurrent,
+            project_path,
+            permission: options.permission,
+            child_thread: options.child_thread,
+            provider: options.provider,
             directory,
             runtime,
             ended,
+            query_ended,
         }),
     );
     drop(sessions);
@@ -1287,6 +1721,7 @@ pub(super) async fn child_agent_session_end(
 ) -> Result<(), String> {
     if let Some(session) = state.sessions.lock().await.remove(&session_id) {
         session.ended.send_replace(true);
+        session.query_ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
     }
     Ok(())
@@ -1365,6 +1800,7 @@ pub(super) fn shutdown_agent_bridges_on_exit(app: &AppHandle) {
     };
     for (_, session) in sessions.drain() {
         session.ended.send_replace(true);
+        session.query_ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
     }
 }
@@ -1384,6 +1820,39 @@ fn mcp_tool_result(payload: &Value, is_error: bool) -> Value {
     })
 }
 
+fn language_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        TOOL_LANGUAGE_QUERY | TOOL_LANGUAGE_STATUS | TOOL_LANGUAGE_INSTALL
+    )
+}
+
+/// Measure the actual escaped MCP envelope, including the line delimiter,
+/// rather than budgeting the inner JSON then expanding it for the model.
+fn mcp_call_response(id: Value, tool: &str, payload: &Value, is_error: bool) -> Value {
+    if !language_tool(tool) {
+        return json!({"jsonrpc": "2.0", "id": id, "result": mcp_tool_result(payload, is_error)});
+    }
+    if id.to_string().len() > 4096 {
+        return mcp_error(
+            Value::Null,
+            -32600,
+            "Language-tool request ID exceeds the supported limit.",
+        );
+    }
+    let response = json!({
+        "jsonrpc": "2.0", "id": id,
+        "result": {"content": [{"type": "text", "text": payload.to_string()}], "isError": is_error},
+    });
+    if response.to_string().len() < super::language_queries::MAX_BRIDGE_RESULT {
+        return response;
+    }
+    json!({
+        "jsonrpc": "2.0", "id": id,
+        "result": {"content": [{"type": "text", "text": "Language-tool response exceeds the serialized output limit; the result is incomplete."}], "isError": true},
+    })
+}
+
 async fn bridge_post(
     client: &reqwest::Client,
     config: &BridgeSessionFile,
@@ -1394,12 +1863,14 @@ async fn bridge_post(
         .json(&body)
         .send()
         .await
-        .map_err(|error| format!("Mythra Code is not reachable: {error}"))?;
+        .map_err(|error| format!("Mythra Code is not reachable: {}", error.without_url()))?;
     let status = response.status();
-    let payload: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Mythra Code returned an unreadable response: {error}"))?;
+    let payload: Value = response.json().await.map_err(|error| {
+        format!(
+            "Mythra Code returned an unreadable response: {}",
+            error.without_url()
+        )
+    })?;
     if !status.is_success() {
         return Err(payload
             .get("error")
@@ -1434,7 +1905,7 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
                 "protocolVersion": "2025-06-18",
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": AGENT_BRIDGE_SERVER, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Mythra Code project controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do, and with run: true whenever the user asks you to run, start, or serve the project so it runs in the app's Terminal panel rather than your shell. Use set_project_check_command when you identify, create, or change the project's appropriate test or verification command. Save the full relevant project-relative command; saving never executes it.",
+                "instructions": "Mythra Code project controls. Use propose_agent_settings when the user asks to change this project's crew, even when delegation is currently off; never claim a proposed change was applied until the user approves it. When spawn_mythra_agent is available, it is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool. Use set_project_run_command when the user asks what the project's top-bar Run button should do, and with run: true whenever the user asks you to run, start, or serve the project so it runs in the app's Terminal panel rather than your shell. Use set_project_check_command when you identify, create, or change the project's appropriate test or verification command. Save the full relevant project-relative command; saving never executes it. When language_tool_query is available, use it for project-scoped definitions, references, hover and file symbols. Its line and UTF-16 column positions are one-based. Inspect language_tools_status when a server is unavailable; install_language_tool obeys the thread's access and Settings policy. Language-only child bridges confer no delegation or project-control powers.",
             }
         }))),
         "ping" => Some(Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} }))),
@@ -1447,6 +1918,20 @@ pub(super) fn bridge_local_response(method: &str, id: Option<&Value>) -> Option<
     }
 }
 
+fn bridge_session_local_response(
+    method: &str,
+    id: Option<&Value>,
+    instructions: &str,
+) -> Option<Option<Value>> {
+    let mut response = bridge_local_response(method, id);
+    if method == "initialize" {
+        if let Some(Some(response)) = response.as_mut() {
+            response["result"]["instructions"] = Value::String(instructions.to_string());
+        }
+    }
+    response
+}
+
 /// Handle one JSON-RPC line. Returns the response to write, or None for a
 /// notification.
 async fn bridge_handle(
@@ -1455,7 +1940,9 @@ async fn bridge_handle(
     message: Value,
 ) -> Option<Value> {
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
-    if let Some(response) = bridge_local_response(method, message.get("id")) {
+    if let Some(response) =
+        bridge_session_local_response(method, message.get("id"), &config.instructions)
+    {
         return response;
     }
     let id = message.get("id").cloned().unwrap_or(Value::Null);
@@ -1464,25 +1951,41 @@ async fn bridge_handle(
         "tools/list" => {
             let body = json!({ "session": config.session_token, "method": "describe" });
             match bridge_post(client, config, body).await {
-                Ok(result) => Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })),
+                Ok(mut result) => {
+                    if let Some(object) = result.as_object_mut() {
+                        object.remove("instructions");
+                    }
+                    Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+                }
                 Err(error) => Some(mcp_error(id, -32603, &error)),
             }
         }
         "tools/call" => {
             let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+            let tool = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if language_tool(tool) && id.to_string().len() > 4096 {
+                return Some(mcp_error(
+                    Value::Null,
+                    -32600,
+                    "Language-tool request ID exceeds the supported limit.",
+                ));
+            }
             let body = json!({
                 "session": config.session_token,
                 "method": "call",
-                "tool": params.get("name").and_then(Value::as_str).unwrap_or_default(),
+                "tool": tool,
                 "arguments": params.get("arguments").cloned().unwrap_or_else(|| json!({})),
             });
             let result = match bridge_post(client, config, body).await {
-                Ok(result) => mcp_tool_result(&result, false),
+                Ok(result) => mcp_call_response(id.clone(), tool, &result, false),
                 // Tool failures are results, not protocol errors: the model
                 // needs to read the reason and choose differently.
-                Err(error) => mcp_tool_result(&json!({ "error": error }), true),
+                Err(error) => mcp_call_response(id.clone(), tool, &json!({ "error": error }), true),
             };
-            Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            Some(result)
         }
         // `bridge_local_response` already answered everything else.
         _ => None,
@@ -1543,6 +2046,357 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_language_catalog_preserves_child_depth_and_normal_chat_scope() {
+        let names = |catalog: Value| {
+            catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        let root = names(scoped_tool_catalog(&[], 1, true, false, "full"));
+        assert!(root.contains(&TOOL_LANGUAGE_STATUS.to_string()));
+        assert!(root.contains(&TOOL_LANGUAGE_INSTALL.to_string()));
+        assert!(root.contains(&TOOL_LANGUAGE_QUERY.to_string()));
+        assert!(root.contains(&TOOL_PROPOSE_SETTINGS.to_string()));
+        assert_eq!(
+            names(scoped_tool_catalog(&[], 1, true, true, "full")),
+            vec![
+                TOOL_LANGUAGE_STATUS,
+                TOOL_LANGUAGE_INSTALL,
+                TOOL_LANGUAGE_QUERY
+            ]
+        );
+        assert!(!names(scoped_tool_catalog(&[], 1, false, false, "full"))
+            .contains(&TOOL_LANGUAGE_INSTALL.to_string()));
+        assert!(names(scoped_tool_catalog(&[], 1, false, true, "full")).is_empty());
+        for permission in ["ask", "read-only"] {
+            let tools = names(scoped_tool_catalog(&[], 1, true, true, permission));
+            assert_eq!(tools, vec![TOOL_LANGUAGE_STATUS, TOOL_LANGUAGE_QUERY]);
+        }
+    }
+
+    #[test]
+    fn language_instructions_match_role_access_and_provider() {
+        let child = scoped_tool_catalog(&[], 1, true, true, "read-only");
+        let instructions = bridge_instructions(&child, "openai");
+        assert!(instructions.starts_with("Use language_tool_query"));
+        assert!(instructions
+            .chars()
+            .take(512)
+            .collect::<String>()
+            .contains("UTF-16"));
+        assert!(!instructions.contains(TOOL_SPAWN));
+        assert!(!instructions.contains(TOOL_PROPOSE_SETTINGS));
+        assert!(!instructions.contains(TOOL_SET_RUN));
+        assert!(!instructions.contains(TOOL_LANGUAGE_INSTALL));
+        assert!(!instructions.contains("Claude's native"));
+        let native = bridge_instructions(&child, "claude");
+        assert!(native.contains("Prefer Claude's native LSP"));
+        assert!(native.contains("newly installed"));
+        assert!(native.contains("extensionless Dockerfiles"));
+        assert!(native.contains("native diagnostics"));
+        let response = bridge_session_local_response("initialize", Some(&json!(1)), &native)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response["result"]["instructions"], native);
+        let full = bridge_instructions(&scoped_tool_catalog(&[], 1, true, true, "full"), "claude");
+        assert!(full.contains(TOOL_LANGUAGE_INSTALL));
+        let chat = bridge_instructions(&scoped_tool_catalog(&[], 1, false, false, "ask"), "openai");
+        assert!(!chat.contains(TOOL_LANGUAGE_QUERY));
+        assert!(!chat.contains(TOOL_SPAWN));
+        assert!(chat.contains(TOOL_PROPOSE_SETTINGS));
+        let target = ChildAgentTarget {
+            id: "reviewer".into(),
+            provider: "openai".into(),
+            model: String::new(),
+            label: String::new(),
+            description: String::new(),
+            reasoning_mode: default_reasoning_mode(),
+            reasoning_effort: default_reasoning_effort(),
+            reasoning_max_effort: default_reasoning_max_effort(),
+        };
+        let parent = bridge_instructions(
+            &scoped_tool_catalog(&[target], 1, true, false, "full"),
+            "openai",
+        );
+        assert!(parent.starts_with("Use language_tool_query"));
+        assert!(parent.contains(TOOL_SPAWN));
+        assert!(parent.contains("never use collaboration.spawn_agent"));
+        assert!(parent.contains(TOOL_SET_RUN));
+        assert!(parent.contains(TOOL_SET_CHECK));
+    }
+
+    #[test]
+    fn status_paths_stay_in_the_registered_project() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!("mythra-bridge-status-{}", uuid::Uuid::new_v4())),
+        );
+        let project = fixture.0.join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("src/app.ts"), "export const value = 1;").unwrap();
+        std::fs::write(fixture.0.join("outside.ts"), "export const other = 1;").unwrap();
+        assert_eq!(
+            status_file(&project, "src/app.ts").unwrap(),
+            std::fs::canonicalize(project.join("src/app.ts")).unwrap()
+        );
+        for relative in [
+            "../outside.ts",
+            "src/../src/app.ts",
+            "/outside.ts",
+            "src",
+            "src/missing.ts",
+            "C:/app.ts",
+            "src\\app.ts",
+        ] {
+            assert!(status_file(&project, relative).is_err(), "{relative}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(fixture.0.join("outside.ts"), project.join("linked.ts"))
+                .unwrap();
+            assert!(status_file(&project, "linked.ts").is_err());
+            std::os::unix::fs::symlink(project.join("src"), project.join("linked-directory"))
+                .unwrap();
+            assert!(status_file(&project, "linked-directory/app.ts").is_err());
+        }
+        assert!(
+            status_ids(&project, &json!({"id":"python","path":"src/app.ts"}))
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn language_mcp_output_budgets_final_serialized_bytes_only() {
+        let payload = json!({"result": "\"\\\n😀".repeat(10_000)});
+        let response = mcp_call_response(json!(1), TOOL_LANGUAGE_QUERY, &payload, false);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, payload.to_string());
+        assert!(!response["result"]["isError"].as_bool().unwrap());
+        assert!(
+            response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
+        );
+        // An inner payload can fit while double escaping exceeds the envelope.
+        let escapes = json!({"result": "\"".repeat(100_000)});
+        assert!(escapes.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT);
+        let response = mcp_call_response(json!("id"), TOOL_LANGUAGE_QUERY, &escapes, false);
+        assert_eq!(response["result"]["isError"], true);
+        assert!(
+            response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
+        );
+        for tool in [
+            TOOL_LANGUAGE_QUERY,
+            TOOL_LANGUAGE_STATUS,
+            TOOL_LANGUAGE_INSTALL,
+        ] {
+            let response =
+                mcp_call_response(json!(1), tool, &json!({"error":"x".repeat(300_000)}), true);
+            assert!(
+                response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
+            );
+            assert_eq!(response["result"]["isError"], true);
+        }
+        let oversized_id = mcp_call_response(
+            json!("x".repeat(4097)),
+            TOOL_LANGUAGE_QUERY,
+            &json!({}),
+            false,
+        );
+        assert_eq!(oversized_id["id"], Value::Null);
+        assert_eq!(oversized_id["error"]["code"], -32600);
+        // Preserve formatting and behavior for unrelated delegation controls.
+        let normal =
+            mcp_call_response(json!(2), TOOL_STATUS, &json!({"nested":{"ok":true}}), false);
+        assert!(normal["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains('\n'));
+    }
+
+    #[test]
+    fn language_queries_accept_only_bounded_read_operations() {
+        let known = HashSet::new();
+        for operation in ["definition", "references", "hover"] {
+            assert!(validate_tool_call(
+                &[],
+                &known,
+                TOOL_LANGUAGE_QUERY,
+                &json!({"operation":operation,"path":"src/app.ts","line":1,"column":2})
+            )
+            .is_ok());
+        }
+        assert!(validate_tool_call(
+            &[],
+            &known,
+            TOOL_LANGUAGE_QUERY,
+            &json!({"operation":"symbols","path":"src/app.ts"})
+        )
+        .is_ok());
+        assert!(validate_tool_call(&[], &known, TOOL_LANGUAGE_QUERY,
+            &json!({"operation":"symbols","path":"src/app.ts","maxResults":25,"nameFilter":"render","pathFilter":"src/"})).is_ok());
+        for arguments in [
+            json!({"operation":"executeCommand","path":"src/app.ts"}),
+            json!({"operation":"hover","path":"src/app.ts"}),
+            json!({"operation":"hover","path":"src/app.ts","line":0,"column":1}),
+            json!({"operation":"hover","path":"src/app.ts","line":1.5,"column":1}),
+            json!({"operation":"hover","path":"src/app.ts","line":1,"column":4294967296u64}),
+            json!({"operation":"symbols","path":"src/app.ts","line":1,"column":1}),
+            json!({"operation":"symbols","path":"src/app.ts","command":"shell"}),
+            json!({"operation":"symbols","path":""}),
+            json!({"operation":"symbols","path":"src/app.ts","maxResults":0}),
+            json!({"operation":"symbols","path":"src/app.ts","maxResults":1001}),
+            json!({"operation":"symbols","path":"src/app.ts","maxResults":1.5}),
+            json!({"operation":"hover","path":"src/app.ts","line":1,"column":1,"nameFilter":"name"}),
+            json!({"operation":"symbols","path":"src/app.ts","pathFilter":""}),
+            json!({"operation":"symbols","path":"src/app.ts","pathFilter":"x".repeat(257)}),
+            json!({"operation":"symbols","path":"src/app.ts","nameFilter":"name\n"}),
+            json!({"operation":"hover","path":"src/app.ts","line":1,"column":1,"pathFilter":"src"}),
+        ] {
+            assert!(
+                validate_tool_call(&[], &known, TOOL_LANGUAGE_QUERY, &arguments).is_err(),
+                "{arguments}"
+            );
+        }
+    }
+
+    #[test]
+    fn language_tools_reject_untrusted_arguments_and_unapproved_installs() {
+        let known = HashSet::new();
+        assert!(validate_tool_call(&[], &known, TOOL_LANGUAGE_STATUS, &json!({})).is_ok());
+        for arguments in [
+            json!({"id":"python"}),
+            json!({"path":"src/app.ts"}),
+            json!({"fullCatalog":true}),
+            json!({"verify":true}),
+            json!({"id":"python","path":"app.py","verify":true}),
+        ] {
+            assert!(
+                validate_tool_call(&[], &known, TOOL_LANGUAGE_STATUS, &arguments).is_ok(),
+                "{arguments}"
+            );
+        }
+        for arguments in [
+            json!({"id":"arbitrary"}),
+            json!({"path":"../app.ts"}),
+            json!({"path":"C:/app.ts"}),
+            json!({"fullCatalog":true,"verify":true}),
+            json!({"fullCatalog":true,"id":"python"}),
+            json!({"verify":"yes"}),
+            json!({"command":"probe"}),
+        ] {
+            assert!(
+                validate_tool_call(&[], &known, TOOL_LANGUAGE_STATUS, &arguments).is_err(),
+                "{arguments}"
+            );
+        }
+        assert!(
+            validate_tool_call(&[], &known, TOOL_LANGUAGE_STATUS, &json!({"path": "/tmp"}))
+                .is_err()
+        );
+        for id in super::super::language_tools::LANGUAGE_TOOL_IDS {
+            assert!(
+                validate_tool_call(&[], &known, TOOL_LANGUAGE_INSTALL, &json!({"id": id})).is_ok()
+            );
+        }
+        for arguments in [
+            json!({}),
+            json!({"id": 5}),
+            json!({"id": "arbitrary-package"}),
+            json!({"id": "python", "path": "/tmp"}),
+            json!({"id": "python", "command": "install"}),
+        ] {
+            assert!(validate_tool_call(&[], &known, TOOL_LANGUAGE_INSTALL, &arguments).is_err());
+        }
+        assert!(validate_language_install_permission("full").is_ok());
+        for permission in ["ask", "read-only", "unknown"] {
+            assert!(validate_language_install_permission(permission).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn registration_rotation_cancels_queries_and_preserves_late_child_accounting() {
+        struct QueryGuard(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for QueryGuard {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let old_query_ended = rearm_query_cancellation(None);
+        let query_watch = old_query_ended.clone();
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dropped_in_query = dropped.clone();
+        let (started, began) = oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            await_language_query(
+                async move {
+                    let _guard = QueryGuard(dropped_in_query);
+                    let _ = started.send(());
+                    std::future::pending::<Result<Value, String>>().await
+                },
+                &query_watch,
+            )
+            .await
+        });
+        timeout(Duration::from_secs(1), began)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let (shared_ended, _) = watch::channel(false);
+        let accounting = Arc::new(Mutex::new(SessionRuntime::default()));
+        {
+            let mut runtime = accounting.lock().await;
+            runtime.reserved = 1;
+            record_spawned_child(
+                &mut runtime,
+                &json!({"childId":"active-child","status":"running"}),
+            );
+            record_finished_child(&mut runtime, "fast-child");
+        }
+        let rearmed = rearm_child_runtime(Some(accounting.clone()), &[], &[]).await;
+        let new_query_ended = rearm_query_cancellation(Some(&old_query_ended));
+        let result = timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.unwrap_err().contains("registration has ended"));
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!*new_query_ended.borrow());
+        assert!(
+            !*shared_ended.borrow(),
+            "query rotation must not end pending child relays"
+        );
+        assert!(Arc::ptr_eq(&accounting, &rearmed));
+        let mut runtime = rearmed.lock().await;
+        assert_eq!(runtime.reserved, 1);
+        assert!(runtime.live.contains("active-child"));
+        record_spawned_child(
+            &mut runtime,
+            &json!({"childId":"fast-child","status":"running"}),
+        );
+        assert!(runtime.known.contains("fast-child"));
+        assert!(
+            !runtime.live.contains("fast-child"),
+            "late spawn response cannot resurrect a finished child"
+        );
+        assert_eq!(
+            await_language_query(async { Ok(json!({"ok":true})) }, &new_query_ended)
+                .await
+                .unwrap(),
+            json!({"ok":true})
+        );
+    }
 
     #[tokio::test]
     async fn child_agent_session_end_interrupts_pending_relay() {

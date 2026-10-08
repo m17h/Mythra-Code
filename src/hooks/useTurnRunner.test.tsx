@@ -36,6 +36,11 @@ const worktrees = vi.hoisted(() => ({
   createThreadWorktree: vi.fn(),
   removeThreadWorktree: vi.fn(),
 }));
+const languageSetup = vi.hoisted(() => ({ invoke: vi.fn(async (): Promise<void> => undefined) }));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tauri-apps/api/core")>(),
+  invoke: languageSetup.invoke,
+}));
 const childSessions = vi.hoisted(() => ({
   // `unknown` so a test can resolve a real bridge result as easily as null.
   ensureChildAgentBridge: vi.fn(async (): Promise<unknown> => null),
@@ -267,6 +272,50 @@ describe("useTurnRunner", () => {
     claude.steerClaudeTurn.mockResolvedValue(undefined);
     claude.isClaudeThreadBusyError.mockImplementation(() => false);
     childSessions.ensureChildAgentBridge.mockResolvedValue(null);
+    languageSetup.invoke.mockReset().mockResolvedValue(undefined);
+  });
+
+  it.each(["full", "ask", "read-only"] as const)("prepares language tools for a new project using its actual %s policy", async (permission) => {
+    const deps = context({ activeThread: null, activeProject: { id: "project-1", name: "Project", path: "/tmp/project" }, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", model: "grok-4.5", permission } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Start work")).toBe(true); });
+    expect(languageSetup.invoke).toHaveBeenCalledWith("language_tools_prepare_project", { cwd: "/tmp/project", permission });
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ projectPath: "/tmp/project", permission }));
+    expect(languageSetup.invoke.mock.invocationCallOrder[0]).toBeLessThan(cursor.startCursorTurn.mock.invocationCallOrder[0]);
+  });
+
+  it("does not provision normal chats or repeat provisioning on every existing-thread message", async () => {
+    const deps = context({ activeThread: null, activeProject: null, activeWorkspace: { id: "chat", name: "Chats", path: "/tmp/normal-chats", isChat: true } });
+    const first = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await first.result.current.sendMessage("Hello")).toBe(true); });
+    expect(languageSetup.invoke).not.toHaveBeenCalledWith("language_tools_prepare_project", expect.anything());
+    first.unmount();
+    resetTaskStore();
+    const second = renderHook(() => useTurnRunner(context({ activeProject: { id: "project-1", name: "Project", path: "/tmp/project" } })));
+    await act(async () => { expect(await second.result.current.sendMessage("Continue")).toBe(true); });
+    expect(languageSetup.invoke).not.toHaveBeenCalledWith("language_tools_prepare_project", expect.anything());
+  });
+
+  it("keeps model dispatch available after optional language setup fails", async () => {
+    languageSetup.invoke.mockRejectedValueOnce(new Error("Offline"));
+    const deps = context({ activeThread: null, activeProject: { id: "project-1", name: "Project", path: "/tmp/project" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("Continue without a server")).toBe(true); });
+    expect(cursor.startCursorTurn).toHaveBeenCalledOnce();
+  });
+
+  it("honors Stop while shared language setup is in progress", async () => {
+    let finish!: () => void;
+    languageSetup.invoke.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const deps = context({ activeThread: null, activeProject: { id: "project-1", name: "Project", path: "/tmp/project" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("Start work"); });
+    expect(languageSetup.invoke).toHaveBeenCalledWith("language_tools_prepare_project", expect.anything());
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    await act(async () => { finish(); expect(await delivered).toBe(false); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
   });
 
   it("preserves the prompt while a pull request operation owns the checkout", async () => {

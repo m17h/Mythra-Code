@@ -327,16 +327,25 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   }
   if (command === "checkpoint_delete") return null;
   if (command === "child_agent_session_start") {
-    const options = (args?.options ?? {}) as { targets?: unknown[]; sessionId?: string };
-    const delegation = Boolean(options.targets?.length);
+    const options = (args?.options ?? {}) as {
+      targets?: unknown[]; sessionId?: string; projectPath?: string;
+      childThread?: boolean; permission?: string;
+    };
+    const delegation = !options.childThread && Boolean(options.targets?.length);
+    const toolNames = options.childThread ? [] : delegation
+      ? ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent", "propose_agent_settings"]
+      : ["propose_agent_settings"];
+    if (options.projectPath) {
+      if (!options.childThread) toolNames.push("set_project_run_command", "set_project_check_command");
+      toolNames.push("language_tools_status", "language_tool_query");
+      if (options.permission === "full") toolNames.push("install_language_tool");
+    }
     return {
       name: "mythra_agents",
       command: "/Applications/Mythra Code.app/Contents/MacOS/mythra-code",
       args: ["--openkiwi-agent-bridge", `/tmp/${options.sessionId ?? "session"}.json`],
       configPath: `/tmp/${options.sessionId ?? "session"}.mcp.json`,
-      toolNames: delegation
-        ? ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent", "propose_agent_settings"]
-        : ["propose_agent_settings"],
+      toolNames,
     };
   }
   if (command === "child_agent_session_end" || command === "child_agent_finished" || command === "child_agent_respond") return null;
@@ -2513,7 +2522,27 @@ describe("workspace switching during thread selection", () => {
         config: { features: { multi_agent: false } },
       });
     });
-    expect(invokeMock.mock.calls.some(([command]) => command === "child_agent_session_start")).toBe(false);
+    const childSession = invokeMock.mock.calls.find(([command, args]) =>
+      command === "child_agent_session_start" && (args?.options as { childThread?: boolean })?.childThread);
+    expect(childSession?.[1]?.options).toMatchObject({
+      sessionId: expect.stringMatching(/^language-child-[a-f0-9]{32}$/),
+      projectPath: PROJECT_A.path,
+      childThread: true,
+      permission: "ask",
+      provider: "openai",
+      targets: [],
+    });
+    const registration = await invokeMock.mock.results[invokeMock.mock.calls.indexOf(childSession!)].value;
+    expect(registration.toolNames).toEqual(["language_tools_status", "language_tool_query"]);
+    const resumedChild = invokeMock.mock.calls
+      .filter(([command, args]) => command === "codex_rpc" && args?.method === "thread/resume")
+      .at(-1)?.[1]?.params;
+    expect(resumedChild).toMatchObject({
+      config: { mcp_servers: { mythra_agents: {
+        command: registration.command,
+        args: registration.args,
+      } } },
+    });
   });
 
   it("keeps the root conversation in the main inbox when storage claims it is its own child's child", async () => {

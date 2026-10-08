@@ -1,4 +1,5 @@
 import { rpc } from "./codex";
+import { invoke } from "@tauri-apps/api/core";
 import { deleteClaudeTranscript, saveClaudeTranscript, startClaudeTurn } from "./claude";
 import { deleteCursorTranscript, saveCursorTranscript, startCursorTurn } from "./cursor";
 import { friendlyError } from "./errors";
@@ -12,6 +13,8 @@ import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { ChildAgentTarget, ScheduleRunSettings, SkillDependencyReport, SkillReference, Thread, Turn } from "../types";
 import type { ResolvedSkillPrompts } from "./skills";
 import { appendCurrentLearnedPreferences } from "./currentLearnedPreferences";
+import { startChildAgentSession, type ChildAgentBridgeLaunch, type ProjectBridgeContext } from "./agentBridge";
+import { registerChildProjectLaunch, releaseChildAgentSession } from "./childAgentSessions";
 
 /**
  * Starting a cross-provider child.
@@ -57,6 +60,7 @@ export interface ChildRunContext {
 }
 
 export interface ChildRunResult {
+  languageSessionId?: string;
   thread: Thread;
   turnId?: string;
   provider: ChildAgentTarget["provider"];
@@ -136,6 +140,30 @@ export async function startChildAgentTurn(
   const systemPrompt = withMythraCodeCompletionInstructions(learnedSystemPrompt);
   const providerPrompt = resolved.prompt;
   const provenance = { skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
+  let languageBridge: ChildAgentBridgeLaunch | undefined;
+  const languageSessionId = context.projectId ? `language-child-${crypto.randomUUID()}` : undefined;
+  const languageContext: ProjectBridgeContext = { projectPath: context.executionPath, permission: run.permission, provider: target.provider, childThread: true };
+  if (languageSessionId) {
+    // A delegated child is a new project thread too. A parent opened before
+    // this feature or a newly added language must get the same optional setup.
+    await invoke("language_tools_prepare_project", { cwd: context.executionPath, permission: run.permission }).catch(() => undefined);
+    assertCanStart();
+    try {
+      languageBridge = await startChildAgentSession({
+        ...context.policy, sessionId: languageSessionId, rootThreadId: "", targets: [], maxConcurrent: 1,
+      }, [], [], languageContext);
+      assertCanStart();
+    } catch (reason) {
+      await releaseChildAgentSession(languageSessionId);
+      throw reason;
+    }
+  }
+  const bindLanguageBridge = (threadId: string) => {
+    if (languageSessionId && languageBridge) registerChildProjectLaunch(threadId, languageSessionId, languageBridge, languageContext);
+  };
+  const releaseLanguageBridge = async () => {
+    if (languageSessionId) await releaseChildAgentSession(languageSessionId);
+  };
 
   if (target.provider === "claude") {
     const thread = childThreadRecord(crypto.randomUUID(), target, prompt, context.executionPath);
@@ -160,13 +188,16 @@ export async function startChildAgentTurn(
         attachments: [],
         subagentMax: 1,
         customAgents: [],
+        ...(languageBridge ? { childAgentBridgeConfig: languageBridge.configPath } : {}),
       });
     } catch (reason) {
+      await releaseLanguageBridge();
       context.discardCheckpoint?.(threadId);
       if (!modelTurnRequested) return removeUnusedChild(reason, threadId, () => deleteClaudeTranscript(threadId));
       throw reason;
     }
-    return { thread, turnId: result.turnId, provider: "claude", model: run.model, ...provenance };
+    bindLanguageBridge(threadId);
+    return { thread, turnId: result.turnId, provider: "claude", model: run.model, ...provenance, ...(languageSessionId ? { languageSessionId } : {}) };
   }
 
   if (target.provider === "cursor") {
@@ -189,12 +220,15 @@ export async function startChildAgentTurn(
         permission: run.permission,
         systemPrompt,
         attachments: [],
+        ...(languageBridge ? { childAgentBridge: { name: languageBridge.name, command: languageBridge.command, args: languageBridge.args } } : {}),
       });
     } catch (reason) {
+      await releaseLanguageBridge();
       context.discardCheckpoint?.(threadId);
       if (!modelTurnRequested) return removeUnusedChild(reason, threadId, () => deleteCursorTranscript(threadId));
       throw reason;
     }
+    bindLanguageBridge(threadId);
     return {
       thread,
       turnId: result.turnId,
@@ -202,17 +236,25 @@ export async function startChildAgentTurn(
       model: run.model,
       cursorSessionId: result.cursorSessionId,
       ...provenance,
+      ...(languageSessionId ? { languageSessionId } : {}),
     };
   }
 
-  const started = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(run, context.executionPath, {
-    serviceName: context.serviceName,
-    perTurnSystemPrompt: true,
-    customAgents: [],
-    modelContextWindow: context.modelContextWindow,
-    interactive: true,
-    additionalWorkspaceRoots: context.additionalWorkspaceRoots,
-  }));
+  let started: { thread: Thread; model?: unknown };
+  try {
+    started = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(run, context.executionPath, {
+      serviceName: context.serviceName,
+      perTurnSystemPrompt: true,
+      customAgents: [],
+      modelContextWindow: context.modelContextWindow,
+      interactive: true,
+      additionalWorkspaceRoots: context.additionalWorkspaceRoots,
+      childAgentBridge: languageBridge,
+    }));
+  } catch (reason) {
+    await releaseLanguageBridge();
+    throw reason;
+  }
   const thread = optimisticStartedThread(started.thread, prompt);
   const runtimeModel = typeof started.model === "string" ? started.model.trim() : undefined;
   let turn: { turn: Turn };
@@ -235,11 +277,13 @@ export async function startChildAgentTurn(
     modelTurnRequested = true;
     turn = await rpc<{ turn: Turn }>("turn/start", params);
   } catch (reason) {
+    await releaseLanguageBridge();
     context.discardCheckpoint?.(thread.id);
     // The thread is newly owned and no turn request was sent. Archive exactly
     // that unused record; an ambiguous start RPC failure is not proof of this.
     if (!modelTurnRequested) return removeUnusedChild(reason, thread.id, () => rpc("thread/archive", { threadId: thread.id }));
     throw reason;
   }
-  return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model || runtimeModel || "", ...provenance };
+  bindLanguageBridge(thread.id);
+  return { thread, turnId: turn.turn?.id, provider: target.provider, model: run.model || runtimeModel || "", ...provenance, ...(languageSessionId ? { languageSessionId } : {}) };
 }

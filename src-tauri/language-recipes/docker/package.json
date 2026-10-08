@@ -1,0 +1,8 @@
+{
+  "name": "mythra-language-tool-docker",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "dockerfile-language-server-nodejs": "0.15.0"
+  }
+}

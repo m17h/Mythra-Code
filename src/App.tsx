@@ -4123,6 +4123,8 @@ export default function App() {
       // with the fast view-only read. The promise is handled immediately to
       // avoid a transient unhandled rejection while history wins the race.
       const childBridgePromise = activeProject ? ensureChildAgentBridge({
+        provider: threadProviderSettings.provider,
+        projectPath: executionPath,
         threadId: thread.id,
         policies: childAgentPolicies,
         links: childAgentLinks,
@@ -4965,7 +4967,7 @@ export default function App() {
    * even before its parent process notices the thread is gone.
    */
   const forgetChildAgentState = async (threadId: string, dropRecords: boolean) => {
-    await releaseChildAgentSessions(childAgentPolicies, threadId);
+    await releaseChildAgentSessions(childAgentPolicies, threadId, childAgentLinks, Boolean(nativeAgentLinks[threadId]));
     // Archiving only shuts down the live bridge. Keep the frozen policy and
     // ownership records so restoring the same thread restores the same powers.
     // Keep the runtime capability record too: app-server may still have the

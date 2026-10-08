@@ -482,6 +482,7 @@ export function useChildAgents(context: ChildAgentContext): {
     if (result.provider === "cursor") ctx.scheduleCursorThreadSave(childThreadId);
 
     const link: ChildAgentLink = {
+      ...(result.languageSessionId ? { languageSessionId: result.languageSessionId } : {}),
       childThreadId,
       rootThreadId,
       sessionId: policy.sessionId,

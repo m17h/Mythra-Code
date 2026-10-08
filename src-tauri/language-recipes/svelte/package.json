@@ -1,0 +1,9 @@
+{
+  "name": "mythra-language-tool-svelte",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "svelte-language-server": "0.18.4",
+    "typescript": "5.9.3"
+  }
+}

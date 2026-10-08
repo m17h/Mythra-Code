@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ChildAgentPolicy } from "./childAgents";
 import { childAgentSessionOptions } from "./childAgents";
+import type { PermissionMode, Provider } from "../types";
 
 /**
  * Front-end half of the cross-provider sub-agent bridge. The backend owns the
@@ -9,7 +10,14 @@ import { childAgentSessionOptions } from "./childAgents";
  * launch descriptor is only an executable path plus a session-file path.
  */
 
-export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command";
+export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "language_tools_status" | "install_language_tool" | "language_tool_query";
+
+export interface ProjectBridgeContext {
+  projectPath?: string;
+  permission: PermissionMode;
+  provider?: Provider;
+  childThread?: boolean;
+}
 
 /** How a provider runtime should register the bridge as an MCP server. */
 export interface ChildAgentBridgeLaunch {
@@ -32,9 +40,15 @@ export async function startChildAgentSession(
   policy: ChildAgentPolicy,
   knownChildren: string[] = [],
   finishedChildren: string[] = [],
+  projectContext?: ProjectBridgeContext,
 ): Promise<ChildAgentBridgeLaunch> {
   return invoke<ChildAgentBridgeLaunch>("child_agent_session_start", {
-    options: { ...childAgentSessionOptions(policy, knownChildren), finishedChildren },
+    options: {
+      ...childAgentSessionOptions(policy, knownChildren),
+      finishedChildren,
+      permission: policy.permission,
+      ...projectContext,
+    },
   });
 }
 

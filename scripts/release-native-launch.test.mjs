@@ -27,6 +27,10 @@ afterEach(async () => {
   roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true }));
 }, 15_000);
 const sessionId = '01a10d39-6aec-7721-9b90-ab146f5b533e';
+// Windows setup/collection includes synchronous PowerShell ownership probes,
+// before and after the fixture's own deadline. Match the neighboring coordinator
+// integration budget without changing the 100ms/5s behavior deadlines or assertions.
+const processIntegrationTimeout = process.platform === 'win32' ? 15_000 : 5_000;
 function config({ script, deadlineMs = 5_000 } = {}) {
   const root = temp(), cli = join(root, 'fixture-cli.mjs'), resultPath = join(root, 'result.json');
   writeFileSync(cli, script || `import {writeFileSync} from 'node:fs'; process.stdin.resume(); console.log(JSON.stringify({type:'thread.started',thread_id:'${sessionId}'})); setTimeout(()=>{writeFileSync(${JSON.stringify(resultPath)},'{}');console.log(JSON.stringify({type:'turn.completed'}));},200);`);
@@ -62,7 +66,7 @@ test('detached native wrapper owns terminal result and reuses it without another
   expect(readFileSync(c.eventsPath, 'utf8')).toContain('turn.completed');
   expect(await launchNativeWorker(c)).toEqual(status);
   expect(readFileSync(c.eventsPath, 'utf8').match(/thread.started/g)).toHaveLength(1);
-});
+}, processIntegrationTimeout);
 
 test('coordinator exit leaves native worker logging and collection available', async () => {
   const c = config(); const parent = join(c.root, 'coordinator-fixture.mjs');
@@ -108,7 +112,7 @@ test('deadline blocks and preserves worker identities; no automatic duplicate', 
   expect(readJson(c.statusPath)).toMatchObject({ status: 'blocked', worker: { pid: expect.any(Number) }, childWorker: { pid: expect.any(Number) } });
   await expect(launchNativeWorker(c)).rejects.toThrow(/blocked/);
   expect(readFileSync(c.eventsPath, 'utf8').match(/thread.started/g)).toHaveLength(1);
-});
+}, processIntegrationTimeout);
 
 test('queued ambiguous launch gets a bounded collection result and cannot be replaced', async () => {
   const root = temp(), statusPath = join(root, 'status.json'); atomicJson(statusPath, { status: 'queued', contractHash: 'c'.repeat(64) });

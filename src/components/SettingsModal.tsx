@@ -59,6 +59,7 @@ import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { HarnessSettings } from "./HarnessSettings";
 import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
+import { LanguageToolsSettings } from "./LanguageToolsSettings";
 import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { SkillLibrary } from "./SkillLibrary";
 import { SkillPromptEditor } from "./SkillPromptEditor";
@@ -138,7 +139,7 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step agent recipes and one-click project actions.", keywords: "workflow automation recipe steps pipeline action command run trigger" },
       { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Prompts that run on their own in a chat or a project.", keywords: "schedule scheduled cron timer interval recurring unattended background task reminder" },
       { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
-      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Local MCP servers and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace" },
+      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Language tools, local MCP servers, and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace language languages lsp install automatic setup" },
     ],
   },
   {
@@ -1394,6 +1395,8 @@ export function SettingsModal({
             scheduleRuns={scheduleRuns}
             onOpenRun={onOpenRun}
           />}
+
+          {settingsSection === "tools" && <LanguageToolsSettings />}
 
           {settingsSection === "tools" &&
           <div className="set-group">

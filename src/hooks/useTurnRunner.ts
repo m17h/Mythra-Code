@@ -62,6 +62,7 @@ import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
+import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
@@ -794,11 +795,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       const isolationGitDir = provisionalWorktree?.gitDir ?? currentIsolation?.gitDir;
       const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];
+      // Provision only for real project threads, never a normal chat's backing
+      // directory. Existing installations are shared across project worktrees.
+      if (!activeThread && activeProject) {
+        setStatus("Checking language tools…");
+        await invoke("language_tools_prepare_project", { cwd: executionPath, permission: effectiveSettings.permission }).catch(() => undefined);
+        assertCanStart();
+      }
       if (activeThread && effectiveSettings.provider !== "claude" && effectiveSettings.provider !== "cursor") {
         await waitForThreadPreparation(activeThread.id);
         assertCanStart();
       }
       childBridge = await ensureChildAgentBridge({
+        provider: effectiveSettings.provider,
+        projectPath: activeProject ? executionPath : undefined,
         threadId: activeThread?.id,
         policies: childAgentPolicies,
         links: childAgentLinks,

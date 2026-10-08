@@ -221,6 +221,14 @@ describe("useChildAgents", () => {
       expect(childRun.startChildAgentTurn.mock.calls[0][2].modelContextWindow).toBe(256_000);
     });
 
+    it("persists the first-turn language bridge identity with the child's ownership link", async () => {
+      const languageSessionId = "language-child-12345678-1234-1234-1234-123456789abc";
+      childRun.startChildAgentTurn.mockResolvedValueOnce({ thread: childThread("child-terra", "openai"), turnId: "turn-terra", provider: "openai", model: "gpt-5.6-terra", languageSessionId });
+      const view = await mount();
+      await view.send(request());
+      expect(persistedLinks["child-terra"]).toMatchObject({ sessionId: "session-1", rootThreadId: "root-1", languageSessionId });
+    });
+
     it("passes the paired resolver to child delivery while retaining frozen raw policies", async () => {
       const resolveSkillPrompts = vi.fn(async (prompt: string, systemPrompt: string) => ({ prompt, systemPrompt }));
       const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];

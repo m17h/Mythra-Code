@@ -73,6 +73,8 @@ export interface ChildAgentPolicy {
 
 /** Parent/child ownership, persisted so it survives a reload. */
 export interface ChildAgentLink {
+  /** Language-only bridge captured before the delegated child's first turn. */
+  languageSessionId?: string;
   childThreadId: string;
   rootThreadId: string;
   /** Bridge session that spawned this child; its concurrency slot owner. */
@@ -628,6 +630,8 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
       childThreadId,
       rootThreadId: entry.rootThreadId,
       sessionId,
+      ...(typeof entry.languageSessionId === "string" && /^language-child-(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(entry.languageSessionId)
+        ? { languageSessionId: entry.languageSessionId } : {}),
       targetId,
       provider,
       model: sanitizeText(entry.model, 128),
