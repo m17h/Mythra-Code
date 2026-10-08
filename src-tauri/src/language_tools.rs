@@ -2785,12 +2785,24 @@ mod tests {
             return;
         };
         let root = temporary();
-        let launch=Launch{command:node,args:vec!["-e".into(),"const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('fs').writeFileSync('owned-worker',String(c.pid));c.unref();".into()],extensions:vec![],initialization_options:None};
+        // A non-detached Node child belongs to libuv's own kill-on-close job.
+        // Deliberately leave a ready orphan for our outer job to contain instead.
+        // Node's detached spawn does not request CREATE_BREAKAWAY_FROM_JOB.
+        let launch = Launch {
+            command: node,
+            args: vec![
+                "-e".into(),
+                "const fs=require('fs');const c=require('child_process').spawn(process.execPath,['-e',\"const fs=require('fs');fs.writeFileSync('owned-worker.pending',String(process.pid));fs.renameSync('owned-worker.pending','owned-worker');setInterval(()=>{},1000)\"],{stdio:'ignore',detached:true,windowsHide:true});c.on('error',()=>process.exit(2));c.unref();const deadline=setTimeout(()=>process.exit(3),2000);const ready=setInterval(()=>{if(fs.existsSync('owned-worker')){clearInterval(ready);clearTimeout(deadline)}},10);".into(),
+            ],
+            extensions: vec![],
+            initialization_options: None,
+        };
         let mut owned = OwnedProcess::spawn(command(&launch, &root)).unwrap();
-        timeout(Duration::from_secs(3), owned.child.wait())
+        let parent_status = timeout(Duration::from_secs(3), owned.child.wait())
             .await
             .unwrap()
             .unwrap();
+        assert!(parent_status.success(), "fixture parent failed: {parent_status}");
         let pid: u32 = fs::read_to_string(root.join("owned-worker"))
             .unwrap()
             .parse()
@@ -2804,7 +2816,8 @@ mod tests {
         };
         assert!(
             !raw.is_null(),
-            "worker must still exist before owning job is dropped"
+            "worker {pid} must still exist before owning job is dropped: {}",
+            std::io::Error::last_os_error()
         );
         let worker = unsafe { OwnedHandle::from_raw_handle(raw) };
         assert_eq!(
