@@ -138,7 +138,8 @@ describe("dot-matrix working mark", () => {
     const node = document.querySelector<HTMLElement>('[data-step-id="think"] .activity-step-node')!;
     expect(node.querySelector(".pixel-working-mark.live")).not.toBeNull();
     expect(node.querySelector("svg")).toBeNull();
-    expect(document.querySelector('[data-step-id="think"] .activity-step-preview')?.textContent).toBe("Weighing options");
+    // Thinking opens as readable prose beside the live mark.
+    expect(document.querySelector('[data-step-id="think"] .activity-step-thought')?.textContent).toBe("Weighing options");
     view.unmount();
 
     // Finished thinking, or a stale in-progress step in a settled run, is static.

@@ -241,11 +241,17 @@ describe("usage calendar", () => {
     await userEvent.hover(cell(dayAgo(1)));
     await waitFor(() => expect(card()?.querySelectorAll("li")).toHaveLength(40));
     const shown = card()!;
-    await userEvent.hover(cell(dayAgo(2)));
-    await userEvent.hover(shown.querySelector<HTMLElement>(".usage-heat-card-list")!);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(card()).toBe(shown);
-    expect(card()?.querySelectorAll("li")).toHaveLength(40);
+    // Enter the card before another day's intent expires. Browser-command
+    // transport can exceed 500ms on a busy runner; control only timeout time
+    // so that delay cannot turn this cancellation check into a day switch.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await userEvent.hover(cell(dayAgo(2)));
+      await userEvent.hover(shown.querySelector<HTMLElement>(".usage-heat-card-list")!);
+      act(() => { vi.advanceTimersByTime(600); });
+      expect(card()).toBe(shown);
+      expect(card()?.querySelectorAll("li")).toHaveLength(40);
+    } finally { vi.useRealTimers(); }
   });
 
   it("shows every provider and model for a hovered day as shares of that day's total tokens", async () => {

@@ -238,7 +238,7 @@ describe("StudioDock", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("Running in Alpha · npm test");
     expect(screen.getByText(/Still running in/)).toHaveTextContent("Still running in beta · npm run build");
-    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear terminal" }));
     expect(onClearTerminal).toHaveBeenCalledOnce();
   });
 

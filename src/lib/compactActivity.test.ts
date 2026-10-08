@@ -14,6 +14,20 @@ const visibleIds = (entries: ReturnType<typeof present>) => entries.filter((entr
   .flatMap((entry) => entry.kind === "message" || entry.kind === "activity" ? [entry.value.id] : entry.value.map((value) => value.id));
 
 describe("compact activity presentation", () => {
+  it.each(["inProgress", "completed", "failed", "error", "interrupted", "cancelled", "declined", undefined])(
+    "never promotes a command with status %s into chat", (status) => {
+      const command: Activity = { id: "command", kind: "command", title: "npm test", detail: "Full output", status, turnId: "turn" };
+      for (const grouped of [false, true]) {
+        const entry: CompactWorkEntry = grouped ? { kind: "commands", value: [command] } : { kind: "activity", value: command };
+        for (const running of [false, true]) {
+          const result = present([user(), entry], running, "turn");
+          expect(visibleIds(result)).toEqual(["prompt"]);
+          expect(result.filter((item) => item.kind === "work").flatMap((item) => item.value)).toContain(entry);
+        }
+      }
+      expect(command).toEqual({ id: "command", kind: "command", title: "npm test", detail: "Full output", status, turnId: "turn" });
+    },
+  );
   it("preserves each completed provider answer when paginated history lacks user prompts", () => {
     const entries = [message("older", "Earlier answer", { turnId: "older-turn", turnStatus: "completed" }),
       message("newer", "Latest answer", { turnId: "newer-turn", turnStatus: "completed" })];
@@ -64,7 +78,7 @@ describe("compact activity presentation", () => {
       message("question", "", { questions: [{ title: "Which folder?" }] }),
       activity("warning", { kind: "warning" }), activity("failed", { status: "failed" })];
     const result = present(entries, false, "turn");
-    expect(visibleIds(result)).toEqual(["prompt", "partial", "question", "warning", "failed"]);
+    expect(visibleIds(result)).toEqual(["prompt", "partial", "question", "warning"]);
     expect(result.find((entry) => entry.kind === "work")).toMatchObject({ state: "unknown" });
   });
 
@@ -120,9 +134,9 @@ describe("compact activity presentation", () => {
       .toEqual(["prompt"]);
   });
 
-  it("keeps structured input, safety warnings and failed tools immediately actionable", () => {
+  it("keeps structured input and safety warnings visible but failed commands in details", () => {
     const result = present([user(), message("question", "", { questions: [{ title: "Which folder?" }] }), activity("warning", { kind: "warning" }), activity("failed", { status: "failed" }), activity("normal")], true);
-    expect(visibleIds(result)).toEqual(["prompt", "question", "warning", "failed"]);
+    expect(visibleIds(result)).toEqual(["prompt", "question", "warning"]);
     expect(result.at(-1)).toMatchObject({ kind: "work", state: "running" });
   });
 
@@ -153,27 +167,27 @@ describe("compact activity presentation", () => {
     expect(result.at(-1)).toMatchObject({ kind: "work", state: "running", turnId: "next" });
   });
 
-  it("preserves compaction landmarks and only the interrupted member of a tool group", () => {
+  it("preserves compaction landmarks without exposing interrupted commands", () => {
     const result = present([user(), activity("boundary", { kind: "compaction" }), { kind: "commands", value: [
       { id: "ok", kind: "command", title: "node", status: "completed" },
       { id: "stopped", kind: "command", title: "npm test", status: "interrupted" },
     ] }], true);
-    expect(visibleIds(result)).toEqual(["prompt", "boundary", "stopped"]);
+    expect(visibleIds(result)).toEqual(["prompt", "boundary"]);
     expect(result.filter((entry) => entry.kind === "work")).toHaveLength(1);
   });
 
-  it("isolates a failed tool without expanding the routine operations before and after it", () => {
+  it("keeps a failed command and its surrounding operations together in work history", () => {
     const tools: Activity[] = [
       { id: "ok", kind: "command", title: "npm build", status: "completed", turnId: "turn" },
       { id: "bad", kind: "command", title: "npm test", status: "failed", turnId: "turn" },
       { id: "next", kind: "command", title: "npm lint", status: "inProgress", turnId: "turn" },
     ];
     const result = present([user(), { kind: "commands", value: tools }], true);
-    expect(visibleIds(result)).toEqual(["prompt", "bad"]);
+    expect(visibleIds(result)).toEqual(["prompt"]);
     const work = result.filter((entry) => entry.kind === "work");
     expect(work).toHaveLength(1);
-    expect(work[0].value).toEqual([{ kind: "commands", value: [tools[0]] }, { kind: "commands", value: [tools[2]] }]);
-    expect((result[2] as { kind: "activity"; value: Activity }).value).toBe(tools[1]);
+    expect(work[0].value).toEqual([{ kind: "commands", value: tools }]);
+    expect(work[0].value[0]).toMatchObject({ value: tools });
     expect(tools.map((tool) => tool.id)).toEqual(["ok", "bad", "next"]);
   });
 

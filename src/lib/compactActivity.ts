@@ -96,6 +96,11 @@ function hasTerminalTurnEvidence(segment: CompactWorkEntry[], id?: string): bool
 }
 
 function importantActivity(activity: Activity): boolean {
+  // A tool failure is still work history, not a chat message. Providers may
+  // recover from it while continuing the same turn. Keep its command, output
+  // and status in details regardless of outcome; actionable warnings and
+  // approvals have their own presentation and must remain visible.
+  if (activity.kind === "command") return false;
   return activity.kind === "warning" || activity.kind === "compaction"
     || ["failed", "error", "interrupted", "cancelled"].includes(activity.status ?? "");
 }
@@ -128,8 +133,8 @@ function isolateImportantActivities(entries: readonly CompactWorkEntry[]): Compa
 export function compactActivityPresentation(
   entries: readonly CompactWorkEntry[], options: CompactActivityOptions,
 ): CompactPresentationEntry[] {
-  // A failed member must not expose hundreds of unrelated grouped operations.
-  // Split presentation groups only; original activities/history stay intact.
+  // Split out visible warnings/landmarks without exposing grouped commands.
+  // Original activities/history stay intact, including failed operations.
   const segments = activityTurnSegments(isolateImportantActivities(entries));
   let activeSegment = -1;
   if (options.activeTurnId) {

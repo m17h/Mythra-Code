@@ -104,6 +104,80 @@ describe("Activity reader endpoints", () => {
   });
 });
 
+describe("Activity reading order", () => {
+  const thought = (id: string, detail: string, status: Activity["status"] = "completed") => ({ kind: "activity" as const,
+    value: { id, kind: "reasoning" as const, title: "Reasoning", detail, status } satisfies Activity });
+  const operation = (id: string, title: string, detail: string, status: Activity["status"] = "completed") => ({ kind: "activity" as const,
+    value: { id, kind: "command" as const, title, detail, status } satisfies Activity });
+  const modal = (entries: Parameters<typeof ActivityDetailsModal>[0]["run"]["entries"], extra: { state?: "running" | "completed"; searchQuery?: string } = {}) =>
+    <ActivityDetailsModal run={{ state: extra.state ?? "completed", entries }} searchQuery={extra.searchQuery}
+      sourceRef={{ current: null }} renderMessage={(message) => <p>{message.text}</p>} renderSubAgents={() => null} onClose={() => {}} />;
+  const longText = Array.from({ length: 30 }, (_, index) => `Line ${index} of careful reasoning.`).join("\n");
+
+  it("opens thinking as readable prose while command output stays folded", () => {
+    render(modal([
+      thought("think", "I'll trace where jobs are emitted before touching the board."),
+      operation("grep", 'grep -rn "JobType" src', "src/systems/state.ts:12: JobType"),
+      { kind: "message", value: { id: "update", role: "assistant", text: "Still mapping the code." } },
+    ]));
+    const dialog = screen.getByRole("dialog");
+    const thinking = within(dialog).getByRole("button", { name: "Hide thinking: Thinking" });
+    expect(thinking).toHaveAttribute("aria-expanded", "true");
+    expect(dialog.querySelector('[data-step-id="think"] .activity-step-thought')).toHaveTextContent("I'll trace where jobs are emitted");
+    expect(dialog.querySelector(".activity-step-preview")).toBeNull();
+    expect(within(dialog).getByText("Still mapping the code.")).toBeInTheDocument();
+
+    // Commands: exact title visible, output only on request.
+    const output = within(dialog).getByRole("button", { name: 'Show output: grep -rn "JobType" src' });
+    expect(output).toHaveAttribute("aria-expanded", "false");
+    expect(within(dialog).getByText('grep -rn "JobType" src')).toBeInTheDocument();
+    expect(within(dialog).queryByText("src/systems/state.ts:12: JobType")).not.toBeInTheDocument();
+    fireEvent.click(output);
+    expect(within(dialog).getByText("src/systems/state.ts:12: JobType")).toBeInTheDocument();
+
+    // Thinking still collapses, to one readable line.
+    fireEvent.click(thinking);
+    expect(within(dialog).getByRole("button", { name: "Show thinking: Thinking" })).toHaveAttribute("aria-expanded", "false");
+    expect(dialog.querySelector('[data-step-id="think"] .activity-step-thought')).toBeNull();
+    expect(dialog.querySelector('[data-step-id="think"] .activity-step-preview')).toHaveTextContent("I'll trace where jobs");
+  });
+
+  it("bounds long settled thinking behind Show all, but never live thinking or a search hit", () => {
+    const view = render(modal([thought("long", longText)]));
+    let dialog = screen.getByRole("dialog");
+    const body = () => dialog.querySelector<HTMLElement>('[data-step-id="long"] .activity-step-thought')!;
+    expect(body()).toHaveClass("is-clamped");
+    // The whole text is present for copying and find-in-page, only bounded visually.
+    expect(body()).toHaveTextContent("Line 29 of careful reasoning.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Show all thinking" }));
+    expect(body()).not.toHaveClass("is-clamped");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Show less thinking" }));
+    expect(body()).toHaveClass("is-clamped");
+    view.unmount();
+
+    render(modal([thought("long", longText, "inProgress")], { state: "running" }));
+    dialog = screen.getByRole("dialog");
+    expect(body()).not.toHaveClass("is-clamped");
+    expect(within(dialog).queryByRole("button", { name: "Show all thinking" })).not.toBeInTheDocument();
+  });
+
+  it("shows a search hit inside long thinking unbounded", () => {
+    render(modal([thought("long", longText)], { searchQuery: "Line 29" }));
+    const dialog = screen.getByRole("dialog");
+    const body = dialog.querySelector<HTMLElement>('[data-step-id="long"] .activity-step-thought')!;
+    expect(body).not.toHaveClass("is-clamped");
+    expect(body).toHaveTextContent("Line 29 of careful reasoning.");
+  });
+
+  it("marks a failed operation on its row", () => {
+    render(modal([operation("ok", "npm test", "pass"), operation("bad", "npm run build", "error TS2322", "failed")]));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector('[data-step-id="bad"]')).toHaveClass("is-failed");
+    expect(dialog.querySelector('[data-step-id="ok"]')).not.toHaveClass("is-failed");
+    expect(within(dialog.querySelector<HTMLElement>('[data-step-id="bad"]')!).getByText("Failed")).toHaveClass("tone-bad");
+  });
+});
+
 describe("compact activity in the timeline", () => {
   const prompt: ChatMessage = { id: "prompt", role: "user", text: "Fix the bug", timelineOrder: 1, ...live };
   const command: Activity = { id: "command", kind: "command", title: "npm test", detail: "1 failing", status: "inProgress", timelineOrder: 2, ...live };
@@ -137,10 +211,17 @@ describe("compact activity in the timeline", () => {
       { id: "new-tool", kind, title: "New failed operation", status: "failed", turnId: "new", turnStatus: "failed", timelineOrder: 2 },
     ];
     const view = render(timeline([], activities, false));
-    expect(view.container).toHaveTextContent("New failed operation");
+    if (kind === "command") expect(view.container).not.toHaveTextContent("New failed operation");
+    else expect(view.container).toHaveTextContent("New failed operation");
     const dialog = openActivity(/^Work completed\. View activity/);
     expect(dialog).toHaveTextContent("Old operation");
     expect(dialog).not.toHaveTextContent("New failed operation");
+    if (kind === "command") {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close activity" }));
+      const failedDialog = openActivity(/^Run failed\. View activity/);
+      expect(failedDialog).toHaveTextContent("New failed operation");
+      expect(failedDialog).not.toHaveTextContent("Old operation");
+    }
   });
 
   it("shows one status line while running and keeps the window open through completion", () => {
