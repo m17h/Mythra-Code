@@ -1,0 +1,8 @@
+{
+  "name": "mythra-language-tool-solidity",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@nomicfoundation/solidity-language-server": "0.9.3"
+  }
+}

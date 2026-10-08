@@ -42,6 +42,10 @@ mod git_publish;
 mod git_workspace;
 mod github;
 mod github_pr;
+mod language_queries;
+mod language_framing;
+mod language_recipes;
+mod language_tools;
 mod openrouter_usage;
 mod persistence;
 mod pricing_sources;
@@ -4455,6 +4459,58 @@ mod unattended_claude_tests {
 }
 
 #[tauri::command]
+async fn language_tools_snapshot(
+    app: AppHandle,
+) -> Result<language_tools::LanguageToolsSnapshot, String> {
+    language_tools::snapshot(&app).await
+}
+
+#[tauri::command]
+async fn language_tools_refresh(
+    app: AppHandle,
+) -> Result<language_tools::LanguageToolsSnapshot, String> {
+    language_tools::refresh(&app).await
+}
+
+#[tauri::command]
+async fn language_tools_set_auto_install(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<language_tools::LanguageToolsSnapshot, String> {
+    language_tools::set_auto_install(&app, enabled).await
+}
+
+#[tauri::command]
+async fn language_tools_install(
+    app: AppHandle,
+    id: String,
+) -> Result<language_tools::LanguageToolsSnapshot, String> {
+    language_tools::install(&app, &id).await
+}
+
+#[tauri::command]
+async fn language_tools_set_enabled(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+) -> Result<language_tools::LanguageToolsSnapshot, String> {
+    language_tools::set_enabled(&app, &id, enabled).await
+}
+
+#[tauri::command]
+async fn language_tools_prepare_project(
+    app: AppHandle,
+    cwd: String,
+    permission: String,
+) -> Result<(), String> {
+    // Read-only and Ask threads may use existing tools, but cannot silently
+    // install software. Manual Settings installations are explicit user actions.
+    language_tools::prepare_project_tools(&app, &cwd, permission == "full", &permission)
+        .await
+        .map(|_| ())
+}
+
+#[tauri::command]
 async fn claude_turn_start(
     app: AppHandle,
     state: State<'_, ClaudeState>,
@@ -4487,6 +4543,11 @@ async fn claude_turn_start(
     let turn_id = uuid::Uuid::new_v4().to_string();
     let home = crate::release_qa::home_dir(&app).ok();
     let mut command = subscription_only_command(&binary, home.as_deref());
+    // Windows executable resolution must not prefer a project-local binary
+    // over the private language server's explicitly controlled PATH. This
+    // flag belongs on the spawning CLI, not merely its LSP child environment.
+    #[cfg(windows)]
+    command.env("NoDefaultCurrentDirectoryInExePath", "1");
     command
         .current_dir(&options.cwd)
         .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
@@ -4534,6 +4595,13 @@ async fn claude_turn_start(
     }
     command.args(claude_permission_arguments(&options.permission));
     command.args(claude_tool_arguments(&options.permission));
+    // Language plugins are explicitly supplied because Claude's user/project
+    // settings are intentionally isolated. Optional setup must never prevent
+    // a normal turn from starting when a dependency is unavailable.
+    if let Ok(Some(plugin_path)) = language_tools::prepare_project(&app, &options.cwd, false, &options.permission).await
+    {
+        command.arg("--plugin-dir").arg(plugin_path);
+    }
     if let Some(plugin_path) = options
         .skills_plugin_path
         .as_deref()
@@ -6974,7 +7042,13 @@ pub fn run() {
             run_discovery::analyze_user_preferences,
             preference_learning::preference_learning_list,
             preference_learning::preference_learning_save,
-            preference_learning::preference_learning_forget
+            preference_learning::preference_learning_forget,
+            language_tools_snapshot,
+            language_tools_refresh,
+            language_tools_set_auto_install,
+            language_tools_install,
+            language_tools_set_enabled,
+            language_tools_prepare_project
             ]);
             move |invoke: tauri::ipc::Invoke| {
                 if release_qa::active() {

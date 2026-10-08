@@ -3,9 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const codex = vi.hoisted(() => ({ rpc: vi.fn() }));
 const claude = vi.hoisted(() => ({ startClaudeTurn: vi.fn(), saveClaudeTranscript: vi.fn(), deleteClaudeTranscript: vi.fn() }));
 const cursor = vi.hoisted(() => ({ startCursorTurn: vi.fn(), saveCursorTranscript: vi.fn(), deleteCursorTranscript: vi.fn() }));
+const bridge = vi.hoisted(() => ({ startChildAgentSession: vi.fn(), endChildAgentSession: vi.fn() }));
+const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("./codex", () => codex);
 vi.mock("./claude", () => claude);
 vi.mock("./cursor", () => cursor);
+vi.mock("./agentBridge", () => bridge);
+vi.mock("@tauri-apps/api/core", () => native);
 const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
 vi.mock("./preferenceLearningStore", () => ({
   getPreferenceLearningHydrated: () => true,
@@ -18,6 +22,9 @@ import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import type { ChildAgentPolicy } from "./childAgents";
 import type { ChildAgentTarget, SkillDependencyReport } from "../types";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "./skillDependencies";
+import { resetChildAgentLaunches } from "./childAgentSessions";
+
+const LANGUAGE_LAUNCH = { name: "mythra_agents", command: "/app/mythra", args: ["--openkiwi-agent-bridge", "/private/session.json"], configPath: "/private/mcp.json", toolNames: ["language_tools_status", "install_language_tool", "language_tool_query"] };
 
 const DEPENDENCIES: SkillDependencyReport = {
   version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
@@ -75,8 +82,12 @@ describe("childRunSettings", () => {
 
 describe("startChildAgentTurn", () => {
   beforeEach(() => {
+    resetChildAgentLaunches();
     preferences.scopes = {};
     vi.clearAllMocks();
+    bridge.startChildAgentSession.mockResolvedValue(LANGUAGE_LAUNCH);
+    bridge.endChildAgentSession.mockResolvedValue(undefined);
+    native.invoke.mockResolvedValue(undefined);
     claude.saveClaudeTranscript.mockResolvedValue(undefined);
     cursor.saveCursorTranscript.mockResolvedValue(undefined);
     claude.deleteClaudeTranscript.mockResolvedValue(undefined);
@@ -86,6 +97,53 @@ describe("startChildAgentTurn", () => {
     codex.rpc.mockImplementation(async (method: string) => (method === "thread/start"
       ? { thread: { id: "thread-child", name: null, preview: "", cwd: "/tmp", updatedAt: 0, modelProvider: "openai" } }
       : { turn: { id: "turn-codex", items: [] } }));
+  });
+
+  it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("attaches a language-only bridge to a %s project's very first delegated turn", async (provider) => {
+    const result = await startChildAgentTurn(target({ provider }), "Inspect symbols", context({ projectId: "project-1" }));
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: result.languageSessionId, targets: [], maxConcurrent: 1, permission: "read-only" }), [], [],
+      { projectPath: "/tmp/project/.worktrees/a", permission: "read-only", provider, childThread: true },
+    );
+    expect(result.languageSessionId).toMatch(/^language-child-/);
+    expect(native.invoke).toHaveBeenCalledWith("language_tools_prepare_project", { cwd: "/tmp/project/.worktrees/a", permission: "read-only" });
+    expect(native.invoke.mock.invocationCallOrder[0]).toBeLessThan(bridge.startChildAgentSession.mock.invocationCallOrder[0]);
+    if (provider === "claude") expect(claude.startClaudeTurn.mock.calls[0][0].childAgentBridgeConfig).toBe(LANGUAGE_LAUNCH.configPath);
+    else if (provider === "cursor") expect(cursor.startCursorTurn.mock.calls[0][0].childAgentBridge).toEqual({ name: LANGUAGE_LAUNCH.name, command: LANGUAGE_LAUNCH.command, args: LANGUAGE_LAUNCH.args });
+    else expect(codex.rpc.mock.calls.find(([method]) => method === "thread/start")![1].config.mcp_servers.mythra_agents).toMatchObject({ command: LANGUAGE_LAUNCH.command, args: LANGUAGE_LAUNCH.args });
+  });
+
+  it("keeps ordinary-chat children outside project language setup", async () => {
+    const result = await startChildAgentTurn(target(), "Discuss design", context({ projectId: null }));
+    expect(native.invoke).not.toHaveBeenCalled();
+    expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
+    expect(result.languageSessionId).toBeUndefined();
+  });
+
+  it("can start a child when optional automatic preparation fails", async () => {
+    native.invoke.mockRejectedValueOnce(new Error("Offline"));
+    const result = await startChildAgentTurn(target(), "Inspect symbols", context({ projectId: "project-1" }));
+    expect(result.turnId).toBe("turn-codex");
+    expect(bridge.startChildAgentSession).toHaveBeenCalledOnce();
+  });
+
+  it("revokes a first-turn bridge when Stop lands during its preparation", async () => {
+    let finish!: (value: typeof LANGUAGE_LAUNCH) => void;
+    let cancelled = false;
+    bridge.startChildAgentSession.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = startChildAgentTurn(target(), "Inspect symbols", context({ projectId: "project-1", isStartCancelled: () => cancelled }));
+    await vi.waitFor(() => expect(bridge.startChildAgentSession).toHaveBeenCalledOnce());
+    cancelled = true;
+    finish(LANGUAGE_LAUNCH);
+    await expect(pending).rejects.toThrow(/cancelled/);
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith(bridge.startChildAgentSession.mock.calls[0][0].sessionId);
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
+  it("revokes a child's language bridge when provider startup fails", async () => {
+    codex.rpc.mockRejectedValueOnce(new Error("Runtime unavailable"));
+    await expect(startChildAgentTurn(target(), "Inspect symbols", context({ projectId: "project-1" }))).rejects.toThrow("Runtime unavailable");
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith(bridge.startChildAgentSession.mock.calls[0][0].sessionId);
   });
 
   it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("uses current root-project preferences after authored skills for a %s child", async (provider) => {

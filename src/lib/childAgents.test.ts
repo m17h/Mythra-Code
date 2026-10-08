@@ -403,6 +403,17 @@ describe("persistence and migration", () => {
     expect(Object.keys(restored).sort()).toEqual(["child-old-open", "child-old-settled", "child-recent-settled"]);
   });
 
+  it("preserves valid language-only bridge identities across reloads without accepting arbitrary sessions", () => {
+    const record = { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "m", title: "Child", createdAt: 1 };
+    const languageSessionId = "language-child-12345678-1234-1234-1234-123456789abc";
+    const restored = sanitizeChildAgentLinks({
+      "child-1": { ...record, languageSessionId },
+      "child-2": { ...record, languageSessionId: "session-1" },
+    });
+    expect(restored["child-1"].languageSessionId).toBe(languageSessionId);
+    expect(restored["child-2"].languageSessionId).toBeUndefined();
+  });
+
   it("keeps surviving children classified when their parent is deleted", () => {
     const links = sanitizeChildAgentLinks({
       "child-1": { rootThreadId: "root-1", sessionId: "session-1", targetId: "terra", provider: "openai", model: "gpt-5.6-terra", title: "One", createdAt: 1 },

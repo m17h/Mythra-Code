@@ -1,0 +1,22 @@
+.language-tools-settings { container-type: inline-size; }
+.language-tools-description { margin-bottom: 12px; }
+.language-tools-description p { margin: 0; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.language-tools-description p + p { margin-top: 6px; }
+.language-tools-state { display: flex; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--muted-2); }
+.language-tools-state[data-state="installed"] { color: var(--green); }
+.language-tools-state[data-state="error"], .language-tools-messages [role="alert"] { color: var(--red); }
+.language-tools-detail { overflow-wrap: anywhere; white-space: pre-wrap; }
+.language-tools-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.language-tools-enabled { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: var(--fs-meta); }
+.language-tools-enabled input { accent-color: var(--green); }
+.language-tools-footer { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.language-tools-messages { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
+.language-tools-messages p { margin: 0; }
+.language-tools-messages p + p { margin-top: 6px; }
+.language-tools-spinner { animation: language-tools-spin 1s linear infinite; }
+@keyframes language-tools-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .language-tools-spinner { animation: none; } }
+@container (max-width: 460px) {
+  .language-tools-row { grid-template-columns: minmax(0, 1fr); }
+  .language-tools-row > .language-tools-controls { justify-self: start; }
+}

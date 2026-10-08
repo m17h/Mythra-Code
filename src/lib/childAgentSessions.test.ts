@@ -114,6 +114,106 @@ describe("ensureChildAgentBridge", () => {
     expect(bridge.startChildAgentSession).not.toHaveBeenCalled();
   });
 
+  it("gives child projects only a scoped language bridge with their own access policy", async () => {
+    const languageLaunch = { ...LAUNCH, toolNames: ["language_tools_status", "install_language_tool"] };
+    bridge.startChildAgentSession.mockResolvedValue(languageLaunch);
+    const childInput = input({ threadId: "child-1", links: { "child-1": link() }, projectPath: "/project/worktree", permission: "read-only" });
+    const result = await ensureChildAgentBridge(childInput);
+    expect(result?.launch).toEqual(languageLaunch);
+    expect(result?.captured).toBe(false);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ targets: [], permission: "read-only", maxConcurrent: 1 }), [], [],
+      { projectPath: "/project/worktree", permission: "read-only", childThread: true },
+    );
+    await ensureChildAgentBridge(childInput);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(1);
+    expect(await releaseChildAgentSessions({}, "child-1")).toEqual(["session-1"]);
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("re-registers a project bridge when access is tightened or its execution folder changes", async () => {
+    const stored = policy({ permission: "full" });
+    const projectInput = input({ threadId: "thread-1", policies: { [stored.sessionId]: stored }, projectPath: "/project", permission: "full" });
+    await ensureChildAgentBridge(projectInput);
+    await ensureChildAgentBridge({ ...projectInput, permission: "ask" });
+    expect(bridge.endChildAgentSession).not.toHaveBeenCalled();
+    expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ permission: "ask" }), [], [],
+      { projectPath: "/project", permission: "ask" },
+    );
+    await ensureChildAgentBridge({ ...projectInput, permission: "ask", projectPath: "/project/new-worktree" });
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes provider-specific project guidance without changing access or delegation", async () => {
+    const projectInput = input({ projectPath: "/project", provider: "claude", permission: "ask" });
+    await ensureChildAgentBridge(projectInput);
+    expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ permission: "ask" }), [], [],
+      { projectPath: "/project", permission: "ask", provider: "claude" },
+    );
+    await ensureChildAgentBridge({ ...projectInput, provider: "openai" });
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
+    expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ permission: "ask" }), [], [],
+      { projectPath: "/project", permission: "ask", provider: "openai" },
+    );
+  });
+
+  it("reuses a child's backend identity after a renderer reload to revoke its prior policy", async () => {
+    const childInput = input({ threadId: "child-1", isChildThread: true, projectPath: "/project", newSessionId: undefined, permission: "full" });
+    const first = await ensureChildAgentBridge(childInput);
+    resetChildAgentLaunches();
+    const second = await ensureChildAgentBridge({ ...childInput, permission: "read-only" });
+    expect(second?.policy.sessionId).toBe(first?.policy.sessionId);
+    expect(second?.policy.sessionId).toMatch(/^language-child-[a-f0-9]{32}$/);
+    expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: first?.policy.sessionId, permission: "read-only", targets: [] }), [], [],
+      { projectPath: "/project", permission: "read-only", childThread: true },
+    );
+  });
+
+  it("restores a delegated child's first-turn language identity and can revoke it without navigation after reload", async () => {
+    const languageSessionId = "language-child-12345678-1234-1234-1234-123456789abc";
+    const childLinks = { "child-1": link({ languageSessionId }) };
+    await ensureChildAgentBridge(input({ threadId: "child-1", links: childLinks, projectPath: "/project", permission: "ask" }));
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: languageSessionId, targets: [], permission: "ask" }), [], [],
+      { projectPath: "/project", permission: "ask", childThread: true },
+    );
+    resetChildAgentLaunches();
+    expect(await releaseChildAgentSessions({}, "child-1", childLinks)).toEqual([languageSessionId]);
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith(languageSessionId);
+  });
+
+  it("revokes a provider-native child's deterministic language identity after reload", async () => {
+    const childInput = input({ threadId: "native-child", isChildThread: true, projectPath: "/project", newSessionId: undefined });
+    const first = await ensureChildAgentBridge(childInput);
+    resetChildAgentLaunches();
+    expect(await releaseChildAgentSessions({}, "native-child", {}, true)).toEqual([first!.policy.sessionId]);
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith(first!.policy.sessionId);
+  });
+
+  it("keeps language setup available for project roots when delegation is off", async () => {
+    const result = await ensureChildAgentBridge(input({
+      projectPath: "/project", settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },
+    }));
+    expect(result).not.toBeNull();
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ targets: [] }), [], [], { projectPath: "/project", permission: "ask" },
+    );
+  });
+
+  it("keeps project language support when delegation is enabled but every target is unavailable", async () => {
+    const result = await ensureChildAgentBridge(input({
+      projectPath: "/project", readiness: { ...READY, openAiSignedIn: false },
+    }));
+    expect(result?.policy.targets).toEqual([]);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ targets: [] }), [], [], { projectPath: "/project", permission: "ask" },
+    );
+  });
+
   it("stays out of the way when the feature is off", async () => {
     expect(await ensureChildAgentBridge(input({
       settings: { childAgents: CHILD_AGENTS, subagentsEnabled: false, subagentMax: 3 },

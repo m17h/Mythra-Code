@@ -1,0 +1,9 @@
+{
+  "name": "mythra-language-tool-astro",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@astrojs/language-server": "2.17.2",
+    "typescript": "5.9.3"
+  }
+}

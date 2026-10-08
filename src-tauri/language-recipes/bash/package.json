@@ -1,0 +1,8 @@
+{
+  "name": "mythra-language-tool-bash",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "bash-language-server": "5.8.1"
+  }
+}
