@@ -94,7 +94,7 @@ describe("usedSkillsForRun", () => {
   });
 
   it("deduplicates Windows UNC paths across slash styles and casing", () => {
-    const paths = ["\\\\SERVER\\Share\\Review\\SKILL.md", "//SERVER/Share/Review/SKILL.md"];
+    const paths = ["\\\\SERVER\\Share\\Review\\SKILL.md", "//SERVER/Share/Review/SKILL.md", "//SERVER/Share\\Review/SKILL.md"];
     expect(usedSkillsForRun([message({ skillUsage: paths.map((path) => ({ name: "review", path, source: "codex-skill-input", status: "selected" })) })]))
       .toEqual([{ identity: "path://server/share/review/skill.md", name: "review", path: paths[0] }]);
   });

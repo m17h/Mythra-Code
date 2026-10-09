@@ -63,7 +63,7 @@ function pathIdentity(path: string, windowsUncPaths: ReadonlySet<string>): strin
   // Only reconcile a forward-slash UNC spelling when this run also records
   // its unambiguous Windows backslash counterpart.
   const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\")
-    || (path.startsWith("//") && windowsUncPaths.has(path.toLowerCase().replace(/\/+$/, "")));
+    || (path.startsWith("//") && windowsUncPaths.has(path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "")));
   const normalized = (windows ? path.replaceAll("\\", "/") : path).replace(/\/+$/, "");
   // Windows paths are case insensitive; POSIX paths are not.
   return `path:${windows ? normalized.toLowerCase() : normalized}`;
