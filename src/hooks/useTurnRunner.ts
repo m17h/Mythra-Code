@@ -16,6 +16,7 @@ import {
   type CursorRuntimeStatus,
 } from "../lib/cursor";
 import type { AgentQuestionSubmission } from "../lib/agentQuestionContext";
+import { beginCursorTurnStart, cursorTurnOwner, isCurrentCursorTurnStart, rejectCursorTurnStart, type CursorStartAttempt } from "../lib/cursorTurnOwnership";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSession, type ChildAgentBridgeResult } from "../lib/childAgentSessions";
 import { childAgentPolicyForThread, type ChildAgentLink, type ChildAgentPolicy, type ChildAgentReadiness } from "../lib/childAgents";
@@ -596,6 +597,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return selectedThread !== selectedThreadAtSend && selectedThread !== activatedCreatedThreadId;
     };
     let pendingStart: PendingTurnStart | undefined;
+    let cursorAttempt: CursorStartAttempt | undefined;
     let draftGeneration: number | undefined;
     // Mark the start synchronously, before the first await, so Stop and the
     // composer reflect it immediately — and only on the thread actually
@@ -603,6 +605,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // flag until the created thread's own status takes over.
     const startingThreadId = activeThread?.id;
     if (startingThreadId) {
+      if (effectiveSettings.provider === "cursor") cursorAttempt = beginCursorTurnStart(startingThreadId, useTaskStore.getState().tasks[startingThreadId]?.activeTurnId);
       useTaskStore.getState().beginAgentRun(startingThreadId);
       useTaskStore.getState().setTaskStatus(startingThreadId, "starting");
       pendingStart = pendingTurnStartsRef.current.begin(startingThreadId);
@@ -622,6 +625,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let childBridge: ChildAgentBridgeResult | null = null;
     const sentAttachments = [...attachments];
     const assertCanStart = () => {
+      if (cursorAttempt && (cursorAttempt.owner.closed || !isCurrentCursorTurnStart(startedThreadId ?? startingThreadId!, cursorAttempt))) {
+        throw new CancelledTurnStart("This Cursor start was superseded");
+      }
       if (pendingStart?.cancelRequested || (!activeThread && draftCancelled())) {
         throw new CancelledTurnStart("Stopped before starting the model turn");
       }
@@ -658,7 +664,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       executionPath: string,
       strategy: {
         prepareTurn: (thread: Thread, updatedThread: Thread) => Promise<void>;
-        startTurn: (thread: Thread) => Promise<{ turnId: string }>;
+        startTurn: (thread: Thread) => Promise<{ turnId: string; superseded?: boolean; stopped?: boolean }>;
         afterStart?: (threadId: string) => void;
         hardStop: (threadId: string) => Promise<unknown>;
       },
@@ -708,6 +714,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         if (!threadSelectionChangedMidSend()) setActiveThread(updatedThread);
       }
       useTaskStore.getState().ensureTask(thread.id, executionPath);
+      if (provider === "cursor" && !cursorAttempt) cursorAttempt = beginCursorTurnStart(thread.id);
       if (!activeThread) useTaskStore.getState().beginAgentRun(thread.id);
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
@@ -733,14 +740,16 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // short turn already delivered its result, reinstalling it here would
       // resurrect the completed thread as permanently running.
       const completedBeforeStartReturned = useTaskStore.getState().tasks[thread.id]?.lastCompletedTurnId === result.turnId;
-      if (!completedBeforeStartReturned) {
+      const ownsIdentity = !result.superseded && (!cursorAttempt || isCurrentCursorTurnStart(thread.id, cursorAttempt));
+      const ownsStart = ownsIdentity && !result.stopped;
+      if (ownsStart && !completedBeforeStartReturned) {
         useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
         useTaskStore.getState().setTaskStatus(thread.id, "running");
       }
       setStartingDraftTurn(false);
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-      strategy.afterStart?.(thread.id);
-      if (pendingTurnStartsRef.current.finish(thread.id, pendingStart) && !completedBeforeStartReturned) {
+      if (ownsIdentity) strategy.afterStart?.(thread.id);
+      if (pendingTurnStartsRef.current.finish(thread.id, pendingStart) && ownsStart && !completedBeforeStartReturned) {
         markProviderStopIntent(thread.id, result.turnId);
         try {
           await strategy.hardStop(thread.id);
@@ -748,8 +757,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
           clearProviderStopIntent(thread.id, result.turnId);
           throw reason;
         }
-        useTaskStore.getState().setActiveTurn(thread.id, undefined);
-        useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+        if (!cursorAttempt || isCurrentCursorTurnStart(thread.id, cursorAttempt)) {
+          useTaskStore.getState().setActiveTurn(thread.id, undefined);
+          useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+        }
         clearProviderStopIntent(thread.id, result.turnId);
         setTransientStatus("Stopped");
       }
@@ -871,6 +882,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             const priorSessionId = cursorSessionIdsRef.current[thread.id];
             const result = await startCursorTurn({
               threadId: thread.id,
+              startRequestId: cursorAttempt?.owner.startRequestId,
               cwd: executionPath,
               prompt: providerText,
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
@@ -883,8 +895,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
                 ? { name: childBridge.launch.name, command: childBridge.launch.command, args: childBridge.launch.args }
                 : undefined,
             });
-            cursorSessionIdsRef.current[thread.id] = result.cursorSessionId;
-            return { turnId: result.turnId };
+            if (!result.superseded && (!cursorAttempt || isCurrentCursorTurnStart(thread.id, cursorAttempt))) cursorSessionIdsRef.current[thread.id] = result.cursorSessionId;
+            return { turnId: result.turnId, superseded: result.superseded, stopped: result.stopped };
           },
           afterStart: (threadId) => scheduleCursorThreadSave(threadId),
           hardStop: (threadId) => killCursorTurn(threadId),
@@ -1055,17 +1067,22 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ).catch(() => undefined);
       }
       if (failedThreadId) {
-        discardRunCheckpoint(failedThreadId);
+        const ownsFailure = !cursorAttempt || isCurrentCursorTurnStart(failedThreadId, cursorAttempt);
+        if (ownsFailure) discardRunCheckpoint(failedThreadId);
         if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
         if (sentMessageId) useTaskStore.getState().removeMessage(failedThreadId, sentMessageId);
-        useTaskStore.getState().setTaskStatus(failedThreadId, cancelled ? "interrupted" : "error", cancelled ? undefined : friendlyError(reason));
+        if (ownsFailure) useTaskStore.getState().setTaskStatus(failedThreadId, cancelled ? "interrupted" : "error", cancelled ? undefined : friendlyError(reason));
         if (isClaudeThreadBusyError(reason)) {
           // The backend slot is held by a Claude process the UI no longer
           // tracks (e.g. after an event loss). Free it so a retry succeeds
           // instead of failing until Mythra Code restarts.
           await killClaudeTurn(failedThreadId).catch(() => undefined);
-        } else if (effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
+        } else if (ownsFailure && effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
           void killCursorTurn(failedThreadId).catch(() => undefined);
+        }
+        if (cursorAttempt) {
+          rejectCursorTurnStart(failedThreadId, cursorAttempt);
+          if (!ownsFailure) return false;
         }
       }
       setStatus("Ready");
@@ -1683,6 +1700,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return;
     }
     const turnId = useTaskStore.getState().tasks[activeThread.id]?.activeTurnId;
+    if (isCursorThread(activeThread) && useTaskStore.getState().tasks[activeThread.id]?.status === "starting"
+      && pendingTurnStartsRef.current.requestCancel(activeThread.id)) {
+      setStatus("Stopping");
+      return;
+    }
     if (!turnId) {
       // If this thread's turn/start RPC is still in flight, flag that exact
       // pending start so sendMessage interrupts the turn the moment its id is
@@ -1695,11 +1717,16 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return;
     }
     const localProvider = isClaudeThread(activeThread) || isCursorThread(activeThread);
+    const cursorStopOwner = isCursorThread(activeThread) ? cursorTurnOwner(activeThread.id, turnId) : undefined;
     if (localProvider) markProviderStopIntent(activeThread.id, turnId);
     try {
       if (isClaudeThread(activeThread)) await killClaudeTurn(activeThread.id);
       else if (isCursorThread(activeThread)) await killCursorTurn(activeThread.id);
       else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
+      if (cursorStopOwner && cursorTurnOwner(activeThread.id) !== cursorStopOwner) {
+        clearProviderStopIntent(activeThread.id, turnId);
+        return;
+      }
       useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
       useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
       if (localProvider) clearProviderStopIntent(activeThread.id, turnId);
@@ -1707,6 +1734,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setTransientStatus("Stopped");
     } catch (reason) {
       if (localProvider) clearProviderStopIntent(activeThread.id, turnId);
+      if (cursorStopOwner && cursorTurnOwner(activeThread.id) !== cursorStopOwner) return;
       setError(friendlyError(reason));
       throw reason;
     }

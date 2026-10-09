@@ -19,9 +19,16 @@ export interface NativeAgentLink {
  */
 export type OwnershipLinks = Record<string, { rootThreadId: string }>;
 
+/** Build once for a batch of reads. Mutable discovery graphs must update their
+ * own set as they accept links; never cache a mutable graph by object identity. */
+export function ownershipRootIds(links: OwnershipLinks): ReadonlySet<string> {
+  return new Set(Object.values(links).map((link) => link.rootThreadId));
+}
+
 /** A thread that owns children is a root; depth is capped at one by design. */
-export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
+export function ownsChildren(links: OwnershipLinks, threadId: string, rootIds?: ReadonlySet<string>): boolean {
   if (!threadId) return false;
+  if (rootIds) return rootIds.has(threadId);
   return Object.values(links).some((link) => link.rootThreadId === threadId);
 }
 
@@ -41,17 +48,18 @@ export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
  * - a root that is itself somebody's child, which would nest it two deep the
  *   other way round (and covers every reversed claim and cycle).
  */
-export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childThreadId: string): boolean {
+export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childThreadId: string, rootIds?: ReadonlySet<string>): boolean {
   if (!rootThreadId || !childThreadId || rootThreadId === childThreadId) return false;
   const existing = links[childThreadId];
   if (existing && existing.rootThreadId !== rootThreadId) return false;
-  if (ownsChildren(links, childThreadId)) return false;
+  if (ownsChildren(links, childThreadId, rootIds)) return false;
   return !links[rootThreadId];
 }
 
 export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeAgentLink> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const result: Record<string, NativeAgentLink> = {};
+  const rootIds = new Set<string>();
   for (const [key, candidate] of Object.entries(value as Record<string, unknown>)) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
     const link = candidate as Partial<NativeAgentLink>;
@@ -61,7 +69,7 @@ export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeA
     // Hand-edited or partially written storage can contain a cycle. Accepting
     // entries against what has already been accepted keeps the restored graph
     // acyclic instead of trusting whatever order the file happened to hold.
-    if (!canOwnThread(result, rootThreadId, childThreadId)) continue;
+    if (!canOwnThread(result, rootThreadId, childThreadId, rootIds)) continue;
     result[key] = {
       childThreadId,
       rootThreadId,
@@ -69,6 +77,7 @@ export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeA
       ...(typeof link.path === "string" && link.path.trim() ? { path: link.path.trim() } : {}),
       createdAt: Number.isFinite(link.createdAt) && Number(link.createdAt) > 0 ? Number(link.createdAt) : Date.now(),
     };
+    rootIds.add(rootThreadId);
   }
   return result;
 }

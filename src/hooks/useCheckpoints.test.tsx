@@ -3,6 +3,10 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import type { CheckpointRecord } from "../lib/checkpoints";
+import { DEFAULT_SETTINGS } from "../lib/appConfig";
+import { scheduleRunSnapshot } from "../lib/turnConfig";
+import { routeCodexEvent, type CodexEventContext } from "../lib/codexEvents";
+import type { ScheduleRunRecord, ScheduledTask } from "../types";
 
 const checkpointApi = vi.hoisted(() => ({
   completeCheckpointSnapshot: vi.fn(),
@@ -11,6 +15,9 @@ const checkpointApi = vi.hoisted(() => ({
   readCheckpointDiff: vi.fn(),
   restoreCheckpointSnapshot: vi.fn(),
 }));
+const schedulerApi = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn(async () => undefined) }));
+vi.mock("../lib/codex", () => schedulerApi);
+vi.mock("../lib/currentLearnedPreferences", () => ({ appendCurrentLearnedPreferences: async (prompt: string) => prompt }));
 
 vi.mock("../lib/checkpoints", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/checkpoints")>(),
@@ -18,6 +25,7 @@ vi.mock("../lib/checkpoints", async (importOriginal) => ({
 }));
 
 import { useCheckpoints, type CheckpointsContext } from "./useCheckpoints";
+import { useScheduler } from "./useScheduler";
 
 function context(overrides: Partial<CheckpointsContext> = {}): CheckpointsContext {
   return {
@@ -95,6 +103,51 @@ describe("useCheckpoints", () => {
       deletions: 2,
     });
     checkpointApi.deleteCheckpointSnapshot.mockResolvedValue(undefined);
+    schedulerApi.rpc.mockReset();
+  });
+
+  it("finalizes the retained scheduled checkpoint when native completion arrives after an acknowledgement timeout", async () => {
+    const ctx = context();
+    const runs: ScheduleRunRecord[] = [];
+    const schedule: ScheduledTask = {
+      id: "scheduled", name: "Scheduled", prompt: "Check files", projectId: "project-1",
+      intervalMinutes: 60, enabled: true, nextRunAt: 0, run: scheduleRunSnapshot(DEFAULT_SETTINGS),
+    };
+    schedulerApi.rpc.mockImplementation(async (method: string) => {
+      if (method === "turn/start") throw new Error("Codex App Server timed out while handling turn/start");
+      return { thread: { id: "thread-1" } };
+    });
+    const { result, unmount } = renderHook(() => {
+      const checkpoints = useCheckpoints(ctx);
+      useScheduler({
+        schedules: [schedule], updateSchedule: vi.fn(), projects: [ctx.activeProject!], settings: DEFAULT_SETTINGS,
+        runtimeAvailable: true, chatGptConnected: true, openRouterReady: false,
+        ensureSkillRoots: async () => undefined, resolveSkillPrompt: async (prompt) => prompt,
+        bindThreadToProject: vi.fn(), beginRunCheckpoint: checkpoints.beginRunCheckpoint,
+        discardRunCheckpoint: checkpoints.discardRunCheckpoint, onThreadStarted: vi.fn(), recordRun: (run) => { runs.push(run); },
+      });
+      return checkpoints;
+    });
+    await waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0].status).toBe("failed");
+    expect(checkpointApi.deleteCheckpointSnapshot).not.toHaveBeenCalled();
+    const completion: Promise<void>[] = [];
+    const events: CodexEventContext = {
+      bindingFor: () => "/tmp/project", providerFor: () => "openai", respond: async () => undefined,
+      audit: vi.fn(), onStatus: vi.fn(), onError: vi.fn(), onAuthRequired: vi.fn(), onAuthSuspected: vi.fn(),
+      onRateLimits: vi.fn(), onTerminalOutput: vi.fn(), onApprovalRequested: vi.fn(), onAccountUpdated: vi.fn(),
+      onLoginFailed: vi.fn(), onProviderToolCompatibilityError: vi.fn(), onNativeAgentDiscovered: vi.fn(),
+      onTurnCompleted: (threadId, turn) => { completion.push(result.current.finalizeRunCheckpoint(threadId, turn?.id)); },
+    };
+    await act(async () => {
+      routeCodexEvent({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "late-turn", items: [] } } }, events);
+      routeCodexEvent({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "late-turn", status: "completed", items: [] } } }, events);
+      await Promise.all(completion);
+    });
+    expect(result.current.checkpoints[0]).toMatchObject({ status: "ready", turnId: "late-turn", beforeCommit: "before", afterCommit: "after" });
+    expect(checkpointApi.completeCheckpointSnapshot).toHaveBeenCalledOnce();
+    expect(checkpointApi.deleteCheckpointSnapshot).not.toHaveBeenCalled();
+    unmount();
   });
 
   it("captures and finalizes the automatic checkpoint for a model run", async () => {
@@ -124,6 +177,22 @@ describe("useCheckpoints", () => {
       deletions: 2,
     });
     expect(result.current.checkpointHeads["/tmp/project"]).toEqual({ checkpointId: id, position: "after" });
+  });
+
+  it("keeps a newer checkpoint when an earlier preparation discards its own id", async () => {
+    const { result } = renderHook(() => useCheckpoints(context()));
+    let first: string | undefined;
+    let second: string | undefined;
+    await act(async () => {
+      first = await result.current.beginRunCheckpoint("thread-1", "/tmp/project", "first", "openai", "gpt-test");
+      second = await result.current.beginRunCheckpoint("thread-1", "/tmp/project", "second", "openai", "gpt-test");
+    });
+    act(() => result.current.discardRunCheckpoint("thread-1", first));
+    expect(checkpointApi.deleteCheckpointSnapshot).not.toHaveBeenCalled();
+    expect(result.current.checkpoints.map(({ id }) => id)).toContain(second);
+    await act(async () => result.current.discardRunCheckpoint("thread-1", second));
+    expect(checkpointApi.deleteCheckpointSnapshot).toHaveBeenCalledExactlyOnceWith(second, "/tmp/project");
+    expect(result.current.checkpoints.map(({ id }) => id)).not.toContain(second);
   });
 
   it("disables repeated snapshot attempts for an unsupported workspace", async () => {

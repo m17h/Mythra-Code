@@ -44,6 +44,7 @@ export function useGitWorkspace(options: Options) {
   const mounted = useRef(true);
   const readSequence = useRef(0);
   const successfulReads = useRef(0);
+  const successfulReadViewer = useRef(-1);
   const readsPending = useRef(new Map<string, { request: number; rerun: boolean; invalidated: boolean }>());
   const mutationsPending = useRef(new Set<string>());
   const update = useCallback((cwd: string, value: Partial<State>) => {
@@ -62,6 +63,7 @@ export function useGitWorkspace(options: Options) {
     // Counts, HEAD and staging paths cannot reveal same-count content edits.
     // Consumers may lazily reread their selected preview after this signal.
     successfulReads.current += 1;
+    successfulReadViewer.current = viewerRef.current.generation;
     update(cwd, { snapshot, branchNotice, readError: "", ...value, readRevision: successfulReads.current });
   }, [update]);
 
@@ -105,6 +107,17 @@ export function useGitWorkspace(options: Options) {
       }
     }
   }, [accept, update]);
+
+  // A newly opened consumer needs current rows, but a read already in progress
+  // satisfies that request. Unlike mutation completion, it needs no rerun.
+  const refreshIfIdle = useCallback((observedRevision?: number) => {
+    // A read can complete between the consumer's render/effect and microtask.
+    // That newer result already satisfies surface entry, even if no read remains pending.
+    if (observedRevision !== undefined && successfulReadViewer.current === viewerRef.current.generation
+      && observedRevision !== successfulReads.current) return;
+    const cwd = optionsRef.current.cwd;
+    if (cwd && !readsPending.current.has(normalizedProjectPath(cwd))) void refresh(false);
+  }, [refresh]);
 
   useEffect(() => {
     generation.current += 1;
@@ -196,5 +209,5 @@ export function useGitWorkspace(options: Options) {
 
   return { ...(state.cwd === options.cwd ? state : empty(options.cwd)),
     busy: Boolean(options.cwd && mutationsPending.current.has(normalizedProjectPath(options.cwd))),
-    refresh, onBranch, fetch, updateBase };
+    refresh, refreshIfIdle, onBranch, fetch, updateBase };
 }

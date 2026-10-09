@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
+import { acceptCursorTurnStart, beginCursorTurnStart, retireCursorTurnOwner } from "../lib/cursorTurnOwnership";
 import type { ChildAgentLink, ChildAgentPolicy } from "../lib/childAgents";
 import type { ChildAgentRequest } from "../lib/agentBridge";
 import type { ChildRunContext } from "../lib/childRun";
@@ -330,6 +331,18 @@ describe("useChildAgents", () => {
       expect(lastResponse()?.[1]).toEqual(expect.objectContaining({ status: "completed" }));
     });
 
+    it("does not revive a stopped Cursor child from its superseded start acknowledgment", async () => {
+      childRun.startChildAgentTurn.mockImplementationOnce(async () => {
+        useTaskStore.getState().setTaskStatus("child-fast", "interrupted");
+        return { thread: childThread("child-fast", "cursor"), turnId: "stopped", cursorSessionId: "stale-session", provider: "cursor", model: "auto", superseded: true };
+      });
+      const view = await mount();
+      await view.send(request({ arguments: { target: "fast", prompt: "Go." } }));
+      expect(useTaskStore.getState().tasks["child-fast"]).toMatchObject({ status: "interrupted" });
+      expect(useTaskStore.getState().tasks["child-fast"].activeTurnId).toBeUndefined();
+      expect(lastResponse()?.[1]).toEqual(expect.objectContaining({ status: "cancelled" }));
+    });
+
     it("remembers the Cursor session so a child can be interrupted later", async () => {
       const ctx = context();
       bridge.onChildAgentRequest.mockImplementation(async (handler: (request: ChildAgentRequest) => void) => {
@@ -339,6 +352,23 @@ describe("useChildAgents", () => {
       renderHook(() => useChildAgents(ctx));
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       expect(ctx.cursorSessionIdsRef.current["child-fast"]).toBe("cursor-session");
+    });
+
+    it("persists an accepted stopped Cursor child session without reviving the child", async () => {
+      childRun.startChildAgentTurn.mockImplementationOnce(async () => {
+        const attempt = beginCursorTurnStart("child-fast");
+        acceptCursorTurnStart("child-fast", attempt, "stopped");
+        retireCursorTurnOwner("child-fast", attempt.owner);
+        useTaskStore.getState().setTaskStatus("child-fast", "interrupted");
+        return { thread: childThread("child-fast", "cursor"), turnId: "stopped", cursorSessionId: "accepted-stopped-session", provider: "cursor", model: "auto", stopped: true };
+      });
+      const sessions = { current: {} as Record<string, string> };
+      const view = await mount({ cursorSessionIdsRef: sessions });
+      await view.send(request({ arguments: { target: "fast", prompt: "Go." } }));
+      expect(sessions.current["child-fast"]).toBe("accepted-stopped-session");
+      expect(useTaskStore.getState().tasks["child-fast"]).toMatchObject({ status: "interrupted" });
+      expect(useTaskStore.getState().tasks["child-fast"].activeTurnId).toBeUndefined();
+      expect(lastResponse()?.[1]).toEqual(expect.objectContaining({ status: "cancelled" }));
     });
 
     it("saves the project's Run button command without executing anything", async () => {

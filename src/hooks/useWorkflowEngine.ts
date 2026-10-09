@@ -3,6 +3,7 @@ import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreference
 import { auditEvent, rpc } from "../lib/codex";
 import { startClaudeTurn, killClaudeTurn, saveClaudeTranscript } from "../lib/claude";
 import { startCursorTurn, killCursorTurn, saveCursorTranscript } from "../lib/cursor";
+import { beginCursorTurnStart, cursorTurnCanSettle, rejectCursorTurnStart } from "../lib/cursorTurnOwnership";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { markProviderStopIntent, clearProviderStopIntent } from "../lib/providerStopIntent";
@@ -553,11 +554,15 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 skillsFolder: resolved.skillsFolder,
                 skillDependencies: resolved.skillDependencies,
               });
+              const cursorAttempt = workflow.run.provider === "cursor"
+                ? beginCursorTurnStart(threadId, useTaskStore.getState().tasks[threadId]?.activeTurnId)
+                : undefined;
               useTaskStore.getState().setTaskStatus(threadId, "starting");
               // Snapshot before the model edits anything. Provider event
               // routers finalize completed turns; explicitly await local
               // finalization before the next step can start a new snapshot.
               let result: { turn: Pick<Turn, "id"> };
+              let nativeTurnAcknowledged = false;
               try {
                 await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
                 if (active.stopRequested) throw new WorkflowStoppedError();
@@ -585,10 +590,24 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                     claudeSessionStarted = true;
                     result = { turn: { id: started.turnId } };
                   } else {
-                    const cursorOptions = { ...options, resumeSessionId: cursorSessionId };
+                    const cursorOptions = { ...options, startRequestId: cursorAttempt?.owner.startRequestId, resumeSessionId: cursorSessionId };
                     if (active.stopRequested) throw new WorkflowStoppedError();
                     appendPrompt();
                     const started = await startCursorTurn(cursorOptions);
+                    nativeTurnAcknowledged = true;
+                    if (started.superseded || started.stopped) {
+                      // Accepted-but-stopped is not failed-to-start: the
+                      // process may have edited files. Finalize only while
+                      // this exact owner still owns the thread checkpoint.
+                      if (cursorTurnCanSettle(threadId, started.turnId, cursorOptions.startRequestId)) {
+                        if (started.stopped && !started.superseded) {
+                          cursorSessionId = started.cursorSessionId;
+                          localThread = depsRef.current.onLocalThreadUpdated?.(localThread!, cursorSessionId, workflow.run) ?? localThread;
+                        }
+                        await current.finalizeRunCheckpoint(threadId, started.turnId);
+                      }
+                      throw new WorkflowStoppedError();
+                    }
                     cursorSessionId = started.cursorSessionId;
                     localThread = depsRef.current.onLocalThreadUpdated?.(localThread!, cursorSessionId, workflow.run) ?? localThread;
                     result = { turn: { id: started.turnId } };
@@ -610,9 +629,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   result = await rpc<{ turn: Turn }>("turn/start", params);
                 }
               } catch (reason) {
+                if (cursorAttempt && !nativeTurnAcknowledged) rejectCursorTurnStart(threadId, cursorAttempt);
                 // No turn ever started, so no completion event will finalize
                 // the snapshot; drop it instead of leaving it running forever.
-                current.discardRunCheckpoint(threadId);
+                if (!nativeTurnAcknowledged) current.discardRunCheckpoint(threadId);
                 throw reason;
               }
               active.turnId = result.turn?.id;

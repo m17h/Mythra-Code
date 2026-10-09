@@ -4,6 +4,7 @@ import type { Activity } from "../types";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { consumeProviderStopIntent } from "./providerStopIntent";
+import { cursorTurnCanSettle, cursorTurnWasSettled, finishCursorTurnOwner, latestCursorUsageSnapshotTurn, markCursorUsageSnapshotTurn, observeCursorTurnOwner, resetCursorTurnOwnershipForTests } from "./cursorTurnOwnership";
 
 const activeAssistantSegments = new Map<string, string>();
 const assistantSegmentCounts = new Map<string, number>();
@@ -67,6 +68,7 @@ export function resetCursorEventStateForTests(): void {
   assistantSegmentCounts.clear();
   completedTurns.clear();
   turnsWithUsageSnapshots.clear();
+  resetCursorTurnOwnershipForTests();
 }
 
 function object(value: unknown): JsonObject {
@@ -132,6 +134,26 @@ function usageView(value: unknown): TokenUsageView | null {
   };
 }
 
+function settledPromptResults(message: JsonObject): JsonObject[] {
+  // The native finalizer retains successful primary/steer responses. `result`
+  // duplicates the last entry, so use it only for the legacy single response.
+  return Array.isArray(message.promptResults) && message.promptResults.length > 0
+    ? message.promptResults.map(object)
+    : [object(message.result)];
+}
+
+function recordResultUsage(threadId: string, turnId: string, message: JsonObject): void {
+  // Preserve the existing cumulative-session snapshot contract: result totals
+  // must not be added on top of usage already reported during this turn.
+  if (turnsWithUsageSnapshots.has(turnKey(threadId, turnId))) return;
+  const multiple = Array.isArray(message.promptResults) && message.promptResults.length > 0;
+  settledPromptResults(message).forEach((result, index) => {
+    const usage = usageView(result.usage);
+    if (usage) useTaskStore.getState().addUsage(threadId, usage,
+      multiple ? `cursor-result:${turnId}:${index}` : `cursor-result:${turnId}`, turnId);
+  });
+}
+
 export interface CursorEventContext {
   bindingFor: (threadId: string) => string | undefined;
   onStatus: (status: string) => void;
@@ -154,9 +176,32 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   const message = object(event.message);
   const store = useTaskStore.getState();
   store.ensureTask(threadId, ctx.bindingFor(threadId));
-  const turnAlreadyCompleted = completedTurns.has(turnKey(threadId, turnId));
+  const turnAlreadyCompleted = completedTurns.has(turnKey(threadId, turnId)) || cursorTurnWasSettled(threadId, turnId, event.startRequestId);
+  const activeTurnId = useTaskStore.getState().tasks[threadId]?.activeTurnId;
+  const ownership = observeCursorTurnOwner(threadId, turnId, event.startRequestId);
+  const activeTurnMismatch = Boolean(activeTurnId && activeTurnId !== turnId);
+  // A first notification may precede the start RPC acknowledgment, while
+  // runLocalTurn marks the task as starting. Once its accepted turn is running,
+  // delayed output from another process may enrich history but cannot take
+  // over that turn's status or steering lock.
+  const mayActivateTurn = ownership.mayActivate && (!activeTurnMismatch || useTaskStore.getState().tasks[threadId]?.status === "starting");
+  // Output activation and terminal settlement have different authority:
+  // Stop closes output admission, but its latest owner must still finalize
+  // its checkpoint once. Superseded history cannot settle the whole thread.
+  const maySettleTurn = mayActivateTurn || (!activeTurnMismatch && cursorTurnCanSettle(threadId, turnId, event.startRequestId));
+  const newerTurnActive = !maySettleTurn;
+  const activateTurnFromEvent = () => {
+    const task = useTaskStore.getState().tasks[threadId];
+    if (!turnAlreadyCompleted && mayActivateTurn && (task?.activeTurnId !== turnId || task.status !== "running")) {
+      store.setActiveTurn(threadId, turnId);
+      store.setTaskStatus(threadId, "running");
+      foregroundStatus(ctx, threadId, "Working");
+    }
+  };
 
   if (message.type === "permission_request") {
+    if (turnAlreadyCompleted || !mayActivateTurn) return;
+    activateTurnFromEvent();
     const params = object(message.params);
     const tool = object(params.toolCall);
     store.enqueueApproval({
@@ -164,6 +209,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       method: "cursor/request_permission",
       params: {
         ...params,
+        turnId,
         command: text(object(tool.rawInput).command),
         reason: text(tool.title) || "Cursor wants to use a tool",
       },
@@ -175,6 +221,8 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   }
 
   if (message.type === "cursor_request" && message.method === "cursor/ask_question") {
+    if (turnAlreadyCompleted || !mayActivateTurn) return;
+    activateTurnFromEvent();
     const params = object(message.params);
     const questions = (Array.isArray(params.questions) ? params.questions : []).map((value) => {
       const question = object(value);
@@ -191,7 +239,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     store.enqueueApproval({
       id: (message.requestId as string | number) ?? crypto.randomUUID(),
       method: "cursor/ask_question",
-      params: { questions },
+      params: { questions, turnId },
       threadId,
       receivedAt: Date.now(),
     });
@@ -204,12 +252,8 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     const id = `cursor-plan-${turnId}`;
     const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
     if (turnAlreadyCompleted && !existing) return;
-    if (!turnAlreadyCompleted) {
-      store.setActiveTurn(threadId, turnId);
-      store.setTaskStatus(threadId, "running");
-      foregroundStatus(ctx, threadId, "Working");
-    }
-    store.upsertActivity(threadId, { id, kind: "agent", title: text(params.name) || "Cursor plan", detail: text(params.plan) || text(params.overview), status: "inProgress" });
+    activateTurnFromEvent();
+    store.upsertActivity(threadId, { id, turnId, kind: "agent", title: text(params.name) || "Cursor plan", detail: text(params.plan) || text(params.overview), status: "inProgress" });
     ctx.onTranscriptChanged(threadId);
     return;
   }
@@ -220,13 +264,10 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     const id = `cursor-plan-${turnId}`;
     const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
     if (turnAlreadyCompleted && !existing) return;
-    if (!turnAlreadyCompleted) {
-      store.setActiveTurn(threadId, turnId);
-      store.setTaskStatus(threadId, "running");
-      foregroundStatus(ctx, threadId, "Working");
-    }
+    activateTurnFromEvent();
     store.upsertActivity(threadId, {
       id,
+      turnId,
       kind: "agent",
       title: "Cursor plan",
       detail: todos.map((value) => {
@@ -242,24 +283,18 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
   if (message.type === "notification" && message.method === "session/update") {
     const update = object(object(message.params).update);
     const kind = text(update.sessionUpdate);
-    const currentTask = useTaskStore.getState().tasks[threadId];
-    if (!turnAlreadyCompleted && (currentTask?.activeTurnId !== turnId || currentTask.status !== "running")) {
-      // Install the turn before materializing a tool/plan activity. Cursor can
-      // emit notifications before session/prompt returns; doing this at the
-      // end left the first activity detached from its turn in that race.
-      store.setActiveTurn(threadId, turnId);
-      store.setTaskStatus(threadId, "running");
-      foregroundStatus(ctx, threadId, "Working");
-    }
+    // Install an admitted turn before materializing its first activity/request:
+    // provider output can arrive before the start RPC acknowledgment.
+    activateTurnFromEvent();
     if (kind === "agent_message_chunk") {
       // Skip empty/non-text chunks so they cannot open a segment that would
       // finalize into an empty assistant bubble at the next tool boundary.
       // A chunk arriving after the turn's result would open a streaming
       // segment nothing will ever finalize, so drop it too.
       const delta = contentText(update.content);
-      if (delta && !turnAlreadyCompleted) store.queueAssistantDelta(threadId, assistantMessageId(threadId, turnId), delta);
+      if (delta && !turnAlreadyCompleted) store.queueAssistantDelta(threadId, assistantMessageId(threadId, turnId), delta, turnId);
     } else if (kind === "agent_thought_chunk") {
-      if (!turnAlreadyCompleted) store.queueReasoningDelta(threadId, `thinking-${turnId}`, contentText(update.content), "content");
+      if (!turnAlreadyCompleted) store.queueReasoningDelta(threadId, `thinking-${turnId}`, contentText(update.content), "content", turnId);
     } else if (kind === "tool_call" || kind === "tool_call_update") {
       // A new tool call ends the preceding assistant-text segment. Updates to
       // an already-running tool are not boundaries because Cursor can deliver
@@ -275,6 +310,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       if (!turnAlreadyCompleted || existing) {
         store.upsertActivity(threadId, {
           id,
+          turnId,
           kind: activityKind(text(update.kind) || existing?.kind || "tool"),
           ...(workType ? { workType } : {}),
           title: text(update.title) || existing?.title || "Cursor tool",
@@ -289,6 +325,7 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       if (!turnAlreadyCompleted || existing) {
         store.upsertActivity(threadId, {
           id,
+          turnId,
           kind: "agent",
           title: "Cursor plan",
           detail: entries.map((entry) => {
@@ -301,7 +338,14 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     } else if (kind === "usage_update") {
       const usage = usageView(update.usage ?? update);
       if (usage && !turnAlreadyCompleted) {
-        store.setUsage(threadId, usage, turnId);
+        // Session snapshots share one cumulative baseline. Once the accepted
+        // successor has reported its snapshot, an older process's delayed
+        // snapshot cannot reset that baseline and recount the next increment.
+        // Its result is still covered by the cumulative-snapshot contract.
+        const latestSnapshotTurn = latestCursorUsageSnapshotTurn(threadId);
+        const successorHasSnapshot = !mayActivateTurn && latestSnapshotTurn && latestSnapshotTurn !== turnId;
+        if (!successorHasSnapshot) store.setUsage(threadId, usage, turnId);
+        if (mayActivateTurn) markCursorUsageSnapshotTurn(threadId, turnId);
         turnsWithUsageSnapshots.add(turnKey(threadId, turnId));
       }
     }
@@ -314,45 +358,55 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
 
   if (message.type === "result") {
     const key = turnKey(threadId, turnId);
+    if (turnAlreadyCompleted) return;
+    if (mayActivateTurn && activeTurnMismatch) store.setActiveTurn(threadId, turnId);
     finalizeAssistantSegments(threadId, turnId, true);
+    recordResultUsage(threadId, turnId, message);
     markTurnCompleted(key);
-    const result = object(message.result);
-    const usage = usageView(result.usage);
-    // In-turn usage_update snapshots already accumulated this turn's tokens
-    // through the cumulative-snapshot path; adding the result total on top
-    // would double count and corrupt the snapshot baseline.
-    if (usage && !turnsWithUsageSnapshots.has(key)) store.addUsage(threadId, usage, `cursor-result:${turnId}`, turnId);
+    finishCursorTurnOwner(threadId, turnId);
     turnsWithUsageSnapshots.delete(key);
     // Re-read state: the flush inside finalizeAssistantSegments may have just
     // materialized the thinking activity, which the entry snapshot predates.
     const task = useTaskStore.getState().tasks[threadId];
     const thinking = task?.activities.find((activity) => activity.id === `thinking-${turnId}`);
     if (thinking?.detail) store.upsertActivity(threadId, { ...thinking, status: "completed" });
-    const interrupted = consumeProviderStopIntent(threadId, turnId)
-      || result.stopReason === "cancelled"
-      || task?.status === "interrupted";
-    store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "completed");
-    foregroundStatus(ctx, threadId, interrupted ? "Stopped" : "Ready");
+    const interrupted = consumeProviderStopIntent(threadId, turnId) || ownership.stopped
+      || settledPromptResults(message).some((result) => result.stopReason === "cancelled")
+      || (!newerTurnActive && task?.status === "interrupted");
+    store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "completed", newerTurnActive);
     ctx.onTranscriptChanged(threadId);
-    ctx.onTurnCompleted(threadId);
+    if (!newerTurnActive) {
+      foregroundStatus(ctx, threadId, interrupted ? "Stopped" : "Ready");
+      ctx.onTurnCompleted(threadId);
+    }
     return;
   }
 
   if (message.type === "openkiwi_error" || message.type === "openkiwi_exit") {
     const key = turnKey(threadId, turnId);
+    if (turnAlreadyCompleted) return;
+    if (mayActivateTurn && activeTurnMismatch) store.setActiveTurn(threadId, turnId);
     finalizeAssistantSegments(threadId, turnId, true);
+    recordResultUsage(threadId, turnId, message);
     markTurnCompleted(key);
+    finishCursorTurnOwner(threadId, turnId);
     turnsWithUsageSnapshots.delete(key);
     const detail = text(message.message) || "Cursor Agent stopped unexpectedly.";
-    const interrupted = consumeProviderStopIntent(threadId, turnId)
-      || useTaskStore.getState().tasks[threadId]?.status === "interrupted";
-    store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "error");
+    const interrupted = consumeProviderStopIntent(threadId, turnId) || ownership.stopped
+      || settledPromptResults(message).some((result) => result.stopReason === "cancelled")
+      || (!newerTurnActive && useTaskStore.getState().tasks[threadId]?.status === "interrupted");
+    store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "error", newerTurnActive);
     if (!interrupted) {
-      store.setTaskStatus(threadId, "error", detail);
-      store.upsertActivity(threadId, { id: `cursor-error-${turnId}`, kind: "warning", title: "Cursor Agent stopped", detail, status: "failed" });
-      foregroundError(ctx, threadId, detail);
+      store.upsertActivity(threadId, { id: `cursor-error-${turnId}`, turnId, kind: "warning", title: "Cursor Agent stopped", detail, status: "failed" });
+      if (!newerTurnActive) {
+        store.setTaskStatus(threadId, "error", detail);
+        foregroundError(ctx, threadId, detail);
+      }
     }
-    foregroundStatus(ctx, threadId, interrupted ? "Stopped" : "Task failed");
-    ctx.onTurnCompleted(threadId);
+    ctx.onTranscriptChanged(threadId);
+    if (!newerTurnActive) {
+      foregroundStatus(ctx, threadId, interrupted ? "Stopped" : "Task failed");
+      ctx.onTurnCompleted(threadId);
+    }
   }
 }

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { PendingTurnStarts } from "../lib/pendingTurnStarts";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
+import { acceptCursorTurnStart, beginCursorTurnStart, cursorTurnOwner, retireCursorTurnOwner } from "../lib/cursorTurnOwnership";
+import { routeCursorEvent } from "../lib/cursorEvents";
 import type { SkillDependencyReport, Thread } from "../types";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
 import { friendlyError } from "../lib/errors";
@@ -1766,6 +1768,78 @@ describe("useTurnRunner", () => {
     expect(task.lastCompletedTurnId).toBe("turn-fast");
     expect(cursor.killCursorTurn).not.toHaveBeenCalled();
   });
+
+  it("does not reinstall a superseded Cursor acknowledgment over its live successor", async () => {
+    cursor.startCursorTurn.mockImplementationOnce(async () => {
+      useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "new-turn");
+      useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+      return { turnId: "old-turn", cursorSessionId: "old-session", superseded: true };
+    });
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("work")).toBe(true); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ activeTurnId: "new-turn", status: "running" });
+    expect(deps.cursorSessionIdsRef.current[CURSOR_THREAD.id]).not.toBe("old-session");
+    expect(cursor.killCursorTurn).not.toHaveBeenCalled();
+  });
+
+  it("retains a stopped latest Cursor session for the next prompt without reviving its turn", async () => {
+    cursor.startCursorTurn.mockImplementationOnce(async () => {
+      const owner = cursorTurnOwner(CURSOR_THREAD.id)!;
+      acceptCursorTurnStart(CURSOR_THREAD.id, { owner }, "stopped-turn");
+      retireCursorTurnOwner(CURSOR_THREAD.id, owner);
+      useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "interrupted");
+      return { turnId: "stopped-turn", cursorSessionId: "accepted-stopped-session", stopped: true };
+    });
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("first prompt")).toBe(true); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ status: "interrupted" });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].activeTurnId).toBeUndefined();
+    expect(deps.cursorSessionIdsRef.current[CURSOR_THREAD.id]).toBe("accepted-stopped-session");
+    expect(deps.scheduleCursorThreadSave).toHaveBeenCalledWith(CURSOR_THREAD.id);
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    await act(async () => { await result.current.sendMessage("continue the conversation"); });
+    expect(cursor.startCursorTurn).toHaveBeenLastCalledWith(expect.objectContaining({ resumeSessionId: "accepted-stopped-session" }));
+  });
+
+  it("does not clear a successor when an older Stop acknowledgment returns", async () => {
+    const old = beginCursorTurnStart(CURSOR_THREAD.id);
+    acceptCursorTurnStart(CURSOR_THREAD.id, old, "old");
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "old");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    let stopped!: () => void;
+    cursor.killCursorTurn.mockImplementationOnce(() => new Promise<void>((resolve) => { stopped = resolve; }));
+    const deps = context({ running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let stop!: Promise<void>;
+    await act(async () => { stop = result.current.stopTurn(); });
+    const next = beginCursorTurnStart(CURSOR_THREAD.id);
+    acceptCursorTurnStart(CURSOR_THREAD.id, next, "new");
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "new");
+    await act(async () => { stopped(); await stop; });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ activeTurnId: "new", status: "running" });
+  });
+
+  it("does not let an older failed start clear its successor's status or checkpoint", async () => {
+    let fail!: (reason: Error) => void;
+    cursor.startCursorTurn.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const deps = context();
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => {
+      delivered = result.current.sendMessage("old request");
+      for (let index = 0; index < 15; index += 1) await Promise.resolve();
+    });
+    const next = beginCursorTurnStart(CURSOR_THREAD.id);
+    acceptCursorTurnStart(CURSOR_THREAD.id, next, "new");
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "new");
+    useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    await act(async () => { fail(new Error("old request failed")); expect(await delivered).toBe(false); });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ activeTurnId: "new", status: "running" });
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(deps.setError).not.toHaveBeenCalledWith("old request failed");
+  });
 });
 
 /**
@@ -2175,6 +2249,36 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith(deps.activeThread!.id);
     expect(useTaskStore.getState().tasks[deps.activeThread!.id]).toMatchObject({ status: "interrupted", messages: [] });
     expect(deps.setError).not.toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it("reserves Cursor authority before its checkpoint and cancels a pending start even with a predecessor active ID", async () => {
+    const old = beginCursorTurnStart(CURSOR_THREAD.id);
+    acceptCursorTurnStart(CURSOR_THREAD.id, old, "old");
+    useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "old");
+    let release!: () => void;
+    const checkpoint = new Promise<void>((resolve) => { release = resolve; });
+    const deps = context({ beginRunCheckpoint: vi.fn(async () => { await checkpoint; return "checkpoint"; }) });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => {
+      delivered = result.current.sendMessage("replacement");
+      for (let index = 0; index < 15; index += 1) await Promise.resolve();
+    });
+    expect(cursorTurnOwner(CURSOR_THREAD.id)?.startRequestId).not.toBe(old.owner.startRequestId);
+    const onCompleted = vi.fn();
+    routeCursorEvent({ threadId: CURSOR_THREAD.id, turnId: "old", startRequestId: old.owner.startRequestId, message: { type: "openkiwi_error", message: "old tail" } }, {
+      bindingFor: () => CURSOR_THREAD.cwd, onStatus: vi.fn(), onError: vi.fn(), onTurnCompleted: onCompleted,
+      onApprovalRequested: vi.fn(), onTranscriptChanged: vi.fn(),
+    });
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].status).toBe("starting");
+    expect(onCompleted).not.toHaveBeenCalled();
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    await act(async () => { release(); expect(await delivered).toBe(false); });
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(cursor.killCursorTurn).not.toHaveBeenCalled();
+    expect(cursorTurnOwner(CURSOR_THREAD.id)).toBeUndefined();
+    expect(useTaskStore.getState().tasks[CURSOR_THREAD.id].status).toBe("interrupted");
   });
 
   it.each(["claude", "cursor"] as const)("does not persist an undelivered skill graph in %s while Stop lands during saving", async (provider) => {

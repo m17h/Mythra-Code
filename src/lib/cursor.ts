@@ -5,6 +5,8 @@ import type { Activity, ChatMessage, PermissionMode, Thread } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { JsonObject } from "./codex";
 import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscriptPage, saveLocalTranscript, type LocalTranscriptPage } from "./localTranscriptPersistence";
+import { acceptCursorTurnStart, beginCursorTurnStart, cursorTurnOwner, cursorTurnStartAttempt, isCurrentCursorTurnStart, rejectCursorTurnStart, retireCursorTurnOwner } from "./cursorTurnOwnership";
+import { useTaskStore } from "./taskStore";
 
 export interface CursorRuntimeStatus {
   available: boolean;
@@ -25,11 +27,13 @@ export interface CursorModel {
 export interface CursorEvent {
   threadId: string;
   turnId: string;
+  startRequestId?: string;
   message: JsonObject;
 }
 
 export interface CursorTurnOptions {
   threadId: string;
+  startRequestId?: string;
   cwd: string;
   prompt: string;
   model: string;
@@ -68,9 +72,23 @@ export function listCursorModels(): Promise<CursorModel[]> {
   return invoke<CursorModel[]>("cursor_models");
 }
 
-export function startCursorTurn(options: CursorTurnOptions): Promise<{ turnId: string; cursorSessionId: string }> {
-  annotateThreadUsage(options.threadId, { provider: "cursor", model: options.model, projectPath: options.cwd });
-  return invoke("cursor_turn_start", { options });
+export async function startCursorTurn(options: CursorTurnOptions): Promise<{ turnId: string; cursorSessionId: string; superseded?: boolean; stopped?: boolean }> {
+  const reservedAttempt = options.startRequestId ? cursorTurnStartAttempt(options.threadId, options.startRequestId) : undefined;
+  if (options.startRequestId && !reservedAttempt) throw new Error("Cursor start was superseded before dispatch");
+  const attempt = reservedAttempt ?? beginCursorTurnStart(options.threadId, useTaskStore.getState().tasks[options.threadId]?.activeTurnId);
+  try {
+    if (!isCurrentCursorTurnStart(options.threadId, attempt) || attempt.owner.closed) throw new Error("Cursor start was superseded before dispatch");
+    annotateThreadUsage(options.threadId, { provider: "cursor", model: options.model, projectPath: options.cwd });
+    const result = await invoke<{ turnId: string; cursorSessionId: string }>("cursor_turn_start", { options: { ...options, startRequestId: attempt.owner.startRequestId } });
+    const current = acceptCursorTurnStart(options.threadId, attempt, result.turnId);
+    // Stop closes output admission, but the latest accepted session remains
+    // this conversation's resume identity. A successor owns its own session.
+    if (isCurrentCursorTurnStart(options.threadId, attempt) && attempt.owner.stopped) return { ...result, stopped: true };
+    return current ? result : { ...result, superseded: true };
+  } catch (error) {
+    if (!reservedAttempt) rejectCursorTurnStart(options.threadId, attempt);
+    throw error;
+  }
 }
 
 export async function steerCursorTurn(threadId: string, prompt: string, attachments: CursorTurnOptions["attachments"] = []): Promise<void> {
@@ -82,7 +100,9 @@ export async function interruptCursorTurn(threadId: string): Promise<void> {
 }
 
 export async function killCursorTurn(threadId: string): Promise<void> {
+  const owner = cursorTurnOwner(threadId, useTaskStore.getState().tasks[threadId]?.activeTurnId);
   await invoke("cursor_turn_kill", { threadId });
+  retireCursorTurnOwner(threadId, owner);
 }
 
 export function isCursorTurnActive(threadId: string): Promise<boolean> {

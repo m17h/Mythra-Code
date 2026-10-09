@@ -120,6 +120,19 @@ describe("startChildAgentTurn", () => {
     expect(result.languageSessionId).toBeUndefined();
   });
 
+  it("preserves a superseded Cursor acknowledgment for the child lifecycle caller", async () => {
+    cursor.startCursorTurn.mockResolvedValueOnce({ turnId: "stopped", cursorSessionId: "session", superseded: true });
+    const result = await startChildAgentTurn(target({ provider: "cursor" }), "Work", context());
+    expect(result).toMatchObject({ turnId: "stopped", superseded: true });
+  });
+
+  it("preserves an accepted stopped Cursor session for the child lifecycle caller", async () => {
+    cursor.startCursorTurn.mockResolvedValueOnce({ turnId: "stopped", cursorSessionId: "accepted-session", stopped: true });
+    const result = await startChildAgentTurn(target({ provider: "cursor" }), "Work", context());
+    expect(result).toMatchObject({ turnId: "stopped", cursorSessionId: "accepted-session", stopped: true });
+    expect(result.superseded).toBeUndefined();
+  });
+
   it("can start a child when optional automatic preparation fails", async () => {
     native.invoke.mockRejectedValueOnce(new Error("Offline"));
     const result = await startChildAgentTurn(target(), "Inspect symbols", context({ projectId: "project-1" }));

@@ -1023,23 +1023,28 @@ describe("SettingsModal", () => {
     expect(onLMStudioRefresh).toHaveBeenCalledOnce();
   });
 
-  it("rescans skills when the pane opens and when the app regains focus", async () => {
+  it("delegates Skills polling to the app owner and stops watching unrelated settings", async () => {
     const onRefreshSkills = vi.fn(async () => undefined);
+    const onSkillsWatchChange = vi.fn();
     const props = modalProps({
       initialSection: "skills",
       skillsFolder: "C:\\Users\\Morgan\\Skills",
       onRefreshSkills,
+      onSkillsWatchChange,
     });
     const { rerender } = render(<SettingsModal {...props} />);
 
-    await waitFor(() => expect(onRefreshSkills).toHaveBeenCalledWith(false));
+    await waitFor(() => expect(onSkillsWatchChange).toHaveBeenLastCalledWith(2_000));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(onRefreshSkills).toHaveBeenCalledWith(true));
-
-    const callsBeforeClose = onRefreshSkills.mock.calls.length;
+    expect(onRefreshSkills).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Interface" }));
+    await waitFor(() => expect(onSkillsWatchChange).toHaveBeenLastCalledWith(null));
+    fireEvent.click(screen.getByRole("button", { name: "Prompts" }));
+    await waitFor(() => expect(onSkillsWatchChange).toHaveBeenLastCalledWith(5_000));
     rerender(<SettingsModal {...props} open={false} />);
     window.dispatchEvent(new Event("focus"));
-    expect(onRefreshSkills).toHaveBeenCalledTimes(callsBeforeClose);
+    expect(onSkillsWatchChange).toHaveBeenLastCalledWith(null);
+    expect(onRefreshSkills).not.toHaveBeenCalled();
   });
 
   it("defaults the quota display to percentage remaining and explains its reach", () => {

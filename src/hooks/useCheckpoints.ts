@@ -249,9 +249,9 @@ export function useCheckpoints(context: CheckpointsContext) {
     }
   }, [checkpointsRef, persistCheckpointHead, persistCheckpoints, runCheckpointProjectOperation]);
 
-  const discardRunCheckpoint = useCallback((threadId: string) => {
+  const discardRunCheckpoint = useCallback((threadId: string, expectedCheckpointId?: string) => {
     const id = activeRunCheckpointsRef.current.get(threadId);
-    if (!id) return;
+    if (!id || (expectedCheckpointId !== undefined && id !== expectedCheckpointId)) return;
     activeRunCheckpointsRef.current.delete(threadId);
     const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
     persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
