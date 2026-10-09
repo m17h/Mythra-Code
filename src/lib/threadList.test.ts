@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Thread } from "../types";
+import { ownershipRootIds } from "./nativeAgentLinks";
 import {
   compactSidebarIndex,
   countActiveThreadsByWorkspace,
   filterThreadsByKind,
   filterThreadsForWorkspace,
+  isSubAgentThread,
   forgetSidebarThread,
   MAX_THREAD_PREVIEW_CHARACTERS,
   optimisticStartedThread,
@@ -30,6 +32,40 @@ function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe("thread sidebar list", () => {
+  it("indexes the ownership graph once for a mixed inbox without changing root precedence or order", () => {
+    const links = {
+      child: { rootThreadId: "root" },
+      root: { rootThreadId: "reversed-claim" },
+      unrelated: { rootThreadId: "elsewhere" },
+    };
+    const threads = [
+      makeThread("ordinary"),
+      makeThread("root", { parentThreadId: "reversed-claim", threadSource: "subagent" }),
+      makeThread("child"),
+      makeThread("self-parent", { parentThreadId: "self-parent" }),
+      makeThread("native", { parentThreadId: "parent" }),
+      makeThread("self-source", { parentThreadId: "self-source", threadSource: "subagent" }),
+    ];
+    const values = vi.spyOn(Object, "values");
+    try {
+      expect(filterThreadsByKind(threads, links, "main").map((thread) => thread.id))
+        .toEqual(["ordinary", "root", "self-parent"]);
+      expect(values.mock.calls.filter(([input]) => input === links)).toHaveLength(1);
+      const roots = ownershipRootIds(links);
+      values.mockClear();
+      expect(filterThreadsByKind(threads, links, "subagents", roots).map((thread) => thread.id))
+        .toEqual(["child", "native", "self-source"]);
+      expect(threads.map((thread) => isSubAgentThread(thread, links, roots)))
+        .toEqual([false, false, true, false, true, true]);
+      expect(repairRootThreadMetadata(threads[1], links, roots)).not.toHaveProperty("parentThreadId");
+      expect(values.mock.calls.filter(([input]) => input === links)).toHaveLength(0);
+      const next = { unrelated: links.unrelated };
+      expect(isSubAgentThread(threads[1], next, ownershipRootIds(next))).toBe(true);
+    } finally {
+      values.mockRestore();
+    }
+  });
+
   it("shows a newly started thread immediately with its first message", () => {
     const started = optimisticStartedThread(makeThread("normal-chat"), "A normal chat", 20);
     const threads = upsertThread([], started);

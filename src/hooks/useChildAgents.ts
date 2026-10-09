@@ -23,6 +23,7 @@ import { startChildAgentTurn } from "../lib/childRun";
 import { auditEvent, rpc, type JsonObject } from "../lib/codex";
 import { isClaudeTurnActive, killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
 import { isCursorTurnActive, killCursorTurn, loadCursorTranscript } from "../lib/cursor";
+import { cursorTurnCanSettle } from "../lib/cursorTurnOwnership";
 import { friendlyError } from "../lib/errors";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
@@ -444,7 +445,7 @@ export function useChildAgents(context: ChildAgentContext): {
     ctx.setThreads((current) => upsertThread(current, result.thread));
     ctx.persistThreadModel(childThreadId, result.model);
     ctx.persistThreadReasoning(childThreadId, { reasoningEffort, ultra: false });
-    if (result.cursorSessionId) ctx.cursorSessionIdsRef.current[childThreadId] = result.cursorSessionId;
+    if (result.cursorSessionId && !result.superseded && (!result.stopped || (result.turnId && cursorTurnCanSettle(childThreadId, result.turnId)))) ctx.cursorSessionIdsRef.current[childThreadId] = result.cursorSessionId;
 
     const taskStore = useTaskStore.getState();
     taskStore.ensureTask(childThreadId, executionPath);
@@ -452,8 +453,8 @@ export function useChildAgents(context: ChildAgentContext): {
     const completedBeforeStartReturned = Boolean(
       result.turnId && taskStore.tasks[childThreadId]?.lastCompletedTurnId === result.turnId,
     );
-    if (result.turnId && !completedBeforeStartReturned) taskStore.setActiveTurn(childThreadId, result.turnId);
-    if (!completedBeforeStartReturned) {
+    if (result.turnId && !completedBeforeStartReturned && !result.superseded && !result.stopped) taskStore.setActiveTurn(childThreadId, result.turnId);
+    if (!completedBeforeStartReturned && !result.superseded && !result.stopped) {
       taskStore.setTaskStatus(childThreadId, "running");
     }
     const lifecycle = childLifecycle(taskStatusOf(childThreadId));

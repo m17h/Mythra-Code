@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, ownsChildren, sanitizeNativeAgentLinks } from "./nativeAgentLinks";
+import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, ownershipRootIds, ownsChildren, sanitizeNativeAgentLinks } from "./nativeAgentLinks";
 
 describe("native agent ownership", () => {
   it("discovers ownership from Codex thread metadata", () => {
@@ -37,6 +37,18 @@ describe("ownership graph guards", () => {
     expect(ownsChildren(graph, "root")).toBe(true);
     expect(ownsChildren(graph, "child")).toBe(false);
     expect(ownsChildren(graph, "")).toBe(false);
+  });
+
+  it("indexes a snapshot without caching a mutable discovery graph", () => {
+    const links: Record<string, { rootThreadId: string }> = { child: { rootThreadId: "root" } };
+    const roots = ownershipRootIds(links);
+    expect(ownsChildren(links, "root", roots)).toBe(true);
+    expect(ownsChildren(links, "child", roots)).toBe(false);
+    delete links.child;
+    links.next = { rootThreadId: "new-root" };
+    expect(ownsChildren(links, "root")).toBe(false);
+    expect(ownsChildren(links, "new-root")).toBe(true);
+    expect([...ownershipRootIds(links)]).toEqual(["new-root"]);
   });
 
   it("refuses self ownership", () => {

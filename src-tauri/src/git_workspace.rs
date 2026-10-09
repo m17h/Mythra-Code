@@ -4,7 +4,10 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Output, Stdio},
-    sync::{mpsc, Arc, Mutex as StdMutex, OnceLock, Weak},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex as StdMutex, OnceLock, Weak,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -14,7 +17,9 @@ use tokio::sync::Mutex;
 
 use crate::{
     github::parse_github_repository,
-    project_git::{git_command_for, git_common_dir, git_stdout, optional_git_stdout, run_git},
+    project_git::{
+        git_command_for, git_common_dir, git_stdout, optional_git_stdout, GitReadOperation,
+    },
 };
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -55,6 +60,8 @@ pub(super) struct GitWorkspaceSnapshot {
     staged_paths: Vec<String>,
     root_path: String,
     is_root: bool,
+    changes: Option<crate::git_inspection::ProjectGitChanges>,
+    changes_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,11 +188,14 @@ pub(super) async fn repository_lock(cwd: &Path) -> Result<Arc<Mutex<()>>, String
 }
 
 fn repo(cwd: &str) -> Result<PathBuf, String> {
+    repo_with_read(cwd, &GitReadOperation::new())
+}
+
+fn repo_with_read(cwd: &str, read: &GitReadOperation) -> Result<PathBuf, String> {
     let selected = PathBuf::from(cwd)
         .canonicalize()
         .map_err(|error| format!("Could not open the project folder: {error}"))?;
-    let root = git_stdout(&selected, &["rev-parse", "--show-toplevel"], None)
-        .map_err(|_| "This folder is not inside a Git repository".to_string())?;
+    let root = read.stdout(&selected, &["rev-parse", "--show-toplevel"])?;
     PathBuf::from(root)
         .canonicalize()
         .map_err(|error| format!("Could not open the Git repository root: {error}"))
@@ -202,8 +212,11 @@ fn mutation_repo(cwd: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn worktree_records(repo: &Path) -> Result<Vec<(String, Option<String>)>, String> {
-    let output = run_git(repo, &["worktree", "list", "--porcelain", "-z"], None)?;
+fn worktree_records_with_read(
+    repo: &Path,
+    read: &GitReadOperation,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let output = read.output(repo, &["worktree", "list", "--porcelain", "-z"])?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if detail.is_empty() {
@@ -227,15 +240,25 @@ fn worktree_records(repo: &Path) -> Result<Vec<(String, Option<String>)>, String
     Ok(records)
 }
 
-pub(super) fn worktree_paths(repo: &Path) -> Result<Vec<String>, String> {
-    Ok(worktree_records(repo)?
+pub(super) fn worktree_paths_with_read(
+    repo: &Path,
+    read: &GitReadOperation,
+) -> Result<Vec<String>, String> {
+    Ok(worktree_records_with_read(repo, read)?
         .into_iter()
         .map(|(path, _)| path)
         .collect())
 }
 
 pub(super) fn worktree_branch_paths(repo: &Path) -> Result<HashMap<String, String>, String> {
-    Ok(worktree_records(repo)?
+    worktree_branch_paths_with_read(repo, &GitReadOperation::new())
+}
+
+pub(super) fn worktree_branch_paths_with_read(
+    repo: &Path,
+    read: &GitReadOperation,
+) -> Result<HashMap<String, String>, String> {
+    Ok(worktree_records_with_read(repo, read)?
         .into_iter()
         .filter_map(|(path, branch)| branch.map(|branch| (branch, path)))
         .collect())
@@ -256,15 +279,29 @@ fn tracking_stdout(repo: &Path, args: &[&str], deadline: Instant) -> Option<Stri
     String::from_utf8(output.stdout).ok()
 }
 
+#[cfg(test)]
 fn snapshot_tracking(
     repo: &Path,
     branch: Option<&str>,
     head_oid: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<usize>, Option<usize>) {
+    snapshot_tracking_with_deadline(
+        repo,
+        branch,
+        head_oid,
+        Instant::now() + TRACKING_READ_TIMEOUT,
+    )
+}
+
+fn snapshot_tracking_with_deadline(
+    repo: &Path,
+    branch: Option<&str>,
+    head_oid: Option<&str>,
+    deadline: Instant,
+) -> (Option<String>, Option<String>, Option<usize>, Option<usize>) {
     let (Some(branch), Some(head_oid)) = (branch, head_oid) else {
         return (None, None, None, None);
     };
-    let deadline = Instant::now() + TRACKING_READ_TIMEOUT;
     let reference = format!("refs/heads/{branch}");
     let Some(metadata) = tracking_stdout(
         repo,
@@ -322,14 +359,21 @@ fn snapshot_tracking(
     }
 }
 
+#[cfg(test)]
 fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
-    let branch = optional_git_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"]);
-    let head_oid = optional_git_stdout(repo, &["rev-parse", "--verify", "HEAD"]);
-    let occupied = worktree_branch_paths(repo)?;
-    let refs = git_stdout(
+    snapshot_with_read(repo, &GitReadOperation::new())
+}
+
+fn snapshot_with_read(
+    repo: &Path,
+    read: &GitReadOperation,
+) -> Result<GitWorkspaceSnapshot, String> {
+    let branch = read.optional_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"])?;
+    let head_oid = read.optional_stdout(repo, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
+    let occupied = worktree_branch_paths_with_read(repo, read)?;
+    let refs = read.stdout(
         repo,
         &["for-each-ref", "--format=%(refname:strip=2)", "refs/heads"],
-        None,
     )?;
     let mut branches: Vec<_> = refs
         .lines()
@@ -348,10 +392,9 @@ fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
     // `git_stdout` trims text output. Porcelain status deliberately starts an
     // unstaged tracked entry with a space, and paths may end with spaces, so
     // parse the raw NUL-delimited bytes without any text normalization.
-    let status = run_git(
+    let status = read.output(
         repo,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        None,
     )?;
     if !status.status.success() {
         let detail = String::from_utf8_lossy(&status.stderr).trim().to_string();
@@ -362,6 +405,7 @@ fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
         });
     }
     let mut staged_paths = Vec::new();
+    let mut staged_files = 0;
     let mut changed = HashSet::new();
     let mut unstaged = HashSet::new();
     let entries: Vec<&[u8]> = status
@@ -377,10 +421,15 @@ fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
         }
         let x = entry[0] as char;
         let y = entry[1] as char;
-        let name = String::from_utf8_lossy(&entry[3..]).into_owned();
-        changed.insert(name.clone());
+        let name = &entry[3..];
+        changed.insert(name);
         if x != ' ' && x != '?' {
-            staged_paths.push(name.clone());
+            staged_files += 1;
+            // Byte filenames may not be representable across the bridge. Keep
+            // counts exact without inventing a different per-file action path.
+            if let Ok(name) = std::str::from_utf8(name) {
+                staged_paths.push(name.to_string());
+            }
         }
         if y != ' ' || x == '?' {
             unstaged.insert(name);
@@ -392,8 +441,25 @@ fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
         };
     }
     staged_paths.sort();
-    let (upstream, upstream_remote, ahead, behind) =
-        snapshot_tracking(repo, branch.as_deref(), head_oid.as_deref());
+    // A presentation failure must not erase independently verified checkout
+    // identity and counts. The Changes consumer receives an explicit error.
+    let (changes, changes_error) =
+        match crate::git_inspection::changes_from_status(repo, &status.stdout, false, 500) {
+            Ok(changes) => (Some(changes), None),
+            Err(error)
+                if error.starts_with("A Git filename is not valid UTF-8")
+                    || error == "Git filename must be a literal repository-relative path" =>
+            {
+                (None, Some(error))
+            }
+            Err(error) => return Err(error),
+        };
+    let (upstream, upstream_remote, ahead, behind) = snapshot_tracking_with_deadline(
+        repo,
+        branch.as_deref(),
+        head_oid.as_deref(),
+        read.deadline().min(Instant::now() + TRACKING_READ_TIMEOUT),
+    );
     Ok(GitWorkspaceSnapshot {
         branch,
         head_oid,
@@ -402,20 +468,34 @@ fn snapshot(repo: &Path) -> Result<GitWorkspaceSnapshot, String> {
         ahead,
         behind,
         branches,
-        staged_files: staged_paths.len(),
+        staged_files,
         unstaged_files: unstaged.len(),
         changed_files: changed.len(),
         staged_paths,
         root_path: repo.to_string_lossy().into_owned(),
         is_root: true,
+        changes,
+        changes_error,
     })
 }
 
 fn snapshot_for_selection(root: &Path, cwd: &str) -> Result<GitWorkspaceSnapshot, String> {
+    // These callers have already received success from a mutation. A failed
+    // bounded refresh is not evidence that the requested change did not happen.
+    snapshot_for_selection_with_read(root, cwd, &GitReadOperation::new()).map_err(|error| {
+        format!("Git completed the requested operation, but its workspace state could not be refreshed: {error}. Changes may already have taken effect; refresh and inspect the checkout before trying again.")
+    })
+}
+
+fn snapshot_for_selection_with_read(
+    root: &Path,
+    cwd: &str,
+    read: &GitReadOperation,
+) -> Result<GitWorkspaceSnapshot, String> {
     let selected = Path::new(cwd)
         .canonicalize()
         .map_err(|error| format!("Could not open the project folder: {error}"))?;
-    let mut value = snapshot(root)?;
+    let mut value = snapshot_with_read(root, read)?;
     value.is_root = selected == root;
     Ok(value)
 }
@@ -1694,6 +1774,33 @@ pub(super) fn bounded_git_output_with_prompt_policy(
 
 // Production uses the no-op readiness callback above and its existing absolute
 // timeout. Lifecycle tests can establish the exact phase before timing it out.
+#[derive(Clone, Copy)]
+enum GitPipe {
+    Stdout,
+    Stderr,
+}
+
+type GitPipeResult = (GitPipe, Result<(Vec<u8>, usize), String>);
+type GitCompletedOutput = (std::process::ExitStatus, (Vec<u8>, usize), (Vec<u8>, usize));
+
+// Only the ignored timing probe overrides this policy, on its own test thread.
+// Normal tests use the actual platform default just like production.
+#[cfg(test)]
+thread_local! {
+    static GIT_COMPLETION_WAKE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn git_completion_wake_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = GIT_COMPLETION_WAKE.get() {
+        return enabled;
+    }
+    // Actual paired native measurements found EOF notifications beneficial on
+    // macOS but slower for Windows status reads. Retain Windows' bounded poll
+    // policy, with the same owned drains, containment and absolute deadline.
+    !cfg!(windows)
+}
+
 fn bounded_git_output_with_readiness(
     repo: &Path,
     args: &[&str],
@@ -1701,6 +1808,60 @@ fn bounded_git_output_with_readiness(
     output_limit: usize,
     prompt_policy: (bool, bool),
     readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+) -> Result<(Output, bool), String> {
+    bounded_git_output_with_capture(
+        repo,
+        args,
+        timeout,
+        output_limit,
+        prompt_policy,
+        readiness,
+        None,
+    )
+}
+
+/// Count records while draining stdout instead of retaining pathname bytes.
+/// The same deadline, child ownership and bounded stderr policy still apply.
+pub(super) fn bounded_git_nul_path_count(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<usize, String> {
+    let count = Arc::new(AtomicUsize::new(0));
+    let (output, truncated) = bounded_git_output_with_capture(
+        repo,
+        args,
+        timeout,
+        output_limit,
+        (true, true),
+        |_| Ok(()),
+        Some(count.clone()),
+    )?;
+    if truncated {
+        return Err(
+            "Git read errors exceeded their byte limit; repository state is unknown".into(),
+        );
+    }
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "Could not count Git paths".into()
+        } else {
+            detail
+        });
+    }
+    Ok(count.load(Ordering::Relaxed))
+}
+
+fn bounded_git_output_with_capture(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+    output_limit: usize,
+    prompt_policy: (bool, bool),
+    readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
+    stdout_nul_count: Option<Arc<AtomicUsize>>,
 ) -> Result<(Output, bool), String> {
     let (network, suppress_askpass) = prompt_policy;
     let home = env::var_os("HOME").map(PathBuf::from);
@@ -1728,11 +1889,18 @@ fn bounded_git_output_with_readiness(
         .stderr
         .take()
         .ok_or_else(|| "Could not read Git errors".to_string())?;
-    let drain = |mut pipe: Box<dyn Read + Send>| {
-        let (sender, receiver) = mpsc::sync_channel(1);
+    let (completion_sender, completion_receiver) = mpsc::sync_channel::<GitPipeResult>(2);
+    let drain = |mut pipe: Box<dyn Read + Send>, kind| {
+        let sender = completion_sender.clone();
+        let nul_counter = if matches!(kind, GitPipe::Stdout) {
+            stdout_nul_count.clone()
+        } else {
+            None
+        };
         thread::spawn(move || {
             let mut kept = Vec::new();
             let mut total = 0usize;
+            let mut path_has_bytes = false;
             let mut chunk = [0u8; 8192];
             let result = loop {
                 let count = pipe
@@ -1743,43 +1911,53 @@ fn bounded_git_output_with_readiness(
                     Err(error) => break Err(error),
                 };
                 if count == 0 {
+                    if nul_counter.is_some() && path_has_bytes {
+                        break Err("Git returned an unterminated path list".into());
+                    }
                     break Ok((kept, total));
                 }
                 total = total.saturating_add(count);
-                if kept.len() < output_limit {
+                if let Some(counted) = &nul_counter {
+                    let mut paths = 0;
+                    let mut empty_path = false;
+                    for byte in &chunk[..count] {
+                        if *byte == 0 {
+                            if !path_has_bytes {
+                                empty_path = true;
+                                break;
+                            }
+                            paths += 1;
+                            path_has_bytes = false;
+                        } else {
+                            path_has_bytes = true;
+                        }
+                    }
+                    if empty_path {
+                        break Err("Git returned an empty path in its path list".into());
+                    }
+                    if counted
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                            value.checked_add(paths)
+                        })
+                        .is_err()
+                    {
+                        break Err("Git returned too many paths to count".into());
+                    }
+                } else if kept.len() < output_limit {
                     let retain = count.min(output_limit - kept.len());
                     kept.extend_from_slice(&chunk[..retain]);
                 }
             };
-            let _ = sender.send(result);
+            let _ = sender.send((kind, result));
         });
-        receiver
     };
-    let stdout_reader = drain(Box::new(stdout));
-    let stderr_reader = drain(Box::new(stderr));
+    drain(Box::new(stdout), GitPipe::Stdout);
+    drain(Box::new(stderr), GitPipe::Stderr);
+    drop(completion_sender);
     readiness(&mut child).map_err(|error| stop(&mut child, error))?;
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            Ok(None) => {
-                return Err(stop(&mut child, "Git operation timed out".into()));
-            }
-            Err(error) => {
-                return Err(stop(&mut child, format!("Could not wait for Git: {error}")));
-            }
-        }
-    };
-    let remaining = || deadline.saturating_duration_since(Instant::now());
-    let (stdout, stdout_len) = stdout_reader
-        .recv_timeout(remaining())
-        .map_err(|_| stop(&mut child, "Git operation timed out".to_string()))?
-        .map_err(|error| stop(&mut child, error))?;
-    let (stderr, stderr_len) = stderr_reader
-        .recv_timeout(remaining())
-        .map_err(|_| stop(&mut child, "Git operation timed out".to_string()))?
-        .map_err(|error| stop(&mut child, error))?;
+    let (status, (stdout, stdout_len), (stderr, stderr_len)) =
+        wait_for_git_completion(&mut child, completion_receiver, deadline, stop)?;
     let output = Output {
         status,
         stdout,
@@ -1787,8 +1965,77 @@ fn bounded_git_output_with_readiness(
     };
     Ok((
         output,
-        stdout_len > output_limit || stderr_len > output_limit,
+        (stdout_nul_count.is_none() && stdout_len > output_limit) || stderr_len > output_limit,
     ))
+}
+
+fn wait_for_git_completion(
+    child: &mut std::process::Child,
+    completed: mpsc::Receiver<GitPipeResult>,
+    deadline: Instant,
+    stop: impl Fn(&mut std::process::Child, String) -> String,
+) -> Result<GitCompletedOutput, String> {
+    let mut status = None;
+    let mut stdout = None;
+    let mut stderr = None;
+    let mut next_child_poll = Instant::now();
+    loop {
+        if status.is_none() {
+            status = child
+                .try_wait()
+                .map_err(|error| stop(child, format!("Could not wait for Git: {error}")))?;
+            next_child_poll = next_git_child_poll(next_child_poll, Instant::now());
+        }
+        if let (Some(status), Some(stdout), Some(stderr)) =
+            (status, stdout.as_mut(), stderr.as_mut())
+        {
+            return Ok((status, std::mem::take(stdout), std::mem::take(stderr)));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(stop(child, "Git operation timed out".into()));
+        }
+        let interval = if status.is_none() {
+            remaining.min(next_child_poll.saturating_duration_since(Instant::now()))
+        } else {
+            remaining
+        };
+        // The old sleep cannot observe a quick Git exit until its full interval
+        // elapses. EOF/error notifications wake it, with their bounded results
+        // cached below. EOF is NOT process exit: recheck try_wait on every wake,
+        // and retain polling when both streams close before the child exits.
+        // An early EOF must not postpone that next scheduled poll: on Windows
+        // the pipes can close before the process handle becomes signaled.
+        if !git_completion_wake_enabled() && status.is_none() {
+            thread::sleep(interval);
+            continue;
+        }
+        if stdout.is_some() && stderr.is_some() {
+            thread::sleep(interval);
+            continue;
+        }
+        match completed.recv_timeout(interval) {
+            Ok((kind, result)) => {
+                let result = result.map_err(|error| stop(child, error))?;
+                match kind {
+                    GitPipe::Stdout => stdout = Some(result),
+                    GitPipe::Stderr => stderr = Some(result),
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(stop(child, "Could not read Git output".into()));
+            }
+        }
+    }
+}
+
+fn next_git_child_poll(previous: Instant, checked_at: Instant) -> Instant {
+    if checked_at >= previous {
+        checked_at + Duration::from_millis(25)
+    } else {
+        previous
+    }
 }
 
 fn bounded_git(repo: &Path, args: &[&str]) -> Result<Output, String> {
@@ -2291,7 +2538,9 @@ pub(super) async fn git_workspace_revert_all(
 #[tauri::command]
 pub(super) async fn git_workspace_snapshot(cwd: String) -> Result<GitWorkspaceSnapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        repo(&cwd).and_then(|path| snapshot_for_selection(&path, &cwd))
+        let read = GitReadOperation::new();
+        repo_with_read(&cwd, &read)
+            .and_then(|path| snapshot_for_selection_with_read(&path, &cwd, &read))
     })
     .await
     .map_err(|error| format!("Git workspace inspection failed: {error}"))?
@@ -2450,6 +2699,7 @@ pub(super) async fn git_workspace_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project_git::run_git;
     use std::{
         fs,
         sync::atomic::{AtomicUsize, Ordering},
@@ -2497,6 +2747,249 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
+    }
+
+    fn completion_fixture_command(wait_before_exit: bool) -> std::process::Command {
+        let mut command = std::process::Command::new(env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "git_workspace::tests::git_completion_fixture_child",
+            "--test-threads=1",
+        ]);
+        command.env(
+            "MYTHRA_GIT_COMPLETION_FIXTURE_EXIT",
+            if wait_before_exit { "7" } else { "0" },
+        );
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
+    #[test]
+    #[ignore = "self-exe child fixture for portable completion lifecycle tests"]
+    fn git_completion_fixture_child() {
+        let Ok(exit) = env::var("MYTHRA_GIT_COMPLETION_FIXTURE_EXIT") else {
+            return;
+        };
+        match exit.as_str() {
+            "7" => {
+                thread::sleep(Duration::from_millis(150));
+                std::process::exit(7);
+            }
+            "0" => std::process::exit(0),
+            _ => panic!("Unknown owned completion fixture"),
+        }
+    }
+
+    #[test]
+    fn completion_notifications_still_require_the_direct_child_exit() {
+        let mut command = completion_fixture_command(true);
+        let (mut child, scope) = spawn_scoped_git(&mut command).unwrap();
+        let (sender, completed) = mpsc::sync_channel(2);
+        // Both pipes can reach EOF before the child exits. Cache both results,
+        // but never turn their completion notifications into process success.
+        sender
+            .send((GitPipe::Stdout, Ok((b"out".to_vec(), 3))))
+            .unwrap();
+        sender
+            .send((GitPipe::Stderr, Ok((b"err".to_vec(), 3))))
+            .unwrap();
+        drop(sender);
+        let (status, stdout, stderr) = wait_for_git_completion(
+            &mut child,
+            completed,
+            Instant::now() + Duration::from_secs(15),
+            |child, reason| scope.stop(child, reason),
+        )
+        .unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(stdout, (b"out".to_vec(), 3));
+        assert_eq!(stderr, (b"err".to_vec(), 3));
+    }
+
+    #[test]
+    fn early_completion_checks_do_not_postpone_the_scheduled_child_poll() {
+        let epoch = Instant::now();
+        let scheduled = epoch + Duration::from_millis(25);
+        let after_stdout = next_git_child_poll(scheduled, epoch + Duration::from_millis(19));
+        let after_stderr = next_git_child_poll(after_stdout, epoch + Duration::from_millis(21));
+        assert_eq!(after_stdout, scheduled);
+        assert_eq!(after_stderr, scheduled);
+        assert_eq!(
+            next_git_child_poll(after_stderr, scheduled),
+            epoch + Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn completion_wait_defaults_to_the_measured_platform_policy() {
+        assert_eq!(GIT_COMPLETION_WAKE.get(), None);
+        assert_eq!(git_completion_wake_enabled(), !cfg!(windows));
+    }
+
+    #[test]
+    fn completion_notifications_still_require_both_drains_before_deadline() {
+        let mut command = completion_fixture_command(false);
+        let (mut child, scope) = spawn_scoped_git(&mut command).unwrap();
+        // Establish direct-child exit independently of platform startup time.
+        let fixture_deadline = Instant::now() + Duration::from_secs(15);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= fixture_deadline {
+                panic!(
+                    "{}",
+                    scope.stop(&mut child, "Fixture child did not exit".into())
+                );
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let (sender, completed) = mpsc::sync_channel(2);
+        sender.send((GitPipe::Stdout, Ok((Vec::new(), 0)))).unwrap();
+        // Keep the second drain pending even after the direct child exits.
+        let error = wait_for_git_completion(
+            &mut child,
+            completed,
+            Instant::now() + Duration::from_millis(100),
+            |child, reason| scope.stop(child, reason),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        drop(sender);
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    #[ignore = "opt-in native read latency measurement; no CI timing threshold"]
+    fn measure_git_read_completion_latency() {
+        assert_eq!(
+            env::var("MYTHRA_MEASURE_GIT_READ_LATENCY").as_deref(),
+            Ok("1")
+        );
+        let path = fixture();
+        let branch = git_stdout(&path, &["symbolic-ref", "--short", "HEAD"], None).unwrap();
+        let head = git_stdout(&path, &["rev-parse", "HEAD"], None).unwrap();
+        git_stdout(
+            &path,
+            &["update-ref", "refs/remotes/origin/main", &head],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &["config", &format!("branch.{branch}.remote"), "origin"],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &[
+                "config",
+                &format!("branch.{branch}.merge"),
+                "refs/heads/main",
+            ],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &[
+                "config",
+                "remote.origin.url",
+                "https://example.invalid/owned-fixture.git",
+            ],
+            None,
+        )
+        .unwrap();
+        git_stdout(
+            &path,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+            None,
+        )
+        .unwrap();
+        let status_args = ["status", "--porcelain=v1", "-z", "--untracked-files=all"];
+        let snapshot_read = || {
+            let read = GitReadOperation::new();
+            let cwd = path.to_str().unwrap();
+            let root = repo_with_read(cwd, &read).unwrap();
+            serde_json::to_value(snapshot_for_selection_with_read(&root, cwd, &read).unwrap())
+                .unwrap()
+        };
+        let report = |label: &str, values: &mut Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            eprintln!(
+                "{label}: n={} median_ms={:.2} p95_ms={:.2}",
+                values.len(),
+                (values[values.len() / 2 - 1] + values[values.len() / 2]) / 2.0,
+                // Nearest-rank p95: ceil(0.95*n)-1, index22 for24 samples.
+                values[(values.len() * 95).div_ceil(100) - 1]
+            );
+        };
+        for dirty in [false, true] {
+            if dirty {
+                fs::write(path.join("file.txt"), "small dirty working copy\n").unwrap();
+                for number in 0..16 {
+                    fs::write(path.join(format!("untracked-{number}.txt")), "new\n").unwrap();
+                }
+            }
+            let expected_status = run_git(&path, &status_args, None).unwrap().stdout;
+            let expected_snapshot = snapshot_read();
+            let modes = [
+                "raw_status",
+                "forced_poll25_status",
+                "forced_wake_status",
+                "platform_default_status",
+                "forced_poll25_snapshot",
+                "forced_wake_snapshot",
+                "platform_default_snapshot",
+            ];
+            let mut values: Vec<Vec<f64>> = vec![Vec::new(); modes.len()];
+            // Warm each path, then rotate measurement ordering on one unchanged
+            // repo. A full snapshot has9 Git subprocesses including3 tracking
+            // probes; status has1. This is native runner time, not UI rendering.
+            for round in 0..25 {
+                for offset in 0..modes.len() {
+                    let mode = (round + offset) % modes.len();
+                    let override_policy = if modes[mode].starts_with("forced_poll25") {
+                        Some(false)
+                    } else if modes[mode].starts_with("forced_wake") {
+                        Some(true)
+                    } else {
+                        None
+                    };
+                    GIT_COMPLETION_WAKE.set(override_policy);
+                    let started = Instant::now();
+                    match mode {
+                        0 => assert_eq!(
+                            run_git(&path, &status_args, None).unwrap().stdout,
+                            expected_status
+                        ),
+                        1..=3 => assert_eq!(
+                            GitReadOperation::new()
+                                .output(&path, &status_args)
+                                .unwrap()
+                                .stdout,
+                            expected_status
+                        ),
+                        _ => assert_eq!(snapshot_read(), expected_snapshot),
+                    }
+                    if round > 0 {
+                        values[mode].push(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    GIT_COMPLETION_WAKE.set(None);
+                }
+            }
+            let fixture_kind = if dirty { "small_dirty" } else { "clean" };
+            for (mode, values) in modes.iter().zip(values.iter_mut()) {
+                report(&format!("{fixture_kind}/{mode}"), values);
+            }
+        }
+        fs::remove_dir_all(path).unwrap();
     }
 
     fn assert_restored_from_head(repo: &Path, path: &str) {
@@ -5361,6 +5854,101 @@ mod tests {
     }
 
     #[test]
+    fn bounded_workspace_snapshot_overflow_never_reports_a_clean_repository() {
+        let path = fixture();
+        let index = fs::read(path.join(".git/index")).unwrap();
+        for number in 0..100 {
+            fs::write(
+                path.join(format!("untracked-long-fixture-name-{number:03}.txt")),
+                "new\n",
+            )
+            .unwrap();
+        }
+        let read = GitReadOperation::with_limits(Duration::from_secs(5), 1024);
+        let error = snapshot_with_read(&path, &read).unwrap_err();
+        assert!(error.contains("byte limit"), "{error}");
+        assert_eq!(fs::read(path.join(".git/index")).unwrap(), index);
+        let recovered = snapshot(&path).unwrap();
+        assert_eq!(recovered.changed_files, 100);
+        let changes = serde_json::to_value(recovered.changes.unwrap()).unwrap();
+        assert_eq!(changes["untrackedFiles"], 100);
+        assert_eq!(changes["rows"].as_array().unwrap().len(), 100);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_snapshot_retains_exact_identity_and_counts_for_non_utf8_git_paths() {
+        let path = fixture();
+        let before = snapshot(&path).unwrap();
+        let blob = crate::project_git::run_git_with_input(
+            &path,
+            &["hash-object", "-w", "--stdin"],
+            None,
+            b"",
+        )
+        .unwrap();
+        assert!(blob.status.success());
+        let oid = String::from_utf8(blob.stdout).unwrap();
+        let mut input = Vec::new();
+        // These distinct byte names would collide if summary keys used lossy
+        // Unicode decoding. Index fixtures also work on UTF-8-only filesystems.
+        for invalid_byte in [0xfe, 0xff] {
+            input.extend_from_slice(format!("100644 {}\tnonutf-", oid.trim()).as_bytes());
+            input.extend_from_slice(&[invalid_byte, 0]);
+        }
+        let indexed = crate::project_git::run_git_with_input(
+            &path,
+            &["update-index", "-z", "--index-info"],
+            None,
+            &input,
+        )
+        .unwrap();
+        assert!(indexed.status.success());
+        let value = snapshot(&path).unwrap();
+        assert_eq!(value.branch, before.branch);
+        assert_eq!(value.head_oid, before.head_oid);
+        assert_eq!(value.changed_files, 2);
+        assert_eq!(value.staged_files, 2);
+        assert_eq!(value.unstaged_files, 2);
+        assert!(value.staged_paths.is_empty());
+        assert!(value.changes.is_none());
+        assert!(value.changes_error.as_deref().unwrap().contains("UTF-8"));
+        let json = serde_json::to_value(value).unwrap();
+        assert!(json["changes"].is_null());
+        assert!(json["changesError"].as_str().unwrap().contains("UTF-8"));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_workspace_snapshot_times_out_a_stalled_fsmonitor_without_changing_the_index() {
+        let path = fixture();
+        let hook = path.join(".git/read-fsmonitor-fixture");
+        fs::write(&hook, "#!/bin/sh\nprintf started > .git/read-fsmonitor-started\n(sleep 1; printf survived > .git/read-fsmonitor-survived) &\nsleep 10\n").unwrap();
+        enable_test_hook(&hook);
+        git_stdout(
+            &path,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+            None,
+        )
+        .unwrap();
+        let index = fs::read(path.join(".git/index")).unwrap();
+        let read = GitReadOperation::with_limits(Duration::from_millis(600), 1024 * 1024);
+        let started = Instant::now();
+        let error = snapshot_with_read(&path, &read).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(path.join(".git/read-fsmonitor-started").exists());
+        assert_eq!(fs::read(path.join(".git/index")).unwrap(), index);
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(!path.join(".git/read-fsmonitor-survived").exists());
+        git_stdout(&path, &["config", "--unset", "core.fsmonitor"], None).unwrap();
+        assert_eq!(snapshot(&path).unwrap().changed_files, 0);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn snapshot_counts_staged_and_unstaged_paths() {
         let path = fixture();
         fs::write(path.join("file.txt"), "two\n").unwrap();
@@ -5371,6 +5959,11 @@ mod tests {
         assert_eq!(value.staged_files, 1);
         assert_eq!(value.unstaged_files, 1);
         assert_eq!(value.staged_paths, vec!["file.txt"]);
+        let changes = serde_json::to_value(value.changes.unwrap()).unwrap();
+        assert_eq!(changes["stagedFiles"], 1);
+        assert_eq!(changes["unstagedFiles"], 0);
+        assert_eq!(changes["untrackedFiles"], 1);
+        assert_eq!(changes["changedFiles"], 2);
         fs::remove_dir_all(path).unwrap();
     }
 

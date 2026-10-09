@@ -391,10 +391,21 @@ pub(super) fn github_remote_url(cwd: &Path, remote: &str) -> Option<String> {
 }
 
 pub(super) fn github_repo_status_sync(cwd: &str) -> Result<GitHubRepoStatus, String> {
+    github_repo_status_with_read(cwd, &crate::project_git::GitReadOperation::new())
+}
+
+fn github_repo_status_with_read(
+    cwd: &str,
+    read: &crate::project_git::GitReadOperation,
+) -> Result<GitHubRepoStatus, String> {
     let selected = PathBuf::from(cwd)
         .canonicalize()
         .map_err(|error| format!("Could not open the project folder: {error}"))?;
-    if git_stdout(&selected, &["rev-parse", "--show-toplevel"], None).is_err() {
+    if !read
+        .output(&selected, &["rev-parse", "--show-toplevel"])?
+        .status
+        .success()
+    {
         return Ok(GitHubRepoStatus {
             is_repo: false,
             remote_url: None,
@@ -409,34 +420,49 @@ pub(super) fn github_repo_status_sync(cwd: &str) -> Result<GitHubRepoStatus, Str
     // get-url expands url.*.insteadOf, which can mask a GitHub origin behind a
     // local/credential transport and break safe native push binding. Reading
     // all values also prevents treating multiple origin URLs as one target.
-    let remote_url = github_remote_url(&selected, "origin");
-    let upstream = optional_git_stdout(
-        &selected,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    );
-    let (ahead, behind) = upstream
-        .as_ref()
-        .and_then(|_| {
-            optional_git_stdout(
-                &selected,
-                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-            )
-        })
-        .and_then(|counts| {
-            let mut parts = counts.split_whitespace();
-            Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
-        })
-        .unwrap_or((0, 0));
+    let remote_url =
+        read.optional_stdout(&selected, &["config", "--get-all", "remote.origin.url"])?;
+    let branch = read.optional_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"])?;
+    let upstream = match branch.as_deref() {
+        Some(branch) => read.optional_stdout(
+            &selected,
+            &[
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                &format!("refs/heads/{branch}"),
+            ],
+        )?,
+        None => None,
+    };
+    let (ahead, behind) = if upstream.is_some() {
+        let counts = read.stdout(
+            &selected,
+            &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        )?;
+        let mut parts = counts.split_whitespace();
+        let invalid = || "Git returned invalid ahead/behind counts".to_string();
+        let ahead = parts
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        let behind = parts
+            .next()
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
+        if parts.next().is_some() {
+            return Err(invalid());
+        }
+        (ahead, behind)
+    } else {
+        (0, 0)
+    };
     Ok(GitHubRepoStatus {
         is_repo: true,
         repository: remote_url.as_deref().and_then(parse_github_repository),
         remote_url,
-        branch: optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        branch,
         upstream,
         ahead,
         behind,
@@ -790,6 +816,21 @@ mod connect_tests {
             .unwrap(),
             "+refs/heads/*:refs/remotes/origin/*"
         );
+    }
+
+    #[test]
+    fn bounded_github_repository_read_never_labels_overflow_as_absent_or_synced() {
+        let fixture = RepositoryFixture::new();
+        let read =
+            crate::project_git::GitReadOperation::with_limits(std::time::Duration::from_secs(3), 1);
+        let error = github_repo_status_with_read(fixture.cwd(), &read).unwrap_err();
+        assert!(error.contains("byte limit"), "{error}");
+        let expired =
+            crate::project_git::GitReadOperation::with_limits(std::time::Duration::ZERO, 1024);
+        assert!(github_repo_status_with_read(fixture.cwd(), &expired)
+            .unwrap_err()
+            .contains("timed out"));
+        assert!(github_repo_status_sync(fixture.cwd()).unwrap().is_repo);
     }
 
     #[test]

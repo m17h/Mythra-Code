@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import {
@@ -132,6 +132,110 @@ describe("ThreadInboxCard", () => {
       pinned={false} scheduledPromptCount={0} onOpen={() => {}} />);
     expect(screen.getByRole("button", { name: "Open Follow up later" })).toBeInTheDocument();
     expect(view.container.querySelector(".scheduled-counts")).toBeNull();
+  });
+});
+
+describe("ThreadInboxCard working-duration clock", () => {
+  beforeEach(() => {
+    resetTaskStore();
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function runningCard(startedAt: number, active = true) {
+    useTaskStore.getState().setTaskStatus("clock", "running");
+    useTaskStore.setState((state) => ({ tasks: {
+      ...state.tasks, clock: { ...state.tasks.clock, workingStartedAt: startedAt },
+    } }));
+    return <ThreadInboxCard threadId="clock" title="Working" workspaceName="Project"
+      directory="/projects/app" provider="openai" providerName="OpenAI" pinned={false}
+      active={active} onOpen={() => {}} />;
+  }
+
+  it("ticks at second boundaries before a minute and minute boundaries thereafter", () => {
+    const timeout = vi.spyOn(window, "setTimeout");
+    render(runningCard(40_001));
+    expect(screen.getByText("59s")).toBeInTheDocument();
+    expect(timeout.mock.calls.at(-1)?.[1]).toBe(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    expect(timeout.mock.calls.at(-1)?.[1]).toBe(60_000);
+    const scheduled = timeout.mock.calls.length;
+    act(() => vi.advanceTimersByTime(59_999));
+    expect(timeout.mock.calls).toHaveLength(scheduled);
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText("2m")).toBeInTheDocument();
+  });
+
+  it("stops when the inbox is collapsed and refreshes the elapsed label on reopening", () => {
+    const view = render(runningCard(0));
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    view.rerender(runningCard(0, false));
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    view.rerender(runningCard(0));
+    expect(screen.getByText("3m")).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(1);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("recovers after the wall clock moves backward and is corrected while still visible", () => {
+    render(runningCard(0));
+    expect(screen.getByText("1m")).toBeInTheDocument();
+    act(() => {
+      vi.setSystemTime(-3_500_000);
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(screen.getByText("0s")).toBeInTheDocument();
+    act(() => {
+      vi.setSystemTime(200_000);
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByText("3m")).toBeInTheDocument();
+  });
+
+  it("pauses an offscreen or hidden document clock and catches up when it is visible", () => {
+    let reportIntersection!: (visible: boolean) => void;
+    const disconnect = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: IntersectionObserverCallback) {
+        reportIntersection = (isIntersecting) => callback([{ isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+      observe() {}
+      disconnect = disconnect;
+    });
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    const view = render(runningCard(0));
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => reportIntersection(true));
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => reportIntersection(false));
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => vi.advanceTimersByTime(120_000));
+    act(() => reportIntersection(true));
+    expect(screen.getByText("3m")).toBeInTheDocument();
+    hidden.mockReturnValue(true);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => vi.advanceTimersByTime(120_000));
+    hidden.mockReturnValue(false);
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    expect(screen.getByText("5m")).toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(1);
+    view.unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    act(() => reportIntersection(true));
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

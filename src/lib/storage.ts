@@ -63,6 +63,14 @@ export const DURABLE_STORAGE_KEYS = [
  */
 export const STORAGE_SCHEMA_VERSION = 29;
 const nativeWriteQueues = new Map<string, Promise<void>>();
+type NativeStateRevision = { operation: () => Promise<unknown> };
+// A settled promise is not a persistence receipt. Keep the latest immutable
+// operation until SQLite acknowledges it, even when the cache also failed.
+const unacknowledgedNativeState = new Map<string, NativeStateRevision>();
+// Hydration reads can finish after a new revision is already acknowledged.
+// Keep an identity for the latest operation independently of pending state.
+const latestNativeState = new Map<string, number>();
+let nativeFlush: Promise<void> | undefined;
 const NATIVE_PENDING_PREFIX = "kiwi.nativePending.";
 let nativeOperationSequence = 0;
 // Keep a readable copy when the webview cache is full or unavailable. The
@@ -96,7 +104,10 @@ function cacheValue(key: string, value: string | null): boolean {
   }
 }
 
-export function resetStorageMemoryForTests(): void { uncachedValues.clear(); unreadableCacheKeys.clear(); }
+export function resetStorageMemoryForTests(): void {
+  uncachedValues.clear(); unreadableCacheKeys.clear();
+  unacknowledgedNativeState.clear(); latestNativeState.clear(); nativeWriteQueues.clear(); nativeFlush = undefined;
+}
 
 function invalidatePendingMarker(key: string): void {
   if (unreadableCacheKeys.has(key)) return;
@@ -127,14 +138,19 @@ function clearNativeOperationPending(key: string, token: string): void {
   }
 }
 
-function queueNativeStateOperation(key: string, operation: () => Promise<unknown>): void {
+function runNativeStateRevision(key: string, revision: NativeStateRevision): void {
   const previous = nativeWriteQueues.get(key);
-  const write = () => {
-    try {
-      return Promise.resolve(operation()).then(() => undefined);
-    } catch (error) {
-      return Promise.reject(error);
+  const write = async () => {
+    try { await revision.operation(); }
+    catch (error) {
+      // Browser-only development has no native store. It must not acquire
+      // a permanent unsaved-native state merely because IPC is unavailable.
+      let native = false;
+      try { native = isTauri(); } catch { /* Test/web adapter has no native identity. */ }
+      if (!native && unacknowledgedNativeState.get(key) === revision) unacknowledgedNativeState.delete(key);
+      throw error;
     }
+    if (unacknowledgedNativeState.get(key) === revision) unacknowledgedNativeState.delete(key);
   };
   const next = previous
     ? previous.catch(() => undefined).then(write)
@@ -143,12 +159,43 @@ function queueNativeStateOperation(key: string, operation: () => Promise<unknown
   void next.finally(() => {
     if (nativeWriteQueues.get(key) === next) nativeWriteQueues.delete(key);
   }).catch(() => {
-    // localStorage remains the immediate fallback if the native mirror fails.
+    // Failure remains represented by the unacknowledged revision. A future
+    // close can retry it; the cache is not proof that SQLite saved it.
   });
 }
 
+function queueNativeStateOperation(key: string, operation: () => Promise<unknown>): void {
+  const revision = { operation };
+  latestNativeState.set(key, (latestNativeState.get(key) ?? 0) + 1);
+  unacknowledgedNativeState.set(key, revision);
+  runNativeStateRevision(key, revision);
+}
+
 export async function flushPendingStateWrites(): Promise<void> {
-  await Promise.allSettled([...nativeWriteQueues.values()]);
+  if (nativeFlush) return nativeFlush;
+  const flush = async () => {
+    const retried = new Set<NativeStateRevision>();
+    for (;;) {
+      await Promise.allSettled([...nativeWriteQueues.values()]);
+      // Writes added during a wait belong to this flush too. Serial per-key
+      // ordering prevents a retry of an older value overtaking a newer edit.
+      if (nativeWriteQueues.size) continue;
+      const retries = [...unacknowledgedNativeState].filter(([, revision]) => !retried.has(revision));
+      if (!retries.length) break;
+      for (const [key, revision] of retries) {
+        retried.add(revision);
+        runNativeStateRevision(key, revision);
+      }
+    }
+    if (unacknowledgedNativeState.size) {
+      // Do not include backend error details or saved values in close UI.
+      throw new Error(`Pending changes could not be saved (${[...unacknowledgedNativeState.keys()].join(", ")}).`);
+    }
+  };
+  const current = flush();
+  nativeFlush = current;
+  try { await current; }
+  finally { if (nativeFlush === current) nativeFlush = undefined; }
 }
 
 if (typeof window !== "undefined") {
@@ -156,7 +203,7 @@ if (typeof window !== "undefined") {
   // before the window closes can be lost, and the next launch hydrates stale
   // data over the newer localStorage copy.
   window.addEventListener("pagehide", () => {
-    void flushPendingStateWrites();
+    void flushPendingStateWrites().catch(() => { /* Native close guard owns failure consent. */ });
   });
 }
 
@@ -326,13 +373,25 @@ export function removeStoredValue(key: string): void {
 export async function hydrateNativeStorage(
   keys: readonly string[] = DURABLE_STORAGE_KEYS,
 ): Promise<void> {
-  const hydrationWrites: Array<() => Promise<unknown>> = [];
+  const hydrationWrites: Array<{ key: string; write: () => Promise<unknown> }> = [];
+  const initialRevisions = new Map([...new Set([...keys, ...STARTUP_DATA_KEYS])].map((key) => [key, latestNativeState.get(key)]));
   const startupSnapshot = new Map<string, string | null>();
   const nativeStartup = isTauri();
   let startupReadFailure: string | null = null;
+  const preserveNewerStartupValues = () => {
+    for (const key of STARTUP_DATA_KEYS) {
+      if (latestNativeState.get(key) !== initialRevisions.get(key)) startupSnapshot.set(key, readStoredRaw(key));
+    }
+  };
   await Promise.all(
     keys.map(async (key) => {
       try {
+        // Rehydration in the same document must not replace a failed cache-
+        // and-native write with older persisted data.
+        if (unacknowledgedNativeState.has(key)) {
+          if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, readStoredRaw(key));
+          return;
+        }
         const marker = pendingMarkerKey(key);
         const markerRead = readCacheChecked(marker);
         const cachedRead = readCacheChecked(key);
@@ -348,6 +407,7 @@ export async function hydrateNativeStorage(
         const pendingToken = markerRead.ok ? markerRead.value : null;
         if (STARTUP_DATA_KEYS.has(key) && cachedRead.ok) startupSnapshot.set(key, cachedRead.value);
         const acceptNative = (raw: string) => {
+          if (latestNativeState.get(key) !== initialRevisions.get(key)) return;
           if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, raw);
           if (cacheUnavailable) uncachedValues.set(key, { cached: null, value: raw });
           else cacheValue(key, raw);
@@ -360,18 +420,18 @@ export async function hydrateNativeStorage(
           }
           const cached = cachedRead.value;
           if (cached === null) {
-            hydrationWrites.push(async () => {
+            hydrationWrites.push({ key, write: async () => {
               await invoke("state_delete", { key });
               clearNativeOperationPending(key, pendingToken);
-            });
+            } });
             return;
           }
           try {
             const value: unknown = JSON.parse(cached);
-            hydrationWrites.push(async () => {
+            hydrationWrites.push({ key, write: async () => {
               await invoke("state_write", { key, value });
               clearNativeOperationPending(key, pendingToken);
-            });
+            } });
             return;
           } catch {
             // Preserve invalid startup input for diagnosis; validation below
@@ -409,13 +469,16 @@ export async function hydrateNativeStorage(
         if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, legacy);
         if (legacy !== null) {
           const value: unknown = JSON.parse(legacy);
-          hydrationWrites.push(() => invoke("state_write", { key, value }));
+          hydrationWrites.push({ key, write: () => invoke("state_write", { key, value }) });
         }
       } catch {
         // Web-only development keeps using localStorage.
       }
     }),
   );
+  // A write during an awaited read supersedes both native results and the
+  // recovery operations collected before other keys finished reading.
+  preserveNewerStartupValues();
   // Custom key lists still validate all startup records. Production's durable
   // list already captured them above, including raw native values and pending
   // replay inputs; never reread those values during validation or migration.
@@ -430,8 +493,14 @@ export async function hydrateNativeStorage(
   // particular, defaults must not overwrite the original saved records.
   const readStartupSnapshot = (key: string): string | null => startupSnapshot.get(key) ?? null;
   validateStartupData(readStartupSnapshot);
-  await Promise.all(hydrationWrites.map(async (write) => {
-    try { await write(); } catch { /* Web-only development keeps using the cache. */ }
-  }));
+  for (const { key, write } of hydrationWrites) {
+    if (latestNativeState.get(key) === initialRevisions.get(key)) queueNativeStateOperation(key, write);
+  }
+  // Startup can continue from a valid recovery cache, but failed replay must
+  // remain visible to the normal retry/close path rather than disappearing.
+  await Promise.allSettled([...nativeWriteQueues.values()]);
+  // A new startup edit can also arrive while recovery itself is persisting.
+  // Migrations must use that edit, not the older pre-replay snapshot.
+  preserveNewerStartupValues();
   migrateStorage(readStartupSnapshot);
 }

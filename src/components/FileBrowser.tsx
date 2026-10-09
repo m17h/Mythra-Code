@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronRight, Eye, EyeOff, File, Folder, Home, LoaderCircle, Paperclip, Search, X } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
 import {
@@ -14,17 +15,9 @@ import {
 
 interface FileResult { root: string; path: string; file_name: string; score: number }
 interface DirectoryEntry { fileName: string; isDirectory: boolean; isFile: boolean }
+interface FilePreview { text: string; truncated: boolean; binary: boolean }
 
 const IGNORED_NAMES = new Set([".git", ".DS_Store", ".next", ".nuxt", ".turbo", "build", "coverage", "dist", "node_modules", "target"]);
-
-function decode(value: string): string {
-  try {
-    const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return "This file is binary or cannot be previewed as UTF-8 text.";
-  }
-}
 
 function containsIgnoredSegment(relativePath: string): boolean {
   return pathSegments(relativePath).some((segment) => IGNORED_NAMES.has(segment));
@@ -33,12 +26,14 @@ function containsIgnoredSegment(relativePath: string): boolean {
 export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path: string) => void }) {
   const normalizedRoot = stripTrailingSeparator(root);
   const [currentDirectory, setCurrentDirectory] = useState(normalizedRoot);
+  const [directoryRoot, setDirectoryRoot] = useState(normalizedRoot);
   const [query, setQuery] = useState("");
   const [directory, setDirectory] = useState<DirectoryEntry[]>([]);
   const [results, setResults] = useState<FileResult[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [directoryError, setDirectoryError] = useState("");
   const [showIgnored, setShowIgnored] = useState(false);
@@ -46,9 +41,14 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   // then a small one used to render the large file's late response under the
   // small file's name.
   const previewRequestRef = useRef(0);
+  const loading = query.trim() ? searchLoading : directoryLoading;
+
+  useEffect(() => () => { previewRequestRef.current += 1; }, []);
 
   useEffect(() => {
     setCurrentDirectory(normalizedRoot);
+    setDirectoryRoot(normalizedRoot);
+    setDirectory([]);
     setSelected(null);
     setPreview("");
     setQuery("");
@@ -57,8 +57,12 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   }, [normalizedRoot]);
 
   useEffect(() => {
+    // A project switch resets navigation in the preceding effect. Wait for
+    // that state before dispatching, so the old folder is never read for the
+    // new project. Root identity also reloads a folder that becomes the root.
+    if (directoryRoot !== normalizedRoot) return;
     let active = true;
-    setLoading(true);
+    setDirectoryLoading(true);
     setDirectoryError("");
     void rpc<{ entries: DirectoryEntry[] }>("fs/readDirectory", { path: currentDirectory })
       .then((value) => {
@@ -70,28 +74,29 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
         setDirectory([]);
         setDirectoryError(`Couldn’t open this folder. ${friendlyError(reason)}`);
       })
-      .finally(() => { if (active) setLoading(false); });
+      .finally(() => { if (active) setDirectoryLoading(false); });
     return () => { active = false; };
   // `entries` is derived below and is not read by this directory request;
   // Babel's TypeScript parser currently reports it as a false dependency.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDirectory]);
+  }, [currentDirectory, directoryRoot, normalizedRoot]);
 
   useEffect(() => {
     if (!query.trim()) {
       setResults([]);
+      setSearchLoading(false);
       return;
     }
     let active = true;
     const token = window.setTimeout(() => {
-      setLoading(true);
+      setSearchLoading(true);
       void rpc<{ files: FileResult[] }>("fuzzyFileSearch", {
         query: query.trim(),
         roots: [normalizedRoot],
         cancellationToken: crypto.randomUUID(),
       }).then((value) => { if (active) setResults(value.files ?? []); })
         .catch(() => { if (active) setResults([]); })
-        .finally(() => { if (active) setLoading(false); });
+        .finally(() => { if (active) setSearchLoading(false); });
     }, 120);
     return () => { active = false; window.clearTimeout(token); };
   }, [normalizedRoot, query]);
@@ -117,6 +122,11 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   const breadcrumbParts = pathSegments(relativeDirectory);
 
   const navigate = (path: string) => {
+    // Entries belong to the folder that returned them. Clear them in the same
+    // update as navigation so they cannot be remapped into the next folder.
+    // The current breadcrumb also leaves search/preview mode. Reuse its
+    // listing because setting the same path does not trigger another read.
+    if (path !== currentDirectory) setDirectory([]);
     setCurrentDirectory(path);
     setSelected(null);
     setPreview("");
@@ -135,10 +145,10 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
     setPreview("");
     setPreviewLoading(true);
     try {
-      const value = await rpc<{ dataBase64: string }>("fs/readFile", { path });
+      const value = await invoke<FilePreview>("preview_project_file", { root: normalizedRoot, path });
       if (previewRequestRef.current !== request) return;
-      const decoded = decode(value.dataBase64);
-      setPreview(decoded.length > 250_000 ? `${decoded.slice(0, 250_000)}\n\n… Preview truncated at 250,000 characters.` : decoded);
+      setPreview(value.binary ? "This file is binary or cannot be previewed as UTF-8 text."
+        : `${value.text}${value.truncated ? "\n\n… Preview truncated at 250,000 bytes." : ""}`);
     } catch (reason) {
       if (previewRequestRef.current !== request) return;
       setPreview(`Couldn’t preview this file. ${friendlyError(reason)}`);

@@ -192,6 +192,28 @@ describe("useUsageRefresh", () => {
     expect(refresh).toHaveBeenCalledTimes(3);
   });
 
+  it("backs off explicitly reported failures without rejecting manual or startup calls", async () => {
+    const failure = { ok: false, error: new Error("provider unavailable") };
+    const refresh = vi.fn().mockResolvedValue(failure);
+    const status = vi.fn();
+    const { result } = renderHook(() => useUsageRefresh({ key: "openrouter", enabled: true, refresh, onStatus: status }));
+    await expect(refresh()).resolves.toBe(failure);
+    refresh.mockClear();
+    act(() => result.current({ force: true }));
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(status).not.toHaveBeenCalledWith("Updated");
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    refresh.mockResolvedValue({ ok: true });
+    act(() => result.current({ force: true }));
+    await flush();
+    expect(status).toHaveBeenLastCalledWith("Updated");
+    await act(async () => { vi.advanceTimersByTime(USAGE_POLL_MS); });
+    expect(refresh).toHaveBeenCalledTimes(4);
+  });
+
   it("polls on the calmer three-minute cadence the app selects for Claude", async () => {
     expect(CLAUDE_USAGE_POLL_MS).toBe(3 * USAGE_POLL_MS);
     const refresh = vi.fn().mockResolvedValue(null);

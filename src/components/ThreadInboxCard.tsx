@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Folder,
   GitBranch,
@@ -38,16 +38,50 @@ export function compactDirectory(path: string, segments = 2): string {
   return parts.slice(-Math.max(1, segments)).join("/");
 }
 
-function WorkingDuration({ startedAt }: { startedAt: number }) {
-  const [, setTick] = useState(0);
+function WorkingDuration({ startedAt, active }: { startedAt: number; active: boolean }) {
+  const [label, setLabel] = useState(() => formatWorkingDuration(Date.now() - startedAt));
+  const hostRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    const interval = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
-    return () => window.clearInterval(interval);
-  }, []);
-  return <span className="thread-card-duration">{formatWorkingDuration(Date.now() - startedAt)}</span>;
+    if (!active) return;
+    let timer: number | undefined;
+    let disposed = false;
+    // Wait for real geometry when supported; hidden/offscreen rows need no clock.
+    let onScreen = typeof IntersectionObserver !== "function";
+    const sync = () => {
+      window.clearTimeout(timer);
+      timer = undefined;
+      if (disposed || !onScreen || document.hidden) return;
+      const elapsed = Date.now() - startedAt;
+      setLabel(formatWorkingDuration(elapsed));
+      if (!Number.isFinite(elapsed)) return;
+      // Below a minute the label shows seconds; afterwards it shows minutes,
+      // including the hours/minutes form. Align to the next displayed boundary.
+      const precision = elapsed < 60_000 ? 1_000 : 60_000;
+      // A clock rollback can put the start in the future. Recheck promptly
+      // so correcting the wall clock does not strand this label at zero.
+      const delay = elapsed < 0 ? 1_000 : precision - elapsed % precision;
+      timer = window.setTimeout(sync, Math.min(delay, 2_147_483_647));
+    };
+    const observer = typeof IntersectionObserver === "function"
+      ? new IntersectionObserver((entries) => {
+          onScreen = entries[entries.length - 1]?.isIntersecting ?? false;
+          sync();
+        })
+      : null;
+    if (hostRef.current) observer?.observe(hostRef.current);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      observer?.disconnect();
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [active, startedAt]);
+  return <span ref={hostRef} className="thread-card-duration">{label}</span>;
 }
 
-function ThreadInboxStatus({ threadId, id }: { threadId: string; id: string }) {
+function ThreadInboxStatus({ threadId, id, active }: { threadId: string; id: string; active: boolean }) {
   const status = useTaskStore((state) => state.statuses[threadId] ?? "idle");
   const startedAt = useTaskStore((state) => state.tasks[threadId]?.workingStartedAt);
   const approvalCount = useTaskStore((state) => state.tasks[threadId]?.approvals.length ?? 0);
@@ -65,7 +99,7 @@ function ThreadInboxStatus({ threadId, id }: { threadId: string; id: string }) {
       <span id={id} className="thread-card-status working" role="status">
         <PixelWorkingMark className="thread-card-working-mark" />
         <span>{status === "starting" ? "Starting" : "Working"}</span>
-        {status === "running" && startedAt !== undefined && <WorkingDuration startedAt={startedAt} />}
+        {status === "running" && startedAt !== undefined && <WorkingDuration startedAt={startedAt} active={active} />}
       </span>
     );
   }
@@ -130,6 +164,9 @@ interface ThreadInboxCardProps {
   /** The pull request saved against this thread, when there is one. */
   pullRequest?: ThreadCardPullRequest | null;
   scheduledPromptCount?: number;
+  /** Whether the inbox surface is open and uncovered. Geometry/document
+   * visibility additionally suspend the working-duration clock. */
+  active?: boolean;
   onOpen: () => void;
 }
 
@@ -157,6 +194,7 @@ export function ThreadInboxCard({
   branch,
   pullRequest = null,
   scheduledPromptCount = 0,
+  active = true,
   onOpen,
 }: ThreadInboxCardProps) {
   const statusId = useId();
@@ -181,7 +219,7 @@ export function ThreadInboxCard({
           {isolated ? <GitBranch size={14} /> : <Folder size={14} />}
           <span>{isolated ? branch || "Isolated" : workspaceName}</span>
         </span>
-        <ThreadInboxStatus threadId={threadId} id={statusId} />
+        <ThreadInboxStatus threadId={threadId} id={statusId} active={active} />
       </span>
       <ThreadTitle className="thread-card-title" title={title} pending={titlePending} />
       <span className="thread-card-meta">
