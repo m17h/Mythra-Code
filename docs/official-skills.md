@@ -150,5 +150,5 @@ Run the focused maintenance and history regressions with the repository's
 Node 22 runtime:
 
 ```sh
-node --test scripts/official-skill-catalog-history.test.mjs
+npm run test:run -- scripts/official-skill-catalog-history.test.mjs
 ```

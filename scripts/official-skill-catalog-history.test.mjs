@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import test from 'node:test';
+import { resolve } from 'node:path';
+import { onTestFinished, test } from 'vitest';
 import { retainCatalogHistory } from './official-skill-catalog-history.mjs';
 import { fetchBytes, safePath, skillRequirements, validatePackageNodes } from './update-official-skill-catalog.mjs';
 
@@ -53,7 +54,7 @@ test('optional requirements preserve historical snapshots and immutable package 
 });
 
 test('catalog reproduces reviewed requirements only for specific external dependencies', async () => {
-  const catalog = JSON.parse(await readFile(new URL('../src-tauri/src/official-skills-catalog.json', import.meta.url), 'utf8'));
+  const catalog = JSON.parse(await readFile(resolve('src-tauri/src/official-skills-catalog.json'), 'utf8'));
   assert.deepEqual(catalog.filter((entry) => entry.requirements).map((entry) => entry.id), Object.keys(skillRequirements));
   for (const entry of catalog) {
     assert.equal(entry.requirements, skillRequirements[entry.id], entry.id);
@@ -120,9 +121,9 @@ test('maintenance paths match the cross-platform installer boundary', () => {
   }
 });
 
-test('maintenance downloads bound declared and streamed response bytes', async (t) => {
+test('maintenance downloads bound declared and streamed response bytes', async () => {
   const originalFetch = globalThis.fetch;
-  t.after(() => { globalThis.fetch = originalFetch; });
+  onTestFinished(() => { globalThis.fetch = originalFetch; });
   globalThis.fetch = async () => new Response('12345', { headers: { 'Content-Length': '5' } });
   await assert.rejects(fetchBytes('https://raw.githubusercontent.com/example', 4), /byte limit/);
   let cancelled = false;
