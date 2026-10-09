@@ -110,7 +110,9 @@ describe("review reproductions: undelivered automatic prompt provenance", () => 
     const task = useTaskStore.getState().tasks["review-thread"];
     expect(task.status).toBe("error");
     expect(task.messages.filter((message) => message.role === "user")).toHaveLength(0);
-    expect(deps.discardRunCheckpoint).toHaveBeenCalledWith("review-thread");
+    // Creation failed before returning an owned ID. Thread-wide cleanup could
+    // discard a checkpoint created by another run while preparation awaited.
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
   });
 
   it.each(["claude", "cursor"] as const)("does not persist a %s prompt stopped while saving prior history", async (provider) => {
@@ -156,13 +158,13 @@ describe("review reproductions: undelivered automatic prompt provenance", () => 
     expect(deps.discardRunCheckpoint).toHaveBeenCalledWith("review-thread");
     workflow.unmount();
     resetTaskStore();
-    const scheduled = schedulerDeps();
+    const scheduled = schedulerDeps({ beginRunCheckpoint: async () => "owned-checkpoint" });
     scheduled.schedules[0].run!.model = "";
     renderHook(() => useScheduler(scheduled));
     await act(flush);
     expect(useTaskStore.getState().tasks["review-thread"].messages).toHaveLength(0);
     expect(runtime.rpc.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
-    expect(scheduled.discardRunCheckpoint).toHaveBeenCalledWith("review-thread");
+    expect(scheduled.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("review-thread", "owned-checkpoint");
   });
 
   it.each(["openai", "claude", "cursor"] as const)("keeps %s history and skill provenance when completion beats the start response", async (provider) => {
@@ -216,17 +218,38 @@ describe("review reproductions: undelivered automatic prompt provenance", () => 
     expect(task.messages.some((message) => message.text === "Completed result")).toBe(true);
   });
 
-  it("preserves a scheduled prompt when its dispatched request rejects", async () => {
+  it("removes undelivered scheduled provenance on a definitive turn rejection", async () => {
     runtime.rpc.mockImplementation(async (method: string) => {
       if (method === "thread/start") return { thread: { id: "review-thread" }, model: "chosen-model" };
-      if (method === "turn/start") throw new Error("Transport failed after dispatch");
+      if (method === "turn/start") throw new Error("Model unavailable");
       return {};
     });
-    renderHook(() => useScheduler(schedulerDeps()));
+    const deps = schedulerDeps({ beginRunCheckpoint: async () => "owned-checkpoint" });
+    renderHook(() => useScheduler(deps));
+    await act(flush);
+    const task = useTaskStore.getState().tasks["review-thread"];
+    expect(task.status).toBe("error");
+    expect(task.messages).toHaveLength(0);
+    expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("review-thread", "owned-checkpoint");
+    expect(deps.recordRun).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: "failed" }));
+  });
+
+  it("preserves scheduled provenance and its checkpoint when native acknowledgement times out", async () => {
+    runtime.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/start") return { thread: { id: "review-thread" }, model: "chosen-model" };
+      if (method === "turn/start") throw new Error("Codex App Server timed out while handling turn/start");
+      return {};
+    });
+    const deps = schedulerDeps({ beginRunCheckpoint: async () => "owned-checkpoint" });
+    renderHook(() => useScheduler(deps));
     await act(flush);
     const task = useTaskStore.getState().tasks["review-thread"];
     expect(task.status).toBe("error");
     expect(task.messages).toHaveLength(1);
     expect(task.messages[0].skillDependencies).toEqual(graph);
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(deps.recordRun).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      status: "failed", error: expect.stringContaining("delivery could not be confirmed"),
+    }));
   });
 });

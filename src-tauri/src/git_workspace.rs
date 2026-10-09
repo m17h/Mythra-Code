@@ -1854,6 +1854,19 @@ pub(super) fn bounded_git_nul_path_count(
     Ok(count.load(Ordering::Relaxed))
 }
 
+fn checked_add_path_count(counted: &AtomicUsize, paths: usize) -> Result<(), String> {
+    let mut current = counted.load(Ordering::Relaxed);
+    loop {
+        let next = current
+            .checked_add(paths)
+            .ok_or_else(|| "Git returned too many paths to count".to_string())?;
+        match counted.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Ok(()),
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 fn bounded_git_output_with_capture(
     repo: &Path,
     args: &[&str],
@@ -1935,13 +1948,8 @@ fn bounded_git_output_with_capture(
                     if empty_path {
                         break Err("Git returned an empty path in its path list".into());
                     }
-                    if counted
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                            value.checked_add(paths)
-                        })
-                        .is_err()
-                    {
-                        break Err("Git returned too many paths to count".into());
+                    if let Err(error) = checked_add_path_count(counted, paths) {
+                        break Err(error);
                     }
                 } else if kept.len() < output_limit {
                     let retain = count.min(output_limit - kept.len());
@@ -2710,6 +2718,17 @@ mod tests {
         seed: PathBuf,
         client: PathBuf,
         bare: PathBuf,
+    }
+
+    #[test]
+    fn path_count_overflow_preserves_the_last_valid_count() {
+        let count = AtomicUsize::new(usize::MAX - 1);
+        checked_add_path_count(&count, 1).unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), usize::MAX);
+        assert!(checked_add_path_count(&count, 1)
+            .unwrap_err()
+            .contains("too many paths"));
+        assert_eq!(count.load(Ordering::Relaxed), usize::MAX);
     }
 
     fn fixture() -> PathBuf {
