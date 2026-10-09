@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Developer maintenance only. Pins and candidates are reviewed source changes;
 // the application's installer never discovers or trusts a moving branch.
 import { createHash } from 'node:crypto';
