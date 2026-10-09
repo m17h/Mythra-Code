@@ -617,22 +617,31 @@ impl Analyzer {
         // and provider delivery agree about which documents are available.
         let mut cursor = self.folder.clone();
         let unsupported_path = raw.strip_prefix(&self.folder).is_ok_and(|relative| {
-            relative.components().any(|component| {
-                match component {
-                    std::path::Component::Normal(part) => {
-                        cursor.push(part);
-                        part.to_string_lossy().starts_with('.')
-                            || std::fs::symlink_metadata(&cursor).is_ok_and(|meta| meta.file_type().is_symlink())
-                            || super::is_windows_reparse_point(&cursor).unwrap_or(false)
-                    }
-                    std::path::Component::ParentDir => { cursor.pop(); false }
-                    _ => false,
+            relative.components().any(|component| match component {
+                std::path::Component::Normal(part) => {
+                    cursor.push(part);
+                    part.to_string_lossy().starts_with('.')
+                        || std::fs::symlink_metadata(&cursor)
+                            .is_ok_and(|meta| meta.file_type().is_symlink())
+                        || super::is_windows_reparse_point(&cursor).unwrap_or(false)
                 }
+                std::path::Component::ParentDir => {
+                    cursor.pop();
+                    false
+                }
+                _ => false,
             })
         });
         if source.starts_with(&self.folder) && unsupported_path {
             self.issue("unsupported-document", "Hidden files and symbolic-link paths cannot be included in provider skill libraries. Use a visible, regular file inside the skills folder.", &chain, stack.last().map(PathBuf::as_path), Some(reference));
-            return self.blocked(requested_name, requested_kind, raw, depth, parent, reference);
+            return self.blocked(
+                requested_name,
+                requested_kind,
+                raw,
+                depth,
+                parent,
+                reference,
+            );
         }
         if diagnostic_path(&source).is_none() {
             self.issue("invalid-path", "Skill source paths must be bounded absolute local paths without control characters.", &chain, stack.last().map(PathBuf::as_path), Some(reference));
@@ -790,6 +799,18 @@ impl Analyzer {
                 return self.blocked(&name, kind, &source, depth, parent, reference);
             }
         };
+        if let Err(message) =
+            crate::official_skills::verify_invoked_source(&self.folder, &source, &instructions)
+        {
+            self.issue(
+                "modified-publisher-skill",
+                message,
+                &chain,
+                Some(&source),
+                Some(reference),
+            );
+            return self.blocked(&name, kind, &source, depth, parent, reference);
+        }
         let count = instructions.chars().count();
         if self.characters.saturating_add(count) > MAX_CHARACTERS {
             self.issue("character-limit", "The invoked skill instructions are too large for one model turn. Shorten them or invoke fewer skills.", &chain, Some(&source), Some(reference));
@@ -2330,7 +2351,8 @@ mod tests {
         let mut lib = Library::new();
         lib.skill("a", "a.md", "[Alias](alias.txt)", true);
         lib.document("docs/real.txt", "private instructions");
-        std::os::unix::fs::symlink(lib.root.join("docs/real.txt"), lib.root.join("alias.txt")).unwrap();
+        std::os::unix::fs::symlink(lib.root.join("docs/real.txt"), lib.root.join("alias.txt"))
+            .unwrap();
         assert!(has_issue(&lib.analyze("@a", ""), "unsupported-document"));
     }
 

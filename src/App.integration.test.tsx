@@ -530,6 +530,253 @@ describe("App pricing request isolation", () => {
 });
 
 describe("skill file recovery messages", () => {
+  it("reports installed files separately from a failed publisher runtime preparation and clears it on Rescan", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const source = { catalogId: "design", publisher: "anthropic" as const, repository: "anthropics/skills", url: "https://github.com/anthropics/skills", revision: "a".repeat(40), license: "Apache-2.0", modified: false };
+    const added: LocalSkillFile = { ...selectedReviewSkill, path: "/skills/design/SKILL.md", defaultName: "design", source };
+    let installed = false;
+    let failMirror = true;
+    localSkillsScanImpl = () => installed ? [added] : [];
+    localSkillsSyncImpl = () => { if (installed && failMirror) throw new Error("Mirror unavailable"); return "/runtime/skills"; };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: source.repository, path: "skills/frontend-design", revision: source.revision, license: source.license, notes: "" }];
+      if (command === "local_skills_install_official") { installed = true; return added.path; }
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    await user.click(within(settings).getByText("Download Anthropic & OpenAI skills"));
+    await user.click(await within(settings).findByRole("button", { name: "Install Frontend design" }));
+    expect(await within(settings).findByRole("alert")).toHaveTextContent("The skill was installed, but Mythra Code could not prepare it");
+    expect(within(settings).getByText("Installed")).toBeInTheDocument();
+    expect(within(settings).getByRole("alert")).toHaveTextContent("Mirror unavailable");
+    failMirror = false;
+    await user.click(within(settings).getByRole("button", { name: "Rescan" }));
+    await waitFor(() => expect(within(settings).queryByRole("alert")).toBeNull());
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_install_official")).toHaveLength(1);
+  });
+
+  it("finishes a publisher install when preference refresh and focus supersede a slow mirror", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const source = { catalogId: "design", publisher: "anthropic" as const, repository: "anthropics/skills", url: "https://github.com/anthropics/skills", revision: "a".repeat(40), license: "Apache-2.0", modified: false };
+    const old: LocalSkillFile = { ...selectedReviewSkill, path: "/skills/old-design/SKILL.md", defaultName: "old-design", source: { ...source, modified: true } };
+    const added: LocalSkillFile = { ...old, path: "/skills/design/SKILL.md", defaultName: "design", source };
+    const pendingMirror = deferred<string>();
+    let installed = false;
+    let blocked = false;
+    localSkillsScanImpl = () => installed ? [old, added] : [old];
+    localSkillsSyncImpl = () => {
+      if (installed && !blocked) { blocked = true; return pendingMirror.promise; }
+      return "/runtime/skills";
+    };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: source.repository, path: "skills/frontend-design", revision: source.revision, license: source.license, notes: "" }];
+      if (command === "local_skills_install_official") { installed = true; return added.path; }
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    await user.click(within(settings).getByText("Download Anthropic & OpenAI skills"));
+    await user.click(await within(settings).findByRole("button", { name: "Install original copy of Frontend design" }));
+    await waitFor(() => expect(blocked).toBe(true));
+    await user.click(within(settings).getByRole("button", { name: "Rename old-design" }));
+    const alias = within(settings).getByRole("textbox", { name: "Invocation name for SKILL.md" });
+    await user.clear(alias);
+    await user.type(alias, "my-design");
+    await user.click(within(settings).getByRole("button", { name: "Save skill name" }));
+    fireEvent(window, new Event("focus"));
+    await act(async () => pendingMirror.resolve("/runtime/skills"));
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Rescan" })).toBeEnabled());
+    expect(within(settings).getByText("Installed")).toBeInTheDocument();
+    expect(within(settings).queryByRole("alert")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("kiwi.disabledSkills")!)).toContain(old.path);
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_sync").at(-1)?.[1]).toEqual({ folder: "/skills", skills: [
+      { sourcePath: old.path, name: "my-design", enabled: false }, { sourcePath: added.path, name: "design", enabled: true },
+    ] }));
+  });
+
+  it("ignores a publisher install result after selecting another folder", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.disabledSkills", JSON.stringify(["/skills/design/SKILL.md"]));
+    localStorage.setItem("kiwi.removedSkills", JSON.stringify(["/skills/design/SKILL.md"]));
+    const pending = deferred<string>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: "anthropics/skills", path: "skills/frontend-design", revision: "a".repeat(40), license: "Apache-2.0", notes: "" }];
+      if (command === "local_skills_install_official") return pending.promise;
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    await user.click(within(settings).getByText("Download Anthropic & OpenAI skills"));
+    await user.click(await within(settings).findByRole("button", { name: "Install Frontend design" }));
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValueOnce("/different");
+    await user.click(within(settings).getByRole("button", { name: "Change" }));
+    await waitFor(() => expect(within(settings).getByText("/different")).toBeInTheDocument());
+    const scansBeforeCompletion = invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan").length;
+    await act(async () => pending.resolve("/skills/design/SKILL.md"));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_scan")).toHaveLength(scansBeforeCompletion);
+    expect(JSON.parse(localStorage.getItem("kiwi.disabledSkills")!)).toEqual(["/skills/design/SKILL.md"]);
+    expect(JSON.parse(localStorage.getItem("kiwi.removedSkills")!)).toEqual(["/skills/design/SKILL.md"]);
+    expect(within(settings).queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps a missing restored source removed and reports the failed restoration", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.removedSkills", JSON.stringify([selectedReviewSkill.path]));
+    let missing = false;
+    localSkillsScanImpl = () => missing ? [] : [selectedReviewSkill];
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    const restore = await within(settings).findByRole("button", { name: "Restore" });
+    missing = true;
+    await user.click(restore);
+    expect(await within(settings).findByRole("alert")).toHaveTextContent("Restore its files before trying again");
+    expect(JSON.parse(localStorage.getItem("kiwi.removedSkills")!)).toEqual([selectedReviewSkill.path]);
+  });
+
+  it("preserves a publisher download failure after closing and reopening its section", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const pending = deferred<string>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: "anthropics/skills", path: "skills/frontend-design", revision: "a".repeat(40), license: "Apache-2.0", notes: "" }];
+      if (command === "local_skills_install_official") { await pending.promise; throw new Error("Download failed while closed"); }
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    const summary = within(settings).getByText("Download Anthropic & OpenAI skills");
+    await user.click(summary);
+    await user.click(await within(settings).findByRole("button", { name: "Install Frontend design" }));
+    await user.click(summary);
+    await act(async () => pending.resolve(""));
+    expect(await within(settings).findByRole("alert")).toHaveTextContent("Download failed while closed");
+    await user.click(summary);
+    expect(await within(settings).findByRole("alert")).toHaveTextContent("Download failed while closed");
+    expect(within(settings).getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("keeps publisher installs busy after closing and reopening downloads", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const pending = deferred<string>();
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: "anthropics/skills", path: "skills/frontend-design", revision: "a".repeat(40), license: "Apache-2.0", notes: "" }];
+      if (command === "local_skills_install_official") return pending.promise;
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    const summary = within(settings).getByText("Download Anthropic & OpenAI skills");
+    await user.click(summary);
+    await user.click(await within(settings).findByRole("button", { name: "Install Frontend design" }));
+    await user.click(summary);
+    await user.click(summary);
+    expect(await within(settings).findByRole("button", { name: "Installing Frontend design" })).toBeDisabled();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_install_official")).toHaveLength(1);
+    await act(async () => pending.resolve("/skills/design/SKILL.md"));
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Install Frontend design" })).toBeEnabled());
+  });
+
+  it("turns off modified copies discovered after a publisher download started", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    const pending = deferred<string>();
+    const source = { catalogId: "design", publisher: "anthropic" as const, repository: "anthropics/skills", url: "https://github.com/anthropics/skills", revision: "a".repeat(40), license: "Apache-2.0", modified: false };
+    const added: LocalSkillFile = { ...selectedReviewSkill, path: "/skills/design/SKILL.md", defaultName: "design", source };
+    const modified: LocalSkillFile = { ...added, path: "/skills/old-design/SKILL.md", source: { ...source, modified: true } };
+    let installed = false;
+    localSkillsScanImpl = () => installed ? [modified, added] : [];
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: source.repository, path: "skills/frontend-design", revision: source.revision, license: source.license, notes: "" }];
+      if (command === "local_skills_install_official") return pending.promise;
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    await user.click(within(settings).getByText("Download Anthropic & OpenAI skills"));
+    await user.click(await within(settings).findByRole("button", { name: "Install Frontend design" }));
+    installed = true;
+    await act(async () => pending.resolve(added.path));
+    expect(await within(settings).findByText("Installed")).toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.disabledSkills")!)).toContain(modified.path));
+    expect(within(settings).getByRole("switch", { name: "Enable design" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("installs publisher skills through real Settings and mirrors the new copy while preserving custom preferences", { timeout: 15_000 }, async () => {
+    const id = "anthropic-design";
+    const source = { catalogId: id, publisher: "anthropic" as const, repository: "anthropics/skills", url: "https://github.com/anthropics/skills", revision: "a".repeat(40), license: "Apache-2.0", modified: false };
+    const old: LocalSkillFile = { ...selectedReviewSkill, path: "/skills/design/SKILL.md", defaultName: "design", source: { ...source, modified: true } };
+    const added: LocalSkillFile = { ...old, path: "/skills/design-2/SKILL.md", relativePath: "design-2/SKILL.md", source };
+    const custom: LocalSkillFile = { ...selectedReviewSkill, path: "/skills/custom.md", defaultName: "custom" };
+    let installed = false;
+    localSkillsScanImpl = () => installed ? [old, custom, added] : [old, custom];
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    localStorage.setItem("kiwi.skillAliases", JSON.stringify({ [custom.path]: "my-custom", [old.path]: "my-design" }));
+    localStorage.setItem("kiwi.disabledSkills", JSON.stringify([custom.path, added.path]));
+    localStorage.setItem("kiwi.removedSkills", JSON.stringify(["/skills/unrelated.md", added.path]));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id, publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: source.repository, path: "skills/frontend-design", revision: source.revision, license: source.license, notes: "" }];
+      if (command === "local_skills_install_official") { installed = true; return added.path; }
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    await user.click(within(settings).getByText("Download Anthropic & OpenAI skills"));
+    await user.click(await within(settings).findByRole("button", { name: "Install original copy of Frontend design" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_skills_install_official", { folder: "/skills", id }));
+    expect(await within(settings).findByText("Installed")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.disabledSkills")!)).toEqual([custom.path, old.path]);
+    expect(JSON.parse(localStorage.getItem("kiwi.removedSkills")!)).toEqual(["/skills/unrelated.md"]);
+    expect(JSON.parse(localStorage.getItem("kiwi.skillAliases")!)).toEqual({ [custom.path]: "my-custom", [old.path]: "my-design" });
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([command]) => command === "local_skills_sync").at(-1)?.[1]).toEqual({ folder: "/skills", skills: [
+      { sourcePath: old.path, name: "my-design", enabled: false },
+      { sourcePath: custom.path, name: "my-custom", enabled: false },
+      { sourcePath: added.path, name: "design", enabled: true },
+    ] }));
+  });
+
+  it("shows a publisher install failure in the download section without changing preferences", { timeout: 15_000 }, async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "local_skills_catalog") return [{ id: "design", publisher: "anthropic", title: "Frontend design", description: "Build interfaces", repository: "anthropics/skills", path: "skills/frontend-design", revision: "a".repeat(40), license: "Apache-2.0", notes: "" }];
+      if (command === "local_skills_install_official") throw new Error("Could not download package: offline");
+      return stubInvoke(command, args);
+    });
+    const user = userEvent.setup();
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" }, { timeout: 10_000 });
+    await user.click(within(settings).getByRole("button", { name: "Skills" }));
+    await user.click(within(settings).getByText("Download Anthropic & OpenAI skills"));
+    await user.click(await within(settings).findByRole("button", { name: "Install Frontend design" }));
+    expect(await within(settings).findByRole("alert")).toHaveTextContent("Could not download package: offline");
+    expect(within(settings).getByRole("button", { name: "Install Frontend design" })).toBeEnabled();
+    expect(within(settings).queryByText("Installed")).toBeNull();
+  });
+
   it.each(["import", "create"] as const)("preserves partial-write recovery details after skill %s", { timeout: 15_000 }, async (operation) => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     const message = `Could not ${operation} the skill: Permission denied. The new file /skills/source-2.md may be incomplete; existing files were not changed.`;

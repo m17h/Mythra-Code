@@ -67,6 +67,37 @@ function fillComposer(name = "release check", instructions = "Check the release 
 }
 
 describe("SkillLibrary", () => {
+  it("marks installed publisher skills with the distributor's logo instead of a text badge", () => {
+    const source = { revision: "a".repeat(40), license: "Apache-2.0", modified: false };
+    const anthropic: LocalSkill = { ...skill, path: "/skills/design/SKILL.md", name: "design", source: { ...source, catalogId: "anthropic-frontend-design", publisher: "anthropic", repository: "anthropics/skills", url: "https://github.com/anthropics/skills" } };
+    const openai: LocalSkill = { ...second, path: "/skills/wrangler/SKILL.md", name: "wrangler", source: { ...source, catalogId: "openai-wrangler", publisher: "openai", repository: "openai/plugins", url: "https://github.com/openai/plugins", modified: true } };
+    const { container } = renderLibrary({ skills: [anthropic, openai, skill] });
+    const rows = [...container.querySelectorAll<HTMLElement>(".skill-card")];
+    const [anthropicRow, openaiRow, customRow] = rows;
+
+    const anthropicMark = within(anthropicRow).getByRole("img", { name: "Distributed by Anthropic" });
+    expect(anthropicMark).toHaveAttribute("title", "Distributed by Anthropic from anthropics/skills");
+    expect(anthropicMark.querySelector("use")).toHaveAttribute("href", "/provider-marks.svg#anthropic");
+    const openaiMark = within(openaiRow).getByRole("img", { name: "Distributed by OpenAI" });
+    expect(openaiMark).toHaveAttribute("title", "Distributed by OpenAI from openai/plugins");
+    expect(openaiMark.querySelector("use")).toHaveAttribute("href", "/provider-marks.svg#openai");
+    expect(anthropicMark.nextElementSibling).toHaveTextContent(`@${anthropic.name}`);
+    expect(openaiMark.nextElementSibling).toHaveTextContent(`@${openai.name}`);
+    // Company marks only — never the Claude sparkle or the Codex image.
+    expect(container.querySelector(".skill-card-list use[href$='#claude'], .skill-card-list img[src*='codex']")).toBeNull();
+
+    for (const row of [anthropicRow, openaiRow]) {
+      expect(row.querySelector(".skill-publisher-tag")).toBeNull();
+      expect(within(row).queryByText(/^(Anthropic|OpenAI)$/)).toBeNull();
+    }
+    expect(within(openaiRow).getByText("Modified locally")).toBeInTheDocument();
+    expect(within(openaiRow).getByText("Off")).toBeInTheDocument();
+    expect(within(customRow).queryByRole("img")).toBeNull();
+    expect(customRow.querySelector(".skill-origin-mark")).toBeNull();
+    expect(within(anthropicRow).getByRole("button", { name: "View design skill" })).toBeInTheDocument();
+    expect(within(customRow).getByRole("button", { name: "Edit review skill" })).toBeInTheDocument();
+  });
+
   it("preserves unsaved source text when a rescan loses the file", async () => {
     const view = renderLibrary();
     fireEvent.click(screen.getByRole("button", { name: "Edit review skill" }));

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { confirmDialog } from "../lib/confirmDialog";
-import { Boxes, Check, FilePenLine, FilePlus2, FolderOpen, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
-import { normalizeSkillName, type LocalSkill } from "../lib/skills";
+import { ArrowUpRight, Boxes, Check, ChevronRight, Download, Eye, FilePenLine, FilePlus2, FolderOpen, LoaderCircle, Lock, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
+import { normalizeSkillName, skillPublisherLabel, type LocalSkill, type OfficialSkillInstallFailure } from "../lib/skills";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { primaryModifierLabel, primaryModifierPressed } from "../lib/platform";
 import { friendlyError } from "../lib/errors";
@@ -12,6 +12,8 @@ import { SkillPromptEditor } from "./SkillPromptEditor";
 import { SkillDependencyDetails } from "./SkillDependencyDetails";
 import { SkillDependencyNotice } from "./SkillDependencyNotice";
 import { useSkillDependencyPreview } from "../hooks/useSkillDependencyPreview";
+import { OfficialSkillDownloads } from "./OfficialSkillDownloads";
+import { AnthropicLogo, OpenAILogo } from "./BrandLogos";
 import "./SkillLibrary.navigation.css";
 
 export interface OpenSkillRequest {
@@ -38,6 +40,10 @@ export function SkillLibrary({
   openSkillRequest,
   onOpenSkillRequestConsumed,
   onAnalyzeSkill,
+  onInstallOfficial,
+  officialInstallFailure,
+  officialInstallingId,
+  active = true,
 }: {
   folder: string;
   skills: LocalSkill[];
@@ -57,10 +63,15 @@ export function SkillLibrary({
   openSkillRequest?: OpenSkillRequest | null;
   onOpenSkillRequestConsumed?: (nonce: number) => void;
   onAnalyzeSkill?: (path: string, content: string) => Promise<SkillDependencyReport>;
+  onInstallOfficial?: (id: string, folder: string) => Promise<string>;
+  officialInstallFailure?: OfficialSkillInstallFailure | null;
+  officialInstallingId?: string;
+  active?: boolean;
 }) {
   const fieldId = useId();
   const [query, setQuery] = useState("");
   const [referenceGuideOpen, setReferenceGuideOpen] = useState(false);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
@@ -87,6 +98,9 @@ export function SkillLibrary({
   const sourceEditorRef = useRef<HTMLDivElement>(null);
   const sourceFieldRef = useRef<HTMLTextAreaElement>(null);
   const sourceRequestRef = useRef(0);
+  const sourceScopeRef = useRef({ folder, active });
+  const previousSourceScopeRef = useRef({ folder, active });
+  sourceScopeRef.current = { folder, active };
   const consumedOpenRequestRef = useRef<number | null>(null);
   const skillCardRefs = useRef(new Map<string, HTMLLIElement>());
   const removeDialogRef = useRef<HTMLDivElement>(null);
@@ -102,6 +116,7 @@ export function SkillLibrary({
   }, [query, skills]);
   const enabledCount = useMemo(() => skills.filter((skill) => skill.enabled).length, [skills]);
   const sourcePath = sourceEditorSkill?.path;
+  const sourceReadOnly = Boolean(sourceEditorSkill?.source);
   const analyzeSource = useMemo(() => sourcePath && sourceLoaded && onAnalyzeSkill
     ? (text: string) => onAnalyzeSkill(sourcePath, text) : undefined, [sourcePath, sourceLoaded, onAnalyzeSkill]);
   const dependencyPreview = useSkillDependencyPreview(sourceDraft, analyzeSource, sourcePath);
@@ -210,6 +225,7 @@ export function SkillLibrary({
   };
 
   const loadSourceEditor = useCallback(async (skill: LocalSkill) => {
+    const requestFolder = sourceScopeRef.current.folder;
     const request = sourceRequestRef.current + 1;
     sourceRequestRef.current = request;
     setSourceLoading(true);
@@ -219,15 +235,15 @@ export function SkillLibrary({
     setSourceOriginal("");
     try {
       const content = await onRead(skill.path);
-      if (sourceRequestRef.current !== request) return;
+      if (sourceRequestRef.current !== request || !navigationMounted.current || !sourceScopeRef.current.active || sourceScopeRef.current.folder !== requestFolder) return;
       setSourceDraft(content);
       setSourceOriginal(content);
       setSourceLoaded(true);
     } catch (reason) {
-      if (sourceRequestRef.current !== request) return;
+      if (sourceRequestRef.current !== request || !navigationMounted.current || !sourceScopeRef.current.active || sourceScopeRef.current.folder !== requestFolder) return;
       setSourceError(friendlyError(reason));
     } finally {
-      if (sourceRequestRef.current === request) setSourceLoading(false);
+      if (sourceRequestRef.current === request && navigationMounted.current && sourceScopeRef.current.active && sourceScopeRef.current.folder === requestFolder) setSourceLoading(false);
     }
   }, [onRead]);
 
@@ -246,6 +262,18 @@ export function SkillLibrary({
     navigationMounted.current = true;
     return () => { navigationMounted.current = false; };
   }, []);
+  useEffect(() => {
+    if (previousSourceScopeRef.current.folder === folder && previousSourceScopeRef.current.active === active) return;
+    previousSourceScopeRef.current = { folder, active };
+    sourceRequestRef.current += 1;
+    setSourceEditorSkill(null);
+    setSourceLoaded(false);
+    setSourceLoading(false);
+    setSourceDraft("");
+    setSourceOriginal("");
+    setSourceError("");
+    setPendingRemoval(null);
+  }, [folder, active]);
 
   useEffect(() => {
     if (!openSkillRequest || consumedOpenRequestRef.current === openSkillRequest.nonce || sourceSaving || removing) return;
@@ -299,7 +327,7 @@ export function SkillLibrary({
   };
 
   const saveSourceEditor = async () => {
-    if (!sourceEditorSkill || !skills.some((skill) => skill.path === sourceEditorSkill.path) || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal) return;
+    if (!sourceEditorSkill || sourceReadOnly || !skills.some((skill) => skill.path === sourceEditorSkill.path) || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal) return;
     setSourceSaving(true);
     setSourceError("");
     try {
@@ -310,6 +338,17 @@ export function SkillLibrary({
       setSourceError(friendlyError(reason));
     } finally {
       setSourceSaving(false);
+    }
+  };
+
+  const openPublisherSource = async () => {
+    if (!sourceEditorSkill?.source) return;
+    const request = sourceRequestRef.current;
+    const requestFolder = folder;
+    try {
+      await openUrl(sourceEditorSkill.source.url);
+    } catch (reason) {
+      if (navigationMounted.current && sourceRequestRef.current === request && sourceScopeRef.current.active && sourceScopeRef.current.folder === requestFolder) setSourceError(friendlyError(reason));
     }
   };
 
@@ -368,6 +407,14 @@ export function SkillLibrary({
 
       {sectionError && <p className="skill-library-alert" role="alert">{sectionError}</p>}
       {navigationError && <p className="skill-library-alert" role="alert">{navigationError}</p>}
+      {!downloadsOpen && officialInstallFailure && <p className="skill-library-alert" role="alert">{officialInstallFailure.message}</p>}
+
+      {onInstallOfficial && <details className="official-skill-library" onToggle={(event) => setDownloadsOpen(event.currentTarget.open)}>
+        {/* The title stays the summary's own text so the disclosure keeps one
+            plain name; the icon, hint and chevron are decoration around it. */}
+        <summary><span className="official-skill-library-icon" aria-hidden="true"><Download size={14} /></span>Download Anthropic &amp; OpenAI skills<small>Curated packages with their source and license</small><ChevronRight className="official-skill-library-chevron" size={15} aria-hidden="true" /></summary>
+        {downloadsOpen && active && <OfficialSkillDownloads folder={folder} skills={skills} removedSkills={removedSkills} busy={busy} pendingInstallId={officialInstallingId} installFailure={officialInstallFailure} onChooseFolder={onChooseFolder} onInstall={onInstallOfficial} onRestore={onRestore} />}
+      </details>}
 
       {folder && <>
         <div className="skill-library-toolbar">
@@ -413,7 +460,16 @@ export function SkillLibrary({
                     </form>
                   ) : (
                     <div className="skill-name-row">
-                      <strong>@{skill.name}</strong>
+                      {/* Distribution, not authorship: the mark names the repository
+                          the package came from; its author may be a third party. */}
+                      {skill.source ? <span className="skill-name-identity">
+                        <span className={`skill-origin-mark ${skill.source.publisher}`} role="img"
+                          aria-label={`Distributed by ${skillPublisherLabel(skill.source.publisher)}`} title={`Distributed by ${skillPublisherLabel(skill.source.publisher)} from ${skill.source.repository}`}>
+                          {skill.source.publisher === "anthropic" ? <AnthropicLogo size={11} /> : <OpenAILogo size={11} />}
+                        </span>
+                        <strong>@{skill.name}</strong>
+                      </span> : <strong>@{skill.name}</strong>}
+                      {skill.source?.modified && <span className="skill-off-tag">Modified locally</span>}
                       {!skill.enabled && <span className="skill-off-tag">Off</span>}
                     </div>
                   )}
@@ -421,7 +477,7 @@ export function SkillLibrary({
                   <small className="skill-card-path">{skill.relativePath}{skill.supportingMarkdownCount ? ` · ${skill.supportingMarkdownCount} supporting Markdown file${skill.supportingMarkdownCount === 1 ? "" : "s"}` : ""}</small>
                 </div>
                 <div className="skill-card-actions">
-                  <button type="button" onClick={() => openSourceEditor(skill)} aria-label={`Edit ${skill.name} skill`} title="Edit skill Markdown in Mythra Code"><FilePenLine size={13} /></button>
+                  <button type="button" onClick={(event) => { event.currentTarget.focus(); openSourceEditor(skill); }} aria-label={`${skill.source ? "View" : "Edit"} ${skill.name} skill`} title={skill.source ? "View downloaded skill (read-only) and source details" : "Edit skill Markdown in Mythra Code"}>{skill.source ? <Eye size={13} /> : <FilePenLine size={13} />}</button>
                   {editingPath !== skill.path && <button type="button" onClick={() => { setEditingPath(skill.path); setNameDraft(skill.name); }} aria-label={`Rename ${skill.name}`} title="Change the app-only invocation name"><Pencil size={13} /></button>}
                   <button type="button" onClick={() => void revealItemInDir(skill.path)} aria-label={`Show ${skill.name} in folder`} title="Show source file"><FolderOpen size={13} /></button>
                   <button type="button" className="danger-icon-button" onClick={() => setPendingRemoval(skill)} aria-label={`Remove ${skill.name}`} title="Remove skill"><Trash2 size={13} /></button>
@@ -550,7 +606,7 @@ export function SkillLibrary({
           >
             <div
               ref={sourceEditorRef}
-              className="skill-editor-dialog"
+              className={`skill-editor-dialog${sourceReadOnly ? " is-read-only" : ""}`}
               role="dialog"
               aria-modal="true"
               aria-labelledby={`${fieldId}-editor-title`}
@@ -566,24 +622,33 @@ export function SkillLibrary({
               }}
             >
               <div className="skill-editor-head">
-                <span className="skill-create-icon"><FilePenLine size={15} aria-hidden="true" /></span>
+                <span className="skill-create-icon">{sourceReadOnly ? <Eye size={15} aria-hidden="true" /> : <FilePenLine size={15} aria-hidden="true" />}</span>
                 <span>
-                  <strong id={`${fieldId}-editor-title`}>Edit @{sourceEditorSkill.name}</strong>
-                  <small id={`${fieldId}-editor-description`}>Saving updates <code>{sourceEditorSkill.relativePath}</code> and refreshes the skill used by Mythra Code.</small>
+                  <strong id={`${fieldId}-editor-title`}>{sourceReadOnly ? "View" : "Edit"} @{sourceEditorSkill.name}</strong>
+                  <small id={`${fieldId}-editor-description`}>{sourceReadOnly ? "Downloaded package · read-only preview. Enable, rename or remove it from your skills list." : <>Saving updates <code>{sourceEditorSkill.relativePath}</code> and refreshes the skill used by Mythra Code.</>}</small>
                 </span>
                 <button type="button" onClick={() => closeSourceEditor()} aria-label="Close skill editor" disabled={sourceSaving}><X size={15} /></button>
               </div>
+
+              {sourceEditorSkill.source && <dl className="skill-source-details">
+                <div><dt>Source</dt><dd><span className={`skill-publisher-tag ${sourceEditorSkill.source.publisher}`}>{skillPublisherLabel(sourceEditorSkill.source.publisher)}</span></dd></div>
+                <div><dt>Repository</dt><dd><button type="button" onClick={() => void openPublisherSource()}><span>{sourceEditorSkill.source.repository}</span><ArrowUpRight size={12} aria-hidden="true" /></button></dd></div>
+                <div><dt>License</dt><dd>{sourceEditorSkill.source.license}</dd></div>
+                <div className="skill-source-revision"><dt>Revision</dt><dd><code title={sourceEditorSkill.source.revision}>{sourceEditorSkill.source.revision}</code></dd></div>
+                {sourceEditorSkill.source.modified && <div className="skill-source-modified"><dt>Status</dt><dd>This installed package has been modified locally.</dd></div>}
+              </dl>}
 
               {sourceLoading ? (
                 <div className="skill-editor-loading"><LoaderCircle className="spin" size={18} aria-hidden="true" /> Loading skill Markdown…</div>
               ) : sourceLoaded ? (
                 <label className="skill-editor-field">
-                  <span>Skill Markdown</span>
+                  <span className="skill-editor-field-label">Skill Markdown{sourceReadOnly && <span className="skill-editor-read-only"><Lock size={11} aria-hidden="true" /> Read-only</span>}</span>
                   <SkillPromptEditor
                     ref={sourceFieldRef}
                     data-autofocus
                     value={sourceDraft}
-                    onChange={(event) => setSourceDraft(event.target.value)}
+                    readOnly={sourceReadOnly}
+                    onChange={(event) => { if (!sourceReadOnly) setSourceDraft(event.target.value); }}
                     spellCheck={false}
                     aria-label={`Markdown for ${sourceEditorSkill.name}`}
                     skills={skills}
@@ -601,11 +666,11 @@ export function SkillLibrary({
 
               <div className="skill-editor-actions">
                 {!sourceLoading && !sourceLoaded && <button type="button" className="secondary-button" onClick={() => void loadSourceEditor(sourceEditorSkill)}>Retry</button>}
-                <span>{sourceLoaded ? `${sourceDraft.length.toLocaleString()} characters · ${primaryModifierLabel()}+Enter to save` : ""}</span>
-                <button type="button" className="secondary-button" onClick={() => closeSourceEditor()} disabled={sourceSaving}>Cancel</button>
-                <button type="button" className="primary-button" onClick={() => void saveSourceEditor()} disabled={!skills.some((skill) => skill.path === sourceEditorSkill.path) || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal}>
+                <span>{sourceLoaded ? `${sourceDraft.length.toLocaleString()} characters${sourceReadOnly ? "" : ` · ${primaryModifierLabel()}+Enter to save`}` : ""}</span>
+                <button type="button" className="secondary-button" onClick={() => closeSourceEditor()} disabled={sourceSaving}>{sourceReadOnly ? "Close" : "Cancel"}</button>
+                {!sourceReadOnly && <button type="button" className="primary-button" onClick={() => void saveSourceEditor()} disabled={!skills.some((skill) => skill.path === sourceEditorSkill.path) || !sourceLoaded || sourceSaving || !sourceDraft.trim() || sourceDraft === sourceOriginal}>
                   {sourceSaving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} Save skill
-                </button>
+                </button>}
               </div>
             </div>
           </div>,

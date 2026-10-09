@@ -50,12 +50,25 @@ describe("language tool settings", () => {
     render(<LanguageToolsSettings />);
     await loaded();
     expect(screen.getByRole("switch", { name: "Automatic setup for new project threads" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText("Installed", { selector: ".language-tools-state" })).toBeInTheDocument();
+    expect(screen.getByText("Verified", { selector: ".language-tools-state" })).toBeInTheDocument();
     expect(screen.getByText(/including tools installed by a model/)).toBeInTheDocument();
     expect(screen.getByText(/does not call a model or spend API tokens/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Install Python" })).toBeDisabled();
+    expect(screen.getByLabelText("Python installed")).toHaveTextContent("Installed");
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(mocks.listen).toHaveBeenCalledWith("language-tools-changed", expect.any(Function));
+  });
+
+  it.each(["installed", "available"] as const)("shows %s installations as a checkmarked Installed label, not a disabled install button", async (state) => {
+    mocks.invoke.mockResolvedValue(snapshot({ tools: [{ ...snapshot().tools[0], state,
+      health: state === "installed" ? "verified" : "stale" }] }));
+    render(<LanguageToolsSettings />);
+    await loaded();
+    const label = screen.getByLabelText("TypeScript installed");
+    expect(label).toHaveTextContent("Installed");
+    expect(label.querySelector("svg.lucide-check")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Install TypeScript" })).not.toBeInTheDocument();
+    if (state === "available") expect(screen.getByText("Verification expired")).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 
   it("saves automatic setup immediately using its authoritative response without another read", async () => {
@@ -126,7 +139,8 @@ describe("language tool settings", () => {
     current = { ...current, tools: current.tools.map((tool) => ({ ...tool, state: "installed" })) };
     await act(async () => installing.resolve(current));
     await waitFor(() => expect(screen.getByText("TypeScript is installed.")).toBeInTheDocument());
-    expect(button).toHaveTextContent("Installed");
+    expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed");
+    expect(button).not.toBeInTheDocument();
   });
 
   it("persists multiple selected installs immediately and keeps them after reopening", async () => {
@@ -148,8 +162,8 @@ describe("language tool settings", () => {
     first.unmount();
     render(<LanguageToolsSettings />);
     await loaded();
-    expect(screen.getByRole("button", { name: "Install TypeScript" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Install Python" })).toBeDisabled();
+    expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed");
+    expect(screen.getByLabelText("Python installed")).toHaveTextContent("Installed");
   });
 
   it("coalesces event bursts into one in-flight read and one dirty follow-up", async () => {
@@ -162,7 +176,7 @@ describe("language tool settings", () => {
     await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(2));
     act(() => { for (let index = 0; index < 20; index += 1) notify(3); });
     await act(async () => oldRead.resolve(snapshot({ generation: 2 })));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Install TypeScript" })).toHaveTextContent("Installed"));
+    await waitFor(() => expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed"));
     expect(mocks.invoke).toHaveBeenCalledTimes(3);
   });
 
@@ -273,7 +287,7 @@ describe("language tool settings", () => {
     mocks.invoke.mockResolvedValueOnce(available).mockResolvedValueOnce(failed).mockResolvedValueOnce(snapshot({ generation: 3, tools: [{ ...available.tools[0], state: "installed", health: "verified" }] }));
     render(<LanguageToolsSettings />);
     await loaded();
-    expect(screen.getByRole("button", { name: "Install TypeScript" })).toBeDisabled();
+    expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed");
     fireEvent.click(screen.getByRole("button", { name: "Refresh language tools" }));
     await waitFor(() => expect(screen.getByText("Verification failed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Retry installing TypeScript" }));
@@ -328,7 +342,7 @@ describe("language tool settings", () => {
     act(() => notify(6));
     await waitFor(() => expect(screen.getByText("Verified by another thread.")).toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Install TypeScript" })).toBeDisabled();
+    expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed");
   });
 
   it("does not announce an obsolete install rejection when that same tool is already verified", async () => {
@@ -345,7 +359,7 @@ describe("language tool settings", () => {
     await act(async () => mutation.reject(new Error("Superseded setup failed.")));
     await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(4));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Install TypeScript" })).toHaveTextContent("Installed");
+    expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed");
   });
 
   it("keeps a returned installation failure actionable without a redundant scan", async () => {

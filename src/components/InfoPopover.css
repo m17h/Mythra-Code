@@ -1,0 +1,43 @@
+/* Read-only details for a small trigger. Neutral menu surface, hairline
+   edge, squircle corners; bounded to the viewport and scrolls when long. */
+.info-popover { position: relative; display: inline-flex; min-width: 0; }
+.info-popover-panel {
+  position: fixed;
+  inset: auto;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: min(280px, calc(100vh - 16px));
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md, 12px);
+  color: var(--ink-2);
+  background: var(--menu-surface, var(--panel-2));
+  box-shadow: var(--shadow);
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.info-popover-panel:focus { outline: none; }
+.info-popover-panel:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+/* Without a top layer the panel is still fixed: positioned from its measured
+   containing block and portaled to the open owner dialog or Settings'
+   backdrop, so inner scrolling and clipping cannot cut it off. */
+.info-popover-panel[hidden] { display: none; }
+
+@supports (corner-shape: squircle) {
+  .info-popover-panel { border-radius: 16px; corner-shape: squircle; }
+}

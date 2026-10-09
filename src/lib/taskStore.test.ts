@@ -10,12 +10,69 @@ import {
 } from "./taskStore";
 import { durationForTurn, resetTurnDurationsForTests } from "./turnDurations";
 import { saveQuestionAnswers, savedQuestionAnswers, saveQuestionRequest } from "./agentQuestionRecords";
+import type { Activity, ChatMessage } from "../types";
+import { usedSkillsForRun } from "./skillUsage";
 
 describe("task store", () => {
   beforeEach(() => {
     localStorage.clear();
     resetTurnDurationsForTests();
     resetTaskStore();
+  });
+
+  it("preserves skill evidence through partial activity updates and stale history with accurate budgeting", () => {
+    const store = useTaskStore.getState();
+    const activity: Activity = { id: "skill", kind: "command", title: "Skill", status: "completed",
+      skillUsage: [{ name: "review", source: "claude-skill-tool", status: "loaded" }] };
+    store.upsertActivity("thread", activity);
+    const { skillUsage: _usage, ...withoutUsage } = activity;
+    store.upsertActivity("thread", withoutUsage);
+    store.hydrateTask("thread", [], [withoutUsage]);
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.activities[0].skillUsage).toEqual(activity.skillUsage);
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+    expect(task.estimatedTranscriptBytes).toBeGreaterThan(estimateTranscriptBytes([], [withoutUsage]));
+  });
+
+  it.each(["loaded", "failed"] as const)("preserves a native skill's %s result when a delayed history snapshot contains only its pending call", (status) => {
+    const store = useTaskStore.getState();
+    store.upsertActivity("thread", { id: "skill", kind: "command", title: "Skill", detail: "Observed tool result",
+      status: status === "loaded" ? "completed" : "failed", skillUsage: [{ name: "review", source: "claude-skill-tool", status }] });
+    store.hydrateTask("thread", [], [{ id: "skill", kind: "command", title: "Skill", status: "inProgress",
+      skillUsage: [{ name: "review", source: "claude-skill-tool", status: "pending" }] }]);
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.activities[0]).toMatchObject({ status: status === "loaded" ? "completed" : "failed", detail: "Observed tool result", skillUsage: [{ status }] });
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+  });
+
+  it.each(["hydrate", "prepend"])("sanitizes skill evidence and preserves its source on %s", (mode) => {
+    const store = useTaskStore.getState();
+    const message: ChatMessage = { id: "user", role: "user", text: "Selected skill", skillUsage: [
+      { name: "review", path: "/skills/review/SKILL.md", source: "codex-skill-input", status: "selected" },
+      { name: "", source: "claude-skill-tool", status: "loaded" },
+    ] };
+    const activity: Activity = { id: "bad", kind: "command", title: "Skill",
+      skillUsage: [{ name: "review", path: "https://example.com", source: "claude-skill-tool", status: "loaded" }] };
+    store.ensureTask("thread");
+    if (mode === "hydrate") store.hydrateTask("thread", [message], [activity]);
+    else store.prependHistory("thread", [message], [activity], {});
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.messages[0].skillUsage).toHaveLength(1);
+    expect(task.activities[0].skillUsage).toBeUndefined();
+    expect(task.estimatedTranscriptBytes).toBe(estimateTranscriptBytes(task.messages, task.activities));
+  });
+
+  it.each(["hydrate", "prepend"])("does not reinterpret corrupt dependency reports as historical captured references on %s", (mode) => {
+    const store = useTaskStore.getState();
+    const message: ChatMessage = { id: "user", role: "user", text: "Review @review",
+      skillReferences: [{ start: 7, end: 14, name: "review", path: "/skills/review/SKILL.md" }],
+      skillDependencies: { version: 999 } as unknown as ChatMessage["skillDependencies"] };
+    store.ensureTask("thread");
+    if (mode === "hydrate") store.hydrateTask("thread", [message], []);
+    else store.prependHistory("thread", [message], [], {});
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.messages[0].skillReferences).toEqual([]);
+    expect(usedSkillsForRun(task.messages.map((value) => ({ kind: "message", value })))).toEqual([]);
   });
 
   it("retains known assistant phase when a stale history page omits the metadata", () => {

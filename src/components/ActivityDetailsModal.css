@@ -50,6 +50,23 @@
 .activity-details-state.unconfirmed { color: var(--muted); }
 .activity-details-meta { min-width: 0; overflow: hidden; color: var(--muted-2); font-variant-numeric: tabular-nums; white-space: nowrap; text-overflow: ellipsis; }
 
+/* Skill usage: a quiet meta-weight count beside status and steps. Its names
+   open on hover, focus or click; the dotted rule marks it as inspectable. */
+.activity-details-subline { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; margin-top: 3px; }
+.activity-details-subline > .activity-details-status { flex: 0 1 auto; margin-top: 0; }
+.activity-details-skills { flex: 0 0 auto; align-items: baseline; font-size: var(--fs-meta); }
+.activity-details-skills::before { content: "·"; margin-right: 8px; color: var(--muted-2); }
+.activity-details-skills-trigger { padding: 0 2px; margin: 0 -2px; border: 0; border-radius: 5px; color: var(--muted-2); background: transparent; font: inherit; font-variant-numeric: tabular-nums; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; cursor: pointer; transition: color var(--t-fast, 120ms) ease; }
+.activity-details-skills-trigger:hover,
+.activity-details-skills-trigger[aria-expanded="true"] { color: var(--ink-2); text-decoration-color: currentColor; }
+.activity-details-skills-trigger:focus-visible { outline: none; box-shadow: var(--ring); }
+.activity-details-skills-title { margin: 0 0 6px; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.activity-details-skills-list { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.activity-details-skills-list li { display: flex; flex-direction: column; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.activity-details-skills-list small { color: var(--muted); font-size: var(--fs-micro); }
+.activity-details-skills-note { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-micro); line-height: 1.45; }
+@media (prefers-reduced-motion: reduce) { .activity-details-skills-trigger { transition: none; } }
+
 .activity-details-search { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; padding: 2px 2px 2px 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--field); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .activity-details-search > span { margin-right: 4px; }
 .activity-details-search button,

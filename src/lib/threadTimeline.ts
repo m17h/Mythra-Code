@@ -2,6 +2,7 @@ import { displayedUserMessage } from "./userMessageEcho";
 import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
 import { compactionActivity, compactionState } from "./contextCompaction";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
+import { codexInputSkillUsage } from "./skillUsage";
 
 export interface ThreadTimelineSnapshot {
   messages: ChatMessage[];
@@ -130,11 +131,13 @@ export function timelineFromTurns(turns: Turn[] = [], options: ThreadTimelineOpt
       const order = ++timelineOrder;
       const id = item.id ?? `${turn.id}-${itemIndex}`;
       if (item.type === "userMessage") {
+        const skillUsage = codexInputSkillUsage(item);
         messages.push({
           id,
           role: "user",
           ...displayedUserMessage(userText(item)),
           attachments: userImageAttachments(item),
+          ...(skillUsage.length ? { skillUsage } : {}),
           timelineOrder: order,
           turnId: turn.id,
           turnStatus,

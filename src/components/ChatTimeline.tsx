@@ -28,6 +28,7 @@ import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamin
 import "./ChatTimeline.compaction.css";
 import "./ChatTimeline.skills.css";
 import { SkillDependencyDetails } from "./SkillDependencyDetails";
+import { usedSkillsForRun } from "../lib/skillUsage";
 import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/streamingTextPacer";
 import { createLineStreamingTextPacer } from "../lib/lineStreamingTextPacer";
 import { createCompletionReveal, type CompletionReveal } from "../lib/completionReveal";
@@ -52,6 +53,9 @@ export type WorkTimelineEntry = {
   turnId?: string;
   /** Idle without terminal evidence for the current turn: neither live nor done. */
   unconfirmed?: boolean;
+  /** Metadata-only opener for a run with recorded skills but no folded work.
+   * It represents no command or synthetic transcript step. */
+  skillCount?: number;
   live?: LiveActivityDescriptor;
 };
 
@@ -396,7 +400,31 @@ function presentTimeline(
     live.live = describeLiveActivity(run?.entries ?? [], { awaiting, activeTurnId });
     output.push(live);
   }
-  return output;
+  // Final-only answers have no hidden work, but their skill-load evidence
+  // still needs a route into details. Existing work rows already provide it;
+  // collect only for runs lacking an opener, rather than rescanning every run.
+  const represented = new Set(output.filter((entry): entry is WorkTimelineEntry => entry.kind === "work")
+    .map((entry) => entry.runKey));
+  const before = new Map<string, WorkTimelineEntry>();
+  const after = new Map<string, WorkTimelineEntry>();
+  for (const run of runs.list) {
+    if (represented.has(run.key)) continue;
+    const skillCount = usedSkillsForRun(run.entries).length;
+    if (!skillCount) continue;
+    const turnId = run.entries.map(workItemTurnId).find(Boolean);
+    const state = runOutcome(run.entries);
+    const row: WorkTimelineEntry = { kind: "work", value: [], runKey: run.key, turnId, state, skillCount,
+      unconfirmed: state === "unknown" && Boolean(activeTurnId) && turnId === activeTurnId };
+    const firstOutput = run.entries.find((entry) => entry.kind !== "message" || entry.value.role !== "user");
+    const anchor = firstOutput ?? run.entries.at(-1);
+    const id = anchor && workItemId(anchor);
+    if (id) (firstOutput ? before : after).set(id, row);
+  }
+  return output.flatMap((entry) => {
+    const id = entry.kind === "work" || entry.kind === "thinking" || entry.kind === "approval" ? undefined : workItemId(entry);
+    return [...(id && before.has(id) ? [before.get(id)!] : []), entry,
+      ...(id && after.has(id) ? [after.get(id)!] : [])];
+  });
 }
 
 /** What one commit showed of the live (or unconfirmed) run. */
@@ -490,7 +518,14 @@ function stepCountLabel(count: number): string {
 /** Outcome of a run with no folded work, from its own runtime metadata. */
 function runOutcome(entries: WorkItemEntry[]): CompactWorkState {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const status = workItemTurnStatus(entries[index]);
+    const entry = entries[index];
+    // Runtime user echoes can default to completed before any provider output.
+    // They are direction, not evidence that the run reached a terminal state.
+    if (entry.kind === "message" && entry.value.role === "user") continue;
+    if (entry.kind === "message" && entry.value.streaming) return "unknown";
+    const status = workItemTurnStatus(entry);
+    // Newer unfinished output must not inherit an older terminal outcome.
+    if (status === "inProgress") return "unknown";
     if (status === "completed" || status === "failed" || status === "interrupted") return status;
   }
   return "unknown";
@@ -1213,7 +1248,8 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
   const entryRef = useRef(entry);
   entryRef.current = entry;
   const onOpen = useCallback((opener: HTMLButtonElement) => onOpenActivity(entryRef.current, opener), [onOpenActivity]);
-  const summary = live ? stepCountLabel(countWorkItems(entry.value)) : workSummary(entry.value) || stepCountLabel(countWorkItems(entry.value));
+  const summary = entry.skillCount !== undefined ? `${entry.skillCount} skill${entry.skillCount === 1 ? "" : "s"} used`
+    : live ? stepCountLabel(countWorkItems(entry.value)) : workSummary(entry.value) || stepCountLabel(countWorkItems(entry.value));
   return <ActivityStatus
     state={state}
     label={live ? entry.live?.label : undefined}
@@ -1230,6 +1266,7 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
 }, (previous, next) => previous.open === next.open && previous.searchMatches === next.searchMatches
   && previous.onOpenActivity === next.onOpenActivity && previous.entry.state === next.entry.state
   && previous.entry.unconfirmed === next.entry.unconfirmed && previous.entry.runKey === next.entry.runKey && previous.entry.live?.label === next.entry.live?.label
+  && previous.entry.skillCount === next.entry.skillCount
   && previous.entry.live?.category === next.entry.live?.category && previous.entry.live?.playful === next.entry.live?.playful
   && sameWorkItems(previous.entry.value, next.entry.value));
 
@@ -1329,6 +1366,7 @@ export function timelineEntryKey(entry: TimelineEntry, index: number): string {
   if (entry.kind === "thinking") return "thinking";
   // One live line keeps its DOM through every status change of the run.
   if (entry.kind === "work" && entry.state === "running") return "work-live";
+  if (entry.kind === "work" && entry.skillCount !== undefined) return `work-metadata-${entry.runKey ?? index}`;
   if (entry.kind === "work") return `work-${(entry.value[0] && workItemId(entry.value[0])) ?? index}`;
   if (entry.kind === "commands" || entry.kind === "files" || entry.kind === "spawns") return `${entry.kind}-${entry.value[0]?.id ?? index}`;
   return `${entry.kind}-${entry.value.id}`;
@@ -2012,7 +2050,7 @@ export function ChatTimeline({
       : {
         entries: selectedRun.entries,
         state: groups[0]?.state ?? runOutcome(selectedRun.entries),
-        summary: workSummary(hidden),
+        summary: groups[0]?.skillCount !== undefined ? undefined : workSummary(hidden),
         unconfirmed: groups.some((group) => group.unconfirmed),
       };
     return { run, visibleIds };

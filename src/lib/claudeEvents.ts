@@ -2,6 +2,7 @@ import { parseClaudeRateLimitEvent, type ClaudeEvent } from "./claude";
 import { auditEvent, type JsonObject } from "./codex";
 import type { ProviderRateLimits } from "./providerUsage";
 import type { Activity } from "../types";
+import { claudeToolSkillUsage, validSkillUsage } from "./skillUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { compactionActivity, compactionState, compactionTitle } from "./contextCompaction";
@@ -398,13 +399,18 @@ function finalizeTool(threadId: string, turnId: string, block: ClaudeBlock): voi
   }
   const kind = activityKind(block.name);
   const workType = toolWorkType(block.name);
+  const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === block.id);
+  const skillUsage = claudeToolSkillUsage(block.name, input);
+  const settledSkill = skillUsage.length > 0 && validSkillUsage(existing?.skillUsage)
+    .some((usage) => usage.source === "claude-skill-tool" && usage.status !== "pending");
   useTaskStore.getState().upsertActivity(threadId, {
     id: block.id,
     kind,
     ...(workType ? { workType } : {}),
     title: activityTitle(block.name, input),
-    detail: activityDetail(input),
-    status: "inProgress",
+    detail: settledSkill ? existing?.detail : activityDetail(input),
+    status: settledSkill ? existing?.status : "inProgress",
+    ...(skillUsage.length ? { skillUsage: settledSkill ? existing?.skillUsage : skillUsage } : {}),
     turnId,
     ...(/^task$/i.test(block.name) ? {
       agent: {
@@ -634,6 +640,8 @@ export function routeClaudeEvent(
         ...existing,
         detail: resultContent.slice(-4000) || existing.detail,
         status: result.is_error ? "failed" : "completed",
+        ...(existing.skillUsage ? { skillUsage: validSkillUsage(existing.skillUsage).map((usage) =>
+          usage.source === "claude-skill-tool" ? { ...usage, status: result.is_error ? "failed" as const : "loaded" as const } : usage) } : {}),
       });
     }
     ctx.onTranscriptChanged(threadId);

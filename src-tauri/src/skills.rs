@@ -25,6 +25,8 @@ pub(super) struct LocalSkillFile {
     pub(super) description: String,
     pub(super) supporting_markdown_count: usize,
     pub(super) content_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) source: Option<crate::official_skills::OfficialSkillSource>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -195,15 +197,21 @@ fn is_windows_reparse_point(_path: &Path) -> Result<bool, String> {
 // Depth and Markdown limits alone do not bound a broad source/dependency tree.
 const MAX_SKILL_SCAN_ENTRIES: usize = 20_000;
 
-fn bounded_skill_entries(directory: &Path, remaining: &mut usize) -> Result<Vec<fs::DirEntry>, String> {
+fn bounded_skill_entries(
+    directory: &Path,
+    remaining: &mut usize,
+) -> Result<Vec<fs::DirEntry>, String> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(directory)
-        .map_err(|error| format!("Could not scan {}: {error}", directory.display()))? {
+        .map_err(|error| format!("Could not scan {}: {error}", directory.display()))?
+    {
         if *remaining == 0 {
             return Err("The skills folder contains too many entries to scan safely. Select a smaller skills folder.".into());
         }
         *remaining -= 1;
-        entries.push(entry.map_err(|error| format!("Could not scan {}: {error}", directory.display()))?);
+        entries.push(
+            entry.map_err(|error| format!("Could not scan {}: {error}", directory.display()))?,
+        );
     }
     Ok(entries)
 }
@@ -645,7 +653,14 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
         .collect::<HashSet<_>>();
     let mut inventory = BTreeMap::new();
     let mut support_entry_budget = MAX_SKILL_SCAN_ENTRIES;
-    collect_supported_skill_metadata(&folder, &folder, 0, &package_roots, &mut inventory, &mut support_entry_budget)?;
+    collect_supported_skill_metadata(
+        &folder,
+        &folder,
+        0,
+        &package_roots,
+        &mut inventory,
+        &mut support_entry_budget,
+    )?;
     let mut support_cache = SupportFingerprintCache::new();
     let mut support_budget = SupportFingerprintBudget::default();
     let mut skills = Vec::new();
@@ -666,6 +681,7 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
         // cross-version file identity.
         let mut content_hasher = DefaultHasher::new();
         content.hash(&mut content_hasher);
+        crate::official_skills::package_fingerprint(&folder, &path).hash(&mut content_hasher);
         if file_name.eq_ignore_ascii_case("SKILL.md") {
             if let Some(package) = path.parent() {
                 for (support, metadata) in inventory.range(package.to_path_buf()..) {
@@ -698,6 +714,7 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
             )?;
         }
         skills.push(LocalSkillFile {
+            source: crate::official_skills::source_for_skill(&folder, &path),
             path: path.to_string_lossy().into_owned(),
             relative_path: path
                 .strip_prefix(&folder)
@@ -1231,8 +1248,11 @@ pub(super) fn build_skill_runtime(
             .map_err(|error| format!("Could not create skill `{name}`: {error}"))?;
         let mut count = 1;
         let mut bytes = content.len() as u64;
+        let official = crate::official_skills::copy_official_support(&folder, &source, &package)?;
         if file_name.eq_ignore_ascii_case("SKILL.md") {
-            copy_markdown_tree(reference_root, &source, &package, 0, &mut count, &mut bytes)?;
+            if !official {
+                copy_markdown_tree(reference_root, &source, &package, 0, &mut count, &mut bytes)?;
+            }
             verify_analyzed_runtime_dependencies(&analysis, reference_root, &source, &package)?;
         } else {
             copy_required_runtime_dependencies(
@@ -1266,14 +1286,23 @@ pub(super) fn build_skill_runtime(
         // The first package is a validated snapshot. Derive the Claude tree
         // from it so an edit to an unlinked source between provider copies
         // cannot produce two different runtime views.
-        copy_markdown_tree(
-            &package,
-            &package.join("SKILL.md"),
-            &claude_package,
-            0,
-            &mut claude_count,
-            &mut claude_bytes,
-        )?;
+        if official {
+            crate::official_skills::copy_official_snapshot(
+                &folder,
+                &source,
+                &package,
+                &claude_package,
+            )?;
+        } else {
+            copy_markdown_tree(
+                &package,
+                &package.join("SKILL.md"),
+                &claude_package,
+                0,
+                &mut claude_count,
+                &mut claude_bytes,
+            )?;
+        }
         verify_analyzed_runtime_dependencies(&analysis, reference_root, &source, &claude_package)?;
         fs::write(claude_package.join("SKILL.md"), &bridge)
             .map_err(|error| format!("Could not prepare Claude skill `{name}`: {error}"))?;
@@ -2066,6 +2095,7 @@ pub(super) fn update_local_skill_source(
         return Err("Skill Markdown must be smaller than 1 MB.".into());
     }
     let source = detected_local_skill_source(folder, source)?;
+    crate::official_skills::ensure_editable(folder, &source)?;
     let current = fs::read_to_string(&source)
         .map_err(|error| format!("Could not read {} before saving: {error}", source.display()))?;
     if current != original {
@@ -2198,13 +2228,22 @@ mod invocation_tests {
 
     #[test]
     fn scan_entry_budget_counts_unrelated_files_across_directories() {
-        let root = std::env::temp_dir().join(format!("mythra-scan-budget-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("mythra-scan-budget-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("nested")).unwrap();
         fs::write(root.join("nested/a.bin"), "a").unwrap();
         fs::write(root.join("nested/b.bin"), "b").unwrap();
         let error = collect_skill_candidates(&root, &root, 0, &mut Vec::new(), &mut 2).unwrap_err();
         assert!(error.contains("too many entries"));
-        let error = collect_supported_skill_metadata(&root, &root, 0, &HashSet::new(), &mut BTreeMap::new(), &mut 2).unwrap_err();
+        let error = collect_supported_skill_metadata(
+            &root,
+            &root,
+            0,
+            &HashSet::new(),
+            &mut BTreeMap::new(),
+            &mut 2,
+        )
+        .unwrap_err();
         assert!(error.contains("too many entries"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -2454,6 +2493,126 @@ mod invocation_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "Downloads one pinned publisher package into an isolated temporary library; no scripts or model requests."]
+    async fn nested_publisher_alias_keeps_resources_and_configuration_boundaries() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let root = std::env::temp_dir().join(format!(
+            "mythra-nested-publisher-runtime-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let library = root.join("library");
+        let nested = library.join("vendors/testing");
+        fs::create_dir_all(&nested).unwrap();
+        let source = crate::official_skills::local_skills_install_official(
+            nested.to_string_lossy().into_owned(),
+            "anthropic-webapp-testing".into(),
+        )
+        .await
+        .unwrap();
+        let publisher = SkillBridgeConfig {
+            source_path: source.clone(),
+            name: "browser-helper".into(),
+            enabled: true,
+        };
+        let healthy_path = library.join("healthy.md");
+        let parent_path = library.join("parent.md");
+        fs::write(&healthy_path, "Independent custom instructions").unwrap();
+        fs::write(&parent_path, "Use @browser-helper").unwrap();
+        let healthy = SkillBridgeConfig {
+            source_path: healthy_path.to_string_lossy().into_owned(),
+            name: "healthy".into(),
+            enabled: true,
+        };
+        let parent = SkillBridgeConfig {
+            source_path: parent_path.to_string_lossy().into_owned(),
+            name: "parent".into(),
+            enabled: true,
+        };
+        let configs = vec![publisher.clone(), healthy.clone(), parent.clone()];
+        let scan = scan_local_skills(&library).unwrap();
+        let scanned = scan.iter().find(|skill| skill.path == source).unwrap();
+        assert!(!scanned.source.as_ref().unwrap().modified);
+        assert_eq!(
+            scanned.relative_path,
+            "vendors/testing/anthropic-webapp-testing/SKILL.md"
+        );
+        let resolved = resolve_skill_prompts_report_at(
+            &library,
+            "Use @parent and @browser-helper",
+            "Follow @browser-helper",
+            None,
+            configs.clone(),
+        )
+        .unwrap();
+        assert!(resolved.skill_dependencies.issues.is_empty());
+        let publisher_node = resolved
+            .skill_dependencies
+            .nodes
+            .iter()
+            .find(|node| node.path == source)
+            .unwrap();
+        assert_eq!(
+            publisher_node.content_hash.as_deref(),
+            Some(format!("{:x}", Sha256::digest(fs::read(&source).unwrap())).as_str())
+        );
+        assert_eq!(
+            resolved
+                .skill_dependencies
+                .nodes
+                .iter()
+                .filter(|node| node.path == source)
+                .count(),
+            1
+        );
+        let runtime = root.join("runtime");
+        sync_skill_runtime_at(&runtime, &library, configs).unwrap();
+        let package = Path::new(&source).parent().unwrap();
+        let original_helper = fs::read(package.join("scripts/with_server.py")).unwrap();
+        for mirror in [runtime.clone(), runtime.join("skills")] {
+            assert!(mirror.join("browser-helper/SKILL.md").exists());
+            assert!(mirror.join("parent/SKILL.md").exists());
+            assert_eq!(
+                fs::read(mirror.join("browser-helper/scripts/with_server.py")).unwrap(),
+                original_helper
+            );
+            assert_eq!(
+                fs::read(mirror.join("browser-helper/LICENSE.txt")).unwrap(),
+                fs::read(package.join("LICENSE.txt")).unwrap()
+            );
+        }
+
+        let disabled = SkillBridgeConfig {
+            enabled: false,
+            ..publisher.clone()
+        };
+        for configured in [Some(disabled), None] {
+            let mut configs = vec![healthy.clone(), parent.clone()];
+            if let Some(config) = configured {
+                configs.push(config);
+            }
+            sync_skill_runtime_at(&runtime, &library, configs.clone()).unwrap();
+            for mirror in [runtime.clone(), runtime.join("skills")] {
+                assert!(mirror.join("healthy/SKILL.md").exists());
+                assert!(!mirror.join("browser-helper").exists());
+                assert!(!mirror.join("parent").exists());
+            }
+            let blocked =
+                resolve_skill_prompts_report_at(&library, "@parent", "", None, configs).unwrap();
+            assert!(!blocked.skill_dependencies.issues.is_empty());
+        }
+
+        // Selecting the publisher package itself keeps its original resource paths.
+        sync_skill_runtime_at(&runtime, package, vec![publisher]).unwrap();
+        assert_eq!(
+            fs::read(runtime.join("browser-helper/scripts/with_server.py")).unwrap(),
+            original_helper
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn blocked_skill_is_removed_from_mirrors_while_healthy_skill_stays_usable() {
         let root = std::env::temp_dir().join(format!(
@@ -2498,17 +2657,24 @@ mod invocation_tests {
 
     #[test]
     fn hidden_dependency_does_not_prevent_healthy_runtime_bridges() {
-        let root = std::env::temp_dir().join(format!("mythra-hidden-runtime-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("mythra-hidden-runtime-{}", uuid::Uuid::new_v4()));
         let library = root.join("library");
         let runtime = root.join("runtime");
         fs::create_dir_all(library.join(".hidden")).unwrap();
         fs::write(library.join("healthy.md"), "Healthy instructions").unwrap();
         fs::write(library.join("broken.md"), "[Guide](.hidden/guide.txt)").unwrap();
         fs::write(library.join(".hidden/guide.txt"), "Guide").unwrap();
-        let configs = ["healthy", "broken"].map(|name| SkillBridgeConfig {
-            source_path: library.join(format!("{name}.md")).to_string_lossy().into_owned(),
-            name: name.into(), enabled: true,
-        }).to_vec();
+        let configs = ["healthy", "broken"]
+            .map(|name| SkillBridgeConfig {
+                source_path: library
+                    .join(format!("{name}.md"))
+                    .to_string_lossy()
+                    .into_owned(),
+                name: name.into(),
+                enabled: true,
+            })
+            .to_vec();
         sync_skill_runtime_at(&runtime, &library, configs).unwrap();
         for mirror in [runtime.clone(), runtime.join("skills")] {
             assert!(mirror.join("healthy/SKILL.md").exists());
