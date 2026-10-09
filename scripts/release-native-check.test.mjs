@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { atomicJson, fileHash, objectHash } from './release-state.mjs';
-import { assertNativeContract, assertQaSourceSupport, validateNativeObservations, validateNativeResult } from './release-native-check.mjs';
+import { assertNativeContract, assertQaSourceSupport, nativePrompt, validateNativeObservations, validateNativeResult } from './release-native-check.mjs';
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -59,6 +59,32 @@ function closeFaultFixture() {
   persistEvents(root, result, events);
   return { ...f, proof };
 }
+test('affected language storage uses existing observations and preserves metadata-only isolation', () => {
+  const { contract } = fixture();
+  contract.checks = [{ id: 'native-storage:darwin-aarch64' }];
+  contract.releaseScope = { changedFiles: ['src-tauri/src/language_tools.rs'], predecessors: [] };
+  const prompt = nativePrompt(contract, '/private/contract.json', '/private/state');
+  expect(prompt).toContain('representative-existing-data/save-close-reopen/affected-data-preserved');
+  expect(prompt).toContain('autoInstall:false and enabled.python:false');
+  expect(prompt).toContain('no external edits or reseeding');
+  expect(prompt).toContain('Never click Refresh/Install or run preparation, a query, MCP or provider');
+  expect(prompt).toContain('original theme/onboarding/draft/app-state checks and close-failure recipe');
+  for (const path of ['src/components/LanguageToolsSettings.tsx', 'src/lib/languageTools.ts']) {
+    contract.releaseScope = { changedFiles: [path], classifications: [{ path, boundaries: ['native-storage'] }], predecessors: [] };
+    expect(nativePrompt(contract, '/private/contract.json', '/private/state')).toContain('Selected language storage:');
+    contract.releaseScope = { changedFiles: [], predecessors: [{ changedFiles: [path] }] };
+    expect(nativePrompt(contract, '/private/contract.json', '/private/state')).toContain('Selected language storage:');
+  }
+  contract.releaseScope = { changedFiles: ['src/components/LanguageToolsSettings.test.tsx', 'src/components/LanguageToolsSettings.css'], predecessors: [] };
+  expect(nativePrompt(contract, '/private/contract.json', '/private/state')).not.toContain('Selected language storage:');
+  contract.releaseScope = { changedFiles: [], predecessors: [{ changedFiles: ['src-tauri/src/language_tools.rs'] }] };
+  expect(nativePrompt(contract, '/private/contract.json', '/private/state')).toContain('Selected language storage:');
+  contract.releaseScope.predecessors = [];
+  expect(nativePrompt(contract, '/private/contract.json', '/private/state')).not.toContain('Selected language storage:');
+  contract.releaseScope.changedFiles = ['src-tauri/src/language_tools.rs'];
+  contract.checks = [{ id: 'native-startup:darwin-aarch64' }];
+  expect(nativePrompt(contract, '/private/contract.json', '/private/state')).not.toContain('Selected language storage:');
+});
 test('declared one-shot native close failure requires prompt cancellation, recovery and a healthy reopened primary', () => {
   const { root, result, contract } = closeFaultFixture();
   expect(validateNativeResult(result, contract, root)).toBe(result);

@@ -88,6 +88,30 @@ describe("language tool settings", () => {
     expect(screen.getByText("TypeScript disabled.")).toBeInTheDocument();
   });
 
+  it("keeps inventory events and immediate preference controls on metadata-only commands", async () => {
+    let current = snapshot();
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "language_tools_set_auto_install") current = { ...current, generation: current.generation + 1, autoInstall: args.enabled };
+      else if (command === "language_tools_set_enabled") current = { ...current, generation: current.generation + 1, tools: current.tools.map((tool) => tool.id === args.id ? { ...tool, enabled: args.enabled } : tool) };
+      else if (command !== "language_tools_snapshot") throw new Error(`QA must not execute ${command}`);
+      return current;
+    });
+    render(<LanguageToolsSettings />);
+    await loaded();
+    fireEvent.click(screen.getByRole("switch", { name: "Automatic setup for new project threads" }));
+    await waitFor(() => expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Enable Python" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Enable Python" })).not.toBeChecked());
+    current = { ...current, generation: current.generation + 1 };
+    act(() => notify(current.generation));
+    await waitFor(() => expect(mocks.invoke.mock.calls.filter(([command]) => command === "language_tools_snapshot")).toHaveLength(2));
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "language_tools_snapshot", "language_tools_set_auto_install", "language_tools_set_enabled", "language_tools_snapshot",
+    ]);
+    expect(mocks.invoke).toHaveBeenCalledWith("language_tools_set_enabled", { id: "python", enabled: false });
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
+  });
+
   it("installs only the selected tool and guards duplicate clicks until completion", async () => {
     const installing = deferred<LanguageToolsSnapshot>();
     let current = snapshot();

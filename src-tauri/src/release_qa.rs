@@ -470,6 +470,9 @@ pub(crate) fn allowed_command(command: &str) -> bool {
             | "preference_learning_list"
             | "preference_learning_save"
             | "preference_learning_forget"
+            | "language_tools_snapshot"
+            | "language_tools_set_auto_install"
+            | "language_tools_set_enabled"
             | "local_transcript_list"
             | "local_transcript_metadata_write"
             | "local_transcript_page_read"
@@ -1133,6 +1136,32 @@ mod tests {
         assert_eq!(offline_status("has_lmstudio_key"), Some(json!(false)));
         assert!(offline_status("claude_login").is_none());
         assert!(offline_status("codex_rpc").is_none());
+    }
+    #[test]
+    fn qa_language_preferences_allow_only_metadata_and_immediate_writes() {
+        for command in [
+            "language_tools_snapshot",
+            "language_tools_set_auto_install",
+            "language_tools_set_enabled",
+        ] {
+            assert!(allowed_command(command), "{command}");
+            assert!(offline_status(command).is_none(), "must use real owned storage: {command}");
+        }
+        for command in [
+            "language_tools_refresh",
+            "language_tools_install",
+            "language_tools_prepare_project",
+            "language_tools_status",
+            "install_language_tool",
+            "language_tool_query",
+            "child_agent_session_start",
+            "child_agent_session_end",
+            "codex_rpc",
+            "claude_turn_start",
+            "cursor_turn_start",
+        ] {
+            assert!(!allowed_command(command), "{command}");
+        }
     }
     #[test]
     fn qa_allowlist_rejects_every_provider_auth_and_external_mutation() {
