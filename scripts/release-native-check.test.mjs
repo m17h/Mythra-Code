@@ -69,6 +69,14 @@ test('affected language storage uses existing observations and preserves metadat
   expect(prompt).toContain('no external edits or reseeding');
   expect(prompt).toContain('Never click Refresh/Install or run preparation, a query, MCP or provider');
   expect(prompt).toContain('original theme/onboarding/draft/app-state checks and close-failure recipe');
+  for (const path of ['src/components/LanguageToolsSettings.tsx', 'src/lib/languageTools.ts']) {
+    contract.releaseScope = { changedFiles: [path], classifications: [{ path, boundaries: ['native-storage'] }], predecessors: [] };
+    expect(nativePrompt(contract, '/private/contract.json', '/private/state')).toContain('Selected language storage:');
+    contract.releaseScope = { changedFiles: [], predecessors: [{ changedFiles: [path] }] };
+    expect(nativePrompt(contract, '/private/contract.json', '/private/state')).toContain('Selected language storage:');
+  }
+  contract.releaseScope = { changedFiles: ['src/components/LanguageToolsSettings.test.tsx', 'src/components/LanguageToolsSettings.css'], predecessors: [] };
+  expect(nativePrompt(contract, '/private/contract.json', '/private/state')).not.toContain('Selected language storage:');
   contract.releaseScope = { changedFiles: [], predecessors: [{ changedFiles: ['src-tauri/src/language_tools.rs'] }] };
   expect(nativePrompt(contract, '/private/contract.json', '/private/state')).toContain('Selected language storage:');
   contract.releaseScope.predecessors = [];

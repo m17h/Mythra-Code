@@ -68,9 +68,10 @@ export function createNativeContract({ root, stateRoot, plan, platform }) {
 }
 
 export function nativePrompt(contract, contractPath, stateRoot) {
+  const languagePreferencePaths = ['src-tauri/src/language_tools.rs', 'src/components/LanguageToolsSettings.tsx', 'src/lib/languageTools.ts'];
   const languageStorage = contract.checks.some((c) => c.id.startsWith('native-storage:'))
     && [contract.releaseScope?.changedFiles ?? [], ...(contract.releaseScope?.predecessors ?? []).map((p) => p.changedFiles ?? [])]
-      .some((files) => files.includes('src-tauri/src/language_tools.rs'));
+      .some((files) => files.some((file) => languagePreferencePaths.includes(file)));
   return `Execute the authorized Mythra Code native release validation contract at ${contractPath}.
 The human already authorized this release and bounded native QA. Read the exact contract and frozen repository instructions. Work only on its final package, disposable profile and evidence files under ${stateRoot}; never edit tracked source, rebuild, publish, stop the working user's app, or read/copy their application/provider profile or credentials.
 
