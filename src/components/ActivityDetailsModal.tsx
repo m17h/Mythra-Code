@@ -561,7 +561,7 @@ export function ActivityDetailsModal({
             </ul>
             {/* Evidence, not a guarantee: unreported activations are invisible
                 here, and a loaded skill does not prove its steps were followed. */}
-            <p className="activity-details-skills-note">Skills loaded into this run or reported by the provider. Some automatic activations may not be reported.</p>
+            <p className="activity-details-skills-note">Skills loaded into this run or reported by the provider. Unreported automatic activations cannot be counted. Loading a skill does not prove its instructions were followed.</p>
           </InfoPopover>}
         </div>
       </div>

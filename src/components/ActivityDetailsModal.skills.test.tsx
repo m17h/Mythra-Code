@@ -44,7 +44,7 @@ describe("Activity skill usage", () => {
 
     fireEvent.focus(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(trigger).toHaveAccessibleDescription(`Skills used in this run frontend-design ${longName} Skills loaded into this run or reported by the provider. Some automatic activations may not be reported.`);
+    expect(trigger).toHaveAccessibleDescription(`Skills used in this run frontend-design ${longName} Skills loaded into this run or reported by the provider. Unreported automatic activations cannot be counted. Loading a skill does not prove its instructions were followed.`);
     expect(panel).toBeVisible();
     expect(screen.getByRole("tooltip")).toHaveTextContent(longName);
 

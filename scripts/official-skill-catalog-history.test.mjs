@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { onTestFinished, test } from 'vitest';
 import { retainCatalogHistory } from './official-skill-catalog-history.mjs';
-import { fetchBytes, safePath, skillRequirements, validatePackageNodes } from './update-official-skill-catalog.mjs';
+import { fetchBytes, fetchPinnedTree, safePath, skillRequirements, validatePackageNodes } from './update-official-skill-catalog.mjs';
 
 const snapshot = (revision = 'a'.repeat(40)) => ({
   id: 'anthropic-example', publisher: 'anthropic', title: 'Example', description: 'Example skill',
@@ -11,9 +11,46 @@ const snapshot = (revision = 'a'.repeat(40)) => ({
   files: [{ path: 'SKILL.md', sha256: '1'.repeat(64), size: 100 }],
 });
 
+test('maintenance resolves a pinned commit to its distinct root tree identity', async () => {
+  const revision = 'a'.repeat(40), treeSha = 'b'.repeat(40), requests = [];
+  const originalFetch = globalThis.fetch;
+  onTestFinished(() => { globalThis.fetch = originalFetch; });
+  const nodes = [{ path: 'skills/example/SKILL.md', type: 'blob' }];
+  globalThis.fetch = async (url) => {
+    requests.push(url);
+    return new Response(JSON.stringify(url.includes('/git/commits/')
+      ? { sha: revision, tree: { sha: treeSha } }
+      : { sha: treeSha, truncated: false, tree: nodes }));
+  };
+  assert.deepEqual(await fetchPinnedTree('anthropics/skills', revision), nodes);
+  assert.deepEqual(requests, [
+    `https://api.github.com/repos/anthropics/skills/git/commits/${revision}`,
+    `https://api.github.com/repos/anthropics/skills/git/trees/${treeSha}?recursive=1`,
+  ]);
+});
+
 test('unchanged regeneration keeps initial history empty', () => {
   const entry = snapshot();
   assert.deepEqual(retainCatalogHistory([entry], [], [structuredClone(entry)]), []);
+});
+
+test('maintenance rejects invalid commit identities and incomplete or mismatched trees', async () => {
+  const revision = 'a'.repeat(40), treeSha = 'b'.repeat(40);
+  const originalFetch = globalThis.fetch;
+  onTestFinished(() => { globalThis.fetch = originalFetch; });
+  const commit = { sha: revision, tree: { sha: treeSha } };
+  const tree = { sha: treeSha, truncated: false, tree: [] };
+  for (const [commitResponse, treeResponse, error] of [
+    [{ ...commit, sha: 'c'.repeat(40) }, tree, /Invalid pinned commit/],
+    [{ ...commit, tree: { sha: 'main' } }, tree, /Invalid pinned commit/],
+    [commit, { ...tree, sha: revision }, /Incomplete or wrong tree/],
+    [commit, { ...tree, truncated: true }, /Incomplete or wrong tree/],
+    [commit, { ...tree, truncated: undefined }, /Incomplete or wrong tree/],
+    [commit, { ...tree, tree: {} }, /Incomplete or wrong tree/],
+  ]) {
+    globalThis.fetch = async (url) => new Response(JSON.stringify(url.includes('/git/commits/') ? commitResponse : treeResponse));
+    await assert.rejects(fetchPinnedTree('anthropics/skills', revision), error);
+  }
 });
 
 test('replacement and removal retain complete prior snapshots without mutating inputs', () => {

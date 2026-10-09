@@ -65,7 +65,7 @@ it.each([
   // The names never cover their own trigger.
   expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(trigger.getBoundingClientRect().bottom);
   expect(panel).toHaveTextContent(longName);
-  expect(panel).toHaveTextContent("Skills loaded into this run or reported by the provider. Some automatic activations may not be reported.");
+  expect(panel).toHaveTextContent("Skills loaded into this run or reported by the provider. Unreported automatic activations cannot be counted. Loading a skill does not prove its instructions were followed.");
   // A long list is bounded and scrolls instead of leaving the window.
   expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight);
   // Moving onto the panel keeps it open so a long list can be scrolled.

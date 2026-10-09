@@ -135,13 +135,20 @@ function reviewLocalLinks(path, bytes, files) {
   }
 }
 
+export async function fetchPinnedTree(repository, revision) {
+  if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error(`Invalid immutable pin: ${repository}`);
+  const commit = JSON.parse((await fetchBytes(`https://api.github.com/repos/${repository}/git/commits/${revision}`)).toString('utf8'));
+  const treeSha = commit?.tree?.sha;
+  if (commit?.sha !== revision || !/^[a-f0-9]{40}$/.test(treeSha ?? '')) throw new Error(`Invalid pinned commit: ${repository}`);
+  const tree = JSON.parse((await fetchBytes(`https://api.github.com/repos/${repository}/git/trees/${treeSha}?recursive=1`)).toString('utf8'));
+  if (tree?.truncated !== false || tree.sha !== treeSha || !Array.isArray(tree.tree)) throw new Error(`Incomplete or wrong tree: ${repository}`);
+  return tree.tree;
+}
+
 async function main() {
 const trees = new Map();
 for (const [repository, revision] of Object.entries(revisions)) {
-  if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error(`Invalid immutable pin: ${repository}`);
-  const tree = JSON.parse((await fetchBytes(`https://api.github.com/repos/${repository}/git/trees/${revision}?recursive=1`)).toString('utf8'));
-  if (tree.truncated || tree.sha !== revision || !Array.isArray(tree.tree)) throw new Error(`Incomplete or wrong tree: ${repository}`);
-  trees.set(repository, tree.tree);
+  trees.set(repository, await fetchPinnedTree(repository, revision));
 }
 
 const catalog = [];

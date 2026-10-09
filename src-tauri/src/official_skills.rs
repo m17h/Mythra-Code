@@ -1396,7 +1396,7 @@ mod tests {
     #[test]
     fn windows_junction_subtrees_and_collision_destinations_are_preserved() {
         fn junction(path: &Path, target: &Path) {
-            let status = std::process::Command::new("cmd.exe")
+            let status = crate::process_launch::background_std_command("cmd.exe")
                 .args(["/d", "/c", "mklink", "/J"])
                 .arg(path)
                 .arg(target)

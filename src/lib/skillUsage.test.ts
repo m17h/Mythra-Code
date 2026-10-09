@@ -93,9 +93,16 @@ describe("usedSkillsForRun", () => {
     ]);
   });
 
+  it("deduplicates Windows UNC paths across slash styles and casing", () => {
+    const paths = ["\\\\SERVER\\Share\\Review\\SKILL.md", "//SERVER/Share/Review/SKILL.md"];
+    expect(usedSkillsForRun([message({ skillUsage: paths.map((path) => ({ name: "review", path, source: "codex-skill-input", status: "selected" })) })]))
+      .toEqual([{ identity: "path://server/share/review/skill.md", name: "review", path: paths[0] }]);
+  });
+
   it("preserves case and literal backslashes in distinct POSIX source paths", () => {
-    const paths = ["/Skills/review/SKILL.md", "/skills/review/SKILL.md", "/skills/review\\notes/SKILL.md", "/skills/review/notes/SKILL.md"];
-    expect(usedSkillsForRun([message({ skillUsage: paths.map((path) => ({ name: "review", path, source: "codex-skill-input", status: "selected" })) })])).toHaveLength(4);
+    const paths = ["/Skills/review/SKILL.md", "/skills/review/SKILL.md", "/skills/review\\notes/SKILL.md", "/skills/review/notes/SKILL.md",
+      "//Users/Morgan/review/SKILL.md", "//users/morgan/review/SKILL.md"];
+    expect(usedSkillsForRun([message({ skillUsage: paths.map((path) => ({ name: "review", path, source: "codex-skill-input", status: "selected" })) })])).toHaveLength(6);
   });
 
   it("bounds persisted runtime evidence and includes its retained memory cost", () => {

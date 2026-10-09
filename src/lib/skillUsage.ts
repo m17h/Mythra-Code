@@ -58,8 +58,12 @@ export function codexInputSkillUsage(item: ThreadItem): SkillUsage[] {
   }));
 }
 
-function pathIdentity(path: string): string {
-  const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\");
+function pathIdentity(path: string, windowsUncPaths: ReadonlySet<string>): string {
+  // Exactly two leading POSIX slashes have implementation-defined semantics.
+  // Only reconcile a forward-slash UNC spelling when this run also records
+  // its unambiguous Windows backslash counterpart.
+  const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\")
+    || (path.startsWith("//") && windowsUncPaths.has(path.toLowerCase().replace(/\/+$/, "")));
   const normalized = (windows ? path.replaceAll("\\", "/") : path).replace(/\/+$/, "");
   // Windows paths are case insensitive; POSIX paths are not.
   return `path:${windows ? normalized.toLowerCase() : normalized}`;
@@ -106,12 +110,14 @@ export function usedSkillsForRun(entries: readonly CompactWorkEntry[]): UsedSkil
       }
     }
   }
+  const windowsUncPaths = new Set(candidates.flatMap((skill) => skill.path?.startsWith("\\\\")
+    ? [skill.path.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "")] : []));
   const pathsByName = new Map<string, Set<string>>();
   for (const skill of candidates) {
     if (!skill.path) continue;
     const name = nameIdentity(skill);
     const paths = pathsByName.get(name) ?? new Set<string>();
-    paths.add(pathIdentity(skill.path));
+    paths.add(pathIdentity(skill.path, windowsUncPaths));
     pathsByName.set(name, paths);
   }
   const used = new Map<string, UsedSkill>();
@@ -122,7 +128,7 @@ export function usedSkillsForRun(entries: readonly CompactWorkEntry[]): UsedSkil
     // loaded local source. A bare Claude skill may be from the user's home
     // library; a matching display name alone cannot establish its path.
     const ownBridge = skill.source === "claude-skill-tool" && skill.name.startsWith("openkiwi-skills:");
-    const identity = skill.path ? pathIdentity(skill.path)
+    const identity = skill.path ? pathIdentity(skill.path, windowsUncPaths)
       : ownBridge && paths?.size === 1 ? [...paths][0] : `name:${skill.name.toLowerCase()}`;
     const previous = used.get(identity);
     if (!previous || (!previous.path && skill.path)) used.set(identity, { identity, name: skill.name,

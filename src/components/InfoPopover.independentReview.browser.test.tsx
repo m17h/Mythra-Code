@@ -116,3 +116,38 @@ it("keeps fallback details readable beside a clipped native dialog", async () =>
   expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
   expect(panel.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2))).toBe(true);
 });
+
+it.each([true, false])("keeps details visible when their scrolling trigger leaves the viewport (top layer: %s)", async (topLayer) => {
+  capability.topLayer = topLayer;
+  await page.viewport(800, 600);
+  render(<div className="app-shell" data-theme="mythra" data-color-scheme="dark">
+    <dialog aria-label="Scrolling owner" style={{ width: 450, height: 350, padding: 0, overflow: "hidden", transform: "translateY(0px) scale(1)" }}>
+      <div data-testid="owner-scroll" style={{ height: 300, overflow: "auto" }}>
+        <div style={{ height: 100 }} />
+        <InfoPopover label="Scrolling requirements" trigger="Details">
+          <p>Python and Playwright plus a running web server.</p>
+        </InfoPopover>
+        <div style={{ height: 1800 }} />
+      </div>
+    </dialog>
+  </div>);
+  const dialog = document.querySelector("dialog")!;
+  dialog.showModal();
+  const trigger = screen.getByRole("button", { name: "Scrolling requirements" });
+  await userEvent.click(trigger);
+  await frame();
+  const panel = screen.getByRole("tooltip");
+  screen.getByTestId("owner-scroll").scrollTop = 900;
+  await frame();
+  expect(trigger.getBoundingClientRect().bottom).toBeLessThan(0);
+  // An invisible anchor may dismiss its details, or leave a readable panel
+  // clamped to the area its modal owner can actually show.
+  if (trigger.getAttribute("aria-expanded") === "true") {
+    const area = topLayer ? new DOMRect(0, 0, window.innerWidth, window.innerHeight) : dialog.getBoundingClientRect();
+    const bounds = panel.getBoundingClientRect();
+    expect(bounds.top).toBeGreaterThanOrEqual(area.top - 1);
+    expect(bounds.bottom).toBeLessThanOrEqual(area.bottom + 1);
+    expect(panel.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2))).toBe(true);
+  }
+  dialog.close();
+});

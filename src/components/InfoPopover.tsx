@@ -134,7 +134,8 @@ export function InfoPopover({ label, className, triggerClassName, children, trig
     panel.style.maxHeight = `${room / zoom}px`;
     const width = panel.offsetWidth * zoom;
     const height = panel.offsetHeight * zoom;
-    const top = below ? bounds.bottom + GAP : bounds.top - GAP - height;
+    const desiredTop = below ? bounds.bottom + GAP : bounds.top - GAP - height;
+    const top = Math.max(area.top + EDGE, Math.min(desiredTop, area.bottom - height - EDGE));
     const left = Math.max(area.left + EDGE, Math.min(bounds.left, area.right - width - EDGE));
     panel.style.left = `${(left - origin.left) / zoom}px`;
     panel.style.top = `${(top - origin.top) / zoom}px`;
