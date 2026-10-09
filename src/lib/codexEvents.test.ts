@@ -3,6 +3,7 @@ import { RUNTIME_THREAD_ID, decodeBase64Utf8, routeCodexEvent, runtimeMessage, t
 import { resetTaskStore, useTaskStore } from "./taskStore";
 import { openRouterReportedCost, usageTotals } from "./usageLedger";
 import { latestCompactActivity, compactActivityPresentation } from "./compactActivity";
+import { usedSkillsForRun } from "./skillUsage";
 
 function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventContext {
   return {
@@ -28,6 +29,26 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
 
 describe("routeCodexEvent", () => {
   beforeEach(() => { localStorage.clear(); resetTaskStore(); });
+
+  it("retains provider-native explicit skill inputs without guessing use from catalog updates or prose", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "skills/changed", params: {} }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: {
+      id: "native-input", type: "userMessage", content: [
+        { type: "text", text: "Review this" },
+        { type: "skill", name: "review", path: "/skills/review/SKILL.md" },
+        { type: "mention", name: "unused", path: "/skills/unused/SKILL.md" },
+      ],
+    } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: {
+      id: "answer", type: "agentMessage", text: "I used @unused skill.",
+    } } }, ctx);
+    const task = useTaskStore.getState().tasks.thread;
+    expect(task.messages[0].skillUsage).toEqual([{ name: "review", path: "/skills/review/SKILL.md", source: "codex-skill-input", status: "selected" }]);
+    expect(usedSkillsForRun(task.messages.map((value) => ({ kind: "message", value })))).toEqual([
+      { identity: "path:/skills/review/SKILL.md", name: "review", path: "/skills/review/SKILL.md" },
+    ]);
+  });
 
   it("attributes native web searches from their item type and actual event lifecycle", () => {
     const ctx = makeContext();

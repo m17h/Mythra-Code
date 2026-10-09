@@ -160,6 +160,16 @@ export interface SkillReference {
   path: string;
 }
 
+/** Provider-native evidence, never inferred from an available-skill catalog or
+ * assistant prose. `selected` means Codex retained a skill input, not proof of
+ * an otherwise unreported automatic activation. */
+export interface SkillUsage {
+  name: string;
+  path?: string;
+  source: "claude-skill-tool" | "codex-skill-input";
+  status: "pending" | "loaded" | "failed" | "selected";
+}
+
 /** Native resolution provenance. Instructions stay in the provider prompt,
  * while history retains only identities, dependencies, and load outcomes. */
 export interface SkillDependencyReport {
@@ -213,6 +223,7 @@ export interface ChatMessage {
   skillReferences?: SkillReference[];
   skillsFolder?: string;
   skillDependencies?: SkillDependencyReport;
+  skillUsage?: SkillUsage[];
   streaming?: boolean;
   /** Normalized provider channel. Older/local transcripts can omit it. */
   phase?: "commentary" | "final";
@@ -237,6 +248,8 @@ export interface Activity {
   title: string;
   detail?: string;
   status?: string;
+  /** Loading outcomes remain independent of the surrounding turn outcome. */
+  skillUsage?: SkillUsage[];
   /** Claude status/boundary UUIDs differ; retain their association on the row
    * so event replays remain idempotent after a transcript reload. */
   compaction?: { boundaryId?: string; endStatusId?: string };

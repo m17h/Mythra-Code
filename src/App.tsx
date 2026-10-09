@@ -139,7 +139,7 @@ import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
 import { scheduleSettingsPreload } from "./lib/settingsPreload";
-import { analyzeSkillPrompts as analyzeSelectedSkillPrompts, createLocalSkill, deleteLocalSkill, importLocalSkills, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, resolveSkillPrompts as resolveSelectedSkillPrompts, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
+import { analyzeSkillPrompts as analyzeSelectedSkillPrompts, createLocalSkill, deleteLocalSkill, importLocalSkills, installOfficialSkill, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, resolveSkillPrompts as resolveSelectedSkillPrompts, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
@@ -755,8 +755,13 @@ export default function App() {
   const [removedSkillPaths, setRemovedSkillPaths] = usePersistedState<string[]>("kiwi.removedSkills", []);
   const [skills, setSkills] = useState<LocalSkill[]>([]);
   const [skillsBusy, setSkillsBusy] = useState(false);
+  const [publisherInstallFolders, setPublisherInstallFolders] = useState<Map<string, string>>(new Map());
+  const publisherInstallFoldersRef = useRef(new Map<string, string>());
+  const [publisherInstallFailure, setPublisherInstallFailure] = useState<{ folder: string; id: string; message: string } | null>(null);
   const [skillsError, setSkillsError] = useState("");
   const [skillAnalysisRevision, setSkillAnalysisRevision] = useState(0);
+  const skillLibraryPreferencesRef = useRef({ folder: skillsFolder, aliases: skillAliases, disabled: disabledSkillPaths, removed: removedSkillPaths });
+  skillLibraryPreferencesRef.current = { folder: skillsFolder, aliases: skillAliases, disabled: disabledSkillPaths, removed: removedSkillPaths };
   const skillRuntimeRootRef = useRef("");
   const skillRuntimeClearFailedRef = useRef(false);
   const skillFilesRef = useRef<LocalSkillFile[]>([]);
@@ -2560,6 +2565,7 @@ export default function App() {
       removed = removedSkillPaths,
       silent = false,
       requiredForInvocation = false,
+      reconcilePreferences?: (files: LocalSkillFile[]) => { aliases: Record<string, string>; disabled: string[]; removed: string[] },
     ) => {
       const scanSequence = ++skillScanSequenceRef.current;
       if (!folder) {
@@ -2585,6 +2591,10 @@ export default function App() {
           return [];
         }
         scannedFiles = files;
+        // Installation preferences depend on the completed scan, including
+        // packages added or modified while the download was running.
+        const reconciled = reconcilePreferences?.(files);
+        if (reconciled) ({ aliases, disabled, removed } = reconciled);
         const unchanged = JSON.stringify(files) === JSON.stringify(skillFilesRef.current);
         setSkillsError("");
         if (silent && unchanged) {
@@ -6506,6 +6516,7 @@ export default function App() {
   const chooseSkillsFolder = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Choose your Mythra Code skills folder" });
     if (!selected || Array.isArray(selected)) return;
+    skillLibraryPreferencesRef.current.folder = selected;
     setSkillsFolder(selected);
     await refreshLocalSkills(selected, skillAliases, disabledSkillPaths, removedSkillPaths);
   };
@@ -6549,6 +6560,59 @@ export default function App() {
     return readLocalSkill(skillsFolder, path);
   };
 
+  const refreshSkillsAfterMutation = async (folder: string, reconcilePreferences?: (files: LocalSkillFile[]) => { aliases: Record<string, string>; disabled: string[]; removed: string[] }) => {
+    // Preference changes and focus refreshes can supersede a slow mirror.
+    // Retry that ownership race with the latest preferences; native failures
+    // still reject, and a changed folder never receives the old result.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = skillLibraryPreferencesRef.current;
+      if (current.folder !== folder) return;
+      try {
+        await refreshLocalSkills(folder, current.aliases, current.disabled, current.removed, false, true, reconcilePreferences);
+        return;
+      } catch (reason) {
+        if (!(reason instanceof SupersededSkillRefreshError) || attempt === 2) throw reason;
+      }
+    }
+  };
+
+  const installPublisherSkill = async (id: string, folder: string): Promise<string> => {
+    if (!folder || skillLibraryPreferencesRef.current.folder !== folder) throw new Error("Choose a skills folder before installing a skill.");
+    if (publisherInstallFoldersRef.current.has(folder)) throw new Error("A skill installation is already running in this folder.");
+    publisherInstallFoldersRef.current.set(folder, id);
+    setPublisherInstallFolders(new Map(publisherInstallFoldersRef.current));
+    setPublisherInstallFailure(null);
+    let installedPath = "";
+    try {
+      installedPath = await installOfficialSkill(folder, id);
+      const current = skillLibraryPreferencesRef.current;
+      // The install belongs to the folder selected at the click. A later folder
+      // choice must not publish the old library or overwrite newer preferences.
+      if (current.folder !== folder) return installedPath;
+      await refreshSkillsAfterMutation(folder, (files) => {
+        const latest = skillLibraryPreferencesRef.current;
+        if (latest.folder !== folder) throw new SupersededSkillRefreshError("The selected skills folder changed during installation.");
+        const removed = latest.removed.filter((path) => path !== installedPath);
+        const modifiedPaths = files.filter((skill) => skill.path !== installedPath && skill.source?.catalogId === id && skill.source.modified).map((skill) => skill.path);
+        const disabled = [...new Set([...latest.disabled.filter((path) => path !== installedPath), ...modifiedPaths])];
+        skillLibraryPreferencesRef.current = { ...latest, removed, disabled };
+        if (JSON.stringify(removed) !== JSON.stringify(latest.removed)) setRemovedSkillPaths(removed);
+        if (JSON.stringify(disabled) !== JSON.stringify(latest.disabled)) setDisabledSkillPaths(disabled);
+        return { aliases: latest.aliases, disabled, removed };
+      });
+      return installedPath;
+    } catch (reason) {
+      const message = installedPath
+        ? `The skill was installed, but Mythra Code could not prepare it. Rescan your skills folder to try again. ${friendlyError(reason)}`
+        : friendlyError(reason);
+      if (skillLibraryPreferencesRef.current.folder === folder) setPublisherInstallFailure({ folder, id, message });
+      throw new Error(message);
+    } finally {
+      publisherInstallFoldersRef.current.delete(folder);
+      setPublisherInstallFolders(new Map(publisherInstallFoldersRef.current));
+    }
+  };
+
   const updateSkill = async (path: string, content: string, original: string): Promise<void> => {
     if (!skillsFolder) throw new Error("Choose a skills folder before editing a skill.");
     setSkillsBusy(true);
@@ -6575,6 +6639,7 @@ export default function App() {
       return false;
     }
     const next = { ...skillAliases, [path]: name };
+    skillLibraryPreferencesRef.current.aliases = next;
     setSkillAliases(next);
     setSkills(resolveLocalSkills(skillFiles, next, disabledSkillPaths, removedSkillPaths));
     setSkillsError("");
@@ -6583,19 +6648,28 @@ export default function App() {
 
   const toggleSkill = (path: string) => {
     const next = disabledSkillPaths.includes(path) ? disabledSkillPaths.filter((candidate) => candidate !== path) : [...disabledSkillPaths, path];
+    skillLibraryPreferencesRef.current.disabled = next;
     setDisabledSkillPaths(next);
     setSkills(resolveLocalSkills(skillFiles, skillAliases, next, removedSkillPaths));
   };
 
   const restoreSkill = async (path: string): Promise<boolean> => {
-    const nextRemoved = removedSkillPaths.filter((candidate) => candidate !== path);
-    setRemovedSkillPaths(nextRemoved);
+    const folder = skillLibraryPreferencesRef.current.folder;
+    if (!folder) return false;
     setSkillsError("");
     try {
-      await refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, nextRemoved);
-      return true;
+      await refreshSkillsAfterMutation(folder, (files) => {
+        const latest = skillLibraryPreferencesRef.current;
+        if (latest.folder !== folder) throw new SupersededSkillRefreshError("The selected skills folder changed during restoration.");
+        if (!files.some((file) => file.path === path)) throw new Error("This skill is no longer in the selected skills folder. Restore its files before trying again.");
+        const removed = latest.removed.filter((candidate) => candidate !== path);
+        skillLibraryPreferencesRef.current = { ...latest, removed };
+        if (removed.length !== latest.removed.length) setRemovedSkillPaths(removed);
+        return { aliases: latest.aliases, disabled: latest.disabled, removed };
+      });
+      return skillLibraryPreferencesRef.current.folder === folder;
     } catch (reason) {
-      setSkillsError(friendlyError(reason));
+      if (skillLibraryPreferencesRef.current.folder === folder) setSkillsError(friendlyError(reason));
       return false;
     }
   };
@@ -6614,6 +6688,7 @@ export default function App() {
       const nextAliases = deleteSource
         ? Object.fromEntries(Object.entries(skillAliases).filter(([candidate]) => candidate !== path))
         : skillAliases;
+      skillLibraryPreferencesRef.current = { folder: skillsFolder, aliases: nextAliases, disabled: nextDisabled, removed: nextRemoved };
       setRemovedSkillPaths(nextRemoved);
       setDisabledSkillPaths(nextDisabled);
       setSkillAliases(nextAliases);
@@ -7931,7 +8006,9 @@ export default function App() {
         removedSkills={removedSkills}
         openSkillRequest={openSkillRequest}
         onOpenSkillRequestConsumed={consumeOpenSkillRequest}
-        skillsBusy={skillsBusy}
+        skillsBusy={skillsBusy || publisherInstallFolders.has(skillsFolder)}
+        officialSkillInstallFailure={publisherInstallFailure?.folder === skillsFolder ? publisherInstallFailure : null}
+        officialSkillInstallingId={publisherInstallFolders.get(skillsFolder)}
         skillsError={skillsError}
         mcpServers={mcpServers}
         onMcpChanged={() => void refreshTools(activeProject)}
@@ -7953,9 +8030,13 @@ export default function App() {
           openWorkflowRunThread(threadId);
         }}
         onChooseSkillsFolder={() => void chooseSkillsFolder()}
-        onRefreshSkills={(silent = false) => refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent).then(() => undefined)}
+        onRefreshSkills={(silent = false) => {
+          if (!silent) setPublisherInstallFailure(null);
+          return refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent).then(() => undefined);
+        }}
         onImportSkills={() => void importSkills()}
         onCreateSkill={createSkill}
+        onInstallOfficialSkill={installPublisherSkill}
         onReadSkill={readSkill}
         onUpdateSkill={updateSkill}
         onRenameSkill={renameSkill}

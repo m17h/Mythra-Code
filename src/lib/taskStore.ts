@@ -1,6 +1,7 @@
 import { displayedUserMessage, reconcileUserMessages, userEchoIndex } from "./userMessageEcho";
 import { validSkillReferences } from "./skillReferences";
 import { estimateSkillDependencyBytes, sanitizeMessageSkillDependencies } from "./skillDependencies";
+import { estimateSkillUsageBytes, sanitizeSkillUsage, validSkillUsage } from "./skillUsage";
 import { restoreQuestionRequests } from "./agentQuestionRecords";
 import { create } from "zustand";
 import type { Activity, ChatMessage, PendingApproval, Turn } from "../types";
@@ -346,6 +347,7 @@ function estimateMessageBytes(message: ChatMessage): number {
     + stringBytes(message.steerStatus)
     + stringBytes(message.skillsFolder)
     + estimateSkillDependencyBytes(message.skillDependencies)
+    + estimateSkillUsageBytes(message.skillUsage)
     + skillReferences.reduce((total, reference) => total + 48 + stringBytes(reference.name) + stringBytes(reference.path), skillReferences.length * ARRAY_SLOT_BYTES)
     + attachments.reduce((total, attachment) => total
       + ATTACHMENT_BASE_BYTES
@@ -366,6 +368,7 @@ function estimateActivityBytes(activity: Activity): number {
     + stringBytes(activity.status)
     + stringBytes(activity.turnId)
     + stringBytes(activity.turnStatus)
+    + estimateSkillUsageBytes(activity.skillUsage)
     + (activity.compaction ? 32 + stringBytes(activity.compaction.boundaryId) + stringBytes(activity.compaction.endStatusId) : 0)
     + (agent ? AGENT_ACTIVITY_BASE_BYTES
       + stringBytes(agent.action)
@@ -383,12 +386,28 @@ export function estimateTranscriptBytes(messages: ChatMessage[], activities: Act
     + activities.reduce((total, activity) => total + ARRAY_SLOT_BYTES + estimateActivityBytes(activity), 0);
 }
 
-/** A saved Claude start is not evidence that its old process is still alive.
+/** Restore bounded provider metadata without erasing an observed Skill result
+ * with an older pending snapshot. A saved Claude compaction start is not
+ * evidence that its old process is still alive.
  * Keep live turns intact, but never restart an animation from an idle snapshot.
  * The metadata gate leaves Codex's separate runtime-history policy unchanged. */
-function restoreCompactionActivity(activity: Activity, task?: ThreadTaskState): Activity {
-  if (activity.kind !== "compaction" || !activity.compaction || activity.status !== "inProgress") return activity;
+function restoreHistoryActivity(activity: Activity, task?: ThreadTaskState): Activity {
   const live = task?.activities.find((entry) => entry.id === activity.id);
+  if (live?.skillUsage) {
+    const observed = validSkillUsage(live.skillUsage);
+    const incoming = activity.skillUsage === undefined ? observed : validSkillUsage(activity.skillUsage);
+    let retainedOutcome = false;
+    const skillUsage = incoming.map((usage) => {
+      if (usage.status !== "pending") return usage;
+      const settled = observed.find((known) => known.source === usage.source && known.name === usage.name
+        && known.path === usage.path && (known.status === "loaded" || known.status === "failed"));
+      if (settled) retainedOutcome = true;
+      return settled ?? usage;
+    });
+    activity = { ...activity, skillUsage, ...(retainedOutcome ? { status: live.status, detail: live.detail } : {}) };
+  }
+  activity = sanitizeSkillUsage(activity);
+  if (activity.kind !== "compaction" || !activity.compaction || activity.status !== "inProgress") return activity;
   if (live && live.status !== "inProgress") return live;
   if ((task?.status === "running" || task?.status === "starting")
     && task.activeTurnId && activity.turnId === task.activeTurnId) return activity;
@@ -631,7 +650,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       ) && !hydratedMessageIds.has(message.id) && !reconciled.matchedIds.has(message.id))
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => withTimelineOrder({
-      ...restoreCompactionActivity(activity, existing),
+      ...restoreHistoryActivity(activity, existing),
       ...(activity.workType === undefined && existingActivitiesById.get(activity.id)?.workType
         ? { workType: existingActivitiesById.get(activity.id)!.workType } : {}),
       turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
@@ -649,7 +668,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     for (const preserved of preservedEntries) {
       const { timelineOrder: _order, ...entry } = preserved.entry;
       if (preserved.kind === "message") inFlight.push(withTimelineOrder(entry as ChatMessage));
-      else inFlightActivities.push(withTimelineOrder(restoreCompactionActivity(entry as Activity, existing)));
+      else inFlightActivities.push(withTimelineOrder(restoreHistoryActivity(entry as Activity, existing)));
     }
     const nextMessages = [...hydratedMessages, ...inFlight];
     const nextActivities = [...hydratedActivities, ...inFlightActivities];
@@ -679,7 +698,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   prependHistory: (threadId, messages, activities, patch) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
-    const restoredMessages = restoreQuestionRequests(threadId, messages.map(sanitizeMessageSkillDependencies), activities, patch.hasMore === false);
+    const restoredMessages = restoreQuestionRequests(threadId, messages.map((message) => sanitizeSkillUsage(sanitizeMessageSkillDependencies(message))), activities, patch.hasMore === false);
     const existingIds = new Set<string>();
     let oldestOrder = 0;
     let hasOrder = false;
@@ -708,7 +727,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     uniqueIncoming.forEach(({ kind, entry }, index) => {
       const timelineOrder = oldestOrder - uniqueIncoming.length + index;
       if (kind === "message") nextMessages.push({ ...entry, timelineOrder });
-      else nextActivities.push({ ...restoreCompactionActivity(entry as Activity), timelineOrder });
+      else nextActivities.push({ ...restoreHistoryActivity(entry as Activity), timelineOrder });
     });
     if (!nextMessages.length && !nextActivities.length && Object.keys(patch).length === 0) return state;
     return {
@@ -739,7 +758,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   appendUserMessage: (threadId, message) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     if (task.messages.some((entry) => entry.id === message.id || entry.clientMessageId === message.id)) return state;
-    const candidate = { ...sanitizeMessageSkillDependencies(message), clientMessageId: message.id, turnId: message.turnId ?? task.activeTurnId };
+    const candidate = { ...sanitizeSkillUsage(sanitizeMessageSkillDependencies(message)), clientMessageId: message.id, turnId: message.turnId ?? task.activeTurnId };
     // A very fast child can deliver its runtime echo before spawn returns.
     const echoedIndex = task.messages.findIndex((entry) => Boolean(message.turnId) && entry.role === "user" && !entry.clientMessageId
       && userEchoIndex([candidate], entry) === 0);
@@ -748,7 +767,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const messages = [...task.messages];
       messages[echoedIndex] = { ...previous, text: candidate.text, attachments: candidate.attachments, clientMessageId: candidate.id,
         skillReferences: candidate.skillReferences ?? previous.skillReferences, skillsFolder: candidate.skillsFolder ?? previous.skillsFolder,
-        skillDependencies: candidate.skillDependencies ?? previous.skillDependencies };
+        skillDependencies: candidate.skillDependencies ?? previous.skillDependencies,
+        skillUsage: candidate.skillUsage ?? previous.skillUsage };
       return { tasks: { ...state.tasks, [threadId]: { ...task, messages,
         estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(messages[echoedIndex])) } } };
     }
@@ -972,7 +992,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     return set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const byId = task.messages.findIndex((entry) => entry.id === message.id);
-    const sanitized = sanitizeMessageSkillDependencies(message);
+    const sanitized = sanitizeSkillUsage(sanitizeMessageSkillDependencies(message));
     const normalized = sanitized.role === "user" ? { ...sanitized, ...displayedUserMessage(sanitized.text),
       ...(sanitized.skillReferences !== undefined ? { skillReferences: sanitized.skillReferences } : {}), ...(sanitized.skillsFolder !== undefined ? { skillsFolder: sanitized.skillsFolder } : {}),
       ...(sanitized.skillDependencies !== undefined ? { skillDependencies: sanitized.skillDependencies } : {}) } : sanitized;
@@ -987,7 +1007,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const display = original && message.role === "user" && (original.clientMessageId || original.id !== message.id)
       ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus,
         skillReferences: original.skillReferences ?? normalized.skillReferences, skillsFolder: original.skillsFolder ?? normalized.skillsFolder,
-        skillDependencies: original.skillDependencies ?? normalized.skillDependencies }
+        skillDependencies: original.skillDependencies ?? normalized.skillDependencies,
+        skillUsage: original.skillUsage ?? normalized.skillUsage }
       : {};
     const nextMessage = existingIndex >= 0
       ? { ...original, ...normalized, ...display,
@@ -1011,6 +1032,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     });
   },
   upsertActivity: (threadId, activity) => {
+    activity = sanitizeSkillUsage(activity);
     // A reasoning row that reached any terminal state keeps its detail in the
     // activity; the streaming buffer behind it would otherwise live until the
     // thread is evicted or removed.
@@ -1049,6 +1071,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
               // must never replace its explicit Stopped outcome.
               status: lateReactivation || preserveStopped ? entry.status : incoming.status,
               ...(activity.workType === undefined && entry.workType ? { workType: entry.workType } : {}),
+              ...(activity.skillUsage === undefined && entry.skillUsage ? { skillUsage: entry.skillUsage } : {}),
               turnId: activityTurnId,
               turnStatus: incoming.turnStatus ?? entry.turnStatus,
               timelineOrder: entry.timelineOrder,

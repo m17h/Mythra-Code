@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { timelineFromTurns } from "./threadTimeline";
 
 describe("timelineFromTurns", () => {
+  it("restores only native skill inputs as selected evidence, including historical source paths", () => {
+    const snapshot = timelineFromTurns([{ id: "turn", items: [{ id: "user", type: "userMessage", content: [
+      { type: "text", text: "Use the selected skill" },
+      { type: "skill", name: "review", path: "/old-source/review/SKILL.md" },
+      { type: "mention", name: "ignored", path: "/ignored/SKILL.md" },
+      { type: "skill", name: "invalid", path: "https://example.com/SKILL.md" },
+    ] }] }]);
+    expect(snapshot.messages[0].skillUsage).toEqual([
+      { name: "review", path: "/old-source/review/SKILL.md", source: "codex-skill-input", status: "selected" },
+    ]);
+  });
   it("retains native web-search attribution through reload without inventing its live lifecycle", () => {
     const item = { id: "search", type: "webSearch", query: "provider protocol" };
     const completed = timelineFromTurns([{ id: "turn", status: "completed", items: [item] }]);

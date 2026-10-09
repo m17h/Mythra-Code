@@ -65,6 +65,39 @@ describe("language tool settings in the browser", () => {
   beforeEach(() => { mocks.invoke.mockReset(); mocks.listen.mockReset(); mocks.listen.mockResolvedValue(() => undefined); });
   afterEach(async () => { await commands.setStreamTestReducedMotion(false); await page.viewport(1400, 900); });
 
+  it.each(["mythra", "light-mythra"] as const)("shows green installed labels instead of dimmed buttons in %s Settings, including while checking", async (theme) => {
+    await commands.setStreamTestReducedMotion(true);
+    let inventory: LanguageToolsSnapshot = {
+      autoInstall: true, generation: 1,
+      tools: [
+        { id: "typescript", name: "TypeScript", languages: ["TypeScript"], state: "available", health: "stale", detail: "Refresh to verify this installation.", enabled: true },
+        { id: "python", name: "Python", languages: ["Python"], state: "installed", health: "verified", detail: "Reusing an existing installation.", enabled: true },
+      ],
+    };
+    const refresh = deferred<LanguageToolsSnapshot>();
+    mocks.invoke.mockImplementation((command) => command === "language_tools_refresh" ? refresh.promise : Promise.resolve(inventory));
+    render(<div className="app-shell" data-theme={theme} data-color-scheme={theme === "mythra" ? "dark" : "light"}><SettingsModal {...settingsProps()} /></div>);
+    const label = await screen.findByRole("img", { name: "TypeScript installed" });
+    label.scrollIntoView({ block: "center" });
+    expect(label).toBeVisible();
+    expect(label.querySelector("svg.lucide-check")).not.toBeNull();
+    const color = getComputedStyle(label).color.match(/\d+/g)!.map(Number);
+    expect(color[1]).toBeGreaterThan(color[0]);
+    expect(color[1]).toBeGreaterThan(color[2]);
+    expect(getComputedStyle(label).opacity).toBe("1");
+    expect(screen.queryByRole("button", { name: "Install TypeScript" })).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Python installed" })).toBeVisible();
+    await page.screenshot({ element: screen.getByRole("dialog", { name: "Settings" }), path: `../../test-results/language-tools-installed-${theme}.png` });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh language tools" }));
+    await waitFor(() => expect(screen.getAllByText("Checking…")).toHaveLength(2));
+    expect(label).toBeVisible();
+    inventory = { ...inventory, generation: 2, tools: inventory.tools.map((tool) => tool.id === "typescript"
+      ? { ...tool, state: "error", health: "error", detail: "The server failed verification." } : tool) };
+    await act(async () => refresh.resolve(inventory));
+    expect(screen.queryByRole("img", { name: "TypeScript installed" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry installing TypeScript" })).toBeEnabled();
+  });
+
   it("keeps a rejected settings save visible when an unrelated installation finishes in full Settings", async () => {
     await commands.setStreamTestReducedMotion(true);
     const inventory: LanguageToolsSnapshot = {
@@ -153,7 +186,7 @@ describe("language tool settings in the browser", () => {
     fireEvent.click(retry);
     await waitFor(() => expect(screen.getByText("TypeScript is installed.")).toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Install TypeScript" })).toBeDisabled();
+    expect(screen.getByLabelText("TypeScript installed")).toHaveTextContent("Installed");
     expect(attempts).toBe(2);
   });
 
@@ -194,7 +227,7 @@ describe("language tool settings in the browser", () => {
         await expectThumbAtEdge(screen.getByRole("switch"), false);
         snapshot = { ...snapshot, tools: snapshot.tools.map((tool) => tool.id === "typescript" ? { ...tool, state: "installed", detail: "Found an installation added by a model." } : tool) };
         await act(async () => (mocks.listen.mock.calls[0][1] as (event: unknown) => void)({ payload: null }));
-        await waitFor(() => expect(screen.getByRole("button", { name: "Install TypeScript / JavaScript" })).toHaveTextContent("Installed"));
+        await waitFor(() => expect(screen.getByLabelText("TypeScript / JavaScript installed")).toHaveTextContent("Installed"));
         await page.screenshot({ element: shell, path: `../../test-results/language-tools-${scheme}-${width}.png` });
       });
     }

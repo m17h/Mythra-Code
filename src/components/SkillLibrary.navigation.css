@@ -15,3 +15,124 @@
 .skill-editor-field .skill-prompt-editor { min-height: 0; flex: 1; display: flex; }
 .skill-editor-field .skill-prompt-editor textarea { min-height: 70px; max-height: 100%; }
 .skill-editor-dialog > .skill-dependency-notice, .skill-editor-dialog > .skill-dependency-details { flex: 0 1 auto; min-height: 0; max-height: 25%; overflow: auto; }
+
+/* ---- Download library ----
+   A quiet disclosure in the same hairline language as the skill cards:
+   neutral surfaces, squircle corners, the accent only on focus, the installed
+   state and links. Colours come from theme tokens so every theme carries it. */
+.official-skill-library { min-width: 0; margin: 14px 0; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-quiet, var(--line-quiet)); transition: border-color var(--t-fast) ease; }
+.official-skill-library[open] { border-color: var(--line-strong); }
+.official-skill-library > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  list-style: none;
+  cursor: pointer;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.official-skill-library > summary::-webkit-details-marker { display: none; }
+.official-skill-library > summary::marker { content: ""; }
+.official-skill-library > summary:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.official-skill-library-icon { grid-column: 1; grid-row: 1 / span 2; width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: var(--panel-2); }
+.official-skill-library > summary > small { grid-column: 2; grid-row: 2; color: var(--muted); font-size: var(--fs-meta); font-weight: 400; }
+.official-skill-library-chevron { grid-column: 3; grid-row: 1 / span 2; color: var(--muted-2); transition: transform var(--t-mid, 200ms) var(--ease, ease), color var(--t-fast) ease; }
+.official-skill-library > summary:hover .official-skill-library-chevron { color: var(--text); }
+.official-skill-library[open] .official-skill-library-chevron { transform: rotate(90deg); }
+
+.official-skill-downloads { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--line); font-size: var(--fs-meta); }
+.official-skill-intro { max-width: 68ch; margin: 0; color: var(--muted); line-height: 1.5; }
+.official-skill-folder-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-sm); color: var(--ink-2); }
+.official-skill-folder-notice > svg { flex: 0 0 auto; color: var(--muted-2); }
+.official-skill-folder-notice > span { flex: 1 1 160px; min-width: 0; }
+.official-skill-placeholder { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); }
+.official-skill-catalog-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.official-skill-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.official-skill-count { flex: 0 0 auto; color: var(--muted-2); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+
+.official-skill-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.official-skill-card { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 11px 12px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); transition: border-color var(--t-fast) ease; }
+.official-skill-card:hover { border-color: var(--line-strong); }
+.official-skill-card:focus-within { border-color: var(--green-line); }
+.official-skill-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
+.official-skill-head > strong { min-width: 0; color: var(--text); font-size: var(--fs-ui); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.official-skill-head-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
+.official-skill-requirements-trigger { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--r-chip, 6px); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.official-skill-requirements-trigger:hover,
+.official-skill-requirements-trigger[aria-expanded="true"] { color: var(--ink-2); border-color: var(--line-strong); background: var(--lm-hover, var(--line-quiet)); }
+.official-skill-requirements-trigger:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.official-skill-requirements-title { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.official-skill-requirements-text { margin: 0; color: var(--text); }
+.official-skill-requirements-kinds { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.official-skill-requirements-kinds > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
+.official-skill-requirements-kinds dt { color: var(--muted-2); font-weight: 600; }
+.official-skill-requirements-kinds dd { margin: 0; color: var(--muted); }
+.official-skill-description { margin: 0; color: var(--ink-2); line-height: 1.45; overflow-wrap: anywhere; }
+.official-skill-note { margin: 0; padding: 6px 8px; border-radius: var(--r-sm); color: var(--muted); background: var(--line-quiet); line-height: 1.45; overflow-wrap: anywhere; }
+.official-skill-note[data-tone="caution"] { color: var(--ink-2); box-shadow: inset 2px 0 0 var(--orange); }
+.official-skill-error { overflow-wrap: anywhere; }
+.official-skill-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; min-width: 0; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line-quiet); }
+.official-skill-provenance { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; color: var(--muted-2); }
+.official-skill-source { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; min-width: 0; padding: 2px 4px; margin: 0 -4px; border: 0; border-radius: var(--r-chip, 6px); color: var(--ink-2); background: transparent; font: var(--fs-meta) var(--font-mono); cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease; }
+.official-skill-source > span { min-width: 0; overflow-wrap: anywhere; }
+.official-skill-source > svg { flex: 0 0 auto; color: var(--muted-2); transition: color var(--t-fast) ease; }
+.official-skill-source:hover { color: var(--info); background: var(--lm-hover, var(--line-quiet)); }
+.official-skill-source:hover > svg { color: var(--info); }
+.official-skill-source:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.official-skill-license { white-space: nowrap; }
+.official-skill-license::before { content: "·"; margin-right: 8px; color: var(--line-strong); }
+.official-skill-action { min-height: 28px; margin-left: auto; padding: 0 10px; gap: 5px; font-size: var(--fs-meta); }
+.official-skill-card[data-state="installing"] .official-skill-action:disabled { opacity: 1; cursor: progress; }
+.official-skill-installed { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; margin-left: auto; color: var(--green); font-weight: 600; }
+
+/* Origin tag: identity, not status, so it stays neutral and mixed-case
+   beside the uppercase Off / Modified state tags. */
+.skill-publisher-tag { flex: 0 0 auto; display: inline-flex; align-items: center; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--r-chip, 6px); color: var(--ink-2); background: transparent; font-size: var(--fs-micro); font-weight: 600; letter-spacing: .02em; line-height: 16px; white-space: nowrap; }
+.skill-name-row { flex-wrap: wrap; }
+.skill-name-identity { display: inline-flex; align-items: center; gap: var(--s-2); min-width: 0; max-width: 100%; }
+.skill-name-identity > strong { min-width: 0; flex: 0 1 auto; }
+
+/* Installed-row origin: the distributor's monochrome mark in a hairline tile.
+   The fill is set here so OpenAI's white sprite fill follows theme ink in
+   light themes; other OpenAI marks in the app keep their own fill. */
+.skill-origin-mark { flex: 0 0 auto; width: 18px; height: 18px; display: inline-grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-chip, 6px); color: var(--ink-2); background: transparent; }
+.skill-origin-mark > svg { display: block; fill: currentColor; }
+.skill-card.disabled .skill-origin-mark { color: var(--muted); }
+
+/* ---- Read-only source viewer ---- */
+.skill-source-details { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: flex-start; min-width: 0; max-height: 22%; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--line-quiet); font-size: var(--fs-meta); }
+.skill-source-details > div { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 3px; }
+.skill-source-details dt { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.skill-source-details dd { min-width: 0; margin: 0; color: var(--ink-2); line-height: 18px; overflow-wrap: anywhere; }
+.skill-source-details button { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 0; border: 0; border-radius: var(--r-chip, 6px); color: var(--info); background: transparent; text-align: left; cursor: pointer; font: inherit; font-family: var(--font-mono); }
+.skill-source-details button > span { min-width: 0; overflow-wrap: anywhere; }
+.skill-source-details button > svg { flex: 0 0 auto; }
+.skill-source-details button:hover > span { text-decoration: underline; text-underline-offset: 2px; }
+.skill-source-details button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.skill-source-revision { flex: 1 1 200px; }
+.skill-source-revision code { display: block; overflow: hidden; padding: 0; border: 0; color: var(--muted); background: none; font: var(--fs-meta) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.skill-source-modified { flex-basis: 100%; }
+.skill-source-modified dd { color: var(--orange); }
+.skill-editor-field-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.skill-editor-read-only { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--r-chip, 6px); color: var(--muted); font-size: var(--fs-micro); font-weight: 600; line-height: 16px; }
+.skill-editor-dialog.is-read-only .skill-editor-field textarea { color: var(--ink-2); background: var(--lm-code-bg, var(--field)); cursor: default; }
+/* Focus stays visible on the read-only field, without the editable ring. */
+.skill-editor-dialog.is-read-only .skill-editor-field textarea:focus { border-color: var(--green-line); box-shadow: none; }
+
+/* Rounded squares, smoothed into squircles where the engine supports it. */
+@supports (corner-shape: squircle) {
+  .official-skill-library, .official-skill-card, .skill-source-details { border-radius: 16px; corner-shape: squircle; }
+  .official-skill-library > summary { border-radius: 16px; corner-shape: squircle; }
+  .official-skill-library-icon, .official-skill-note, .official-skill-folder-notice { border-radius: 11px; corner-shape: squircle; }
+  .skill-publisher-tag, .skill-editor-read-only, .official-skill-source, .skill-origin-mark, .official-skill-requirements-trigger { border-radius: 7px; corner-shape: squircle; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .official-skill-library, .official-skill-library-chevron, .official-skill-card, .official-skill-source, .official-skill-source > svg, .official-skill-requirements-trigger { transition: none; }
+}

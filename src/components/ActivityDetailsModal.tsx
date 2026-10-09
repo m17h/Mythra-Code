@@ -8,6 +8,8 @@ import { prefersReducedMotion } from "../lib/flipRoster";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatusCategory } from "./ActivityStatus";
 import { PixelWorkingMark } from "./PixelWorkingMark";
+import { InfoPopover } from "./InfoPopover";
+import { usedSkillsForRun } from "../lib/skillUsage";
 import "./ActivityDetailsModal.css";
 
 /** Searchable text for one transcript entry, shared with timeline search. */
@@ -363,6 +365,7 @@ export function ActivityDetailsModal({
   const smoothScrollRef = useRef(false);
   const [showLatest, setShowLatest] = useState(false);
   const steps = useMemo(() => stepsFor(run.entries), [run.entries]);
+  const usedSkills = useMemo(() => usedSkillsForRun(run.entries), [run.entries]);
 
   const query = searchQuery?.trim().toLowerCase() ?? "";
   const matches = useMemo(() => query
@@ -532,15 +535,34 @@ export function ActivityDetailsModal({
   const settledLabel = run.state === "running" ? undefined
     : run.unconfirmed ? UNCONFIRMED_ACTIVITY_LABEL : SETTLED_ACTIVITY_LABELS[run.state];
   const stepCount = steps.filter((step) => !visibleIds?.has(step.id)).length;
-  const stepText = `${stepCount} step${stepCount === 1 ? "" : "s"}`;
+  const stepText = stepCount ? `${stepCount} step${stepCount === 1 ? "" : "s"}` : "";
+  const skillsText = `${usedSkills.length} skill${usedSkills.length === 1 ? "" : "s"} used`;
 
   const contents = <>
     <header className="activity-details-header">
       <div className="activity-details-heading">
         <h2 id={titleId}>Activity</h2>
-        <div className="activity-details-status" role={live ? "status" : undefined}>
-          <span className={`activity-details-state state-${run.state}${run.unconfirmed ? " unconfirmed" : ""}`}>{live ? run.label || "Working" : settledLabel}</span>
-          <span className="activity-details-meta">{[run.summary, stepText].filter(Boolean).join(" · ")}</span>
+        <div className="activity-details-subline">
+          <div className="activity-details-status" role={live ? "status" : undefined}>
+            <span className={`activity-details-state state-${run.state}${run.unconfirmed ? " unconfirmed" : ""}`}>{live ? run.label || "Working" : settledLabel}</span>
+            <span className="activity-details-meta">{[run.summary, stepText].filter(Boolean).join(" · ")}</span>
+          </div>
+          {/* Outside the live status so opening the names is not announced
+              as a status change. Hidden when no skill was actually used. */}
+          {usedSkills.length > 0 && <InfoPopover className="activity-details-skills" triggerClassName="activity-details-skills-trigger" label={skillsText}
+            trigger={skillsText}>
+            <p className="activity-details-skills-title">Skills used in this run</p>
+            <ul className="activity-details-skills-list">
+              {usedSkills.map((skill) => <li key={skill.identity}>
+                <span>{skill.name}</span>
+                {/* Same-named sources stay distinguishable by their file. */}
+                {skill.path && usedSkills.some((other) => other !== skill && other.name.toLowerCase() === skill.name.toLowerCase()) && <small>{skill.path}</small>}
+              </li>)}
+            </ul>
+            {/* Evidence, not a guarantee: unreported activations are invisible
+                here, and a loaded skill does not prove its steps were followed. */}
+            <p className="activity-details-skills-note">Skills loaded into this run or reported by the provider. Unreported automatic activations cannot be counted. Loading a skill does not prove its instructions were followed.</p>
+          </InfoPopover>}
         </div>
       </div>
       {query && (

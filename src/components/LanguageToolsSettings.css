@@ -7,6 +7,9 @@
 .language-tools-state[data-state="error"], .language-tools-messages [role="alert"] { color: var(--red); }
 .language-tools-detail { overflow-wrap: anywhere; white-space: pre-wrap; }
 .language-tools-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.language-tools-installed { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; color: #80e5a0; font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; }
+.app-shell[data-color-scheme="light"] .language-tools-installed { color: #227a3e; }
+.language-tools-installed svg { flex: 0 0 auto; }
 .language-tools-enabled { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: var(--fs-meta); }
 .language-tools-enabled input { accent-color: var(--green); }
 .language-tools-footer { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }

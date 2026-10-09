@@ -408,6 +408,8 @@ export function SettingsModal({
   removedSkills,
   skillsBusy,
   skillsError,
+  officialSkillInstallFailure,
+  officialSkillInstallingId,
   mcpServers,
   onMcpChanged,
   workspaceToolsAvailable,
@@ -425,6 +427,7 @@ export function SettingsModal({
   onRefreshSkills,
   onImportSkills,
   onCreateSkill,
+  onInstallOfficialSkill,
   onReadSkill,
   onUpdateSkill,
   onRenameSkill,
@@ -515,6 +518,8 @@ export function SettingsModal({
   removedSkills: LocalSkill[];
   skillsBusy: boolean;
   skillsError: string;
+  officialSkillInstallFailure?: import("../lib/skills").OfficialSkillInstallFailure | null;
+  officialSkillInstallingId?: string;
   mcpServers?: McpView[];
   onMcpChanged?: () => void;
   workspaceToolsAvailable: boolean;
@@ -532,6 +537,7 @@ export function SettingsModal({
   onRefreshSkills: (silent?: boolean) => Promise<void> | void;
   onImportSkills: () => void;
   onCreateSkill: (name: string, instructions: string) => Promise<boolean>;
+  onInstallOfficialSkill?: (id: string, folder: string) => Promise<string>;
   onReadSkill: (path: string) => Promise<string>;
   onUpdateSkill: (path: string, content: string, original: string) => Promise<void>;
   onRenameSkill: (path: string, name: string) => boolean;
@@ -1485,6 +1491,10 @@ export function SettingsModal({
           </>}
 
           {settingsSection === "skills" && <SkillLibrary
+            active={open}
+            onInstallOfficial={onInstallOfficialSkill}
+            officialInstallFailure={officialSkillInstallFailure}
+            officialInstallingId={officialSkillInstallingId}
             openSkillRequest={openSkillRequest}
             onOpenSkillRequestConsumed={onOpenSkillRequestConsumed}
             onAnalyzeSkill={open ? onAnalyzeSkill : undefined}

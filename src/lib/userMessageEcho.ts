@@ -1,6 +1,7 @@
 import type { ChatMessage } from "../types";
 import { skillMentionRanges } from "./skillMentions";
 import { isSkillDependencyPath, sanitizeMessageSkillDependencies, validSkillDependencyReport } from "./skillDependencies";
+import { sanitizeSkillUsage } from "./skillUsage";
 
 const ATTACHED_CONTEXT_MARKER = "\n\nAttached context:\n";
 
@@ -86,6 +87,7 @@ function collapseRepeatedUserIds(messages: ChatMessage[]): ChatMessage[] {
         skillReferences: message.skillReferences ?? previous.skillReferences,
         skillsFolder: message.skillsFolder ?? previous.skillsFolder,
         skillDependencies: message.skillDependencies ?? previous.skillDependencies,
+        skillUsage: message.skillUsage ?? previous.skillUsage,
       });
     }
   }
@@ -102,7 +104,7 @@ function collapseRepeatedUserIds(messages: ChatMessage[]): ChatMessage[] {
 /** One-to-one reconciliation: two intentional identical sends remain two rows. */
 export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage[]): { messages: ChatMessage[]; matchedIds: Set<string> } {
   const matchedIds = new Set<string>();
-  const sanitizedLive = live.map(sanitizeMessageSkillDependencies);
+  const sanitizedLive = live.map((message) => sanitizeSkillUsage(sanitizeMessageSkillDependencies(message)));
   const byId = new Map(sanitizedLive.map((message) => [message.id, message]));
   const byTurn = new Map<string, ChatMessage[]>();
   for (const message of sanitizedLive) {
@@ -111,7 +113,7 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     entries.push(message);
     byTurn.set(message.turnId, entries);
   }
-  const messages = collapseRepeatedUserIds(incoming.map(sanitizeMessageSkillDependencies)).map((message) => {
+  const messages = collapseRepeatedUserIds(incoming.map((message) => sanitizeSkillUsage(sanitizeMessageSkillDependencies(message)))).map((message) => {
     if (message.role !== "user") return message;
     const candidates = byId.has(message.id) ? [] : (byTurn.get(message.turnId ?? "") ?? []).filter((entry) => !matchedIds.has(entry.id));
     const existing = byId.get(message.id) ?? candidates[userEchoIndex(candidates, message)];
@@ -120,7 +122,8 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     return { ...message, ...(existing.id === message.id ? existing : {}), timelineOrder: message.timelineOrder ?? existing.timelineOrder, text: existing.text, attachments: existing.attachments ?? message.attachments,
       clientMessageId: existing.clientMessageId ?? (existing.id !== message.id ? existing.id : undefined), steerStatus: existing.steerStatus,
       skillReferences: existing.skillReferences ?? message.skillReferences, skillsFolder: existing.skillsFolder ?? message.skillsFolder,
-      skillDependencies: existing.skillDependencies ?? message.skillDependencies };
+      skillDependencies: existing.skillDependencies ?? message.skillDependencies,
+      skillUsage: existing.skillUsage ?? message.skillUsage };
   });
   return { messages, matchedIds };
 }

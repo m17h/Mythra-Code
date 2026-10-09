@@ -1,0 +1,180 @@
+[
+  {
+    "id": "anthropic-algorithmic-art",
+    "publisher": "anthropic",
+    "title": "Algorithmic art",
+    "description": "Create original generative artwork with p5.js and interactive controls.",
+    "repository": "anthropics/skills",
+    "path": "skills/algorithmic-art",
+    "revision": "9d630808e4add0a7146de4af9384155d5dee350a",
+    "license": "Apache-2.0",
+    "notes": "Includes JavaScript and HTML templates. Viewing the artwork requires a browser and p5.js.",
+    "files": [
+      {
+        "path": "LICENSE.txt",
+        "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+        "size": 11345
+      },
+      {
+        "path": "SKILL.md",
+        "sha256": "3bc4092c09804853186524c826bc0621b940bb6122c05b84496dff95388e6eef",
+        "size": 19769
+      },
+      {
+        "path": "templates/generator_template.js",
+        "sha256": "9ee0f1da52ef8f7bbfde1917123654880890d43f2d388642d71eab6dd78f94c4",
+        "size": 7826
+      },
+      {
+        "path": "templates/viewer.html",
+        "sha256": "86c79d7ce97d2599ebe4bd9b97fdeb7295c9d3ed61ceeb513cbe1b2bb5d1ce29",
+        "size": 20844
+      }
+    ]
+  },
+  {
+    "id": "anthropic-webapp-testing",
+    "publisher": "anthropic",
+    "title": "Web app testing",
+    "description": "Test local web applications with Playwright and Python helpers.",
+    "repository": "anthropics/skills",
+    "path": "skills/webapp-testing",
+    "revision": "9d630808e4add0a7146de4af9384155d5dee350a",
+    "license": "Apache-2.0",
+    "notes": "Requires Python, Playwright, and its browser installation. These dependencies are not installed with the skill.",
+    "files": [
+      {
+        "path": "examples/console_logging.py",
+        "sha256": "ea46877289acb82da7e7ce59d0bc37c8977cd57e2a006d0c88d7a1c625bf95da",
+        "size": 1027
+      },
+      {
+        "path": "examples/element_discovery.py",
+        "sha256": "d63c89604a22f8845d724e95dda45db49b1bf57c25ce0a83afbb7b8da3d402f0",
+        "size": 1463
+      },
+      {
+        "path": "examples/static_html_automation.py",
+        "sha256": "9d533aafb875ee3ab8b8ebf8f5b9003ac8d999da3d09b285cce252e623140064",
+        "size": 953
+      },
+      {
+        "path": "LICENSE.txt",
+        "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+        "size": 11345
+      },
+      {
+        "path": "scripts/with_server.py",
+        "sha256": "b0dcf4918935b795f4eda9821579b9902119235ff4447f687a30286e7d0925fd",
+        "size": 3693,
+        "executable": true
+      },
+      {
+        "path": "SKILL.md",
+        "sha256": "51b7349e77ec63b7744a6f63647e7566a0b4d2e301121cc10e8c2113af6556a2",
+        "size": 3913
+      }
+    ]
+  },
+  {
+    "id": "anthropic-mcp-builder",
+    "publisher": "anthropic",
+    "title": "MCP server builder",
+    "description": "Build MCP servers with TypeScript or Python and practical reference guides.",
+    "repository": "anthropics/skills",
+    "path": "skills/mcp-builder",
+    "revision": "9d630808e4add0a7146de4af9384155d5dee350a",
+    "license": "Apache-2.0",
+    "notes": "Requires a TypeScript or Python development environment. The optional evaluation helper requires the Anthropic SDK and an API key.",
+    "files": [
+      {
+        "path": "LICENSE.txt",
+        "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+        "size": 11345
+      },
+      {
+        "path": "reference/evaluation.md",
+        "sha256": "8c99479f8a2d22a636c38e274537aac3610879e26f34e0709825077c4576f427",
+        "size": 21663
+      },
+      {
+        "path": "reference/mcp_best_practices.md",
+        "sha256": "80fb4369a349447cf18ecdd7494fe7938b6065377e9f08c077cec411093a3007",
+        "size": 7330
+      },
+      {
+        "path": "reference/node_mcp_server.md",
+        "sha256": "c3ba35a4f599dd53be9c6555ae72c19a7bf412cd5426576c2c08d42755482c66",
+        "size": 28550
+      },
+      {
+        "path": "reference/python_mcp_server.md",
+        "sha256": "2da52f77e675191014ca2e146a4b95aa04d0ca7dd7e2b100322df15ade685e80",
+        "size": 25099
+      },
+      {
+        "path": "scripts/connections.py",
+        "sha256": "9403668a2041568772082a8b334122c1f88daf0541fb393af4522d0094a47a6e",
+        "size": 4875
+      },
+      {
+        "path": "scripts/evaluation.py",
+        "sha256": "49ed1d17cdce5da101b210197740713f49b935c29d4f339542a14b132658e6f7",
+        "size": 12579
+      },
+      {
+        "path": "scripts/example_evaluation.xml",
+        "sha256": "9272b348ddcc4b06ba562367ccd0770e018158c0068ac5116d5e34aaeff8777a",
+        "size": 1194
+      },
+      {
+        "path": "scripts/requirements.txt",
+        "sha256": "d5d7558b2368ecea9dfeed7d1fbc71ee9e0750bebd1282faa527d528a344c3c7",
+        "size": 29
+      },
+      {
+        "path": "SKILL.md",
+        "sha256": "0f4592dcb53cf2b5d6b7febee6b4152018b565551a1c29e3c612f57b218ab295",
+        "size": 9092
+      }
+    ]
+  },
+  {
+    "id": "openai-wrangler",
+    "publisher": "openai",
+    "title": "Cloudflare Wrangler",
+    "description": "Develop and manage Cloudflare Workers with Wrangler CLI guidance.",
+    "repository": "openai/plugins",
+    "path": "plugins/cloudflare/skills/wrangler",
+    "revision": "0722921d5542fc593105c27bd52630babd8b8c2a",
+    "license": "Apache-2.0",
+    "notes": "Authored by Cloudflare and distributed in OpenAI's public repository. Requires Node.js and Wrangler; account operations require Cloudflare authentication.",
+    "files": [
+      {
+        "path": "agents/openai.yaml",
+        "sha256": "3df482def3f6c6f71a107a214a7ab1b46d01cc1a6be994e5927f4fbd3b96d598",
+        "size": 322
+      },
+      {
+        "path": "assets/cloudflare-small.svg",
+        "sha256": "48f68d56ac6c83734e8aa64af35fa3f6a0613a9a2293158153db1402be104f17",
+        "size": 1221
+      },
+      {
+        "path": "assets/cloudflare.png",
+        "sha256": "ccef528d73dfe224cfb4817bcb7e15d63922421249d688031ff48c5eef2a2189",
+        "size": 1187
+      },
+      {
+        "path": "LICENSE.txt",
+        "sha256": "4dd13869245e356246a5b770723247bbb80a8f07a181d1d3d873a1734297cdb9",
+        "size": 10776
+      },
+      {
+        "path": "SKILL.md",
+        "sha256": "0aa6fbe6932df4392779bfda67b1a0165697369668cb2dbef66d018a34f44c11",
+        "size": 16937
+      }
+    ]
+  }
+]

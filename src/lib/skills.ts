@@ -5,6 +5,41 @@ import { displayedUserMessage } from "./userMessageEcho";
 
 export { SkillDependencyError } from "./skillDependencies";
 
+export type SkillPublisher = "anthropic" | "openai";
+
+export interface OfficialSkill {
+  id: string;
+  publisher: SkillPublisher;
+  title: string;
+  description: string;
+  repository: string;
+  path: string;
+  revision: string;
+  license: string;
+  notes: string;
+  /** Reviewed runtime/tool prerequisites; absent when there are no specific dependencies. */
+  requirements?: string;
+}
+
+export interface OfficialSkillInstallFailure {
+  id: string;
+  message: string;
+}
+
+export interface SkillSource {
+  catalogId: string;
+  publisher: SkillPublisher;
+  repository: string;
+  url: string;
+  revision: string;
+  license: string;
+  modified: boolean;
+}
+
+export function skillPublisherLabel(publisher: SkillPublisher): string {
+  return publisher === "anthropic" ? "Anthropic" : "OpenAI";
+}
+
 export interface LocalSkillFile {
   path: string;
   relativePath: string;
@@ -13,6 +48,7 @@ export interface LocalSkillFile {
   description: string;
   supportingMarkdownCount: number;
   contentFingerprint?: string;
+  source?: SkillSource;
 }
 
 export interface LocalSkill extends LocalSkillFile {
@@ -73,6 +109,14 @@ export function resolveLocalSkills(
 
 export async function scanLocalSkills(folder: string): Promise<LocalSkillFile[]> {
   return invoke<LocalSkillFile[]>("local_skills_scan", { folder });
+}
+
+export async function officialSkillsCatalog(): Promise<OfficialSkill[]> {
+  return invoke<OfficialSkill[]>("local_skills_catalog");
+}
+
+export async function installOfficialSkill(folder: string, id: string): Promise<string> {
+  return invoke<string>("local_skills_install_official", { folder, id });
 }
 
 function skillBridges(skills: LocalSkill[]): SkillBridgeConfig[] {

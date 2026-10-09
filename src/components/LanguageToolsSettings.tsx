@@ -14,7 +14,7 @@ import {
 import "./LanguageToolsSettings.css";
 
 const STATE_LABELS: Record<LanguageToolState, string> = {
-  installed: "Installed",
+  installed: "Verified",
   available: "Not yet verified",
   missing: "Not installed",
   installing: "Installing…",
@@ -222,7 +222,7 @@ export function LanguageToolsSettings() {
             <strong>{tool.name}</strong>
             <small>{tool.languages.join(" · ")}</small>
             <span className="language-tools-state" data-state={tool.state} role={tool.state === "error" ? "alert" : undefined}>
-              {installing || checkingTool ? <LoaderCircle size={13} className="language-tools-spinner" aria-hidden="true" /> : tool.state === "installed" && tool.enabled ? <Check size={13} aria-hidden="true" /> : null}
+              {installing || checkingTool ? <LoaderCircle size={13} className="language-tools-spinner" aria-hidden="true" /> : null}
               {installing ? "Installing…" : !tool.enabled ? "Disabled" : checkingTool ? "Checking…" : tool.state === "available" && tool.health === "stale" ? "Verification expired" : tool.state === "error" && tool.health === "error" ? "Verification failed" : STATE_LABELS[tool.state]}
             </span>
             {tool.detail && <small className="language-tools-detail">{tool.detail}</small>}
@@ -232,13 +232,15 @@ export function LanguageToolsSettings() {
               const enabled = event.currentTarget.checked;
               void run(`enabled:${tool.id}`, () => setLanguageToolEnabled(tool.id, enabled), (next) => ({ message: `${tool.name} ${next.tools.find((entry) => entry.id === tool.id)?.enabled ? "enabled" : "disabled"}.` }));
             }} /> Enabled</label>
-            <button type="button" className="secondary-button" aria-label={`${tool.state === "error" ? "Retry installing" : "Install"} ${tool.name}`} disabled={pending !== null || installing || hasInstallation || tool.state === "unavailable"} onClick={() => void run(`install:${tool.id}`, () => installLanguageTool(tool.id), (next) => {
+            {hasInstallation && !installing ? <span className="language-tools-installed" role="img" aria-label={`${tool.name} installed`}>
+              <Check size={15} aria-hidden="true" /> Installed
+            </span> : <button type="button" className="secondary-button" aria-label={`${tool.state === "error" ? "Retry installing" : "Install"} ${tool.name}`} disabled={pending !== null || installing || tool.state === "unavailable"} onClick={() => void run(`install:${tool.id}`, () => installLanguageTool(tool.id), (next) => {
               const updated = next.tools.find((entry) => entry.id === tool.id);
               return {
                 message: updated?.state === "installed" ? `${tool.name} is installed.` : `${tool.name}: ${updated?.detail || `setup is ${updated?.state ?? "pending"}.`}`,
                 failed: updated?.state !== "installed",
               };
-            })}><Download size={13} aria-hidden="true" />{installing ? "Installing…" : hasInstallation ? "Installed" : tool.state === "error" ? "Retry install" : "Install"}</button>
+            })}><Download size={13} aria-hidden="true" />{installing ? "Installing…" : tool.state === "error" ? "Retry install" : "Install"}</button>}
           </div>
         </div>;
       })}

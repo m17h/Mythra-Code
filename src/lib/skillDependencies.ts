@@ -118,7 +118,11 @@ export function sanitizeMessageSkillDependencies(message: ChatMessage): ChatMess
   if (message.skillDependencies === undefined) return message;
   const { skillDependencies: _metadata, ...rest } = message;
   const skillDependencies = validSkillDependencyReport(message.skillDependencies);
-  return skillDependencies ? { ...rest, skillDependencies } : rest;
+  // A supplied but corrupt report cannot become legacy invocation evidence
+  // merely because sanitization removed it. Empty references also forbid
+  // retargeting its authored mentions to today's skill catalog.
+  return skillDependencies ? { ...rest, skillDependencies }
+    : rest.skillReferences === undefined ? rest : { ...rest, skillReferences: [] };
 }
 
 export function hasBlockedSkillDependencies(report: SkillDependencyReport): boolean {

@@ -55,6 +55,7 @@ mod project_git;
 mod run_discovery;
 mod preference_learning;
 mod skills;
+mod official_skills;
 mod startup_guard;
 mod workspace_folder;
 #[cfg(test)]
@@ -126,6 +127,7 @@ use skills::{
     local_skills_resolve_prompts, local_skills_scan, local_skills_sync, local_skills_update,
     normalize_skill_name,
 };
+use official_skills::{local_skills_catalog, local_skills_install_official};
 use startup_guard::{startup_failed, startup_ready, StartupGuardState};
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
@@ -7004,6 +7006,8 @@ pub fn run() {
             diagnostics_export,
             export_text_file,
             local_skills_scan,
+            local_skills_catalog,
+            local_skills_install_official,
             local_skills_sync,
             local_skills_import,
             local_skills_create,

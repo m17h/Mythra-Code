@@ -6,6 +6,7 @@ import { markProviderStopIntent } from "./providerStopIntent";
 import { usageTotals } from "./usageLedger";
 import { useClaudeContinuationStore } from "./claudeContinuation";
 import { compactActivityPresentation } from "./compactActivity";
+import { usedSkillsForRun } from "./skillUsage";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 
@@ -32,6 +33,49 @@ describe("Claude event routing", () => {
     resetTaskStore();
     useClaudeContinuationStore.setState({ byThread: {} });
     vi.clearAllMocks();
+  });
+
+  it("counts native Skill only after a successful result, preserving streamed/replayed identity and reload", () => {
+    send({ type: "system", subtype: "init", skills: ["available-but-unused"] });
+    send({ type: "stream_event", event: { type: "content_block_start", index: 0,
+      content_block: { type: "tool_use", id: "skill-call", name: "Skill" } } });
+    send({ type: "stream_event", event: { type: "content_block_delta", index: 0,
+      delta: { type: "input_json_delta", partial_json: '{"skill":"openkiwi-skills:review","args":"private instructions"}' } } });
+    send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    const entries = () => useTaskStore.getState().tasks["thread-1"].activities.map((value) => ({ kind: "activity" as const, value }));
+    expect(usedSkillsForRun(entries())).toEqual([]);
+    send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "skill-call", content: "Launching skill" }] } });
+    expect(usedSkillsForRun(entries())).toEqual([{ identity: "name:openkiwi-skills:review", name: "openkiwi-skills:review" }]);
+    send({ type: "assistant", message: { id: "replay", content: [{ type: "tool_use", id: "skill-call", name: "Skill",
+      input: { skill: "openkiwi-skills:review", args: "private instructions" } }] } });
+    expect(entries()).toHaveLength(1);
+    expect(entries()[0].value).toMatchObject({ status: "completed", detail: "Launching skill",
+      skillUsage: [{ name: "openkiwi-skills:review", source: "claude-skill-tool", status: "loaded" }] });
+    const snapshot = JSON.parse(JSON.stringify(useTaskStore.getState().tasks["thread-1"].activities));
+    expect(snapshot[0].skillUsage[0]).not.toHaveProperty("args");
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask("thread-1", [], snapshot);
+    expect(usedSkillsForRun(entries())).toHaveLength(1);
+  });
+
+  it.each([true, false])("does not count failed or unconfirmed native Skill loads after turn completion (error=%s)", (failed) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "tool-message", content: [{ type: "tool_use", id: "skill-call", name: "Skill", input: { skill: "review" } }] } });
+    if (failed) send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "skill-call", is_error: true, content: "Unknown skill" }] } });
+    send({ type: "result", subtype: "success", result: "Done" });
+    const activity = useTaskStore.getState().tasks["thread-1"].activities[0];
+    expect(activity.skillUsage?.[0].status).toBe(failed ? "failed" : "pending");
+    expect(usedSkillsForRun([{ kind: "activity", value: activity }])).toEqual([]);
+  });
+
+  it("does not infer native skill use from generic tools, available catalogs, or assistant prose", () => {
+    send({ type: "system", subtype: "init", skills: ["review"] });
+    send({ type: "assistant", message: { id: "tool-message", content: [
+      { type: "text", text: "I am using the review skill." },
+      { type: "tool_use", id: "read", name: "Read", input: { file_path: "/skills/review/SKILL.md" } },
+      { type: "tool_use", id: "mcp", name: "mcp__fake__Skill", input: { skill: "review" } },
+    ] } });
+    expect(useTaskStore.getState().tasks["thread-1"].activities.every((activity) => activity.skillUsage === undefined)).toBe(true);
   });
 
   it("keeps a failed Bash command after Claude compaction in details while a retry runs", () => {
