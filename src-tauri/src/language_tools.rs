@@ -2540,7 +2540,7 @@ mod tests {
         // Prove the discovered canary can execute and writes the marker before
         // checking that the actual metadata and setter paths never execute it.
         assert!(crate::process_launch::background_command(node)
-            .arg(&script)
+            .arg(child_path(&script))
             .status()
             .await
             .unwrap()
