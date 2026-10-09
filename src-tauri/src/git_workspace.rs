@@ -2769,7 +2769,7 @@ mod tests {
     }
 
     fn completion_fixture_command(wait_before_exit: bool) -> std::process::Command {
-        let mut command = std::process::Command::new(env::current_exe().unwrap());
+        let mut command = crate::process_launch::background_std_command(env::current_exe().unwrap());
         command.args([
             "--ignored",
             "--exact",

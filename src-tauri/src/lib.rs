@@ -5908,7 +5908,7 @@ mod provider_runtime_tests {
                     read_input_line();
                 }
                 // The descendant inherits stdout and stderr and outlives us.
-                let mut descendant = std::process::Command::new(env::current_exe().unwrap())
+                let mut descendant = background_std_command(env::current_exe().unwrap())
                     .args(["--exact", FIXTURE_TEST, "--ignored", "--nocapture", "-q"])
                     .env(
                         FIXTURE_MODE,
@@ -6014,7 +6014,7 @@ mod provider_runtime_tests {
         /// The fixture in `mode` with piped stdio in its own process group, as
         /// provider CLIs are launched.
         pub(crate) fn command(&self, mode: &str) -> Command {
-            let mut command = Command::new(env::current_exe().unwrap());
+            let mut command = background_command(env::current_exe().unwrap());
             command
                 .args(["--exact", FIXTURE_TEST, "--ignored", "--nocapture", "-q"])
                 .env(FIXTURE_MODE, mode)
