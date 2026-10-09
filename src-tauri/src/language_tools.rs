@@ -1580,16 +1580,10 @@ pub(super) async fn set_auto_install(
 ) -> Result<LanguageToolsSnapshot, String> {
     let root = root(app)?;
     let runtime = runtime(&root)?;
-    {
-        let mut settings = runtime.settings.lock().await;
-        let mut updated = settings.clone();
-        updated.auto_install = enabled;
-        atomic_json(&root.join("settings.json"), &updated)?;
-        *settings = updated;
-    }
-    invalidate_failures(&root);
-    changed(app);
-    snapshot_at(&root, &runtime).await
+    set_preference_at(Some(app), &root, &runtime, |settings| {
+        settings.auto_install = enabled;
+    })
+    .await
 }
 pub(super) async fn set_enabled(
     app: &AppHandle,
@@ -1599,16 +1593,33 @@ pub(super) async fn set_enabled(
     tool(id)?;
     let root = root(app)?;
     let runtime = runtime(&root)?;
+    set_preference_at(Some(app), &root, &runtime, |settings| {
+        settings.enabled.insert(id.into(), enabled);
+    })
+    .await
+}
+// Both Settings endpoints share this exact write/event/metadata-return path.
+// Without an AppHandle, native component tests can exercise it without a UI.
+async fn set_preference_at(
+    app: Option<&AppHandle>,
+    root: &Path,
+    runtime: &Runtime,
+    update: impl FnOnce(&mut Settings),
+) -> Result<LanguageToolsSnapshot, String> {
     {
         let mut settings = runtime.settings.lock().await;
         let mut updated = settings.clone();
-        updated.enabled.insert(id.into(), enabled);
+        update(&mut updated);
         atomic_json(&root.join("settings.json"), &updated)?;
         *settings = updated;
     }
-    invalidate_failures(&root);
-    changed(app);
-    snapshot_at(&root, &runtime).await
+    invalidate_failures(root);
+    if let Some(app) = app {
+        changed(app);
+    } else {
+        runtime.generation.fetch_add(1, Ordering::SeqCst);
+    }
+    snapshot_at(root, runtime).await
 }
 async fn bounded_run(command: tokio::process::Command) -> Result<(), String> {
     bounded_run_with_timeout(command, INSTALL_TIMEOUT).await
@@ -2503,6 +2514,104 @@ mod tests {
         assert!(!proof_matches(&key, &identities));
         remember_health(&key, identities[1].clone(), None);
         assert!(proof_matches(&key, &identities));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn settings_metadata_and_both_preference_snapshots_never_start_enabled_server() {
+        let node = system_binary("node").expect("Node is required to arm the native server canary");
+        let root = temporary();
+        let runtime = runtime(&root).unwrap();
+        let receipt = uuid::Uuid::new_v4().to_string();
+        let package = root
+            .join("tools/python")
+            .join(&receipt)
+            .join("node_modules/pyright");
+        fs::create_dir_all(&package).unwrap();
+        let marker = root.join("unexpected-server-start");
+        let script = package.join("langserver.index.js");
+        fs::write(
+            &script,
+            format!(
+                "require('fs').writeFileSync({},'started');process.exit(0);",
+                json!(child_path(&marker))
+            ),
+        )
+        .unwrap();
+        // Prove the discovered canary can execute and writes the marker before
+        // checking that the actual metadata and setter paths never execute it.
+        assert!(tokio::process::Command::new(node)
+            .arg(&script)
+            .status()
+            .await
+            .unwrap()
+            .success());
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "started");
+        fs::remove_file(&marker).unwrap();
+        {
+            let mut settings = runtime.settings.lock().await;
+            settings.installations.insert("python".into(), receipt.clone());
+            settings.errors.insert("go".into(), "Retained error".into());
+        }
+        let initial = snapshot_at(&root, &runtime).await.unwrap();
+        let python = |snapshot: &LanguageToolsSnapshot| {
+            snapshot.tools.iter().find(|tool| tool.id == "python").unwrap().clone()
+        };
+        assert_eq!(python(&initial).state, "available");
+        assert_eq!(python(&initial).health, "unverified");
+        assert!(python(&initial).enabled);
+        assert!(!marker.exists());
+        let automatic = set_preference_at(None, &root, &runtime, |settings| {
+            settings.auto_install = false;
+        })
+        .await
+        .unwrap();
+        assert!(!automatic.auto_install);
+        assert!(automatic.generation > initial.generation);
+        assert_eq!(python(&automatic).state, "available");
+        assert!(!marker.exists());
+        let enabled = set_preference_at(None, &root, &runtime, |settings| {
+            settings.enabled.insert("python".into(), true);
+        })
+        .await
+        .unwrap();
+        assert!(enabled.generation > automatic.generation);
+        assert_eq!(python(&enabled).state, "available");
+        assert_eq!(python(&enabled).health, "unverified");
+        assert!(!marker.exists());
+        let disabled = set_preference_at(None, &root, &runtime, |settings| {
+            settings.enabled.insert("python".into(), false);
+        })
+        .await
+        .unwrap();
+        assert!(disabled.generation > enabled.generation);
+        assert!(!python(&disabled).enabled);
+        assert!(!marker.exists());
+        let saved = fs::read(root.join("settings.json")).unwrap();
+        let restarted = read_settings(&root).unwrap();
+        assert!(!restarted.auto_install);
+        assert!(!restarted.enabled["python"]);
+        assert_eq!(restarted.installations["python"], receipt);
+        assert_eq!(restarted.errors["go"], "Retained error");
+        // A failed atomic write preserves settings and does not invalidate the
+        // generation or execute the enabled server while returning an error.
+        fs::remove_file(root.join("settings.json")).unwrap();
+        fs::create_dir(root.join("settings.json")).unwrap();
+        assert!(set_preference_at(None, &root, &runtime, |settings| {
+            settings.enabled.insert("python".into(), true);
+        })
+        .await
+        .is_err());
+        assert!(!runtime.settings.lock().await.enabled["python"]);
+        assert_eq!(runtime.generation.load(Ordering::SeqCst), disabled.generation);
+        assert!(!marker.exists());
+        fs::remove_dir(root.join("settings.json")).unwrap();
+        fs::write(root.join("settings.json"), &saved).unwrap();
+        runtimes().lock().unwrap().remove(&root);
+        let reopened = snapshot_at(&root, &super::runtime(&root).unwrap()).await.unwrap();
+        assert!(!reopened.auto_install);
+        assert!(!python(&reopened).enabled);
+        assert!(!marker.exists());
+        assert_eq!(fs::read(root.join("settings.json")).unwrap(), saved);
         fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]

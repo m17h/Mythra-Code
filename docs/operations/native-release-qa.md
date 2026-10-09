@@ -99,6 +99,37 @@ This recipe was exercised on macOS with a development binary and a temporary
 development bundle. Each release receipt must repeat it on the exact frozen
 package. A development run does not prove that package or Windows behavior.
 
+## Language-tool preferences when storage is affected
+
+When the selected storage scope includes language tools, perform this small
+affected-data case inside the existing `representative-existing-data`,
+`save-close-reopen`, and `affected-data-preserved` observations. Keep the original
+theme, onboarding, representative app-state/draft and close/fault checks.
+
+In the actual exact-package/full-UUID Settings → Tools & MCP window, inspect
+the language-tool inventory. Switch **Automatic setup for new project threads**
+off and uncheck **Enable Python**. These preferences save immediately; the
+modal's general Save button is not required. Read only the owned file
+`root/app-data/language-tools/settings.json`; require `autoInstall:false` and
+`enabled.python:false`, and retain it as evidence outside the disposable root.
+
+Close normally, then reopen the same candidate/root with no external edits or
+reseeding between those UI saves and their healthy reopen. Require the fresh
+run identity and persisted renderer marker, the same visible disabled controls,
+and those exact JSON preference values. Verify unrelated representative data
+was preserved. Capture actual pixels/AX and owned-file evidence within the
+existing storage observations; generic theme persistence or a fixture test does
+not establish these preferences. Missing or rejected controls are failures.
+
+QA allows only `language_tools_snapshot`, `language_tools_set_auto_install`, and
+`language_tools_set_enabled`. They use the real private store and metadata
+inventory. Inventory may inspect bounded host/global/HOME/USERPROFILE tool
+executable metadata; it does not start servers, inspect provider credentials,
+or prove current server health. **Do not click Refresh or Install.** Health
+refresh, installation, project preparation, provider/MCP execution and language
+queries remain blocked. This case proves native preference persistence, not
+installation, language-server queries, or authenticated provider integration.
+
 ## Close and event schema
 
 Wait for this process's matching `control-ready` event (profileId, PID and
