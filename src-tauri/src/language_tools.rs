@@ -2539,7 +2539,7 @@ mod tests {
         .unwrap();
         // Prove the discovered canary can execute and writes the marker before
         // checking that the actual metadata and setter paths never execute it.
-        assert!(tokio::process::Command::new(node)
+        assert!(crate::process_launch::background_command(node)
             .arg(&script)
             .status()
             .await
