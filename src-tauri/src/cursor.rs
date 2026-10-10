@@ -6,8 +6,8 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError,
     },
 };
 
@@ -17,8 +17,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin},
-    sync::{oneshot, Mutex},
+    process::{Child, ChildStdin, ChildStdout},
+    sync::{oneshot, Mutex, Notify},
     time::{timeout, timeout_at, Duration, Instant},
 };
 
@@ -28,6 +28,18 @@ use crate::process_launch::background_command;
 use crate::process_launch::interactive_command;
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
+type CursorTurns = Arc<Mutex<HashMap<String, Arc<CursorProcess>>>>;
+/// Where a Cursor process publishes renderer events (`app.emit` in the app).
+type CursorEmit = Arc<dyn Fn(&str, Value) + Send + Sync>;
+
+/// Upper bound for taking the input pipe, writing one ACP message, and
+/// flushing it. An agent that stops reading stdin must not wedge every later
+/// request, permission reply, or Stop behind the pipe lock.
+const CURSOR_INPUT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a kill waits for the direct child to be reaped.
+const CURSOR_KILL_REAP_GRACE: Duration = Duration::from_secs(2);
+const CURSOR_EXITED_EARLY: &str = "Cursor Agent exited before completing the turn.";
+const CURSOR_STOPPED: &str = "Cursor Agent stopped.";
 
 /// How long to wait for one ACP reply, or `None` for "as long as the process
 /// lives".
@@ -48,32 +60,287 @@ pub(super) fn cursor_request_timeout(method: &str) -> Option<Duration> {
 
 #[derive(Default)]
 pub struct CursorState {
-    turns: Arc<Mutex<HashMap<String, Arc<CursorProcess>>>>,
+    turns: CursorTurns,
     authenticated: AtomicBool,
 }
 
 struct CursorProcess {
-    stdin: Arc<Mutex<ChildStdin>>,
+    stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
     pid: Option<u32>,
     pending: PendingMap,
     next_id: AtomicI64,
-    alive: Arc<AtomicBool>,
-    /// Outstanding `session/prompt` requests. A steer queues a second prompt
-    /// on the same session; only the last one to settle may take the process
-    /// down, or a completing primary prompt would kill its own steer.
-    active_prompts: AtomicUsize,
+    alive: AtomicBool,
+    input_timeout: Duration,
+    /// The `session/prompt` requests (primary plus steers) of this turn.
+    run: CursorPromptRun,
     /// `session/load` replays previous conversation updates. They belong to
     /// prior turns and must not be emitted under this process's new turn ID.
     prompt_started: AtomicBool,
     session_id: Mutex<Option<String>>,
+    thread_id: Option<String>,
     turn_id: Option<String>,
     wsl: bool,
     /// Ids of agent-initiated requests that were forwarded to the renderer
     /// and not answered yet. `cursor_permission_respond` only accepts one of
     /// these, so the webview cannot answer a request this process never
     /// asked (mirrors the Codex bridge's server-request set).
-    server_requests: Arc<Mutex<HashSet<String>>>,
+    server_requests: Mutex<HashSet<String>>,
+    emit: CursorEmit,
+    #[cfg(test)]
+    stages: CursorStageLog,
+    #[cfg(test)]
+    primary_start_gate: StdMutex<Option<(oneshot::Receiver<()>, Arc<AtomicBool>)>>,
+}
+
+/// Test-only record of the input, retirement, and kill phases, so a native
+/// hang can be attributed to the phase it stopped in. Compiled out of the app
+/// and bounded, holding only static phase names (never message content).
+#[cfg(test)]
+#[derive(Default)]
+struct CursorStageLog(StdMutex<Vec<(std::time::Instant, &'static str)>>);
+
+#[cfg(test)]
+impl CursorStageLog {
+    const CAPACITY: usize = 256;
+
+    fn record(&self, stage: &'static str) {
+        let mut stages = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if stages.len() < Self::CAPACITY {
+            stages.push((std::time::Instant::now(), stage));
+        }
+    }
+
+    /// Never blocks, so a watchdog can read it while the runtime is stuck.
+    fn snapshot(&self, since: std::time::Instant) -> String {
+        match self.0.try_lock() {
+            Ok(stages) => stages
+                .iter()
+                .map(|(at, stage)| {
+                    format!(
+                        "{:>7}ms {stage}",
+                        at.saturating_duration_since(since).as_millis()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(_) => "(stage log busy)".into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CursorPromptKind {
+    Primary,
+    Steer,
+}
+
+#[derive(Debug)]
+struct CursorPromptOutcome {
+    kind: CursorPromptKind,
+    result: Result<Value, String>,
+}
+
+/// Admission and completion of the `session/prompt` requests that make up one
+/// Mythra Code turn. A steer queues another prompt on the same session, and
+/// ACP does not say how its completion is ordered against the primary's, so
+/// the turn ends — one terminal event, then teardown — only when the last
+/// admitted prompt settles. Admission and that decision share one lock: a
+/// steer either joins the run before it ends or is refused with an error.
+#[derive(Default)]
+struct CursorPromptRun(StdMutex<CursorPromptRunState>);
+
+#[derive(Default)]
+struct CursorPromptRunState {
+    started: bool,
+    closed: bool,
+    finished: bool,
+    outstanding: usize,
+    outcomes: Vec<CursorPromptOutcome>,
+    input: CursorPromptInputOrder,
+}
+
+/// Prompt writes follow admission order, independently of response order.
+/// A withdrawn preparation skips its ticket only after every earlier write.
+#[derive(Clone, Debug, Default)]
+struct CursorPromptInputOrder(Arc<CursorPromptInputQueue>);
+
+#[derive(Debug, Default)]
+struct CursorPromptInputQueue {
+    state: StdMutex<CursorPromptInputState>,
+    changed: Notify,
+}
+
+#[derive(Debug, Default)]
+struct CursorPromptInputState {
+    next_ticket: usize,
+    next_write: usize,
+    completed: HashSet<usize>,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct CursorPromptInputTicket {
+    order: CursorPromptInputOrder,
+    index: usize,
+}
+
+impl CursorPromptInputOrder {
+    fn reserve(&self) -> CursorPromptInputTicket {
+        let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let index = state.next_ticket;
+        state.next_ticket += 1;
+        CursorPromptInputTicket {
+            order: self.clone(),
+            index,
+        }
+    }
+
+    fn close(&self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closed = true;
+        self.0.changed.notify_waiters();
+    }
+}
+
+impl CursorPromptInputTicket {
+    async fn wait(&self) -> Result<(), String> {
+        loop {
+            // Register before observing state so completion cannot lose a wake.
+            let changed = self.order.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let state = self
+                    .order
+                    .0
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if state.closed {
+                    return Err("This Cursor turn is no longer running".into());
+                }
+                if state.next_write == self.index {
+                    return Ok(());
+                }
+            }
+            changed.await;
+        }
+    }
+}
+
+impl Drop for CursorPromptInputTicket {
+    fn drop(&mut self) {
+        let mut state = self
+            .order
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.completed.insert(self.index);
+        loop {
+            let next = state.next_write;
+            if !state.completed.remove(&next) {
+                break;
+            }
+            state.next_write += 1;
+        }
+        drop(state);
+        self.order.0.changed.notify_waiters();
+    }
+}
+
+impl CursorPromptRun {
+    fn state(&self) -> StdMutexGuard<'_, CursorPromptRunState> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn admit_primary(&self) -> Option<CursorPromptInputTicket> {
+        let mut state = self.state();
+        if state.started || state.closed {
+            return None;
+        }
+        state.started = true;
+        state.outstanding = 1;
+        Some(state.input.reserve())
+    }
+
+    fn admit_steer(&self) -> Result<CursorPromptInputTicket, String> {
+        let mut state = self.state();
+        if !state.started {
+            return Err("Cursor session is still starting".into());
+        }
+        if state.closed || state.outstanding == 0 {
+            return Err("Cursor already finished this turn".into());
+        }
+        state.outstanding += 1;
+        Ok(state.input.reserve())
+    }
+
+    /// Settle one admitted prompt; `None` withdraws a steer that was never
+    /// sent. The caller settling the last prompt receives every outcome in
+    /// settle order and owns the run's single terminal event and teardown.
+    fn settle(&self, outcome: Option<CursorPromptOutcome>) -> Option<Vec<CursorPromptOutcome>> {
+        let mut state = self.state();
+        if let Some(outcome) = outcome {
+            state.outcomes.push(outcome);
+        }
+        state.outstanding = state.outstanding.saturating_sub(1);
+        if state.outstanding > 0 || state.finished {
+            return None;
+        }
+        state.finished = true;
+        state.closed = true;
+        state.input.close();
+        Some(std::mem::take(&mut state.outcomes))
+    }
+
+    /// Refuse further admission. Returns whether a prompt was ever admitted,
+    /// in which case that prompt's settlement reports how the turn ended.
+    fn close(&self) -> bool {
+        let mut state = self.state();
+        state.closed = true;
+        state.input.close();
+        state.started
+    }
+}
+
+/// The single terminal renderer message for a run. Every prompt's result is
+/// kept, in settle order; the last-settled result describes how the run
+/// ended. Any failure — including a steer the agent did not accept — makes
+/// the turn an error, because the user's added instructions were lost.
+fn cursor_final_message(outcomes: Vec<CursorPromptOutcome>) -> Value {
+    let mut results = Vec::new();
+    let mut causes: Vec<String> = Vec::new();
+    let mut errors = Vec::new();
+    for outcome in outcomes {
+        match outcome.result {
+            Ok(result) => results.push(result),
+            // One process failure settles every prompt with the same cause.
+            Err(cause) if causes.contains(&cause) => {}
+            Err(cause) => {
+                errors.push(match outcome.kind {
+                    CursorPromptKind::Primary => cause.clone(),
+                    CursorPromptKind::Steer => {
+                        format!("Cursor did not accept the added instructions: {cause}")
+                    }
+                });
+                causes.push(cause);
+            }
+        }
+    }
+    let mut message = if errors.is_empty() {
+        json!({ "type": "result", "result": results.last().cloned().unwrap_or(Value::Null) })
+    } else {
+        json!({ "type": "openkiwi_error", "message": errors.join("\n") })
+    };
+    if results.len() > 1 || (!errors.is_empty() && !results.is_empty()) {
+        message["promptResults"] = Value::Array(results);
+    }
+    message
 }
 
 fn visible_cursor_notification(method: &str, prompt_started: bool) -> bool {
@@ -112,6 +379,10 @@ pub struct CursorAttachment {
 #[serde(rename_all = "camelCase")]
 pub struct CursorTurnOptions {
     thread_id: String,
+    /// Renderer-owned start intent, echoed only on Mythra event envelopes.
+    /// Never sent to ACP or used as a permission/authorization credential.
+    #[serde(default)]
+    start_request_id: Option<String>,
     cwd: String,
     prompt: String,
     model: String,
@@ -165,21 +436,57 @@ pub struct CursorTurnStarted {
 }
 
 impl CursorProcess {
+    /// Test-only phase marker; a no-op in the app.
+    fn stage(&self, _stage: &'static str) {
+        #[cfg(test)]
+        self.stages.record(_stage);
+    }
+
     async fn write_value(&self, message: &Value) -> Result<(), String> {
         if !self.alive.load(Ordering::Acquire) {
             return Err("This Cursor turn is no longer running".into());
         }
-        write_json(&self.stdin, message).await
+        self.stage("write: start");
+        let result = write_json(&self.stdin, message, Instant::now() + self.input_timeout).await;
+        self.stage(if result.is_ok() {
+            "write: done"
+        } else {
+            "write: failed"
+        });
+        if let Err(error) = &result {
+            // A timed-out or failed write may have sent part of a JSON line,
+            // so nothing more can be framed on this stream. Retire it: every
+            // waiting request settles, and the next turn starts one fresh
+            // process because the finished run releases the thread slot.
+            self.retire(&format!("Cursor Agent input failed: {error}"))
+                .await;
+        }
+        result
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.request_with_input(method, params, None).await
+    }
+
+    async fn request_with_input(
+        &self,
+        method: &str,
+        params: Value,
+        input: Option<CursorPromptInputTicket>,
+    ) -> Result<Value, String> {
+        if let Some(input) = input.as_ref() {
+            input.wait().await?;
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id, sender);
-        if let Err(error) = self
+        self.stage("request: registered");
+        let written = self
             .write_value(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
-            .await
-        {
+            .await;
+        // Steers may write while the primary's ACP response remains pending.
+        drop(input);
+        if let Err(error) = written {
             self.pending.lock().await.remove(&id);
             return Err(error);
         }
@@ -213,26 +520,153 @@ impl CursorProcess {
             .await
     }
 
+    /// Stop the process and settle everything waiting on it. The kill comes
+    /// first and never waits for the input pipe: a writer blocked on an agent
+    /// that stopped reading holds that lock, and the kill is what fails it.
     async fn shutdown(&self) {
-        self.alive.store(false, Ordering::Release);
-        let _ = self.stdin.lock().await.shutdown().await;
-        if let Some(pid) = self.pid {
-            super::kill_process_tree(pid);
+        self.retire(CURSOR_STOPPED).await;
+        // Close input only if no writer owns it; one that does fails on its own
+        // now that the process is gone.
+        if let Ok(mut stdin) = self.stdin.try_lock() {
+            let _ = timeout(Duration::from_millis(250), stdin.shutdown()).await;
         }
-        let _ = self.child.lock().await.kill().await;
+    }
+
+    /// End this transport: refuse further input and steers, fail every request
+    /// still waiting with `reason`, and kill the process. Idempotent.
+    async fn retire(&self, reason: &str) {
+        self.stage("retire: start");
+        self.alive.store(false, Ordering::Release);
+        self.run.close();
+        // Settle first: once the process dies the reader reaches EOF and would
+        // otherwise report a generic closed connection instead of the cause.
+        fail_pending(&self.pending, reason).await;
+        self.stage("retire: pending settled");
+        self.terminate().await;
+        self.stage("retire: done");
+    }
+
+    /// Kill the process tree and reap the direct child, unless it was already
+    /// reaped. An unreaped child keeps its pid and process group reserved, so
+    /// the tree signal cannot reach an unrelated process that reused them.
+    async fn terminate(&self) {
+        let mut child = self.child.lock().await;
+        self.stage("terminate: child locked");
+        if matches!(child.try_wait(), Ok(None)) {
+            if let Some(pid) = self.pid {
+                super::kill_process_tree(pid);
+            }
+            self.stage("terminate: tree kill returned");
+            let _ = child.start_kill();
+            let reaped = timeout(CURSOR_KILL_REAP_GRACE, child.wait()).await;
+            self.stage(match reaped {
+                Ok(Ok(_)) => "terminate: reaped",
+                Ok(Err(_)) => "terminate: wait failed",
+                Err(_) => "terminate: reap grace elapsed",
+            });
+        } else {
+            self.stage("terminate: already exited");
+        }
+    }
+
+    fn emit_turn_message(&self, message: Value) {
+        if let (Some(thread_id), Some(turn_id)) = (&self.thread_id, &self.turn_id) {
+            (self.emit)(
+                "cursor-event",
+                json!({ "threadId": thread_id, "turnId": turn_id, "message": message }),
+            );
+        }
     }
 }
 
-async fn write_json(stdin: &Arc<Mutex<ChildStdin>>, message: &Value) -> Result<(), String> {
-    let mut stdin = stdin.lock().await;
-    stdin
-        .write_all(format!("{message}\n").as_bytes())
-        .await
-        .map_err(|error| format!("Could not write to Cursor Agent: {error}"))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|error| format!("Could not flush Cursor Agent input: {error}"))
+async fn fail_pending(pending: &PendingMap, reason: &str) {
+    for (_, sender) in pending.lock().await.drain() {
+        let _ = sender.send(Err(reason.to_string()));
+    }
+}
+
+/// The pipe lock, the write, and the flush share one deadline.
+async fn write_json(
+    stdin: &Mutex<ChildStdin>,
+    message: &Value,
+    deadline: Instant,
+) -> Result<(), String> {
+    timeout_at(deadline, async {
+        let mut stdin = stdin.lock().await;
+        stdin
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .map_err(|error| format!("Could not write to Cursor Agent: {error}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| format!("Could not flush Cursor Agent input: {error}"))
+    })
+    .await
+    .map_err(|_| "Cursor Agent stopped reading its input".to_string())?
+}
+
+/// Send one `session/prompt` belonging to the run. Whoever settles the last
+/// admitted prompt emits the run's terminal event and tears it down.
+fn spawn_cursor_prompt(
+    process: Arc<CursorProcess>,
+    turns: CursorTurns,
+    kind: CursorPromptKind,
+    input: CursorPromptInputTicket,
+    session_id: String,
+    blocks: Vec<Value>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        #[cfg(test)]
+        if kind == CursorPromptKind::Primary {
+            let gate = process
+                .primary_start_gate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((gate, entered)) = gate {
+                entered.store(true, Ordering::Release);
+                let _ = gate.await;
+            }
+        }
+        let result = process
+            .request_with_input(
+                "session/prompt",
+                json!({ "sessionId": session_id, "prompt": blocks }),
+                Some(input),
+            )
+            .await;
+        if let Some(outcomes) = process
+            .run
+            .settle(Some(CursorPromptOutcome { kind, result }))
+        {
+            finish_cursor_run(&process, &turns, outcomes).await;
+        }
+    })
+}
+
+async fn finish_cursor_run(
+    process: &Arc<CursorProcess>,
+    turns: &CursorTurns,
+    outcomes: Vec<CursorPromptOutcome>,
+) {
+    // Retire before announcing. The terminal event can start a queued
+    // follow-up turn at once, which must find this run neither alive nor
+    // accepting steers (settling the last prompt already closed admission).
+    process.alive.store(false, Ordering::Release);
+    process.run.close();
+    process.emit_turn_message(cursor_final_message(outcomes));
+    process.shutdown().await;
+    // A successor may already own the slot; only this exact run is removed.
+    if let Some(thread_id) = process.thread_id.as_deref() {
+        let mut turns = turns.lock().await;
+        if turns
+            .get(thread_id)
+            .is_some_and(|current| Arc::ptr_eq(current, process))
+        {
+            turns.remove(thread_id);
+        }
+    }
 }
 
 fn field_after_label(output: &str, label: &str) -> Option<String> {
@@ -771,6 +1205,7 @@ async fn spawn_cursor_process(
     app: &AppHandle,
     cwd: &Path,
     event_context: Option<(String, String, String, bool)>,
+    start_request_id: Option<&str>,
 ) -> Result<Arc<CursorProcess>, String> {
     let runtime = resolve_cursor_runtime(app).await?;
     let mut command = runtime.background(Some(cwd));
@@ -785,248 +1220,102 @@ async fn spawn_cursor_process(
     // descendant the agent spawns, not just the direct child.
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = command.spawn().map_err(|error| {
+    let child = command.spawn().map_err(|error| {
         format!(
             "Could not start Cursor Agent at `{}`: {error}",
             runtime.display_path()
         )
     })?;
-    let stdin = Arc::new(Mutex::new(
-        child
-            .stdin
-            .take()
-            .ok_or("Cursor Agent did not expose stdin")?,
-    ));
+    let app = app.clone();
+    let emit: CursorEmit = Arc::new(move |event: &str, payload: Value| {
+        let _ = app.emit(event, payload);
+    });
+    let emit = with_cursor_start_id(emit, start_request_id.map(str::to_owned));
+    attach_cursor_process(
+        child,
+        runtime.is_wsl(),
+        event_context,
+        emit,
+        CURSOR_INPUT_TIMEOUT,
+    )
+}
+
+/// Tag both individual and batched envelopes at their common emission edge.
+/// The original ACP message and its ordering remain untouched.
+fn with_cursor_start_id(emit: CursorEmit, start_request_id: Option<String>) -> CursorEmit {
+    let Some(start_request_id) = start_request_id else {
+        return emit;
+    };
+    Arc::new(move |event, mut payload| {
+        if matches!(event, "cursor-event" | "cursor-events") {
+            let tag = |envelope: &mut Value| {
+                if let Some(object) = envelope.as_object_mut() {
+                    object.insert(
+                        "startRequestId".into(),
+                        Value::String(start_request_id.clone()),
+                    );
+                }
+            };
+            match &mut payload {
+                Value::Array(envelopes) => envelopes.iter_mut().for_each(tag),
+                envelope => tag(envelope),
+            }
+        }
+        emit(event, payload);
+    })
+}
+
+/// Wrap a spawned agent in its ACP transport and start its output readers.
+fn attach_cursor_process(
+    mut child: Child,
+    wsl: bool,
+    event_context: Option<(String, String, String, bool)>,
+    emit: CursorEmit,
+    input_timeout: Duration,
+) -> Result<Arc<CursorProcess>, String> {
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or("Cursor Agent did not expose stdin")?;
     let stdout = child
         .stdout
         .take()
         .ok_or("Cursor Agent did not expose stdout")?;
     let stderr = child.stderr.take();
     let pid = child.id();
-    let child = Arc::new(Mutex::new(child));
-    let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
-    let alive = Arc::new(AtomicBool::new(true));
-    let server_requests: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
-    let server_requests_for_reader = server_requests.clone();
     let process = Arc::new(CursorProcess {
-        stdin: stdin.clone(),
-        child: child.clone(),
+        stdin: Mutex::new(stdin),
+        child: Arc::new(Mutex::new(child)),
         pid,
-        pending: pending.clone(),
+        pending: Arc::new(Mutex::new(HashMap::new())),
         next_id: AtomicI64::new(1),
-        alive: alive.clone(),
-        active_prompts: AtomicUsize::new(0),
+        alive: AtomicBool::new(true),
+        input_timeout,
+        run: CursorPromptRun::default(),
         prompt_started: AtomicBool::new(false),
         session_id: Mutex::new(None),
+        thread_id: event_context
+            .as_ref()
+            .map(|(thread_id, _, _, _)| thread_id.clone()),
         turn_id: event_context
             .as_ref()
             .map(|(_, turn_id, _, _)| turn_id.clone()),
-        wsl: runtime.is_wsl(),
-        server_requests,
+        wsl,
+        server_requests: Mutex::new(HashSet::new()),
+        emit,
+        #[cfg(test)]
+        stages: CursorStageLog::default(),
+        #[cfg(test)]
+        primary_start_gate: StdMutex::default(),
     });
-
-    let app_for_reader = app.clone();
-    let event_for_reader = event_context.clone();
-    let alive_for_reader = alive.clone();
-    let process_for_reader = process.clone();
-    tauri::async_runtime::spawn(async move {
-        const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
-        let mut lines = BufReader::new(stdout).lines();
-        // High-frequency ACP notifications (`session/update` and friends) are
-        // coalesced into a single "cursor-events" array emit, mirroring the
-        // Codex and Claude readers: flushed on a ~25ms tick or before any
-        // other message so ordering is strictly preserved. Each entry is
-        // exactly the payload a per-line "cursor-event" emit would carry.
-        let mut delta_buffer: Vec<Value> = Vec::new();
-        let mut flush_deadline = Instant::now();
-        let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
-            if !buffer.is_empty() {
-                let batch = std::mem::take(buffer);
-                let _ = app.emit("cursor-events", Value::Array(batch));
-            }
-        };
-        loop {
-            // `Lines::next_line` is cancellation safe, so racing it against
-            // the flush deadline cannot drop partial lines.
-            let next = if delta_buffer.is_empty() {
-                lines.next_line().await
-            } else {
-                match timeout_at(flush_deadline, lines.next_line()).await {
-                    Ok(next) => next,
-                    Err(_) => {
-                        flush_deltas(&mut delta_buffer, &app_for_reader);
-                        continue;
-                    }
-                }
-            };
-            let line = match next {
-                Ok(Some(line)) => line,
-                _ => break,
-            };
-            let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                // Surface unparseable output instead of dropping it, so a
-                // wedged or misbehaving agent is visible in the thread.
-                flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref() {
-                    let _ = app_for_reader.emit(
-                        "cursor-event",
-                        json!({
-                            "threadId": thread_id, "turnId": turn_id,
-                            "message": { "type": "stderr", "line": format!("Unparseable Cursor Agent output: {line}") }
-                        }),
-                    );
-                }
-                continue;
-            };
-            if let Some(id) = message.get("id").and_then(Value::as_i64) {
-                if message.get("result").is_some() || message.get("error").is_some() {
-                    // A settled request can trigger turn completion handling;
-                    // deliver buffered updates first so order is preserved.
-                    flush_deltas(&mut delta_buffer, &app_for_reader);
-                    if let Some(sender) = pending.lock().await.remove(&id) {
-                        let result = if let Some(error) = message.get("error") {
-                            Err(error
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .unwrap_or("Cursor Agent request failed")
-                                .to_string())
-                        } else {
-                            Ok(message.get("result").cloned().unwrap_or(Value::Null))
-                        };
-                        let _ = sender.send(result);
-                    }
-                    continue;
-                }
-            }
-            let method = message
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if method == "session/request_permission" {
-                flush_deltas(&mut delta_buffer, &app_for_reader);
-                let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                if let (Some(id), Some((thread_id, turn_id, permission, interactive))) =
-                    (message.get("id").cloned(), event_for_reader.as_ref())
-                {
-                    if let Some(result) =
-                        automatic_permission_result(permission, *interactive, &params)
-                    {
-                        let _ = write_json(
-                            &stdin,
-                            &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                        )
-                        .await;
-                    } else {
-                        // Record the id (before emitting) so the response
-                        // command can verify it targets a live request.
-                        server_requests_for_reader
-                            .lock()
-                            .await
-                            .insert(id.to_string());
-                        let _ = app_for_reader.emit("cursor-event", json!({
-                            "threadId": thread_id, "turnId": turn_id,
-                            "message": { "type": "permission_request", "requestId": id, "params": params }
-                        }));
-                    }
-                }
-                continue;
-            }
-            if method == "cursor/ask_question" {
-                flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let (Some(id), Some((thread_id, turn_id, _, interactive))) =
-                    (message.get("id").cloned(), event_for_reader.as_ref())
-                {
-                    if *interactive {
-                        server_requests_for_reader
-                            .lock()
-                            .await
-                            .insert(id.to_string());
-                        let _ = app_for_reader.emit("cursor-event", json!({
-                            "threadId": thread_id, "turnId": turn_id,
-                            "message": { "type": "cursor_request", "method": method, "requestId": id, "params": message.get("params").cloned().unwrap_or(Value::Null) }
-                        }));
-                    } else {
-                        let _ = write_json(&stdin, &unattended_question_error(id)).await;
-                    }
-                }
-                continue;
-            }
-            if method == "cursor/create_plan" {
-                flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref().filter(|_| {
-                    visible_cursor_notification(
-                        method,
-                        process_for_reader.prompt_started.load(Ordering::Acquire),
-                    )
-                }) {
-                    let _ = app_for_reader.emit("cursor-event", json!({
-                        "threadId": thread_id, "turnId": turn_id,
-                        "message": { "type": "notification", "method": method, "params": message.get("params").cloned().unwrap_or(Value::Null) }
-                    }));
-                }
-                if let Some(id) = message.get("id").cloned() {
-                    let _ = write_json(
-                        &stdin,
-                        &json!({ "jsonrpc": "2.0", "id": id, "result": { "accepted": true } }),
-                    )
-                    .await;
-                }
-                continue;
-            }
-            if message.get("id").is_some() && message.get("method").is_some() {
-                flush_deltas(&mut delta_buffer, &app_for_reader);
-                if let Some(id) = message.get("id").cloned() {
-                    let _ = write_json(&stdin, &json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": { "code": -32601, "message": format!("Mythra Code does not support Cursor request `{method}` yet") }
-                    })).await;
-                }
-                continue;
-            }
-            if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref().filter(|_| {
-                visible_cursor_notification(
-                    method,
-                    process_for_reader.prompt_started.load(Ordering::Acquire),
-                )
-            }) {
-                if delta_buffer.is_empty() {
-                    flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
-                }
-                delta_buffer.push(json!({
-                    "threadId": thread_id, "turnId": turn_id,
-                    "message": { "type": "notification", "method": method, "params": message.get("params").cloned().unwrap_or(Value::Null) }
-                }));
-            }
-        }
-        flush_deltas(&mut delta_buffer, &app_for_reader);
-        let was_alive = alive_for_reader.swap(false, Ordering::AcqRel);
-        let mut waiting = pending.lock().await;
-        for (_, sender) in waiting.drain() {
-            let _ = sender.send(Err("Cursor Agent connection closed".into()));
-        }
-        drop(waiting);
-        if was_alive {
-            if let Some((thread_id, turn_id, _, _)) = event_for_reader.as_ref() {
-                let _ = app_for_reader.emit("cursor-event", json!({
-                    "threadId": thread_id, "turnId": turn_id,
-                    "message": { "type": "openkiwi_exit", "message": "Cursor Agent exited before completing the turn." }
-                }));
-            }
-        }
-        let mut child = child.lock().await;
-        if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
-            let _ = child.kill().await;
-        }
-    });
-
-    if let Some(stderr) = stderr {
-        let app_for_stderr = app.clone();
-        let event_for_stderr = event_context;
+    let stderr_task = stderr.map(|stderr| {
+        let emit = process.emit.clone();
+        let event_for_stderr = event_context.clone();
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Some((thread_id, turn_id, _, _)) = event_for_stderr.as_ref() {
-                    let _ = app_for_stderr.emit(
+                    emit(
                         "cursor-event",
                         json!({
                             "threadId": thread_id, "turnId": turn_id,
@@ -1035,9 +1324,208 @@ async fn spawn_cursor_process(
                     );
                 }
             }
-        });
-    }
+        })
+    });
+    tauri::async_runtime::spawn(read_cursor_output(
+        process.clone(),
+        stdout,
+        event_context,
+        stderr_task,
+    ));
     Ok(process)
+}
+
+async fn read_cursor_output(
+    process: Arc<CursorProcess>,
+    stdout: ChildStdout,
+    event_context: Option<(String, String, String, bool)>,
+    stderr_task: Option<tauri::async_runtime::JoinHandle<()>>,
+) {
+    let emit = process.emit.clone();
+    // The transport ends at EOF or, because a descendant can inherit stdout
+    // and hold it open, when the direct child exits plus a bounded drain of
+    // the output it already wrote (often its final response).
+    let mut output = super::ProviderOutput::new(BufReader::new(stdout), process.child.clone());
+    // High-frequency ACP notifications (`session/update` and friends) are
+    // coalesced into a single "cursor-events" array emit, mirroring the
+    // Codex and Claude readers: flushed on a ~25ms tick, at the batch
+    // size/byte threshold, or before any other message so ordering is strictly
+    // preserved. Each entry is exactly the payload a per-line "cursor-event"
+    // emit would carry.
+    let mut delta_buffer = super::ProviderDeltaBatch::default();
+    let flush_deltas = |buffer: &mut super::ProviderDeltaBatch| {
+        if let Some(batch) = buffer.take() {
+            emit("cursor-events", batch);
+        }
+    };
+    loop {
+        let line = match output.next_line(delta_buffer.deadline()).await {
+            super::ProviderRead::Line(line) => line,
+            super::ProviderRead::FlushDue => {
+                flush_deltas(&mut delta_buffer);
+                continue;
+            }
+            super::ProviderRead::Closed => break,
+        };
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            // Surface unparseable output instead of dropping it, so a
+            // wedged or misbehaving agent is visible in the thread.
+            flush_deltas(&mut delta_buffer);
+            if let Some((thread_id, turn_id, _, _)) = event_context.as_ref() {
+                emit(
+                    "cursor-event",
+                    json!({
+                        "threadId": thread_id, "turnId": turn_id,
+                        "message": { "type": "stderr", "line": format!("Unparseable Cursor Agent output: {line}") }
+                    }),
+                );
+            }
+            continue;
+        };
+        if let Some(id) = message.get("id").and_then(Value::as_i64) {
+            if message.get("result").is_some() || message.get("error").is_some() {
+                // A settled request can trigger turn completion handling;
+                // deliver buffered updates first so order is preserved.
+                flush_deltas(&mut delta_buffer);
+                if let Some(sender) = process.pending.lock().await.remove(&id) {
+                    let result = if let Some(error) = message.get("error") {
+                        Err(error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Cursor Agent request failed")
+                            .to_string())
+                    } else {
+                        Ok(message.get("result").cloned().unwrap_or(Value::Null))
+                    };
+                    let _ = sender.send(result);
+                }
+                continue;
+            }
+        }
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        // Replies written from here are bounded like every other input; a
+        // failed write retires the transport, which then ends this loop.
+        if method == "session/request_permission" {
+            flush_deltas(&mut delta_buffer);
+            let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+            if let (Some(id), Some((thread_id, turn_id, permission, interactive))) =
+                (message.get("id").cloned(), event_context.as_ref())
+            {
+                if let Some(result) = automatic_permission_result(permission, *interactive, &params)
+                {
+                    let _ = process.respond(id, result).await;
+                } else {
+                    // Record the id (before emitting) so the response
+                    // command can verify it targets a live request.
+                    process.server_requests.lock().await.insert(id.to_string());
+                    emit(
+                        "cursor-event",
+                        json!({
+                            "threadId": thread_id, "turnId": turn_id,
+                            "message": { "type": "permission_request", "requestId": id, "params": params }
+                        }),
+                    );
+                }
+            }
+            continue;
+        }
+        if method == "cursor/ask_question" {
+            flush_deltas(&mut delta_buffer);
+            if let (Some(id), Some((thread_id, turn_id, _, interactive))) =
+                (message.get("id").cloned(), event_context.as_ref())
+            {
+                if *interactive {
+                    process.server_requests.lock().await.insert(id.to_string());
+                    emit(
+                        "cursor-event",
+                        json!({
+                            "threadId": thread_id, "turnId": turn_id,
+                            "message": { "type": "cursor_request", "method": method, "requestId": id, "params": message.get("params").cloned().unwrap_or(Value::Null) }
+                        }),
+                    );
+                } else {
+                    let _ = process.write_value(&unattended_question_error(id)).await;
+                }
+            }
+            continue;
+        }
+        if method == "cursor/create_plan" {
+            flush_deltas(&mut delta_buffer);
+            if let Some((thread_id, turn_id, _, _)) = event_context.as_ref().filter(|_| {
+                visible_cursor_notification(method, process.prompt_started.load(Ordering::Acquire))
+            }) {
+                emit(
+                    "cursor-event",
+                    json!({
+                        "threadId": thread_id, "turnId": turn_id,
+                        "message": { "type": "notification", "method": method, "params": message.get("params").cloned().unwrap_or(Value::Null) }
+                    }),
+                );
+            }
+            if let Some(id) = message.get("id").cloned() {
+                let _ = process.respond(id, json!({ "accepted": true })).await;
+            }
+            continue;
+        }
+        if message.get("id").is_some() && message.get("method").is_some() {
+            flush_deltas(&mut delta_buffer);
+            if let Some(id) = message.get("id").cloned() {
+                let _ = process.write_value(&json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32601, "message": format!("Mythra Code does not support Cursor request `{method}` yet") }
+                })).await;
+            }
+            continue;
+        }
+        if let Some((thread_id, turn_id, _, _)) = event_context.as_ref().filter(|_| {
+            visible_cursor_notification(method, process.prompt_started.load(Ordering::Acquire))
+        }) {
+            let event = json!({
+                "threadId": thread_id, "turnId": turn_id,
+                "message": { "type": "notification", "method": method, "params": message.get("params").cloned().unwrap_or(Value::Null) }
+            });
+            // Ready lines win the deadline race during a continuous stream,
+            // so the flush thresholds are checked after each append.
+            if delta_buffer.push(event, line.len(), Instant::now()) {
+                flush_deltas(&mut delta_buffer);
+            }
+        }
+    }
+    flush_deltas(&mut delta_buffer);
+    let was_alive = process.alive.swap(false, Ordering::AcqRel);
+    // Closing admission and reading whether a prompt was admitted is one
+    // step, so exactly one terminal event reports this exit: the run's own,
+    // once its prompts settle with the error below, or this one.
+    let prompt_admitted = process.run.close();
+    fail_pending(
+        &process.pending,
+        if was_alive {
+            CURSOR_EXITED_EARLY
+        } else {
+            "Cursor Agent connection closed"
+        },
+    )
+    .await;
+    if was_alive && !prompt_admitted {
+        process
+            .emit_turn_message(json!({ "type": "openkiwi_exit", "message": CURSOR_EXITED_EARLY }));
+    }
+    if timeout(
+        Duration::from_secs(5),
+        super::direct_child_exit(process.child.clone()),
+    )
+    .await
+    .is_err()
+    {
+        process.terminate().await;
+    }
+    // A descendant can hold stderr open too; it is diagnostic, not lifecycle.
+    if let Some(stderr_task) = stderr_task {
+        super::finish_stderr_reader(stderr_task).await;
+    }
 }
 
 async fn initialize_cursor(process: &CursorProcess) -> Result<Value, String> {
@@ -1105,7 +1593,7 @@ pub async fn cursor_models(app: AppHandle) -> Result<Vec<CursorModel>, String> {
     tokio::fs::create_dir_all(&workspace)
         .await
         .map_err(|error| format!("Could not create Mythra Code app data: {error}"))?;
-    let process = spawn_cursor_process(&app, &workspace, None).await?;
+    let process = spawn_cursor_process(&app, &workspace, None, None).await?;
     let result = async {
         initialize_cursor(&process).await?;
         let response = process
@@ -1207,6 +1695,13 @@ pub async fn cursor_turn_start(
     agent_state: State<'_, ChildAgentState>,
     options: CursorTurnOptions,
 ) -> Result<CursorTurnStarted, String> {
+    if options
+        .start_request_id
+        .as_ref()
+        .is_some_and(|id| id.is_empty() || id.len() > 128)
+    {
+        return Err("Invalid Cursor start request identity.".into());
+    }
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
         return Err("Choose a valid project folder before starting this Cursor thread.".into());
     }
@@ -1250,6 +1745,7 @@ pub async fn cursor_turn_start(
             options.permission.clone(),
             options.interactive,
         )),
+        options.start_request_id.as_deref(),
     )
     .await?;
     if !super::claim_turn_slot(&state.turns, &options.thread_id, &process, |existing| {
@@ -1320,7 +1816,16 @@ pub async fn cursor_turn_start(
         Ok::<_, String>((session_id, blocks))
     }
     .await;
-    let (session_id, blocks) = match start_result {
+    // Admission fails only if the process already ended or was stopped.
+    let start_result = start_result.and_then(|started| {
+        process.prompt_started.store(true, Ordering::Release);
+        if let Some(input) = process.run.admit_primary() {
+            Ok((started, input))
+        } else {
+            Err("Cursor Agent stopped before the turn started.".to_string())
+        }
+    });
+    let ((session_id, blocks), input) = match start_result {
         Ok(value) => value,
         Err(error) => {
             let mut turns = state.turns.lock().await;
@@ -1336,59 +1841,14 @@ pub async fn cursor_turn_start(
         }
     };
 
-    let app_for_prompt = app.clone();
-    let thread_id = options.thread_id.clone();
-    let turn_id_for_prompt = turn_id.clone();
-    let turns = state.turns.clone();
-    let process_for_prompt = process.clone();
-    let prompt_session_id = session_id.clone();
-    process.prompt_started.store(true, Ordering::Release);
-    process.active_prompts.fetch_add(1, Ordering::AcqRel);
-    tauri::async_runtime::spawn(async move {
-        let result = process_for_prompt
-            .request(
-                "session/prompt",
-                json!({ "sessionId": prompt_session_id, "prompt": blocks }),
-            )
-            .await;
-        match result {
-            Ok(result) => {
-                let _ = app_for_prompt.emit(
-                    "cursor-event",
-                    json!({
-                        "threadId": thread_id, "turnId": turn_id_for_prompt,
-                        "message": { "type": "result", "result": result }
-                    }),
-                );
-            }
-            Err(error) => {
-                let _ = app_for_prompt.emit(
-                    "cursor-event",
-                    json!({
-                        "threadId": thread_id, "turnId": turn_id_for_prompt,
-                        "message": { "type": "openkiwi_error", "message": error }
-                    }),
-                );
-            }
-        }
-        // A steer queued behind this prompt is still running on the same
-        // session; only the last outstanding prompt tears the process down.
-        if process_for_prompt
-            .active_prompts
-            .fetch_sub(1, Ordering::AcqRel)
-            == 1
-        {
-            process_for_prompt.alive.store(false, Ordering::Release);
-            process_for_prompt.shutdown().await;
-            let mut turns = turns.lock().await;
-            if turns
-                .get(&thread_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &process_for_prompt))
-            {
-                turns.remove(&thread_id);
-            }
-        }
-    });
+    spawn_cursor_prompt(
+        process,
+        state.turns.clone(),
+        CursorPromptKind::Primary,
+        input,
+        session_id.clone(),
+        blocks,
+    );
 
     Ok(CursorTurnStarted {
         turn_id,
@@ -1398,7 +1858,6 @@ pub async fn cursor_turn_start(
 
 #[tauri::command]
 pub async fn cursor_turn_steer(
-    app: AppHandle,
     state: State<'_, CursorState>,
     thread_id: String,
     prompt: String,
@@ -1417,54 +1876,29 @@ pub async fn cursor_turn_steer(
         .await
         .clone()
         .ok_or("Cursor session is still starting")?;
-    let turn_for_prompt = turn.clone();
-    let turns_for_prompt = state.turns.clone();
-    let blocks = cursor_prompt_blocks_for(&prompt, "", &attachments, turn.wsl).await?;
-    turn.active_prompts.fetch_add(1, Ordering::AcqRel);
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = turn_for_prompt
-            .request(
-                "session/prompt",
-                json!({
-                    "sessionId": session_id,
-                    "prompt": blocks
-                }),
-            )
-            .await
-        {
-            // A dropped steer means the user's guidance never reached the
-            // agent; surface it instead of failing silently.
-            let _ = app.emit(
-                "cursor-event",
-                json!({
-                    "threadId": thread_id,
-                    "turnId": turn_for_prompt.turn_id.clone().unwrap_or_default(),
-                    "message": {
-                        "type": "openkiwi_error",
-                        "message": format!("Cursor did not accept the added instructions: {error}"),
-                    }
-                }),
-            );
-        }
-        // The primary prompt increments before any steer can exist, so a
-        // count reaching zero here means it already settled and skipped its
-        // teardown; this steer inherits that duty.
-        if turn_for_prompt
-            .active_prompts
-            .fetch_sub(1, Ordering::AcqRel)
-            == 1
-        {
-            turn_for_prompt.alive.store(false, Ordering::Release);
-            turn_for_prompt.shutdown().await;
-            let mut turns = turns_for_prompt.lock().await;
-            if turns
-                .get(&thread_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &turn_for_prompt))
-            {
-                turns.remove(&thread_id);
+    // Join the run before reading attachments, so the primary prompt cannot
+    // end the turn while this steer is being prepared. Once admitted, the
+    // steer's outcome is part of the run's single terminal event.
+    let input = turn.run.admit_steer()?;
+    let blocks = match cursor_prompt_blocks_for(&prompt, "", &attachments, turn.wsl).await {
+        Ok(blocks) => blocks,
+        Err(error) => {
+            // Never sent: withdraw it, finishing the run if it was the last.
+            drop(input);
+            if let Some(outcomes) = turn.run.settle(None) {
+                finish_cursor_run(&turn, &state.turns, outcomes).await;
             }
+            return Err(error);
         }
-    });
+    };
+    spawn_cursor_prompt(
+        turn,
+        state.turns.clone(),
+        CursorPromptKind::Steer,
+        input,
+        session_id,
+        blocks,
+    );
     Ok(())
 }
 
@@ -1573,6 +2007,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cursor_start_identity_tags_single_and_batched_envelopes_without_changing_messages() {
+        let recorded: Arc<StdMutex<Vec<(String, Value)>>> = Arc::default();
+        let emit: CursorEmit = Arc::new({
+            let recorded = recorded.clone();
+            move |event, payload| recorded.lock().unwrap().push((event.into(), payload))
+        });
+        let emit = with_cursor_start_id(emit, Some("new-intent".into()));
+        let one = json!({ "threadId": "t", "turnId": "native-1", "message": { "type": "permission_request", "requestId": 7 } });
+        let two = json!({ "threadId": "t", "turnId": "native-1", "message": { "type": "result", "result": {} } });
+        emit("cursor-event", one.clone());
+        emit("cursor-events", json!([one.clone(), two.clone()]));
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded[0].1["startRequestId"], "new-intent");
+        assert_eq!(recorded[0].1["message"], one["message"]);
+        let batch = recorded[1].1.as_array().unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0]["startRequestId"], "new-intent");
+        assert_eq!(batch[1]["startRequestId"], "new-intent");
+        assert_eq!(batch[0]["message"], one["message"]);
+        assert_eq!(batch[1]["message"], two["message"]);
+    }
+
+    #[test]
+    fn cursor_start_identity_remains_optional_for_catalog_and_legacy_callers() {
+        let recorded: Arc<StdMutex<Vec<Value>>> = Arc::default();
+        let emit: CursorEmit = Arc::new({
+            let recorded = recorded.clone();
+            move |_, payload| recorded.lock().unwrap().push(payload)
+        });
+        let emit = with_cursor_start_id(emit, None);
+        let payload = json!({ "threadId": "t", "turnId": "old", "message": { "type": "result" } });
+        emit("cursor-event", payload.clone());
+        assert_eq!(recorded.lock().unwrap()[0], payload);
+    }
+
+    #[test]
     fn parses_cursor_about_fields() {
         let output = "About Cursor CLI\n\nCLI Version         2026.07.23\nSubscription Tier   Pro\nUser Email          person@example.com\n";
         assert_eq!(
@@ -1654,6 +2124,957 @@ mod tests {
         ] }));
         assert_eq!(models.len(), 2);
         assert!(models.iter().any(|model| model.name == "Grok 4.5"));
+    }
+
+    fn outcome(kind: CursorPromptKind, result: Result<Value, &str>) -> CursorPromptOutcome {
+        CursorPromptOutcome {
+            kind,
+            result: result.map_err(str::to_string),
+        }
+    }
+
+    #[test]
+    fn steer_keeps_the_run_open_until_every_admitted_prompt_settles() {
+        let run = CursorPromptRun::default();
+        assert!(run.admit_steer().unwrap_err().contains("starting"));
+        assert!(run.admit_primary().is_some());
+        assert!(run.admit_primary().is_none());
+        run.admit_steer().unwrap();
+        // The primary settling first must not end the turn under the steer.
+        assert!(run
+            .settle(Some(outcome(
+                CursorPromptKind::Primary,
+                Ok(json!({ "stopReason": "end_turn" }))
+            )))
+            .is_none());
+        // The run is still open, so a further steer joins it.
+        run.admit_steer().unwrap();
+        assert!(run.settle(None).is_none(), "a withdrawn steer is not last");
+        let outcomes = run
+            .settle(Some(outcome(
+                CursorPromptKind::Steer,
+                Ok(json!({ "stopReason": "end_turn" })),
+            )))
+            .expect("the last settle finishes the run");
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].kind, CursorPromptKind::Primary);
+        assert!(run.admit_steer().unwrap_err().contains("finished"));
+        assert!(run.settle(None).is_none(), "a run never finishes twice");
+    }
+
+    #[test]
+    fn withdrawn_last_steer_finishes_with_the_primary_outcome() {
+        let run = CursorPromptRun::default();
+        assert!(run.admit_primary().is_some());
+        run.admit_steer().unwrap();
+        assert!(run
+            .settle(Some(outcome(CursorPromptKind::Primary, Ok(json!({})))))
+            .is_none());
+        let outcomes = run.settle(None).expect("withdrawal of the last prompt");
+        assert_eq!(outcomes.len(), 1);
+    }
+
+    #[test]
+    fn closed_run_refuses_steers_but_admitted_prompts_still_report() {
+        let run = CursorPromptRun::default();
+        assert!(!CursorPromptRun::default().close());
+        assert!(run.admit_primary().is_some());
+        run.admit_steer().unwrap();
+        assert!(run.close(), "a prompt was admitted");
+        assert!(run.admit_steer().is_err());
+        assert!(run.admit_primary().is_none());
+        assert!(run
+            .settle(Some(outcome(CursorPromptKind::Primary, Err("stopped"))))
+            .is_none());
+        assert!(run
+            .settle(Some(outcome(CursorPromptKind::Steer, Err("stopped"))))
+            .is_some());
+    }
+
+    #[test]
+    fn racing_steer_admission_and_completion_finishes_exactly_once() {
+        for _ in 0..500 {
+            let run = Arc::new(CursorPromptRun::default());
+            assert!(run.admit_primary().is_some());
+            let primary = std::thread::spawn({
+                let run = run.clone();
+                move || run.settle(Some(outcome(CursorPromptKind::Primary, Ok(json!(1)))))
+            });
+            let steer = std::thread::spawn({
+                let run = run.clone();
+                move || match run.admit_steer() {
+                    Ok(_input) => (
+                        true,
+                        run.settle(Some(outcome(CursorPromptKind::Steer, Ok(json!(2))))),
+                    ),
+                    Err(_) => (false, None),
+                }
+            });
+            let primary = primary.join().unwrap();
+            let (admitted, steer) = steer.join().unwrap();
+            let finals: Vec<_> = [primary, steer].into_iter().flatten().collect();
+            assert_eq!(finals.len(), 1, "exactly one finisher");
+            // An admitted steer always belongs to the run that finishes.
+            assert_eq!(finals[0].len(), if admitted { 2 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn final_message_reports_every_prompt_once() {
+        let single = cursor_final_message(vec![outcome(
+            CursorPromptKind::Primary,
+            Ok(json!({ "stopReason": "end_turn" })),
+        )]);
+        assert_eq!(single["type"], "result");
+        assert_eq!(single["result"]["stopReason"], "end_turn");
+        assert!(single.get("promptResults").is_none());
+
+        let steered = cursor_final_message(vec![
+            outcome(
+                CursorPromptKind::Primary,
+                Ok(json!({ "stopReason": "cancelled" })),
+            ),
+            outcome(
+                CursorPromptKind::Steer,
+                Ok(json!({ "stopReason": "end_turn" })),
+            ),
+        ]);
+        assert_eq!(steered["type"], "result");
+        assert_eq!(steered["result"]["stopReason"], "end_turn");
+        assert_eq!(steered["promptResults"].as_array().unwrap().len(), 2);
+
+        let rejected = cursor_final_message(vec![
+            outcome(CursorPromptKind::Steer, Err("busy")),
+            outcome(
+                CursorPromptKind::Primary,
+                Ok(json!({ "stopReason": "end_turn" })),
+            ),
+        ]);
+        assert_eq!(rejected["type"], "openkiwi_error");
+        assert_eq!(
+            rejected["message"],
+            "Cursor did not accept the added instructions: busy"
+        );
+        assert_eq!(rejected["promptResults"].as_array().unwrap().len(), 1);
+
+        let exited = cursor_final_message(vec![
+            outcome(CursorPromptKind::Primary, Err(CURSOR_EXITED_EARLY)),
+            outcome(CursorPromptKind::Steer, Err(CURSOR_EXITED_EARLY)),
+        ]);
+        assert_eq!(exited["message"], CURSOR_EXITED_EARLY);
+        assert!(exited.get("promptResults").is_none());
+    }
+
+    /// Cross-platform fake agents: the test binary re-run as a fixture (see
+    /// `provider_runtime_tests::provider_fixture`). No provider is contacted.
+    mod fake_process {
+        use super::*;
+        use crate::provider_runtime_tests::{
+            Fixture, FIXTURE_FINAL, FIXTURE_HOLDER, FIXTURE_READ_FIRST,
+        };
+        use std::sync::{OnceLock, Weak};
+
+        type Events = Arc<StdMutex<Vec<(String, Value)>>>;
+
+        fn recording_emit() -> (CursorEmit, Events) {
+            let events: Events = Arc::default();
+            let sink = events.clone();
+            let emit: CursorEmit = Arc::new(move |event: &str, payload: Value| {
+                sink.lock().unwrap().push((event.to_string(), payload));
+            });
+            (emit, events)
+        }
+
+        fn attach(
+            mut command: tokio::process::Command,
+            emit: CursorEmit,
+            input_timeout: Duration,
+        ) -> Arc<CursorProcess> {
+            let child = command.spawn().expect("spawn fake Cursor Agent");
+            attach_cursor_process(
+                child,
+                false,
+                Some(("thread".into(), "turn".into(), "full".into(), true)),
+                emit,
+                input_timeout,
+            )
+            .unwrap()
+        }
+
+        fn fake_agent(
+            fixture: &Fixture,
+            mode: &str,
+            input_timeout: Duration,
+        ) -> (Arc<CursorProcess>, Events) {
+            let (emit, events) = recording_emit();
+            (attach(fixture.command(mode), emit, input_timeout), events)
+        }
+
+        /// Renderer messages in emission order, with batches flattened.
+        fn messages(events: &Events) -> Vec<Value> {
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|(name, payload)| match name.as_str() {
+                    "cursor-events" => payload.as_array().unwrap().clone(),
+                    _ => vec![payload.clone()],
+                })
+                .map(|payload| payload["message"].clone())
+                .collect()
+        }
+
+        fn is_terminal(message: &Value) -> bool {
+            matches!(
+                message["type"].as_str(),
+                Some("result" | "openkiwi_error" | "openkiwi_exit")
+            )
+        }
+
+        async fn wait_until(condition: impl Fn() -> bool, limit: Duration) {
+            timeout(limit, async {
+                while !condition() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("condition reached in time");
+        }
+
+        fn huge_message() -> Value {
+            json!({ "blob": "x".repeat(2 * 1024 * 1024) })
+        }
+
+        async fn exited(process: &CursorProcess) -> bool {
+            process.child.lock().await.try_wait().unwrap().is_some()
+        }
+
+        #[test]
+        fn admitted_steer_cannot_write_before_a_delayed_primary() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, events) = fake_agent(&fixture, "read-one", CURSOR_INPUT_TIMEOUT);
+                let turns: CursorTurns = Arc::default();
+                turns.lock().await.insert("thread".into(), process.clone());
+                let (release, gate) = oneshot::channel();
+                let entered = Arc::new(AtomicBool::new(false));
+                *process.primary_start_gate.lock().unwrap() = Some((gate, entered.clone()));
+                let primary_input = process.run.admit_primary().unwrap();
+                let primary = spawn_cursor_prompt(
+                    process.clone(),
+                    turns.clone(),
+                    CursorPromptKind::Primary,
+                    primary_input,
+                    "session".into(),
+                    vec![json!({ "type": "text", "text": "original prompt" })],
+                );
+                wait_until(|| entered.load(Ordering::Acquire), Duration::from_secs(5)).await;
+                let steer_input = process.run.admit_steer().unwrap();
+                let steer = spawn_cursor_prompt(
+                    process.clone(),
+                    turns,
+                    CursorPromptKind::Steer,
+                    steer_input,
+                    "session".into(),
+                    vec![json!({ "type": "text", "text": "added instructions" })],
+                );
+                let consumed_before_primary = timeout(Duration::from_millis(500), async {
+                    loop {
+                        if messages(&events).iter().any(|message| {
+                            message["line"].as_str().is_some_and(|line| {
+                                line.contains(crate::provider_runtime_tests::FIXTURE_CONSUMED)
+                            })
+                        }) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .is_ok();
+                let _ = release.send(());
+                process.shutdown().await;
+                timeout(Duration::from_secs(5), primary)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                timeout(Duration::from_secs(5), steer)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    !consumed_before_primary,
+                    "the child consumed the steer while the primary had not started its request"
+                );
+            });
+        }
+
+        #[test]
+        fn force_stop_kills_before_waiting_for_a_blocked_input_write() {
+            tauri::async_runtime::block_on(async {
+                // Never reads stdin: a large message fills the pipe and its
+                // writer blocks while holding the input lock.
+                let fixture = Fixture::new();
+                let (process, _) = fake_agent(&fixture, "no-read", Duration::from_secs(30));
+                let writer = tauri::async_runtime::spawn({
+                    let process = process.clone();
+                    async move { process.write_value(&huge_message()).await }
+                });
+                wait_until(|| process.stdin.try_lock().is_err(), Duration::from_secs(5)).await;
+                assert!(process.stdin.try_lock().is_err(), "writer holds input");
+                timeout(Duration::from_secs(5), process.shutdown())
+                    .await
+                    .expect("Stop must not wait behind the input pipe");
+                assert!(!process.alive.load(Ordering::Acquire));
+                assert!(exited(&process).await);
+                let written = timeout(Duration::from_secs(5), writer)
+                    .await
+                    .expect("the blocked writer fails once the agent is killed")
+                    .unwrap();
+                assert!(written.is_err());
+            });
+        }
+
+        fn spawn_admitted(
+            process: &Arc<CursorProcess>,
+            turns: &CursorTurns,
+            kind: CursorPromptKind,
+            input: CursorPromptInputTicket,
+            text: &str,
+        ) -> tauri::async_runtime::JoinHandle<()> {
+            spawn_cursor_prompt(
+                process.clone(),
+                turns.clone(),
+                kind,
+                input,
+                "session".into(),
+                vec![json!({ "type": "text", "text": text })],
+            )
+        }
+
+        fn echoes(events: &Events) -> Vec<String> {
+            messages(events)
+                .iter()
+                .filter_map(|message| message["params"]["echo"].as_str().map(str::to_owned))
+                .collect()
+        }
+
+        #[test]
+        fn steer_writes_keep_admission_order_when_preparation_finishes_in_reverse() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, events) = fake_agent(&fixture, "acp-echo", CURSOR_INPUT_TIMEOUT);
+                process.prompt_started.store(true, Ordering::Release);
+                let turns: CursorTurns = Arc::default();
+                let primary_input = process.run.admit_primary().unwrap();
+                // The first steer is admitted before its attachments finish.
+                let first_input = process.run.admit_steer().unwrap();
+                let second_input = process.run.admit_steer().unwrap();
+                let primary = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Primary,
+                    primary_input,
+                    "original",
+                );
+                let second = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Steer,
+                    second_input,
+                    "second",
+                );
+                wait_until(|| !echoes(&events).is_empty(), Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let before_first_prepared = echoes(&events);
+                let first = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Steer,
+                    first_input,
+                    "first",
+                );
+                wait_until(|| echoes(&events).len() == 3, Duration::from_secs(5)).await;
+                let written = echoes(&events);
+                process.shutdown().await;
+                for prompt in [primary, first, second] {
+                    timeout(Duration::from_secs(5), prompt)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                }
+                assert_eq!(before_first_prepared, ["original"]);
+                assert_eq!(written, ["original", "first", "second"]);
+            });
+        }
+
+        #[test]
+        fn failed_middle_preparation_does_not_skip_a_blocked_primary_or_hold_later_steers() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, events) = fake_agent(&fixture, "acp-echo", CURSOR_INPUT_TIMEOUT);
+                process.prompt_started.store(true, Ordering::Release);
+                let turns: CursorTurns = Arc::default();
+                let (release, gate) = oneshot::channel();
+                let entered = Arc::new(AtomicBool::new(false));
+                *process.primary_start_gate.lock().unwrap() = Some((gate, entered.clone()));
+                let primary_input = process.run.admit_primary().unwrap();
+                let failed_input = process.run.admit_steer().unwrap();
+                let later_input = process.run.admit_steer().unwrap();
+                let primary = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Primary,
+                    primary_input,
+                    "original",
+                );
+                wait_until(|| entered.load(Ordering::Acquire), Duration::from_secs(5)).await;
+                let later = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Steer,
+                    later_input,
+                    "later",
+                );
+                let missing =
+                    env::temp_dir().join(format!("mythra-missing-{}.png", uuid::Uuid::new_v4()));
+                let prepared = cursor_prompt_blocks_for(
+                    "failed",
+                    "",
+                    &[CursorAttachment {
+                        path: missing.to_string_lossy().into_owned(),
+                        kind: "image".into(),
+                    }],
+                    false,
+                )
+                .await;
+                assert!(prepared.is_err());
+                drop(failed_input);
+                assert!(process.run.settle(None).is_none());
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let before_primary = echoes(&events);
+                let _ = release.send(());
+                wait_until(|| echoes(&events).len() == 2, Duration::from_secs(5)).await;
+                let written = echoes(&events);
+                process.shutdown().await;
+                for prompt in [primary, later] {
+                    timeout(Duration::from_secs(5), prompt)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                }
+                assert!(before_primary.is_empty());
+                assert_eq!(written, ["original", "later"]);
+            });
+        }
+
+        #[test]
+        fn stop_wakes_a_queued_steer_before_its_primary_is_ready_to_write() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, _) = fake_agent(&fixture, "no-read", CURSOR_INPUT_TIMEOUT);
+                let turns: CursorTurns = Arc::default();
+                let (release, gate) = oneshot::channel();
+                let entered = Arc::new(AtomicBool::new(false));
+                *process.primary_start_gate.lock().unwrap() = Some((gate, entered.clone()));
+                let primary_input = process.run.admit_primary().unwrap();
+                let steer_input = process.run.admit_steer().unwrap();
+                let primary = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Primary,
+                    primary_input,
+                    "original",
+                );
+                wait_until(|| entered.load(Ordering::Acquire), Duration::from_secs(5)).await;
+                let steer = spawn_admitted(
+                    &process,
+                    &turns,
+                    CursorPromptKind::Steer,
+                    steer_input,
+                    "later",
+                );
+                assert!(process.pending.lock().await.is_empty());
+                timeout(Duration::from_secs(5), process.shutdown())
+                    .await
+                    .unwrap();
+                // This must settle even though no pending ACP sender was registered.
+                let queued_settled = timeout(Duration::from_secs(2), steer).await;
+                let _ = release.send(());
+                timeout(Duration::from_secs(5), primary)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                queued_settled
+                    .expect("Stop wakes the unregistered input waiter")
+                    .unwrap();
+            });
+        }
+
+        /// Bounded phase diagnostics for a native fake-process test. If the
+        /// test panics or outlives `limit`, its own phases, the transport's
+        /// test-only stage log, and a non-blocking state snapshot go straight
+        /// to stderr (bypassing output capture). Past the limit, an OS thread
+        /// that does not depend on the async runtime ends the test process
+        /// with code 86 instead of letting it hang. A runtime heartbeat tells
+        /// a stalled async runtime apart from an await that never completes.
+        struct Diagnostics {
+            steps: Arc<StdMutex<Vec<(std::time::Instant, &'static str)>>>,
+            finished: Arc<AtomicBool>,
+            heartbeat: tauri::async_runtime::JoinHandle<()>,
+            report: Arc<dyn Fn() -> String + Send + Sync>,
+        }
+
+        impl Diagnostics {
+            fn arm(
+                name: &'static str,
+                limit: Duration,
+                process: &Arc<CursorProcess>,
+                events: &Events,
+            ) -> Self {
+                let started = std::time::Instant::now();
+                let steps: Arc<StdMutex<Vec<(std::time::Instant, &'static str)>>> = Arc::default();
+                let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let heartbeat = tauri::async_runtime::spawn({
+                    let ticks = ticks.clone();
+                    async move {
+                        loop {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            ticks.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+                let report: Arc<dyn Fn() -> String + Send + Sync> = Arc::new({
+                    let steps = steps.clone();
+                    let process = process.clone();
+                    let events = events.clone();
+                    move || {
+                        let elapsed = started.elapsed();
+                        let at = |instant: &std::time::Instant| {
+                            instant.saturating_duration_since(started).as_millis()
+                        };
+                        let steps = match steps.try_lock() {
+                            Ok(steps) => steps
+                                .iter()
+                                .map(|(instant, step)| format!("{:>7}ms {step}", at(instant)))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            Err(_) => "(test steps busy)".into(),
+                        };
+                        let stdin = if process.stdin.try_lock().is_ok() {
+                            "free"
+                        } else {
+                            "held by a writer"
+                        };
+                        let pending = process
+                            .pending
+                            .try_lock()
+                            .map(|pending| pending.len().to_string())
+                            .unwrap_or_else(|_| "locked".into());
+                        let child = match process.child.try_lock() {
+                            Ok(mut child) => match child.try_wait() {
+                                Ok(Some(status)) => format!("exited ({status})"),
+                                Ok(None) => "running".into(),
+                                Err(error) => format!("unknown ({error})"),
+                            },
+                            Err(_) => "locked".into(),
+                        };
+                        let recent = events
+                            .try_lock()
+                            .map(|events| {
+                                events
+                                    .iter()
+                                    .rev()
+                                    .take(6)
+                                    .map(|(event, payload)| {
+                                        let line: String = payload["message"]["line"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .chars()
+                                            .take(100)
+                                            .collect();
+                                        format!(
+                                            "{event} {} {line}",
+                                            payload["message"]["type"].as_str().unwrap_or("-")
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .unwrap_or_else(|_| "(events busy)".into());
+                        format!(
+                            "[{name}] after {}ms; runtime heartbeat {} of ~{} ticks\n\
+                             alive={} stdin={stdin} pending={pending} child={child}\n\
+                             test steps:\n{steps}\ntransport stages:\n{}\n\
+                             recent events (newest first):\n{recent}\n",
+                            elapsed.as_millis(),
+                            ticks.load(Ordering::Relaxed),
+                            elapsed.as_millis() / 100,
+                            process.alive.load(Ordering::Acquire),
+                            process.stages.snapshot(started),
+                        )
+                    }
+                });
+                let finished = Arc::new(AtomicBool::new(false));
+                std::thread::spawn({
+                    let finished = finished.clone();
+                    let report = report.clone();
+                    move || {
+                        while started.elapsed() < limit {
+                            if finished.load(Ordering::Acquire) {
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        let message = format!(
+                            "\n[{name}] watchdog: not finished within {limit:?}\n{}",
+                            report()
+                        );
+                        let _ =
+                            std::io::Write::write_all(&mut std::io::stderr(), message.as_bytes());
+                        std::process::exit(86);
+                    }
+                });
+                Self {
+                    steps,
+                    finished,
+                    heartbeat,
+                    report,
+                }
+            }
+
+            fn step(&self, step: &'static str) {
+                self.steps
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((std::time::Instant::now(), step));
+            }
+        }
+
+        impl Drop for Diagnostics {
+            fn drop(&mut self) {
+                self.finished.store(true, Ordering::Release);
+                self.heartbeat.abort();
+                if std::thread::panicking() {
+                    let _ = std::io::Write::write_all(
+                        &mut std::io::stderr(),
+                        format!("\n{}", (self.report)()).as_bytes(),
+                    );
+                }
+            }
+        }
+
+        /// The Windows shape of a kill: `taskkill` and the reap run while the
+        /// kill path holds the child, and the transport reaches EOF meanwhile.
+        /// Once that holder is done, every later kill and reap must still get
+        /// the child; the output watcher must not have been left owning it.
+        #[test]
+        fn transport_closing_during_a_slow_kill_does_not_wedge_later_kills() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, _) = fake_agent(&fixture, "no-read", CURSOR_INPUT_TIMEOUT);
+                let mut child = process.child.lock().await;
+                // The output watcher checks the busy child at least once.
+                tokio::time::sleep(crate::PROVIDER_EXIT_POLL_INTERVAL * 2).await;
+                child.start_kill().unwrap();
+                // The reader sees EOF and ends while the child is still held.
+                wait_until(
+                    || !process.alive.load(Ordering::Acquire),
+                    Duration::from_secs(5),
+                )
+                .await;
+                drop(child);
+                timeout(Duration::from_secs(10), process.shutdown())
+                    .await
+                    .expect("a later kill must still get the child");
+                let mut child = timeout(Duration::from_secs(2), process.child.lock())
+                    .await
+                    .expect("the child lock is free after every kill path");
+                assert!(child.try_wait().unwrap().is_some());
+            });
+        }
+
+        #[test]
+        fn partial_input_retires_the_transport_and_settles_pending_requests() {
+            tauri::async_runtime::block_on(async {
+                // Reads one request, announces it, then stops reading.
+                let fixture = Fixture::new();
+                let (process, events) =
+                    fake_agent(&fixture, "read-one", Duration::from_millis(300));
+                let diagnostics =
+                    Diagnostics::arm("partial-input", Duration::from_secs(60), &process, &events);
+                diagnostics.step("fixture spawned");
+                let pending = tauri::async_runtime::spawn({
+                    let process = process.clone();
+                    async move { process.request("initialize", json!({})).await }
+                });
+                // Wait until the fixture has consumed the request, not merely
+                // until it is registered: registration precedes its write, so
+                // the large write could otherwise take the input pipe first
+                // and be read in its place.
+                wait_until(
+                    || {
+                        messages(&events).iter().any(|message| {
+                            message["line"].as_str().is_some_and(|line| {
+                                line.contains(crate::provider_runtime_tests::FIXTURE_CONSUMED)
+                            })
+                        })
+                    },
+                    Duration::from_secs(10),
+                )
+                .await;
+                diagnostics.step("fixture consumed the request and stopped reading");
+                assert_eq!(process.pending.lock().await.len(), 1);
+                let error = process.write_value(&huge_message()).await.unwrap_err();
+                diagnostics.step("large write returned");
+                assert!(error.contains("stopped reading"), "{error}");
+                let settled = timeout(Duration::from_secs(5), pending)
+                    .await
+                    .expect("waiting requests settle with the retirement")
+                    .unwrap();
+                diagnostics.step("pending request settled");
+                assert!(settled.unwrap_err().contains("input failed"));
+                assert!(!process.alive.load(Ordering::Acquire));
+                diagnostics.step("waiting for the child lock");
+                let mut child = process.child.lock().await;
+                diagnostics.step("child lock acquired");
+                let status = child.try_wait();
+                diagnostics.step("child try_wait returned");
+                assert!(status.unwrap().is_some());
+                drop(child);
+                assert!(process
+                    .write_value(&json!({}))
+                    .await
+                    .unwrap_err()
+                    .contains("no longer running"));
+                diagnostics.step("retired transport refuses input");
+            });
+        }
+
+        #[test]
+        fn steered_turn_emits_one_final_event_after_all_prompt_output() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, events) = fake_agent(&fixture, "acp-steer", CURSOR_INPUT_TIMEOUT);
+                let turns: CursorTurns = Arc::default();
+                turns.lock().await.insert("thread".into(), process.clone());
+                process.prompt_started.store(true, Ordering::Release);
+                let primary_input = process.run.admit_primary().unwrap();
+                let primary = spawn_cursor_prompt(
+                    process.clone(),
+                    turns.clone(),
+                    CursorPromptKind::Primary,
+                    primary_input,
+                    "session".into(),
+                    vec![json!({ "type": "text", "text": "start" })],
+                );
+                wait_until(
+                    || {
+                        process
+                            .pending
+                            .try_lock()
+                            .is_ok_and(|pending| pending.len() == 1)
+                    },
+                    Duration::from_secs(5),
+                )
+                .await;
+                let steer_input = process.run.admit_steer().unwrap();
+                let steer = spawn_cursor_prompt(
+                    process.clone(),
+                    turns.clone(),
+                    CursorPromptKind::Steer,
+                    steer_input,
+                    "session".into(),
+                    vec![json!({ "type": "text", "text": "steer" })],
+                );
+                timeout(Duration::from_secs(10), async {
+                    primary.await.unwrap();
+                    steer.await.unwrap();
+                })
+                .await
+                .expect("both prompts settle");
+
+                let messages = messages(&events);
+                let terminals: Vec<usize> = (0..messages.len())
+                    .filter(|index| is_terminal(&messages[*index]))
+                    .collect();
+                assert_eq!(terminals.len(), 1, "{messages:?}");
+                let primary_output = messages
+                    .iter()
+                    .position(|message| message["params"]["n"] == 1)
+                    .expect("primary output delivered");
+                let steer_output = messages
+                    .iter()
+                    .position(|message| message["params"]["n"] == 2)
+                    .expect("steer output delivered");
+                assert!(primary_output < steer_output);
+                assert!(steer_output < terminals[0], "final event after all output");
+                let final_message = &messages[terminals[0]];
+                assert_eq!(final_message["type"], "result");
+                assert_eq!(final_message["promptResults"].as_array().unwrap().len(), 2);
+                assert!(!process.alive.load(Ordering::Acquire));
+                assert!(process.run.admit_steer().is_err());
+                assert!(turns.lock().await.is_empty());
+                assert!(exited(&process).await);
+            });
+        }
+
+        #[test]
+        fn finished_run_is_retired_before_its_terminal_event_starts_a_successor() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let turns: CursorTurns = Arc::default();
+                let (successor, _) = fake_agent(&fixture, "no-read", CURSOR_INPUT_TIMEOUT);
+                let finishing: Arc<OnceLock<Weak<CursorProcess>>> = Arc::default();
+                let observed: Arc<StdMutex<Vec<(bool, bool)>>> = Arc::default();
+                // Reacts to the terminal event synchronously, the way a queued
+                // follow-up would: `cursor_turn_start` refuses a thread whose
+                // slot holds a live turn, otherwise it claims the slot.
+                let emit: CursorEmit = Arc::new({
+                    let turns = turns.clone();
+                    let successor = successor.clone();
+                    let finishing = finishing.clone();
+                    let observed = observed.clone();
+                    move |_event: &str, payload: Value| {
+                        if !is_terminal(&payload["message"]) {
+                            return;
+                        }
+                        let old = finishing.get().and_then(Weak::upgrade).unwrap();
+                        let mut slots = turns
+                            .try_lock()
+                            .expect("the turn map is not held while announcing");
+                        let claimable = !slots
+                            .get("thread")
+                            .is_some_and(|existing| existing.alive.load(Ordering::Acquire));
+                        if claimable {
+                            slots.insert("thread".into(), successor.clone());
+                        }
+                        observed
+                            .lock()
+                            .unwrap()
+                            .push((claimable, old.run.admit_steer().is_err()));
+                    }
+                });
+                let process = attach(fixture.command("acp-one"), emit, CURSOR_INPUT_TIMEOUT);
+                finishing.set(Arc::downgrade(&process)).unwrap();
+                turns.lock().await.insert("thread".into(), process.clone());
+                let primary_input = process.run.admit_primary().unwrap();
+                let prompt = spawn_cursor_prompt(
+                    process.clone(),
+                    turns.clone(),
+                    CursorPromptKind::Primary,
+                    primary_input,
+                    "session".into(),
+                    vec![json!({ "type": "text", "text": "start" })],
+                );
+                timeout(Duration::from_secs(10), prompt)
+                    .await
+                    .expect("the run finishes")
+                    .unwrap();
+                assert_eq!(
+                    *observed.lock().unwrap(),
+                    vec![(true, true)],
+                    "at its terminal event the run is neither live nor steerable"
+                );
+                // The finished run's cleanup must not evict its successor.
+                assert!(turns
+                    .lock()
+                    .await
+                    .get("thread")
+                    .is_some_and(|current| Arc::ptr_eq(current, &successor)));
+                assert!(successor.alive.load(Ordering::Acquire));
+                successor.shutdown().await;
+            });
+        }
+
+        #[test]
+        fn direct_exit_ends_the_transport_while_a_descendant_holds_output() {
+            tauri::async_runtime::block_on(async {
+                // The descendant inherits stdout and stderr and outlives the
+                // agent, so EOF would not arrive until the fixture is released.
+                let fixture = Fixture::new();
+                let mut command = fixture.command("orphan-parent");
+                command
+                    .env(FIXTURE_READ_FIRST, "1")
+                    .env(FIXTURE_HOLDER, "hold")
+                    .env(
+                        FIXTURE_FINAL,
+                        r#"{"jsonrpc":"2.0","id":1,"result":{"final":true}}"#,
+                    );
+                let (emit, events) = recording_emit();
+                let process = attach(command, emit, CURSOR_INPUT_TIMEOUT);
+                let first = timeout(
+                    Duration::from_secs(10),
+                    process.request("session/prompt", json!({})),
+                )
+                .await
+                .expect("buffered final output is delivered");
+                assert_eq!(first.unwrap()["final"], true);
+                wait_until(
+                    || !process.alive.load(Ordering::Acquire),
+                    crate::PROVIDER_EXIT_DRAIN + Duration::from_secs(5),
+                )
+                .await;
+                let second = timeout(
+                    Duration::from_secs(2),
+                    process.request("session/prompt", json!({})),
+                )
+                .await
+                .expect("later requests fail instead of hanging");
+                assert!(second.is_err());
+                // Stderr written before the exit is still reported.
+                wait_until(
+                    || {
+                        messages(&events).iter().any(|message| {
+                            message["line"] == crate::provider_runtime_tests::FIXTURE_STDERR
+                        })
+                    },
+                    Duration::from_secs(5),
+                )
+                .await;
+                let exits = messages(&events)
+                    .into_iter()
+                    .filter(|message| message["type"] == "openkiwi_exit")
+                    .count();
+                assert_eq!(exits, 1);
+            });
+        }
+
+        #[test]
+        fn ready_notification_bursts_are_emitted_in_bounded_batches() {
+            tauri::async_runtime::block_on(async {
+                let fixture = Fixture::new();
+                let (process, events) = fake_agent(&fixture, "burst", CURSOR_INPUT_TIMEOUT);
+                process.prompt_started.store(true, Ordering::Release);
+                let notifications = |events: &Events| -> Vec<i64> {
+                    messages(events)
+                        .iter()
+                        .filter(|message| message["type"] == "notification")
+                        .map(|message| message["params"]["n"].as_i64().unwrap())
+                        .collect()
+                };
+                wait_until(
+                    || notifications(&events).len() >= 1000,
+                    Duration::from_secs(10),
+                )
+                .await;
+                let batches: Vec<usize> = events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(name, _)| name == "cursor-events")
+                    .map(|(_, batch)| batch.as_array().unwrap().len())
+                    .collect();
+                assert!(
+                    batches
+                        .iter()
+                        .all(|len| *len <= crate::CODEX_DELTA_MAX_BATCH_SIZE),
+                    "{batches:?}"
+                );
+                assert_eq!(notifications(&events), (0..1000).collect::<Vec<_>>());
+                process.shutdown().await;
+            });
+        }
     }
 
     #[test]

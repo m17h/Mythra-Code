@@ -78,7 +78,7 @@ import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMess
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
 import { hasEligibleQueuedTurns } from "./lib/timedPrompts";
 import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
@@ -125,7 +125,8 @@ import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts
 import { useThreadHealth } from "./hooks/useThreadHealth";
 import { useCodexEvents } from "./hooks/useCodexEvents";
 import { useClaudeEvents } from "./hooks/useClaudeEvents";
-import { CLAUDE_USAGE_POLL_MS, nextUsageReset, useUsageRefresh } from "./hooks/useUsageRefresh";
+import { CLAUDE_USAGE_POLL_MS, nextUsageReset, useUsageRefresh, type UsageRefreshOutcome } from "./hooks/useUsageRefresh";
+import { useSkillsRefreshWatcher } from "./hooks/useSkillsRefreshWatcher";
 import { PinnedWorkspaceGroup } from "./components/PinnedWorkspaceGroup";
 import { useCursorEvents } from "./hooks/useCursorEvents";
 import { useScheduler } from "./hooks/useScheduler";
@@ -195,7 +196,7 @@ import {
 } from "./lib/childAgents";
 import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
-import { boundedNativeText, canOwnNativeThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
+import { boundedNativeText, canOwnNativeThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates, nativeArchiveActivity } from "./lib/subAgentArchive";
 import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
@@ -859,6 +860,9 @@ export default function App() {
   );
   const childThreadLinksRef = useRef(childThreadLinks);
   childThreadLinksRef.current = childThreadLinks;
+  const childThreadRootIds = useMemo(() => ownershipRootIds(childThreadLinks), [childThreadLinks]);
+  const childThreadRootIdsRef = useRef(childThreadRootIds);
+  childThreadRootIdsRef.current = childThreadRootIds;
   const childAgentLinksRef = useRef(childAgentLinks);
   childAgentLinksRef.current = childAgentLinks;
   const activeThreadHandoff = activeThreadId ? threadHandoffs[activeThreadId] : undefined;
@@ -957,10 +961,10 @@ export default function App() {
       reasoningEffort: sanitizeComposerReasoningEffort(rememberedReasoning?.reasoningEffort ?? projectSettings.reasoningEffort),
       ultra: false,
     };
-    return activeThread && isSubAgentThread(activeThread, childThreadLinks)
+    return activeThread && isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, draftThreadModel, draftSubagentSettings, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
   // Destructive Git confirmations recheck the permission visible when they finish.
   const gitPermissionRef = useRef(effectiveSettings.permission);
   gitPermissionRef.current = effectiveSettings.permission;
@@ -1025,7 +1029,7 @@ export default function App() {
     ? activeChildAgentPolicy
     : undefined;
   /** This conversation is itself a sub-agent, so it may never delegate. */
-  const activeThreadIsChild = Boolean(activeThread && isSubAgentThread(activeThread, childThreadLinks));
+  const activeThreadIsChild = Boolean(activeThread && isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds));
   /** A captured thread keeps its own roster; activity decides whether the
    * command center may stage a replacement for the next turn. */
   const subagentPolicyMode = useMemo<SubAgentPolicyMode>(() => {
@@ -1249,29 +1253,9 @@ export default function App() {
   // Standard approvals for the thread being viewed render inline in its
   // timeline; the modal is reserved for background threads and for complex
   // input/elicitation forms.
-  const inlineApproval = useTaskStore((state) => {
-    if (!state.activeThreadId) return null;
-    const candidate = state.tasks[state.activeThreadId]?.approvals.find((entry) => !(entry.method === "item/tool/requestUserInput" && entry.params.isBlocking === false)) ?? null;
-    if (!candidate) return null;
-    if ((candidate.method === "claude/can_use_tool" && candidate.params.tool_name === "AskUserQuestion") || candidate.method === "item/tool/requestUserInput" || candidate.method === "cursor/ask_question" || candidate.method === "mcpServer/elicitation/request") return null;
-    return candidate;
-  });
-  const pendingApproval = useTaskStore((state) => {
-    let earliest: PendingApproval | null = null;
-    for (const task of Object.values(state.tasks)) {
-      const candidate = task.approvals.find((entry) => !(entry.method === "item/tool/requestUserInput" && entry.params.isBlocking === false));
-      if (!candidate) continue;
-      const handledInline = candidate.threadId === state.activeThreadId && !(candidate.method === "claude/can_use_tool" && candidate.params.tool_name === "AskUserQuestion") && candidate.method !== "item/tool/requestUserInput" && candidate.method !== "cursor/ask_question" && candidate.method !== "mcpServer/elicitation/request";
-      if (handledInline) continue;
-      if (!earliest || candidate.receivedAt < earliest.receivedAt) earliest = candidate;
-    }
-    return earliest;
-  });
-  const pendingApprovalCount = useTaskStore((state) => {
-    let count = 0;
-    for (const task of Object.values(state.tasks)) count += task.approvals.filter((entry) => !(entry.method === "item/tool/requestUserInput" && entry.params.isBlocking === false)).length;
-    return count;
-  });
+  const inlineApproval = useTaskStore(selectInlineApproval);
+  const pendingApproval = useTaskStore(selectPendingApproval);
+  const pendingApprovalCount = useTaskStore(selectPendingApprovalCount);
   const projectThreadCounts = countActiveThreadsByWorkspace(
     knownThreadsRef.current ?? {},
     threadProjectBindingsRef.current ?? {},
@@ -1298,8 +1282,9 @@ export default function App() {
       filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindingsRef.current ?? {}),
       childThreadLinks,
       threadKindView,
+      childThreadRootIds,
     );
-  }, [activeWorkspace, childThreadLinks, threadKindView, threads]);
+  }, [activeWorkspace, childThreadLinks, childThreadRootIds, threadKindView, threads]);
   const displayedThreads = useMemo(() => {
     if (!activeWorkspace) return [];
     const threadProjectBindings = threadProjectBindingsRef.current ?? {};
@@ -1308,7 +1293,7 @@ export default function App() {
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
     const mergedIds = new Set(merged.map((thread) => thread.id));
     for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
-      if (!filterThreadsByKind([found], childThreadLinks, threadKindView).length) continue;
+      if (!filterThreadsByKind([found], childThreadLinks, threadKindView, childThreadRootIds).length) continue;
       if (!mergedIds.has(found.id)) {
         mergedIds.add(found.id);
         merged.push(found);
@@ -1316,21 +1301,21 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, childThreadLinks, pinnedThreadIds, searchResults, threadKindView, threadSearch, workspaceKindThreads]);
+  }, [activeWorkspace, childThreadLinks, childThreadRootIds, pinnedThreadIds, searchResults, threadKindView, threadSearch, workspaceKindThreads]);
 
   // Jump-to surfaces are for the user's own conversations. Delegated children
   // are browsable through the sidebar's Sub-agents view, not mixed into search.
   const paletteThreads = useMemo(
-    () => filterThreadsByKind(threads, childThreadLinks, "main"),
-    [childThreadLinks, threads],
+    () => filterThreadsByKind(threads, childThreadLinks, "main", childThreadRootIds),
+    [childThreadLinks, childThreadRootIds, threads],
   );
 
   const threadKindCounts = useMemo(() => {
     if (!activeWorkspace) return { main: 0, subagents: 0 };
     const scoped = filterThreadsForWorkspace(threads, activeWorkspace.path, threadProjectBindingsRef.current ?? {});
-    const subagents = scoped.filter((thread) => isSubAgentThread(thread, childThreadLinks)).length;
+    const subagents = scoped.filter((thread) => isSubAgentThread(thread, childThreadLinks, childThreadRootIds)).length;
     return { main: scoped.length - subagents, subagents };
-  }, [activeWorkspace, childThreadLinks, threads]);
+  }, [activeWorkspace, childThreadLinks, childThreadRootIds, threads]);
   // @-mention autocomplete searches project files with the same fuzzy RPC the
   // file browser uses. Only available inside a project workspace.
   const activeProjectPath = activeProject ? activeExecutionPath : undefined;
@@ -2035,7 +2020,7 @@ export default function App() {
     let rememberedChanged = false;
     const nextRemembered: ThreadSidebarIndex = {};
     for (const [threadId, thread] of Object.entries(remembered)) {
-      const repaired = repairRootThreadMetadata(thread, childThreadLinks);
+      const repaired = repairRootThreadMetadata(thread, childThreadLinks, childThreadRootIds);
       nextRemembered[threadId] = repaired;
       if (repaired !== thread) rememberedChanged = true;
     }
@@ -2046,14 +2031,14 @@ export default function App() {
     setThreads((current) => {
       let listChanged = false;
       const repaired = current.map((thread) => {
-        const next = repairRootThreadMetadata(thread, childThreadLinks);
+        const next = repairRootThreadMetadata(thread, childThreadLinks, childThreadRootIds);
         if (next !== thread) listChanged = true;
         return next;
       });
       return listChanged ? repaired : current;
     });
-    setActiveThread((current) => current ? repairRootThreadMetadata(current, childThreadLinks) : current);
-  }, [childThreadLinks]);
+    setActiveThread((current) => current ? repairRootThreadMetadata(current, childThreadLinks, childThreadRootIds) : current);
+  }, [childThreadLinks, childThreadRootIds]);
 
   const localTranscriptSaves = useTranscriptSaves(async (threadId) => {
     useTaskStore.getState().flushDeltas();
@@ -2522,7 +2507,7 @@ export default function App() {
   }, []);
 
   const openRouterCreditsRequestRef = useRef(0);
-  const refreshOpenRouterCredits = useCallback(async () => {
+  const refreshOpenRouterCredits = useCallback(async (): Promise<UsageRefreshOutcome> => {
     const request = ++openRouterCreditsRequestRef.current;
     setOpenRouterCreditsRead(false);
     setOpenRouterCreditsError("");
@@ -2532,12 +2517,14 @@ export default function App() {
         setOpenRouterCredits(balance);
         setOpenRouterCreditsRead(true);
       }
+      return { ok: true };
     } catch (reason) {
       if (openRouterCreditsRequestRef.current === request) {
         setOpenRouterCredits(null);
         setOpenRouterCreditsError(friendlyError(reason));
         setOpenRouterCreditsRead(true);
       }
+      return { ok: false, error: reason };
     }
   }, []);
 
@@ -2955,38 +2942,28 @@ export default function App() {
     };
   }, []);
 
-  // Load once for this selected library/configuration and refresh when the app
-  // regains focus. The periodic watcher is managed separately so merely
-  // opening or closing Settings cannot start another one-off scan.
-  const skillsSurfaceVisible = settingsOpen || (studioOpen && studioTab === "tools");
+  // One watcher owns polling and focus refresh. Unrelated Settings sections
+  // do not scan the skill library, and overlapping surfaces share its cadence.
+  const [settingsSkillsPollMs, setSettingsSkillsPollMs] = useState<number | null>(null);
+  const skillsPollMs = settingsOpen && settingsSkillsPollMs !== null
+    ? Math.min(settingsSkillsPollMs, studioOpen && studioTab === "tools" ? 5_000 : Infinity)
+    : studioOpen && studioTab === "tools" ? 5_000 : null;
   useEffect(() => {
     if (!skillsFolder) return;
-    const refresh = () => {
-      if (document.visibilityState === "visible") void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
-    };
     const promise = refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
     skillWarmupRef.current = { folder: skillsFolder, promise };
     void promise.finally(() => {
       if (skillWarmupRef.current?.promise === promise) skillWarmupRef.current = null;
     });
-    window.addEventListener("focus", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-    };
   }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder]);
 
   // While a skill surface is visible, detect external edits promptly without
   // paying for permanent background polling elsewhere in the app.
-  useEffect(() => {
-    if (!skillsFolder || !skillsSurfaceVisible) return;
-    const interval = window.setInterval(() => {
-      // A slow scan/sync must finish before the watcher starts another one;
-      // otherwise each tick invalidates the result it is still waiting for.
-      // Explicit edits and focus refreshes retain their superseding behavior.
-      if (document.visibilityState === "visible" && !skillsRefreshCountsRef.current.has(skillsFolder)) void refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, true);
-    }, 5_000);
-    return () => window.clearInterval(interval);
-  }, [disabledSkillPaths, refreshLocalSkills, removedSkillPaths, skillAliases, skillsFolder, skillsSurfaceVisible]);
+  useSkillsRefreshWatcher({
+    folder: skillsFolder, pollMs: skillsPollMs,
+    refresh: (silent) => refreshLocalSkills(skillsFolder, skillAliases, disabledSkillPaths, removedSkillPaths, silent),
+    busy: () => skillsRefreshCountsRef.current.has(skillsFolder),
+  });
 
   const refreshTools = useCallback(
     async (workspace: Project | null) => {
@@ -4396,7 +4373,7 @@ export default function App() {
         systemPrompt: providerPrompt,
         ...(threadReasoning[thread.id] ?? {}),
       };
-      const threadIsChild = Boolean(childThreadLinks[thread.id]) || isSubAgentThread(thread, childThreadLinks);
+      const threadIsChild = Boolean(childThreadLinks[thread.id]) || isSubAgentThread(thread, childThreadLinks, childThreadRootIds);
       const threadProviderSettings = threadIsChild
         ? settingsWithoutChildDelegation(targetSettings)
         : targetSettings.subagentEngine === "native" && nativeSubagentUnavailableReason(provider, {
@@ -4769,7 +4746,7 @@ export default function App() {
       return projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(path))?.id ?? null;
     },
     isScopeValid: (scopeKey) => scopeKey === "app" || projectsRef.current.some((project) => scopeKey === `project:${project.id}`),
-    isEligibleThread: (thread) => !isSubAgentThread(thread, childThreadLinksRef.current)
+    isEligibleThread: (thread) => !isSubAgentThread(thread, childThreadLinksRef.current, childThreadRootIdsRef.current)
       && !useTaskStore.getState().workflowOwners[thread.id]
       && !workflowRuns.some((run) => run.threadId === thread.id),
     getHistoryThreads: async (scopeKey) => {
@@ -6272,7 +6249,7 @@ export default function App() {
       || Object.values(threadWorktreesRef.current).some((record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(path) && projectHasActiveTask(record.path)),
   });
   const publishConfig = activeProject ? autoPublish.configs[activeProject.id] : undefined;
-  const { onBranch: changeWorkspaceBranch, refresh: refreshWorkspace, updateBase: updateWorkspaceBase } = gitWorkspace;
+  const { onBranch: changeWorkspaceBranch, refresh: refreshWorkspace, refreshIfIdle: refreshWorkspaceIfIdle, updateBase: updateWorkspaceBase } = gitWorkspace;
   const { enable: enablePublishing, disable: disablePublishing, retry: retryPublishing } = autoPublish;
   const gitWorkflow = useMemo<GitWorkflowControls>(() => ({
     snapshot: gitWorkspace.snapshot,
@@ -6286,6 +6263,7 @@ export default function App() {
     isolated: Boolean(activeThreadWorktree && activeThreadWorktree.status !== "removed"),
     onBranch: changeWorkspaceBranch,
     onRefresh: () => { void refreshWorkspace(); },
+    onRefreshIfIdle: refreshWorkspaceIfIdle,
     autoPublish: activeProject && (githubRepoStatus?.repository || publishConfig) ? {
       enabled: Boolean(publishConfig?.enabled),
       status: publishConfig?.status ?? "idle",
@@ -6298,7 +6276,7 @@ export default function App() {
       },
       onRetry: () => retryPublishing(activeProject.id),
     } : undefined,
-  }), [gitWorkspace.snapshot, gitWorkspace.readRevision, gitWorkspace.readError, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, refreshWorkspace, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission, setGitOutput]);
+  }), [gitWorkspace.snapshot, gitWorkspace.readRevision, gitWorkspace.readError, gitWorkspace.busy, gitWorkspace.error, gitWorkspace.notice, gitWorkspace.branchNotice, gitWorkspace.lastFetchedAt, changeWorkspaceBranch, refreshWorkspace, refreshWorkspaceIfIdle, activeThreadWorktree, activeProject, githubRepoStatus?.repository, publishConfig, enablePublishing, disablePublishing, retryPublishing, effectiveSettings.permission, setGitOutput]);
 
   const prMutationBlockedReason = effectiveSettings.permission === "read-only"
     ? "Switch this thread to Ask or Full access before changing Git or a pull request."
@@ -7474,6 +7452,7 @@ export default function App() {
                   </div>
                 ) : (
                   <ThreadInboxCard
+                    active={sidebarOpen && !settingsOpen && !onboardingOpen}
                     threadId={thread.id}
                     title={thread.name || thread.preview || "Untitled thread"}
                     titlePending={automaticTitles.pendingIds.has(thread.id)}
@@ -8263,6 +8242,7 @@ export default function App() {
         >
         <Suspense fallback={null}>
           <SettingsModalView
+        onSkillsWatchChange={setSettingsSkillsPollMs}
         open={settingsOpen}
         initialSection={settingsInitialSection}
         promptFocusRequest={promptFocusRequest}

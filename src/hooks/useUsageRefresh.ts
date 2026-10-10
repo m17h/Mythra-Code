@@ -29,6 +29,9 @@ const RESET_GRACE_MS = 5_000;
 const MAX_TIMEOUT_MS = 21_600_000;
 const MAX_FAILURE_BACKOFF_MS = 15 * 60_000;
 
+/** A handled failure stays safe for startup/manual callers while informing the poller. */
+export type UsageRefreshOutcome = { ok: true } | { ok: false; error: unknown };
+
 export interface UsageRefreshOptions {
   /**
    * Identifies the account being watched. A change (switching provider, signing
@@ -126,7 +129,11 @@ export function useUsageRefresh({
     };
     void Promise.resolve()
       .then(current.refresh)
-      .then(() => complete(false), (reason) => complete(true, reason));
+      .then((outcome) => {
+        if (outcome && typeof outcome === "object" && "ok" in outcome && outcome.ok === false) {
+          complete(true, "error" in outcome ? outcome.error : undefined);
+        } else complete(false);
+      }, (reason) => complete(true, reason));
   }, []);
 
   useEffect(() => {

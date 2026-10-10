@@ -1,4 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
+import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
@@ -20,10 +21,14 @@ const codex = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/codex", () => codex);
-const preferences = vi.hoisted(() => ({ scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>> }));
+const preferences = vi.hoisted(() => ({
+  scopes: {} as Record<string, Partial<{ enabled: boolean; markdown: string }>>,
+  hydrated: true,
+  load: vi.fn(async () => {}),
+}));
 vi.mock("../lib/preferenceLearningStore", () => ({
-  getPreferenceLearningHydrated: () => true,
-  loadPreferenceLearning: async () => {},
+  getPreferenceLearningHydrated: () => preferences.hydrated,
+  loadPreferenceLearning: () => preferences.load(),
   getPreferenceLearningScope: (scopeKey: string) => ({ scopeKey, enabled: false, markdown: "", ...preferences.scopes[scopeKey] }),
 }));
 
@@ -77,6 +82,8 @@ async function flushMicrotasks(count = 12): Promise<void> {
 describe("useScheduler", () => {
   beforeEach(() => {
     preferences.scopes = {};
+    preferences.hydrated = true;
+    preferences.load.mockReset().mockResolvedValue(undefined);
     resetTaskStore();
     forgetSubagentCapabilities();
     vi.useFakeTimers();
@@ -88,6 +95,394 @@ describe("useScheduler", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  const preparationStages = ["skills", "resolved skills", "preferences", "runtime roots", "thread start", "thread resume", "checkpoint"] as const;
+  it.each(preparationStages.flatMap((stage) => ["disable", "delete", "retarget", "convert to Chats"].map((change) => [stage, change] as const)))(
+    "revokes a pending schedule during %s after %s",
+    async (stage, change) => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      const schedule = testSchedule(stage === "thread resume" ? { threadMode: "reuse", lastThreadId: "thread-1" } : {});
+      const runs: ScheduleRunRecord[] = [];
+      codex.rpc.mockImplementation(async (method: string) => {
+        if (method === "thread/start" || method === "thread/resume") {
+          if (stage === "thread start" && method === "thread/start" || stage === "thread resume" && method === "thread/resume") await pending;
+          return { thread: { id: "thread-1" } };
+        }
+        return {};
+      });
+      if (stage === "preferences") {
+        preferences.hydrated = false;
+        preferences.load.mockImplementation(async () => { await pending; preferences.hydrated = true; });
+      }
+      const deps = testSchedulerDeps(schedule, runs, {
+        resolveSkillPrompt: vi.fn(async (prompt) => { if (stage === "skills") await pending; return prompt; }),
+        ...(stage === "resolved skills" ? { resolveSkillPrompts: vi.fn(async (prompt, systemPrompt) => { await pending; return { prompt, systemPrompt }; }) } : {}),
+        ensureSkillRoots: vi.fn(async () => { if (stage === "runtime roots") await pending; }),
+        beginRunCheckpoint: vi.fn(async () => { if (stage === "checkpoint") await pending; return "owned-checkpoint"; }),
+      });
+      const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+      await act(async () => { await flushMicrotasks(30); });
+      const schedules = change === "delete" ? [] : [{ ...schedule, ...(change === "disable" ? { enabled: false } : { projectId: change === "convert to Chats" ? null : "project-2" }) }];
+      rerender({ ...deps, schedules });
+      await act(async () => { release(); await flushMicrotasks(30); });
+
+      expect(codex.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
+      expect(runs).toHaveLength(0);
+      expect(deps.updateSchedule).not.toHaveBeenCalled();
+      expect(deps.onThreadStarted).not.toHaveBeenCalled();
+      if (stage === "checkpoint") {
+        expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("thread-1", "owned-checkpoint");
+        expect(useTaskStore.getState().statuses["thread-1"]).toBe("interrupted");
+        expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
+      } else expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not revive preparation when a schedule is disabled and enabled again", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const schedule = testSchedule();
+    const deps = testSchedulerDeps(schedule, [], { resolveSkillPrompt: async (prompt) => { await pending; return prompt; } });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    rerender({ ...deps, schedules: [{ ...schedule, enabled: false }] });
+    rerender(deps);
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each(["changed path", "removed project", "changed Chats path"])("revokes preparation for a %s", async (change) => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const schedule = testSchedule(change === "changed Chats path" ? { projectId: null } : {});
+    const deps = testSchedulerDeps(schedule, [], { resolveSkillPrompt: async (prompt) => { await pending; return prompt; } });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    rerender({
+      ...deps,
+      projects: change === "removed project" ? [] : [{ ...deps.projects[0], path: "/tmp/moved-project" }],
+      chatWorkspace: change === "changed Chats path" ? { ...deps.chatWorkspace!, path: "/tmp/moved-chats" } : deps.chatWorkspace,
+    });
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(deps.updateSchedule).not.toHaveBeenCalled();
+  });
+
+  it("does not start a fallback thread after a revoked resume rejects", async () => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const schedule = testSchedule({ threadMode: "reuse", lastThreadId: "thread-1" });
+    const deps = testSchedulerDeps(schedule, []);
+    codex.rpc.mockImplementation(async (method: string) => method === "thread/resume" ? pending : { thread: { id: "fallback" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    rerender({ ...deps, schedules: [] });
+    await act(async () => { reject(new Error("thread not found")); await flushMicrotasks(30); });
+    expect(codex.rpc.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
+  });
+
+  it("revokes pending preparation when the scheduler unmounts", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const deps = testSchedulerDeps(testSchedule(), [], { resolveSkillPrompt: async (prompt) => { await pending; return prompt; } });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const { unmount } = renderHook(() => useScheduler(deps));
+    unmount();
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
+  it("does not discard another run's checkpoint when preparation created none", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const deps = testSchedulerDeps(testSchedule(), [], {
+      beginRunCheckpoint: async () => { await pending; return undefined; },
+    });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    rerender({ ...deps, schedules: [] });
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("does not interrupt a turn accepted elsewhere while a cancelled checkpoint is pending", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const deps = testSchedulerDeps(testSchedule(), [], {
+      beginRunCheckpoint: async () => { await pending; return "owned-checkpoint"; },
+    });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    rerender({ ...deps, schedules: [] });
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("running");
+  });
+
+  it("keeps a dispatched turn and its checkpoint when disabling during its acknowledgement", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const schedule = testSchedule();
+    const runs: ScheduleRunRecord[] = [];
+    const deps = testSchedulerDeps(schedule, runs);
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "turn/start") { await pending; return {}; }
+      return { thread: { id: "thread-1" } };
+    });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    expect(codex.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
+    rerender({ ...deps, schedules: [{ ...schedule, enabled: false }] });
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
+    expect(runs).toEqual([expect.objectContaining({ status: "started", threadId: "thread-1" })]);
+    expect(deps.updateSchedule).not.toHaveBeenCalled();
+  });
+
+  it.each(["skills", "resume", "checkpoint", "workflow"])("does not overwrite or dispatch into a reused thread that became busy during %s", async (stage) => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const schedule = testSchedule({ threadMode: "reuse", lastThreadId: "thread-1" });
+    const deps = testSchedulerDeps(schedule, [], {
+      resolveSkillPrompt: async (prompt) => { if (stage === "skills" || stage === "workflow") await pending; return prompt; },
+      beginRunCheckpoint: vi.fn(async () => { if (stage === "checkpoint") await pending; return "owned-checkpoint"; }),
+    });
+    useTaskStore.getState().ensureTask("thread-1", "/tmp/project");
+    codex.rpc.mockImplementation(async () => { if (stage === "resume") await pending; return { thread: { id: "thread-1" } }; });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    if (stage === "workflow") useTaskStore.getState().setWorkflowOwner("thread-1", { runId: "workflow-run", workflowId: "workflow" });
+    else {
+      useTaskStore.getState().setActiveTurn("thread-1", "user-turn");
+      useTaskStore.getState().setTaskStatus("thread-1", "running");
+    }
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(codex.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe(stage === "workflow" ? "idle" : "running");
+    if (stage === "checkpoint") expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("thread-1", "owned-checkpoint");
+    else expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it.each(["busy", "disable", "delete", "checkpoint failure"])("preserves a workflow's starting reservation during %s checkpoint cleanup", async (change) => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const schedule = testSchedule();
+    const deps = testSchedulerDeps(schedule, [], {
+      beginRunCheckpoint: vi.fn(async () => { await pending; if (change === "checkpoint failure") throw new Error("checkpoint failure"); return "owned-checkpoint"; }),
+    });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().setWorkflowOwner("thread-1", { workflowId: "workflow", runId: "workflow-run" });
+    if (change === "disable") rerender({ ...deps, schedules: [{ ...schedule, enabled: false }] });
+    else if (change === "delete") rerender({ ...deps, schedules: [] });
+    await act(async () => { release(); await flushMicrotasks(30); });
+    expect(codex.rpc.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(0);
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("starting");
+    expect(useTaskStore.getState().workflowOwners["thread-1"]).toEqual({ workflowId: "workflow", runId: "workflow-run" });
+  });
+
+  it("does not create a fallback conversation when a rejected resume became busy meanwhile", async () => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const runs: ScheduleRunRecord[] = [];
+    const deps = testSchedulerDeps(testSchedule({ threadMode: "reuse", lastThreadId: "thread-1" }), runs);
+    useTaskStore.getState().ensureTask("thread-1", "/tmp/project");
+    codex.rpc.mockImplementation(async (method: string) => method === "thread/resume" ? pending : { thread: { id: "fallback-thread" } });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().setActiveTurn("thread-1", "user-turn");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    await act(async () => { reject(new Error("resume rejected")); await flushMicrotasks(30); });
+    expect(codex.rpc.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
+    expect(runs).toHaveLength(0);
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("running");
+  });
+
+  it.each([false, true].flatMap((disable) => (["running", "completed", "interrupted"] as const).map((status) => [disable, status] as const)))("preserves runtime-accepted work if turn acknowledgement rejects after disabling %s with status %s", async (disable, status) => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const schedule = testSchedule();
+    const runs: ScheduleRunRecord[] = [];
+    const nativePrompt = `<mythra_code_invoked_skills>\n${JSON.stringify({ skills: [], userMessage: schedule.prompt })}\n</mythra_code_invoked_skills>`;
+    const deps = testSchedulerDeps(schedule, runs, {
+      beginRunCheckpoint: vi.fn(async () => "owned-checkpoint"),
+      resolveSkillPrompts: vi.fn(async () => ({ prompt: nativePrompt, systemPrompt: "Resolved authored policy" })),
+    });
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "turn/start") return pending;
+      return { thread: { id: "thread-1" } };
+    });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().setActiveTurn("thread-1", "accepted-turn");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    useTaskStore.getState().completeMessage("thread-1", { id: "runtime-user-item", role: "user", text: nativePrompt, turnId: "accepted-turn" });
+    if (status !== "running") useTaskStore.getState().completeTurn("thread-1", "accepted-turn", status);
+    if (disable) rerender({ ...deps, schedules: [{ ...schedule, enabled: false }] });
+    await act(async () => { reject(new Error("request acknowledgement timed out")); await flushMicrotasks(30); });
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe(status);
+    expect(runs).toEqual([expect.objectContaining({ status: "started", threadId: "thread-1" })]);
+  });
+
+  it("does not treat an identical competing user prompt as exact scheduled acceptance", async () => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const runs: ScheduleRunRecord[] = [];
+    const schedule = testSchedule();
+    const deps = testSchedulerDeps(schedule, runs, { beginRunCheckpoint: vi.fn(async () => "owned-checkpoint") });
+    codex.rpc.mockImplementation(async (method: string) => method === "turn/start" ? pending : { thread: { id: "thread-1" } });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().appendUserMessage("thread-1", { id: "local-competing-prompt", role: "user", text: schedule.prompt });
+    useTaskStore.getState().setActiveTurn("thread-1", "competing-turn");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    useTaskStore.getState().completeMessage("thread-1", { id: "native-competing-item", role: "user", text: schedule.prompt, turnId: "competing-turn" });
+    await act(async () => { reject(new Error("acknowledgement timed out")); await flushMicrotasks(30); });
+    expect(runs).toEqual([expect.objectContaining({ status: "failed" })]);
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("running");
+  });
+
+  it("keeps exact scheduled acceptance when a different local followup arrives before acknowledgement fails", async () => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const runs: ScheduleRunRecord[] = [];
+    const schedule = testSchedule();
+    const deps = testSchedulerDeps(schedule, runs, { beginRunCheckpoint: vi.fn(async () => "owned-checkpoint") });
+    codex.rpc.mockImplementation(async (method: string) => method === "turn/start" ? pending : { thread: { id: "thread-1" } });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().setActiveTurn("thread-1", "accepted-turn");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    useTaskStore.getState().completeMessage("thread-1", { id: "native-scheduled-item", role: "user", text: schedule.prompt, turnId: "accepted-turn" });
+    useTaskStore.getState().appendUserMessage("thread-1", { id: "local-followup", role: "user", text: "Continue with extra checks" });
+    await act(async () => { reject(new Error("acknowledgement timed out")); await flushMicrotasks(30); });
+    expect(runs).toEqual([expect.objectContaining({ status: "started", threadId: "thread-1" })]);
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("running");
+  });
+
+  it.each([false, true])("records a genuine dispatch rejection and does not claim an unrelated later turn %s", async (unrelated) => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const runs: ScheduleRunRecord[] = [];
+    const deps = testSchedulerDeps(testSchedule(), runs, { beginRunCheckpoint: vi.fn(async () => "owned-checkpoint") });
+    codex.rpc.mockImplementation(async (method: string) => method === "turn/start" ? pending : { thread: { id: "thread-1" } });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    if (unrelated) {
+      useTaskStore.getState().setActiveTurn("thread-1", "unrelated-turn");
+      useTaskStore.getState().setTaskStatus("thread-1", "running");
+      useTaskStore.getState().completeMessage("thread-1", { id: "unrelated-runtime-item", role: "user", text: "A different user prompt", turnId: "unrelated-turn" });
+    }
+    await act(async () => { reject(new Error("explicit turn rejection")); await flushMicrotasks(30); });
+    expect(runs).toEqual([expect.objectContaining({ status: "failed" })]);
+    if (unrelated) expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    else {
+      expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("thread-1", "owned-checkpoint");
+      expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
+    }
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe(unrelated ? "running" : "error");
+  });
+
+  it.each([false, true].flatMap((disable) => (["running", "completed", "interrupted"] as const).map((status) => [disable, status] as const)))("keeps ambiguous runtime work without claiming scheduled acceptance after disabling %s with status %s", async (disable, status) => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<never>((_, fail) => { reject = fail; });
+    const runs: ScheduleRunRecord[] = [];
+    const schedule = testSchedule();
+    const deps = testSchedulerDeps(schedule, runs, { beginRunCheckpoint: vi.fn(async () => "owned-checkpoint") });
+    codex.rpc.mockImplementation(async (method: string) => method === "turn/start" ? pending : { thread: { id: "thread-1" } });
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    await act(async () => { await flushMicrotasks(30); });
+    useTaskStore.getState().setActiveTurn("thread-1", "unconfirmed-turn");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    if (status !== "running") useTaskStore.getState().completeTurn("thread-1", "unconfirmed-turn", status);
+    if (disable) rerender({ ...deps, schedules: [{ ...schedule, enabled: false }] });
+    await act(async () => { reject(new Error("request acknowledgement timed out")); await flushMicrotasks(30); });
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe(status);
+    expect(runs).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("timed out") })]);
+    if (disable) expect(deps.updateSchedule).not.toHaveBeenCalled();
+    else {
+      const patch = vi.mocked(deps.updateSchedule).mock.calls.at(-1)![1];
+      expect(patch(schedule).nextRunAt).toBe(Date.now() + schedule.intervalMinutes * 60_000);
+    }
+  });
+
+  it.each(["string", "Error"])("retains a checkpoint on native turn/start timeout before any runtime event (%s)", async (kind) => {
+    const runs: ScheduleRunRecord[] = [];
+    const schedule = testSchedule();
+    const message = "Codex App Server timed out while handling turn/start";
+    const deps = testSchedulerDeps(schedule, runs, { beginRunCheckpoint: vi.fn(async () => "owned-checkpoint") });
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "turn/start") throw kind === "Error" ? new Error(message) : message;
+      return { thread: { id: "thread-1" } };
+    });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().statuses["thread-1"]).toBe("error");
+    expect(runs).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("delivery could not be confirmed") })]);
+    const patch = vi.mocked(deps.updateSchedule).mock.calls.at(-1)![1];
+    expect(patch(schedule).nextRunAt).toBe(Date.now() + schedule.intervalMinutes * 60_000);
+    // Delayed native acceptance/completion still updates the retained thread.
+    useTaskStore.getState().setActiveTurn("thread-1", "late-turn");
+    useTaskStore.getState().setTaskStatus("thread-1", "running");
+    useTaskStore.getState().completeMessage("thread-1", { id: "late-user-item", role: "user", text: schedule.prompt, turnId: "late-turn" });
+    useTaskStore.getState().completeTurn("thread-1", "late-turn", "completed");
+    expect(useTaskStore.getState().tasks["thread-1"].lastCompletedTurnId).toBe("late-turn");
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(runs[0].status).toBe("failed");
+  });
+
+  it.each(["started", "failed", "busy"])("does not overwrite a newer edit when a deferred %s schedule updater executes", async (outcome) => {
+    const schedule = testSchedule(outcome === "busy" ? { threadMode: "reuse", lastThreadId: "thread-1" } : {});
+    const deps = testSchedulerDeps(schedule, []);
+    if (outcome === "busy") {
+      useTaskStore.getState().ensureTask("thread-1", "/tmp/project");
+      useTaskStore.getState().setTaskStatus("thread-1", "running");
+    }
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "turn/start" && outcome === "failed") throw new Error("explicit turn rejection");
+      return { thread: { id: "thread-1" } };
+    });
+    renderHook(() => useScheduler(deps));
+    await act(async () => { await flushMicrotasks(30); });
+    const updater = vi.mocked(deps.updateSchedule).mock.calls.at(-1)![1];
+    const newer = { ...schedule, prompt: "User edited the prompt", nextRunAt: Date.now() + 7_200_000 };
+    expect(updater(newer)).toBe(newer);
+    expect(updater({ ...newer, enabled: false })).toEqual({ ...newer, enabled: false });
+    expect(updater(schedule)).not.toBe(schedule);
+  });
+
+  it("checks revocation immediately before dispatch and removes an undelivered optimistic prompt", async () => {
+    const runs: ScheduleRunRecord[] = [];
+    const deps = testSchedulerDeps(testSchedule(), runs, { beginRunCheckpoint: vi.fn(async () => "owned-checkpoint") });
+    codex.rpc.mockResolvedValue({ thread: { id: "thread-1" } });
+    const append = useTaskStore.getState().appendUserMessage;
+    const appendSpy = vi.spyOn(useTaskStore.getState(), "appendUserMessage");
+    const { rerender } = renderHook((current: SchedulerDeps) => useScheduler(current), { initialProps: deps });
+    appendSpy.mockImplementation((...args) => {
+      append(...args);
+      flushSync(() => rerender({ ...deps, schedules: [] }));
+    });
+    try {
+      await act(async () => { await flushMicrotasks(30); });
+      expect(codex.rpc.mock.calls.map(([method]) => method)).toEqual(["thread/start"]);
+      expect(useTaskStore.getState().tasks["thread-1"].messages).toHaveLength(0);
+      expect(useTaskStore.getState().statuses["thread-1"]).toBe("interrupted");
+      expect(deps.discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("thread-1", "owned-checkpoint");
+      expect(runs).toHaveLength(0);
+    } finally {
+      appendSpy.mockRestore();
+    }
   });
 
   it.each([null, "project-1"])("uses live app and target-project preferences for deferred schedule %s", async (projectId) => {
@@ -417,13 +812,13 @@ describe("useScheduler", () => {
     const onThreadDelegationDisabled = vi.fn();
     let unresolved = false;
     const threadBusyReason = vi.fn(() => unresolved ? "A native child started during preparation." : null);
-    const beginRunCheckpoint = vi.fn(async () => { unresolved = true; return undefined; });
+    const beginRunCheckpoint = vi.fn(async () => { unresolved = true; return "native-guard-checkpoint"; });
     const discardRunCheckpoint = vi.fn();
     codex.rpc.mockImplementation(async (method: string) => method === "thread/resume" ? { thread: { id: "thread-existing" } } : {});
     renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ threadMode: "reuse", lastThreadId: "thread-existing" }), runs, { threadBusyReason, beginRunCheckpoint, discardRunCheckpoint, onThreadDelegationDisabled })));
     await act(async () => { await flushMicrotasks(40); });
     expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
-    expect(discardRunCheckpoint).toHaveBeenCalledWith("thread-existing");
+    expect(discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("thread-existing", "native-guard-checkpoint");
     expect(onThreadDelegationDisabled).not.toHaveBeenCalled();
     expect(useTaskStore.getState().tasks["thread-existing"].messages).toEqual([]);
     expect(runs.at(-1)?.status).toBe("failed");
@@ -495,12 +890,13 @@ describe("useScheduler", () => {
     const discardRunCheckpoint = vi.fn();
     const onThreadDelegationDisabled = vi.fn(() => { throw new Error("Off policy persistence failed"); });
     codex.rpc.mockImplementation(async (method: string) => method === "thread/resume" ? { thread: { id: "thread-existing" } } : {});
-    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ threadMode: "reuse", lastThreadId: "thread-existing" }), runs, { onThreadDelegationDisabled, discardRunCheckpoint })));
+    const beginRunCheckpoint = vi.fn(async () => "off-policy-checkpoint");
+    renderHook(() => useScheduler(testSchedulerDeps(testSchedule({ threadMode: "reuse", lastThreadId: "thread-existing" }), runs, { onThreadDelegationDisabled, discardRunCheckpoint, beginRunCheckpoint })));
     await act(async () => { await flushMicrotasks(30); });
     expect(codex.rpc).not.toHaveBeenCalledWith("turn/start", expect.anything());
     expect(useTaskStore.getState().tasks["thread-existing"].messages).toEqual([]);
     expect(useTaskStore.getState().statuses["thread-existing"]).toBe("error");
-    expect(discardRunCheckpoint).toHaveBeenCalledWith("thread-existing");
+    expect(discardRunCheckpoint).toHaveBeenCalledExactlyOnceWith("thread-existing", "off-policy-checkpoint");
     expect(runs.at(-1)).toMatchObject({ status: "failed", error: expect.stringContaining("Off policy persistence failed") });
   });
 

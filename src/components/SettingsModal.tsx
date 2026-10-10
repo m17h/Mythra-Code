@@ -433,6 +433,7 @@ export function SettingsModal({
   onOpenRun,
   onChooseSkillsFolder,
   onRefreshSkills,
+  onSkillsWatchChange,
   onImportSkills,
   onCreateSkill,
   onInstallOfficialSkill,
@@ -544,6 +545,8 @@ export function SettingsModal({
   onOpenRun?: (threadId: string) => void;
   onChooseSkillsFolder: () => void;
   onRefreshSkills: (silent?: boolean) => Promise<void> | void;
+  /** Report relevant surfaces to the app's single skill watcher. */
+  onSkillsWatchChange?: (pollMs: number | null) => void;
   onImportSkills: () => void;
   onCreateSkill: (name: string, instructions: string) => Promise<boolean>;
   onInstallOfficialSkill?: (id: string, folder: string) => Promise<string>;
@@ -585,8 +588,6 @@ export function SettingsModal({
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
-  const skillsRefreshRef = useRef(onRefreshSkills);
-  skillsRefreshRef.current = onRefreshSkills;
 
   const modelCatalogs = useMemo<ModelCatalogs>(() => ({
     runtimeModels,
@@ -742,35 +743,12 @@ export function SettingsModal({
   }, [onGitHubRefresh, open, settingsSection]);
 
   useEffect(() => {
-    if (!open || settingsSection !== "skills" || !skillsFolder) return;
-    let disposed = false;
-    let inFlight = false;
-    const refresh = async (silent: boolean) => {
-      if (disposed || inFlight) return;
-      inFlight = true;
-      try {
-        await skillsRefreshRef.current(silent);
-      } finally {
-        inFlight = false;
-      }
-    };
-    void refresh(false);
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh(true);
-    }, 2_000);
-    const onFocus = () => void refresh(true);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void refresh(true);
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      disposed = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [open, settingsSection, skillsFolder]);
+    const pollMs = !open || !skillsFolder ? null
+      : settingsSection === "skills" ? 2_000
+        : settingsSection === "prompts" || settingsSection === "tools" ? 5_000 : null;
+    onSkillsWatchChange?.(pollMs);
+    return () => onSkillsWatchChange?.(null);
+  }, [open, settingsSection, skillsFolder, onSkillsWatchChange]);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalFocus(dialogRef, open);

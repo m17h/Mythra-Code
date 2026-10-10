@@ -1,4 +1,5 @@
 import { displayedUserMessage, reconcileUserMessages, userEchoIndex } from "./userMessageEcho";
+import { forgetCursorTurnOwnership, resetCursorTurnOwnershipForTests } from "./cursorTurnOwnership";
 import { validSkillReferences } from "./skillReferences";
 import { estimateSkillDependencyBytes, sanitizeMessageSkillDependencies } from "./skillDependencies";
 import { estimateSkillUsageBytes, sanitizeSkillUsage, validSkillUsage } from "./skillUsage";
@@ -211,6 +212,8 @@ export function isAssistantOutputActive(task: ThreadTaskState | undefined): bool
 interface TaskStoreState {
   activeThreadId: string | null;
   tasks: Record<string, ThreadTaskState>;
+  /** Changes only when approval contents change, never for transcript deltas. */
+  approvalQueryToken: object;
   statuses: Record<string, TaskStatus>;
   /** A workflow owns its thread across turns and command steps, including idle gaps. */
   workflowOwners: Record<string, WorkflowThreadOwner>;
@@ -232,7 +235,7 @@ interface TaskStoreState {
   upsertActivity: (threadId: string, activity: Activity) => void;
   beginNativeActivation: (threadId: string, activationId: string) => void;
   setActiveTurn: (threadId: string, turnId?: string) => boolean;
-  completeTurn: (threadId: string, turnId: string | undefined, status: TaskStatus) => boolean;
+  completeTurn: (threadId: string, turnId: string | undefined, status: TaskStatus, preserveThreadState?: boolean) => boolean;
   setTaskStatus: (threadId: string, status: TaskStatus, error?: string) => void;
   setDiff: (threadId: string, diff: ReviewDiff) => void;
   /** `turnId` attributes the usage to a prompt turn; it defaults to the active turn. */
@@ -260,6 +263,68 @@ interface TaskStoreState {
   removeQueuedTurn: (threadId: string, queuedTurnId: string) => void;
   clearUnread: (threadId: string) => void;
   removeTask: (threadId: string) => void;
+}
+
+interface ApprovalQuerySnapshot {
+  count: number;
+  candidates: PendingApproval[];
+  activeThreadId?: string | null;
+  pending: PendingApproval | null;
+}
+
+const approvalQuerySnapshots = new WeakMap<object, ApprovalQuerySnapshot>();
+
+function isBlockingApproval(approval: PendingApproval): boolean {
+  return !(approval.method === "item/tool/requestUserInput" && approval.params.isBlocking === false);
+}
+
+function isInlineApproval(approval: PendingApproval): boolean {
+  return !(approval.method === "claude/can_use_tool" && approval.params.tool_name === "AskUserQuestion")
+    && approval.method !== "item/tool/requestUserInput"
+    && approval.method !== "cursor/ask_question"
+    && approval.method !== "mcpServer/elicitation/request";
+}
+
+function approvalQuerySnapshot(state: TaskStoreState): ApprovalQuerySnapshot {
+  const cached = approvalQuerySnapshots.get(state.approvalQueryToken);
+  if (cached) return cached;
+  const snapshot: ApprovalQuerySnapshot = { count: 0, candidates: [], pending: null };
+  // Preserve task insertion order for equal timestamps, and the first blocking
+  // request within each task. Text-only publications reuse this exact snapshot.
+  for (const task of Object.values(state.tasks)) {
+    let candidate: PendingApproval | undefined;
+    for (const approval of task.approvals) {
+      if (!isBlockingApproval(approval)) continue;
+      snapshot.count += 1;
+      candidate ??= approval;
+    }
+    if (candidate) snapshot.candidates.push(candidate);
+  }
+  approvalQuerySnapshots.set(state.approvalQueryToken, snapshot);
+  return snapshot;
+}
+
+export function selectInlineApproval(state: TaskStoreState): PendingApproval | null {
+  if (!state.activeThreadId) return null;
+  const candidate = state.tasks[state.activeThreadId]?.approvals.find(isBlockingApproval);
+  return candidate && isInlineApproval(candidate) ? candidate : null;
+}
+
+export function selectPendingApprovalCount(state: TaskStoreState): number {
+  return approvalQuerySnapshot(state).count;
+}
+
+export function selectPendingApproval(state: TaskStoreState): PendingApproval | null {
+  const snapshot = approvalQuerySnapshot(state);
+  if (snapshot.activeThreadId === state.activeThreadId) return snapshot.pending;
+  let earliest: PendingApproval | null = null;
+  for (const candidate of snapshot.candidates) {
+    if (candidate.threadId === state.activeThreadId && isInlineApproval(candidate)) continue;
+    if (!earliest || candidate.receivedAt < earliest.receivedAt) earliest = candidate;
+  }
+  snapshot.activeThreadId = state.activeThreadId;
+  snapshot.pending = earliest;
+  return earliest;
 }
 
 interface PendingAssistantDelta {
@@ -593,6 +658,7 @@ function isFinalizedAssistantMessage(message: ChatMessage): boolean {
 export const useTaskStore = create<TaskStoreState>((set, get) => ({
   activeThreadId: null,
   tasks: {},
+  approvalQueryToken: {},
   statuses: {},
   workflowOwners: {},
   queueRevision: 0,
@@ -1155,12 +1221,15 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     });
     return true;
   },
-  completeTurn: (threadId, turnId, status) => {
+  completeTurn: (threadId, turnId, status, preserveThreadState = false) => {
     const previousTask = get().tasks[threadId];
     // A completion without a freshly identified child turn is not evidence
     // that a follow-up stopped. Hard runtime/process cutoffs use no turn ID.
     if (turnId && (previousTask?.pendingNativeActivationId || previousTask?.retiredNativeTurnIds?.includes(turnId))) return false;
-    const newerTurnActive = Boolean(previousTask?.activeTurnId && turnId && previousTask.activeTurnId !== turnId);
+    // A local provider may own a replacement start before its native turn ID
+    // is acknowledged. Its predecessor may seal history without ending that
+    // pending start or clearing its timing, prompts, and approvals.
+    const newerTurnActive = preserveThreadState || Boolean(previousTask?.activeTurnId && turnId && previousTask.activeTurnId !== turnId);
     const completedTurnId = turnId ?? previousTask?.activeTurnId;
     const queuedAssistantDeltas = new Map<string, PendingAssistantDelta>();
     const queuedForThread = pendingDeltas.get(threadId);
@@ -1176,7 +1245,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const completedTurnId = turnId ?? task.activeTurnId;
-    const newerTurnActive = Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
+    const newerTurnActive = preserveThreadState || Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
     const threadStatus = newerTurnActive ? task.status : status;
     const turnStatus = completedTurnStatus(status);
     const elapsedMs = task.workingStartedAt !== undefined
@@ -1281,6 +1350,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         }),
       };
     }
+    const approvals = task.approvals.filter((approval) => approval.method.startsWith("openkiwi/")
+      || (newerTurnActive && approval.params.turnId !== completedTurnId));
     return {
       tasks: {
         ...state.tasks,
@@ -1295,8 +1366,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           agents,
           // Runtime requests belong to the finished turn. Local settings
           // proposals have their own lifetime and remain answerable.
-          approvals: task.approvals.filter((approval) => approval.method.startsWith("openkiwi/")
-            || (newerTurnActive && approval.params.turnId !== completedTurnId)),
+          approvals,
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
           pendingNativeActivationId: newerTurnActive ? task.pendingNativeActivationId : undefined,
           assistantOutputTurnId: completedTurnId === task.assistantOutputTurnId
@@ -1308,13 +1378,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           // A completion without a turn id (runtime exit, provider crash)
           // must not erase the record of the last turn that really finished —
           // workflow waiters key off it and would otherwise idle out.
-          lastCompletedTurnId: completedTurnId ?? task.lastCompletedTurnId,
-          lastCompletedTurnStatus: completedTurnId ? status : task.lastCompletedTurnStatus,
+          // An explicitly historical completion cannot replace the scheduler's
+          // newest receipt (including the completed-before-start-ack guard).
+          lastCompletedTurnId: preserveThreadState ? task.lastCompletedTurnId : completedTurnId ?? task.lastCompletedTurnId,
+          lastCompletedTurnStatus: preserveThreadState ? task.lastCompletedTurnStatus : completedTurnId ? status : task.lastCompletedTurnStatus,
           status: threadStatus,
           unread: state.activeThreadId !== threadId && threadStatus === "completed" ? true : task.unread,
           updatedAt: Date.now(),
         },
       },
+      approvalQueryToken: approvals.length === task.approvals.length ? state.approvalQueryToken : {},
       statuses: { ...state.statuses, [threadId]: threadStatus },
     };
     });
@@ -1439,17 +1512,19 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // A fresh question can reuse an expired process's numeric ID. Keep exact
     // duplicate events idempotent, but never hide a different question behind it.
     const approvals = previous ? task.approvals.map((entry) => entry === previous ? approval : entry) : [...task.approvals, approval];
-    return { tasks: { ...state.tasks, [approval.threadId]: { ...task, approvals, unread: state.activeThreadId !== approval.threadId, updatedAt: Date.now() } } };
+    return { approvalQueryToken: {}, tasks: { ...state.tasks, [approval.threadId]: { ...task, approvals, unread: state.activeThreadId !== approval.threadId, updatedAt: Date.now() } } };
   }),
   resolveApproval: (threadId, approvalId) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
-    return { tasks: { ...state.tasks, [threadId]: { ...task, approvals: task.approvals.filter((entry) => entry.id !== approvalId), updatedAt: Date.now() } } };
+    const approvals = task.approvals.filter((entry) => entry.id !== approvalId);
+    if (approvals.length === task.approvals.length) return state;
+    return { approvalQueryToken: {}, tasks: { ...state.tasks, [threadId]: { ...task, approvals, updatedAt: Date.now() } } };
   }),
   clearApprovals: (threadId) => set((state) => {
     const task = state.tasks[threadId];
     if (!task || task.approvals.length === 0) return state;
-    return { tasks: { ...state.tasks, [threadId]: { ...task, approvals: [], updatedAt: Date.now() } } };
+    return { approvalQueryToken: {}, tasks: { ...state.tasks, [threadId]: { ...task, approvals: [], updatedAt: Date.now() } } };
   }),
   enqueueTurn: (threadId, text, attachments, options) => {
     const queuedTurn: QueuedTurn = {
@@ -1583,6 +1658,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   clearUnread: (threadId) => set((state) => state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], unread: false } } } : state),
   removeTask: (threadId) => {
+    forgetCursorTurnOwnership(threadId);
     // Clear queued streaming buffers so a pending flush cannot resurrect the
     // deleted thread as a ghost task.
     pendingDeltas.delete(threadId);
@@ -1595,12 +1671,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       delete statuses[threadId];
       delete workflowOwners[threadId];
       persistQueuedTurns(threadId, []);
-      return { tasks, statuses, workflowOwners, queueRevision: state.queueRevision + 1, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
+      return { tasks, statuses, workflowOwners, approvalQueryToken: state.tasks[threadId]?.approvals.length ? {} : state.approvalQueryToken, queueRevision: state.queueRevision + 1, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
     });
   },
 }));
 
 export function resetTaskStore(): void {
+  resetCursorTurnOwnershipForTests();
   resetRuntimePerformanceDiagnostics();
   pendingDeltas.clear();
   pendingReasoningItems.clear();
@@ -1613,5 +1690,5 @@ export function resetTaskStore(): void {
   transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
   transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
   removeStoredValue(QUEUED_TURNS_KEY);
-  useTaskStore.setState({ activeThreadId: null, tasks: {}, statuses: {}, workflowOwners: {}, queueRevision: 0 });
+  useTaskStore.setState({ activeThreadId: null, tasks: {}, approvalQueryToken: {}, statuses: {}, workflowOwners: {}, queueRevision: 0 });
 }

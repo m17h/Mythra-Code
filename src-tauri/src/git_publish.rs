@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 use crate::process_launch::background_std_command;
 use crate::{
     git_workspace::{
-        bounded_git_output_with_prompt_policy, repository_lock, worktree_branch_paths,
+        bounded_git_output_with_prompt_policy, repository_lock, worktree_branch_paths_with_read,
     },
     github::parse_github_repository,
-    project_git::{git_common_dir, git_stdout, optional_git_stdout},
+    project_git::{git_common_dir, git_stdout, optional_git_stdout, GitReadOperation},
 };
 #[cfg(test)]
 use std::env;
@@ -79,11 +79,16 @@ where
 }
 
 fn selected_repository(cwd: &str) -> Result<PathBuf, String> {
+    selected_repository_with_read(cwd, &GitReadOperation::new())
+}
+
+fn selected_repository_with_read(cwd: &str, read: &GitReadOperation) -> Result<PathBuf, String> {
     let selected = PathBuf::from(cwd)
         .canonicalize()
         .map_err(|error| paused(format!("Could not open the project folder: {error}")))?;
-    let top = git_stdout(&selected, &["rev-parse", "--show-toplevel"], None)
-        .map_err(|_| paused("The selected folder is not a Git repository."))?;
+    let top = read
+        .stdout(&selected, &["rev-parse", "--show-toplevel"])
+        .map_err(paused)?;
     PathBuf::from(top)
         .canonicalize()
         .map_err(|error| paused(format!("Could not open the Git repository: {error}")))
@@ -173,39 +178,66 @@ fn repository_identity(fetch: &str, push: &str) -> Result<String, String> {
     }
 }
 
-fn current_remote(repo: &Path) -> String {
-    optional_git_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
-        .and_then(|branch| {
-            optional_git_stdout(
+fn current_remote(repo: &Path, read: &GitReadOperation) -> Result<String, String> {
+    let configured = match read
+        .optional_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .map_err(paused)?
+    {
+        Some(branch) => read
+            .optional_stdout(
                 repo,
                 &["config", "--get", &format!("branch.{branch}.remote")],
             )
-        })
+            .map_err(paused)?,
+        None => None,
+    };
+    Ok(configured
         .filter(|remote| !remote.is_empty())
-        .unwrap_or_else(|| "origin".into())
+        .unwrap_or_else(|| "origin".into()))
 }
 
-fn checked_out_branches(repo: &Path) -> Result<HashSet<String>, String> {
-    worktree_branch_paths(repo)
+fn checked_out_branches(repo: &Path, read: &GitReadOperation) -> Result<HashSet<String>, String> {
+    worktree_branch_paths_with_read(repo, read)
         .map(|paths| paths.into_keys().collect())
         .map_err(|error| paused(format!("Could not inspect repository worktrees: {error}")))
 }
 
 fn snapshot_sync(cwd: &str) -> Result<GitPublishSnapshot, String> {
-    let repo = selected_repository(cwd)?;
-    let common_dir = git_common_dir(&repo).map_err(paused)?;
-    let remote = current_remote(&repo);
-    let (fetch_url, push_url) = remote_urls(&repo, &remote)?;
+    snapshot_with_read(cwd, &GitReadOperation::new())
+}
+
+fn snapshot_with_read(cwd: &str, read: &GitReadOperation) -> Result<GitPublishSnapshot, String> {
+    let repo = selected_repository_with_read(cwd, read)?;
+    let common_dir = read.common_dir(&repo).map_err(paused)?;
+    let remote = current_remote(&repo, read)?;
+    if !valid_ref_component(&remote) {
+        return Err(paused("The configured Git remote name is invalid."));
+    }
+    let fetch_url = read
+        .stdout(&repo, &["remote", "get-url", &remote])
+        .map_err(paused)?;
+    let pushes = read
+        .stdout(&repo, &["remote", "get-url", "--push", "--all", &remote])
+        .map_err(paused)?;
+    let push_urls: Vec<_> = pushes
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if push_urls.len() != 1 {
+        return Err(paused(format!(
+            "Remote {remote} must have exactly one push URL before automatic publishing can run."
+        )));
+    }
+    let push_url = push_urls[0].to_string();
     let repository = repository_identity(&fetch_url, &push_url)?;
-    let checked_out = checked_out_branches(&repo)?;
-    let rows = git_stdout(
+    let checked_out = checked_out_branches(&repo, read)?;
+    let rows = read.stdout(
         &repo,
         &[
             "for-each-ref",
             "--format=%(refname:strip=2)%00%(objectname)%00%(upstream:remotename)%00%(upstream:remoteref)",
             "refs/heads",
         ],
-        None,
     )
     .map_err(|error| paused(format!("Could not inspect local branches: {error}")))?;
     let mut branches = Vec::new();
@@ -839,7 +871,43 @@ mod tests {
         let binding = snapshot_sync(repo.to_str().unwrap()).unwrap().binding;
         let result = establish_upstream(&repo, &binding, "main", &published, "main");
         assert!(result.unwrap_err().contains("advanced or changed"));
-        assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), newer);
+        assert_eq!(
+            run(&repo, &["rev-parse", "refs/remotes/origin/main"]),
+            newer
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_publication_snapshot_rejects_incomplete_branch_mappings() {
+        let (root, repo) = fixture();
+        let head = run(&repo, &["rev-parse", "HEAD"]);
+        let mut refs = String::new();
+        for number in 0..40 {
+            refs.push_str(&format!(
+                "update refs/heads/long-fixture-branch-{number:03} {head}\n"
+            ));
+        }
+        let output = crate::project_git::run_git_with_input(
+            &repo,
+            &["update-ref", "--stdin"],
+            None,
+            refs.as_bytes(),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        let read = GitReadOperation::with_limits(Duration::from_secs(5), 1024);
+        let error = snapshot_with_read(repo.to_str().unwrap(), &read).unwrap_err();
+        assert!(error.starts_with("PAUSED:"), "{error}");
+        assert!(error.contains("byte limit"), "{error}");
+        assert_eq!(
+            snapshot_sync(repo.to_str().unwrap())
+                .unwrap()
+                .branches
+                .len(),
+            41
+        );
+        assert_eq!(run(&repo, &["rev-parse", "HEAD"]), head);
         fs::remove_dir_all(root).unwrap();
     }
 

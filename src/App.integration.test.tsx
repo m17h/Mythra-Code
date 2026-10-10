@@ -1899,6 +1899,30 @@ describe("overlapping refresh ordering", () => {
     expect(within(dialog).queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
   });
 
+  it("polls only relevant Settings surfaces with one Skills watcher", async () => {
+    localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
+    await renderApp();
+    const intervals = vi.spyOn(window, "setInterval");
+    const clears = vi.spyOn(window, "clearInterval");
+    const activeCadences = () => intervals.mock.calls.flatMap(([, delay], index) => {
+      const id = intervals.mock.results[index].value;
+      return (delay === 2_000 || delay === 5_000) && !clears.mock.calls.some(([cleared]) => cleared === id) ? [delay] : [];
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const dialog = await screen.findByRole("dialog", { name: "Settings" });
+    expect(activeCadences()).toEqual([]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Prompts" }));
+    await waitFor(() => expect(activeCadences()).toEqual([5_000]));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Tools & MCP" }));
+    await waitFor(() => expect(activeCadences()).toEqual([5_000]));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Skills" }));
+    await waitFor(() => expect(activeCadences()).toEqual([2_000]));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Models & accounts" }));
+    await waitFor(() => expect(activeCadences()).toEqual([]));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close settings" }));
+    expect(activeCadences()).toEqual([]);
+  });
+
   it("lets a slow skills refresh finish instead of superseding it on each poll", async () => {
     localStorage.setItem("kiwi.skillsFolder", JSON.stringify("/skills"));
     const scan = deferred<unknown>();
@@ -1912,8 +1936,10 @@ describe("overlapping refresh ordering", () => {
     expect(initialScans).toBeGreaterThan(0);
     const intervals = vi.spyOn(window, "setInterval");
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    await waitFor(() => expect(intervals.mock.calls.some(([, delay]) => delay === 5_000)).toBe(true));
-    const poll = intervals.mock.calls.find(([, delay]) => delay === 5_000)![0] as () => void;
+    const dialog = await screen.findByRole("dialog", { name: "Settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Skills" }));
+    await waitFor(() => expect(intervals.mock.calls.some(([, delay]) => delay === 2_000)).toBe(true));
+    const poll = intervals.mock.calls.find(([, delay]) => delay === 2_000)![0] as () => void;
     // Reproduce a scan/sync taking longer than several watcher ticks.
     await act(async () => { poll(); poll(); poll(); });
     expect(scans()).toBe(initialScans);
@@ -2227,6 +2253,10 @@ describe("overlapping refresh ordering", () => {
     const rootsBefore = invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc"
       && args?.method === "skills/extraRoots/set"
       && ((args.params ?? {}) as { extraRoots: string[] }).extraRoots[0] === "/runtime/skills").length;
+    // A later focus retries the repaired library; immediate focus/visibility
+    // pairs deliberately share the watcher's short burst floor.
+    const retryNow = Date.now() + 250;
+    vi.spyOn(Date, "now").mockReturnValue(retryNow);
     await act(async () => { window.dispatchEvent(new Event("focus")); });
     await waitFor(() => expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc"
       && args?.method === "skills/extraRoots/set"

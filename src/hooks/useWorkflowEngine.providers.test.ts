@@ -1,4 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
+import { acceptCursorTurnStart, cursorTurnStartAttempt, retireCursorTurnOwner } from "../lib/cursorTurnOwnership";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/appConfig";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
@@ -146,6 +147,43 @@ describe.each(["claude", "cursor"] as const)("%s saved workflows", (provider) =>
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ messages: expect.arrayContaining([expect.objectContaining({ role: "assistant", text: "Result turn-2" })]) }));
     if (provider === "cursor") expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ cursorSessionId: "cursor-session" }));
     expect(useTaskStore.getState().tasks[runs.at(-1)!.threadId!].status).toBe("completed");
+  });
+
+  if (provider === "cursor") it("does not revive a stopped Cursor workflow from its superseded acknowledgment", async () => {
+    const { deps, runs } = setup(provider);
+    runtime.cursor.mockImplementationOnce(async ({ threadId, startRequestId }: { threadId: string; startRequestId: string }) => {
+      const attempt = cursorTurnStartAttempt(threadId, startRequestId)!;
+      acceptCursorTurnStart(threadId, attempt, "stopped");
+      retireCursorTurnOwner(threadId, attempt.owner);
+      useTaskStore.getState().setTaskStatus(threadId, "interrupted");
+      return { turnId: "stopped", cursorSessionId: "stale-session", superseded: true };
+    });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("recipe"); });
+    expect(runs.at(-1)?.status).toBe("interrupted");
+    expect(runtime.cursor).toHaveBeenCalledTimes(1);
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(deps.finalizeRunCheckpoint).toHaveBeenCalledWith(runs.at(-1)!.threadId, "stopped");
+    expect(useTaskStore.getState().tasks[runs.at(-1)!.threadId!].activeTurnId).toBeUndefined();
+    expect(useTaskStore.getState().tasks[runs.at(-1)!.threadId!].status).toBe("interrupted");
+  });
+  if (provider === "cursor") it("saves the accepted stopped Cursor workflow session for later conversation resume", async () => {
+    const { deps, runs } = setup(provider);
+    runtime.cursor.mockImplementationOnce(async ({ threadId, startRequestId }: { threadId: string; startRequestId: string }) => {
+      const attempt = cursorTurnStartAttempt(threadId, startRequestId)!;
+      acceptCursorTurnStart(threadId, attempt, "stopped");
+      retireCursorTurnOwner(threadId, attempt.owner);
+      useTaskStore.getState().setTaskStatus(threadId, "interrupted");
+      return { turnId: "stopped", cursorSessionId: "accepted-stopped-session", stopped: true };
+    });
+    const { result } = renderHook(() => useWorkflowEngine(deps));
+    await act(async () => { await result.current.runWorkflow("recipe"); });
+    expect(runs.at(-1)?.status).toBe("interrupted");
+    expect(runtime.cursor).toHaveBeenCalledTimes(1);
+    expect(runtime.saveCursor).toHaveBeenLastCalledWith(expect.objectContaining({ cursorSessionId: "accepted-stopped-session" }));
+    expect(deps.discardRunCheckpoint).not.toHaveBeenCalled();
+    expect(deps.finalizeRunCheckpoint).toHaveBeenCalledWith(runs.at(-1)!.threadId, "stopped");
+    expect(useTaskStore.getState().tasks[runs.at(-1)!.threadId!]).toMatchObject({ status: "interrupted" });
   });
   it("owns the thread while the completed step checkpoint is still finalizing", async () => {
     const { deps, runs } = setup(provider);

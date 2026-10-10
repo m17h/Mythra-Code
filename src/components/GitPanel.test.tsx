@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { GitPanel, type GitPanelProps } from "./GitPanel";
+import type { GitChangeArea } from "../lib/gitInspection";
 
 function panelProps(overrides: Partial<GitPanelProps> = {}): GitPanelProps {
   return {
@@ -64,6 +65,45 @@ function workflow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("GitPanel commit controls", () => {
+  it("shows an authoritative filename error without rescanning or disabling branch controls", async () => {
+    const changesError = "A Git filename is not valid UTF-8 and cannot be selected safely";
+    const inspection = { cwd: "/unsupported-path", getChanges: vi.fn(), getFileDiff: vi.fn(), getHistory: vi.fn() };
+    const controls = workflow({ snapshot: snapshot({ rootPath: inspection.cwd, changes: null, changesError }) });
+    render(<GitPanel {...panelProps({ inspection, workflow: controls, onPathAction: vi.fn() })} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(changesError);
+    expect(inspection.getChanges).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /^Stage .+\./ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch or create a branch" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Switch or create a branch" }));
+    expect(screen.getByRole("menuitem", { name: /^main/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^main/ }));
+    expect(controls.onBranch).toHaveBeenCalledWith("main", false);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(controls.onRefresh).toHaveBeenCalledOnce();
+    expect(inspection.getChanges).not.toHaveBeenCalled();
+  });
+
+  it("reuses workspace status while refreshing a same-count selected diff", async () => {
+    const changes = { rootPath: "/shared-status", rows: [{ path: "pending.ts", originalPath: null, area: "unstaged" as const, status: "M" }], stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false };
+    let content = "+first contents";
+    const inspection = {
+      cwd: changes.rootPath,
+      getChanges: vi.fn().mockResolvedValue(changes),
+      getFileDiff: vi.fn(async (_cwd: string, path: string, area: GitChangeArea) => ({ path, area, text: content, binary: false, truncated: false })),
+      getHistory: vi.fn(),
+    };
+    const input = panelProps({ inspection, workflow: workflow({ readRevision: 1, snapshot: snapshot({ rootPath: changes.rootPath, changes, changedFiles: 1, unstagedFiles: 1 }) }) });
+    const view = render(<GitPanel {...input} />);
+    await vi.waitFor(() => expect(screen.getAllByText("pending.ts").length).toBeGreaterThan(0));
+    expect(inspection.getChanges).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /pending.ts.*not staged/i }));
+    await vi.waitFor(() => expect(inspection.getFileDiff).toHaveBeenCalledTimes(1));
+    content = "+edited contents";
+    view.rerender(<GitPanel {...input} workflow={workflow({ readRevision: 2, snapshot: snapshot({ rootPath: changes.rootPath, changes, changedFiles: 1, unstagedFiles: 1 }) })} />);
+    await vi.waitFor(() => expect(inspection.getFileDiff).toHaveBeenCalledTimes(2));
+    expect(inspection.getChanges).not.toHaveBeenCalled();
+  });
+
   it("changes the primary actions from dirty to committed ahead to fully synced", () => {
     const input = panelProps({ githubRepoStatus: { ...attached, ahead: 0, behind: 0 }, workflow: workflow() });
     const view = render(<GitPanel {...input} />);

@@ -37,6 +37,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod agents;
 mod close_guard;
 mod cursor;
+mod file_preview;
 mod git_inspection;
 mod git_publish;
 mod git_workspace;
@@ -1212,6 +1213,66 @@ async fn reap_claude_process(
     }
 }
 
+/// How long Claude Code may take to accept the initialize request and first
+/// prompt. Stdout and stderr are drained meanwhile, so only a CLI that stops
+/// reading its input reaches this; that start then fails and its process is
+/// killed instead of holding the thread slot.
+const CLAUDE_STARTUP_INPUT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Stdout retained while startup input is still being written. Past this the
+/// drain pauses, without discarding anything, and the input deadline applies.
+const CLAUDE_STARTUP_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Stdout read results, in order, observed before the reader task took over.
+type ClaudeEarlyOutput = std::collections::VecDeque<std::io::Result<Option<String>>>;
+
+/// Write Claude Code's startup input while draining its stdout. The CLI may
+/// write before it reads, and a full stdout pipe would stop it reading stdin.
+/// Everything drained is returned unprocessed so the stdout reader can apply
+/// its normal handling — including the prompt boundary — in original order.
+async fn write_claude_startup_input<R: tokio::io::AsyncBufRead + Unpin>(
+    turn: &ClaudeTurn,
+    messages: &[&Value],
+    lines: &mut tokio::io::Lines<R>,
+    deadline: Instant,
+) -> Result<ClaudeEarlyOutput, String> {
+    enum Progress {
+        Written(Result<Result<(), String>, tokio::time::error::Elapsed>),
+        Read(std::io::Result<Option<String>>),
+    }
+    let writes = timeout_at(deadline, async {
+        for message in messages {
+            turn.write(message).await?;
+        }
+        Ok::<(), String>(())
+    });
+    tokio::pin!(writes);
+    let mut early = ClaudeEarlyOutput::new();
+    let mut early_bytes = 0usize;
+    loop {
+        // EOF and read errors end the drain; the reader reports them in turn.
+        let draining = early_bytes < CLAUDE_STARTUP_OUTPUT_BYTES
+            && early.back().is_none_or(|last| matches!(last, Ok(Some(_))));
+        let progress = tokio::select! {
+            biased;
+            written = &mut writes => Progress::Written(written),
+            line = lines.next_line(), if draining => Progress::Read(line),
+        };
+        match progress {
+            Progress::Written(Ok(Ok(()))) => return Ok(early),
+            Progress::Written(Ok(Err(error))) => return Err(error),
+            Progress::Written(Err(_)) => {
+                return Err("Claude Code did not accept its input in time.".into())
+            }
+            Progress::Read(line) => {
+                if let Ok(Some(text)) = &line {
+                    early_bytes = early_bytes.saturating_add(text.len());
+                }
+                early.push_back(line);
+            }
+        }
+    }
+}
+
 /// A resumed CLI can finish restored background notifications before it starts
 /// our queued prompt. Match the CLI's command lifecycle to the UUID we sent;
 /// that zero-turn result must not close stdin or retire the process.
@@ -1776,7 +1837,9 @@ where
 }
 
 async fn openrouter_key() -> Option<String> {
-    if release_qa::active() { return None; }
+    if release_qa::active() {
+        return None;
+    }
     bounded_keyring_read(&OPENROUTER_KEY_READ, KEYRING_READ_TIMEOUT, || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, OPENROUTER_ACCOUNT).ok()?;
         entry
@@ -1788,7 +1851,9 @@ async fn openrouter_key() -> Option<String> {
 }
 
 async fn lmstudio_key() -> Option<String> {
-    if release_qa::active() { return None; }
+    if release_qa::active() {
+        return None;
+    }
     bounded_keyring_read(&LMSTUDIO_KEY_READ, KEYRING_READ_TIMEOUT, || {
         let entry = keyring::Entry::new(KEYRING_SERVICE, LMSTUDIO_ACCOUNT).ok()?;
         entry
@@ -5345,22 +5410,9 @@ async fn claude_turn_start(
         return Err("Claude is already working in this thread".into());
     }
 
-    let initialize = json!({
-        "type": "control_request",
-        "request_id": uuid::Uuid::new_v4().to_string(),
-        "request": { "subtype": "initialize" }
-    });
-    if let Err(error) = turn.write(&initialize).await {
-        remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
-        turn.shutdown().await;
-        return Err(error);
-    }
-    if let Err(error) = turn.write(&user_message).await {
-        remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
-        turn.shutdown().await;
-        return Err(error);
-    }
-
+    // Both output pipes are drained before any input is written. A CLI that
+    // writes startup output before reading its prompt would otherwise fill an
+    // unread pipe and stop reading stdin while this write waits for it.
     let stderr_lines = Arc::new(Mutex::new(TailBuffer::new(CLAUDE_STDERR_TAIL_BYTES)));
     let stderr_output = stderr_lines.clone();
     let mut stderr_task = tauri::async_runtime::spawn(async move {
@@ -5372,6 +5424,29 @@ async fn claude_turn_start(
             }
         }
     });
+    let mut lines = BufReader::new(stdout).lines();
+
+    let initialize = json!({
+        "type": "control_request",
+        "request_id": uuid::Uuid::new_v4().to_string(),
+        "request": { "subtype": "initialize" }
+    });
+    let mut early_output = match write_claude_startup_input(
+        &turn,
+        &[&initialize, &user_message],
+        &mut lines,
+        Instant::now() + CLAUDE_STARTUP_INPUT_TIMEOUT,
+    )
+    .await
+    {
+        Ok(early_output) => early_output,
+        Err(error) => {
+            remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
+            turn.shutdown().await;
+            stderr_task.abort();
+            return Err(error);
+        }
+    };
 
     let mut turn_boundary = ClaudeTurnBoundary::new(
         user_message["uuid"]
@@ -5389,29 +5464,37 @@ async fn claude_turn_start(
     let stdout_child = turn.child.clone();
     let stdout_runtime = turn.clone();
     tauri::async_runtime::spawn(async move {
-        const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
-        let mut lines = BufReader::new(stdout).lines();
         let mut terminal_result = None;
         let mut saw_terminal_assistant = false;
         // High-frequency `stream_event` messages are coalesced into a single
         // "claude-events" array emit (mirroring the Codex reader), flushed on
-        // a ~25ms tick or before any non-delta message so ordering is
-        // strictly preserved. Each array entry is exactly the payload the
-        // per-line "claude-event" emit would have carried.
-        let mut delta_buffer: Vec<Value> = Vec::new();
-        let mut flush_deadline = Instant::now();
+        // a ~25ms tick, at the event or byte flush threshold, or before any non-delta
+        // message so ordering is strictly preserved. Each array entry is
+        // exactly the payload the per-line "claude-event" emit would have
+        // carried.
+        let mut delta_buffer = ProviderDeltaBatch::default();
         let mut observed_exit = None;
-        let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
-            if !buffer.is_empty() {
-                let batch = std::mem::take(buffer);
-                let _ = app.emit("claude-events", Value::Array(batch));
+        let flush_deltas = |buffer: &mut ProviderDeltaBatch, app: &AppHandle| {
+            if let Some(batch) = buffer.take() {
+                let _ = app.emit("claude-events", batch);
             }
         };
 
         'reader: loop {
             // `Lines::next_line` is cancellation safe, so racing it against
-            // the flush deadline cannot drop partial lines.
-            let next = if delta_buffer.is_empty() {
+            // the flush deadline cannot drop partial lines. Output read while
+            // startup input was being written comes first, in order.
+            let next = if let Some(early) = early_output.pop_front() {
+                early
+            } else if let Some(flush_deadline) = delta_buffer.deadline() {
+                match timeout_at(flush_deadline, lines.next_line()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        flush_deltas(&mut delta_buffer, &stdout_app);
+                        continue;
+                    }
+                }
+            } else {
                 match timeout(Duration::from_secs(1), lines.next_line()).await {
                     Ok(next) => next,
                     Err(_) => {
@@ -5433,14 +5516,6 @@ async fn claude_turn_start(
                                 break 'reader;
                             }
                         }
-                    }
-                }
-            } else {
-                match timeout_at(flush_deadline, lines.next_line()).await {
-                    Ok(next) => next,
-                    Err(_) => {
-                        flush_deltas(&mut delta_buffer, &stdout_app);
-                        continue;
                     }
                 }
             };
@@ -5484,14 +5559,16 @@ async fn claude_turn_start(
                 if claude_reopens_turn(&message) {
                     saw_terminal_assistant = false;
                 }
-                if delta_buffer.is_empty() {
-                    flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
-                }
-                delta_buffer.push(json!({
+                let event = json!({
                     "threadId": stdout_thread,
                     "turnId": stdout_turn,
                     "message": message,
-                }));
+                });
+                // Ready lines win the deadline race during a continuous
+                // stream, so the flush thresholds are checked after each append.
+                if delta_buffer.push(event, line.len(), Instant::now()) {
+                    flush_deltas(&mut delta_buffer, &stdout_app);
+                }
                 continue;
             }
             flush_deltas(&mut delta_buffer, &stdout_app);
@@ -6254,6 +6331,720 @@ fn codex_delta_batch_due(batch_len: usize, deadline: Instant, now: Instant) -> b
     batch_len >= CODEX_DELTA_MAX_BATCH_SIZE || now >= deadline
 }
 
+/// How long provider readers coalesce high-frequency deltas before emitting.
+const PROVIDER_DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
+/// Raw provider output, in bytes, at which a coalesced delta batch is flushed.
+/// This is a flush threshold, not a payload limit: the event that crosses it
+/// is kept in the batch, one event can be larger than it, and the emitted JSON
+/// adds wrapper overhead. Events are never split, reordered, or dropped.
+const PROVIDER_DELTA_MAX_BATCH_BYTES: usize = 256 * 1024;
+
+fn provider_delta_batch_due(
+    batch_len: usize,
+    batch_bytes: usize,
+    deadline: Instant,
+    now: Instant,
+) -> bool {
+    codex_delta_batch_due(batch_len, deadline, now) || batch_bytes >= PROVIDER_DELTA_MAX_BATCH_BYTES
+}
+
+/// Deltas waiting to be emitted as one array event, in arrival order.
+#[derive(Default)]
+struct ProviderDeltaBatch {
+    events: Vec<Value>,
+    bytes: usize,
+    deadline: Option<Instant>,
+}
+
+impl ProviderDeltaBatch {
+    /// Append one delta and report whether the batch must be emitted now: its
+    /// deadline passed, or it reached the event count or byte threshold. The
+    /// check runs after every append because a reader whose next line is
+    /// already buffered never observes its flush deadline expiring.
+    fn push(&mut self, event: Value, line_bytes: usize, now: Instant) -> bool {
+        let deadline = *self
+            .deadline
+            .get_or_insert(now + PROVIDER_DELTA_FLUSH_INTERVAL);
+        self.events.push(event);
+        self.bytes = self.bytes.saturating_add(line_bytes);
+        provider_delta_batch_due(self.events.len(), self.bytes, deadline, now)
+    }
+
+    /// The pending flush deadline; `None` exactly when nothing is buffered.
+    fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    fn take(&mut self) -> Option<Value> {
+        self.deadline = None;
+        self.bytes = 0;
+        (!self.events.is_empty()).then(|| Value::Array(std::mem::take(&mut self.events)))
+    }
+}
+
+/// How often a provider reader checks its direct child independently of the
+/// output pipes, which a descendant can inherit and hold open.
+const PROVIDER_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// After the direct child exits, output it already wrote (often its final
+/// response) is still read for at most this long. A descendant holding the
+/// pipe open, silently or while writing, cannot extend the transport's life.
+const PROVIDER_EXIT_DRAIN: Duration = Duration::from_secs(2);
+
+/// Resolves once the direct child has exited. Each check takes the child lock
+/// only if it is free and only for a non-blocking `try_wait`, so the watcher
+/// never queues ahead of, or holds the lock against, a kill path. If the child
+/// cannot be inspected this never resolves, leaving EOF as the only end of the
+/// transport exactly as before the watcher existed.
+async fn direct_child_exit(child: Arc<Mutex<Child>>) {
+    loop {
+        // Never queue for the lock. Tokio's mutex is fair: a queued acquisition
+        // is granted the lock when its holder releases it, before it is polled
+        // again. A reader polls this watcher only while it waits for output, so
+        // a grant that arrives while it handles a line, or after its transport
+        // closed, would hold the lock unpolled and wedge every kill and reap of
+        // this child. A busy lock (a kill path owns the child) just means
+        // checking again after the interval.
+        let status = match child.try_lock() {
+            Ok(mut child) => child.try_wait(),
+            Err(_) => Ok(None),
+        };
+        match status {
+            Ok(Some(_)) => return,
+            Ok(None) => tokio::time::sleep(PROVIDER_EXIT_POLL_INTERVAL).await,
+            Err(_) => return std::future::pending().await,
+        }
+    }
+}
+
+/// How long a provider's stderr reader may keep delivering output the process
+/// already wrote once its transport has ended.
+const PROVIDER_STDERR_DRAIN: Duration = Duration::from_secs(1);
+
+/// Retire a stderr reader with its transport. A descendant can inherit stderr
+/// and hold it open indefinitely, so after a short grace the reader is aborted
+/// rather than left running detached.
+async fn finish_stderr_reader(mut task: tauri::async_runtime::JoinHandle<()>) {
+    if timeout(PROVIDER_STDERR_DRAIN, &mut task).await.is_err() {
+        task.abort();
+    }
+}
+
+enum ProviderRead {
+    Line(String),
+    /// The caller's coalescing deadline passed while no line was ready.
+    FlushDue,
+    /// EOF, a read error, or the bounded drain after the direct child exited.
+    Closed,
+}
+
+/// Provider stdout lines whose end is the earlier of EOF and the direct
+/// child's exit plus a bounded final drain.
+struct ProviderOutput<R> {
+    lines: tokio::io::Lines<R>,
+    exit: std::pin::Pin<Box<dyn Future<Output = ()> + Send>>,
+    drain_until: Option<Instant>,
+}
+
+impl<R: tokio::io::AsyncBufRead + Unpin> ProviderOutput<R> {
+    fn new(reader: R, child: Arc<Mutex<Child>>) -> Self {
+        Self {
+            lines: reader.lines(),
+            exit: Box::pin(direct_child_exit(child)),
+            drain_until: None,
+        }
+    }
+
+    async fn next_line(&mut self, flush_at: Option<Instant>) -> ProviderRead {
+        enum Wake {
+            Line(std::io::Result<Option<String>>),
+            Exited,
+            Timer,
+        }
+        loop {
+            if self
+                .drain_until
+                .is_some_and(|until| Instant::now() >= until)
+            {
+                return self.close();
+            }
+            let wake_at = match (flush_at, self.drain_until) {
+                (Some(flush), Some(drain)) => Some(flush.min(drain)),
+                (flush, drain) => flush.or(drain),
+            };
+            let watching_exit = self.drain_until.is_none();
+            // The exit watcher is polled first: output that is always ready
+            // would otherwise win every race and starve it, so a descendant
+            // could keep the transport alive. Once the exit is seen, buffered
+            // output is still read until the drain deadline. `Lines::next_line`
+            // is cancellation safe, so losing a race cannot drop a partial line.
+            let wake = tokio::select! {
+                biased;
+                () = &mut self.exit, if watching_exit => Wake::Exited,
+                line = self.lines.next_line() => Wake::Line(line),
+                () = tokio::time::sleep_until(wake_at.unwrap_or_else(Instant::now)), if wake_at.is_some() => Wake::Timer,
+            };
+            match wake {
+                Wake::Line(Ok(Some(line))) => return ProviderRead::Line(line),
+                Wake::Line(_) => return self.close(),
+                Wake::Exited => self.drain_until = Some(Instant::now() + PROVIDER_EXIT_DRAIN),
+                Wake::Timer => {
+                    if flush_at.is_some_and(|flush| Instant::now() >= flush) {
+                        return ProviderRead::FlushDue;
+                    }
+                }
+            }
+        }
+    }
+
+    /// End the transport and drop the exit watcher with it. Nothing polls the
+    /// watcher after `Closed`, so it must not outlive this call holding (or
+    /// waiting for) anything — callers go on to kill and reap the same child.
+    fn close(&mut self) -> ProviderRead {
+        self.exit = Box::pin(std::future::pending());
+        ProviderRead::Closed
+    }
+}
+
+#[cfg(test)]
+mod provider_runtime_tests {
+    use super::*;
+    use std::io::{BufRead as _, Write as _};
+
+    const FIXTURE_TEST: &str = "provider_runtime_tests::provider_fixture";
+    const FIXTURE_MODE: &str = "MYTHRA_PROVIDER_FIXTURE";
+    const FIXTURE_RELEASE: &str = "MYTHRA_PROVIDER_FIXTURE_RELEASE";
+    pub(crate) const FIXTURE_HOLDER: &str = "MYTHRA_PROVIDER_FIXTURE_HOLDER";
+    pub(crate) const FIXTURE_READ_FIRST: &str = "MYTHRA_PROVIDER_FIXTURE_READ_FIRST";
+    pub(crate) const FIXTURE_FINAL: &str = "MYTHRA_PROVIDER_FIXTURE_FINAL";
+    pub(crate) const FIXTURE_STDERR: &str = "fixture stderr before exit";
+    /// Printed by `read-one` once it has consumed its line and stopped reading.
+    pub(crate) const FIXTURE_CONSUMED: &str = "fixture consumed one input line";
+    /// The longest a fixture waits for release; tests release them sooner.
+    const FIXTURE_LIFETIME: Duration = Duration::from_secs(30);
+
+    /// A hermetic stand-in for a provider CLI on every OS: this test binary
+    /// re-run in one mode. It never contacts a provider or uses a model.
+    #[test]
+    #[ignore = "subprocess fixture spawned by provider runtime tests"]
+    fn provider_fixture() {
+        let Ok(mode) = env::var(FIXTURE_MODE) else {
+            return;
+        };
+        let release = PathBuf::from(env::var_os(FIXTURE_RELEASE).expect("fixture release path"));
+        run_fixture(&mode, &release);
+        // Exit before the harness prints its result line on stdout.
+        std::process::exit(0);
+    }
+
+    fn released(release: &Path) -> bool {
+        release.exists() || !release.parent().is_some_and(Path::exists)
+    }
+
+    fn wait_for_release(release: &Path) {
+        let started = std::time::Instant::now();
+        while !released(release) && started.elapsed() < FIXTURE_LIFETIME {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn read_input_line() {
+        let mut line = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut line);
+    }
+
+    fn print_lines(lines: &[&str]) {
+        let mut stdout = std::io::stdout().lock();
+        for line in lines {
+            writeln!(stdout, "{line}").unwrap();
+        }
+        stdout.flush().unwrap();
+    }
+
+    fn run_fixture(mode: &str, release: &Path) {
+        // The harness banner precedes fixture output; start on a fresh line.
+        print_lines(&[""]);
+        match mode {
+            "exit" => {}
+            "hold" | "no-read" => wait_for_release(release),
+            "hold-spam" => {
+                let mut stdout = std::io::stdout().lock();
+                // Ends when the reader closes the pipe or the test releases it.
+                while !released(release) && writeln!(stdout, "spam").is_ok() {}
+            }
+            "orphan-parent" => {
+                if env::var_os(FIXTURE_READ_FIRST).is_some() {
+                    read_input_line();
+                }
+                // The descendant inherits stdout and stderr and outlives us.
+                let mut descendant = background_std_command(env::current_exe().unwrap())
+                    .args(["--exact", FIXTURE_TEST, "--ignored", "--nocapture", "-q"])
+                    .env(
+                        FIXTURE_MODE,
+                        env::var(FIXTURE_HOLDER).unwrap_or("hold".into()),
+                    )
+                    .stdin(Stdio::null())
+                    .spawn()
+                    .expect("spawn fixture descendant");
+                // Reap while the parent remains alive. This mode deliberately
+                // exits first, at which point the OS adopts the descendant;
+                // the scratch-root release still bounds its lifetime.
+                std::thread::spawn(move || {
+                    let _ = descendant.wait();
+                });
+                let final_line = env::var(FIXTURE_FINAL).unwrap_or("final".into());
+                print_lines(&[&final_line]);
+                eprintln!("{FIXTURE_STDERR}");
+            }
+            "startup" => {
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(&vec![b'x'; 1024 * 1024]).unwrap();
+                stdout.write_all(b"\nsecond\n").unwrap();
+                stdout.flush().unwrap();
+                drop(stdout);
+                let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            }
+            "read-one" => {
+                read_input_line();
+                // Lets a test order its next write after this read, instead
+                // of racing the first writer for the input pipe.
+                print_lines(&[FIXTURE_CONSUMED]);
+                wait_for_release(release);
+            }
+            "acp-one" => {
+                read_input_line();
+                print_lines(&[r#"{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}"#]);
+                wait_for_release(release);
+            }
+            "acp-echo" => {
+                for _ in 0..3 {
+                    let mut line = String::new();
+                    if std::io::stdin().lock().read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    print_lines(&[&json!({ "jsonrpc": "2.0", "method": "session/update",
+                        "params": { "echo": request["params"]["prompt"][0]["text"] }
+                    })
+                    .to_string()]);
+                }
+                wait_for_release(release);
+            }
+            "acp-steer" => {
+                read_input_line();
+                read_input_line();
+                print_lines(&[
+                    r#"{"jsonrpc":"2.0","method":"session/update","params":{"n":1}}"#,
+                    r#"{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}"#,
+                ]);
+                std::thread::sleep(Duration::from_millis(300));
+                print_lines(&[
+                    r#"{"jsonrpc":"2.0","method":"session/update","params":{"n":2}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#,
+                ]);
+                wait_for_release(release);
+            }
+            "burst" => {
+                std::thread::sleep(Duration::from_millis(300));
+                let burst: String = (0..1000)
+                    .map(|n| {
+                        format!(
+                            "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"n\":{n}}}}}\n"
+                        )
+                    })
+                    .collect();
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(burst.as_bytes()).unwrap();
+                stdout.flush().unwrap();
+                drop(stdout);
+                wait_for_release(release);
+            }
+            other => panic!("unknown provider fixture mode `{other}`"),
+        }
+    }
+
+    /// A scratch directory whose removal releases every fixture started from it.
+    pub(crate) struct Fixture {
+        directory: PathBuf,
+        release: PathBuf,
+    }
+
+    impl Fixture {
+        pub(crate) fn new() -> Self {
+            let directory =
+                env::temp_dir().join(format!("mythra-provider-fixture-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&directory).unwrap();
+            Self {
+                release: directory.join("release"),
+                directory,
+            }
+        }
+
+        /// The fixture in `mode` with piped stdio in its own process group, as
+        /// provider CLIs are launched.
+        pub(crate) fn command(&self, mode: &str) -> Command {
+            let mut command = background_command(env::current_exe().unwrap());
+            command
+                .args(["--exact", FIXTURE_TEST, "--ignored", "--nocapture", "-q"])
+                .env(FIXTURE_MODE, mode)
+                .env(FIXTURE_RELEASE, &self.release)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            #[cfg(unix)]
+            command.process_group(0);
+            command
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[test]
+    fn provider_delta_batches_flush_after_every_append() {
+        let now = Instant::now();
+        let mut batch = ProviderDeltaBatch::default();
+        assert!(batch.deadline().is_none());
+        for index in 0..CODEX_DELTA_MAX_BATCH_SIZE - 1 {
+            assert!(!batch.push(json!(index), 10, now));
+        }
+        assert!(batch.push(json!("last"), 10, now));
+        let events = batch.take().expect("full batch");
+        let events = events.as_array().unwrap();
+        assert_eq!(events.len(), CODEX_DELTA_MAX_BATCH_SIZE);
+        assert_eq!(events[0], json!(0), "arrival order is preserved");
+        assert!(batch.deadline().is_none() && batch.take().is_none());
+
+        // A single event larger than the byte threshold is emitted whole and
+        // alone: the threshold triggers a flush, it does not split or drop.
+        let large = "z".repeat(2 * PROVIDER_DELTA_MAX_BATCH_BYTES);
+        assert!(batch.push(json!(large), large.len(), now));
+        let events = batch.take().unwrap();
+        assert_eq!(events.as_array().unwrap(), &vec![json!(large)]);
+        assert!(!batch.push(json!(1), 1, now));
+        assert!(
+            batch.push(json!(2), 1, now + PROVIDER_DELTA_FLUSH_INTERVAL),
+            "the deadline is honored even when the next line was already ready"
+        );
+    }
+
+    /// Output that is always ready: every poll yields another `spam` line.
+    #[derive(Default)]
+    struct EndlessSpam {
+        offset: usize,
+    }
+
+    const SPAM: &[u8] = b"spam\nspam\nspam\nspam\nspam\nspam\nspam\nspam\n";
+
+    impl tokio::io::AsyncRead for EndlessSpam {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let available = &SPAM[self.offset..];
+            let count = available.len().min(buf.remaining());
+            buf.put_slice(&available[..count]);
+            self.offset = (self.offset + count) % SPAM.len();
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncBufRead for EndlessSpam {
+        fn poll_fill_buf(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<&[u8]>> {
+            let offset = self.offset;
+            std::task::Poll::Ready(Ok(&SPAM[offset..]))
+        }
+
+        fn consume(mut self: std::pin::Pin<&mut Self>, amount: usize) {
+            self.offset = (self.offset + amount) % SPAM.len();
+        }
+    }
+
+    /// A kill path (Cursor `terminate`, Codex `shutdown`) holds the child lock
+    /// while the reader reaches EOF. Whatever the watcher was doing then, it
+    /// must not end up owning that lock after the holder releases it: nothing
+    /// polls a watcher after `Closed`, so a lock granted to it is never
+    /// released and every later kill or reap of the transport waits forever.
+    #[tokio::test]
+    async fn closed_output_does_not_retain_the_child_lock() {
+        let fixture = Fixture::new();
+        let child = Arc::new(Mutex::new(fixture.command("hold").spawn().unwrap()));
+        let holder = child.lock().await;
+        let mut output = ProviderOutput::new(BufReader::new(tokio::io::empty()), child.clone());
+        assert!(matches!(
+            timeout(Duration::from_secs(2), output.next_line(None)).await,
+            Ok(ProviderRead::Closed)
+        ));
+        drop(holder);
+        assert!(
+            child.try_lock().is_ok(),
+            "a closed output must not hold the child lock"
+        );
+        drop(output);
+        child.lock().await.start_kill().unwrap();
+    }
+
+    /// The same applies between lines: a reader handling a line may itself
+    /// need the child lock (a failed reply retires and kills the transport).
+    #[tokio::test]
+    async fn returned_line_does_not_leave_the_watcher_holding_the_child_lock() {
+        let fixture = Fixture::new();
+        let child = Arc::new(Mutex::new(fixture.command("hold").spawn().unwrap()));
+        let holder = child.lock().await;
+        let mut output = ProviderOutput::new(BufReader::new(&b"line\n"[..]), child.clone());
+        assert!(matches!(
+            timeout(Duration::from_secs(2), output.next_line(None)).await,
+            Ok(ProviderRead::Line(line)) if line == "line"
+        ));
+        drop(holder);
+        assert!(
+            child.try_lock().is_ok(),
+            "the watcher must not be granted the child lock between lines"
+        );
+        drop(output);
+        child.lock().await.start_kill().unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_exit_watch_is_not_starved_by_always_ready_output() {
+        let fixture = Fixture::new();
+        let child = Arc::new(Mutex::new(fixture.command("exit").spawn().unwrap()));
+        let mut output = ProviderOutput::new(EndlessSpam::default(), child.clone());
+        let started = Instant::now();
+        let lines = timeout(Duration::from_secs(15), async {
+            let mut lines = 0u64;
+            loop {
+                match output.next_line(None).await {
+                    ProviderRead::Line(_) => {
+                        lines += 1;
+                        // A consumer that does other work between lines.
+                        if lines.is_multiple_of(32) {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    ProviderRead::FlushDue => {}
+                    ProviderRead::Closed => return lines,
+                }
+            }
+        })
+        .await
+        .expect("the exit watcher must not be starved by always-ready output");
+        assert!(lines > 0, "output after exit is still drained");
+        assert!(started.elapsed() < PROVIDER_EXIT_DRAIN + Duration::from_secs(5));
+        assert!(child.lock().await.try_wait().unwrap().is_some());
+    }
+
+    fn fixture_output(
+        fixture: &Fixture,
+        mode: &str,
+        holder: &str,
+    ) -> (
+        Arc<Mutex<Child>>,
+        ProviderOutput<BufReader<tokio::process::ChildStdout>>,
+        tokio::process::ChildStderr,
+    ) {
+        let mut child = fixture
+            .command(mode)
+            .env(FIXTURE_HOLDER, holder)
+            .spawn()
+            .expect("spawn fixture provider");
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let child = Arc::new(Mutex::new(child));
+        let output = ProviderOutput::new(BufReader::new(stdout), child.clone());
+        (child, output, stderr)
+    }
+
+    async fn read_until_closed(
+        output: &mut ProviderOutput<BufReader<tokio::process::ChildStdout>>,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        loop {
+            match output.next_line(None).await {
+                ProviderRead::Line(line) => lines.push(line),
+                ProviderRead::FlushDue => {}
+                ProviderRead::Closed => return lines,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_output_keeps_final_output_and_ends_at_direct_exit() {
+        // The descendant inherits stdout and stderr and outlives the direct
+        // child, so EOF would not arrive until the fixture is released.
+        let fixture = Fixture::new();
+        let (child, mut output, _stderr) = fixture_output(&fixture, "orphan-parent", "hold");
+        let started = Instant::now();
+        let lines = timeout(Duration::from_secs(10), read_until_closed(&mut output))
+            .await
+            .expect("transport must end at direct exit");
+        assert!(lines.iter().any(|line| line == "final"), "{lines:?}");
+        assert!(started.elapsed() < PROVIDER_EXIT_DRAIN + Duration::from_secs(5));
+        assert!(child.lock().await.try_wait().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn provider_output_drain_is_bounded_while_a_descendant_keeps_writing() {
+        let fixture = Fixture::new();
+        let (_child, mut output, _stderr) = fixture_output(&fixture, "orphan-parent", "hold-spam");
+        let lines = timeout(Duration::from_secs(10), read_until_closed(&mut output))
+            .await
+            .expect("drain must end while a descendant keeps writing");
+        assert!(
+            lines.iter().any(|line| line == "final"),
+            "final output kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_output_reports_a_due_flush_while_idle() {
+        let fixture = Fixture::new();
+        let (_child, mut output, _stderr) = fixture_output(&fixture, "no-read", "hold");
+        // Skip the harness banner so the idle wait is what is measured.
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match timeout(Duration::from_millis(500), output.next_line(None)).await {
+                    Err(_) => break,
+                    Ok(ProviderRead::Line(_) | ProviderRead::FlushDue) => {}
+                    Ok(ProviderRead::Closed) => {
+                        panic!("fixture exited before the idle flush check")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("fixture banner drain must finish or fail within the startup bound");
+        let flush_at = Instant::now() + Duration::from_millis(30);
+        assert!(matches!(
+            timeout(Duration::from_secs(2), output.next_line(Some(flush_at))).await,
+            Ok(ProviderRead::FlushDue)
+        ));
+    }
+
+    #[test]
+    fn stderr_reader_reports_while_active_and_is_retired_with_the_transport() {
+        tauri::async_runtime::block_on(async {
+            let fixture = Fixture::new();
+            let (child, mut output, stderr) = fixture_output(&fixture, "orphan-parent", "hold");
+            let reported = Arc::new(StdMutex::new(Vec::new()));
+            let task = tauri::async_runtime::spawn({
+                let reported = reported.clone();
+                async move {
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        reported.lock().unwrap().push(line);
+                    }
+                }
+            });
+            timeout(Duration::from_secs(10), read_until_closed(&mut output))
+                .await
+                .unwrap();
+            assert!(child.lock().await.try_wait().unwrap().is_some());
+            // The descendant still holds stderr, so the reader never sees EOF.
+            let started = Instant::now();
+            timeout(Duration::from_secs(5), finish_stderr_reader(task))
+                .await
+                .expect("an inherited stderr pipe must not keep its reader running");
+            assert!(started.elapsed() < PROVIDER_STDERR_DRAIN + Duration::from_secs(1));
+            assert!(reported
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line == FIXTURE_STDERR));
+        });
+    }
+
+    fn fixture_claude(
+        fixture: &Fixture,
+        mode: &str,
+    ) -> (
+        ClaudeTurn,
+        tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    ) {
+        let mut child = fixture
+            .command(mode)
+            .spawn()
+            .expect("spawn fake Claude Code");
+        let stdin = child.stdin.take().unwrap();
+        let lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let turn = ClaudeTurn {
+            stdin: Mutex::new(Some(stdin)),
+            pid: child.id(),
+            child: Arc::new(Mutex::new(child)),
+            alive: Arc::new(AtomicBool::new(true)),
+            control_requests: Mutex::new(HashSet::new()),
+            control_response: Mutex::new(()),
+        };
+        (turn, lines)
+    }
+
+    #[tokio::test]
+    async fn claude_startup_input_is_written_while_its_output_is_drained() {
+        // Writes 1 MiB before reading any input. Writing first, as startup
+        // used to, leaves both sides blocked on full pipes.
+        let fixture = Fixture::new();
+        let (turn, mut lines) = fixture_claude(&fixture, "startup");
+        let prompt = json!({ "type": "user", "blob": "y".repeat(2 * 1024 * 1024) });
+        let early = timeout(
+            Duration::from_secs(20),
+            write_claude_startup_input(
+                &turn,
+                &[&json!({ "type": "control_request" }), &prompt],
+                &mut lines,
+                Instant::now() + Duration::from_secs(20),
+            ),
+        )
+        .await
+        .expect("startup input must not deadlock behind unread output")
+        .expect("startup input written");
+        let mut drained: Vec<String> = early
+            .into_iter()
+            .map(|line| line.unwrap().expect("not EOF"))
+            .collect();
+        // Output the drain had not reached yet stays in the stream, in order.
+        while !drained.iter().any(|line| line == "second") {
+            drained.push(lines.next_line().await.unwrap().unwrap());
+        }
+        let large = drained
+            .iter()
+            .position(|line| line.len() == 1024 * 1024)
+            .expect("1 MiB line kept whole");
+        assert_eq!(drained[large + 1], "second");
+        turn.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn claude_startup_input_has_a_deadline() {
+        let fixture = Fixture::new();
+        let (turn, mut lines) = fixture_claude(&fixture, "no-read");
+        let prompt = json!({ "type": "user", "blob": "y".repeat(2 * 1024 * 1024) });
+        let error = timeout(
+            Duration::from_secs(5),
+            write_claude_startup_input(
+                &turn,
+                &[&prompt],
+                &mut lines,
+                Instant::now() + Duration::from_millis(300),
+            ),
+        )
+        .await
+        .expect("the deadline bounds a CLI that never reads")
+        .unwrap_err();
+        assert!(error.contains("in time"), "{error}");
+        timeout(Duration::from_secs(5), turn.shutdown())
+            .await
+            .expect("the timed-out start is killed promptly");
+        assert!(turn.child.lock().await.try_wait().unwrap().is_some());
+    }
+}
+
 // Only active assistant items are tracked; completion events discard their IDs.
 #[derive(Default)]
 struct CodexFirstAssistantDeltas {
@@ -6442,39 +7233,44 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     let instance_for_reader = instance.clone();
     state.lifecycle.begin_instance(&instance);
 
+    // The stdout reader owns this task: stderr keeps reporting while the
+    // transport is active and is retired with it, even when a descendant holds
+    // the inherited pipe open.
+    let stderr_task = stderr.map(|stderr| {
+        let app_for_stderr = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ =
+                    app_for_stderr.emit("codex-event", json!({ "stream": "stderr", "line": line }));
+            }
+        })
+    });
+
     tauri::async_runtime::spawn(async move {
-        const DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(25);
-        let mut lines = BufReader::new(stdout).lines();
+        // A descendant can inherit stdout and hold it open after the direct
+        // app-server exits. Watching the child ends the transport anyway, so
+        // pending requests fail and the next request starts a replacement.
+        let mut output = ProviderOutput::new(BufReader::new(stdout), child_for_reader.clone());
         // The first assistant chunk is emitted immediately so the UI can lock
         // steering; subsequent deltas are coalesced into "codex-events" until
         // the deadline, batch size, or a non-delta message requires a flush.
-        let mut delta_buffer: Vec<Value> = Vec::new();
+        let mut delta_buffer = ProviderDeltaBatch::default();
         let mut first_assistant_deltas = CodexFirstAssistantDeltas::default();
-        let mut flush_deadline = Instant::now();
-        let flush_deltas = |buffer: &mut Vec<Value>, app: &AppHandle| {
-            if !buffer.is_empty() {
-                let batch = std::mem::take(buffer);
-                let _ = app.emit("codex-events", Value::Array(batch));
+        let flush_deltas = |buffer: &mut ProviderDeltaBatch, app: &AppHandle| {
+            if let Some(batch) = buffer.take() {
+                let _ = app.emit("codex-events", batch);
             }
         };
 
         loop {
-            // `Lines::next_line` is cancellation safe, so racing it against
-            // the flush deadline cannot drop partial lines.
-            let next = if delta_buffer.is_empty() {
-                lines.next_line().await
-            } else {
-                match timeout_at(flush_deadline, lines.next_line()).await {
-                    Ok(next) => next,
-                    Err(_) => {
-                        flush_deltas(&mut delta_buffer, &app_for_reader);
-                        continue;
-                    }
+            let line = match output.next_line(delta_buffer.deadline()).await {
+                ProviderRead::Line(line) => line,
+                ProviderRead::FlushDue => {
+                    flush_deltas(&mut delta_buffer, &app_for_reader);
+                    continue;
                 }
-            };
-            let line = match next {
-                Ok(Some(line)) => line,
-                _ => break,
+                ProviderRead::Closed => break,
             };
 
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -6514,13 +7310,9 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
                         let _ = app_for_reader.emit("codex-event", message);
                         continue;
                     }
-                    if delta_buffer.is_empty() {
-                        flush_deadline = Instant::now() + DELTA_FLUSH_INTERVAL;
-                    }
-                    delta_buffer.push(message);
-                    // Ready lines can keep winning timeout_at's race during a
-                    // continuous stream, so enforce the deadline here too.
-                    if codex_delta_batch_due(delta_buffer.len(), flush_deadline, Instant::now()) {
+                    // Ready lines can keep winning the deadline race during a
+                    // continuous stream, so the flush thresholds are checked here too.
+                    if delta_buffer.push(message, line.len(), Instant::now()) {
                         flush_deltas(&mut delta_buffer, &app_for_reader);
                     }
                 } else {
@@ -6573,18 +7365,10 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         // published as ours.
         clear_server_identity(&identity_slot_for_reader, identity);
         lifecycle_for_reader.clear_instance(&instance_for_reader);
+        if let Some(stderr_task) = stderr_task {
+            finish_stderr_reader(stderr_task).await;
+        }
     });
-
-    if let Some(stderr) = stderr {
-        let app_for_stderr = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let _ =
-                    app_for_stderr.emit("codex-event", json!({ "stream": "stderr", "line": line }));
-            }
-        });
-    }
 
     let server = Arc::new(AppServer {
         stdin: Mutex::new(stdin),
@@ -7490,7 +8274,9 @@ pub fn run() {
         std::process::exit(78);
     }
     if first_argument.as_deref() == Some(AGENT_BRIDGE_ARG) {
-        if release_qa::require_providers().is_err() { std::process::exit(78); }
+        if release_qa::require_providers().is_err() {
+            std::process::exit(78);
+        }
         let session = arguments.next().unwrap_or_default();
         std::process::exit(run_agent_bridge(&session));
     }
@@ -7590,153 +8376,155 @@ pub fn run() {
         .manage(CloseGuardState::default())
         .manage(StartupGuardState::default())
         .invoke_handler({
-            let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
-                release_qa::release_qa_renderer_probe,
-            close_guard_claim,
-            close_guard_finish,
-            startup_ready,
-            startup_failed,
-            codex_runtime_status,
-            codex_runtime_status_refresh,
-            reserve_runtime_restart,
-            release_runtime_restart,
-            restart_runtime_reserved,
-            developer_runtime_updates,
-            developer_runtime_update,
-            claude_runtime_status,
-            claude_models,
-            claude_usage,
-            claude_login,
-            cursor_runtime_status,
-            cursor_login,
-            cursor_models,
-            pricing_sources::fetch_pricing_document,
-            github_status,
-            github_login,
-            github_repo_status,
-            github_attach_remote,
-            github_create_repository,
-            github_clone_repository,
-            git_workspace_snapshot,
-            git_project_changes,
-            git_project_diff,
-            git_project_file_diff,
-            git_project_history,
-            git_workspace_stage,
-            git_workspace_revert_preview,
-            git_workspace_revert,
-            git_workspace_revert_all_preview,
-            git_workspace_revert_all,
-            git_workspace_commit,
-            git_workspace_push,
-            git_workspace_pull,
-            git_workspace_branch,
-            git_workspace_fetch,
-            git_workspace_update,
-            git_publish_snapshot,
-            git_publish_commit,
-            github_pr_context,
-            github_pr_view,
-            github_pr_find,
-            github_pr_list,
-            github_pr_create,
-            github_pr_merge,
-            github_pr_branch,
-            github_pr_ready,
-            claude_turn_start,
-            claude_turn_steer,
-            claude_turn_interrupt,
-            claude_turn_kill,
-            claude_turn_active,
-            claude_permission_respond,
-            claude_control_error,
-            cursor_turn_start,
-            cursor_turn_steer,
-            cursor_turn_interrupt,
-            cursor_turn_kill,
-            cursor_turn_active,
-            cursor_permission_respond,
-            state_read,
-            state_read_raw,
-            state_write,
-            state_delete,
-            local_transcript_list,
-            local_transcript_page_read,
-            local_transcript_full_read,
-            local_transcript_snapshot_write,
-            local_transcript_write_state_read,
-            local_transcript_tail_write,
-            local_transcript_metadata_write,
-            local_transcript_rename,
-            checkpoint_create,
-            checkpoint_complete,
-            checkpoint_diff,
-            checkpoint_restore,
-            checkpoint_delete,
-            workspace_git_info,
-            workspace_git_initialize,
-            worktree_create,
-            worktree_recreate,
-            worktree_status,
-            worktree_apply_to_source,
-            worktree_set_applied_baseline,
-            worktree_merge_branch,
-            worktree_remove,
-            audit_append,
-            audit_recent,
-            performance_snapshot,
-            diagnostics_read,
-            diagnostics_export,
-            export_text_file,
-            local_skills_scan,
-            local_skills_catalog,
-            local_skills_install_official,
-            local_skills_sync,
-            local_skills_import,
-            local_skills_create,
-            local_skills_read,
-            local_skills_mention_names,
-            local_skills_analyze_prompts,
-            local_skills_resolve_prompt,
-            local_skills_resolve_prompts,
-            local_skills_update,
-            local_skills_delete,
-            normal_chat_workspace,
-            workspace_folder::open_workspace_folder,
-            codex_rpc,
-            codex_respond,
-            save_openrouter_key,
-            save_lmstudio_key,
-            save_pasted_image,
-            prepare_image_preview,
-            persist_image_attachment,
-            has_openrouter_key,
-            openrouter_credits,
-            has_lmstudio_key,
-            list_openrouter_models,
-            openrouter_model,
-            list_lmstudio_models,
-            child_agent_session_start,
-            child_agent_session_end,
-            child_agent_respond,
-            child_agent_finished,
-            runtime_instance,
-            runtime_thread_state,
-            restart_runtime,
-            run_discovery_start,
-            run_discovery_cancel,
-            run_discovery::generate_thread_title,
-            run_discovery::analyze_user_preferences,
-            preference_learning::preference_learning_list,
-            preference_learning::preference_learning_save,
-            preference_learning::preference_learning_forget,
-            language_tools_snapshot,
-            language_tools_refresh,
-            language_tools_set_auto_install,
-            language_tools_install,
-            language_tools_set_enabled,
-            language_tools_prepare_project
-            ]);
+            let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> =
+                Box::new(tauri::generate_handler![
+                    file_preview::preview_project_file,
+                    release_qa::release_qa_renderer_probe,
+                    close_guard_claim,
+                    close_guard_finish,
+                    startup_ready,
+                    startup_failed,
+                    codex_runtime_status,
+                    codex_runtime_status_refresh,
+                    reserve_runtime_restart,
+                    release_runtime_restart,
+                    restart_runtime_reserved,
+                    developer_runtime_updates,
+                    developer_runtime_update,
+                    claude_runtime_status,
+                    claude_models,
+                    claude_usage,
+                    claude_login,
+                    cursor_runtime_status,
+                    cursor_login,
+                    cursor_models,
+                    pricing_sources::fetch_pricing_document,
+                    github_status,
+                    github_login,
+                    github_repo_status,
+                    github_attach_remote,
+                    github_create_repository,
+                    github_clone_repository,
+                    git_workspace_snapshot,
+                    git_project_changes,
+                    git_project_diff,
+                    git_project_file_diff,
+                    git_project_history,
+                    git_workspace_stage,
+                    git_workspace_revert_preview,
+                    git_workspace_revert,
+                    git_workspace_revert_all_preview,
+                    git_workspace_revert_all,
+                    git_workspace_commit,
+                    git_workspace_push,
+                    git_workspace_pull,
+                    git_workspace_branch,
+                    git_workspace_fetch,
+                    git_workspace_update,
+                    git_publish_snapshot,
+                    git_publish_commit,
+                    github_pr_context,
+                    github_pr_view,
+                    github_pr_find,
+                    github_pr_list,
+                    github_pr_create,
+                    github_pr_merge,
+                    github_pr_branch,
+                    github_pr_ready,
+                    claude_turn_start,
+                    claude_turn_steer,
+                    claude_turn_interrupt,
+                    claude_turn_kill,
+                    claude_turn_active,
+                    claude_permission_respond,
+                    claude_control_error,
+                    cursor_turn_start,
+                    cursor_turn_steer,
+                    cursor_turn_interrupt,
+                    cursor_turn_kill,
+                    cursor_turn_active,
+                    cursor_permission_respond,
+                    state_read,
+                    state_read_raw,
+                    state_write,
+                    state_delete,
+                    local_transcript_list,
+                    local_transcript_page_read,
+                    local_transcript_full_read,
+                    local_transcript_snapshot_write,
+                    local_transcript_write_state_read,
+                    local_transcript_tail_write,
+                    local_transcript_metadata_write,
+                    local_transcript_rename,
+                    checkpoint_create,
+                    checkpoint_complete,
+                    checkpoint_diff,
+                    checkpoint_restore,
+                    checkpoint_delete,
+                    workspace_git_info,
+                    workspace_git_initialize,
+                    worktree_create,
+                    worktree_recreate,
+                    worktree_status,
+                    worktree_apply_to_source,
+                    worktree_set_applied_baseline,
+                    worktree_merge_branch,
+                    worktree_remove,
+                    audit_append,
+                    audit_recent,
+                    performance_snapshot,
+                    diagnostics_read,
+                    diagnostics_export,
+                    export_text_file,
+                    local_skills_scan,
+                    local_skills_catalog,
+                    local_skills_install_official,
+                    local_skills_sync,
+                    local_skills_import,
+                    local_skills_create,
+                    local_skills_read,
+                    local_skills_mention_names,
+                    local_skills_analyze_prompts,
+                    local_skills_resolve_prompt,
+                    local_skills_resolve_prompts,
+                    local_skills_update,
+                    local_skills_delete,
+                    normal_chat_workspace,
+                    workspace_folder::open_workspace_folder,
+                    codex_rpc,
+                    codex_respond,
+                    save_openrouter_key,
+                    save_lmstudio_key,
+                    save_pasted_image,
+                    prepare_image_preview,
+                    persist_image_attachment,
+                    has_openrouter_key,
+                    openrouter_credits,
+                    has_lmstudio_key,
+                    list_openrouter_models,
+                    openrouter_model,
+                    list_lmstudio_models,
+                    child_agent_session_start,
+                    child_agent_session_end,
+                    child_agent_respond,
+                    child_agent_finished,
+                    runtime_instance,
+                    runtime_thread_state,
+                    restart_runtime,
+                    run_discovery_start,
+                    run_discovery_cancel,
+                    run_discovery::generate_thread_title,
+                    run_discovery::analyze_user_preferences,
+                    preference_learning::preference_learning_list,
+                    preference_learning::preference_learning_save,
+                    preference_learning::preference_learning_forget,
+                    language_tools_snapshot,
+                    language_tools_refresh,
+                    language_tools_set_auto_install,
+                    language_tools_install,
+                    language_tools_set_enabled,
+                    language_tools_prepare_project
+                ]);
             move |invoke: tauri::ipc::Invoke| {
                 if release_qa::active() {
                     if let Some(value) = release_qa::offline_status(invoke.message.command()) {
@@ -7744,7 +8532,9 @@ pub fn run() {
                         return true;
                     }
                     if !release_qa::allowed_command(invoke.message.command()) {
-                        invoke.resolver.reject("This action is unavailable in the credential-free release QA profile");
+                        invoke.resolver.reject(
+                            "This action is unavailable in the credential-free release QA profile",
+                        );
                         return true;
                     }
                 }
@@ -7779,8 +8569,12 @@ pub fn run() {
                 }
             }
         }
-        if release_qa::dispose_before_exit(app_handle, &event) { return; }
-        if matches!(event, tauri::RunEvent::Exit) { release_qa::record("exit", json!({})); }
+        if release_qa::dispose_before_exit(app_handle, &event) {
+            return;
+        }
+        if matches!(event, tauri::RunEvent::Exit) {
+            release_qa::record("exit", json!({}));
+        }
         if matches!(
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit

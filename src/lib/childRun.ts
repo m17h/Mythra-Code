@@ -60,6 +60,8 @@ export interface ChildRunContext {
 }
 
 export interface ChildRunResult {
+  superseded?: boolean;
+  stopped?: boolean;
   languageSessionId?: string;
   thread: Thread;
   turnId?: string;
@@ -238,6 +240,8 @@ export async function startChildAgentTurn(
       thread,
       turnId: result.turnId,
       provider: "cursor",
+      superseded: result.superseded,
+      stopped: result.stopped,
       model: run.model,
       cursorSessionId: result.cursorSessionId,
       ...provenance,

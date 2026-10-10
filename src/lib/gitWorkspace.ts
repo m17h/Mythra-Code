@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ProjectGitChanges } from "./gitInspection";
 
 export interface GitWorkspaceBranch {
   name: string;
@@ -24,6 +25,10 @@ export interface GitWorkspaceSnapshot {
   rootPath: string;
   /** Native canonical identity check; optional for older runtimes. */
   isRoot?: boolean;
+  /** Bounded rows from this snapshot's status scan; absent on older runtimes. */
+  changes?: ProjectGitChanges | null;
+  /** Changes presentation can fail while identity and summary remain usable. */
+  changesError?: string | null;
 }
 
 export interface GitWorkflowControls {
@@ -38,6 +43,8 @@ export interface GitWorkflowControls {
   branchNotice?: string;
   onBranch: (name: string, create: boolean) => Promise<boolean | void>;
   onRefresh: () => void;
+  /** Surface entry shares an already pending owner read instead of queueing another. */
+  onRefreshIfIdle?: (observedRevision?: number) => void;
   autoPublish?: {
     enabled: boolean;
     status: string;

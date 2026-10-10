@@ -5,14 +5,11 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
     process::Output,
-    time::Duration,
 };
 
 use serde::Serialize;
 
-use crate::git_workspace::bounded_git_output;
-
-const INSPECTION_TIMEOUT: Duration = Duration::from_secs(15);
+use crate::project_git::GitReadOperation;
 const STATUS_BYTES: usize = 2 * 1024 * 1024;
 const DIFF_BYTES: usize = 512 * 1024;
 const HISTORY_BYTES: usize = 256 * 1024;
@@ -29,7 +26,7 @@ pub(super) struct GitChange {
     status: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ProjectGitChanges {
     root_path: String,
@@ -87,7 +84,12 @@ struct BoundedOutput {
     truncated: bool,
 }
 
-fn run_bounded(repo: &Path, args: &[&str], limit: usize) -> Result<BoundedOutput, String> {
+fn run_bounded(
+    read: &GitReadOperation,
+    repo: &Path,
+    args: &[&str],
+    limit: usize,
+) -> Result<BoundedOutput, String> {
     let mut readonly_args = vec![
         "--no-pager",
         "--no-optional-locks",
@@ -100,13 +102,17 @@ fn run_bounded(repo: &Path, args: &[&str], limit: usize) -> Result<BoundedOutput
     readonly_args.extend_from_slice(args);
     // Reuse the native PATH, bounded pipe draining, and Unix/Windows process
     // tree cleanup. Prompt suppression also applies to any configured filter.
-    let (output, truncated) =
-        bounded_git_output(repo, &readonly_args, INSPECTION_TIMEOUT, limit, true)?;
+    let (output, truncated) = read.bounded_output(repo, &readonly_args, limit)?;
     Ok(BoundedOutput { output, truncated })
 }
 
-fn checked(repo: &Path, args: &[&str], limit: usize) -> Result<BoundedOutput, String> {
-    let result = run_bounded(repo, args, limit)?;
+fn checked(
+    read: &GitReadOperation,
+    repo: &Path,
+    args: &[&str],
+    limit: usize,
+) -> Result<BoundedOutput, String> {
+    let result = run_bounded(read, repo, args, limit)?;
     if result.output.status.success() {
         Ok(result)
     } else {
@@ -119,12 +125,17 @@ fn checked(repo: &Path, args: &[&str], limit: usize) -> Result<BoundedOutput, St
     }
 }
 
-fn repository(cwd: &str) -> Result<PathBuf, String> {
+fn repository(read: &GitReadOperation, cwd: &str) -> Result<PathBuf, String> {
     let selected = Path::new(cwd)
         .canonicalize()
         .map_err(|error| format!("Could not open the project folder: {error}"))?;
-    let result = checked(&selected, &["rev-parse", "--show-toplevel"], 32 * 1024)
-        .map_err(|error| format!("Could not find this project's Git repository: {error}"))?;
+    let result = checked(
+        read,
+        &selected,
+        &["rev-parse", "--show-toplevel"],
+        32 * 1024,
+    )
+    .map_err(|error| format!("Could not find this project's Git repository: {error}"))?;
     if result.truncated {
         return Err("Git repository root is too long".into());
     }
@@ -242,8 +253,9 @@ fn parse_status(bytes: &[u8], truncated: bool) -> Result<Vec<GitChange>, String>
     Ok(rows)
 }
 
-fn read_status(repo: &Path) -> Result<(Vec<GitChange>, bool), String> {
+fn read_status(read: &GitReadOperation, repo: &Path) -> Result<(Vec<GitChange>, bool), String> {
     let result = checked(
+        read,
         repo,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         STATUS_BYTES,
@@ -255,11 +267,31 @@ fn read_status(repo: &Path) -> Result<(Vec<GitChange>, bool), String> {
 }
 
 fn changes_sync(cwd: &str, limit: usize) -> Result<ProjectGitChanges, String> {
+    let read = GitReadOperation::new();
     if !(1..=MAX_ROWS).contains(&limit) {
         return Err("Changes limit must be between 1 and 2000".into());
     }
-    let root = repository(cwd)?;
-    let (mut rows, status_truncated) = read_status(&root)?;
+    let root = repository(&read, cwd)?;
+    let (mut rows, status_truncated) = read_status(&read, &root)?;
+    changes_from_rows(&root, &mut rows, status_truncated, limit)
+}
+
+pub(super) fn changes_from_status(
+    root: &Path,
+    bytes: &[u8],
+    truncated: bool,
+    limit: usize,
+) -> Result<ProjectGitChanges, String> {
+    let mut rows = parse_status(bytes, truncated)?;
+    changes_from_rows(root, &mut rows, truncated, limit)
+}
+
+fn changes_from_rows(
+    root: &Path,
+    rows: &mut Vec<GitChange>,
+    status_truncated: bool,
+    limit: usize,
+) -> Result<ProjectGitChanges, String> {
     let staged_files = rows.iter().filter(|row| row.area == "staged").count();
     let unstaged_files = rows.iter().filter(|row| row.area == "unstaged").count();
     let untracked_files = rows.iter().filter(|row| row.area == "untracked").count();
@@ -272,7 +304,7 @@ fn changes_sync(cwd: &str, limit: usize) -> Result<ProjectGitChanges, String> {
     rows.truncate(limit);
     Ok(ProjectGitChanges {
         root_path: root.to_string_lossy().into(),
-        rows,
+        rows: std::mem::take(rows),
         staged_files,
         unstaged_files,
         untracked_files,
@@ -281,8 +313,9 @@ fn changes_sync(cwd: &str, limit: usize) -> Result<ProjectGitChanges, String> {
     })
 }
 
-fn head(repo: &Path) -> Result<Option<String>, String> {
+fn head(read: &GitReadOperation, repo: &Path) -> Result<Option<String>, String> {
     let result = run_bounded(
+        read,
         repo,
         &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         256,
@@ -313,8 +346,9 @@ fn bounded_text(bytes: &[u8], limit: usize) -> (String, bool) {
 }
 
 fn project_diff_sync(cwd: &str) -> Result<ProjectGitDiff, String> {
-    let root = repository(cwd)?;
-    let has_head = head(&root)?.is_some();
+    let read = GitReadOperation::new();
+    let root = repository(&read, cwd)?;
+    let has_head = head(&read, &root)?.is_some();
     let mut bytes = Vec::new();
     let mut truncated = false;
     let commands: Vec<Vec<&str>> = if has_head {
@@ -340,7 +374,7 @@ fn project_diff_sync(cwd: &str) -> Result<ProjectGitDiff, String> {
         ]
     };
     for args in commands {
-        let result = checked(&root, &args, DIFF_BYTES)?;
+        let result = checked(&read, &root, &args, DIFF_BYTES)?;
         truncated |= result.truncated;
         bytes.extend_from_slice(&result.output.stdout);
     }
@@ -351,7 +385,7 @@ fn project_diff_sync(cwd: &str) -> Result<ProjectGitDiff, String> {
             "\n\n[Diff preview truncated at 512 KiB. Select a file in Changes to inspect it.]\n",
         );
     }
-    let (rows, status_truncated) = read_status(&root)?;
+    let (rows, status_truncated) = read_status(&read, &root)?;
     let mut untracked_paths: Vec<_> = rows
         .into_iter()
         .filter(|row| row.area == "untracked")
@@ -378,7 +412,7 @@ fn binary_diff(text: &str) -> bool {
         .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch")
 }
 
-fn safe_untracked_preview(root: &Path, path: &str) -> Result<(Vec<u8>, bool), String> {
+pub(crate) fn safe_untracked_preview(root: &Path, path: &str) -> Result<(Vec<u8>, bool), String> {
     safe_untracked_preview_after_parent_check(root, path, || {})
 }
 
@@ -638,12 +672,13 @@ fn anchored_untracked_preview(
 }
 
 fn file_diff_sync(cwd: &str, path: &str, area: &str) -> Result<ProjectGitFileDiff, String> {
+    let read = GitReadOperation::new();
     validate_path(path)?;
     if !["staged", "unstaged", "untracked"].contains(&area) {
         return Err("Git change area is invalid".into());
     }
-    let root = repository(cwd)?;
-    let (rows, _) = read_status(&root)?;
+    let root = repository(&read, cwd)?;
+    let (rows, _) = read_status(&read, &root)?;
     let row = rows
         .iter()
         .find(|row| row.path == path && row.area == area)
@@ -659,7 +694,7 @@ fn file_diff_sync(cwd: &str, path: &str, area: &str) -> Result<ProjectGitFileDif
         if let Some(original) = row.original_path.as_deref() {
             args.push(original);
         }
-        let result = checked(&root, &args, DIFF_BYTES)?;
+        let result = checked(&read, &root, &args, DIFF_BYTES)?;
         (result.output.stdout, result.truncated)
     };
     let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() && !truncated;
@@ -724,16 +759,17 @@ fn history_sync(
     limit: usize,
     head_oid: Option<&str>,
 ) -> Result<ProjectGitHistory, String> {
+    let read = GitReadOperation::new();
     if !(1..=MAX_HISTORY_PAGE).contains(&limit) || offset > MAX_HISTORY_OFFSET {
         return Err("History requires a page of 1–100 commits and an offset up to 100000".into());
     }
     if let Some(oid) = head_oid {
         validate_oid(oid)?;
     }
-    let root = repository(cwd)?;
+    let root = repository(&read, cwd)?;
     let head_oid = match head_oid {
         Some(oid) => Some(oid.into()),
-        None => head(&root)?,
+        None => head(&read, &root)?,
     };
     let Some(oid) = head_oid.as_deref() else {
         return Ok(ProjectGitHistory {
@@ -747,6 +783,7 @@ fn history_sync(
     let skip = format!("--skip={offset}");
     let count = format!("--max-count={}", limit + 1);
     let result = checked(
+        &read,
         &root,
         &[
             "log",
@@ -831,6 +868,21 @@ mod tests {
     use super::*;
     use crate::project_git::run_git;
     use std::env;
+    #[cfg(unix)]
+    use std::time::Duration;
+
+    #[test]
+    fn shared_status_rows_are_capped_without_losing_exact_summary_counts() {
+        let mut status = Vec::new();
+        for number in 0..501 {
+            status.extend_from_slice(format!("?? file-{number:03}.txt\0").as_bytes());
+        }
+        let changes = changes_from_status(Path::new("/fixture"), &status, false, 500).unwrap();
+        assert_eq!(changes.rows.len(), 500);
+        assert_eq!(changes.untracked_files, 501);
+        assert_eq!(changes.changed_files, 501);
+        assert!(changes.truncated);
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {

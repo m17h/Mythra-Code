@@ -294,6 +294,137 @@ pub(super) fn run_git(
         .map_err(|error| format!("Could not run Git: {error}"))
 }
 
+/// One deadline for a read-only operation, including all of its Git subprocesses.
+/// Mutation helpers deliberately keep their existing semantics and ownership.
+pub(super) struct GitReadOperation {
+    deadline: Instant,
+    output_limit: usize,
+}
+
+impl GitReadOperation {
+    pub(super) fn new() -> Self {
+        Self::with_limits(Duration::from_secs(15), 2 * 1024 * 1024)
+    }
+
+    pub(super) fn with_limits(timeout: Duration, output_limit: usize) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+            output_limit,
+        }
+    }
+
+    pub(super) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub(super) fn bounded_output(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        limit: usize,
+    ) -> Result<(std::process::Output, bool), String> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("Git read operation timed out")?;
+        let mut readonly_args = vec!["--no-pager", "--no-optional-locks", "-c", "color.ui=false"];
+        readonly_args.extend_from_slice(args);
+        crate::git_workspace::bounded_git_output(
+            cwd,
+            &readonly_args,
+            remaining,
+            limit.min(self.output_limit),
+            true,
+        )
+    }
+
+    pub(super) fn output(&self, cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+        let (output, truncated) = self.bounded_output(cwd, args, self.output_limit)?;
+        if truncated {
+            return Err(
+                "Git read output exceeded its byte limit; repository state is unknown".into(),
+            );
+        }
+        Ok(output)
+    }
+
+    pub(super) fn nul_path_count(&self, cwd: &Path, args: &[&str]) -> Result<usize, String> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("Git read operation timed out")?;
+        let mut readonly_args = vec!["--no-pager", "--no-optional-locks", "-c", "color.ui=false"];
+        readonly_args.extend_from_slice(args);
+        crate::git_workspace::bounded_git_nul_path_count(
+            cwd,
+            &readonly_args,
+            remaining,
+            self.output_limit,
+        )
+    }
+
+    pub(super) fn stdout(&self, cwd: &Path, args: &[&str]) -> Result<String, String> {
+        let output = self.output(cwd, args)?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                "Could not inspect Git repository".into()
+            } else {
+                detail
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// A completed nonzero probe can mean an absent ref/config value. A timeout,
+    /// overflow or failed process launch must never masquerade as absence.
+    pub(super) fn optional_stdout(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+    ) -> Result<Option<String>, String> {
+        let output = self.output(cwd, args)?;
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                format!("Git read probe failed with status {}", output.status)
+            } else {
+                detail
+            });
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok((!value.is_empty()).then_some(value))
+    }
+
+    pub(super) fn common_dir(&self, repo: &Path) -> Result<PathBuf, String> {
+        let path = PathBuf::from(self.stdout(repo, &["rev-parse", "--git-common-dir"])?);
+        let resolved = if path.is_absolute() {
+            path
+        } else {
+            repo.join(path)
+        };
+        resolved
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve the shared Git directory: {error}"))
+    }
+
+    fn root(&self, cwd: &str) -> Result<PathBuf, String> {
+        let selected = PathBuf::from(cwd)
+            .canonicalize()
+            .map_err(|error| format!("Could not open the project folder: {error}"))?;
+        let root = PathBuf::from(self.stdout(&selected, &["rev-parse", "--show-toplevel"])?)
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve the Git repository: {error}"))?;
+        if selected != root {
+            return Err("Open the Git repository root before inspecting worktrees".into());
+        }
+        Ok(root)
+    }
+}
+
 pub(super) fn run_git_with_input(
     cwd: &Path,
     args: &[&str],
@@ -499,26 +630,6 @@ pub(super) const IGNORED_FILES_ARGS: &[&str] = &[
     "--ignored",
     "--exclude-standard",
 ];
-
-/// How many paths `args` reports, without materializing any of them. Used
-/// where only the count is needed; a generated-output directory can hold far
-/// more entries than are worth allocating or sending to the UI.
-pub(super) fn git_nul_path_count(cwd: &Path, args: &[&str]) -> Result<usize, String> {
-    let output = run_git(cwd, args, None)?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if detail.is_empty() {
-            "Could not inspect checkpoint files".into()
-        } else {
-            detail
-        });
-    }
-    Ok(output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .count())
-}
 
 pub(super) fn git_nul_paths(cwd: &Path, args: &[&str]) -> Result<Vec<PathBuf>, String> {
     let output = run_git(cwd, args, None)?;
@@ -825,16 +936,7 @@ pub(super) async fn checkpoint_delete(id: String, cwd: String) -> Result<(), Str
 }
 
 pub(super) fn git_common_dir(repo: &Path) -> Result<PathBuf, String> {
-    let value = git_stdout(repo, &["rev-parse", "--git-common-dir"], None)?;
-    let path = PathBuf::from(value);
-    let resolved = if path.is_absolute() {
-        path
-    } else {
-        repo.join(path)
-    };
-    resolved
-        .canonicalize()
-        .map_err(|error| format!("Could not resolve the shared Git directory: {error}"))
+    GitReadOperation::new().common_dir(repo)
 }
 
 pub(super) fn verify_linked_worktree(source: &Path, worktree: &Path) -> Result<(), String> {
@@ -938,12 +1040,14 @@ pub(super) fn worktree_status_sync(
     branch: &str,
     base_commit: &str,
 ) -> Result<WorktreeStatus, String> {
-    let source = checkpoint_repo(project_path)?;
+    let read = GitReadOperation::new();
+    let source = read.root(project_path)?;
     let path = PathBuf::from(worktree_path);
     if !path.exists() {
         return Ok(WorktreeStatus {
             head_oid: None,
-            source_branch: optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]),
+            source_branch: read
+                .optional_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"])?,
             exists: false,
             registered: false,
             branch: None,
@@ -956,9 +1060,11 @@ pub(super) fn worktree_status_sync(
             clean: false,
         });
     }
-    let worktree = checkpoint_repo(worktree_path)?;
-    verify_linked_worktree(&source, &worktree)?;
-    let registered = crate::git_workspace::worktree_paths(&source)?
+    let worktree = read.root(worktree_path)?;
+    if read.common_dir(&source)? != read.common_dir(&worktree)? {
+        return Err("That worktree does not belong to the selected project".into());
+    }
+    let registered = crate::git_workspace::worktree_paths_with_read(&source, &read)?
         .into_iter()
         .any(|listed_path| {
             PathBuf::from(listed_path)
@@ -966,15 +1072,14 @@ pub(super) fn worktree_status_sync(
                 .map(|path| path == worktree)
                 .unwrap_or(false)
         });
-    let status = git_stdout(
+    let status = read.stdout(
         &worktree,
         &["status", "--porcelain=v1", "--untracked-files=all"],
-        None,
     )?;
     let changed_files = status.lines().filter(|line| !line.is_empty()).count();
     let untracked_files = status.lines().filter(|line| line.starts_with("??")).count();
-    let ignored_file_count = git_nul_path_count(&worktree, IGNORED_FILES_ARGS)?;
-    let counts = git_stdout(
+    let ignored_file_count = read.nul_path_count(&worktree, IGNORED_FILES_ARGS)?;
+    let counts = read.stdout(
         &source,
         &[
             "rev-list",
@@ -982,24 +1087,28 @@ pub(super) fn worktree_status_sync(
             "--count",
             &format!("HEAD...{branch}"),
         ],
-        None,
-    )
-    .unwrap_or_else(|_| "0\t0".into());
+    )?;
     let mut count_parts = counts.split_whitespace();
+    let invalid = || "Git returned invalid worktree ahead/behind counts".to_string();
     let behind = count_parts
         .next()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
     let ahead = count_parts
         .next()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
+    if count_parts.next().is_some() {
+        return Err(invalid());
+    }
     Ok(WorktreeStatus {
-        head_oid: optional_git_stdout(&worktree, &["rev-parse", "HEAD"]),
-        source_branch: optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head_oid: read.optional_stdout(&worktree, &["rev-parse", "--verify", "--quiet", "HEAD"])?,
+        source_branch: read.optional_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"])?,
         exists: true,
         registered,
-        branch: optional_git_stdout(&worktree, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        branch: read.optional_stdout(&worktree, &["symbolic-ref", "--short", "-q", "HEAD"])?,
         base_commit: Some(base_commit.into()),
         changed_files,
         untracked_files,
@@ -1011,6 +1120,7 @@ pub(super) fn worktree_status_sync(
 }
 
 pub(super) fn workspace_git_info_sync(cwd: &str) -> Result<WorkspaceGitInfo, String> {
+    let read = GitReadOperation::new();
     let selected = match PathBuf::from(cwd).canonicalize() {
         Ok(path) if path.is_dir() => path,
         Ok(_) => {
@@ -1034,26 +1144,26 @@ pub(super) fn workspace_git_info_sync(cwd: &str) -> Result<WorkspaceGitInfo, Str
             });
         }
     };
-    let root = match git_stdout(&selected, &["rev-parse", "--show-toplevel"], None) {
-        Ok(value) => PathBuf::from(value),
-        Err(_) => {
-            return Ok(WorkspaceGitInfo {
-                is_repo: false,
-                is_root: false,
-                has_commit: false,
-                branch: None,
-                head: None,
-                error: None,
-            });
-        }
+    let root_probe = read.output(&selected, &["rev-parse", "--show-toplevel"])?;
+    let root = if root_probe.status.success() {
+        PathBuf::from(String::from_utf8_lossy(&root_probe.stdout).trim())
+    } else {
+        return Ok(WorkspaceGitInfo {
+            is_repo: false,
+            is_root: false,
+            has_commit: false,
+            branch: None,
+            head: None,
+            error: None,
+        });
     };
     let root = root.canonicalize().unwrap_or(root);
-    let head = optional_git_stdout(&selected, &["rev-parse", "--verify", "HEAD"]);
+    let head = read.optional_stdout(&selected, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
     Ok(WorkspaceGitInfo {
         is_repo: true,
         is_root: selected == root,
         has_commit: head.is_some(),
-        branch: optional_git_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        branch: read.optional_stdout(&selected, &["symbolic-ref", "--short", "-q", "HEAD"])?,
         head,
         error: None,
     })
@@ -1622,8 +1732,30 @@ pub(super) fn worktree_merge_branch_sync(
     }
     let source_commit = git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None)?;
     if optional_git_stdout(&source, &["symbolic-ref", "--short", "-q", "HEAD"]) != source_branch
-        || !run_git(&source, &["merge-base", "--is-ancestor", &source_head_oid, &source_commit], None)?.status.success()
-        || !run_git(&source, &["merge-base", "--is-ancestor", &isolated_head_oid, &source_commit], None)?.status.success()
+        || !run_git(
+            &source,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &source_head_oid,
+                &source_commit,
+            ],
+            None,
+        )?
+        .status
+        .success()
+        || !run_git(
+            &source,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &isolated_head_oid,
+                &source_commit,
+            ],
+            None,
+        )?
+        .status
+        .success()
     {
         return Err("The checkout changed after the merge, possibly from a Git hook. The merge may already be complete; refresh and inspect the branches before continuing.".into());
     }
@@ -2388,6 +2520,166 @@ pub(super) async fn worktree_remove(
 }
 
 #[cfg(test)]
+mod bounded_read_tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("mythra-git-read-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn bounded_git_read_overflow_is_an_error_even_for_optional_probes() {
+        let fixture = Fixture::new();
+        let read = GitReadOperation::with_limits(Duration::from_secs(3), 64);
+        let args = ["-c", "alias.read-fixture=!printf %0256d 0", "read-fixture"];
+        let error = read.optional_stdout(&fixture.0, &args).unwrap_err();
+        assert!(error.contains("byte limit"), "{error}");
+        let (output, truncated) = read.bounded_output(&fixture.0, &args, 32).unwrap();
+        assert!(truncated);
+        assert_eq!(output.stdout.len(), 32);
+    }
+
+    #[test]
+    fn bounded_git_read_optional_probes_distinguish_missing_values_from_fatal_failures() {
+        let fixture = Fixture::new();
+        let read = GitReadOperation::new();
+        assert!(read
+            .optional_stdout(
+                &fixture.0,
+                &["-c", "alias.read-fixture=!exit 1", "read-fixture"]
+            )
+            .unwrap()
+            .is_none());
+        let error = read
+            .optional_stdout(
+                &fixture.0,
+                &["-c", "alias.read-fixture=!exit 2", "read-fixture"],
+            )
+            .unwrap_err();
+        assert!(error.contains("status"), "{error}");
+    }
+
+    #[test]
+    fn bounded_git_path_count_discards_paths_but_retains_error_and_deadline_limits() {
+        let fixture = Fixture::new();
+        git_stdout(&fixture.0, &["init"], None).unwrap();
+        fs::write(fixture.0.join(".git/info/exclude"), "build/\n").unwrap();
+        fs::create_dir(fixture.0.join("build")).unwrap();
+        for number in 0..100 {
+            fs::write(
+                fixture.0.join(format!("build/generated-{number:03}.o")),
+                b"",
+            )
+            .unwrap();
+        }
+        let read = GitReadOperation::with_limits(Duration::from_secs(5), 64);
+        assert!(read
+            .output(&fixture.0, IGNORED_FILES_ARGS)
+            .unwrap_err()
+            .contains("byte limit"));
+        assert_eq!(
+            read.nul_path_count(&fixture.0, IGNORED_FILES_ARGS).unwrap(),
+            100
+        );
+        let error = read
+            .nul_path_count(
+                &fixture.0,
+                &[
+                    "-c",
+                    "alias.read-fixture=!printf %0256d 0 >&2",
+                    "read-fixture",
+                ],
+            )
+            .unwrap_err();
+        assert!(error.contains("byte limit"), "{error}");
+        let expired = GitReadOperation::with_limits(Duration::ZERO, 64);
+        assert!(expired
+            .nul_path_count(&fixture.0, IGNORED_FILES_ARGS)
+            .unwrap_err()
+            .contains("timed out"));
+    }
+
+    #[test]
+    fn bounded_git_path_count_rejects_unterminated_and_empty_records() {
+        let fixture = Fixture::new();
+        for (script, expected) in [
+            ("alias.read-fixture=!printf 'one\\0partial'", "unterminated"),
+            ("alias.read-fixture=!printf '%09000d' 0", "unterminated"),
+            ("alias.read-fixture=!printf '\\0'", "empty path"),
+            ("alias.read-fixture=!printf 'one\\0\\0'", "empty path"),
+        ] {
+            let read = GitReadOperation::new();
+            let error = read
+                .nul_path_count(&fixture.0, &["-c", script, "read-fixture"])
+                .unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+        // A long byte record crosses the pipe reader's 8192-byte buffer; the
+        // second contains invalid UTF-8, which counting must never decode.
+        let read = GitReadOperation::with_limits(Duration::from_secs(5), 64);
+        assert_eq!(
+            read.nul_path_count(
+                &fixture.0,
+                &[
+                    "-c",
+                    "alias.read-fixture=!printf '%09000d\\0tail\\377\\0' 0",
+                    "read-fixture",
+                ]
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn bounded_git_reads_share_one_deadline_across_subprocesses() {
+        let fixture = Fixture::new();
+        let read = GitReadOperation::with_limits(Duration::from_millis(800), 1024);
+        let args = [
+            "-c",
+            "alias.read-fixture=!sleep 0.45; printf complete",
+            "read-fixture",
+        ];
+        let started = Instant::now();
+        assert_eq!(read.stdout(&fixture.0, &args).unwrap(), "complete");
+        let error = read.optional_stdout(&fixture.0, &args).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(read
+            .stdout(&fixture.0, &["--version"])
+            .unwrap_err()
+            .contains("timed out"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_read_timeout_stops_pipe_holding_descendants_after_parent_exit() {
+        let fixture = Fixture::new();
+        let read = GitReadOperation::with_limits(Duration::from_millis(400), 1024);
+        let args = [
+            "-c",
+            "alias.read-fixture=!printf started > started; (sleep 1; printf survived > survived) &",
+            "read-fixture",
+        ];
+        let error = read.stdout(&fixture.0, &args).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(fixture.0.join("started").exists());
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(!fixture.0.join("survived").exists());
+    }
+}
+
+#[cfg(test)]
 mod worktree_lifecycle_tests {
     use super::*;
 
@@ -2396,6 +2688,37 @@ mod worktree_lifecycle_tests {
         source: PathBuf,
         managed_root: PathBuf,
         isolated: PathBuf,
+    }
+
+    #[test]
+    fn worktree_status_counts_ignored_build_outputs_beyond_the_path_output_cap() {
+        let fixture = RemovalFixture::new();
+        fs::write(fixture.source.join(".git/info/exclude"), "build/\n").unwrap();
+        let build = fixture
+            .isolated
+            .join("build")
+            .join("nested-output-".repeat(6));
+        fs::create_dir_all(&build).unwrap();
+        for number in 0..22000 {
+            fs::write(build.join(format!("artifact-{number:05}.o")), b"").unwrap();
+        }
+        // Verify this fixture crosses the ordinary pathname-output boundary.
+        assert!(GitReadOperation::new()
+            .output(&fixture.isolated, IGNORED_FILES_ARGS)
+            .unwrap_err()
+            .contains("byte limit"));
+        let base = git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap();
+        let status = worktree_status_sync(
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            &base,
+        )
+        .unwrap();
+        assert!(status.exists && status.registered && status.clean);
+        assert_eq!(status.changed_files, 0);
+        assert_eq!(status.ignored_file_count, 22000);
+        assert_eq!((status.ahead, status.behind), (0, 0));
     }
 
     impl RemovalFixture {
@@ -3313,15 +3636,34 @@ mod worktree_lifecycle_tests {
         let fixture = RemovalFixture::new();
         git_stdout(&fixture.source, &["branch", "other"], None).unwrap();
         fs::write(fixture.isolated.join("file.txt"), "isolated change\n").unwrap();
-        git_stdout(&fixture.isolated, &["commit", "-am", "isolated change"], None).unwrap();
-        capture_checkpoint_snapshot("hook-merge-safety", fixture.source.to_str().unwrap(), "after", "safety").unwrap();
+        git_stdout(
+            &fixture.isolated,
+            &["commit", "-am", "isolated change"],
+            None,
+        )
+        .unwrap();
+        capture_checkpoint_snapshot(
+            "hook-merge-safety",
+            fixture.source.to_str().unwrap(),
+            "after",
+            "safety",
+        )
+        .unwrap();
         let hook = fixture.source.join(".git/hooks/post-merge");
         fs::write(&hook, "#!/bin/sh\ngit checkout other\n").unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-        let result = worktree_merge_branch_sync(fixture.source.to_str().unwrap(), fixture.isolated.to_str().unwrap(),
-            "mythra/isolated", "hook-merge-safety", None);
+        let result = worktree_merge_branch_sync(
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            "hook-merge-safety",
+            None,
+        );
         assert!(result.unwrap_err().contains("changed after the merge"));
-        assert_eq!(git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(), "other");
+        assert_eq!(
+            git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(),
+            "other"
+        );
     }
 
     #[cfg(unix)]
@@ -3330,16 +3672,46 @@ mod worktree_lifecycle_tests {
         use std::os::unix::fs::PermissionsExt;
         let fixture = RemovalFixture::new();
         fs::write(fixture.isolated.join("file.txt"), "isolated change\n").unwrap();
-        git_stdout(&fixture.isolated, &["commit", "-am", "isolated change"], None).unwrap();
-        capture_checkpoint_snapshot("hook-commit-safety", fixture.source.to_str().unwrap(), "after", "safety").unwrap();
+        git_stdout(
+            &fixture.isolated,
+            &["commit", "-am", "isolated change"],
+            None,
+        )
+        .unwrap();
+        capture_checkpoint_snapshot(
+            "hook-commit-safety",
+            fixture.source.to_str().unwrap(),
+            "after",
+            "safety",
+        )
+        .unwrap();
         let hook = fixture.source.join(".git/hooks/post-merge");
-        fs::write(&hook, "#!/bin/sh\ngit commit --allow-empty -m 'hook commit'\n").unwrap();
+        fs::write(
+            &hook,
+            "#!/bin/sh\ngit commit --allow-empty -m 'hook commit'\n",
+        )
+        .unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-        let result = worktree_merge_branch_sync(fixture.source.to_str().unwrap(), fixture.isolated.to_str().unwrap(),
-            "mythra/isolated", "hook-commit-safety", None).unwrap();
-        assert_eq!(result.source_commit, git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap());
-        assert_eq!(git_stdout(&fixture.source, &["log", "-1", "--format=%s"], None).unwrap(), "hook commit");
-        assert_eq!(git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(), "main");
+        let result = worktree_merge_branch_sync(
+            fixture.source.to_str().unwrap(),
+            fixture.isolated.to_str().unwrap(),
+            "mythra/isolated",
+            "hook-commit-safety",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            result.source_commit,
+            git_stdout(&fixture.source, &["rev-parse", "HEAD"], None).unwrap()
+        );
+        assert_eq!(
+            git_stdout(&fixture.source, &["log", "-1", "--format=%s"], None).unwrap(),
+            "hook commit"
+        );
+        assert_eq!(
+            git_stdout(&fixture.source, &["symbolic-ref", "--short", "HEAD"], None).unwrap(),
+            "main"
+        );
     }
 
     #[test]

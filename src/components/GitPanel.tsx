@@ -259,7 +259,8 @@ function GitPanelInner(props: GitPanelProps) {
   // Changes follow the owner's snapshot and settle after every operation, so
   // they are re-read when something happened — not on a timer of their own.
   const changesRevision = [workflow?.readRevision, snapshot?.headOid, snapshot?.branch, snapshot?.stagedFiles, snapshot?.unstagedFiles, snapshot?.changedFiles, snapshot?.stagedPaths?.join("\0"), props.gitCommitSuccessRevision, props.gitCommitSuccess].join("|");
-  const changes = useProjectGitChanges(absent ? undefined : props.inspection, view === "changes" && !mutationBusy, changesRevision);
+  const changes = useProjectGitChanges(absent ? undefined : props.inspection, view === "changes" && !mutationBusy, changesRevision,
+    workflow && (workflow.readRevision !== undefined || snapshot?.changes !== undefined || snapshot?.changesError !== undefined) ? workflow : undefined);
   const history = useProjectGitHistory(absent ? undefined : props.inspection, view === "history");
   const plan = commitPlan(changes.changes, snapshot);
   const staged = snapshot?.stagedFiles ?? plan.staged;

@@ -1,6 +1,6 @@
 import type { Thread } from "../types";
 import type { TaskStatus, WorkflowThreadOwner } from "./taskStore";
-import { ownsChildren, type OwnershipLinks } from "./nativeAgentLinks";
+import { ownershipRootIds, ownsChildren, type OwnershipLinks } from "./nativeAgentLinks";
 import { isLocalSubscriptionThread } from "./threadProvider";
 import { boundThreadPreview } from "./threadPreview";
 
@@ -37,8 +37,8 @@ export type ThreadKindView = "main" | "subagents";
  * expose the old poisoned `parentThreadId` and move the root back into the
  * Sub-agents inbox.
  */
-export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLinks): Thread {
-  if (childLinks[thread.id] || !ownsChildren(childLinks, thread.id)) return thread;
+export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLinks, rootIds?: ReadonlySet<string>): Thread {
+  if (childLinks[thread.id] || !ownsChildren(childLinks, thread.id, rootIds)) return thread;
   const hasChildMetadata = Boolean(
     thread.parentThreadId
     || thread.threadSource === "subagent"
@@ -69,9 +69,9 @@ export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLi
  * the Sub-agents inbox permanently, because `parentThreadId` is persisted on
  * the thread record and would keep answering yes forever after.
  */
-export function isSubAgentThread(thread: Thread, childLinks: OwnershipLinks): boolean {
+export function isSubAgentThread(thread: Thread, childLinks: OwnershipLinks, rootIds?: ReadonlySet<string>): boolean {
   if (childLinks[thread.id]) return true;
-  if (ownsChildren(childLinks, thread.id)) return false;
+  if (ownsChildren(childLinks, thread.id, rootIds)) return false;
   // A thread reported as its own parent is a runtime artifact, not a child.
   if (thread.parentThreadId && thread.parentThreadId !== thread.id) return true;
   return thread.threadSource === "subagent";
@@ -82,9 +82,10 @@ export function filterThreadsByKind(
   threads: Thread[],
   childLinks: OwnershipLinks,
   kind: ThreadKindView,
+  rootIds: ReadonlySet<string> = ownershipRootIds(childLinks),
 ): Thread[] {
   const wantsChild = kind === "subagents";
-  return threads.filter((thread) => isSubAgentThread(thread, childLinks) === wantsChild);
+  return threads.filter((thread) => isSubAgentThread(thread, childLinks, rootIds) === wantsChild);
 }
 
 /** Bulk archive never stops a live task. Split the selected inbox snapshot so

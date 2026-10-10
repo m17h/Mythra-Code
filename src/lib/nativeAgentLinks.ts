@@ -49,9 +49,16 @@ export interface NativeAgentLink extends NativeAgentReadout {
  */
 export type OwnershipLinks = Record<string, { rootThreadId: string }>;
 
+/** Build once for a batch of reads. Mutable discovery graphs must update their
+ * own set as they accept links; never cache a mutable graph by object identity. */
+export function ownershipRootIds(links: OwnershipLinks): ReadonlySet<string> {
+  return new Set(Object.values(links).map((link) => link.rootThreadId));
+}
+
 /** A thread that owns children is a root; depth is capped at one by design. */
-export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
+export function ownsChildren(links: OwnershipLinks, threadId: string, rootIds?: ReadonlySet<string>): boolean {
   if (!threadId) return false;
+  if (rootIds) return rootIds.has(threadId);
   return Object.values(links).some((link) => link.rootThreadId === threadId);
 }
 
@@ -71,11 +78,11 @@ export function ownsChildren(links: OwnershipLinks, threadId: string): boolean {
  * - a root that is itself somebody's child, which would nest it two deep the
  *   other way round (and covers every reversed claim and cycle).
  */
-export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childThreadId: string): boolean {
+export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childThreadId: string, rootIds?: ReadonlySet<string>): boolean {
   if (!rootThreadId || !childThreadId || rootThreadId === childThreadId) return false;
   const existing = links[childThreadId];
   if (existing && existing.rootThreadId !== rootThreadId) return false;
-  if (ownsChildren(links, childThreadId)) return false;
+  if (ownsChildren(links, childThreadId, rootIds)) return false;
   return !links[rootThreadId];
 }
 
