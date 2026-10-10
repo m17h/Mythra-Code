@@ -3579,11 +3579,9 @@ export default function App() {
     if (previous && previous.path === path && previous.available === available
       && previous.codexAvailable === codexAvailable && previous.runtimeHome === runtimeHome) return;
     workspaceEffectRef.current = { path, available, codexAvailable, runtimeHome };
-    if (available) {
-      void loadThreads(activeWorkspace);
-    } else {
-      setThreads([]);
-    }
+    // Saved local conversations remain readable without any provider CLI.
+    // loadThreads owns the separate runtime gate for provider-native paging.
+    void loadThreads(activeWorkspace);
     void refreshToolsRef.current(activeWorkspace);
     if (previous && previous.path === path) return; // Discovery changed — keep the open conversation.
     // Invalidate any in-flight thread selection: a slow thread/resume issued

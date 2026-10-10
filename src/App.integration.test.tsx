@@ -1253,6 +1253,57 @@ describe("Codex cold startup", () => {
     });
   });
 
+  it.each([
+    { provider: "claude", remembered: true },
+    { provider: "cursor", remembered: false },
+  ])("opens a saved $provider thread with every runtime unavailable (remembered: $remembered)", async ({ provider, remembered }) => {
+    const user = userEvent.setup();
+    const thread: Thread = { ...THREAD_A, id: `offline-${provider}`, name: `Saved ${provider} conversation`, modelProvider: provider };
+    const unavailable = { available: false, path: null, version: null, loggedIn: false, warning: "Offline" };
+    claudeRuntimeStatusImpl = () => unavailable;
+    cursorRuntimeStatusImpl = () => unavailable;
+    if (remembered) localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [thread.id]: thread }));
+    localStorage.setItem("kiwi.threadProjects", JSON.stringify({ [thread.id]: PROJECT_A.path }));
+    localStorage.setItem("kiwi.threadSubagentSettings", JSON.stringify({ [thread.id]: { enabled: false, engine: "mythra", nativeMaxConcurrent: 6 } }));
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "codex_runtime_status") return { ...stubInvoke(command, args) as object, available: false };
+      // A remembered row must survive an empty durable listing; a missing
+      // sidebar cache must instead be recoverable from local metadata alone.
+      if (command === "local_transcript_list") return remembered ? [] : [thread];
+      if (command === "local_transcript_page_read") return {
+        thread,
+        messages: [{ id: "saved-message", role: "user", text: "Saved offline history", timelineOrder: 1 }],
+        activities: [], nextCursor: null, headSeq: 0, tailSeq: 1, generation: 1, byteLen: 512,
+      };
+      return stubInvoke(command, args);
+    });
+
+    await renderApp();
+    await user.click(await screen.findByRole("button", { name: `Open ${thread.name}` }));
+    await act(async () => { await import("./components/ChatTimeline"); });
+    expect(await screen.findByText("Saved offline history")).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("local_transcript_page_read", {
+      provider, threadId: thread.id, cursor: null, byteBudget: 40 * 1024,
+    });
+    const { useTaskStore } = await import("./lib/taskStore");
+    expect(useTaskStore.getState().activeThreadId).toBe(thread.id);
+
+    if (provider === "claude") {
+      await user.click(await screen.findByRole("button", { name: "Sub-agents off" }));
+      await user.click(await screen.findByRole("button", { name: "Conversation compaction" }));
+      await user.click(within(await screen.findByRole("menu", { name: "Conversation compaction choices" }))
+        .getByRole("menuitemradio", { name: /^200K tokens$/ }));
+      expect(screen.getByRole("button", { name: "Conversation compaction" })).toHaveTextContent("200K tokens");
+      expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[thread.id])
+        .toMatchObject({ enabled: false, engine: "mythra", nativeMaxConcurrent: 6, autoCompactTokens: 200_000 });
+    }
+    expect(invokeMock.mock.calls.filter(([command]) => command === "codex_rpc")).toEqual([]);
+    expect(invokeMock.mock.calls.filter(([command]) => (
+      (command.startsWith("claude_") || command.startsWith("cursor_"))
+      && !["claude_runtime_status", "cursor_runtime_status"].includes(command)
+    ))).toEqual([]);
+  });
+
   it("recovers a durable local thread when the browser sidebar index is missing", async () => {
     const user = userEvent.setup();
     const claudeThread: Thread = {
