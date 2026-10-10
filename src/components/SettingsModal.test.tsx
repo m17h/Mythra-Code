@@ -149,6 +149,20 @@ describe("SettingsModal", () => {
     expect(within(nav).queryByRole("button", { name: /^Skills/ })).not.toBeInTheDocument();
   });
 
+  it("opens Model pricing from search without starting a pricing check", () => {
+    render(<SettingsModal {...modalProps()} />);
+    const nav = screen.getByRole("navigation", { name: "Settings categories" });
+    const search = screen.getByRole("textbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "cache write" } });
+    expect(within(nav).getByRole("button", { name: /Model pricing/ })).toBeInTheDocument();
+    expect(within(nav).queryByRole("button", { name: /^Usage/ })).not.toBeInTheDocument();
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(screen.getByRole("heading", { level: 3, name: "Model pricing" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh prices" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveClass("settings-modal-wide");
+    expect(nativeInvoke).not.toHaveBeenCalledWith("fetch_pricing_document", expect.anything());
+  });
+
   it("requires every search word to match, and says so when none do", () => {
     render(<SettingsModal {...modalProps()} />);
     const nav = screen.getByRole("navigation", { name: "Settings categories" });

@@ -78,6 +78,19 @@ describe("childRunSettings", () => {
   it("resolves a blank model to the destination provider's default", () => {
     expect(childRunSettings(target({ provider: "claude", model: "" }), context()).model).toBe("claude-fable-5");
   });
+
+  it("assigns the target's own window with no delegation or parent inheritance", () => {
+    for (const autoCompactTokens of [100_000, 1_000_000]) {
+      const run = childRunSettings(target({ provider: "claude", model: "claude-haiku-5-5", autoCompactTokens }), context());
+      expect(run).toMatchObject({ autoCompactTokens, subagentsEnabled: false, subagentMax: 1 });
+      expect(run.nativeSubagentOptions).toBeUndefined();
+    }
+    expect(childRunSettings(target(), context()).autoCompactTokens).toBeUndefined();
+  });
+
+  it.each([99_999, 1_000_001, 100_000.5, NaN, Infinity])("rejects an explicit malformed worker window: %j", (autoCompactTokens) => {
+    expect(() => childRunSettings(target({ autoCompactTokens }), context())).toThrow("whole number");
+  });
 });
 
 describe("startChildAgentTurn", () => {
@@ -97,6 +110,22 @@ describe("startChildAgentTurn", () => {
     codex.rpc.mockImplementation(async (method: string) => (method === "thread/start"
       ? { thread: { id: "thread-child", name: null, preview: "", cwd: "/tmp", updatedAt: 0, modelProvider: "openai" } }
       : { turn: { id: "turn-codex", items: [] } }));
+  });
+
+  it.each([100_000, 1_000_000])("passes the approved Haiku worker's own %i window to its Claude process", async (autoCompactTokens) => {
+    await startChildAgentTurn(target({ provider: "claude", model: "claude-haiku-5-5", autoCompactTokens }), "Investigate", context());
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-haiku-5-5", autoCompactTokens, subagentMax: 1 }));
+    expect(claude.startClaudeTurn.mock.calls[0][0].nativeAutoCompactTokens).toBeUndefined();
+  });
+
+  it("rejects unsupported or malformed compaction before any preparation or provider creation", async () => {
+    const resolveSkillPrompt = vi.fn(async (prompt: string) => prompt);
+    await expect(startChildAgentTurn(target({ provider: "cursor", autoCompactTokens: 100_000 }), "Investigate", context({ resolveSkillPrompt }))).rejects.toThrow("Cursor");
+    await expect(startChildAgentTurn(target({ provider: "claude", autoCompactTokens: 0 }), "Investigate", context({ resolveSkillPrompt }))).rejects.toThrow("whole number");
+    expect(resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(claude.saveClaudeTranscript).not.toHaveBeenCalled();
+    expect(cursor.saveCursorTranscript).not.toHaveBeenCalled();
+    expect(codex.rpc).not.toHaveBeenCalled();
   });
 
   it.each(["openai", "openrouter", "lmstudio", "claude", "cursor"] as const)("attaches a language-only bridge to a %s project's very first delegated turn", async (provider) => {

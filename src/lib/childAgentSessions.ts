@@ -88,7 +88,7 @@ export interface ChildAgentBridgeInput {
   links: Record<string, ChildAgentLink>;
   /** Includes provider-native ownership, which is stored separately from bridge links. */
   isChildThread?: boolean;
-  settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax">;
+  settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax" | "subagentEngine">;
   permission: PermissionMode;
   /** Current provider guides tool routing without changing authority. */
   provider?: Provider;
@@ -130,6 +130,7 @@ export async function ensureChildAgentBridge(
     permission: input.permission,
     ...(input.provider ? { provider: input.provider } : {}),
     ...(childThread ? { childThread: true } : {}),
+    ...(input.settings.subagentEngine === "native" ? { nativeDelegation: true } : {}),
   };
   const contextIdentity = JSON.stringify(projectContext);
   const cachedLaunch = async (sessionId: string) => {
@@ -225,7 +226,7 @@ export async function ensureChildAgentBridge(
   // backend unconditionally also closes a reload-shaped gap: the renderer can
   // reload without the Tauri process being replaced, which empties the maps
   // above while leaving a registered bridge alive in Rust.
-  const delegationEnabled = !clearedRoster && input.settings.subagentsEnabled && input.settings.childAgents.enabled
+  const delegationEnabled = input.settings.subagentEngine !== "native" && !clearedRoster && input.settings.subagentsEnabled && input.settings.childAgents.enabled
     && Boolean(existing?.targets.length || readyChildAgentTargets(input.settings.childAgents, input.readiness).length);
   if (!delegationEnabled) {
     if (!input.settingsProposalsEnabled && !input.projectPath) {
@@ -250,7 +251,8 @@ export async function ensureChildAgentBridge(
     cacheChildAgentPolicy(policy);
     const cached = await cachedLaunch(policy.sessionId);
     cacheChildAgentPolicy(policy);
-    if (cached?.toolNames.includes("propose_agent_settings") && !cached.toolNames.includes("spawn_mythra_agent")) {
+    if (cached && !cached.toolNames.includes("spawn_mythra_agent")
+      && (input.settings.subagentEngine === "native" || cached.toolNames.includes("propose_agent_settings"))) {
       return { policy, launch: cached, captured: !stored };
     }
     if (cached || existing) await releaseChildAgentSession(policy.sessionId);

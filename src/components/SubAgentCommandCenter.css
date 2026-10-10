@@ -1,0 +1,90 @@
+/* Sub-agent system selector and the provider-native pane. Shared panel, row,
+   stepper and worker styles stay in styles.css; this file only adds what the
+   native mode introduces. */
+
+/* The panel's height is measured from the room left between its trigger and
+   the viewport edge (see fitPanelToViewport); the shared rule's fixed share of
+   the window only applies until that first measurement. When the trigger sits
+   too close to the top, the panel opens below it instead. Width and left are
+   measured the same way, and only differ from the normal pane near an edge. */
+.subagent-control > .subagent-panel { left: var(--sa-panel-offset-x, 0px); max-width: var(--sa-panel-max-width, none); max-height: var(--sa-panel-max-height, min(560px, calc(100vh - 210px))); }
+.subagent-control > .subagent-panel[data-placement="below"] { top: calc(100% + 8px); bottom: auto; transform-origin: top left; }
+
+.subagent-panel .sa-engine { container-type: inline-size; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; min-inline-size: 0; margin: 0; padding: 3px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); }
+.subagent-panel .sa-engine-option { position: relative; min-width: 0; display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 7px; padding: 5px 7px; border: 1px solid transparent; border-radius: var(--r-sm); color: var(--muted); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+/* The real radio covers its option, so a click anywhere selects it and the
+   browser keeps arrow-key and disabled semantics for free. */
+.subagent-panel .sa-engine-option input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.subagent-panel .sa-engine-option:hover:not(.selected) { color: var(--text); background: var(--surface-quiet); }
+.subagent-panel .sa-engine-option.selected { color: var(--text); border-color: var(--line-strong); background: var(--surface-selected); }
+.subagent-panel .sa-engine-option:has(input:focus-visible) { outline: 2px solid color-mix(in srgb, var(--green) 62%, transparent); outline-offset: 1px; }
+.subagent-panel .sa-engine-option.unavailable { opacity: .5; cursor: not-allowed; }
+.subagent-panel .sa-engine:disabled .sa-engine-option { cursor: default; }
+.subagent-panel .sa-engine:disabled .sa-engine-option:not(.selected) { opacity: .5; }
+.subagent-panel .sa-engine-option.selected .sa-engine-mark { color: var(--text); }
+.subagent-panel .sa-engine-mark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-xs); color: var(--ink-2); background: var(--panel-3); }
+.subagent-panel .sa-engine-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.subagent-panel .sa-engine-copy strong { overflow: hidden; font-size: var(--fs-meta); font-weight: 620; white-space: nowrap; text-overflow: ellipsis; }
+.subagent-panel .sa-engine-copy small { overflow: hidden; color: var(--muted-2); font-size: 9.5px; white-space: nowrap; text-overflow: ellipsis; }
+@container (max-width: 280px) {
+  .subagent-panel .sa-engine-option { grid-template-columns: minmax(0, 1fr); padding: 6px 7px; }
+  .subagent-panel .sa-engine-mark, .subagent-panel .sa-engine-copy small { display: none; }
+}
+
+.subagent-panel .sa-engine-reason { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin: 0; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--orange) 22%, transparent); border-radius: var(--r-md); color: color-mix(in srgb, var(--orange) 62%, var(--text)); background: color-mix(in srgb, var(--orange) 6%, transparent); font-size: var(--fs-micro); line-height: 1.45; }
+.subagent-panel .sa-engine-reason svg { flex: 0 0 auto; margin-top: 2px; }
+.subagent-panel .sa-engine-reason > span { flex: 1 1 160px; min-width: 0; }
+.subagent-panel .sa-engine-reason button { flex: 0 0 auto; padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line)); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: inherit; cursor: pointer; }
+.subagent-panel .sa-engine-reason button:hover { color: var(--text); border-color: color-mix(in srgb, var(--orange) 46%, var(--line-strong)); }
+
+.subagent-panel .sa-native { display: flex; flex-direction: column; gap: var(--s-1); }
+.subagent-panel .sa-native.muted { opacity: .55; }
+.subagent-panel .sa-native-intro { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); font-size: var(--fs-micro); line-height: 1.45; }
+.subagent-panel .sa-native-mark { flex: 0 0 auto; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--ink-2); background: var(--panel-3); }
+.subagent-panel .sa-native-mark.claude { color: #ffffff; background: #d97757; }
+.subagent-panel .sa-native-note { margin: 0; padding: 0 10px; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.45; }
+
+/* Per-thread native options: one quiet card, copy on the left and a compact
+   select on the right, stacking when the panel is narrow. Menus portal out, so
+   the card never clips them and the panel keeps its own scroll. */
+.subagent-panel .sa-native-options { container-type: inline-size; min-inline-size: 0; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.016); }
+.subagent-panel .sa-native-field { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(128px, 168px); align-items: center; gap: var(--s-3); padding: 8px 10px; }
+.subagent-panel .sa-native-field + .sa-native-field { border-top: 1px solid var(--line); }
+.subagent-panel .sa-native-field:has(.app-select.open) { z-index: 11; }
+.subagent-panel .sa-native-options:disabled .app-select-trigger { cursor: default; opacity: .6; }
+@container (max-width: 300px) {
+  .subagent-panel .sa-native-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .subagent-panel .sa-compaction-readout { justify-self: start; }
+}
+.subagent-panel .sa-native-compact { display: flex; align-items: flex-start; gap: 6px; }
+.subagent-panel .sa-native-compact > span { flex: 1 1 auto; min-width: 0; }
+.subagent-panel .sa-native-info { flex: 0 0 auto; width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-xs); color: var(--muted); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease; }
+.subagent-panel .sa-native-info:hover, .subagent-panel .sa-native-info[aria-expanded="true"] { color: var(--text); border-color: var(--line-strong); }
+.subagent-panel .sa-native-warn { display: flex; align-items: flex-start; gap: 5px; margin: 0; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--orange) 22%, transparent); border-radius: var(--r-md); color: color-mix(in srgb, var(--orange) 62%, var(--text)); background: color-mix(in srgb, var(--orange) 6%, transparent); font-size: var(--fs-micro); line-height: 1.45; }
+.subagent-panel .sa-native-warn svg { flex: 0 0 auto; margin-top: 2px; }
+.subagent-panel .sa-native-warn > span { flex: 1 1 auto; min-width: 0; }
+.subagent-panel .sa-native-reset { flex: 0 0 auto; align-self: center; padding: 1px 7px; border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line)); border-radius: var(--r-xs); color: inherit; background: transparent; font-size: inherit; cursor: pointer; }
+.subagent-panel .sa-native-reset:hover:not(:disabled) { color: var(--text); border-color: color-mix(in srgb, var(--orange) 46%, var(--line-strong)); }
+.subagent-panel .sa-native-reset:disabled { opacity: .55; cursor: default; }
+
+/* This conversation's own compaction window: the same quiet card as the
+   native options, independent of the delegation switch. */
+.subagent-panel .sa-compaction { container-type: inline-size; display: flex; flex-direction: column; gap: 4px; min-inline-size: 0; margin: 0; padding: 0 0 7px; border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(255,255,255,.016); }
+.subagent-panel .sa-compaction:disabled .app-select-trigger { cursor: default; opacity: .6; }
+.subagent-panel .sa-compaction-issue { margin: 0 8px; }
+.subagent-panel .sa-compaction-readout { justify-self: end; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* A worker's reported assignment, progress and result. Each block scrolls
+   within a fixed height so a long report never stretches the popup. */
+.subagent-panel .sa-worker-end { flex-wrap: wrap; }
+.subagent-panel .sa-worker-details { position: relative; z-index: 1; grid-column: 1 / -1; min-width: 0; padding-top: 6px; border-top: 1px solid var(--line); }
+.subagent-panel .sa-worker-details dl { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.subagent-panel .sa-worker-details dt { color: var(--muted-2); font-size: 9.5px; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.subagent-panel .sa-worker-details dd { max-height: 132px; overflow-y: auto; overscroll-behavior: contain; margin: 2px 0 0; color: var(--ink-2); font-size: var(--fs-micro); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.subagent-panel .sa-worker-details p { margin: 6px 0 0; color: var(--muted-2); font-size: 9.5px; }
+
+.sa-trigger-provider { display: inline-grid; place-items: center; width: 14px; height: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-panel .sa-engine-option, .subagent-panel .sa-native-info { transition: none; }
+}

@@ -143,9 +143,25 @@ const NATIVE_SPAWN_TOOL_NAMES: &[&str] = &[
 ];
 
 #[test]
-fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
+fn claude_all_coding_routes_disable_internal_skill_forks() {
+    // Managed children, workflows, legacy callers and Mythra/off use false;
+    // native callers explicitly use true. Both pass this exact argument builder
+    // on fresh and resumed processes. Provider Skill forks dispatch internally,
+    // so denying Agent alone is insufficient.
+    for native in [false, true] {
+        for permission in ["ask", "read-only", "full"] {
+            let args = claude_tool_arguments(permission, native);
+            assert!(args.iter().any(|arg| arg == "--disable-slash-commands"));
+            assert!(!claude_allowed_builtin_tools(permission, native).contains(&"Skill"));
+            assert!(claude_disallowed_tools(permission, native).contains(&"Skill"));
+        }
+    }
+}
+
+#[test]
+fn claude_default_route_keeps_native_subagents_unavailable() {
     for permission in ["ask", "read-only", "full"] {
-        let arguments = claude_tool_arguments(permission);
+        let arguments = claude_tool_arguments(permission, false);
         let allowed = arguments
             .iter()
             .position(|argument| argument == "--tools")
@@ -181,6 +197,321 @@ fn claude_always_uses_mythra_code_as_its_only_subagent_route() {
             );
         }
     }
+}
+
+#[test]
+fn claude_native_route_exposes_only_in_session_agents_and_preserves_permissions() {
+    for permission in ["ask", "read-only", "full"] {
+        let allowed = claude_allowed_builtin_tools(permission, true);
+        let denied = claude_disallowed_tools(permission, true);
+        for tool in CLAUDE_NATIVE_AGENT_TOOLS {
+            assert!(allowed.contains(tool), "native {permission} lacks {tool}");
+            assert!(!denied.contains(tool), "native {permission} denies {tool}");
+        }
+        for tool in CLAUDE_SPAWN_TOOLS
+            .iter()
+            .filter(|tool| !CLAUDE_NATIVE_AGENT_TOOLS.contains(tool))
+        {
+            assert!(!allowed.contains(tool), "native opened unrelated {tool}");
+            assert!(denied.contains(tool), "native must deny unrelated {tool}");
+        }
+        if permission == "read-only" {
+            for tool in CLAUDE_WRITE_TOOLS {
+                assert!(!allowed.contains(tool));
+                assert!(denied.contains(tool));
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_native_route_requires_inherited_permissions_and_fresh_resumed_prompt() {
+    assert!(validate_claude_native_support(true, false).is_err());
+    assert!(validate_claude_native_support(true, true).is_ok());
+    assert!(validate_claude_native_support(false, false).is_ok());
+}
+
+#[test]
+fn claude_native_version_gate_is_separate_from_prompt_snapshot_support() {
+    for version in ["2.1.257 (Claude Code)", "2.1.266", "2.1.267-beta.1"] {
+        assert_eq!(
+            claude_native_subagent_version_support(Some(version)),
+            Some(false)
+        );
+    }
+    for version in ["2.1.267 (Claude Code)", "v2.1.267", "2.1.293", "3.0.0"] {
+        assert_eq!(
+            claude_native_subagent_version_support(Some(version)),
+            Some(true)
+        );
+    }
+    for version in [None, Some("unknown"), Some("2.1.267garbage")] {
+        assert_eq!(claude_native_subagent_version_support(version), None);
+    }
+    assert_eq!(
+        claude_prompt_snapshot_version_support(Some("2.1.257")),
+        Some(true)
+    );
+    assert!(validate_claude_native_support(true, false)
+        .unwrap_err()
+        .contains("2.1.267"));
+}
+
+#[tokio::test]
+async fn claude_native_capability_uses_same_verified_executable_as_snapshot() {
+    let root = skill_test_directory("claude-native-capability");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("cli");
+    fs::write(&path, "snapshot-only").unwrap();
+    let cache = Mutex::new(None);
+    assert!(!cached_claude_native_subagent_support(&cache, &path).await);
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.257 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(!cached_claude_native_subagent_support(&cache, &path).await);
+    fs::write(&path, "safe-native").unwrap();
+    assert!(
+        cached_claude_prompt_snapshot_support(&cache, &path, || async {
+            Some("2.1.267 (Claude Code)".into())
+        })
+        .await
+    );
+    assert!(cached_claude_native_subagent_support(&cache, &path).await);
+    fs::write(&path, "unverified-replacement").unwrap();
+    assert!(!cached_claude_native_subagent_support(&cache, &path).await);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn claude_legacy_turn_payload_does_not_opt_into_native_agents() {
+    let options: ClaudeTurnOptions = serde_json::from_value(json!({
+        "threadId": "legacy-thread",
+        "cwd": "/project",
+        "prompt": "Inspect this project",
+        "model": "default",
+        "effort": "high",
+        "permission": "read-only",
+        "systemPrompt": "",
+        "resume": true,
+        "attachments": [],
+        "subagentMax": 6,
+        "customAgents": [],
+        "skillsPluginPath": null
+    }))
+    .unwrap();
+    assert!(!options.native_subagents);
+    assert_eq!(options.native_subagent_max, None);
+    assert_eq!(options.native_subagent_model, None);
+    assert_eq!(options.native_auto_compact_tokens, None);
+    assert_eq!(options.auto_compact_tokens, None);
+}
+
+#[test]
+fn claude_native_route_does_not_shadow_provider_agents_with_mythra_profiles() {
+    let profiles = vec![ClaudeAgentInput {
+        name: "Explore".into(),
+        description: "Saved Mythra specialist".into(),
+        instructions: "Use the Mythra crew".into(),
+        model: Some("claude-haiku-4-5".into()),
+        enabled: true,
+    }];
+    assert_eq!(claude_agent_definitions(&profiles, 6, true), json!({}));
+    assert_eq!(
+        claude_agent_definitions(&profiles, 6, false)["explore"]["model"],
+        "claude-haiku-4-5"
+    );
+}
+
+#[test]
+fn claude_native_limits_are_process_local_foreground_and_depth_one() {
+    for (requested, expected) in [
+        (None, "6"),
+        (Some(0), "1"),
+        (Some(12), "12"),
+        (Some(999), "24"),
+    ] {
+        let mut command = Command::new("claude");
+        configure_claude_native_agents(&mut command, requested, None);
+        assert!(command
+            .as_std()
+            .get_args()
+            .any(|argument| argument == "--forward-subagent-text"));
+        let environment = command.as_std().get_envs().collect::<HashMap<_, _>>();
+        for (key, value) in [
+            ("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", expected),
+            ("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "1"),
+            ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1"),
+        ] {
+            assert_eq!(
+                environment
+                    .get(std::ffi::OsStr::new(key))
+                    .copied()
+                    .flatten(),
+                Some(std::ffi::OsStr::new(value))
+            );
+        }
+        for key in [
+            "CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+        ] {
+            assert_eq!(environment.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+    }
+}
+
+#[test]
+fn claude_native_model_and_window_are_explicit_process_local_options() {
+    let mut command = Command::new("claude");
+    command.args(["--model", "claude-opus-5-5"]);
+    configure_claude_native_agents(&mut command, Some(4), Some(" claude-haiku-5-5 "));
+    let settings = claude_compaction_settings("claude-opus-5-5", Some(1_000_000), Some("claude-haiku-5-5"), Some(100_000)).unwrap();
+    configure_claude_compaction(&mut command, settings.as_ref());
+    let environment = command.as_std().get_envs().collect::<HashMap<_, _>>();
+    for (key, value) in [
+        ("CLAUDE_CODE_SUBAGENT_MODEL", "claude-haiku-5-5"),
+        ("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "1"),
+        ("CLAUDE_CODE_FORK_SUBAGENT", "0"),
+    ] {
+        assert_eq!(environment.get(std::ffi::OsStr::new(key)).copied().flatten(), Some(std::ffi::OsStr::new(value)));
+    }
+    for key in ["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "DISABLE_COMPACT", "DISABLE_AUTO_COMPACT"] {
+        assert_eq!(environment.get(std::ffi::OsStr::new(key)), Some(&None));
+    }
+    let arguments = command.as_std().get_args().collect::<Vec<_>>();
+    assert_eq!(arguments[0], "--model");
+    assert_eq!(arguments[1], "claude-opus-5-5", "child selection changed the root model");
+    let settings_arg = arguments.windows(2).find(|arguments| arguments[0] == "--settings").unwrap()[1];
+    let settings_json: Value = serde_json::from_str(settings_arg.to_str().unwrap()).unwrap();
+    assert_eq!(settings_json["modelSettings"]["claude-opus-5-5"]["autoCompactWindow"], 1_000_000);
+    assert_eq!(settings_json["modelSettings"]["claude-haiku-5-5"]["autoCompactWindow"], 100_000);
+    assert!(!arguments.iter().any(|argument| *argument == "--autocompact" || *argument == "--agents"));
+    for model in [None, Some(""), Some("   ")] {
+        let mut command = Command::new("claude");
+        configure_claude_native_agents(&mut command, None, model);
+        let environment = command.as_std().get_envs().collect::<HashMap<_, _>>();
+        for key in ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] {
+            assert_eq!(environment.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+        for key in ["CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "DISABLE_COMPACT", "DISABLE_AUTO_COMPACT"] {
+            assert!(!environment.contains_key(std::ffi::OsStr::new(key)));
+        }
+        assert!(!command.as_std().get_args().any(|argument| argument == "--settings"));
+    }
+}
+
+#[test]
+fn claude_native_options_reject_unsupported_version_syntax_and_windows() {
+    for version in ["2.1.267", "2.1.292", "2.1.293-beta.1"] {
+        assert_eq!(claude_haiku55_version_support(Some(version)), Some(false));
+    }
+    for version in ["2.1.293 (Claude Code)", "v2.1.293", "3.0.0"] {
+        assert_eq!(claude_haiku55_version_support(Some(version)), Some(true));
+    }
+    assert_eq!(claude_haiku55_version_support(None), None);
+    assert!(validate_claude_native_options(Some("claude-haiku-5-5"), None, false).unwrap_err().contains("2.1.293"));
+    assert!(validate_claude_native_options(Some("claude-haiku-5-5"), Some(100_000), true).is_ok());
+    assert!(validate_claude_native_options(Some("claude-sonnet-4-6"), Some(1_000_000), false).is_ok());
+    for tokens in [0, 99_999, 1_000_001, usize::MAX] {
+        assert!(validate_claude_native_options(None, Some(tokens), true).is_err());
+    }
+    for model in ["opus[1m]", "claude-fable-5-1[1m]", "claude-opus-5-5[1M]", "claude-haiku-5-5[1m]"] {
+        assert!(validate_claude_native_options(Some(model), None, true).is_ok(), "{model}");
+    }
+    assert!(validate_claude_native_options(Some("haiku[1m]"), None, false).unwrap_err().contains("2.1.293"));
+    for model in ["default", "inherit", "INHERIT", "two models", "model\nname", "--model=x", "opus[1m][1m]", "opus[2m]", "opus[1m]/other", "[1m]", "inherit[1m]", "default[1m]"] {
+        assert!(validate_claude_native_options(Some(model), None, true).is_err(), "{model}");
+    }
+    assert!(validate_claude_native_options(Some(&"a".repeat(201)), None, true).is_err());
+}
+
+#[test]
+fn claude_compaction_keeps_the_configured_model_capacity() {
+    for tokens in [100_000, 1_000_000] {
+        let mut command = Command::new("claude");
+        command.env("CLAUDE_CODE_DISABLE_1M_CONTEXT", "1");
+        let settings = claude_compaction_settings("opus", Some(tokens), None, None).unwrap();
+        configure_claude_compaction(&mut command, settings.as_ref());
+        let environment = command.as_std().get_envs().collect::<HashMap<_, _>>();
+        assert_eq!(environment.get(std::ffi::OsStr::new("CLAUDE_CODE_DISABLE_1M_CONTEXT")).copied().flatten(), Some(std::ffi::OsStr::new("1")));
+    }
+}
+
+#[test]
+fn claude_compaction_windows_are_model_scoped_in_both_directions() {
+    for (parent_tokens, child_tokens) in [(1_000_000, 100_000), (100_000, 1_000_000)] {
+        let settings = claude_compaction_settings("opus", Some(parent_tokens), Some("haiku"), Some(child_tokens)).unwrap().unwrap();
+        assert_eq!(settings["modelSettings"]["claude-opus-5-5"]["autoCompactWindow"], parent_tokens);
+        assert_eq!(settings["modelSettings"]["claude-haiku-5-5"]["autoCompactWindow"], child_tokens);
+        assert!(settings.get("autoCompactWindow").is_none());
+        assert!(settings.get("agents").is_none());
+    }
+    let settings = claude_compaction_settings("opus", None, Some("haiku"), Some(100_000)).unwrap().unwrap();
+    assert_eq!(settings["modelSettings"]["claude-opus-5-5"]["autoCompactWindow"], "auto");
+    let parent_only = claude_compaction_settings("claude-haiku-5-5", Some(100_000), None, None).unwrap().unwrap();
+    assert_eq!(parent_only["modelSettings"]["claude-haiku-5-5"]["autoCompactWindow"], 100_000);
+    let provider_default = claude_compaction_settings("default", Some(100_000), None, None).unwrap().unwrap();
+    assert_eq!(provider_default["autoCompactWindow"], 100_000);
+    let same_window = claude_compaction_settings("default", Some(100_000), None, Some(100_000)).unwrap().unwrap();
+    assert_eq!(same_window["autoCompactWindow"], 100_000);
+}
+
+#[test]
+fn claude_compaction_refuses_unknown_and_conflicting_model_identity() {
+    for (parent, child) in [("default", Some("haiku")), ("opus", None), ("opus", Some("custom-haiku")), ("opus", Some("claude-opus-5-5")), ("claude-opus-5-5[1m]", Some("OPUS"))] {
+        assert!(claude_compaction_settings(parent, Some(1_000_000), child, Some(100_000)).is_err(), "{parent} / {child:?}");
+    }
+    assert_eq!(claude_compaction_model_key("claude-haiku-4-5-20251001"), Some("claude-haiku-4-5".into()));
+    assert_eq!(claude_compaction_model_key("inherit"), None);
+    for tokens in [0, 99_999, 1_000_001, usize::MAX] {
+        assert!(claude_compaction_settings("default", Some(tokens), None, None).is_err());
+    }
+    assert!(claude_compaction_settings("default", None, None, None).unwrap().is_none());
+    let mut command = Command::new("claude");
+    configure_claude_compaction(&mut command, None);
+    assert_eq!(command.as_std().get_args().count(), 0);
+    assert_eq!(command.as_std().get_envs().count(), 0);
+}
+
+#[tokio::test]
+async fn claude_model_compaction_support_is_versioned_and_identity_bound() {
+    assert_eq!(claude_model_compaction_version_support(Some("2.1.287")), Some(false));
+    assert_eq!(claude_model_compaction_version_support(Some("2.1.288-beta.1")), Some(false));
+    assert_eq!(claude_model_compaction_version_support(Some("2.1.288 (Claude Code)")), Some(true));
+    assert_eq!(claude_model_compaction_version_support(None), None);
+    let root = skill_test_directory("claude-model-compaction-capability");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("cli");
+    fs::write(&path, "old-native").unwrap();
+    let cache = Mutex::new(None);
+    assert!(cached_claude_prompt_snapshot_support(&cache, &path, || async { Some("2.1.267".into()) }).await);
+    assert!(!cached_claude_model_compaction_support(&cache, &path).await);
+    fs::write(&path, "new-per-model").unwrap();
+    assert!(cached_claude_prompt_snapshot_support(&cache, &path, || async { Some("2.1.288".into()) }).await);
+    assert!(cached_claude_model_compaction_support(&cache, &path).await);
+    fs::write(&path, "unverified-replacement").unwrap();
+    assert!(!cached_claude_model_compaction_support(&cache, &path).await);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn claude_native_haiku_capability_rechecks_executable_identity() {
+    let root = skill_test_directory("claude-native-haiku-capability");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("cli");
+    fs::write(&path, "old-native").unwrap();
+    let cache = Mutex::new(None);
+    assert!(cached_claude_prompt_snapshot_support(&cache, &path, || async { Some("2.1.267".into()) }).await);
+    assert!(!cached_claude_haiku55_support(&cache, &path).await);
+    fs::write(&path, "new-haiku-native").unwrap();
+    assert!(cached_claude_prompt_snapshot_support(&cache, &path, || async { Some("2.1.293".into()) }).await);
+    assert!(cached_claude_haiku55_support(&cache, &path).await);
+    fs::write(&path, "unverified-replacement").unwrap();
+    assert!(!cached_claude_haiku55_support(&cache, &path).await);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -398,7 +729,7 @@ async fn claude_system_prompt_capability_does_not_cache_a_version_from_a_replace
 
 #[test]
 fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
-    let asking = claude_allowed_builtin_tools("ask");
+    let asking = claude_allowed_builtin_tools("ask", false);
     for tool in [
         "Read",
         "Edit",
@@ -406,14 +737,13 @@ fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
         "Grep",
         "Glob",
         "Bash",
-        "Skill",
         "TodoWrite",
     ] {
         assert!(asking.contains(&tool), "`{tool}` must stay available");
     }
 
-    let read_only = claude_allowed_builtin_tools("read-only");
-    for tool in ["Read", "Grep", "Glob", "Skill"] {
+    let read_only = claude_allowed_builtin_tools("read-only", false);
+    for tool in ["Read", "Grep", "Glob"] {
         assert!(read_only.contains(&tool));
     }
     // PowerShell, BashOutput and KillShell were reachable in read-only
@@ -431,7 +761,7 @@ fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
             !read_only.contains(&tool),
             "read-only must not expose `{tool}`"
         );
-        assert!(claude_disallowed_tools("read-only").contains(&tool));
+        assert!(claude_disallowed_tools("read-only", false).contains(&tool));
     }
 }
 
@@ -439,7 +769,7 @@ fn claude_keeps_its_normal_coding_tools_and_read_only_stays_read_only() {
 fn claude_tool_containment_leaves_mcp_delegation_alone() {
     // `--tools` governs the built-in set only, so no MCP tool — the Mythra
     // Code bridge included — may be named on either list.
-    let arguments = claude_tool_arguments("ask").join(",");
+    let arguments = claude_tool_arguments("ask", false).join(",");
     assert!(!arguments.contains("mcp__"));
     assert!(!arguments.contains("spawn_mythra_agent"));
 }
@@ -2267,6 +2597,7 @@ base_url = \"https://openrouter.ai/api/v1\"
     ));
     assert!(updated.contains("Never use collaboration.spawn_agent"));
     assert!(updated.contains("max_threads = 1"));
+    assert!(updated.contains("enabled = false"));
     // The Mythra Code bridge is the only spawning authority, so a drifted native
     // depth is pulled back to one alongside the thread ceiling.
     assert!(updated.contains("max_depth = 1"));
@@ -2398,6 +2729,171 @@ fn initialize_negotiates_fields_used_by_project_threads() {
 }
 
 #[test]
+fn codex_delegation_config_pins_start_resume_and_fork_to_one_route() {
+    for method in ["thread/start", "thread/resume", "thread/fork"] {
+        for mut params in [json!({}), json!({ "config": null }), json!({ "config": { "profile": "ambient-native", "agents": { "max_threads": 12 } } })] {
+            enforce_codex_delegation_config(method, &mut params).unwrap();
+            assert_eq!(params.pointer("/config/agents/enabled"), Some(&json!(false)));
+            assert_eq!(params.pointer("/config/features/multi_agent"), Some(&json!(false)));
+            assert_eq!(params.pointer("/config/features/multi_agent_v2"), Some(&json!(false)));
+        }
+        for config in [
+            json!({ "features": { "multi_agent": true } }),
+            json!({ "agents": { "enabled": true } }),
+            json!({ "features.multi_agent_v2": true }),
+            json!({ "agents.enabled": true }),
+            json!({ "features": { "multi_agent_v2.enabled": true } }),
+            json!({ "features": { "multi_agent_v2": { "max_concurrent_threads_per_session": 7 } } }),
+            json!({ "features": { "multi_agent_v2": "true" } }),
+        ] {
+            assert!(enforce_codex_delegation_config(method, &mut json!({ "config": config })).is_err());
+        }
+        let mut native = json!({ "config": { "model_provider": "openai", "agents": { "enabled": true }, "features": {
+            "multi_agent_v2": { "enabled": true, "max_concurrent_threads_per_session": 7 }
+        } } });
+        enforce_codex_delegation_config(method, &mut native).unwrap();
+        assert_eq!(native.pointer("/config/agents/enabled"), Some(&json!(true)));
+        assert_eq!(native.pointer("/config/features/multi_agent"), Some(&json!(true)));
+        assert_eq!(native.pointer("/config/features/multi_agent_v2/max_concurrent_threads_per_session"), Some(&json!(7)));
+        assert!(validate_native_codex_runtime(method, &native, "0.161.0").is_ok());
+        for (key, value) in [
+            ("profile", json!("alternate")),
+            ("profiles", json!({ "alternate": { "mcp_servers": {} } })),
+            ("profiles.alternate.mcp_servers", json!({})),
+            ("mcp_servers.renamed_crew.args", json!(["--openkiwi-agent-bridge", "/private/session.json"])),
+        ] {
+            let mut alternate = native.clone();
+            alternate["config"][key] = value;
+            assert!(enforce_codex_delegation_config(method, &mut alternate).is_err());
+        }
+    }
+}
+
+#[test]
+fn native_codex_requires_verified_runtime_and_explicit_provider() {
+    let params = json!({ "config": { "model_provider": "openai", "agents": { "enabled": true }, "features": { "multi_agent_v2": { "enabled": true } } } });
+    for method in ["thread/start", "thread/resume", "thread/fork"] {
+        for version in ["codex-cli 0.161.0", "codex-cli 0.162.0-alpha.1", "1.0.0"] {
+            assert!(validate_native_codex_runtime(method, &params, version).is_ok());
+        }
+        for version in ["unknown", "codex-cli 0.160.9", "codex-cli 0.161.0-alpha.1"] {
+            assert!(validate_native_codex_runtime(method, &params, version)
+                .unwrap_err()
+                .contains("0.161.0"));
+        }
+        let wrong_provider = json!({ "modelProvider": "openrouter", "config": params["config"] });
+        assert!(
+            validate_native_codex_runtime(method, &wrong_provider, "0.161.0")
+                .unwrap_err()
+                .contains("Codex subscription")
+        );
+        let unknown_provider = json!({ "config": { "features": { "multi_agent_v2": true } } });
+        assert!(validate_native_codex_runtime(method, &unknown_provider, "0.161.0").is_err());
+        // Existing Mythra threads and read-only RPCs keep their older baseline.
+        assert!(validate_native_codex_runtime(
+            method,
+            &json!({ "config": { "features": { "multi_agent_v2": false } } }),
+            "0.145.0"
+        )
+        .is_ok());
+    }
+}
+
+#[test]
+fn native_codex_validates_bounded_child_defaults_and_compaction() {
+    let params = json!({ "config": { "model_provider": "openai", "features": { "multi_agent_v2": { "enabled": true } },
+        "agents": { "default_subagent_model": "gpt-6-luna", "default_subagent_reasoning_effort": "high" },
+        "model_auto_compact_token_limit": 100000, "model_auto_compact_token_limit_scope": "total"
+    } });
+    assert!(validate_native_codex_runtime("thread/start", &params, "0.161.0").is_ok());
+    for (path, value) in [
+        ("/config/agents/default_subagent_model", json!("model\n[agents]")),
+        ("/config/agents/default_subagent_model", json!("")),
+        ("/config/agents/default_subagent_reasoning_effort", json!(42)),
+        ("/config/agents/default_subagent_reasoning_effort", json!("bogus")),
+        ("/config/model_auto_compact_token_limit", json!(99999)),
+        ("/config/model_auto_compact_token_limit", json!(1000001)),
+        ("/config/model_auto_compact_token_limit", json!(100000.5)),
+        ("/config/model_auto_compact_token_limit_scope", json!("body_after_prefix")),
+    ] {
+        let mut invalid = params.clone();
+        *invalid.pointer_mut(path).unwrap() = value;
+        assert!(validate_native_codex_runtime("thread/resume", &invalid, "0.161.0").is_err(), "{path}");
+    }
+    let cleared = json!({ "config": { "model_provider": "openai", "features": { "multi_agent_v2": { "enabled": true } } } });
+    assert!(validate_native_codex_runtime("thread/resume", &cleared, "0.161.0").is_ok());
+}
+
+#[test]
+fn codex_compaction_validation_also_covers_parent_and_managed_children() {
+    for native in [false, true] {
+        for invalid in [json!(0), json!(99999), json!(1000001), json!(100000.5), json!("100000"), json!(true)] {
+            let params = json!({"config": {"features": {"multi_agent_v2": native}, "model_auto_compact_token_limit": invalid, "model_auto_compact_token_limit_scope": "total", "model_provider": "openai"}});
+            assert!(validate_native_codex_runtime("thread/start", &params, "0.161.0").is_err());
+        }
+    }
+    assert!(validate_native_codex_runtime("thread/start", &json!({"config":{"model_auto_compact_token_limit":100000}}), "0.145.0").is_err());
+    assert!(validate_native_codex_runtime("thread/start", &json!({"config":{"model_auto_compact_token_limit":100000,"model_auto_compact_token_limit_scope":"total"}}), "0.145.0").is_ok());
+    assert!(validate_native_codex_runtime("thread/resume", &json!({"config":{"model_auto_compact_token_limit":null,"model_auto_compact_token_limit_scope":null}}), "0.145.0").is_ok());
+}
+
+#[tokio::test]
+async fn native_codex_checks_inherited_bridge_aliases_and_disabled_overrides() {
+    let state = ChildAgentState::default();
+    let native = json!({ "config": { "features": { "multi_agent_v2": true } } });
+    let inherited = json!({ "mcp_servers": {
+        "renamed_crew": { "command": "mythra", "enabled": true, "args": ["--openkiwi-agent-bridge", "/not-registered/session.json"] },
+        "ordinary_external": { "command": "user-mcp", "args": ["custom-tool"] }
+    } });
+    let merged = native_codex_effective_bridge_params(&native, &inherited).unwrap();
+    assert!(validate_native_codex_bridges(&state, "thread/start", &merged).await.is_err());
+    let disabled = json!({ "config": { "mcp_servers": { "renamed_crew": { "enabled": false } } } });
+    let merged = native_codex_effective_bridge_params(&disabled, &inherited).unwrap();
+    assert_eq!(merged.pointer("/config/mcp_servers/renamed_crew/args"), inherited.pointer("/mcp_servers/renamed_crew/args"));
+    assert_eq!(merged.pointer("/config/mcp_servers/renamed_crew/enabled"), Some(&json!(false)));
+    assert!(validate_native_codex_bridges(&state, "thread/resume", &merged).await.is_ok());
+    assert_eq!(merged.pointer("/config/mcp_servers/ordinary_external"), inherited.pointer("/mcp_servers/ordinary_external"));
+    let override_command = json!({ "config": { "mcp_servers": { "renamed_crew": { "command": "user-mcp", "args": ["ordinary"] } } } });
+    let merged = native_codex_effective_bridge_params(&override_command, &inherited).unwrap();
+    assert!(validate_native_codex_bridges(&state, "thread/fork", &merged).await.is_ok());
+    assert!(native_codex_effective_bridge_params(&native, &Value::Null).is_err());
+    assert!(native_codex_effective_bridge_params(&native, &json!({ "mcp_servers": [] })).is_err());
+}
+
+#[tokio::test]
+async fn native_codex_rejects_unregistered_or_malformed_project_bridge() {
+    let state = ChildAgentState::default();
+    let renamed = json!({ "config": { "features": { "multi_agent_v2": true }, "mcp_servers": {
+        "renamed_crew": { "command": "mythra", "args": ["--openkiwi-agent-bridge", "/not-registered/session.json"] }
+    } } });
+    assert!(validate_native_codex_bridges(&state, "thread/start", &renamed).await.is_err());
+    let mut params = json!({ "config": { "features": { "multi_agent_v2": { "enabled": true } }, "mcp_servers": {
+        "mythra_agents": { "command": "unregistered", "args": ["--openkiwi-agent-bridge", "/missing/session.json"] }
+    } } });
+    assert!(
+        validate_native_codex_bridges(&state, "thread/start", &params)
+            .await
+            .unwrap_err()
+            .contains("no longer active")
+    );
+    params["config"]["mcp_servers"]["mythra_agents"]["args"] =
+        json!(["--openkiwi-agent-bridge", 42]);
+    assert!(
+        validate_native_codex_bridges(&state, "thread/resume", &params)
+            .await
+            .unwrap_err()
+            .contains("invalid arguments")
+    );
+    assert!(validate_native_codex_bridges(
+        &state,
+        "thread/start",
+        &json!({ "config": { "features": { "multi_agent_v2": true } } })
+    )
+    .await
+    .is_ok());
+}
+
+#[test]
 fn managed_runtime_config_pins_encrypted_auth_storage_on_windows() {
     // A Windows profile that turned the feature off would send ChatGPT tokens
     // straight to Credential Manager, whose 2,560-byte cap fails the sign-in
@@ -2511,6 +3007,156 @@ fn model_refresh_restart_reservation_serializes_turns_and_commands() {
     command.finish(true);
     assert_eq!(lifecycle.active_command_count(), 0);
     assert!(lifecycle.reserve_restart().is_ok());
+}
+
+#[test]
+fn runtime_restart_tracks_native_children_without_child_turn_notifications() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("native-runtime");
+    let spawn = json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "id": "spawn-one", "type": "collabAgentToolCall", "tool": "spawnAgent", "status": "completed",
+        "receiverThreadIds": ["child"], "agentsStates": { "child": { "status": "running" } }
+    } } });
+    lifecycle.observe_server_message("native-runtime", &spawn);
+    lifecycle.observe_server_message(
+        "native-runtime",
+        &json!({ "method": "turn/completed", "params": { "threadId": "root" } }),
+    );
+    assert!(lifecycle.reserve_restart().is_err());
+    assert!(lifecycle.begin_generic_restart().is_err());
+    lifecycle.observe_server_message(
+        "native-runtime",
+        &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "id": "wait-one", "type": "collabAgentToolCall", "tool": "wait", "status": "completed",
+        "receiverThreadIds": ["child"], "agentsStates": { "child": { "status": "completed" } }
+    } } }),
+    );
+    // Late completion of the original spawn cannot revive settled work.
+    lifecycle.observe_server_message("native-runtime", &spawn);
+    let mut duplicate_start = spawn.clone();
+    duplicate_start["method"] = json!("item/started");
+    lifecycle.observe_server_message("native-runtime", &duplicate_start);
+    let restart = lifecycle.begin_generic_restart().unwrap();
+    drop(restart);
+    // A real subsequent activation reuses the child and blocks restart again.
+    lifecycle.observe_server_message("native-runtime", &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "id": "followup-two", "type": "collabAgentToolCall", "tool": "followupTask", "status": "completed",
+        "receiverThreadIds": ["child"], "agentsStates": {}
+    } } }));
+    assert!(lifecycle.begin_generic_restart().is_err());
+    let mut old_terminal = spawn.clone();
+    old_terminal["params"]["item"]["agentsStates"]["child"]["status"] = json!("completed");
+    lifecycle.observe_server_message("native-runtime", &old_terminal);
+    assert!(lifecycle.begin_generic_restart().is_err());
+    lifecycle.observe_server_message(
+        "native-runtime",
+        &json!({ "method": "turn/completed", "params": { "threadId": "child" } }),
+    );
+    assert!(lifecycle.begin_generic_restart().is_ok());
+}
+
+#[test]
+fn runtime_restart_rejects_stale_passive_native_snapshots() {
+    for tool in ["wait", "listAgents"] {
+        let lifecycle = Arc::new(RuntimeLifecycle::default());
+        lifecycle.begin_instance("native-passive");
+        let activation = |id| {
+            json!({ "method": "item/started", "params": { "threadId": "root", "item": {
+            "type": "collabAgentToolCall", "id": id, "tool": "followupTask", "receiverThreadIds": ["child"], "agentsStates": {}
+        } } })
+        };
+        let snapshot = |method, id, status| {
+            json!({ "method": method, "params": { "threadId": "root", "item": {
+            "type": "collabAgentToolCall", "id": id, "tool": tool, "receiverThreadIds": ["child"], "agentsStates": { "child": { "status": status } }
+        } } })
+        };
+        lifecycle.observe_server_message("native-passive", &activation("first"));
+        lifecycle.observe_server_message(
+            "native-passive",
+            &snapshot("item/started", "passive-old", "running"),
+        );
+        lifecycle.observe_server_message("native-passive", &activation("second"));
+        lifecycle.observe_server_message(
+            "native-passive",
+            &snapshot("item/completed", "passive-old", "completed"),
+        );
+        assert!(
+            lifecycle.begin_generic_restart().is_err(),
+            "{tool} must not settle a newer activation"
+        );
+        lifecycle.observe_server_message(
+            "native-passive",
+            &snapshot("item/started", "passive-current", "running"),
+        );
+        lifecycle.observe_server_message(
+            "native-passive",
+            &snapshot("item/completed", "passive-current", "completed"),
+        );
+        assert!(
+            lifecycle.begin_generic_restart().is_ok(),
+            "{tool} may settle the activation it observed"
+        );
+    }
+}
+
+#[test]
+fn runtime_restart_holds_unknown_native_children_until_terminal_evidence() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("native-unknown");
+    lifecycle.observe_server_message("native-unknown", &json!({ "method": "item/completed", "params": { "threadId": "child", "item": {
+        "id": "nested-spawn", "type": "collabAgentToolCall", "tool": "spawnAgent", "status": "completed",
+        "receiverThreadIds": ["grandchild"], "agentsStates": {}
+    } } }));
+    assert!(lifecycle.reserve_restart().is_err());
+    lifecycle.observe_server_message("native-unknown", &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "id": "passive-list", "type": "collabAgentToolCall", "tool": "listAgents", "status": "completed",
+        "receiverThreadIds": ["grandchild"], "agentsStates": { "grandchild": { "status": "pendingInit" } }
+    } } }));
+    assert!(lifecycle.reserve_restart().is_err());
+    lifecycle.observe_server_message(
+        "old-runtime",
+        &json!({ "method": "turn/completed", "params": { "threadId": "grandchild" } }),
+    );
+    assert!(lifecycle.reserve_restart().is_err());
+    lifecycle.observe_server_message("native-unknown", &json!({ "method": "thread/status/changed", "params": { "threadId": "grandchild", "status": { "type": "idle" } } }));
+    assert!(lifecycle.reserve_restart().is_ok());
+}
+
+#[test]
+fn runtime_restart_tracks_subagent_activity_and_ignores_replayed_start() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("native-activity");
+    let started = json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "type": "subAgentActivity", "id": "activity-start", "kind": "started", "agentThreadId": "child"
+    } } });
+    lifecycle.observe_server_message("native-activity", &started);
+    assert!(lifecycle.begin_generic_restart().is_err());
+    lifecycle.observe_server_message("native-activity", &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "type": "subAgentActivity", "id": "activity-done", "kind": "completed", "agentThreadId": "child"
+    } } }));
+    lifecycle.observe_server_message("native-activity", &started);
+    assert!(lifecycle.begin_generic_restart().is_ok());
+}
+
+#[test]
+fn runtime_restart_does_not_let_old_activity_settle_new_native_activation() {
+    let lifecycle = Arc::new(RuntimeLifecycle::default());
+    lifecycle.begin_instance("native-new-activation");
+    lifecycle.observe_server_message("native-new-activation", &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "type": "subAgentActivity", "id": "activity-first", "kind": "started", "agentThreadId": "child"
+    } } }));
+    lifecycle.observe_server_message("native-new-activation", &json!({ "method": "item/started", "params": { "threadId": "root", "item": {
+        "type": "collabAgentToolCall", "id": "followup-new", "tool": "followupTask", "receiverThreadIds": ["child"], "agentsStates": {}
+    } } }));
+    lifecycle.observe_server_message("native-new-activation", &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "type": "subAgentActivity", "id": "activity-first", "kind": "started", "agentThreadId": "child"
+    } } }));
+    lifecycle.observe_server_message("native-new-activation", &json!({ "method": "item/completed", "params": { "threadId": "root", "item": {
+        "type": "subAgentActivity", "id": "activity-old-completed", "kind": "completed", "agentThreadId": "child"
+    } } }));
+    assert!(lifecycle.begin_generic_restart().is_err());
+    lifecycle.observe_server_message("native-new-activation", &json!({ "method": "thread/status/changed", "params": { "threadId": "child", "status": { "type": "idle" } } }));
+    assert!(lifecycle.begin_generic_restart().is_ok());
 }
 
 #[test]
@@ -3623,6 +4269,7 @@ fn child_target(id: &str, provider: &str, model: &str) -> ChildAgentTarget {
         reasoning_mode: "inherit".into(),
         reasoning_effort: "medium".into(),
         reasoning_max_effort: "high".into(),
+        auto_compact_tokens: None,
     }
 }
 
@@ -4474,7 +5121,7 @@ fn claude_exit_recovery_requires_a_successful_native_process_exit() {
 #[test]
 fn claude_questions_use_stdio_in_every_permission_mode() {
     for permission in ["ask", "full", "read-only"] {
-        assert!(claude_allowed_builtin_tools(permission).contains(&"AskUserQuestion"));
+        assert!(claude_allowed_builtin_tools(permission, false).contains(&"AskUserQuestion"));
         let arguments = claude_permission_arguments(permission);
         assert!(arguments
             .windows(2)

@@ -8,6 +8,8 @@ export interface ChildAgentModelOption {
   label: string;
   detail?: string;
   keywords?: string;
+  /** Concrete identity reported by the runtime, especially for floating aliases. */
+  resolvedModel?: string;
 }
 const BUILTIN_MODEL_CATALOGS: Record<Provider, ChildAgentModelOption[]> = {
   openai: [

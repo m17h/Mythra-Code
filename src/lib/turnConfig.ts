@@ -7,6 +7,23 @@ import { CHECK_COMMAND_TOOL } from "./projectChecks";
 import { resolveProviderSystemPrompt } from "./systemPrompt";
 import { DEFAULT_LM_STUDIO_BASE_URL } from "./appConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID, runtimeModelProviderId } from "./providerIds";
+import { nativeSubagentOptionsError, nativeSubagentVersionAtLeast, parentAutoCompactionUnavailableReason, sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions } from "./threadSubagentSettings";
+
+/** First runtime whose V2 config and spawn model overrides we have verified. */
+export const NATIVE_CODEX_MINIMUM_VERSION = "0.161.0";
+
+export function nativeCodexSubagentUnavailableReason(version: string | null | undefined): string | null {
+  if (nativeSubagentVersionAtLeast(version, [0, 161, 0])) return null;
+  return `Native Codex sub-agents need Codex ${NATIVE_CODEX_MINIMUM_VERSION} or newer. Update Codex before using this mode.`;
+}
+
+export function normalizeNativeSubagentMax(value: number | undefined): number {
+  return sanitizeNativeSubagentMax(value);
+}
+
+function nativeCodexDelegation(run: ScheduleRunSettings): boolean {
+  return run.provider === "openai" && run.subagentsEnabled && run.subagentEngine === "native";
+}
 
 export function normalizeLmStudioBaseUrl(value: string | null | undefined): string {
   const trimmed = value?.trim().replace(/\/+$/, "") || DEFAULT_LM_STUDIO_BASE_URL;
@@ -113,46 +130,61 @@ export function childAgentMcpConfig(bridge: ChildAgentBridgeLaunch | undefined):
  * can contain provider-specific schemas that OpenRouter destinations reject.
  */
 export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<Pick<ThreadStartOptions, "interactive" | "customAgents" | "modelContextWindow" | "childAgentBridge" | "projectRunCommand" | "projectCheckCommand">> = {}): JsonObject {
+  const compactError = parentAutoCompactionUnavailableReason(run.provider, run.autoCompactTokens);
+  if (compactError) throw new Error(compactError);
   const contextWindow = Number(options.modelContextWindow);
+  const nativeDelegation = nativeCodexDelegation(run);
+  const nativeMax = normalizeNativeSubagentMax(run.nativeSubagentMax);
+  const nativeOptionsError = nativeDelegation ? nativeSubagentOptionsError(run.provider, run.nativeSubagentOptions) : null;
+  if (nativeOptionsError) throw new Error(nativeOptionsError);
+  const nativeOptions = nativeDelegation ? sanitizeNativeSubagentOptions(run.nativeSubagentOptions)?.codex : undefined;
+  if (nativeOptions?.autoCompactTokens !== undefined) throw new Error("Codex currently shares the parent compaction setting with native workers. Reset child compaction to inherited, or use Mythra Code for independent worker windows.");
   const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
   const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
+  if (nativeDelegation && mythraDelegation) {
+    throw new Error("Native sub-agents cannot share a thread with the Mythra Code spawning bridge. Refresh this thread's sub-agent setup before sending.");
+  }
   return {
     ...childAgentMcpConfig(options.childAgentBridge),
     ...lmStudioProviderConfig(run),
+    ...(nativeDelegation ? { model_provider: "openai" } : {}),
     project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
     project_doc_fallback_filenames: [],
-    // Current Codex releases can enable their native team surface through the
-    // host's multi-agent mode even while both legacy feature flags are false.
-    // This suppresses that injected team role and leaves the exact Mythra Code
-    // MCP destination enum as the sole provider/model authority.
-    multi_agent_mode: { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
-    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options)),
+    // Older runtimes use this mode hint. Current V2 ignores it, but replacing
+    // the app baseline also avoids retaining its native-disabled custom text.
+    multi_agent_mode: nativeDelegation ? "explicitRequestOnly" : { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
+    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options), nativeDelegation),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
+    ...(run.autoCompactTokens !== undefined ? {
+      // Own context only. Native Codex workers inherit this runtime policy;
+      // separate Mythra workers supply their own approved target preference.
+      model_auto_compact_token_limit: run.autoCompactTokens,
+      model_auto_compact_token_limit_scope: "total",
+    } : {}),
     ...((run.provider === "openrouter" || run.provider === "lmstudio") && Number.isFinite(contextWindow) && contextWindow > 0
       ? { model_context_window: Math.floor(contextWindow) }
       : {}),
     agents: {
-      // Not `run.subagentMax`. That number is the Mythra Code bridge's budget and
-      // the bridge enforces it itself, per spawn, against its own ownership
-      // records. Handing the same number to Codex's native agent runtime gave
-      // the model a second independent budget stacked on top of the bridge's,
-      // so a thread configured for two children could reach four workers. This
-      // matches the ceiling the managed `config.toml` already pins.
-      max_threads: 1,
+      enabled: nativeDelegation,
+      // Native and Mythra budgets are independent settings and never active
+      // together. Override the old alias as well as the canonical V2 limit.
+      max_threads: nativeDelegation ? nativeMax : 1,
+      max_concurrent_threads_per_session: nativeDelegation ? nativeMax : 1,
+      // V1 compatibility only; V2 owns its descendants and ignores this cap.
       max_depth: 1,
-      ...customAgentConfig(options.customAgents ?? []),
+      ...(nativeOptions?.model ? { default_subagent_model: nativeOptions.model } : {}),
+      ...(nativeOptions?.reasoningEffort ? { default_subagent_reasoning_effort: nativeOptions.reasoningEffort } : {}),
+      ...(!nativeDelegation ? customAgentConfig(options.customAgents ?? []) : {}),
     },
     features: {
       ...(run.provider === "openai" ? { default_mode_request_user_input: options.interactive !== false } : {}),
-      // Mythra Code is the only delegation authority. Provider-native spawning
-      // bypasses the user's approved destinations, frozen concurrency budget,
-      // ownership records, and child inbox. With no managed destination the
-      // model receives no spawning route at all.
-      multi_agent: false,
-      // Codex 0.147 split its native team runtime into a second feature flag.
-      // Keep both generations off so Mythra Code's approved bridge remains the
-      // only delegation authority (and child threads cannot spawn children).
-      multi_agent_v2: false,
+      multi_agent: nativeDelegation,
+      multi_agent_v2: nativeDelegation ? {
+        enabled: true,
+        expose_spawn_agent_model_overrides: true,
+        // Codex 0.161 V2 counts the root, unlike agents' child-only limit.
+        max_concurrent_threads_per_session: nativeMax + 1,
+      } : false,
       ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: false, remote_plugin: false } : {}),
     },
     ...(run.provider === "openrouter" || run.provider === "lmstudio" ? { apps: { _default: { enabled: false } } } : {}),
@@ -165,6 +197,7 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
     runButtonContext(options),
     checkButtonContext(options),
+    nativeCodexDelegation(run),
   );
   const params: JsonObject = {
     cwd,
@@ -205,6 +238,7 @@ export function threadResumeParams(
     Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings")),
     runButtonContext(options),
     checkButtonContext(options),
+    nativeCodexDelegation(run),
   );
   const modelProvider = runtimeModelProviderId(run.provider);
   return {
@@ -223,7 +257,7 @@ export function threadResumeParams(
     developerInstructions,
     ...(options.excludeTurns ? { excludeTurns: true } : {}),
     ...(modelProvider ? { modelProvider } : {}),
-    ...(run.provider === "openrouter" || run.provider === "lmstudio" || options.childAgentBridge || options.refreshRuntimeConfig
+    ...(run.provider === "openrouter" || run.provider === "lmstudio" || run.subagentEngine === "native" || options.childAgentBridge || options.refreshRuntimeConfig
       ? { config: threadRuntimeConfig(run, options) }
       : {}),
   };
@@ -302,15 +336,21 @@ export function turnStartParams(
     effort: run.ultra ? "ultra" : run.reasoningEffort,
     serviceTier: run.serviceTier,
   };
-  return instructions.systemPrompt === undefined ? params : withCurrentSystemPrompt(params, instructions.systemPrompt, instructions.model, instructions.developerInstructions);
+  return instructions.systemPrompt === undefined ? params : withCurrentSystemPrompt(params, instructions.systemPrompt, instructions.model,
+    instructions.developerInstructions ?? mythraCodeDeveloperInstructions(false, false, undefined, undefined, nativeCodexDelegation(run)));
 }
 
 export function scheduleRunSnapshot(
   settings: ScheduleRunSettings & Partial<Pick<AppSettings, "codexSystemPrompt" | "claudeSystemPrompt">>,
 ): ScheduleRunSettings {
+  const compactError = parentAutoCompactionUnavailableReason(settings.provider, settings.autoCompactTokens);
+  if (compactError) throw new Error(compactError);
+  const nativeOptionsError = nativeCodexDelegation(settings) ? nativeSubagentOptionsError(settings.provider, settings.nativeSubagentOptions) : null;
+  if (nativeOptionsError) throw new Error(nativeOptionsError);
   return {
     provider: settings.provider,
     model: settings.model,
+    ...(settings.autoCompactTokens !== undefined ? { autoCompactTokens: settings.autoCompactTokens } : {}),
     lmStudioBaseUrl: normalizeLmStudioBaseUrl(settings.lmStudioBaseUrl),
     permission: settings.permission,
     systemPrompt: resolveProviderSystemPrompt(
@@ -322,6 +362,9 @@ export function scheduleRunSnapshot(
     projectInstructionsEnabled: settings.projectInstructionsEnabled,
     subagentsEnabled: settings.subagentsEnabled,
     subagentMax: settings.subagentMax,
+    subagentEngine: settings.subagentEngine,
+    nativeSubagentMax: settings.nativeSubagentMax,
+    nativeSubagentOptions: sanitizeNativeSubagentOptions(settings.nativeSubagentOptions),
     reasoningEffort: settings.reasoningEffort,
     ultra: settings.ultra,
     serviceTier: settings.serviceTier,

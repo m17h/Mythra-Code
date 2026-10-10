@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import type { AttachmentRecord } from "../components/StudioDock";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
-import type { AppSettings, PermissionMode, Provider } from "../types";
+import type { AppSettings, NativeSubagentOptions, PermissionMode, Provider, SubagentEngine } from "../types";
+import { nativeSubagentOptionsError, sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions, sanitizeSubagentEngine, storedAutoCompactTokens } from "./threadSubagentSettings";
 import { loadStored, removeStoredValue, storeValue } from "./storage";
 import { normalizedProjectPath } from "./paths";
 import { sanitizeStoredQueuedTurns, type QueuedTurn, type QueuedTurnStatus } from "./taskStore";
@@ -25,6 +26,10 @@ export interface NewThreadSettingsSnapshot {
   permission: PermissionMode;
   serviceTier: string | null;
   subagentsEnabled: boolean;
+  subagentEngine?: SubagentEngine;
+  nativeSubagentMax?: number;
+  nativeSubagentOptions?: NativeSubagentOptions;
+  autoCompactTokens?: number;
   isolated: boolean;
 }
 
@@ -55,7 +60,11 @@ export function newThreadSnapshot(settings: AppSettings, isolated: boolean): New
     ultra: settings.ultra,
     permission: settings.permission,
     serviceTier: settings.serviceTier ?? null,
-    subagentsEnabled: settings.subagentsEnabled,
+    subagentsEnabled: settings.subagentsEnabled && (settings.subagentEngine !== "native" || nativeSubagentOptionsError(settings.provider, settings.nativeSubagentOptions) === null),
+    subagentEngine: sanitizeSubagentEngine(settings.subagentEngine),
+    nativeSubagentMax: sanitizeNativeSubagentMax(settings.nativeSubagentMax),
+    nativeSubagentOptions: sanitizeNativeSubagentOptions(settings.nativeSubagentOptions),
+    ...(settings.autoCompactTokens !== undefined ? { autoCompactTokens: storedAutoCompactTokens(settings.autoCompactTokens) } : {}),
     isolated,
   };
 }
@@ -70,7 +79,11 @@ export function applyNewThreadSnapshot(settings: AppSettings, snapshot: NewThrea
     ultra: snapshot.ultra,
     permission: snapshot.permission,
     serviceTier: snapshot.serviceTier,
-    subagentsEnabled: snapshot.subagentsEnabled,
+    subagentsEnabled: snapshot.subagentsEnabled && (snapshot.subagentEngine !== "native" || nativeSubagentOptionsError(snapshot.provider, snapshot.nativeSubagentOptions) === null),
+    subagentEngine: sanitizeSubagentEngine(snapshot.subagentEngine),
+    nativeSubagentMax: sanitizeNativeSubagentMax(snapshot.nativeSubagentMax),
+    nativeSubagentOptions: sanitizeNativeSubagentOptions(snapshot.nativeSubagentOptions),
+    autoCompactTokens: storedAutoCompactTokens(snapshot.autoCompactTokens),
   };
 }
 
@@ -88,7 +101,11 @@ function sanitizeSnapshot(value: unknown): NewThreadSettingsSnapshot | null {
     ultra: raw.ultra === true,
     permission: raw.permission as PermissionMode,
     serviceTier: typeof raw.serviceTier === "string" ? raw.serviceTier : null,
-    subagentsEnabled: raw.subagentsEnabled === true,
+    subagentsEnabled: raw.subagentsEnabled === true && (raw.subagentEngine === undefined || raw.subagentEngine === "mythra" || raw.subagentEngine === "native") && (raw.subagentEngine !== "native" || nativeSubagentOptionsError(raw.provider as Provider, raw.nativeSubagentOptions) === null),
+    subagentEngine: sanitizeSubagentEngine(raw.subagentEngine),
+    nativeSubagentMax: sanitizeNativeSubagentMax(raw.nativeSubagentMax),
+    nativeSubagentOptions: sanitizeNativeSubagentOptions(raw.nativeSubagentOptions),
+    ...(raw.autoCompactTokens !== undefined ? { autoCompactTokens: storedAutoCompactTokens(raw.autoCompactTokens) } : {}),
     isolated: raw.isolated === true,
   };
 }
@@ -173,7 +190,7 @@ export const useNewThreadTimedPrompts = create<NewThreadTimedPromptState>((set, 
       deliverAt,
       workspacePath,
       workspaceName,
-      snapshot: { ...snapshot },
+      snapshot: { ...snapshot, subagentsEnabled: snapshot.subagentsEnabled && (snapshot.subagentEngine !== "native" || nativeSubagentOptionsError(snapshot.provider, snapshot.nativeSubagentOptions) === null), nativeSubagentOptions: sanitizeNativeSubagentOptions(snapshot.nativeSubagentOptions), ...(snapshot.autoCompactTokens !== undefined ? { autoCompactTokens: storedAutoCompactTokens(snapshot.autoCompactTokens) } : {}) },
       ...(skillInvocationText !== undefined ? { skillInvocationText } : {}),
     };
     const prompts = { ...get().prompts, [workspacePath]: [...(get().prompts[workspacePath] ?? []), prompt] };

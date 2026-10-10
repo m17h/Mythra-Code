@@ -83,4 +83,14 @@ describe("Mythra Code completion instructions", () => {
     expect(instructions).toContain(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
     expect(instructions).not.toContain(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
   });
+
+  it("native mode selects exactly one authority and keeps ordinary project instructions", () => {
+    const instructions = mythraCodeDeveloperInstructions(true, true, null, null, true);
+    expect(instructions).toContain("Provider-native sub-agent delegation is enabled");
+    expect(instructions).not.toContain(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
+    expect(instructions).not.toContain(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
+    expect(instructions).toContain("inherit this turn's project and permission boundaries");
+    expect(withMythraCodeCompletionInstructions("User style.", false, false, null, null, true))
+      .toContain("User style.\n\n");
+  });
 });

@@ -3,6 +3,7 @@ import { canOwnThread } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AppSettings, ChildAgentPreset, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
+import { autoCompactTokensError, storedAutoCompactTokens } from "./threadSubagentSettings";
 
 /**
  * Cross-provider sub-agents.
@@ -252,6 +253,8 @@ export function childAgentTargetIssue(
   readiness: ChildAgentReadiness,
 ): string | null {
   if (!CHILD_AGENT_PROVIDERS.includes(target.provider)) return "Unknown provider.";
+  const compactionError = childAgentAutoCompactIssue(target);
+  if (compactionError) return compactionError;
   const model = childAgentModel(target);
   if (target.provider === "openrouter" && !model.includes("/")) {
     return "OpenRouter needs a fully qualified model, for example `x-ai/grok-4.5`.";
@@ -280,6 +283,16 @@ export function childAgentTargetIssue(
   if (target.provider === "lmstudio" && !readiness.lmStudioReady) return "Start LM Studio's local server and refresh its models first.";
   if (target.provider === "claude" && !readiness.claudeReady) return "Install and sign in to Claude Code first.";
   if (target.provider === "cursor" && !readiness.cursorReady) return "Install and sign in to Cursor Agent first.";
+  return null;
+}
+
+/** Explicit unsupported or malformed preferences cannot launch provider defaults. */
+export function childAgentAutoCompactIssue(target: Pick<ChildAgentTarget, "provider" | "autoCompactTokens">): string | null {
+  const error = autoCompactTokensError(target.autoCompactTokens);
+  if (error) return error;
+  if (target.autoCompactTokens !== undefined && target.provider === "cursor") {
+    return "Cursor does not support a configurable auto-compaction window. Choose provider default.";
+  }
   return null;
 }
 
@@ -315,12 +328,13 @@ export function sanitizeChildAgentSettings(stored: unknown): ChildAgentSettings 
       label: sanitizeText(entry.label, 80) || id,
       description: sanitizeText(entry.description, 400),
       // An entry with no explicit flag predates the flag and stays available.
-      enabled: entry.enabled !== false,
+      enabled: entry.enabled !== false && autoCompactTokensError(entry.autoCompactTokens) === null,
       // Existing destinations inherit the root effort, preserving the exact
       // behaviour they had before per-destination reasoning existed.
       reasoningMode: entry.reasoningMode === "fixed" || entry.reasoningMode === "agent" ? entry.reasoningMode : "inherit",
       reasoningEffort: isReasoningEffort(entry.reasoningEffort) ? entry.reasoningEffort : "medium",
       reasoningMaxEffort: isReasoningEffort(entry.reasoningMaxEffort) ? entry.reasoningMaxEffort : "high",
+      ...(entry.autoCompactTokens !== undefined ? { autoCompactTokens: storedAutoCompactTokens(entry.autoCompactTokens) } : {}),
     });
   }
   // The roster is the provider allow-list. A legacy cross-provider switch
@@ -527,6 +541,7 @@ export function childAgentSessionOptions(policy: ChildAgentPolicy, knownChildren
     reasoningMode: ChildAgentTarget["reasoningMode"];
     reasoningEffort: ReasoningEffort;
     reasoningMaxEffort: ReasoningEffort;
+    autoCompactTokens?: number;
   }>;
 } {
   return {
@@ -542,6 +557,7 @@ export function childAgentSessionOptions(policy: ChildAgentPolicy, knownChildren
       reasoningMode: target.reasoningMode,
       reasoningEffort: target.reasoningEffort,
       reasoningMaxEffort: target.reasoningMaxEffort,
+      ...(target.autoCompactTokens !== undefined ? { autoCompactTokens: target.autoCompactTokens } : {}),
     })),
   };
 }

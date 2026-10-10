@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { canOwnThread, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, ownsChildren, sanitizeNativeAgentLinks } from "./nativeAgentLinks";
+import { canOwnThread, canOwnNativeThread, nativeDescendantIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, ownsChildren, sanitizeNativeAgentLinks } from "./nativeAgentLinks";
 
 describe("native agent ownership", () => {
+  it("restores bounded readout evidence without promoting requested models to observed models", () => {
+    const restored = sanitizeNativeAgentLinks({ child: { childThreadId: "child", rootThreadId: "root", createdAt: 1, title: "Task", task: "a".repeat(13000), progress: "b".repeat(9000) + "latest", result: "Reported result", requestedModel: "requested", modelSource: "invented", activationId: "operation" } }).child;
+    expect(restored.task?.length).toBe(12001);
+    expect(restored.progress?.length).toBe(8001);
+    expect(restored.progress).toMatch(/latest$/);
+    expect(restored).toMatchObject({ result: "Reported result", requestedModel: "requested", activationId: "operation" });
+    expect(restored.model).toBeUndefined();
+    expect(restored.modelSource).toBeUndefined();
+  });
+
+  it("retains explicit cleared model evidence for a new activation across reload", () => {
+    const restored = sanitizeNativeAgentLinks({ child: { childThreadId: "child", rootThreadId: "root", createdAt: 1, title: "Task", model: "", requestedModel: "", activationId: "fresh-operation" } }).child;
+    expect(restored).toMatchObject({ model: "", requestedModel: "", activationId: "fresh-operation" });
+    expect(restored.modelSource).toBeUndefined();
+  });
   it("discovers ownership from Codex thread metadata", () => {
     expect(nativeAgentLinkFromThread({
       id: "child",
@@ -70,12 +85,16 @@ describe("ownership graph guards", () => {
     expect(canOwnThread(graph, "root", "child")).toBe(true);
   });
 
-  it("drops a persisted grandchild so restored delegation stays one level deep", () => {
+  it("restores native descendants while Mythra delegation stays one level deep", () => {
     const restored = sanitizeNativeAgentLinks({
       child: { childThreadId: "child", rootThreadId: "root", title: "work", createdAt: 1 },
       grandchild: { childThreadId: "grandchild", rootThreadId: "child", title: "nested", createdAt: 2 },
     });
-    expect(Object.keys(restored)).toEqual(["child"]);
+    expect(Object.keys(restored)).toEqual(["child", "grandchild"]);
+    expect(canOwnThread(restored, "grandchild", "next")).toBe(false);
+    expect(canOwnNativeThread(restored, "grandchild", "next")).toBe(true);
+    expect(nativeDescendantIds(restored, "root")).toEqual(["child", "grandchild"]);
+    expect(canOwnNativeThread(restored, "grandchild", "root")).toBe(false);
   });
 
   it("drops cyclic pairs from persisted storage instead of trusting file order", () => {

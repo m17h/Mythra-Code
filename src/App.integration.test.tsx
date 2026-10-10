@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import publishedPricingCatalog from "../model-pricing.json?raw";
+import { ANTHROPIC_PRICING_PAGE, CURSOR_PRICING_PAGE, OPENAI_PRICING_PAGE } from "./test/pricingPages";
 import type { SkillDependencyReport, Thread } from "./types";
 import { emptySkillDependencyReport } from "./lib/skillDependencies";
 import { skillDependencyFixture } from "./test/skillDependencyFixtures";
@@ -23,6 +24,7 @@ const invokeMock = vi.fn();
 const appFetch = vi.fn<typeof fetch>();
 const pricingRequest = /^https:\/\/raw\.githubusercontent\.com\/m17h\/Mythra-Code\/main\/model-pricing\.json\?openkiwi=\d+$/;
 const settingsPrewarm = vi.hoisted(() => ({ schedule: vi.fn<(preload: () => void) => () => void>(() => () => {}) }));
+const tauriSurface = vi.hoisted(() => ({ enabled: false }));
 vi.mock("./lib/settingsPreload", () => ({ scheduleSettingsPreload: settingsPrewarm.schedule }));
 const tauriEvents = vi.hoisted(() => ({
   handlers: new Map<string, (event: { payload: unknown }) => void>(),
@@ -30,7 +32,7 @@ const tauriEvents = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string, args?: Record<string, unknown>) => invokeMock(command, args),
-  isTauri: () => false,
+  isTauri: () => tauriSurface.enabled,
   convertFileSrc: (path: string) => path,
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -421,6 +423,7 @@ async function renderApp() {
 }
 
 beforeEach(() => {
+  tauriSurface.enabled = false;
   // Each App mount refreshes pricing. Keep the real refresh/parser but own its
   // HTTP boundary: live requests can finish after unmount and write the next
   // test's storage even though vi.resetModules() created a fresh module graph.
@@ -514,6 +517,66 @@ afterEach(async () => {
 });
 
 describe("App pricing request isolation", () => {
+  it("refreshes official pricing once per native app launch despite a recent cache, and shares manual refresh without checking on settings open", async () => {
+    tauriSurface.enabled = true;
+    const sources = ["openai", "anthropic", "cursor"] as const;
+    const cachedAt = Date.now() - 1_000;
+    localStorage.setItem("kiwi.officialModelPricing", JSON.stringify({
+      schemaVersion: 1, updatedAt: new Date(cachedAt).toISOString(), models: {},
+      sources: Object.fromEntries(sources.map((source) => [source, {
+        checkedAt: cachedAt, verifiedAt: cachedAt, lastModelCount: 1, catalog: {},
+      }])),
+    }));
+    const pages = { openai: OPENAI_PRICING_PAGE, anthropic: ANTHROPIC_PRICING_PAGE, cursor: CURSOR_PRICING_PAGE };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "fetch_pricing_document") return pages[args?.source as keyof typeof pages];
+      return stubInvoke(command, args);
+    });
+    const timers = vi.spyOn(window, "setTimeout");
+    const pricingCalls = () => invokeMock.mock.calls.filter(([command]) => command === "fetch_pricing_document");
+    const fireLaunchCheck = async () => {
+      const launches = timers.mock.calls.map(([callback, delay], index) => ({ callback, delay, index }))
+        .filter(({ delay }) => delay === 6_000);
+      const latest = launches.at(-1)!;
+      expect(typeof latest.callback).toBe("function");
+      // Execute the actual deferred launch callback without waiting six wall
+      // seconds. Cancel its original timer so the fixture cannot double-fire.
+      window.clearTimeout(timers.mock.results[latest.index].value);
+      await act(async () => { (latest.callback as () => void)(); });
+      return launches.length;
+    };
+    const first = await renderApp();
+    const { officialPricingStatus } = await import("./lib/officialPricing");
+    expect(officialPricingStatus().every(({ checkedAt }) => checkedAt === cachedAt)).toBe(true);
+    expect(pricingCalls()).toHaveLength(0);
+    expect(await fireLaunchCheck()).toBe(1);
+    await waitFor(() => expect(officialPricingStatus().every(({ checking, verifiedAt, error, models }) =>
+      !checking && (verifiedAt ?? 0) > cachedAt && !error && models > 0)).toBe(true));
+    expect(pricingCalls().map(([, args]) => args.source)).toEqual(sources);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(settings).getByRole("button", { name: "Model pricing" }));
+    const refresh = await within(settings).findByRole("button", { name: "Refresh prices" });
+    expect(pricingCalls()).toHaveLength(3);
+    expect(timers.mock.calls.filter(([, delay]) => delay === 6_000)).toHaveLength(1);
+    await user.click(refresh);
+    await waitFor(() => expect(pricingCalls()).toHaveLength(6));
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+    expect(pricingCalls().slice(3).map(([, args]) => args.source)).toEqual(sources);
+    first.unmount();
+
+    const second = await renderApp();
+    expect(pricingCalls()).toHaveLength(6);
+    expect(await fireLaunchCheck()).toBe(2);
+    const secondPricing = await import("./lib/officialPricing");
+    await waitFor(() => expect(pricingCalls()).toHaveLength(9));
+    await waitFor(() => expect(secondPricing.officialPricingStatus().every(({ checking, error }) => !checking && !error)).toBe(true));
+    expect(pricingCalls().slice(6).map(([, args]) => args.source)).toEqual(sources);
+    second.unmount();
+  });
+
   it("settles the real startup refresh with the owned catalog before leaving the fixture", async () => {
     const view = await renderApp();
     const { pricingRefreshStatus, MODEL_PRICING_CATALOG_KEY } = await import("./lib/usageLedger");
@@ -1029,7 +1092,16 @@ describe("Codex cold startup", () => {
     const user = userEvent.setup();
     const threads = [THREAD_A, THREAD_B].map(thread => kind === "sub-agent" ? { ...thread, parentThreadId: "root", threadSource: "subagent" } : thread);
     threadListImpl = (params) => ({ data: params.cwd === PROJECT_A.path ? threads : [], nextCursor: null });
-    resumeImpl = () => ({ thread: { ...threads[0], turns: [] } });
+    threadReadImpl = (params) => ({ thread: { ...threads.find((thread) => thread.id === params.threadId)!, turns: [] } });
+    resumeImpl = (params) => ({ thread: { ...threads.find((thread) => thread.id === params.threadId)!, turns: [] } });
+    if (kind === "sub-agent") {
+      // Listed native children without terminal evidence are deliberately
+      // protected. This bulk-success fixture represents two settled workers.
+      localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify(Object.fromEntries(threads.map((thread) => [thread.id, {
+        childThreadId: thread.id, rootThreadId: "root", title: thread.name,
+        createdAt: 1, runtime: "codex", status: "completed", finishedAt: 2,
+      }]))));
+    }
     await renderApp();
     if (kind === "sub-agent") await user.click(within(screen.getByRole("group", { name: "Thread type" })).getByRole("button", { name: /^Sub-agents/ }));
     const status = document.querySelector(".runtime-status")!;
@@ -1049,6 +1121,9 @@ describe("Codex cold startup", () => {
     expect(status.textContent).toBe("Ready");
     await user.click(screen.getByRole("button", { name: "Archive all" }));
     expect(await screen.findByText(`Archived 2 ${kind} threads`)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.filter(([command, args]) => command === "codex_rpc" && args?.method === "thread/archive")
+      .map(([, args]) => (args?.params as { threadId: string }).threadId).sort()).toEqual([THREAD_A.id, THREAD_B.id].sort());
+    expect(JSON.parse(localStorage.getItem("kiwi.archivedThreads") ?? "[]").map((thread: { id: string }) => thread.id).sort()).toEqual([THREAD_A.id, THREAD_B.id].sort());
     expect(status.textContent).toBe("Ready");
     expect(status).not.toHaveTextContent("Archived");
   });
@@ -2456,6 +2531,208 @@ describe("overlapping refresh ordering", () => {
 
 describe("model catalog request ordering", () => {
   const catalogModel = (id: string) => ({ id, model: id, displayName: id, description: "Account model", supportedReasoningEfforts: [], defaultReasoningEffort: "high", isDefault: false });
+
+  function nativePricingFixture() {
+    tauriSurface.enabled = true;
+    const pages = { openai: OPENAI_PRICING_PAGE, anthropic: ANTHROPIC_PRICING_PAGE, cursor: CURSOR_PRICING_PAGE };
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => command === "fetch_pricing_document"
+      ? pages[args?.source as keyof typeof pages] : stubInvoke(command, args));
+  }
+  async function openPricing(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const settings = await screen.findByRole("dialog", { name: "Settings" });
+    await user.click(within(settings).getByRole("button", { name: "Model pricing" }));
+    return settings;
+  }
+  async function fireCatalogLaunch(timers: { mock: { calls: unknown[][]; results: Array<{ value: unknown }> } }) {
+    const latest = timers.mock.calls.map((args: unknown[], index: number) => ({ callback: args[0], delay: args[1], index })).filter(({ delay }) => delay === 6_000).at(-1)!;
+    window.clearTimeout(timers.mock.results[latest.index].value as number);
+    await act(async () => { (latest.callback as () => void)(); });
+  }
+
+  it("launch price refresh reuses fresh startup catalogs and never restarts an active runtime when a later read is due", async () => {
+    nativePricingFixture();
+    modelListImpl = () => ({ data: [catalogModel("startup-model")] });
+    const timers = vi.spyOn(window, "setTimeout");
+    await renderApp();
+    const startupReads = invokeMock.mock.calls.filter(([, args]) => args?.method === "model/list").length;
+    await fireCatalogLaunch(timers);
+    expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "model/list")).toHaveLength(startupReads);
+    const { useTaskStore } = await import("./lib/taskStore");
+    await act(async () => { useTaskStore.getState().setTaskStatus(THREAD_A.id, "running"); });
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 31_000);
+    modelListImpl = () => ({ data: [catalogModel("due-model")] });
+    await fireCatalogLaunch(timers);
+    await waitFor(() => expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "model/list")).toHaveLength(startupReads + 1));
+    clock.mockRestore();
+    expect(invokeMock.mock.calls.some(([command]) => ["codex_runtime_status_refresh", "restart_runtime", "restart_runtime_reserved"].includes(command))).toBe(false);
+  });
+
+  it.each(["upgrade", "sign-out"] as const)("manual price refresh queued behind routine discovery handles %s without stale or duplicate work", async (outcome) => {
+    nativePricingFixture();
+    modelListImpl = () => ({ data: [catalogModel("startup-model")] });
+    const timers = vi.spyOn(window, "setTimeout");
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    const oldRead = deferred<{ data: unknown[] }>();
+    let reads = 0;
+    modelListImpl = () => ++reads === 1 ? oldRead.promise : { data: [catalogModel("replacement-after-upgrade")] };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+    await fireCatalogLaunch(timers);
+    await waitFor(() => expect(reads).toBe(1));
+    clock.mockRestore();
+    const runtime = refreshedCodexRuntimeStatusImpl() as Record<string, unknown>;
+    refreshedCodexRuntimeStatusImpl = () => ({ ...runtime, runtimeChanged: true, version: "100.0.0" });
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "codex_runtime_status_refresh")).toHaveLength(0);
+    if (outcome === "sign-out") {
+      await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null } } }); });
+    }
+    await act(async () => { oldRead.resolve({ data: [catalogModel("old-routine-model")] }); });
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime_reserved")).toHaveLength(outcome === "upgrade" ? 1 : 0);
+    expect(reads).toBe(outcome === "upgrade" ? 2 : 1);
+    if (outcome === "upgrade") {
+      await user.click(within(settings).getByRole("button", { name: "Close settings" }));
+      await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+      expect(await screen.findByRole("menuitemradio", { name: /^replacement-after-upgrade:/ })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitemradio", { name: /^old-routine-model:/ })).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(["openai", "claude"] as const)("price refresh discovers replacement %s account models without changing the selection", async (provider) => {
+    nativePricingFixture();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider, model: provider === "openai" ? "chosen-model" : "sonnet" }));
+    modelListImpl = () => ({ data: [catalogModel("chosen-model")] });
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/bin/claude", version: "2.1.100", loggedIn: true, authMethod: "oauth", email: "test@example.com", subscriptionType: "max", warning: null });
+    const sonnet = { value: "sonnet", displayName: "Sonnet", description: "Claude Sonnet 5", resolvedModel: "claude-sonnet-5" };
+    claudeModelsImpl = () => ({ models: [sonnet] });
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    modelListImpl = () => ({ data: [catalogModel("replacement-account-model")] });
+    claudeModelsImpl = () => ({ models: [sonnet, { value: "claude-haiku-5-5", displayName: "Replacement Haiku", description: "Claude Haiku 5.5", resolvedModel: "claude-haiku-5-5" }] });
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+    expect(within(settings).queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(within(settings).getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: provider === "openai" ? /^OpenAI model:/ : /^Claude model:/ }));
+    expect(await screen.findByRole("menuitemradio", { name: provider === "openai" ? /^replacement-account-model:/ : /^Replacement Haiku/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: provider === "openai" ? /^OpenAI model: chosen-model/ : /^Claude model: Sonnet/ })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).model).toBe(provider === "openai" ? "chosen-model" : "sonnet");
+    expect(screen.queryByRole("menuitemradio", { name: /^gpt-5.6-search/ })).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "restart_runtime_reserved")).toBe(false);
+  });
+
+  it("price refresh keeps the last good account catalog on offline discovery and reports models separately", async () => {
+    nativePricingFixture();
+    modelListImpl = () => ({ data: [catalogModel("last-good-model")] });
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    modelListImpl = () => { throw new Error("Catalog offline"); };
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    expect(await within(settings).findByRole("alert")).toHaveTextContent("Available models could not be refreshed. OpenAI: Catalog offline");
+    expect(within(settings).queryByText(/Couldn’t refresh pricing/)).not.toBeInTheDocument();
+    await user.click(within(settings).getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: /^OpenAI model:/ }));
+    expect(await screen.findByRole("menuitemradio", { name: /^last-good-model:/ })).toBeInTheDocument();
+  });
+
+  it("price refresh skips signed-out and absent providers without spurious model errors", async () => {
+    nativePricingFixture();
+    accountReadImpl = () => ({ account: null, requiresOpenaiAuth: true });
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    const before = invokeMock.mock.calls.length;
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+    expect(within(settings).queryByRole("alert")).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.slice(before).some(([command, args]) => command === "claude_models" || args?.method === "model/list")).toBe(false);
+  });
+
+  it.each(["offline", "empty"] as const)("price refresh retains Claude's last good catalog when discovery is %s", async (failure) => {
+    nativePricingFixture();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "claude", model: "sonnet" }));
+    modelListImpl = () => ({ data: [catalogModel("account-model")] });
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/bin/claude", version: "2.1.100", loggedIn: true, authMethod: "oauth", email: "test@example.com", subscriptionType: "max", warning: null });
+    claudeModelsImpl = () => ({ models: [{ value: "sonnet", displayName: "Saved account Sonnet", description: "Claude Sonnet 5", resolvedModel: "claude-sonnet-5" }] });
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    claudeModelsImpl = () => { if (failure === "offline") throw new Error("Claude catalog offline"); return { models: [] }; };
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    expect(await within(settings).findByRole("alert")).toHaveTextContent(failure === "offline" ? "Claude: Claude catalog offline" : "Claude: Claude Code returned no models");
+    await user.click(within(settings).getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: /^Claude model:/ }));
+    expect(await screen.findByRole("menuitemradio", { name: "Saved account Sonnet" })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("kiwi.settings")!).model).toBe("sonnet");
+  });
+
+  it("Claude account identity change rejects an older price discovery result and reads the new account catalog", async () => {
+    nativePricingFixture();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "claude", model: "sonnet" }));
+    modelListImpl = () => ({ data: [catalogModel("account-model")] });
+    let email = "old@example.com";
+    claudeRuntimeStatusImpl = () => ({ available: true, path: "/bin/claude", version: "2.1.100", loggedIn: true, authMethod: "oauth", email, subscriptionType: "max", warning: null });
+    const sonnet = { value: "sonnet", displayName: "Sonnet", description: "Claude Sonnet 5", resolvedModel: "claude-sonnet-5" };
+    claudeModelsImpl = () => ({ models: [sonnet] });
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    const obsolete = deferred<unknown>();
+    claudeModelsImpl = () => obsolete.promise;
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    await user.click(within(settings).getByRole("button", { name: "Models & accounts" }));
+    email = "new@example.com";
+    claudeModelsImpl = () => ({ models: [sonnet, { value: "claude-haiku-5-5", displayName: "New account Haiku", description: "Claude Haiku 5.5", resolvedModel: "claude-haiku-5-5" }] });
+    await user.click(within(settings).getByRole("button", { name: "Refresh Claude status" }));
+    await act(async () => { obsolete.resolve({ models: [{ value: "claude-opus-5", displayName: "Obsolete account Opus", description: "Claude Opus 5", resolvedModel: "claude-opus-5" }] }); });
+    await user.click(within(settings).getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: /^Claude model:/ }));
+    expect(await screen.findByRole("menuitemradio", { name: "New account Haiku" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: "Obsolete account Opus" })).not.toBeInTheDocument();
+  });
+
+  it("price refresh cannot replace the runtime while an unknown unhydrated native descendant exists", async () => {
+    nativePricingFixture();
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({ orphan: { childThreadId: "orphan", rootThreadId: THREAD_A.id, title: "Unresolved worker", createdAt: 1, status: "unknown", runtime: "codex", provider: "openai" } }));
+    modelListImpl = () => ({ data: [catalogModel("last-good-model")] });
+    const user = userEvent.setup();
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    await act(async () => { useTaskStore.getState().setTaskStatus(THREAD_A.id, "completed"); });
+    const settings = await openPricing(user);
+    const runtime = refreshedCodexRuntimeStatusImpl() as Record<string, unknown>;
+    refreshedCodexRuntimeStatusImpl = () => ({ ...runtime, runtimeChanged: true, version: "100.0.0" });
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    expect(await within(settings).findByRole("alert")).toHaveTextContent(/still using the current runtime/);
+    expect(invokeMock.mock.calls.some(([command]) => command === "restart_runtime_reserved")).toBe(false);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "release_runtime_restart")).toHaveLength(1);
+  });
+
+  it("sign-out during a price refresh runtime check cancels the obsolete replacement and catalog publication", async () => {
+    nativePricingFixture();
+    modelListImpl = () => ({ data: [catalogModel("old-account-model")] });
+    const user = userEvent.setup();
+    await renderApp();
+    const settings = await openPricing(user);
+    const runtime = refreshedCodexRuntimeStatusImpl() as Record<string, unknown>;
+    const check = deferred<unknown>();
+    refreshedCodexRuntimeStatusImpl = () => check.promise;
+    const readsBefore = invokeMock.mock.calls.filter(([, args]) => args?.method === "model/list").length;
+    await user.click(within(settings).getByRole("button", { name: "Refresh prices" }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "codex_runtime_status_refresh")).toBe(true));
+    await act(async () => { tauriEvents.handlers.get("codex-event")?.({ payload: { method: "account/updated", params: { authMode: null } } }); });
+    await act(async () => { check.resolve({ ...runtime, runtimeChanged: true, version: "100.0.0" }); });
+    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+    expect(invokeMock.mock.calls.some(([command]) => command === "restart_runtime_reserved")).toBe(false);
+    expect(invokeMock.mock.calls.filter(([, args]) => args?.method === "model/list")).toHaveLength(readsBefore);
+  });
 
   it("keeps Cursor refresh failures inside the picker and clears them on retry", async () => {
     localStorage.setItem("kiwi.settings", JSON.stringify({ provider: "cursor", model: "auto" }));
@@ -5322,7 +5599,7 @@ describe("composer sub-agent command center", () => {
     }
     await user.type(await screen.findByPlaceholderText(/Ask Mythra Code to work in/), "save this choice{Enter}");
     await waitFor(() => expect(codexCalls("turn/start").at(-1)).toMatchObject({ threadId: "isolated-thread" }));
-    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")["isolated-thread"]).toBe(optIn));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")["isolated-thread"]).toMatchObject({ enabled: optIn, engine: "mythra" }));
     const sessions = invokeMock.mock.calls.filter(([command]) => command === "child_agent_session_start");
     expect(sessions.some(([, args]) => Array.isArray((args?.options as { targets?: unknown[] } | undefined)?.targets) && ((args?.options as { targets: unknown[] }).targets.length > 0))).toBe(optIn);
     await user.click(screen.getByRole("button", { name: /^New threadCtrl/ }));
@@ -5415,7 +5692,7 @@ describe("composer sub-agent command center", () => {
           targets: [expect.objectContaining({ id: "claude", provider: "claude" })],
         },
       });
-      expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toBe(true);
+      expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toMatchObject({ enabled: true, engine: "mythra" });
     });
   });
 
@@ -5541,12 +5818,12 @@ describe("composer sub-agent command center", () => {
         config: { features: { multi_agent: false } },
       });
     });
-    const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
+    const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command)).length;
 
     await openCrew(user);
     await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toBe(true));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toMatchObject({ enabled: true, engine: "mythra" }));
 
     const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "now split this up{Enter}");
@@ -5556,7 +5833,7 @@ describe("composer sub-agent command center", () => {
     });
     // Startup-only config is ignored for a thread the app-server already holds,
     // so the switch is only real if the runtime was replaced first.
-    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(restartsAfterOpen + 1);
+    expect(invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toHaveLength(restartsAfterOpen + 1);
     expect(codexCalls("thread/resume").at(-1)).toMatchObject({
       threadId: THREAD_A.id,
       config: {
@@ -5585,7 +5862,7 @@ describe("composer sub-agent command center", () => {
       sortDirection: "desc",
       itemsView: "summary",
     });
-    const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => command === "restart_runtime").length;
+    const restartsAfterOpen = invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command)).length;
 
     const composer = await screen.findByPlaceholderText(/Ask Mythra Code to work in/);
     await user.type(composer, "carry on{Enter}");
@@ -5593,8 +5870,237 @@ describe("composer sub-agent command center", () => {
     await waitFor(() => {
       expect(codexCalls("turn/start").at(-1)).toMatchObject({ threadId: THREAD_A.id });
     });
-    expect(invokeMock.mock.calls.filter(([command]) => command === "restart_runtime")).toHaveLength(restartsAfterOpen);
+    expect(invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toHaveLength(restartsAfterOpen);
     expect(codexCalls("thread/resume")).toHaveLength(1);
+  });
+
+  it("refuses capability refresh while another root has an unresolved durable native child", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: false, subagentMax: 5, childAgents: { enabled: true, targets: [{ id: "managed-openai", provider: "openai", model: "gpt-5.6-terra", label: "Managed OpenAI", description: "", enabled: true, reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" }] } }));
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({ "unknown-child": { childThreadId: "unknown-child", rootThreadId: THREAD_B.id, title: "Unresolved worker", createdAt: 1, runtime: "codex", provider: "openai" } }));
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+    await user.click(screen.getByTitle("Manage sub-agents for this thread"));
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.click(screen.getByTitle("Manage sub-agents for this thread"));
+    const before = invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command)).length;
+    await user.type(screen.getByPlaceholderText(/Ask Mythra Code to work in/), "delegate safely{Enter}");
+    await waitFor(() => expect(screen.getByText(/unresolved sub-agent, terminal command/)).toBeInTheDocument());
+    expect(invokeMock.mock.calls.filter(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toHaveLength(before);
+    expect(codexCalls("turn/start")).toHaveLength(0);
+    expect(invokeMock.mock.calls.some(([command]) => command === "reserve_runtime_restart")).toBe(false);
+  });
+
+  it("still opens a warm thread while its capability refresh is deferred for another root's native child", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("kiwi.settings", JSON.stringify({ subagentsEnabled: false, subagentMax: 5, childAgents: { enabled: true, targets: [{ id: "managed-openai", provider: "openai", model: "gpt-5.6-terra", label: "Managed OpenAI", description: "", enabled: true, reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" }] } }));
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({ "unknown-child": { childThreadId: "unknown-child", rootThreadId: THREAD_B.id, title: "Unresolved worker", createdAt: 1, runtime: "codex", provider: "openai" } }));
+    resumeImpl = (params) => ({ thread: { ...(params.threadId === THREAD_B.id ? THREAD_B : THREAD_A), turns: [] } });
+    threadReadImpl = (params) => ({ thread: { ...(params.threadId === THREAD_B.id ? THREAD_B : THREAD_A), turns: [] } });
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(codexCalls("thread/resume").some((call) => call.threadId === THREAD_A.id)).toBe(true));
+    await user.click(screen.getByTitle("Manage sub-agents for this thread"));
+    await user.click(screen.getByRole("switch", { name: "Allow sub-agent spawning" }));
+    await user.click(screen.getByTitle("Manage sub-agents for this thread"));
+    await user.click(screen.getByText("Beta thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_B.id));
+    const resumesA = codexCalls("thread/resume").filter((call) => call.threadId === THREAD_A.id).length;
+    await user.click(screen.getByText("Alpha thread"));
+    await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(THREAD_A.id));
+    await waitFor(() => expect(screen.getByTitle("Ready")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByPlaceholderText(/Ask Mythra Code to work in/)).not.toBeDisabled());
+    expect(codexCalls("thread/resume").filter((call) => call.threadId === THREAD_A.id)).toHaveLength(resumesA);
+    expect(invokeMock.mock.calls.some(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toBe(false);
+    expect(screen.queryByText(/Your message was not sent/)).not.toBeInTheDocument();
+  });
+
+  it("persists native assignment and provider evidence without replacing it with passive wait text", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+    const emit = (method: string, params: Record<string, unknown>) => tauriEvents.handlers.get("codex-event")?.({ payload: { method, params } });
+    await act(async () => {
+      emit("turn/started", { threadId: THREAD_A.id, turn: { id: "native-root-turn" } });
+      emit("item/completed", { threadId: THREAD_A.id, turnId: "native-root-turn", item: { id: "native-spawn", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Inspect the real assignment", model: "requested-alias", receiverThreadIds: ["native-evidence-child"], agentsStates: { "native-evidence-child": { status: "inProgress", model: "actual-child-model" } } } });
+      emit("item/completed", { threadId: "native-evidence-child", turnId: "native-child-turn", item: { id: "native-result", type: "agentMessage", phase: "final_answer", text: "Actual provider result" } });
+      emit("item/completed", { threadId: THREAD_A.id, turnId: "native-root-turn", item: { id: "native-wait", type: "collabAgentToolCall", tool: "wait", receiverThreadIds: ["native-evidence-child"], agentsStates: { "native-evidence-child": { status: "completed" } } } });
+    });
+    const link = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")["native-evidence-child"];
+    expect(link).toMatchObject({ rootThreadId: THREAD_A.id, task: "Inspect the real assignment", requestedModel: "requested-alias", model: "actual-child-model", modelSource: "configured", progress: "Actual provider result", result: "Actual provider result", status: "completed" });
+    expect(link.finishedAt).toEqual(expect.any(Number));
+  });
+
+  it.each([100_000, 1_000_000, undefined].flatMap((tokens) => (["lifecycle-only", "spawn"] as const).map((source) => [tokens, source] as const)))("captures native Codex children's inherited %j window from %s for reopened turns", async (autoCompactTokens, source) => {
+    const user = userEvent.setup();
+    const childId = "native-compaction-child";
+    localStorage.setItem("kiwi.threadSubagentSettings", JSON.stringify({ [THREAD_A.id]: { enabled: false, engine: "mythra", nativeMaxConcurrent: 6, autoCompactTokens } }));
+    const view = await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+    const emit = (method: string, params: Record<string, unknown>) => tauriEvents.handlers.get("codex-event")?.({ payload: { method, params } });
+    await act(async () => {
+      emit("turn/started", { threadId: THREAD_A.id, turn: { id: "native-window-root" } });
+      // Provider child-start notifications can precede the authoritative
+      // spawn result; that earlier ownership must not suppress capture.
+      emit("item/completed", { threadId: THREAD_A.id, turnId: "native-window-root", item: { id: "native-window-lifecycle", type: "subAgentActivity", kind: "started", agentThreadId: childId } });
+      if (source === "spawn") emit("item/completed", { threadId: THREAD_A.id, turnId: "native-window-root", item: { id: "native-window-spawn", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Native compaction assignment", receiverThreadIds: [childId], agentsStates: { [childId]: { status: "completed" } } } });
+      emit("turn/completed", { threadId: THREAD_A.id, turn: { id: "native-window-root", status: "completed" } });
+    });
+    const policies = JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}");
+    expect(policies[childId]).toMatchObject({ enabled: false, engine: "mythra", nativeMaxConcurrent: 6 });
+    expect(policies[childId].autoCompactTokens).toBe(autoCompactTokens);
+    if (source === "spawn") expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")[childId].title).toBe("Native compaction assignment");
+    view.unmount();
+    const child: Thread = { ...THREAD_B, id: childId, name: "Native compaction child", parentThreadId: THREAD_A.id, threadSource: "subagent", cwd: PROJECT_A.path };
+    threadListImpl = () => ({ data: [THREAD_A, child], nextCursor: null });
+    threadReadImpl = (params) => ({ thread: { ...(params.threadId === childId ? child : THREAD_A), turns: [] } });
+    resumeImpl = (params) => ({ thread: { ...(params.threadId === childId ? child : THREAD_A), turns: [] } });
+    // A later parent choice cannot rewrite a worker's original runtime config.
+    localStorage.setItem("kiwi.threadSubagentSettings", JSON.stringify({ ...policies, [THREAD_A.id]: { ...policies[THREAD_A.id], autoCompactTokens: 500_000 } }));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /^Sub-agents \d+$/ }));
+    await user.click(await screen.findByText("Native compaction child"));
+    await waitFor(() => {
+      const resume = codexCalls("thread/resume").filter((params) => params.threadId === childId).at(-1);
+      expect(resume).toBeDefined();
+      const config = resume?.config as Record<string, unknown> | undefined;
+      if (autoCompactTokens === undefined) expect(config).not.toHaveProperty("model_auto_compact_token_limit");
+      else expect(config?.model_auto_compact_token_limit).toBe(autoCompactTokens);
+    });
+  });
+
+  it("preserves execution-model and readout evidence during passive thread-list refresh", async () => {
+    const child: Thread = { ...THREAD_B, id: "native-passive-child", parentThreadId: THREAD_A.id, threadSource: "subagent", model: "configured-child-default" };
+    const saved = { childThreadId: child.id, rootThreadId: THREAD_A.id, title: "Original assignment", createdAt: 123, status: "completed", finishedAt: 456, runtime: "codex", provider: "openai", model: "observed-execution-model", modelSource: "execution", task: "Original full task", progress: "Final report", result: "Actual result", requestedModel: "requested-alias" };
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({ [child.id]: saved }));
+    threadListImpl = () => ({ data: [THREAD_A, child], nextCursor: null });
+    await renderApp();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}")[child.id]?.model).toBe("configured-child-default"));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")[child.id]).toMatchObject(saved));
+  });
+
+  it("does not infer a historical native child's compaction from a live wait snapshot", async () => {
+    localStorage.setItem("kiwi.threadSubagentSettings", JSON.stringify({ [THREAD_A.id]: { enabled: false, engine: "mythra", nativeMaxConcurrent: 6, autoCompactTokens: 1_000_000 } }));
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    await act(async () => {
+      useTaskStore.getState().ensureTask(THREAD_A.id, PROJECT_A.path);
+      useTaskStore.getState().setActiveTurn(THREAD_A.id, "live-wait-turn");
+      useTaskStore.getState().setTaskStatus(THREAD_A.id, "running");
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "item/completed", params: { threadId: THREAD_A.id, turnId: "live-wait-turn", item: { id: "live-wait", type: "collabAgentToolCall", tool: "wait", receiverThreadIds: ["historical-window-child"], agentsStates: { "historical-window-child": { status: "completed" } } } } } });
+    });
+    expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")["historical-window-child"]).toBeDefined();
+    expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")["historical-window-child"]).toBeUndefined();
+  });
+
+  it.each(["stale-start", "live-progress"])("does not infer a native child's compaction from %s lifecycle evidence", async (source) => {
+    localStorage.setItem("kiwi.threadSubagentSettings", JSON.stringify({ [THREAD_A.id]: { enabled: false, engine: "mythra", autoCompactTokens: 1_000_000 } }));
+    await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    await act(async () => {
+      useTaskStore.getState().setActiveTurn(THREAD_A.id, "current-root-turn");
+      useTaskStore.getState().setTaskStatus(THREAD_A.id, "running");
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "item/completed", params: {
+        threadId: THREAD_A.id, turnId: source === "stale-start" ? "older-root-turn" : "current-root-turn",
+        item: { id: "non-start-proof", type: "subAgentActivity", kind: source === "stale-start" ? "started" : "interacted", agentThreadId: "unproven-window-child" },
+      } } });
+    });
+    expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")["unproven-window-child"]).toBeDefined();
+    expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")["unproven-window-child"]).toBeUndefined();
+  });
+
+  it.each(["running", "starting", "workflow"] as const)("defers unknown capability refresh when selecting the target's own %s work", async (kind) => {
+    const user = userEvent.setup();
+    await renderApp();
+    pendingResume.resolve({ thread: { ...THREAD_A, turns: [] } });
+    await user.click(await screen.findByText("Alpha thread"));
+    await waitFor(() => expect(codexCalls("thread/resume")).not.toHaveLength(0));
+    const { useTaskStore } = await import("./lib/taskStore");
+    const { forgetSubagentCapabilities } = await import("./lib/threadCapabilities");
+    act(() => {
+      const store = useTaskStore.getState();
+      if (kind === "workflow") store.setWorkflowOwner(THREAD_A.id, { workflowId: "workflow", runId: "active-workflow" });
+      else { store.setActiveTurn(THREAD_A.id, "actual-active-turn"); store.setTaskStatus(THREAD_A.id, kind); }
+    });
+    forgetSubagentCapabilities(THREAD_A.id);
+    await user.click(screen.getAllByText("Alpha thread")[0]);
+    await waitFor(() => expect(screen.getByTitle("Ready")).toBeInTheDocument());
+    expect(invokeMock.mock.calls.some(([command]) => ["restart_runtime", "restart_runtime_reserved"].includes(command))).toBe(false);
+    if (kind === "workflow") expect(useTaskStore.getState().workflowOwners[THREAD_A.id]).toMatchObject({ runId: "active-workflow" });
+    else expect(useTaskStore.getState().tasks[THREAD_A.id].activeTurnId).toBe("actual-active-turn");
+    expect(screen.queryByText(/Your message was not sent/)).not.toBeInTheDocument();
+  });
+
+  it.each([true, false])("clears a reused native worker's old model evidence on a verified fresh activation (task reported: %s)", async (taskReported) => {
+    const child: Thread = { ...THREAD_B, id: "reused-native-child", parentThreadId: THREAD_A.id, threadSource: "subagent", model: "stale-configured-model" };
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [child.id]: child }));
+    localStorage.setItem("kiwi.nativeAgentLinks", JSON.stringify({ [child.id]: { childThreadId: child.id, rootThreadId: THREAD_A.id, title: "Old assignment", createdAt: 1, finishedAt: 2, runtime: "codex", provider: "openai", status: "completed", activationId: "old-activation", task: "Old task", model: "old-execution-model", modelSource: "execution", requestedModel: "old-requested-model" } }));
+    const view = await renderApp();
+    const { useTaskStore } = await import("./lib/taskStore");
+    act(() => {
+      const store = useTaskStore.getState();
+      store.ensureTask(THREAD_A.id, PROJECT_A.path);
+      store.setActiveTurn(THREAD_A.id, "fresh-root-turn");
+      store.setTaskStatus(THREAD_A.id, "running");
+      store.upsertAgent(THREAD_A.id, { id: child.id, prompt: "Old task", task: "Old task", status: "completed", runtime: "codex", activationId: "old-activation", model: "old-execution-model", modelSource: "execution", requestedModel: "old-requested-model" });
+      tauriEvents.handlers.get("codex-event")?.({ payload: { method: "item/completed", params: { threadId: THREAD_A.id, turnId: "fresh-root-turn", item: { id: "fresh-activation", type: "collabAgentToolCall", tool: "followupTask", ...(taskReported ? { prompt: "New actual assignment" } : {}), receiverThreadIds: [child.id], agentsStates: { [child.id]: { status: "running" } } } } } });
+    });
+    const link = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")[child.id];
+    expect(link).toMatchObject({ activationId: "fresh-activation", model: "" });
+    expect(link.task).toBe(taskReported ? "New actual assignment" : undefined);
+    expect(link.title).toBe(taskReported ? "New actual assignment" : "Task not reported");
+    expect(link.modelSource).toBeUndefined();
+    expect(link.requestedModel || undefined).toBeUndefined();
+    expect(link.finishedAt).toBeUndefined();
+    view.unmount();
+    threadListImpl = () => ({ data: [THREAD_A, child], nextCursor: null });
+    await renderApp();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.knownThreads") ?? "{}")[child.id]?.model).toBe("stale-configured-model"));
+    const restored = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")[child.id];
+    expect(restored.model).toBe("");
+    expect(restored.modelSource).toBeUndefined();
+    expect(restored.requestedModel || undefined).toBeUndefined();
+  });
+
+  it("shows delegation off after a schedule admits a reused thread while retaining its native preferences", async () => {
+    const user = userEvent.setup();
+    // Native Codex workers inherit the parent's window; only Claude retains
+    // an independent child-model choice in this supported native fixture.
+    const nativeOptions = { codex: { model: "gpt-6.1-sol", reasoningEffort: "high" as const }, claude: { model: "claude-haiku-5-5", autoCompactTokens: 200_000 } };
+    const savedPolicy = { enabled: true, engine: "native", nativeMaxConcurrent: 9, nativeOptions, autoCompactTokens: 100_000 };
+    localStorage.setItem("kiwi.threadSubagentSettings", JSON.stringify({ [THREAD_A.id]: savedPolicy }));
+    localStorage.setItem("kiwi.knownThreads", JSON.stringify({ [THREAD_A.id]: THREAD_A }));
+    localStorage.setItem("kiwi.scheduledTasks", JSON.stringify([{ id: "reuse-native", name: "Scheduled check", prompt: "Run a scheduled check", projectId: PROJECT_A.id, intervalMinutes: 60, enabled: true, nextRunAt: 0, threadMode: "reuse", lastThreadId: THREAD_A.id, run: scheduleRunSnapshot({ ...DEFAULT_SETTINGS, provider: "openai", subagentsEnabled: true, subagentEngine: "native", nativeSubagentMax: 9, nativeSubagentOptions: nativeOptions, autoCompactTokens: 1_000_000 }) }]));
+    resumeImpl = () => ({ thread: { ...THREAD_A, turns: [] } });
+    const intervals = vi.spyOn(window, "setInterval");
+    try {
+      await renderApp();
+      await screen.findByText("Alpha thread");
+      await waitFor(() => expect(codexCalls("account/read")).not.toHaveLength(0));
+      await user.click(screen.getByText("Alpha thread"));
+      expect(await screen.findByRole("button", { name: /Native: 9/ })).toBeInTheDocument();
+      expect(codexCalls("thread/resume").at(-1)).toMatchObject({ config: { model_auto_compact_token_limit: 100_000 } });
+      // The initial mount check waits for runtime/auth readiness. Exercise the
+      // scheduler's next real polling callback, rather than requiring startup
+      // to dispatch while its readiness state is still loading.
+      const pollers = intervals.mock.calls.filter(([, delay]) => delay === 30_000).map(([poll]) => poll as () => void);
+      expect(pollers.length).toBeGreaterThan(0);
+      expect(codexCalls("turn/start")).toHaveLength(0);
+      await act(async () => { for (const poll of pollers) poll(); });
+      await waitFor(() => expect(codexCalls("turn/start").some((call) => call.threadId === THREAD_A.id)).toBe(true));
+    } finally {
+      intervals.mockRestore();
+    }
+    expect(codexCalls("thread/resume").at(-1)).toMatchObject({ config: { features: { multi_agent: false, multi_agent_v2: false }, model_auto_compact_token_limit: 1_000_000 } });
+    expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings") ?? "{}")[THREAD_A.id]).toEqual({ ...savedPolicy, enabled: false, autoCompactTokens: 1_000_000 });
+    expect(await screen.findByRole("button", { name: "Sub-agents off" })).toBeInTheDocument();
   });
 });
 

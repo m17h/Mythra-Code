@@ -99,6 +99,8 @@ export interface Thread {
   path?: string | null;
   updatedAt: number;
   modelProvider: string;
+  /** Provider-reported configured model, not per-turn execution telemetry. */
+  model?: string | null;
   turns?: Turn[];
   /** Codex app-server metadata for provider-native collaboration children. */
   parentThreadId?: string | null;
@@ -139,10 +141,14 @@ export interface ThreadItem {
   exitCode?: number | null;
   changes?: unknown[];
   summary?: string[];
-  tool?: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent";
+  tool?: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent" | "sendMessage" | "followupTask" | "interruptAgent" | "listAgents";
   prompt?: string | null;
   receiverThreadIds?: string[];
+  /** Model requested by the collaboration tool, not execution evidence. */
+  model?: string | null;
+  agentsStates?: Record<string, { status?: string; model?: string; message?: string | null } | string>;
   agentThreadId?: string;
+  agentModel?: string;
   agentPath?: string;
   kind?: string;
 }
@@ -259,6 +265,10 @@ export interface Activity {
     action: "spawn" | "sendInput" | "resume" | "wait" | "close" | "status";
     provider?: Provider;
     model?: string;
+    requestedModel?: string;
+    modelSource?: "configured" | "execution";
+    progress?: string;
+    result?: string;
     task?: string;
     count?: number;
     /** Runtime thread identities represented by this activity. They let the
@@ -329,11 +339,31 @@ export interface ChildAgentTarget {
   reasoningMode: "inherit" | "fixed" | "agent";
   reasoningEffort: ReasoningEffort;
   reasoningMaxEffort: ReasoningEffort;
+  /** This worker's own compaction window; omitted means provider default. */
+  autoCompactTokens?: number;
 }
 
 export interface ChildAgentSettings {
   enabled: boolean;
   targets: ChildAgentTarget[];
+}
+
+/** The single delegation route selected by this conversation. */
+export type SubagentEngine = "mythra" | "native";
+
+/** Optional provider defaults; omission lets the native runtime choose. */
+export interface NativeSubagentOptions {
+  claude?: { model?: string; autoCompactTokens?: number };
+  codex?: { model?: string; reasoningEffort?: ReasoningEffort; autoCompactTokens?: number };
+}
+
+export interface ThreadSubagentSettings {
+  enabled: boolean;
+  engine: SubagentEngine;
+  nativeMaxConcurrent?: number;
+  nativeOptions?: NativeSubagentOptions;
+  /** This conversation's own compaction window, independent of delegation. */
+  autoCompactTokens?: number;
 }
 
 export interface ProjectSubagentSettings {
@@ -366,6 +396,12 @@ export interface ScheduleRunSettings {
   projectInstructionsEnabled: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
+  /** Older snapshots use Mythra's managed crew. */
+  subagentEngine?: SubagentEngine;
+  nativeSubagentMax?: number;
+  nativeSubagentOptions?: NativeSubagentOptions;
+  /** The launched conversation's compaction window, not its children's. */
+  autoCompactTokens?: number;
   reasoningEffort: ReasoningEffort;
   ultra: boolean;
   serviceTier: string | null;
@@ -448,6 +484,12 @@ export interface AppSettings {
   projectInstructionsEnabled: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
+  /** Resolved from thread-local authority; absent in legacy settings. */
+  subagentEngine?: SubagentEngine;
+  nativeSubagentMax?: number;
+  nativeSubagentOptions?: NativeSubagentOptions;
+  /** Resolved own-context window; omission leaves provider defaults. */
+  autoCompactTokens?: number;
   /** Move settled child conversations to Archived after their parent ends. */
   autoArchiveSubagentThreads: boolean;
   /** Cross-provider delegation. Absent in settings written before 1.5. */

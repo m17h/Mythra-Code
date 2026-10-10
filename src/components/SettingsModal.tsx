@@ -5,6 +5,7 @@ import { confirmDialog } from "../lib/confirmDialog";
 import { skillMentionRanges } from "../lib/skillMentions";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  BadgeDollarSign,
   Boxes,
   BookOpenCheck,
   CalendarClock,
@@ -67,6 +68,7 @@ import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
 import { UsageDashboard } from "./UsageDashboard";
+import { FrontierPricingSettings } from "./FrontierPricingSettings";
 import type {
   Account,
   AppSettings,
@@ -112,9 +114,13 @@ import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, ensureDeve
  * the *setting* ("api key", "dark mode", "mcp"), not the section it was filed
  * under, so every pane carries the vocabulary of the settings inside it.
  */
+/** Panes the app can open directly, plus reference panes reached only from
+ * the rail. A superset, so it keeps compiling once App can link to them too. */
+type SettingsPane = SettingsSection | "pricing";
+
 const SETTINGS_NAV: ReadonlyArray<{
   group: string;
-  items: ReadonlyArray<{ id: SettingsSection; label: string; icon: typeof Palette; detail: string; keywords: string }>;
+  items: ReadonlyArray<{ id: SettingsPane; label: string; icon: typeof Palette; detail: string; keywords: string }>;
 }> = [
   {
     group: "Workspace",
@@ -129,6 +135,7 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
       { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
       { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
+      { id: "pricing", label: "Model pricing", icon: BadgeDollarSign, detail: "Official OpenAI and Anthropic API list prices per 1M tokens. Reference only; subscriptions aren’t billed at these rates.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread, plus optional automatically learned preferences.", keywords: "prompt system instructions agents.md claude.md guidance context profile global memory learning learned preferences history" },
       { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Thread cleanup and reusable sub-agent setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew" },
     ],
@@ -367,6 +374,7 @@ export function SettingsModal({
   githubLoginPending = false,
   githubSignInError = "",
   onRefreshUsagePricing,
+  onRefreshAvailableModels,
   openRouterPricingError,
   onClose,
   onSave,
@@ -477,6 +485,7 @@ export function SettingsModal({
   githubLoginPending?: boolean;
   githubSignInError?: string;
   onRefreshUsagePricing?: () => Promise<void>;
+  onRefreshAvailableModels?: () => Promise<void>;
   openRouterPricingError?: string;
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
@@ -569,7 +578,7 @@ export function SettingsModal({
   const [lmStudioToken, setLmStudioToken] = useState("");
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>(initialSection);
+  const [settingsSection, setSettingsSection] = useState<SettingsPane>(initialSection);
   const globalPromptRef = useRef<HTMLTextAreaElement>(null);
   const codexPromptRef = useRef<HTMLTextAreaElement>(null);
   const claudePromptRef = useRef<HTMLTextAreaElement>(null);
@@ -1069,7 +1078,7 @@ export function SettingsModal({
 
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div ref={dialogRef} className={`settings-modal${settingsSection === "usage" ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className={`settings-modal${settingsSection === "usage" || settingsSection === "pricing" ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
             <div className="settings-nav-head">
@@ -1489,6 +1498,8 @@ export function SettingsModal({
             {open && <UsageDashboard onRefreshPricing={onRefreshUsagePricing} openRouterPricingError={openRouterPricingError} />}
             <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
           </>}
+
+          {settingsSection === "pricing" && open && <FrontierPricingSettings onRefreshAvailableModels={onRefreshAvailableModels} />}
 
           {settingsSection === "skills" && <SkillLibrary
             active={open}

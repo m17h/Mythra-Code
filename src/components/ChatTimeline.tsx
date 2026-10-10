@@ -22,7 +22,7 @@ import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
 import { compactionState, compactionTitle } from "../lib/contextCompaction";
-import { describeSubAgentActivity, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts, type SubAgentWorker } from "../lib/subAgentActivity";
+import { describeSubAgentActivity, isSubAgentWorkerActive, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts, type SubAgentWorker } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 import "./ChatTimeline.compaction.css";
@@ -959,7 +959,7 @@ function subAgentCountsFromActivities(activities: Activity[]): SubAgentCounts {
     const count = Math.max(1, activity.agent?.count ?? 1);
     const status = workerStatusFromAgentRecord(activity.status ?? "");
     counts.total += count;
-    if (status === "starting" || status === "working") counts.active += count;
+    if (isSubAgentWorkerActive(status)) counts.active += count;
     if (status !== "idle" && status !== "unknown") counts[status] += count;
   }
   return counts;
@@ -973,11 +973,12 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
   const failure = useTaskStore((state) => childId ? state.tasks[childId]?.error : undefined);
   const [action, setAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const active = worker?.status === "starting" || worker?.status === "working";
+  const active = worker ? isSubAgentWorkerActive(worker.status) : false;
   const elapsed = worker && worker.createdAt > 0 && (active || worker.finishedAt)
     ? Math.max(0, Math.floor(((worker.finishedAt ?? controls!.now) - worker.createdAt) / 1000)) : null;
   const runAction = async (kind: "open" | "stop") => {
     if (!worker || !controls || action) return;
+    if (kind === "open" && worker.canOpen === false || kind === "stop" && (worker.canStop === false || !active)) return;
     setAction(kind);
     setActionError(null);
     try { await (kind === "open" ? controls.onOpen(worker) : controls.onStop(worker)); }
@@ -1013,9 +1014,9 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
         <strong>{task}</strong>
         {elapsed !== null && <small>{Math.floor(elapsed / 60)}m {elapsed % 60}s{active ? " elapsed" : " total"}</small>}
         {status === "failed" && failure && <small role="status">{failure}</small>}
-        {worker && <div className="subagent-relay-actions">
-          <button type="button" disabled={Boolean(action)} onClick={() => void runAction("open")}>Open sub-agent</button>
-          {active && <button type="button" disabled={Boolean(action)} onClick={() => void runAction("stop")}>Stop sub-agent</button>}
+        {worker && (worker.canOpen !== false || active && worker.canStop !== false) && <div className="subagent-relay-actions">
+          {worker.canOpen !== false && <button type="button" disabled={Boolean(action)} onClick={() => void runAction("open")}>Open sub-agent</button>}
+          {active && worker.canStop !== false && <button type="button" disabled={Boolean(action)} onClick={() => void runAction("stop")}>Stop sub-agent</button>}
         </div>}
         {actionError && <small role="alert">{actionError}</small>}
       </div>

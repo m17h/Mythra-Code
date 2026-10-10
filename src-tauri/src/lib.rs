@@ -42,20 +42,20 @@ mod git_publish;
 mod git_workspace;
 mod github;
 mod github_pr;
-mod language_queries;
 mod language_framing;
+mod language_queries;
 mod language_recipes;
 mod language_tools;
+mod official_skills;
 mod openrouter_usage;
 mod persistence;
+mod preference_learning;
 mod pricing_sources;
-mod release_qa;
 mod process_launch;
 mod project_git;
+mod release_qa;
 mod run_discovery;
-mod preference_learning;
 mod skills;
-mod official_skills;
 mod startup_guard;
 mod workspace_folder;
 #[cfg(test)]
@@ -64,9 +64,10 @@ use agents::{
     ChildAgentTarget, AGENT_BRIDGE_SERVER, AGENT_BRIDGE_TOOLS,
 };
 use agents::{
-    child_agent_bridge_config_registered, child_agent_finished, child_agent_respond,
-    child_agent_session_end, child_agent_session_start, purge_stale_agent_bridges,
-    run_agent_bridge, shutdown_agent_bridges_on_exit, ChildAgentState, AGENT_BRIDGE_ARG,
+    child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
+    child_agent_finished, child_agent_respond, child_agent_session_end, child_agent_session_start,
+    purge_stale_agent_bridges, run_agent_bridge, shutdown_agent_bridges_on_exit, ChildAgentState,
+    AGENT_BRIDGE_ARG,
 };
 use close_guard::{close_guard_claim, close_guard_finish, CloseGuardState};
 use cursor::{
@@ -97,6 +98,7 @@ use github_pr::{
     github_pr_branch, github_pr_context, github_pr_create, github_pr_find, github_pr_list,
     github_pr_merge, github_pr_ready, github_pr_view,
 };
+use official_skills::{local_skills_catalog, local_skills_install_official};
 use persistence::{
     local_transcript_full_read, local_transcript_list, local_transcript_metadata_write,
     local_transcript_page_read, local_transcript_rename, local_transcript_snapshot_write,
@@ -127,7 +129,6 @@ use skills::{
     local_skills_resolve_prompts, local_skills_scan, local_skills_sync, local_skills_update,
     normalize_skill_name,
 };
-use official_skills::{local_skills_catalog, local_skills_install_official};
 use startup_guard::{startup_failed, startup_ready, StartupGuardState};
 
 const KEYRING_SERVICE: &str = "com.kiwi.harness";
@@ -200,6 +201,15 @@ struct RuntimeLifecycleState {
     instance: Option<String>,
     restart_reservation: Option<RuntimeRestartReservationState>,
     active_turns: HashSet<String>,
+    // V2 child work can be reported on the parent's collaboration item even
+    // when the client is not subscribed to the child's own turn events.
+    active_native_agents: HashSet<String>,
+    settled_native_agents: HashSet<String>,
+    native_agent_operations: HashMap<String, String>,
+    native_agent_operation_ids: HashSet<(String, String)>,
+    native_passive_operation_snapshots: HashMap<String, HashMap<String, String>>,
+    native_subagent_activity_ids: HashMap<String, String>,
+    ambiguous_native_activity: HashSet<String>,
     starting_turns: HashSet<String>,
     active_compactions: HashSet<String>,
     starting_compactions: HashSet<String>,
@@ -339,6 +349,13 @@ impl RuntimeLifecycle {
         let mut state = self.lock();
         state.instance = Some(instance.to_owned());
         state.active_turns.clear();
+        state.active_native_agents.clear();
+        state.settled_native_agents.clear();
+        state.native_agent_operations.clear();
+        state.native_agent_operation_ids.clear();
+        state.native_passive_operation_snapshots.clear();
+        state.native_subagent_activity_ids.clear();
+        state.ambiguous_native_activity.clear();
         state.starting_turns.clear();
         state.active_compactions.clear();
         state.starting_compactions.clear();
@@ -351,6 +368,13 @@ impl RuntimeLifecycle {
         if state.instance.as_deref() == Some(instance) {
             state.instance = None;
             state.active_turns.clear();
+            state.active_native_agents.clear();
+            state.settled_native_agents.clear();
+            state.native_agent_operations.clear();
+            state.native_agent_operation_ids.clear();
+            state.native_passive_operation_snapshots.clear();
+            state.native_subagent_activity_ids.clear();
+            state.ambiguous_native_activity.clear();
             state.starting_turns.clear();
             state.active_compactions.clear();
             state.starting_compactions.clear();
@@ -364,6 +388,155 @@ impl RuntimeLifecycle {
             return;
         };
         let params = &message["params"];
+        if matches!(method, "item/started" | "item/completed")
+            && params["item"]["type"].as_str() == Some("subAgentActivity")
+        {
+            let Some(agent) = params["item"]["agentThreadId"].as_str() else {
+                return;
+            };
+            let mut state = self.lock();
+            if state.instance.as_deref() != Some(instance) {
+                return;
+            }
+            match params["item"]["kind"].as_str() {
+                // Activity items have no task/activation reference. Once
+                // another activation has taken over, a terminal activity
+                // snapshot cannot prove that newer work is finished.
+                Some("completed" | "interrupted")
+                    if !state.ambiguous_native_activity.contains(agent)
+                        && state.native_subagent_activity_ids.get(agent)
+                            == state.native_agent_operations.get(agent) =>
+                {
+                    state.active_native_agents.remove(agent);
+                    state.settled_native_agents.insert(agent.to_owned());
+                }
+                Some("started") => {
+                    let operation = params["item"]["id"].as_str().unwrap_or_default();
+                    let known = state
+                        .native_agent_operation_ids
+                        .contains(&(agent.to_owned(), operation.to_owned()));
+                    if !known {
+                        if state
+                            .native_subagent_activity_ids
+                            .get(agent)
+                            .is_some_and(|previous| previous != operation)
+                        {
+                            state.ambiguous_native_activity.insert(agent.to_owned());
+                        }
+                        state
+                            .native_subagent_activity_ids
+                            .insert(agent.to_owned(), operation.to_owned());
+                        state
+                            .native_agent_operation_ids
+                            .insert((agent.to_owned(), operation.to_owned()));
+                        state
+                            .native_agent_operations
+                            .insert(agent.to_owned(), operation.to_owned());
+                        state.settled_native_agents.remove(agent);
+                        state.active_native_agents.insert(agent.to_owned());
+                    }
+                }
+                _ if !state.settled_native_agents.contains(agent) => {
+                    state.active_native_agents.insert(agent.to_owned());
+                }
+                _ => {}
+            }
+            return;
+        }
+        if matches!(method, "item/started" | "item/completed")
+            && params["item"]["type"].as_str() == Some("collabAgentToolCall")
+        {
+            let mut state = self.lock();
+            if state.instance.as_deref() != Some(instance) {
+                return;
+            }
+            let item = &params["item"];
+            let activation = matches!(
+                item["tool"].as_str(),
+                Some("spawnAgent" | "sendInput" | "resumeAgent" | "followupTask")
+            );
+            let operation = item["id"].as_str().unwrap_or_default();
+            let states = item["agentsStates"].as_object();
+            let mut agents: HashSet<&str> = item["receiverThreadIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if let Some(states) = states {
+                agents.extend(states.keys().map(String::as_str));
+            }
+            if !activation
+                && !state
+                    .native_passive_operation_snapshots
+                    .contains_key(operation)
+            {
+                // Bind wait/list snapshots to the activations present when the
+                // operation began, not whichever work exists when it finishes.
+                let snapshot = state.native_agent_operations.clone();
+                state
+                    .native_passive_operation_snapshots
+                    .insert(operation.to_owned(), snapshot);
+            }
+            for agent in agents {
+                if !activation
+                    && state
+                        .native_passive_operation_snapshots
+                        .get(operation)
+                        .and_then(|snapshot| snapshot.get(agent))
+                        != state.native_agent_operations.get(agent)
+                {
+                    continue;
+                }
+                let known_operation = state
+                    .native_agent_operation_ids
+                    .contains(&(agent.to_owned(), operation.to_owned()));
+                if activation
+                    && known_operation
+                    && state
+                        .native_agent_operations
+                        .get(agent)
+                        .is_some_and(|current| current != operation)
+                {
+                    // An older activation can finish after a newer follow-up
+                    // has begun. Its snapshot cannot settle the newer work.
+                    continue;
+                }
+                let new_operation = activation && !known_operation;
+                if new_operation {
+                    state
+                        .native_agent_operation_ids
+                        .insert((agent.to_owned(), operation.to_owned()));
+                    state
+                        .native_agent_operations
+                        .insert(agent.to_owned(), operation.to_owned());
+                    state.settled_native_agents.remove(agent);
+                }
+                let status = states
+                    .and_then(|states| states.get(agent))
+                    .and_then(|agent| {
+                        agent
+                            .as_str()
+                            .or_else(|| agent.get("status").and_then(Value::as_str))
+                    });
+                if matches!(
+                    status,
+                    Some("completed" | "interrupted" | "errored" | "shutdown" | "notFound")
+                ) {
+                    state.active_native_agents.remove(agent);
+                    state.ambiguous_native_activity.remove(agent);
+                    state.settled_native_agents.insert(agent.to_owned());
+                    continue;
+                }
+                // A completed spawn tool does not mean the spawned child is
+                // done. New activation IDs may reuse a settled child; replaying
+                // its old tool completion or passive status must not revive it.
+                if !state.settled_native_agents.contains(agent) {
+                    state.active_native_agents.insert(agent.to_owned());
+                }
+            }
+            return;
+        }
         if method == "item/completed"
             && params["item"]["type"].as_str() == Some("contextCompaction")
         {
@@ -386,12 +559,17 @@ impl RuntimeLifecycle {
         match method {
             "turn/started" => {
                 state.active_turns.insert(thread_id.to_owned());
+                state.settled_native_agents.remove(thread_id);
             }
             "turn/completed" => {
                 state.active_turns.remove(thread_id);
+                state.active_native_agents.remove(thread_id);
+                state.ambiguous_native_activity.remove(thread_id);
+                state.settled_native_agents.insert(thread_id.to_owned());
             }
             "thread/status/changed" if params["status"]["type"].as_str() == Some("active") => {
                 state.active_turns.insert(thread_id.to_owned());
+                state.settled_native_agents.remove(thread_id);
             }
             "thread/status/changed"
                 if matches!(
@@ -400,6 +578,9 @@ impl RuntimeLifecycle {
                 ) =>
             {
                 state.active_turns.remove(thread_id);
+                state.active_native_agents.remove(thread_id);
+                state.ambiguous_native_activity.remove(thread_id);
+                state.settled_native_agents.insert(thread_id.to_owned());
                 state.active_compactions.remove(thread_id);
             }
             _ => {}
@@ -413,6 +594,7 @@ impl RuntimeLifecycle {
             return Err("A Codex runtime refresh is already in progress.".into());
         }
         if !state.active_turns.is_empty()
+            || !state.active_native_agents.is_empty()
             || !state.starting_turns.is_empty()
             || !state.active_compactions.is_empty()
             || !state.starting_compactions.is_empty()
@@ -476,6 +658,7 @@ impl RuntimeLifecycle {
             return Err("A Codex runtime refresh is already in progress.".into());
         }
         if !state.active_turns.is_empty()
+            || !state.active_native_agents.is_empty()
             || !state.starting_turns.is_empty()
             || !state.active_compactions.is_empty()
             || !state.starting_compactions.is_empty()
@@ -812,6 +995,9 @@ struct ClaudeExecutableIdentity {
 struct ClaudePromptSnapshotSupport {
     identity: ClaudeExecutableIdentity,
     supported: Option<bool>,
+    native_supported: Option<bool>,
+    haiku55_supported: Option<bool>,
+    model_compaction_supported: Option<bool>,
     checked_at: Instant,
 }
 
@@ -918,6 +1104,16 @@ struct ClaudeTurnOptions {
     attachments: Vec<ClaudeAttachment>,
     subagent_max: usize,
     custom_agents: Vec<ClaudeAgentInput>,
+    #[serde(default)]
+    native_subagents: bool,
+    #[serde(default)]
+    native_subagent_max: Option<usize>,
+    #[serde(default)]
+    native_subagent_model: Option<String>,
+    #[serde(default)]
+    native_auto_compact_tokens: Option<usize>,
+    #[serde(default)]
+    auto_compact_tokens: Option<usize>,
     skills_plugin_path: Option<String>,
     /// Path to the cross-provider delegation MCP configuration, present only
     /// for a root thread whose policy allows spawning on other providers.
@@ -2135,12 +2331,12 @@ fn managed_runtime_config(openrouter_base_url: &str) -> Vec<(&'static str, &'sta
             "multi_agent_mode",
             format!("{{ custom = {native_delegation_policy} }}"),
         ),
-        // The Mythra Code bridge is the only spawning authority, so the native
-        // agent runtime is pinned to a single non-nesting thread. Depth is
-        // re-asserted alongside the thread ceiling: a stale or hand-edited
-        // `max_depth` would otherwise let native delegation nest below a child.
+        // Off is authoritative only with agents disabled and both native
+        // feature flags disabled. The small legacy limits are compatibility
+        // defaults, not the mechanism that prevents native spawning.
         ("agents", "max_threads", "1".into()),
         ("agents", "max_depth", "1".into()),
+        ("agents", "enabled", "false".into()),
         ("features", "multi_agent", "false".into()),
         ("features", "multi_agent_v2", "false".into()),
         ("model_providers.openrouter", "base_url", base_url),
@@ -2290,6 +2486,7 @@ multi_agent_mode = {{ custom = {native_delegation_policy} }}
 [agents]
 max_threads = 1
 max_depth = 1
+enabled = false
 
 [features]
 multi_agent = false
@@ -2646,6 +2843,187 @@ fn runtime_is_compatible(version: &str) -> bool {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     major > 0 || minor >= 145
+}
+
+/// Pin the actual harness route on every startup RPC. App-owned baseline
+/// files are not enough: project/profile layers and omitted renderer config
+/// must not reactivate a second delegation system.
+fn enforce_codex_delegation_config(method: &str, params: &mut Value) -> Result<(), String> {
+    if !matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
+        return Ok(());
+    }
+    let params = params.as_object_mut().ok_or_else(|| "Thread startup requires an object.".to_string())?;
+    let config = params.entry("config").or_insert_with(|| json!({}));
+    if config.is_null() { *config = json!({}); }
+    let config = config.as_object_mut().ok_or_else(|| "Thread startup config must be an object.".to_string())?;
+    if config.keys().any(|key| key.starts_with("agents.") || key.starts_with("features.multi_agent")) {
+        return Err("Thread delegation settings must use the explicit managed configuration, not dotted overrides.".into());
+    }
+    let features = config.entry("features").or_insert_with(|| json!({}));
+    let features = features.as_object_mut().ok_or_else(|| "Thread startup features must be an object.".to_string())?;
+    if features.keys().any(|key| key.starts_with("multi_agent." ) || key.starts_with("multi_agent_v2.")) {
+        return Err("Thread delegation settings cannot use dotted feature overrides.".into());
+    }
+    let native = match features.get("multi_agent_v2") {
+        None | Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) => true,
+        Some(Value::Object(value)) => value.get("enabled").and_then(Value::as_bool)
+            .ok_or_else(|| "Native Codex V2 configuration requires an explicit enabled flag.".to_string())?,
+        _ => return Err("Native Codex V2 configuration has an invalid enabled flag.".into()),
+    };
+    // The native safety inspection resolves the current cwd's layers and
+    // merges the explicit MCP table. Alternate selectors/dotted overrides
+    // would describe a different configuration than the one it inspected.
+    if native && config.keys().any(|key| key == "profile" || key == "profiles" || key.starts_with("profiles.") || key.starts_with("mcp_servers.")) {
+        return Err("Native Codex startup must use explicit MCP tables without alternate configuration profiles.".into());
+    }
+    let features = config.get_mut("features").and_then(Value::as_object_mut).expect("features were validated above");
+    let legacy = match features.get("multi_agent") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err("Native Codex legacy configuration has an invalid enabled flag.".into()),
+    };
+    if !native && legacy {
+        return Err("Mythra Code supports only the explicitly selected native Codex V2 route.".into());
+    }
+    features.insert("multi_agent".into(), json!(native));
+    if !native { features.insert("multi_agent_v2".into(), json!(false)); }
+    let agents = config.entry("agents").or_insert_with(|| json!({}));
+    let agents = agents.as_object_mut().ok_or_else(|| "Thread startup agents must be an object.".to_string())?;
+    if let Some(enabled) = agents.get("enabled") {
+        let enabled = enabled.as_bool().ok_or_else(|| "Native Codex agents require a boolean enabled flag.".to_string())?;
+        if !native && enabled { return Err("Native Codex agents require the explicitly selected V2 route.".into()); }
+    }
+    agents.insert("enabled".into(), json!(native));
+    Ok(())
+}
+
+fn requests_native_codex(method: &str, params: &Value) -> bool {
+    if !matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
+        return false;
+    }
+    let v2 = params.pointer("/config/features/multi_agent_v2");
+    v2 == Some(&Value::Bool(true))
+        || v2
+            .and_then(|value| value.get("enabled"))
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+async fn validate_native_codex_bridges(
+    state: &ChildAgentState,
+    method: &str,
+    params: &Value,
+) -> Result<(), String> {
+    if !requests_native_codex(method, params) {
+        return Ok(());
+    }
+    let Some(bridges) = params.pointer("/config/mcp_servers").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for (name, bridge) in bridges {
+    // A retained alias that is explicitly disabled cannot expose tools.
+    if bridge.get("enabled") == Some(&Value::Bool(false)) { continue; }
+    let bridge_marker = bridge["args"].as_array().is_some_and(|args| args.iter().any(|arg| arg.as_str() == Some("--openkiwi-agent-bridge")));
+    if name != "mythra_agents" && !bridge_marker { continue; }
+    let args: Vec<String> = bridge["args"]
+        .as_array()
+        .and_then(|args| {
+            args.iter()
+                .map(|arg| arg.as_str().map(str::to_owned))
+                .collect()
+        })
+        .ok_or_else(|| {
+            "The native thread's Mythra Code project bridge has invalid arguments.".to_string()
+        })?;
+    let command = bridge["command"].as_str().unwrap_or_default();
+    if agents::child_agent_bridge_launch_allows_spawning(state, &args).await {
+        return Err("Native Codex sub-agents cannot run with a Mythra Code delegation bridge. Reconfigure this thread's sub-agent mode before starting.".into());
+    }
+    if !agents::child_agent_bridge_launch_registered(state, name, command, &args).await {
+        return Err("The native thread's Mythra Code project bridge is no longer active.".into());
+    }
+    }
+    Ok(())
+}
+
+/// MCP server tables merge by field in Codex's configuration layers. Keep
+/// inherited aliases visible while applying per-thread command/args/disabled
+/// overrides, without copying unrelated configuration or exposing its secrets.
+fn native_codex_effective_bridge_params(params: &Value, effective_config: &Value) -> Result<Value, String> {
+    if !effective_config.is_object() {
+        return Err("Could not verify inherited Mythra Code bridges before native startup.".into());
+    }
+    let mut bridges = match effective_config.get("mcp_servers") {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(bridges)) => bridges.clone(),
+        _ => return Err("Could not verify inherited Mythra Code bridge configuration.".into()),
+    };
+    if let Some(overrides) = params.pointer("/config/mcp_servers") {
+        let overrides = overrides.as_object().ok_or_else(|| "Native thread MCP configuration must be an object.".to_string())?;
+        for (name, server) in overrides {
+            match (bridges.get_mut(name), server.as_object()) {
+                (Some(Value::Object(inherited)), Some(fields)) => inherited.extend(fields.clone()),
+                _ => { bridges.insert(name.clone(), server.clone()); }
+            }
+        }
+    }
+    Ok(json!({ "config": { "features": { "multi_agent_v2": true }, "mcp_servers": bridges } }))
+}
+
+fn validate_native_codex_runtime(
+    method: &str,
+    params: &Value,
+    version: &str,
+) -> Result<(), String> {
+    // This setting also applies to parent and Mythra-managed child turns.
+    if let Some(value) = params.pointer("/config/model_auto_compact_token_limit") {
+        if !value.is_null() {
+            if value.as_u64().is_none_or(|value| !(100_000..=1_000_000).contains(&value)) {
+                return Err("Codex auto-compaction must be a whole token count from 100,000 to 1,000,000.".into());
+            }
+            if params.pointer("/config/model_auto_compact_token_limit_scope").and_then(Value::as_str) != Some("total") {
+                return Err("Codex auto-compaction must count the full active context.".into());
+            }
+        }
+    }
+    if !requests_native_codex(method, params) {
+        return Ok(());
+    }
+    if parsed_runtime_version(version)
+        .is_none_or(|version| version < semver::Version::new(0, 161, 0))
+    {
+        return Err("Native Codex sub-agents need Codex 0.161.0 or newer. Update Codex before using this mode.".into());
+    }
+    let provider = params
+        .get("modelProvider")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .pointer("/config/model_provider")
+                .and_then(Value::as_str)
+        });
+    if provider != Some("openai") {
+        return Err(
+            "Native Codex sub-agents are available only for the Codex subscription.".into(),
+        );
+    }
+    if let Some(value) = params.pointer("/config/agents/default_subagent_model") {
+        let valid = value.as_str().is_some_and(|value| {
+            !value.is_empty() && value.len() <= 200 && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte)
+            })
+        });
+        if !valid {
+            return Err("The native Codex child model must be a valid identifier.".into());
+        }
+    }
+    if let Some(value) = params.pointer("/config/agents/default_subagent_reasoning_effort") {
+        if !matches!(value.as_str(), Some("low" | "medium" | "high" | "xhigh" | "max" | "ultra")) {
+            return Err("The native Codex child reasoning effort is invalid.".into());
+        }
+    }
+    Ok(())
 }
 
 fn codex_runtime_changed(
@@ -3351,6 +3729,7 @@ fn configure_claude_subscription(command: &mut Command, home: Option<&Path>) {
         .env_remove("ANTHROPIC_DEFAULT_HAIKU_MODEL")
         .env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL")
         .env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL")
+        .env_remove("ANTHROPIC_DEFAULT_FABLE_MODEL")
         .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
         .env_remove("AWS_BEARER_TOKEN_BEDROCK")
         .env_remove("AWS_ACCESS_KEY_ID")
@@ -3388,6 +3767,27 @@ fn claude_prompt_snapshot_version_support(version: Option<&str>) -> Option<bool>
     let token = version?.split_whitespace().next()?;
     let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
     Some(version >= semver::Version::new(2, 1, 257))
+}
+
+fn claude_native_subagent_version_support(version: Option<&str>) -> Option<bool> {
+    let token = version?.split_whitespace().next()?;
+    let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
+    // 2.1.267 refuses a custom child's bypassPermissions mode unless its
+    // parent already has that authority. Snapshot support alone (2.1.257)
+    // cannot establish this inherited permission boundary.
+    Some(version >= semver::Version::new(2, 1, 267))
+}
+
+fn claude_haiku55_version_support(version: Option<&str>) -> Option<bool> {
+    let token = version?.split_whitespace().next()?;
+    let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
+    Some(version >= semver::Version::new(2, 1, 293))
+}
+
+fn claude_model_compaction_version_support(version: Option<&str>) -> Option<bool> {
+    let token = version?.split_whitespace().next()?;
+    let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
+    Some(version >= semver::Version::new(2, 1, 288))
 }
 
 fn claude_wrap_up_version_support(version: Option<&str>) -> Option<bool> {
@@ -3483,6 +3883,9 @@ where
     }
     let version = probe().await;
     let supported = claude_prompt_snapshot_version_support(version.as_deref());
+    let native_supported = claude_native_subagent_version_support(version.as_deref());
+    let haiku55_supported = claude_haiku55_version_support(version.as_deref());
+    let model_compaction_supported = claude_model_compaction_version_support(version.as_deref());
     // An updater can replace the CLI during a probe. Never attribute the old
     // version to the new executable (or send a new flag to a replaced old CLI).
     if claude_executable_identity(path).await != identity {
@@ -3492,6 +3895,9 @@ where
     *cached = Some(ClaudePromptSnapshotSupport {
         identity,
         supported,
+        native_supported,
+        haiku55_supported,
+        model_compaction_supported,
         checked_at: Instant::now(),
     });
     supported.unwrap_or(false)
@@ -3502,6 +3908,45 @@ async fn claude_prompt_snapshot_supported(state: &ClaudeState, path: &Path) -> b
         runtime_version(path)
     })
     .await
+}
+
+async fn cached_claude_native_subagent_support(
+    cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
+    path: &Path,
+) -> bool {
+    // The snapshot probe fills both capabilities from the same executable.
+    // Recheck identity so an updater cannot transfer permission guarantees
+    // from the probed CLI to a replacement binary.
+    let identity = claude_executable_identity(path).await;
+    cache
+        .lock()
+        .await
+        .as_ref()
+        .filter(|runtime| runtime.reusable(&identity, Instant::now()))
+        .and_then(|runtime| runtime.native_supported)
+        .unwrap_or(false)
+}
+
+async fn cached_claude_haiku55_support(
+    cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
+    path: &Path,
+) -> bool {
+    let identity = claude_executable_identity(path).await;
+    cache.lock().await.as_ref()
+        .filter(|runtime| runtime.reusable(&identity, Instant::now()))
+        .and_then(|runtime| runtime.haiku55_supported)
+        .unwrap_or(false)
+}
+
+async fn cached_claude_model_compaction_support(
+    cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
+    path: &Path,
+) -> bool {
+    let identity = claude_executable_identity(path).await;
+    cache.lock().await.as_ref()
+        .filter(|runtime| runtime.reusable(&identity, Instant::now()))
+        .and_then(|runtime| runtime.model_compaction_supported)
+        .unwrap_or(false)
 }
 
 fn claude_system_prompt_arguments(system_prompt: &str, snapshot_supported: bool) -> Vec<String> {
@@ -4235,7 +4680,16 @@ fn claude_effort(value: &str) -> &str {
     }
 }
 
-fn claude_agent_definitions(agents: &[ClaudeAgentInput], maximum: usize) -> Value {
+fn claude_agent_definitions(
+    agents: &[ClaudeAgentInput],
+    maximum: usize,
+    native_subagents: bool,
+) -> Value {
+    // The saved profiles are the Mythra crew, not native Claude definitions.
+    // Keep the provider's registered agents and their model defaults intact.
+    if native_subagents {
+        return json!({});
+    }
     let definitions = agents
         .iter()
         .filter(|agent| agent.enabled)
@@ -4271,7 +4725,7 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The built-in tools a Claude thread may use.
+/// The base built-in tools a Claude thread may use, before native opt-in.
 ///
 /// `--tools` is an allowlist over the CLI's built-in set, so containment no
 /// longer depends on Mythra Code knowing the name of every spawning tool. A
@@ -4281,7 +4735,7 @@ fn validate_cli_value(value: &str, label: &str) -> Result<(), String> {
 /// available. Anything absent from this allowlist —
 /// `Agent`, `Workflow`, the background `Task*` family, cron and remote
 /// triggers, peer messaging, and whatever a later release adds or renames —
-/// is simply not available to the model.
+/// is unavailable unless explicitly opened by CLAUDE_NATIVE_AGENT_TOOLS.
 ///
 /// MCP tools are not governed by `--tools`, so the Mythra Code delegation
 /// bridge still reaches Claude as the one approved way to delegate.
@@ -4299,7 +4753,6 @@ const CLAUDE_BUILTIN_TOOLS: &[&str] = &[
     "Grep",
     "LSP",
     "TodoWrite",
-    "Skill",
     "WebFetch",
     "WebSearch",
     "ListMcpResourcesTool",
@@ -4322,14 +4775,20 @@ const CLAUDE_WRITE_TOOLS: &[&str] = &[
 
 /// Provider-native spawning, scheduling, and agent-messaging surfaces.
 ///
-/// Mythra Code is the sole delegation authority: these bypass the approved
-/// roster, concurrency budget, ownership records, and child inbox. The
-/// allowlist above already withholds them; naming them again as a deny list
+/// Mythra mode withholds these because they bypass its approved roster,
+/// concurrency budget, ownership records and child inbox. Native mode opens
+/// only CLAUDE_NATIVE_AGENT_TOOLS; scheduling and unrelated routes stay denied.
+/// The allowlist above already withholds them; naming them again as a deny list
 /// keeps containment if a future CLI widens or ignores `--tools`, and covers
 /// both the current `Agent` name and the pre-2.1.63 `Task` name. Only names
 /// the CLI still knows belong here — it warns on stderr for the rest — so
 /// retired names such as `TeamCreate` are left to the allowlist alone.
 const CLAUDE_SPAWN_TOOLS: &[&str] = &[
+    // A context:fork Skill dispatches its child internally, without calling
+    // Agent and its spawn-depth guard. App-selected skills are expanded inline
+    // before dispatch instead; the provider executor is unavailable in either
+    // engine so it cannot bypass the selected delegation/lifecycle boundary.
+    "Skill",
     "Agent",
     "Task",
     "Workflow",
@@ -4350,39 +4809,204 @@ const CLAUDE_SPAWN_TOOLS: &[&str] = &[
     "RemoteTrigger",
 ];
 
-fn claude_allowed_builtin_tools(permission: &str) -> Vec<&'static str> {
+/// Native mode opens only ordinary in-session delegation. Workflows, teams,
+/// scheduling and cross-session messaging remain outside this route.
+const CLAUDE_NATIVE_AGENT_TOOLS: &[&str] = &["Agent", "Task", "TaskOutput", "TaskStop"];
+
+fn claude_allowed_builtin_tools(permission: &str, native_subagents: bool) -> Vec<&'static str> {
+    let native_tools = if native_subagents {
+        CLAUDE_NATIVE_AGENT_TOOLS
+    } else {
+        &[]
+    };
     CLAUDE_BUILTIN_TOOLS
         .iter()
+        .chain(native_tools.iter())
         .copied()
         .filter(|tool| permission != "read-only" || !CLAUDE_WRITE_TOOLS.contains(tool))
-        // Belt and braces: a spawning tool must never reach the allowlist,
+        // An unrelated spawning route must never reach the allowlist,
         // whatever a later edit to CLAUDE_BUILTIN_TOOLS adds.
-        .filter(|tool| !CLAUDE_SPAWN_TOOLS.contains(tool))
+        .filter(|tool| {
+            !CLAUDE_SPAWN_TOOLS.contains(tool)
+                || native_subagents && CLAUDE_NATIVE_AGENT_TOOLS.contains(tool)
+        })
         .collect()
 }
 
-fn claude_disallowed_tools(permission: &str) -> Vec<&'static str> {
+fn claude_disallowed_tools(permission: &str, native_subagents: bool) -> Vec<&'static str> {
     let mut disallowed = Vec::new();
     if permission == "read-only" {
         disallowed.extend(CLAUDE_WRITE_TOOLS.iter().copied());
     }
-    disallowed.extend(CLAUDE_SPAWN_TOOLS.iter().copied());
+    disallowed.extend(
+        CLAUDE_SPAWN_TOOLS
+            .iter()
+            .copied()
+            .filter(|tool| !native_subagents || !CLAUDE_NATIVE_AGENT_TOOLS.contains(tool)),
+    );
     disallowed
 }
 
 /// The tool-availability arguments handed to the Claude CLI, built once so a
 /// test can assert on exactly what the spawned command receives.
-fn claude_tool_arguments(permission: &str) -> Vec<String> {
+fn claude_tool_arguments(permission: &str, native_subagents: bool) -> Vec<String> {
     let mut arguments = vec![
+        // Also close user slash-command forks: they do not call the exposed
+        // Skill/Agent tools. This process-local flag disables the provider's
+        // skill executor, not Mythra Code's inline skill resolution.
+        "--disable-slash-commands".to_string(),
         "--tools".to_string(),
-        claude_allowed_builtin_tools(permission).join(","),
+        claude_allowed_builtin_tools(permission, native_subagents).join(","),
     ];
-    let disallowed = claude_disallowed_tools(permission);
+    let disallowed = claude_disallowed_tools(permission, native_subagents);
     if !disallowed.is_empty() {
         arguments.push("--disallowedTools".to_string());
         arguments.push(disallowed.join(","));
     }
     arguments
+}
+
+fn validate_claude_native_support(
+    native_subagents: bool,
+    native_supported: bool,
+) -> Result<(), String> {
+    if native_subagents && !native_supported {
+        return Err("Native Claude sub-agents require a verified Claude Code 2.1.267 or newer to preserve parent permission rules and apply changed delegation instructions when this conversation resumes. Update Claude Code or choose Mythra Code sub-agents.".into());
+    }
+    Ok(())
+}
+
+fn validate_claude_native_options(
+    model: Option<&str>,
+    compact_tokens: Option<usize>,
+    haiku55_supported: bool,
+) -> Result<(), String> {
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        let lower = model.to_ascii_lowercase();
+        let identifier = lower.strip_suffix("[1m]").unwrap_or(&lower);
+        if model.len() > 200 || identifier.is_empty() || !identifier.bytes().all(|byte| byte.is_ascii_alphanumeric()
+            || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-'))
+            || matches!(identifier, "default" | "inherit")
+        {
+            return Err("Choose a supported native child model, or leave it empty for provider selection.".into());
+        }
+        if (identifier == "haiku" || identifier.starts_with("claude-haiku-5-5")) && !haiku55_supported {
+            return Err("Native Haiku 5.5 requires a verified Claude Code 2.1.293 or newer. Update Claude Code or choose another child model.".into());
+        }
+    }
+    if compact_tokens.is_some_and(|tokens| !(100_000..=1_000_000).contains(&tokens)) {
+        return Err("The native auto-compact window must be a whole token count from 100,000 to 1,000,000.".into());
+    }
+    Ok(())
+}
+
+/// Identity keys verified against the first-party Claude Code 2.1.293
+/// modelSettings resolver. Unknown/custom spellings are deliberately refused
+/// for separate windows instead of guessing which model they serve.
+fn claude_compaction_model_key(model: &str) -> Option<String> {
+    let lower = model.trim().to_ascii_lowercase();
+    let spelling = lower.strip_suffix("[1m]").unwrap_or(&lower);
+    let spelling = match spelling {
+        "opus" => "claude-opus-5-5",
+        "sonnet" => "claude-sonnet-5-5",
+        "haiku" => "claude-haiku-5-5",
+        "fable" => "claude-fable-5-1",
+        value => value,
+    };
+    let spelling = spelling.rsplit_once('-').filter(|(_, suffix)|
+        suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    ).map_or(spelling, |(prefix, _)| prefix);
+    matches!(spelling,
+        "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" |
+        "claude-opus-5" | "claude-opus-5-5" |
+        "claude-sonnet-4-5" | "claude-sonnet-4-6" | "claude-sonnet-5" |
+        "claude-sonnet-5-5" | "claude-haiku-4-5" | "claude-haiku-5-5" |
+        "claude-fable-5" | "claude-fable-5-1"
+    ).then(|| spelling.to_string())
+}
+
+fn claude_compaction_settings(
+    parent_model: &str,
+    parent_tokens: Option<usize>,
+    child_model: Option<&str>,
+    child_tokens: Option<usize>,
+) -> Result<Option<Value>, String> {
+    for tokens in [parent_tokens, child_tokens].into_iter().flatten() {
+        if !(100_000..=1_000_000).contains(&tokens) {
+            return Err("The auto-compact window must be a whole token count from 100,000 to 1,000,000.".into());
+        }
+    }
+    if parent_tokens.is_none() && child_tokens.is_none() {
+        return Ok(None);
+    }
+    let mut settings = json!({"autoCompactEnabled": true});
+    let parent_key = claude_compaction_model_key(parent_model);
+    if child_tokens.is_some() && child_tokens != parent_tokens {
+        let parent = parent_key.ok_or_else(|| "Separate native auto-compact windows require an explicit supported parent model. Choose a model instead of Provider default, or use Mythra Code sub-agents.".to_string())?;
+        let child = child_model.and_then(claude_compaction_model_key).ok_or_else(|| "Separate native auto-compact windows require an explicit supported child model. Choose a child model, or use Mythra Code sub-agents.".to_string())?;
+        if parent == child {
+            return Err("Claude native parent and children using the same model share that model's auto-compact window. Choose a different child model, use the same window, or choose Mythra Code sub-agents.".into());
+        }
+        let mut models = serde_json::Map::new();
+        models.insert(parent, json!({"autoCompactWindow": parent_tokens.map_or(json!("auto"), |tokens| json!(tokens))}));
+        models.insert(child, json!({"autoCompactWindow": child_tokens}));
+        settings["modelSettings"] = Value::Object(models);
+    } else if let Some(tokens) = parent_tokens.or(child_tokens) {
+        // Equal explicit windows are safe even when the provider chooses the
+        // model. A parent-only value is keyed when its identity is known.
+        if child_tokens.is_none() {
+            if let Some(parent) = parent_key {
+                settings["modelSettings"] = json!({parent: {"autoCompactWindow": tokens}});
+            } else {
+                settings["autoCompactWindow"] = json!(tokens);
+            }
+        } else {
+            settings["autoCompactWindow"] = json!(tokens);
+        }
+    }
+    Ok(Some(settings))
+}
+
+fn configure_claude_compaction(command: &mut Command, settings: Option<&Value>) {
+    let Some(settings) = settings else { return; };
+    command.env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        .env_remove("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+        .env_remove("DISABLE_COMPACT")
+        .env_remove("DISABLE_AUTO_COMPACT")
+        .arg("--settings").arg(settings.to_string());
+}
+
+fn configure_claude_native_agents(
+    command: &mut Command,
+    maximum: Option<usize>,
+    model: Option<&str>,
+) {
+    // This app owns a process per turn and closes it after its root result.
+    // Foreground children finish inside that turn; background children could
+    // otherwise lose their later completion notification when we reap it.
+    command
+        // Complete child messages carry the actual model and parent tool id.
+        // The frontend routes these into native activity, never root answers.
+        .arg("--forward-subagent-text")
+        .env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")
+        .env("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "1")
+        .env(
+            "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+            maximum.unwrap_or(6).clamp(1, 24).to_string(),
+        )
+        // Retain the runtime's built-in catalog and model defaults. A process
+        // inherited override must not silently hijack this thread's selection.
+        .env_remove("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS")
+        .env_remove("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL_FORCE")
+        // Forks inherit the parent context/model and require background work,
+        // which this per-turn process does not support.
+        .env("CLAUDE_CODE_FORK_SUBAGENT", "0");
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        command.env("CLAUDE_CODE_SUBAGENT_MODEL", model)
+            .env("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "1");
+    }
 }
 
 fn claude_permission_arguments(permission: &str) -> Vec<&'static str> {
@@ -4399,6 +5023,9 @@ fn claude_permission_arguments(permission: &str) -> Vec<&'static str> {
 }
 
 fn claude_read_only_denial(read_only: bool, message: &Value) -> Option<Value> {
+    // Agent launches in manual mode don't ordinarily require permission;
+    // each child's tools still use this control channel. Keep explicit policy
+    // prompts denied too rather than granting a native-agent exception here.
     let request = &message["request"];
     if !read_only
         || message["type"] != "control_request"
@@ -4455,8 +5082,8 @@ mod unattended_claude_tests {
         assert_eq!(denied["response"]["response"]["behavior"], "deny");
         assert_eq!(denied["response"]["request_id"], "question-1");
         assert!(claude_unattended_denial(true, &question).is_none());
-        assert!(claude_allowed_builtin_tools("read-only").contains(&"Read"));
-        assert!(!claude_allowed_builtin_tools("read-only").contains(&"Write"));
+        assert!(claude_allowed_builtin_tools("read-only", false).contains(&"Read"));
+        assert!(!claude_allowed_builtin_tools("read-only", false).contains(&"Write"));
     }
 }
 
@@ -4579,11 +5206,44 @@ async fn claude_turn_start(
     #[cfg(unix)]
     command.process_group(0);
     let snapshot_supported = claude_prompt_snapshot_supported(&state, &binary).await;
+    let compaction_settings = claude_compaction_settings(
+        &options.model, options.auto_compact_tokens,
+        options.native_subagents.then_some(options.native_subagent_model.as_deref()).flatten(),
+        options.native_subagents.then_some(options.native_auto_compact_tokens).flatten(),
+    )?;
+    if compaction_settings.is_some() {
+        if !cached_claude_model_compaction_support(&state.prompt_snapshot_support, &binary).await {
+            return Err("Explicit Claude auto-compaction requires a verified Claude Code 2.1.288 or newer. Update Claude Code before choosing this window.".into());
+        }
+        if claude_compaction_model_key(&options.model).as_deref() == Some("claude-haiku-5-5")
+            && !cached_claude_haiku55_support(&state.prompt_snapshot_support, &binary).await {
+            return Err("Haiku 5.5 requires a verified Claude Code 2.1.293 or newer. Update Claude Code before choosing this model.".into());
+        }
+    }
+    configure_claude_compaction(&mut command, compaction_settings.as_ref());
+    if options.native_subagents {
+        validate_claude_native_support(
+            true,
+            cached_claude_native_subagent_support(&state.prompt_snapshot_support, &binary).await,
+        )?;
+        validate_claude_native_options(
+            options.native_subagent_model.as_deref(), options.native_auto_compact_tokens,
+            cached_claude_haiku55_support(&state.prompt_snapshot_support, &binary).await,
+        )?;
+        configure_claude_native_agents(
+            &mut command, options.native_subagent_max,
+            options.native_subagent_model.as_deref(),
+        );
+    }
     command.args(claude_system_prompt_arguments(
         &options.system_prompt,
         snapshot_supported,
     ));
-    let agent_definitions = claude_agent_definitions(&options.custom_agents, options.subagent_max);
+    let agent_definitions = claude_agent_definitions(
+        &options.custom_agents,
+        options.subagent_max,
+        options.native_subagents,
+    );
     if agent_definitions
         .as_object()
         .is_some_and(|agents| !agents.is_empty())
@@ -4596,11 +5256,15 @@ async fn claude_turn_start(
         command.args(["--session-id", &options.thread_id]);
     }
     command.args(claude_permission_arguments(&options.permission));
-    command.args(claude_tool_arguments(&options.permission));
+    command.args(claude_tool_arguments(
+        &options.permission,
+        options.native_subagents,
+    ));
     // Language plugins are explicitly supplied because Claude's user/project
     // settings are intentionally isolated. Optional setup must never prevent
     // a normal turn from starting when a dependency is unavailable.
-    if let Ok(Some(plugin_path)) = language_tools::prepare_project(&app, &options.cwd, false, &options.permission).await
+    if let Ok(Some(plugin_path)) =
+        language_tools::prepare_project(&app, &options.cwd, false, &options.permission).await
     {
         command.arg("--plugin-dir").arg(plugin_path);
     }
@@ -4617,6 +5281,11 @@ async fn claude_turn_start(
     if let Some(bridge_config) = options.child_agent_bridge_config.as_deref() {
         if !child_agent_bridge_config_registered(&agent_state, bridge_config).await {
             return Err("The sub-agent bridge configuration is no longer active.".into());
+        }
+        if options.native_subagents
+            && child_agent_bridge_config_allows_spawning(&agent_state, bridge_config).await
+        {
+            return Err("Native Claude sub-agents cannot run with a Mythra Code delegation bridge. Reconfigure this thread's sub-agent mode before starting.".into());
         }
         // Claude merges this server with the user's normal MCP configuration.
         command.args(["--mcp-config", bridge_config]);
@@ -6217,11 +6886,24 @@ async fn codex_rpc(
             "Mythra Code's desktop bridge does not allow the RPC method `{method}`"
         ));
     }
+    enforce_codex_delegation_config(&method, &mut params)?;
     validate_rpc_params(&method, &params)?;
+    validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &params).await?;
     // Register before `ensure_server` so a read cannot spawn a process in the
     // gap after a reserved restart has taken the old server out of the slot.
     let _rpc_guard = state.lifecycle.begin_rpc_call(&method)?;
     let server = ensure_server(&app, &state).await?;
+    validate_native_codex_runtime(&method, &params, &server.runtime_version)?;
+    if requests_native_codex(&method, &params) {
+        let cwd = params.get("cwd").and_then(Value::as_str).filter(|cwd| !cwd.is_empty())
+            .ok_or_else(|| "Native Codex startup requires its working directory to verify inherited bridges.".to_string())?;
+        // One read from this existing process, only for native startup. Never
+        // bootstrap another client or retry a failed safety inspection.
+        let effective = server.request("config/read", json!({ "cwd": cwd, "includeLayers": false })).await
+            .map_err(|_| "Could not verify inherited Mythra Code bridges. The native thread was not started; retry after the Codex runtime is available.".to_string())?;
+        let bridge_params = native_codex_effective_bridge_params(&params, &effective["config"])?;
+        validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &bridge_params).await?;
+    }
     if matches!(
         method.as_str(),
         "thread/start" | "thread/resume" | "thread/fork"
@@ -6252,6 +6934,7 @@ async fn codex_rpc(
                 format!("{error}. Mythra Code also could not restart the runtime: {restart_error}")
             })?;
             if RETRYABLE_METHODS.contains(&method.as_str()) {
+                validate_native_codex_runtime(&method, &params, &recovered.runtime_version)?;
                 recovered.request(&method, params).await
             } else {
                 Err(format!(

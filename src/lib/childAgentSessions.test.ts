@@ -96,6 +96,33 @@ describe("ensureChildAgentBridge", () => {
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(1);
   });
 
+  it("native project mode revokes managed spawning but preserves the stored roster for switching back", async () => {
+    const stored = policy();
+    await ensureChildAgentBridge(input({ threadId: "thread-1", policies: { "thread-1": stored }, projectPath: "/project" }));
+    const projectLaunch = { ...LAUNCH, toolNames: ["set_project_run_command", "set_project_check_command", "language_tools_status"] };
+    bridge.startChildAgentSession.mockResolvedValue(projectLaunch);
+    const nativeInput = input({
+      threadId: "thread-1", policies: { "thread-1": stored }, projectPath: "/project",
+      settingsProposalsEnabled: false,
+      settings: { childAgents: CHILD_AGENTS, subagentsEnabled: true, subagentMax: 3, subagentEngine: "native" },
+    });
+    const result = await ensureChildAgentBridge(nativeInput);
+    expect(bridge.endChildAgentSession).toHaveBeenCalledWith(stored.sessionId);
+    expect(result?.launch.toolNames).not.toContain("spawn_mythra_agent");
+    expect(result?.captured).toBe(false);
+    expect(stored.targets[0].id).toBe("frozen");
+    expect(bridge.startChildAgentSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ targets: [] }), [], [],
+      expect.objectContaining({ nativeDelegation: true, projectPath: "/project" }),
+    );
+    await ensureChildAgentBridge(nativeInput);
+    expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(2);
+    bridge.startChildAgentSession.mockResolvedValue(LAUNCH);
+    const restored = await ensureChildAgentBridge(input({ threadId: "thread-1", policies: { "thread-1": stored }, projectPath: "/project" }));
+    expect(restored?.policy.targets[0].id).toBe("frozen");
+    expect(restored?.launch.toolNames).toContain("spawn_mythra_agent");
+  });
+
   it("never gives a child thread a bridge, which is what caps depth at one", async () => {
     const result = await ensureChildAgentBridge(input({
       threadId: "child-1",

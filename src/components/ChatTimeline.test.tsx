@@ -232,12 +232,13 @@ describe("ChatTimeline", () => {
     render(<ActivityRow activity={snapshot.activities[0]} />);
 
     expect(screen.getByRole("article", {
-      name: /OpenAI sub-agent working: \/root\/audio_regression_audit/i,
+      name: /OpenAI sub-agent working: Sub-agent started/i,
     })).toBeInTheDocument();
     expect(screen.getByText("OpenAI sub-agent")).toBeInTheDocument();
-    expect(screen.getByText("/root/audio_regression_audit")).toBeInTheDocument();
+    expect(snapshot.activities[0].detail).toBe("/root/audio_regression_audit");
+    expect(snapshot.activities[0].agent?.task).toBeUndefined();
     expect(screen.getByText("Working")).toBeInTheDocument();
-    expect(screen.queryByText("Sub-agent started")).not.toBeInTheDocument();
+    expect(screen.getByText("Sub-agent started")).toBeInTheDocument();
   });
 
   it("groups consecutive same-turn spawns into one coordinated wave", () => {
@@ -927,4 +928,22 @@ it("opens and stops the owned child from its timeline card and shows elapsed tim
   await waitFor(() => expect(screen.getByRole("button", { name: "Stop sub-agent" })).toBeEnabled());
   fireEvent.click(screen.getByRole("button", { name: "Stop sub-agent" }));
   await waitFor(() => expect(onStop).toHaveBeenCalledWith(worker));
+});
+
+it("does not advertise independent controls for a Claude native child", () => {
+  const worker = { id: "claude-native:root:tool", kind: "native" as const, status: "working" as const, title: "Review", detail: "Claude", createdAt: 1000, canOpen: false, canStop: false };
+  render(<SubAgentControls.Provider value={{ workers: [worker], onOpen: vi.fn(), onStop: vi.fn(), now: 2000 }}>
+    <ActivityRow activity={{ id: "spawn", kind: "agent", title: "Review", status: "inProgress", agent: { action: "spawn", provider: "claude", threadIds: [worker.id] } }} />
+  </SubAgentControls.Provider>);
+  expect(screen.queryByRole("button", { name: "Open sub-agent" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Stop sub-agent" })).not.toBeInTheDocument();
+});
+
+it("keeps Stop available for an unresolved native Codex child", () => {
+  const worker = { id: "unknown-native", kind: "native" as const, status: "unknown" as const, title: "Review", detail: "OpenAI", createdAt: 1000 };
+  render(<SubAgentControls.Provider value={{ workers: [worker], onOpen: vi.fn(), onStop: vi.fn(), now: 2000 }}>
+    <ActivityRow activity={{ id: "spawn", kind: "agent", title: "Review", agent: { action: "spawn", provider: "openai", threadIds: [worker.id] } }} />
+  </SubAgentControls.Provider>);
+  expect(screen.getByRole("button", { name: "Stop sub-agent" })).toBeEnabled();
+  expect(screen.getByText("Status unknown")).toBeInTheDocument();
 });

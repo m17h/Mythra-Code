@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import type { UsageEvidence } from "../types";
+import type { NativeAgentReadout } from "../lib/nativeAgentLinks";
 import {
   Bot,
   Boxes,
@@ -48,7 +49,8 @@ import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { contextUsagePercent } from "../lib/contextUsage";
 import { parseDiffSections, type ReviewDiff } from "../lib/gitDiff";
 import type { StudioTab } from "../lib/studioTabs";
-import { agentStatusLabel, mcpServerConnected, mcpStatusLabel, worktreeStatusLabel } from "../lib/statusLabels";
+import { mcpServerConnected, mcpStatusLabel, worktreeStatusLabel } from "../lib/statusLabels";
+import { isActiveAgentRecord, subAgentStatusLabel, workerStatusFromAgentRecord } from "../lib/subAgentActivity";
 import {
   checkpointIsRestorable,
   checkpointStatusLabel,
@@ -62,11 +64,19 @@ import type { AccountUsageView } from "../lib/providerUsage";
 
 export type { StudioTab } from "../lib/studioTabs";
 
-export interface AgentRecord {
+export interface AgentRecord extends NativeAgentReadout {
   id: string;
   prompt: string;
   status: string;
   path?: string;
+  provider?: import("../types").Provider;
+  model?: string;
+  runtime?: "codex" | "claude";
+  createdAt?: number;
+  rootTurnId?: string;
+  /** Native operation identity distinguishes reactivation while turn IDs lag. */
+  canOpen?: boolean;
+  canStop?: boolean;
 }
 
 export interface AttachmentRecord {
@@ -446,8 +456,17 @@ export function StudioDock(props: {
 
         {props.tab === "agents" && <>
           <PanelHeader icon={UsersRound} title="Agent control" subtitle="Direct children and delegated work" onClose={props.onClose} />
-          <div className="metric-grid"><div><strong>{props.agents.length}</strong><span>Observed</span></div><div><strong>{props.agents.filter((a) => a.status === "inProgress" || a.status === "started").length}</strong><span>Active</span></div></div>
-          <div className="studio-list">{props.agents.length ? props.agents.map((agent) => <div className="studio-list-row" key={agent.id}><span className={`status-orb ${agent.status}`} /><div><strong>{agent.prompt || "Delegated task"}</strong><small>{agentStatusLabel(agent.status)} · {agent.id.slice(0, 8)}</small></div><button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button><button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button></div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
+          <div className="metric-grid"><div><strong>{props.agents.length}</strong><span>Observed</span></div><div><strong>{props.agents.filter((agent) => isActiveAgentRecord(agent.status)).length}</strong><span>Active</span></div></div>
+          <div className="studio-list">{props.agents.length ? props.agents.map((agent) => <div className="studio-list-row" key={agent.id}>
+            <span className={`status-orb ${agent.status}`} /><div><strong>{agent.prompt || "Delegated task"}</strong>
+              <small>{subAgentStatusLabel(workerStatusFromAgentRecord(agent.status))} · {agent.id.slice(0, 8)}</small>
+              {agent.runtime && <small>{agent.provider === "claude" ? "Claude" : "OpenAI"} · {agent.model ? `${agent.modelSource === "configured" ? "Configured model" : "Reported model"}: ${agent.model}` : "Model: provider managed / unknown"}{agent.requestedModel ? ` · Requested: ${agent.requestedModel}` : ""}</small>}
+              {(agent.task || agent.progress || agent.result) && <details><summary>Task and reported progress</summary>
+                {agent.task && <div><small>Assigned task</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.task}</p></div>}
+                {agent.progress && <div><small>Latest reported progress</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.progress}</p></div>}
+                {agent.result && <div><small>Reported result</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.result}</p></div>}
+              </details>}
+            </div>{agent.canOpen !== false && agent.runtime !== "claude" && <button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button>}{agent.canStop !== false && agent.runtime !== "claude" && isActiveAgentRecord(agent.status) && <button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button>}</div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
         </>}
 
         {props.tab === "terminal" && <>

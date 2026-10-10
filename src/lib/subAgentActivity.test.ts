@@ -56,11 +56,15 @@ describe("workerStatusFromAgentRecord", () => {
     expect(workerStatusFromAgentRecord("completed")).toBe("completed");
     expect(workerStatusFromAgentRecord("interrupted")).toBe("cancelled");
     expect(workerStatusFromAgentRecord("failed")).toBe("failed");
+    expect(workerStatusFromAgentRecord("errored")).toBe("failed");
+    expect(workerStatusFromAgentRecord("notFound")).toBe("failed");
+    expect(workerStatusFromAgentRecord("pendingInit")).toBe("starting");
+    expect(workerStatusFromAgentRecord("shutdown")).toBe("cancelled");
   });
 
-  it("never inflates the live count with an unknown provider word", () => {
-    expect(workerStatusFromAgentRecord("percolating")).toBe("idle");
-    expect(isSubAgentWorkerActive(workerStatusFromAgentRecord("percolating"))).toBe(false);
+  it("retains unknown native status until evidence proves the worker settled", () => {
+    expect(workerStatusFromAgentRecord("percolating")).toBe("unknown");
+    expect(isSubAgentWorkerActive(workerStatusFromAgentRecord("percolating"))).toBe(true);
   });
 });
 
@@ -72,7 +76,7 @@ describe("isActiveAgentRecord", () => {
     (status) => expect(isActiveAgentRecord(status)).toBe(true),
   );
 
-  it.each(["completed", "failed", "cancelled", "interrupted", "something-else"])(
+  it.each(["completed", "failed", "cancelled", "interrupted", "idle"])(
     "treats %s as settled",
     (status) => expect(isActiveAgentRecord(status)).toBe(false),
   );
@@ -149,7 +153,7 @@ describe("collectSubAgentWorkers", () => {
     })]);
   });
 
-  it("gives a native worker the root's own provider and model, and its real task", () => {
+  it("does not claim that a native child used its parent's model", () => {
     const agents: AgentRecord[] = [{ id: "native-1", prompt: "Delegated task", status: "inProgress" }];
     const workers = collectSubAgentWorkers({
       rootThreadId: "root-1",
@@ -166,8 +170,7 @@ describe("collectSubAgentWorkers", () => {
       status: "working",
       title: "Port the parser",
       provider: "openai",
-      model: "gpt-5.6-terra",
-      detail: "OpenAI · gpt-5.6-terra",
+      detail: "OpenAI · provider managed",
       createdAt: 4_000,
     })]);
   });
@@ -182,7 +185,50 @@ describe("collectSubAgentWorkers", () => {
       nativeProvider: "openai",
       nativeModel: "gpt-5.6-terra",
     });
-    expect(workers[0].detail).toBe("OpenAI · gpt-5.6-terra · /managed/worktrees/native-1");
+    expect(workers[0].detail).toBe("OpenAI · provider managed · /managed/worktrees/native-1");
+  });
+
+  it("restores the entire native descendant roster with unknown status and real model evidence", () => {
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", links: {}, statuses: {}, agents: [], nativeProvider: "openai", nativeLinks: {
+      child: { childThreadId: "child", rootThreadId: "root", title: "Review", model: "actual-child", runtime: "codex", createdAt: 1 },
+      nested: { childThreadId: "nested", rootThreadId: "child", title: "Investigate", runtime: "codex", createdAt: 2 },
+    } });
+    expect(workers).toHaveLength(2);
+    expect(workers.find((worker) => worker.id === "child")).toMatchObject({ model: "actual-child", status: "unknown" });
+    expect(summarizeSubAgentWorkers(workers).active).toBe(2);
+  });
+
+  it("restores bounded task/progress/result readout without inventing an actual model", () => {
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", links: {}, statuses: {}, agents: [], nativeProvider: "openai", nativeModel: "parent-model", nativeLinks: {
+      child: { childThreadId: "child", rootThreadId: "root", title: "Review", task: "Actual assignment", progress: "Inspecting adapters", result: "Failure details", requestedModel: "requested-child", runtime: "codex", status: "failed", createdAt: 1 },
+    } });
+    expect(workers[0]).toMatchObject({ task: "Actual assignment", progress: "Inspecting adapters", result: "Failure details", requestedModel: "requested-child", status: "failed", detail: "OpenAI · provider managed" });
+    expect(workers[0].model).toBeUndefined();
+  });
+
+  it("keeps native activation identity through restoration and prefers a newer live activation", () => {
+    const input = { rootThreadId: "root", links: {}, statuses: {}, nativeLinks: {
+      child: { childThreadId: "child", rootThreadId: "root", title: "Review", createdAt: 1, activationId: "saved-operation" },
+    } };
+    expect(collectSubAgentWorkers({ ...input, agents: [] })[0].activationId).toBe("saved-operation");
+    expect(collectSubAgentWorkers({ ...input, agents: [{ id: "child", prompt: "Review", status: "running", activationId: "new-operation" }] })[0].activationId).toBe("new-operation");
+    expect(collectSubAgentWorkers({ ...input, agents: [{ id: "child", prompt: "Review", status: "running" }] })[0].activationId).toBe("saved-operation");
+  });
+
+  it("does not resurrect prior durable execution evidence after the live activation explicitly clears it", () => {
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", links: {}, statuses: {}, nativeLinks: {
+      child: { childThreadId: "child", rootThreadId: "root", title: "Review", createdAt: 1, activationId: "old", model: "old-executed", modelSource: "execution", requestedModel: "old-requested", progress: "Old progress", result: "Old result" },
+    }, agents: [{ id: "child", prompt: "Fresh task", status: "starting", activationId: "new", model: "", requestedModel: "", progress: "", result: "" }] });
+    expect(workers[0]).toMatchObject({ activationId: "new", requestedModel: "", progress: "", result: "" });
+    expect(workers[0].model).toBeUndefined();
+    expect(workers[0].modelSource).toBeUndefined();
+  });
+
+  it("does not offer fake Claude child sessions or independent cutoff", () => {
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", links: {}, statuses: {}, agents: [
+      { id: "claude-native:root:tool", prompt: "Review", status: "running", runtime: "claude", provider: "claude", model: "actual-model" },
+    ] });
+    expect(workers[0]).toMatchObject({ detail: "Claude · actual-model", canOpen: false, canStop: false });
   });
 
   it("never lists the root thread as one of its own workers", () => {

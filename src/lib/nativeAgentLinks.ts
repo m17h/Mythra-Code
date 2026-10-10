@@ -1,12 +1,42 @@
-import type { Thread } from "../types";
+import type { Provider, Thread } from "../types";
+
+/** Bounded provider evidence; never infer progress, results or execution models. */
+export interface NativeAgentReadout {
+  task?: string;
+  requestedModel?: string;
+  modelSource?: "configured" | "execution";
+  progress?: string;
+  result?: string;
+  activationId?: string;
+  /** Ephemeral receipt evidence, consumed into durable createdAt by App.
+   * Activation replay/turn guards use activationId and actual child turn IDs. */
+  activatedAt?: number;
+  /** Ephemeral provenance for enriching a lifecycle-first Codex spawn. */
+  lifecycleTurnId?: string;
+}
+
+export function boundedNativeText(value: unknown, kind: "task" | "progress" | "result"): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const text = value.trim();
+  const limit = kind === "progress" ? 8000 : 12000;
+  return text.length <= limit ? text : kind === "task" ? `${text.slice(0, limit)}…` : `…${text.slice(-limit)}`;
+}
 
 /** Durable ownership for provider-native children (Codex collaboration agents). */
-export interface NativeAgentLink {
+export interface NativeAgentLink extends NativeAgentReadout {
   childThreadId: string;
   rootThreadId: string;
   title: string;
   path?: string;
   createdAt: number;
+  provider?: Provider;
+  model?: string;
+  /** Claude children execute inside the root process, not separate app sessions. */
+  runtime?: "codex" | "claude";
+  status?: string;
+  finishedAt?: number;
+  /** Exact root-process turn that owns a synthetic Claude child. */
+  rootTurnId?: string;
 }
 
 /**
@@ -49,6 +79,33 @@ export function canOwnThread(links: OwnershipLinks, rootThreadId: string, childT
   return !links[rootThreadId];
 }
 
+/** Native V2 descendants may nest, but cannot change owner or form a cycle. */
+export function canOwnNativeThread(links: OwnershipLinks, parentThreadId: string, childThreadId: string): boolean {
+  if (!parentThreadId || !childThreadId || parentThreadId === childThreadId) return false;
+  if (links[childThreadId] && links[childThreadId].rootThreadId !== parentThreadId) return false;
+  const seen = new Set([childThreadId]);
+  let current = parentThreadId;
+  while (current) {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    current = links[current]?.rootThreadId ?? "";
+  }
+  return true;
+}
+
+export function nativeDescendantIds(links: OwnershipLinks, rootThreadId: string): string[] {
+  const descendants = new Set<string>();
+  const parents = [rootThreadId];
+  for (let index = 0; index < parents.length; index += 1) {
+    for (const [id, link] of Object.entries(links)) {
+      if (id === rootThreadId || descendants.has(id) || link.rootThreadId !== parents[index]) continue;
+      descendants.add(id);
+      parents.push(id);
+    }
+  }
+  return [...descendants];
+}
+
 export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeAgentLink> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const result: Record<string, NativeAgentLink> = {};
@@ -61,13 +118,27 @@ export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeA
     // Hand-edited or partially written storage can contain a cycle. Accepting
     // entries against what has already been accepted keeps the restored graph
     // acyclic instead of trusting whatever order the file happened to hold.
-    if (!canOwnThread(result, rootThreadId, childThreadId)) continue;
+    if (!canOwnNativeThread(result, rootThreadId, childThreadId)) continue;
     result[key] = {
       childThreadId,
       rootThreadId,
       title: typeof link.title === "string" && link.title.trim() ? link.title.trim() : "Delegated task",
       ...(typeof link.path === "string" && link.path.trim() ? { path: link.path.trim() } : {}),
       createdAt: Number.isFinite(link.createdAt) && Number(link.createdAt) > 0 ? Number(link.createdAt) : Date.now(),
+      ...(link.provider && ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(link.provider) ? { provider: link.provider } : {}),
+      // An explicit empty model is a cleared-activation evidence marker; do
+      // not drop it on reload and later refill it from cached thread metadata.
+      ...(typeof link.model === "string" ? { model: link.model.trim() } : {}),
+      ...(link.runtime === "codex" || link.runtime === "claude" ? { runtime: link.runtime } : {}),
+      ...(typeof link.status === "string" ? { status: link.status } : {}),
+      ...(Number.isFinite(link.finishedAt) && Number(link.finishedAt) > 0 ? { finishedAt: Number(link.finishedAt) } : {}),
+      ...(typeof link.rootTurnId === "string" && link.rootTurnId ? { rootTurnId: link.rootTurnId } : {}),
+      ...(boundedNativeText(link.task, "task") ? { task: boundedNativeText(link.task, "task") } : {}),
+      ...(boundedNativeText(link.progress, "progress") ? { progress: boundedNativeText(link.progress, "progress") } : {}),
+      ...(boundedNativeText(link.result, "result") ? { result: boundedNativeText(link.result, "result") } : {}),
+      ...(typeof link.requestedModel === "string" ? { requestedModel: link.requestedModel.trim() } : {}),
+      ...(link.modelSource === "configured" || link.modelSource === "execution" ? { modelSource: link.modelSource } : {}),
+      ...(typeof link.activationId === "string" && link.activationId ? { activationId: link.activationId } : {}),
     };
   }
   return result;
@@ -81,6 +152,7 @@ export function nativeAgentLinkFromThread(thread: Thread): NativeAgentLink | nul
     title: thread.agentNickname || thread.agentRole || thread.preview || "Delegated task",
     ...(thread.agentPath ? { path: thread.agentPath } : {}),
     createdAt: Math.max(1, thread.updatedAt * 1000),
+    ...(thread.model ? { model: thread.model, modelSource: "configured" as const } : {}),
   };
 }
 

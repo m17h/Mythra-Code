@@ -207,6 +207,16 @@ describe("thread sidebar list", () => {
     expect(filterThreadsByKind([main], {}, "subagents")).toEqual([]);
   });
 
+  it("keeps an intermediate native child in the child inbox when it owns descendants", () => {
+    const root = makeThread("root");
+    const child = makeThread("child", { parentThreadId: "root", threadSource: "subagent" });
+    const descendant = makeThread("descendant", { parentThreadId: "child", threadSource: "subagent" });
+    const graph = { child: { rootThreadId: "root" }, descendant: { rootThreadId: "child" } };
+    expect(filterThreadsByKind([root, child, descendant], graph, "main")).toEqual([root]);
+    expect(filterThreadsByKind([root, child, descendant], graph, "subagents")).toEqual([child, descendant]);
+    expect(repairRootThreadMetadata(child, graph)).toBe(child);
+  });
+
   it("strips poisoned child metadata from a proven root before its last link disappears", () => {
     const poisoned = makeThread("main", {
       parentThreadId: "child",

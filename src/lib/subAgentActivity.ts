@@ -1,5 +1,5 @@
 import { childAgentModel, childLifecycleForLink, providerDisplayName, type ChildAgentLink } from "./childAgents";
-import type { NativeAgentLink } from "./nativeAgentLinks";
+import { nativeDescendantIds, type NativeAgentLink, type NativeAgentReadout } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
 import type { Provider } from "../types";
@@ -20,7 +20,7 @@ export type SubAgentWorkerStatus = "unknown" | "idle" | "starting" | "working" |
 
 export type SubAgentWorkerKind = "cross-provider" | "native";
 
-export interface SubAgentWorker {
+export interface SubAgentWorker extends NativeAgentReadout {
   /** Child thread id for cross-provider work; the runtime agent id otherwise. */
   id: string;
   kind: SubAgentWorkerKind;
@@ -35,6 +35,8 @@ export interface SubAgentWorker {
   detail: string;
   createdAt: number;
   finishedAt?: number;
+  canOpen?: boolean;
+  canStop?: boolean;
 }
 
 export interface SubAgentCounts {
@@ -48,7 +50,7 @@ export interface SubAgentCounts {
   failed: number;
 }
 
-const ACTIVE_STATUSES: SubAgentWorkerStatus[] = ["starting", "working"];
+const ACTIVE_STATUSES: SubAgentWorkerStatus[] = ["starting", "working", "unknown"];
 
 /** Terminal workers settle to the bottom; live ones stay in view. */
 const STATUS_ORDER: Record<SubAgentWorkerStatus, number> = {
@@ -79,21 +81,22 @@ export function workerStatusFromLifecycle(lifecycle: string): SubAgentWorkerStat
 
 /**
  * Native agent records carry whatever word their provider chose. Unknown
- * values settle to idle instead of being guessed into an active state, so a
- * renamed provider status can never inflate the live count.
+ * values remain unknown and hold the safety boundary until runtime evidence
+ * proves the child settled.
  */
 export function workerStatusFromAgentRecord(status: string): SubAgentWorkerStatus {
   const value = status.trim().toLowerCase();
-  if (value === "starting" || value === "pending" || value === "queued") return "starting";
+  if (value === "starting" || value === "pending" || value === "queued" || value === "pendinginit") return "starting";
   if (value === "started" || value === "running" || value === "working" || value === "interacted" || value === "inprogress") return "working";
   if (value === "completed" || value === "complete" || value === "done" || value === "success" || value === "succeeded") {
     return "completed";
   }
-  if (value === "interrupted" || value === "cancelled" || value === "canceled" || value === "aborted" || value === "stopped") {
+  if (value === "interrupted" || value === "cancelled" || value === "canceled" || value === "aborted" || value === "stopped" || value === "shutdown") {
     return "cancelled";
   }
-  if (value === "failed" || value === "failure" || value === "error") return "failed";
-  return "idle";
+  if (value === "failed" || value === "failure" || value === "error" || value === "errored" || value === "notfound") return "failed";
+  if (value === "idle") return "idle";
+  return "unknown";
 }
 
 /**
@@ -137,8 +140,7 @@ export interface SubAgentWorkerInput {
   /** Durable ownership for provider-native children, which carries the task
    * title and spawn time their bare agent records do not. */
   nativeLinks?: Record<string, NativeAgentLink>;
-  /** A native child runs inside the root's own provider, so the root's
-   * provider and model are what the row should name. */
+  /** Fallback provider only; a parent's model is never child model evidence. */
   nativeProvider?: Provider;
   nativeModel?: string;
 }
@@ -188,15 +190,25 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
     });
   }
 
-  for (const agent of input.agents) {
+  const nativeIds = nativeDescendantIds(input.nativeLinks ?? {}, rootThreadId);
+  const records = new Map(input.agents.map((agent) => [agent.id, agent]));
+  for (const id of nativeIds) {
+    if (records.has(id)) continue;
+    const link = input.nativeLinks![id];
+    records.set(id, { ...link, id, prompt: link.title, status: link.status ?? "unknown" });
+  }
+  for (const agent of records.values()) {
     if (owned.has(agent.id) || agent.id === rootThreadId) continue;
     // A bare native record is only an id and a status word. The durable link
     // Mythra Code wrote when it discovered this child carries the actual task and
     // when it started, so a native row reads as informatively as an owned one.
     const nativeLink = input.nativeLinks?.[agent.id];
-    const model = input.nativeModel?.trim();
-    const providerLabel = input.nativeProvider
-      ? `${providerDisplayName(input.nativeProvider)} · ${model || "provider default"}`
+    const provider = agent.provider ?? nativeLink?.provider ?? input.nativeProvider;
+    // Empty is an explicit new-activation clear, not missing metadata. Do not
+    // resurrect an old execution model from the durable fallback during it.
+    const model = agent.model !== undefined ? agent.model.trim() : nativeLink?.model?.trim();
+    const providerLabel = provider
+      ? `${providerDisplayName(provider)} · ${model || "provider managed"}`
       : "Same provider as this thread";
     // `agent.path` is a worktree location for a native child but a
     // provider/model summary for a mirrored cross-provider one. Only the
@@ -206,16 +218,31 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       : agent.path
         ? `${providerLabel} · ${agent.path}`
         : providerLabel;
+    const childStatus = input.statuses[agent.id];
+    const status = childStatus && childStatus !== "idle"
+      ? workerStatusFromLifecycle(childStatus === "error" ? "failed" : childStatus === "interrupted" ? "cancelled" : childStatus)
+      : workerStatusFromAgentRecord(agent.status);
+    if (input.runStartedAt !== undefined && nativeLink && nativeLink.createdAt < input.runStartedAt && !isSubAgentWorkerActive(status)) continue;
+    const claudeNative = (agent.runtime ?? nativeLink?.runtime) === "claude";
     workers.push({
       id: agent.id,
       kind: "native",
-      status: workerStatusFromAgentRecord(agent.status),
+      status,
       title: decodeHtmlEntities(nativeLink?.title || agent.prompt || "Delegated task"),
-      ...(input.nativeProvider ? { provider: input.nativeProvider } : {}),
+      ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
+      task: agent.task ?? nativeLink?.task,
+      requestedModel: agent.requestedModel ?? nativeLink?.requestedModel,
+      modelSource: agent.model === "" ? undefined : agent.modelSource ?? nativeLink?.modelSource,
+      progress: agent.progress ?? nativeLink?.progress,
+      result: agent.result ?? nativeLink?.result,
+      activationId: agent.activationId ?? nativeLink?.activationId,
       detail,
       // Native records carry no timestamp of their own; the durable link does.
-      createdAt: nativeLink?.createdAt ?? 0,
+      createdAt: nativeLink?.createdAt ?? agent.createdAt ?? 0,
+      ...(nativeLink?.finishedAt ? { finishedAt: nativeLink.finishedAt } : {}),
+      canOpen: !claudeNative,
+      canStop: !claudeNative,
     });
   }
 

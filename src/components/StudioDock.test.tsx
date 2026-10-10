@@ -90,6 +90,26 @@ function dockProps(open: boolean): Parameters<typeof StudioDock>[0] {
   };
 }
 
+it("shows only supported child controls and counts unresolved native work as active", () => {
+  const props = dockProps(true);
+  props.tab = "agents";
+  props.agents = [
+    { id: "claude-native:root:tool", prompt: "Claude child", status: "running", runtime: "claude" },
+    { id: "limited-child", prompt: "Restricted child", status: "starting", canOpen: false, canStop: false },
+    { id: "unknown-child", prompt: "Unresolved child", status: "unknown", runtime: "codex" },
+    { id: "settled-child", prompt: "Finished child", status: "completed", runtime: "codex" },
+  ];
+  render(<StudioDock {...props} />);
+  expect(screen.getByText("Active").parentElement).toHaveTextContent("3");
+  expect(screen.queryByRole("button", { name: "Open sub-agent claude-n" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Stop sub-agent claude-n" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Open sub-agent limited-" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Stop sub-agent limited-" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Stop sub-agent unknown-" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Open sub-agent settled-" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Stop sub-agent settled-" })).not.toBeInTheDocument();
+});
+
 describe("StudioDock", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -968,5 +988,16 @@ describe("StudioDock Git routing", () => {
   it("explains that accepting a checkpoint commits, merges and pushes nothing", () => {
     render(<StudioDock {...dockProps(true)} tab="checkpoints" />);
     expect(screen.getByText(/Accept only marks a run as reviewed here; it does not commit, merge, or push anything/)).toBeInTheDocument();
+  });
+
+  it("shows native assignment and reported progress without claiming requested model execution or fake child controls", () => {
+    render(<StudioDock {...dockProps(true)} tab="agents" agents={[{ id: "claude-native:root:tool", prompt: "Audit", status: "running", runtime: "claude", provider: "claude", requestedModel: "haiku", task: "Check the actual ownership graph", progress: "Inspecting adapters", result: "Reported child outcome" }]} />);
+    expect(screen.getByText(/Model: provider managed \/ unknown/)).toHaveTextContent("Requested: haiku");
+    fireEvent.click(screen.getByText("Task and reported progress"));
+    expect(screen.getByText("Check the actual ownership graph")).toBeInTheDocument();
+    expect(screen.getByText("Inspecting adapters")).toBeInTheDocument();
+    expect(screen.getByText("Reported child outcome")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Open sub-agent/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Stop sub-agent/ })).not.toBeInTheDocument();
   });
 });

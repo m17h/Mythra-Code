@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "./appConfig";
 import { resetTaskStore, sanitizeStoredQueuedTurns, storedPendingTimedTurns, useTaskStore } from "./taskStore";
 import {
+  applyNewThreadSnapshot,
   newThreadSnapshot,
   newThreadPromptsForWorkspace,
   resetNewThreadTimedPromptsForTests,
@@ -128,6 +129,48 @@ describe("new-thread timed prompts", () => {
     expect(JSON.stringify(stored)).not.toContain("systemPrompt");
     const restored = sanitizeStoredNewThreadPrompts(stored);
     expect(restored["/tmp/project"][0]).toMatchObject({ text: "first", attachments: [{ path: "/tmp/a.txt" }], snapshot: { provider: "claude" } });
+  });
+
+  it("keeps a timed first prompt's engine and native budget when the live draft changes", () => {
+    const nativeSnapshot = newThreadSnapshot({ ...DEFAULT_SETTINGS, provider: "claude", subagentsEnabled: true, subagentEngine: "native", nativeSubagentMax: 9 }, false);
+    const prompt = useNewThreadTimedPrompts.getState().add({ workspacePath: "/p", workspaceName: "P", text: "native later", attachments: [], deliverAt: NOW + 60_000, snapshot: nativeSnapshot });
+    const stored = JSON.parse(localStorage.getItem("kiwi.newThreadTimedPrompts")!);
+    const restored = sanitizeStoredNewThreadPrompts(stored)["/p"][0];
+    expect(restored.id).toBe(prompt.id);
+    expect(applyNewThreadSnapshot({ ...DEFAULT_SETTINGS, subagentEngine: "mythra", nativeSubagentMax: 2 }, restored.snapshot)).toMatchObject({ provider: "claude", subagentsEnabled: true, subagentEngine: "native", nativeSubagentMax: 9 });
+    const legacy = { ...nativeSnapshot, subagentEngine: undefined, nativeSubagentMax: undefined };
+    expect(applyNewThreadSnapshot(DEFAULT_SETTINGS, legacy)).toMatchObject({ subagentEngine: "mythra", nativeSubagentMax: 6 });
+  });
+
+  it("deeply pins both native providers' options through storage and draft changes", () => {
+    const nativeSubagentOptions = { codex: { model: "gpt-6.1-sol", reasoningEffort: "high" as const, autoCompactTokens: 150_000 }, claude: { model: "claude-haiku-5-5", autoCompactTokens: 200_000 } };
+    const pinned = newThreadSnapshot({ ...DEFAULT_SETTINGS, subagentsEnabled: true, subagentEngine: "native", nativeSubagentOptions }, false);
+    const prompt = useNewThreadTimedPrompts.getState().add({ workspacePath: "/p", workspaceName: "P", text: "later", attachments: [], deliverAt: NOW + 60_000, snapshot: pinned });
+    nativeSubagentOptions.claude.model = "claude-opus-5";
+    pinned.nativeSubagentOptions!.codex!.autoCompactTokens = 300_000;
+    const restored = sanitizeStoredNewThreadPrompts({ "/p": [prompt] })["/p"][0];
+    expect(applyNewThreadSnapshot({ ...DEFAULT_SETTINGS, nativeSubagentOptions: { codex: { model: "different" } } }, restored.snapshot).nativeSubagentOptions).toEqual({ codex: { model: "gpt-6.1-sol", reasoningEffort: "high", autoCompactTokens: 150_000 }, claude: { model: "claude-haiku-5-5", autoCompactTokens: 200_000 } });
+    expect(applyNewThreadSnapshot({ ...DEFAULT_SETTINGS, nativeSubagentOptions }, { ...pinned, nativeSubagentOptions: undefined }).nativeSubagentOptions).toBeUndefined();
+  });
+
+  it("pins the parent window independently of native child windows and clears omission on restoration", () => {
+    const pinned = newThreadSnapshot({ ...DEFAULT_SETTINGS, autoCompactTokens: 1_000_000, nativeSubagentOptions: { claude: { autoCompactTokens: 100_000 } } }, false);
+    const prompt = useNewThreadTimedPrompts.getState().add({ workspacePath: "/p", workspaceName: "P", text: "later", attachments: [], deliverAt: NOW + 60_000, snapshot: pinned });
+    pinned.autoCompactTokens = 200_000;
+    const restored = sanitizeStoredNewThreadPrompts(JSON.parse(JSON.stringify({ "/p": [prompt] })))["/p"][0];
+    expect(applyNewThreadSnapshot({ ...DEFAULT_SETTINGS, autoCompactTokens: 100_000 }, restored.snapshot)).toMatchObject({ autoCompactTokens: 1_000_000, nativeSubagentOptions: { claude: { autoCompactTokens: 100_000 } } });
+    expect(applyNewThreadSnapshot({ ...DEFAULT_SETTINGS, autoCompactTokens: 1_000_000 }, { ...restored.snapshot, autoCompactTokens: undefined }).autoCompactTokens).toBeUndefined();
+    const invalid = sanitizeStoredNewThreadPrompts({ "/p": [{ ...prompt, snapshot: { ...prompt.snapshot, autoCompactTokens: "100000" } }] })["/p"][0];
+    expect(invalid.snapshot.autoCompactTokens).toBe(0);
+    expect(applyNewThreadSnapshot(DEFAULT_SETTINGS, invalid.snapshot).autoCompactTokens).toBe(0);
+  });
+
+  it("disables malformed active scheduled native preferences before sanitation removes them", () => {
+    const malformed = newThreadSnapshot({ ...DEFAULT_SETTINGS, provider: "openai", subagentsEnabled: true, subagentEngine: "native", nativeSubagentOptions: { codex: { autoCompactTokens: 99_999 } } }, false);
+    expect(malformed.subagentsEnabled).toBe(false);
+    const valid = newThreadSnapshot({ ...DEFAULT_SETTINGS, provider: "openai", subagentsEnabled: true, subagentEngine: "native" }, false);
+    const restored = sanitizeStoredNewThreadPrompts({ "/p": [{ id: "invalid-native", text: "later", status: "queued", deliverAt: NOW + 60_000, snapshot: { ...valid, nativeSubagentOptions: { codex: { autoCompactTokens: 99_999 } } } }] });
+    expect(restored["/p"][0].snapshot).toMatchObject({ subagentsEnabled: false, subagentEngine: "native" });
   });
 
   it("drops restored first prompts without a time or provider snapshot", () => {

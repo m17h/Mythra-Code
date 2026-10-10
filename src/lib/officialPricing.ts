@@ -23,8 +23,12 @@ export interface OfficialRate {
   /** Cursor's "Provider" column. */
   vendor?: string;
   status?: "retired" | "limited";
+  /** Explicitly published standard long-context rates; never used to replace
+   * the ledger's short-context rate. */
+  longContext?: Omit<OfficialRate, "longContext" | "name" | "vendor" | "status">;
+  longContextThresholdTokens?: number;
 }
-export type OfficialPricingResult = { ok: true; models: Record<string, OfficialRate>; skipped?: number } | { ok: false; error: string };
+export type OfficialPricingResult = { ok: true; models: Record<string, OfficialRate>; catalogModels?: Record<string, OfficialRate>; skipped?: number } | { ok: false; error: string };
 interface SourceState {
   /** Last attempt, successful or not. */
   checkedAt?: number;
@@ -34,10 +38,17 @@ interface SourceState {
   lastModelCount?: number;
   /** Why the last attempt failed; cleared by a successful one. */
   error?: string;
+  /** Exact last successful listing for the settings catalog. The ledger
+   * deliberately retains older removed rows for historical usage. */
+  catalog?: Record<string, OfficialRate>;
 }
 export interface OfficialPricingStatus extends SourceState {
   source: OfficialPricingSource;
   checking: boolean;
+  /** Saved provenance stays intact when the clock moves backward. These
+   * flags prevent future timestamps from attesting present freshness. */
+  verificationTimeUncertain: boolean;
+  checkedTimeUncertain: boolean;
   /** Models the page listed at its last successful check. */
   models: number;
 }
@@ -49,25 +60,119 @@ const CURSOR_NOTE = "Cursor list price. Cursor doesn’t report cache writes, an
 let checking = false;
 
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
-const timestamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+const timestamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 8.64e15 ? value : undefined;
+/** Allow minor device-clock drift; larger forward timestamps require another
+ * observation, without clamping or rewriting retained rate evidence. */
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
+const timestampAhead = (at: number | undefined, now: number) => at !== undefined && at > now + CLOCK_SKEW_TOLERANCE_MS;
+// These published Claude 3 names have a different canonical API-id order.
+// Keep the bounded mapping in the display catalog; usage pricing retains its
+// existing model scope. Source:
+// https://platform.claude.com/docs/en/about-claude/model-deprecations
+const LEGACY_CLAUDE_IDS: Readonly<Record<string, string>> = {
+  "Claude Haiku 3.5": "claude-3-5-haiku", "Claude Haiku 3": "claude-3-haiku",
+  "Claude Sonnet 3.7": "claude-3-7-sonnet", "Claude Sonnet 3.5": "claude-3-5-sonnet",
+  "Claude Sonnet 3": "claude-3-sonnet", "Claude Opus 3": "claude-3-opus",
+};
+const isLegacyClaudeId = (id: string) => Object.values(LEGACY_CLAUDE_IDS).includes(id);
+export const isAnthropicPricingModelId = (id: string) => /^claude-[a-z]+-\d+(?:-\d+)?$/.test(id) || isLegacyClaudeId(id);
 
 /** The stored snapshot, re-validated: rates through the ledger's own catalog
  * validator (the same one it prices from), source states field by field. */
 function readStore(): { models: Record<string, ModelPricingCatalogEntry>; sources: Partial<Record<OfficialPricingSource, SourceState>>; epochs: Record<string, RateEpoch[]> } {
-  const raw = loadStored<{ sources?: Record<string, Record<string, unknown>>; epochs?: unknown } | null>(OFFICIAL_PRICING_KEY, null);
+  const raw = loadStored<{ schemaVersion?: unknown; updatedAt?: unknown; models?: unknown; sources?: Record<string, Record<string, unknown>>; epochs?: unknown } | null>(OFFICIAL_PRICING_KEY, null);
   const sources: Partial<Record<OfficialPricingSource, SourceState>> = {};
+  // Source metadata cannot attest a listing from a corrupt or unknown schema.
+  // Empty model dictionaries remain valid for catalog-only rows or failures.
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.schemaVersion !== 1
+    || typeof raw.updatedAt !== "string" || !Number.isFinite(Date.parse(raw.updatedAt))
+    || !raw.models || typeof raw.models !== "object" || Array.isArray(raw.models)) return { models: {}, sources, epochs: {} };
   for (const source of OFFICIAL_PRICING_SOURCES) {
     const state = raw?.sources?.[source];
     if (!state || typeof state !== "object") continue;
+    const verifiedAt = timestamp(state.verifiedAt);
+    const parsedCatalog = verifiedAt ? validatedRateSnapshot(state.catalog, dayOf(verifiedAt)) : undefined;
+    const idsValid = parsedCatalog && Object.keys(parsedCatalog).every((id) => source === "openai"
+      ? /^[a-z0-9][a-z0-9.-]{0,79}(?:@(fast|flex|batch|ultrafast))?$/.test(id)
+      : source === "anthropic" ? isAnthropicPricingModelId(id) : true);
+    const catalog = idsValid ? parsedCatalog : undefined;
     sources[source] = {
       checkedAt: timestamp(state.checkedAt),
-      verifiedAt: timestamp(state.verifiedAt),
+      verifiedAt,
       ...(typeof state.lastModelCount === "number" && Number.isSafeInteger(state.lastModelCount)
         && state.lastModelCount >= 0 && state.lastModelCount <= MAX_ROWS ? { lastModelCount: state.lastModelCount } : {}),
       ...(typeof state.error === "string" ? { error: state.error.slice(0, 240) } : {}),
+      // A corrupt new-format listing must not silently fall back to older,
+      // deliberately retained historical ledger rows.
+      ...(state.catalog !== undefined ? { catalog: catalog ?? {} } : {}),
+      ...(state.catalog !== undefined && !catalog ? { error: "Stored pricing listing is invalid; refresh to read the official prices." } : {}),
     };
   }
   return { models: parseModelPricingCatalog(raw, true)?.models ?? {}, sources, epochs: parseRateEpochs(raw?.epochs) };
+}
+
+/** Revalidate persisted display snapshots independently of their successful
+ * download. Invalid cache values cannot become free prices or fresh evidence. */
+function validatedRateSnapshot(value: unknown, observedDay?: string, depth = 0): Record<string, OfficialRate> | undefined {
+  if (depth > 1) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const rows = Object.entries(value);
+  if (rows.length > MAX_ROWS) return undefined;
+  const models: Record<string, OfficialRate> = {};
+  for (const [id, raw] of rows) {
+    if (!id || id.length > 160 || id === "__proto__" || !raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const rate = raw as Record<string, unknown>;
+    if (rate.serviceTier !== undefined && (typeof rate.serviceTier !== "string"
+      || !["standard", "fast", "flex", "batch", "ultrafast"].includes(rate.serviceTier))) return undefined;
+    if (id.includes("@") ? id.split("@").length !== 2 || id.split("@")[1] !== rate.serviceTier
+      : rate.serviceTier !== undefined && rate.serviceTier !== "standard") return undefined;
+    if (typeof rate.asOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(rate.asOf)
+      || !Number.isFinite(Date.parse(rate.asOf)) || dayOf(Date.parse(rate.asOf)) !== rate.asOf
+      || (observedDay !== undefined && rate.asOf > observedDay)) return undefined;
+    const numeric: Record<string, number> = {};
+    for (const field of ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"] as const) {
+      const amount = rate[field];
+      if (amount === undefined && field !== "input" && field !== "output") continue;
+      if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0 || amount > MAX_RATE) return undefined;
+      numeric[field] = amount;
+    }
+    if ((numeric.cacheRead !== undefined && numeric.cacheRead > numeric.input)
+      || (numeric.cacheWrite !== undefined && numeric.cacheWrite < numeric.input)
+      || (numeric.cacheWrite1h !== undefined && numeric.cacheWrite1h < (numeric.cacheWrite ?? numeric.input))) return undefined;
+    const long = rate.longContext === undefined ? undefined : validatedRateSnapshot({ [id]: rate.longContext }, observedDay, depth + 1);
+    if (rate.longContext !== undefined && !long) return undefined;
+    models[id] = {
+      ...numeric, asOf: rate.asOf,
+      ...(typeof rate.name === "string" && rate.name.length <= 120 ? { name: rate.name } : {}),
+      ...(typeof rate.serviceTier === "string" && ["standard", "fast", "flex", "batch", "ultrafast"].includes(rate.serviceTier) ? { serviceTier: rate.serviceTier } : {}),
+      ...(rate.status === "retired" || rate.status === "limited" ? { status: rate.status } : {}),
+      ...(long ? { longContext: long[id] } : {}),
+      ...(typeof rate.longContextThresholdTokens === "number" && Number.isSafeInteger(rate.longContextThresholdTokens)
+        && rate.longContextThresholdTokens > 0 && rate.longContextThresholdTokens <= 2_000_000
+        ? { longContextThresholdTokens: rate.longContextThresholdTokens } : {}),
+    } as OfficialRate;
+  }
+  return models;
+}
+
+/** Observed official catalog only: no bundled prices or inferred freshness. */
+export function officialPricingSnapshot(source: OfficialPricingSource): Record<string, OfficialRate> {
+  const store = readStore();
+  const state = store.sources[source];
+  if (!state?.verifiedAt) return {};
+  if (state.catalog) return state.catalog;
+  // Existing installations had no exact listing metadata. Keep their dated
+  // standard rates visible until the next successful refresh upgrades them.
+  return validatedRateSnapshot(Object.fromEntries(Object.entries(store.models)
+    .filter(([key]) => key.startsWith(`${PROVIDER_KEY[source]}:`))
+    .map(([key, rate]) => [key.slice(PROVIDER_KEY[source].length + 1), {
+      input: rate.inputPerMillion, output: rate.outputPerMillion, asOf: rate.asOf,
+      ...(rate.cachedInputPerMillion !== undefined ? { cacheRead: rate.cachedInputPerMillion } : {}),
+      ...(rate.cacheWriteInputPerMillion !== undefined ? { cacheWrite: rate.cacheWriteInputPerMillion } : {}),
+      ...(rate.cacheWrite1hInputPerMillion !== undefined ? { cacheWrite1h: rate.cacheWrite1hInputPerMillion } : {}),
+      ...(rate.serviceTier ? { serviceTier: rate.serviceTier } : {}),
+      ...(rate.status ? { status: rate.status } : {}),
+    }])), dayOf(state.verifiedAt)) ?? {};
 }
 
 /**
@@ -113,11 +218,15 @@ function modelsSeenAtLastCheck(source: OfficialPricingSource, store = readStore(
   return Object.entries(store.models).filter(([key, entry]) => key.startsWith(prefix) && !key.includes("@") && entry.asOf === day).length;
 }
 
-export function officialPricingStatus(): OfficialPricingStatus[] {
+export function officialPricingStatus(now = Date.now()): OfficialPricingStatus[] {
   const store = readStore();
   return OFFICIAL_PRICING_SOURCES.map((source) => {
     const state = store.sources[source];
-    return { source, checking, checkedAt: state?.checkedAt, verifiedAt: state?.verifiedAt, error: state?.error, models: modelsSeenAtLastCheck(source, store) };
+    return {
+      source, checking, checkedAt: state?.checkedAt, verifiedAt: state?.verifiedAt, error: state?.error,
+      verificationTimeUncertain: timestampAhead(state?.verifiedAt, now),
+      checkedTimeUncertain: timestampAhead(state?.checkedAt, now), models: modelsSeenAtLastCheck(source, store),
+    };
   });
 }
 
@@ -134,8 +243,12 @@ export function recordOfficialPricingResult(source: OfficialPricingSource, resul
   const models = { ...store.models };
   let epochs = store.epochs;
   if (result.ok) {
-    epochs = observeRates(epochs, prefix, result.models, now);
-    for (const [model, rate] of Object.entries(result.models)) {
+    // This boundary also protects callers recording a parsed Claude page
+    // directly: an explicit prompt band cannot become an all-context estimate.
+    const ledgerModels = source === "anthropic" ? Object.fromEntries(Object.entries(result.models)
+      .filter(([id, rate]) => !isLegacyClaudeId(id) && rate.longContextThresholdTokens === undefined)) : result.models;
+    epochs = observeRates(epochs, prefix, ledgerModels, now);
+    for (const [model, rate] of Object.entries(ledgerModels)) {
       models[`${prefix}${model}`] = {
         inputPerMillion: rate.input, outputPerMillion: rate.output,
         ...(rate.cacheRead !== undefined ? { cachedInputPerMillion: rate.cacheRead } : {}),
@@ -152,7 +265,7 @@ export function recordOfficialPricingResult(source: OfficialPricingSource, resul
     for (const key of Object.keys(epochs)) if (!(key in models)) delete epochs[key];
   }
   const state: SourceState = result.ok
-    ? { checkedAt: now, verifiedAt: now, lastModelCount: Object.keys(result.models).filter((model) => !model.includes("@")).length }
+    ? { checkedAt: now, verifiedAt: now, lastModelCount: Object.keys(result.catalogModels ?? result.models).filter((model) => !model.includes("@")).length, catalog: result.catalogModels ?? result.models }
     : { ...store.sources[source], checkedAt: now, error: result.error.slice(0, 240) };
   storeValue(OFFICIAL_PRICING_KEY, { schemaVersion: 1, updatedAt: new Date(now).toISOString(), models, sources: { ...store.sources, [source]: state }, epochs });
   notifyPricingChanged();
@@ -175,7 +288,7 @@ function setChecking(value: boolean): void {
  * failed source changes nothing, and its last verified rates stay in use.
  * Rows it cannot map to a model id with certainty are skipped rather than
  * guessed. Tier rates come only from their explicitly labelled tables;
- * long-context columns are not yet read.
+ * long-context columns are retained separately for the settings catalog.
  */
 
 const MAX_ROWS = 400;
@@ -317,7 +430,7 @@ const OPENAI_MODEL = /^[a-z0-9][a-z0-9.-]{0,79}$/;
 const OPENAI_CONTEXT_NOTE = /\s*\(<\s*\d+K context length\)$/i;
 
 /** Explicitly labelled tier tables only; never infer one tier from another. */
-export function parseOpenAIPricing(markdown: string, asOf: string): Parsed {
+export function parseOpenAIPricing(markdown: string, asOf: string, options: { includeLongContext?: boolean; includeCatalogDetails?: boolean } = {}): Parsed {
   const table = tableAfter(markdown.split(/\r?\n/), OPENAI_ANCHOR, true);
   if (typeof table === "string") return fail(table);
   if (!headerMatches(table.header, OPENAI_HEADER)) return fail("OpenAI's standard pricing columns changed");
@@ -329,6 +442,66 @@ export function parseOpenAIPricing(markdown: string, asOf: string): Parsed {
     const error = addModel(models, id, { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }, { asOf });
     if (error === "skipped") skipped += 1;
     else if (error) return fail(error);
+    if (options.includeLongContext && models[id]) {
+      const long: Record<string, OfficialRate> = models[id].longContext ? { [id]: models[id].longContext } : {};
+      const longError = addModel(long, id, { input: row[5], cacheRead: row[6], cacheWrite: row[7], output: row[8] }, { asOf });
+      if (longError && longError !== "skipped") return fail(longError);
+      // All dashes mean the provider publishes no separate long-context rate.
+      // A partially published base pair signals a malformed table.
+      if (longError === "skipped" && row.slice(5).some((cell) => !MISSING.has(plainText(cell)))) return fail(`Incomplete long-context rates for ${id}`);
+      if (long[id]) models[id].longContext = long[id];
+    }
+  }
+  if (options.includeCatalogDetails) {
+    const lines = markdown.split(/\r?\n/);
+    for (const [section, endLabel, expected] of [
+      ["Cyber models", "Life sciences models", OPENAI_HEADER],
+      ["Life sciences models", "Multimodal models", ["model", "input", "cached input", "output"]],
+      ["Specialized models", "Fast", ["category", "model", "input", "cached input", "output"]],
+    ] as const) {
+      const starts = lines.flatMap((line, index) => line.trim() === section ? [index] : []);
+      if (!starts.length) continue;
+      if (starts.length !== 1) return fail(`OpenAI's ${section} section appears more than once`);
+      const start = starts[0];
+      const end = lines.findIndex((line, index) => index > start && line.trim() === endLabel);
+      const scoped = lines.slice(start, end < 0 ? undefined : end);
+      if (!scoped.some((line) => line.trim() === "Prices per 1M tokens.")) return fail(`OpenAI's ${section} units changed`);
+      const beforeTable = scoped.slice(0, scoped.findIndex((line) => line.trim() === "### Grouped Pricing Table data"));
+      const tierLabels = beforeTable.map((line) => line.trim()).filter((line) => ["Standard", "Batch", "Fast", "Flex", "Ultrafast"].includes(line));
+      if (section === "Specialized models" ? tierLabels.length !== 1 || tierLabels[0] !== "Standard"
+        : tierLabels.some((label) => label !== "Standard")) return fail(`OpenAI's ${section} Standard label changed`);
+      const extra = tableAfter(scoped, "### Grouped Pricing Table data", true);
+      if (typeof extra === "string") return fail(extra);
+      if (!headerMatches(extra.header, [...expected])) return fail(`OpenAI's ${section} pricing columns changed`);
+      for (const row of extra.rows) {
+        if (section === "Specialized models" && ["Embedding", "Moderation"].includes(plainText(row[0]))) continue;
+        const offset = section === "Specialized models" ? 1 : 0;
+        const id = plainText(row[offset]).replace(OPENAI_CONTEXT_NOTE, "");
+        if (!OPENAI_MODEL.test(id)) { skipped += 1; continue; }
+        const raw = section === "Cyber models"
+          ? { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }
+          : { input: row[offset + 1], cacheRead: row[offset + 2], cacheWrite: "-", output: row[offset + 3] };
+        const error = addModel(models, id, raw, { asOf });
+        if (error === "skipped") skipped += 1;
+        else if (error) return fail(error);
+        if (options.includeLongContext && section === "Cyber models" && models[id]) {
+          const long: Record<string, OfficialRate> = models[id].longContext ? { [id]: models[id].longContext } : {};
+          const error = addModel(long, id, { input: row[5], cacheRead: row[6], cacheWrite: row[7], output: row[8] }, { asOf });
+          if (error && error !== "skipped") return fail(error);
+          if (error === "skipped" && row.slice(5).some((cell) => !MISSING.has(plainText(cell)))) return fail(`Incomplete long-context rates for ${id}`);
+          if (long[id]) models[id].longContext = long[id];
+        }
+      }
+    }
+  }
+  if (options.includeLongContext) {
+    const contextNote = /^Short context: ≤(\d+)K input tokens\. Long context: >(\d+)K input tokens\.$/m.exec(markdown);
+    if (contextNote && contextNote[1] === contextNote[2]) {
+      const threshold = Number(contextNote[1]) * 1_000;
+      if (threshold > 0 && threshold <= 2_000_000) {
+        for (const rate of Object.values(models)) if (rate.longContext) rate.longContextThresholdTokens = threshold;
+      }
+    }
   }
   for (const [tier, label] of [["fast", "Fast"], ["flex", "Flex"], ["batch", "Batch"]] as const) {
     const extra = tableAfter(markdown.split(/\r?\n/), `### ${label} pricing data`, false);
@@ -351,38 +524,61 @@ const ANTHROPIC_HEADER = [
   "model", /^base input( tokens)?$/, /^5m cache writes?$/, /^1h cache writes?$/, /^cache (hits|reads)( and refreshes)?$/, /^output( tokens)?$/,
 ];
 const CLAUDE_NAME = /^Claude ([A-Z][a-z]+) (\d+)(?:\.(\d+))?(?: \(([^()]*)\))?$/;
+const CLAUDE_CONTEXT_NOTE = / \(for prompts (up to|over) ([1-9]\d{0,2}(?:,\d{3})+) tokens\)$/;
 
 /** Maps a published display name to the API id scheme used since Claude 4
  * (`Claude Opus 5.5` → `claude-opus-5-5`). Earlier generations used a
  * different id order, and an unrecognised annotation could mean a different
- * price tier, so both are skipped. */
-export function claudeModelId(name: string): { id: string; status?: OfficialRate["status"] } | null {
-  const match = CLAUDE_NAME.exec(name);
-  if (!match || Number(match[2]) < 4) return null;
+ * price tier. Known older names are included only when the caller requests
+ * the reference catalog, leaving the historical ledger's scope unchanged. */
+export function claudeModelId(name: string, options: { includeCatalogDetails?: boolean } = {}): { id: string; status?: OfficialRate["status"] } | null {
+  const match = CLAUDE_NAME.exec(name.replace(CLAUDE_CONTEXT_NOTE, ""));
+  if (!match) return null;
+  const baseName = name.replace(CLAUDE_CONTEXT_NOTE, "").replace(/ \(.*\)$/, "");
+  const legacyId = options.includeCatalogDetails ? LEGACY_CLAUDE_IDS[baseName] : undefined;
+  if (Number(match[2]) < 4 && !legacyId) return null;
   const note = match[4]?.toLowerCase();
   const status = note === undefined ? undefined : note.startsWith("retired") ? "retired" : note.startsWith("limited") ? "limited" : null;
   if (status === null) return null;
-  return { id: `claude-${match[1].toLowerCase()}-${match[2]}${match[3] ? `-${match[3]}` : ""}`, ...(status ? { status } : {}) };
+  return { id: legacyId ?? `claude-${match[1].toLowerCase()}-${match[2]}${match[3] ? `-${match[3]}` : ""}`, ...(status ? { status } : {}) };
 }
 
 /** Claude's base rates, with both cache-write durations: Claude Code reports
  * how many cache-write tokens used the 1-hour cache. */
-export function parseAnthropicPricing(markdown: string, asOf: string): Parsed {
+export function parseAnthropicPricing(markdown: string, asOf: string, options: { includeCatalogDetails?: boolean } = {}): Parsed {
   const table = tableAfter(markdown.split(/\r?\n/), ANTHROPIC_ANCHOR, true);
   if (typeof table === "string") return fail(table);
   if (!headerMatches(table.header, ANTHROPIC_HEADER)) return fail("Claude's model pricing columns changed");
   const models: Record<string, OfficialRate> = {};
+  const longModels: Record<string, OfficialRate> = {};
+  const shortThresholds = new Map<string, number>();
+  const longThresholds = new Map<string, number>();
   let skipped = 0;
   for (const row of table.rows) {
     const name = plainText(row[0]);
-    const model = claudeModelId(name);
+    const model = claudeModelId(name, options);
     if (!model) { skipped += 1; continue; }
-    const error = addModel(models, model.id, { input: row[1], cacheWrite: row[2], cacheWrite1h: row[3], cacheRead: row[4], output: row[5] }, {
+    const context = CLAUDE_CONTEXT_NOTE.exec(name);
+    const threshold = context ? Number(context[2].replaceAll(",", "")) : undefined;
+    if (threshold !== undefined && threshold > 2_000_000) return fail(`Unexpected context threshold for ${model.id}`);
+    const long = context?.[1] === "over";
+    if (threshold !== undefined) {
+      const thresholds = long ? longThresholds : shortThresholds;
+      if (thresholds.has(model.id) && thresholds.get(model.id) !== threshold) return fail(`Conflicting context thresholds for ${model.id}`);
+      thresholds.set(model.id, threshold);
+    }
+    const error = addModel(long ? longModels : models, model.id, { input: row[1], cacheWrite: row[2], cacheWrite1h: row[3], cacheRead: row[4], output: row[5] }, {
       asOf, name: name.replace(/ \(.*\)$/, ""), ...(model.status ? { status: model.status } : {}),
     });
     if (error === "skipped") skipped += 1;
     else if (error) return fail(error);
   }
+  for (const [id, rate] of Object.entries(longModels)) {
+    if (!models[id] || shortThresholds.get(id) !== longThresholds.get(id)) return fail(`Incomplete context tiers for ${id}`);
+    models[id].longContext = rate;
+    models[id].longContextThresholdTokens = longThresholds.get(id);
+  }
+  for (const id of shortThresholds.keys()) if (!longModels[id]) return fail(`Incomplete context tiers for ${id}`);
   return finish(models, skipped);
 }
 
@@ -416,17 +612,17 @@ export function parseCursorPricing(markdown: string, asOf: string): Parsed {
 }
 
 const PARSERS: Record<OfficialPricingSource, (markdown: string, asOf: string) => Parsed> = {
-  openai: parseOpenAIPricing,
-  anthropic: parseAnthropicPricing,
+  openai: (markdown, asOf) => parseOpenAIPricing(markdown, asOf, { includeLongContext: true, includeCatalogDetails: true }),
+  anthropic: (markdown, asOf) => parseAnthropicPricing(markdown, asOf, { includeCatalogDetails: true }),
   cursor: parseCursorPricing,
 };
 
 /** A page that suddenly lists far fewer models than last time is more likely
  * a truncated or restructured table than a mass retirement. */
-function shrankSuspiciously(source: OfficialPricingSource, result: Parsed): boolean {
+function shrankSuspiciously(source: OfficialPricingSource, result: OfficialPricingResult): boolean {
   if (!result.ok) return false;
   const before = modelsSeenAtLastCheck(source);
-  return before >= 6 && Object.keys(result.models).filter((model) => !model.includes("@")).length < before / 2;
+  return before >= 6 && Object.keys(result.catalogModels ?? result.models).filter((model) => !model.includes("@")).length < before / 2;
 }
 
 export type PricingDocumentFetcher = (source: OfficialPricingSource) => Promise<string>;
@@ -469,7 +665,9 @@ async function run({ force = false, fetchDocument = fetchPricingDocument, now = 
   const due = OFFICIAL_PRICING_SOURCES.filter((source) => {
     if (force) return true;
     const state = sources[source];
-    return !state?.checkedAt || now() - state.checkedAt >= (state.error ? RETRY_FAILED_MS : DAY_MS);
+    const at = now();
+    return !state?.checkedAt || timestampAhead(state.checkedAt, at)
+      || at - state.checkedAt >= (state.error ? RETRY_FAILED_MS : DAY_MS);
   });
   if (!due.length) return { checked: [], failed: [] };
   setChecking(true);
@@ -477,8 +675,20 @@ async function run({ force = false, fetchDocument = fetchPricingDocument, now = 
     const outcomes = await Promise.all(due.map(async (source) => {
       let result: OfficialPricingResult;
       try {
-        const parsed = PARSERS[source](await fetchDocument(source), dayOf(now()));
-        result = shrankSuspiciously(source, parsed) ? { ok: false, error: "Far fewer models than the last check; keeping the previous rates" } : parsed;
+        const document = await fetchDocument(source);
+        const asOf = dayOf(now());
+        const parsed = PARSERS[source](document, asOf);
+        if (!parsed.ok) result = parsed;
+        else {
+          // Settings can show supplementary standard tables and explicit
+          // prompt tiers without changing historical usage billing. Until the
+          // ledger accounts for prompt bands, Haiku 5.5 remains unpriced there.
+          const ledger = source === "openai" ? parseOpenAIPricing(document, asOf)
+            : source === "anthropic" ? { ...parsed, models: Object.fromEntries(Object.entries(parsed.models)
+              .filter(([id, rate]) => !isLegacyClaudeId(id) && rate.longContextThresholdTokens === undefined)) } : parsed;
+          result = ledger.ok ? { ...ledger, catalogModels: parsed.models } : ledger;
+        }
+        if (shrankSuspiciously(source, result)) result = { ok: false, error: "Far fewer models than the last check; keeping the previous rates" };
       } catch (error) {
         result = { ok: false, error: describeFetchError(error) };
       }
