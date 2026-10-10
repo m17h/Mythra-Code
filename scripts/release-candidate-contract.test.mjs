@@ -6,11 +6,26 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPlan } from './release-plan.mjs';
 import { atomicJson, readJson, realPath } from './release-state.mjs';
-import { assertCandidateContract } from './release-candidate-contract.mjs';
+import { assertCandidateContract, WINDOWS_CANDIDATE_PROCESS_COMMAND } from './release-candidate-contract.mjs';
 
 const roots = [];
 const temp = () => { const path = mkdtempSync(join(tmpdir(), 'mythra-candidate-contract-')); roots.push(path); return path; };
 afterEach(() => roots.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })));
+
+test.skipIf(process.platform !== 'win32')('Windows candidate inventory preserves Unicode commands through an OEM console', () => {
+  const command = 'node "C:\\QA\\candidate.mjs" --label “Run game” --name é 漢 🚀';
+  const encoded = Buffer.from(command, 'utf8').toString('base64');
+  const input = `@([pscustomobject]@{ProcessId=123;ParentProcessId=1;CommandLine=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))},[pscustomobject]@{ProcessId=456;ParentProcessId=123;CommandLine=$null})`;
+  // Use the production transport/serializer with harmless input. The child
+  // starts with OEM encoding; production must select UTF-8 before emitting JSON.
+  const script = '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437); '
+    + WINDOWS_CANDIDATE_PROCESS_COMMAND.replace('Get-CimInstance Win32_Process', input);
+  const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' });
+  expect(JSON.parse(output)).toEqual([
+    { ProcessId: 123, ParentProcessId: 1, CommandLine: command },
+    { ProcessId: 456, ParentProcessId: 123, CommandLine: null },
+  ]);
+}, 15_000);
 
 function fixture() {
   const root = temp(), stateRoot = temp();

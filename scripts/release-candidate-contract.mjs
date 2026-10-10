@@ -6,10 +6,15 @@ import { assertPlan, leaseStatus, processIdentity, readJson, realPath } from './
 
 // This authorizes only provisional native packaging. CI remains a mandatory
 // parent of the draft receipt, and no candidate contract is publication proof.
+// OEM best-fit can turn Unicode quotes into unescaped ASCII JSON quotes.
+export const WINDOWS_CANDIDATE_PROCESS_COMMAND =
+  '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); '
+  + 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress';
+
 export function candidateProcesses() {
   if (process.platform === 'win32') {
     const rows = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress'], { encoding: 'utf8' }));
+      WINDOWS_CANDIDATE_PROCESS_COMMAND], { encoding: 'utf8' }));
     return (Array.isArray(rows) ? rows : [rows]).map((p) => ({ pid: p.ProcessId, parentPid: p.ParentProcessId, command: p.CommandLine ?? '' }));
   }
   return execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' }).trim().split('\n').map((row) => {
