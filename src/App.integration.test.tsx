@@ -554,6 +554,14 @@ describe("App pricing request isolation", () => {
       !checking && (verifiedAt ?? 0) > cachedAt && !error && models > 0)).toBe(true));
     expect(pricingCalls().map(([, args]) => args.source)).toEqual(sources);
 
+    // Own the lazy module's readiness before measuring pricing on Settings
+    // open; the cold-loading regressions separately exercise that boundary.
+    const preload = settingsPrewarm.schedule.mock.calls.at(-1)?.[0] as (() => Promise<unknown>) | undefined;
+    expect(preload).toBeTypeOf("function");
+    await act(async () => { await preload!(); });
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(pricingCalls()).toHaveLength(3);
+
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Settings" }));
     const settings = await screen.findByRole("dialog", { name: "Settings" });

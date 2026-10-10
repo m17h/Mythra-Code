@@ -227,9 +227,25 @@ describe("usage calendar", () => {
     expect(getComputedStyle(shown).pointerEvents).toBe("auto");
     const list = within(shown).getByRole("region", { name: /^Providers and models on / });
     expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
-    list.focus();
-    await userEvent.keyboard("{End}");
-    await waitFor(() => expect(list.scrollTop).toBeGreaterThan(0));
+    let endKey: globalThis.KeyboardEvent | undefined;
+    const recordEnd = (event: globalThis.KeyboardEvent) => { if (event.key === "End") endKey = event; };
+    document.addEventListener("keydown", recordEnd, true);
+    try {
+      list.focus();
+      expect(document.activeElement).toBe(list);
+      await userEvent.keyboard("{End}");
+      // Separate lost focus/event delivery from a native scrolling failure.
+      expect(endKey).toBeDefined();
+      expect(endKey!.target).toBe(list);
+      expect(endKey!.isTrusted).toBe(true);
+      expect(endKey!.defaultPrevented).toBe(false);
+      await waitFor(() => expect(list.scrollTop, JSON.stringify({
+        focused: document.activeElement === list,
+        connected: list.isConnected,
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+      })).toBeGreaterThan(0));
+    } finally { document.removeEventListener("keydown", recordEnd, true); }
     await userEvent.keyboard("{Escape}");
     expect(card()).toBeNull();
   });

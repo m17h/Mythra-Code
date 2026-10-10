@@ -16,7 +16,11 @@ const checkpointApi = vi.hoisted(() => ({
   restoreCheckpointSnapshot: vi.fn(),
 }));
 const schedulerApi = vi.hoisted(() => ({ rpc: vi.fn(), auditEvent: vi.fn(async () => undefined) }));
-vi.mock("../lib/codex", () => schedulerApi);
+vi.mock("../lib/codex", () => ({
+  ...schedulerApi,
+  runtimeInstanceId: async () => "checkpoint-fixture-runtime",
+  runtimeThreadState: async () => ({ instance: "checkpoint-fixture-runtime", loaded: false }),
+}));
 vi.mock("../lib/currentLearnedPreferences", () => ({ appendCurrentLearnedPreferences: async (prompt: string) => prompt }));
 
 vi.mock("../lib/checkpoints", async (importOriginal) => ({
@@ -129,7 +133,8 @@ describe("useCheckpoints", () => {
       return checkpoints;
     });
     await waitFor(() => expect(runs).toHaveLength(1));
-    expect(runs[0].status).toBe("failed");
+    expect(runs[0]).toMatchObject({ status: "failed", error: expect.stringContaining("delivery could not be confirmed") });
+    expect(result.current.checkpoints).toHaveLength(1);
     expect(checkpointApi.deleteCheckpointSnapshot).not.toHaveBeenCalled();
     const completion: Promise<void>[] = [];
     const events: CodexEventContext = {
