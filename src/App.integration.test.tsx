@@ -412,6 +412,10 @@ async function renderApp() {
   // be reset after seeding storage for each test.
   vi.resetModules();
   const { default: App } = await import("./App");
+  return renderPreparedApp(App);
+}
+
+async function renderPreparedApp(App: (typeof import("./App"))["default"]) {
   // Own the immediate startup Promise/effect commits before behavioral queries.
   // Deliberately deferred requests stay pending; no thread list is fabricated.
   let view!: ReturnType<typeof render>;
@@ -517,72 +521,86 @@ afterEach(async () => {
 });
 
 describe("App pricing request isolation", () => {
-  it("refreshes official pricing once per native app launch despite a recent cache, and shares manual refresh without checking on settings open", async () => {
-    tauriSurface.enabled = true;
+  describe("native launch fixture", () => {
+    let PreparedApp: (typeof import("./App"))["default"];
+    let cachedAt: number;
     const sources = ["openai", "anthropic", "cursor"] as const;
-    const cachedAt = Date.now() - 1_000;
-    localStorage.setItem("kiwi.officialModelPricing", JSON.stringify({
-      schemaVersion: 1, updatedAt: new Date(cachedAt).toISOString(), models: {},
-      sources: Object.fromEntries(sources.map((source) => [source, {
-        checkedAt: cachedAt, verifiedAt: cachedAt, lastModelCount: 1, catalog: {},
-      }])),
-    }));
-    const pages = { openai: OPENAI_PRICING_PAGE, anthropic: ANTHROPIC_PRICING_PAGE, cursor: CURSOR_PRICING_PAGE };
-    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "fetch_pricing_document") return pages[args?.source as keyof typeof pages];
-      return stubInvoke(command, args);
+
+    beforeEach(async () => {
+      tauriSurface.enabled = true;
+      cachedAt = Date.now() - 1_000;
+      localStorage.setItem("kiwi.officialModelPricing", JSON.stringify({
+        schemaVersion: 1, updatedAt: new Date(cachedAt).toISOString(), models: {},
+        sources: Object.fromEntries(sources.map((source) => [source, {
+          checkedAt: cachedAt, verifiedAt: cachedAt, lastModelCount: 1, catalog: {},
+        }])),
+      }));
+      const pages = { openai: OPENAI_PRICING_PAGE, anthropic: ANTHROPIC_PRICING_PAGE, cursor: CURSOR_PRICING_PAGE };
+      invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+        if (command === "fetch_pricing_document") return pages[args?.source as keyof typeof pages];
+        return stubInvoke(command, args);
+      });
+      // Prepare the first module graph after seeding its exact native/cache
+      // fixture, without mounting or starting a launch. Cold App/Settings
+      // evaluation belongs to setup, not the pricing behavior's five seconds.
+      vi.resetModules();
+      ({ default: PreparedApp } = await import("./App"));
+      await import("./components/SettingsModal");
     });
-    const timers = vi.spyOn(window, "setTimeout");
-    const pricingCalls = () => invokeMock.mock.calls.filter(([command]) => command === "fetch_pricing_document");
-    const fireLaunchCheck = async () => {
-      const launches = timers.mock.calls.map(([callback, delay], index) => ({ callback, delay, index }))
-        .filter(({ delay }) => delay === 6_000);
-      const latest = launches.at(-1)!;
-      expect(typeof latest.callback).toBe("function");
-      // Execute the actual deferred launch callback without waiting six wall
-      // seconds. Cancel its original timer so the fixture cannot double-fire.
-      window.clearTimeout(timers.mock.results[latest.index].value);
-      await act(async () => { (latest.callback as () => void)(); });
-      return launches.length;
-    };
-    const first = await renderApp();
-    const { officialPricingStatus } = await import("./lib/officialPricing");
-    expect(officialPricingStatus().every(({ checkedAt }) => checkedAt === cachedAt)).toBe(true);
-    expect(pricingCalls()).toHaveLength(0);
-    expect(await fireLaunchCheck()).toBe(1);
-    await waitFor(() => expect(officialPricingStatus().every(({ checking, verifiedAt, error, models }) =>
-      !checking && (verifiedAt ?? 0) > cachedAt && !error && models > 0)).toBe(true));
-    expect(pricingCalls().map(([, args]) => args.source)).toEqual(sources);
 
-    // Own the lazy module's readiness before measuring pricing on Settings
-    // open; the cold-loading regressions separately exercise that boundary.
-    const preload = settingsPrewarm.schedule.mock.calls.at(-1)?.[0] as (() => Promise<unknown>) | undefined;
-    expect(preload).toBeTypeOf("function");
-    await act(async () => { await preload!(); });
-    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
-    expect(pricingCalls()).toHaveLength(3);
+    it("refreshes official pricing once per native app launch despite a recent cache, and shares manual refresh without checking on settings open", async () => {
+      const timers = vi.spyOn(window, "setTimeout");
+      const pricingCalls = () => invokeMock.mock.calls.filter(([command]) => command === "fetch_pricing_document");
+      const fireLaunchCheck = async () => {
+        const launches = timers.mock.calls.map(([callback, delay], index) => ({ callback, delay, index }))
+          .filter(({ delay }) => delay === 6_000);
+        const latest = launches.at(-1)!;
+        expect(typeof latest.callback).toBe("function");
+        // Execute the actual deferred launch callback without waiting six wall
+        // seconds. Cancel its original timer so the fixture cannot double-fire.
+        window.clearTimeout(timers.mock.results[latest.index].value);
+        await act(async () => { (latest.callback as () => void)(); });
+        return launches.length;
+      };
+      const first = await renderPreparedApp(PreparedApp);
+      const { officialPricingStatus } = await import("./lib/officialPricing");
+      expect(officialPricingStatus().every(({ checkedAt }) => checkedAt === cachedAt)).toBe(true);
+      expect(pricingCalls()).toHaveLength(0);
+      expect(await fireLaunchCheck()).toBe(1);
+      await waitFor(() => expect(officialPricingStatus().every(({ checking, verifiedAt, error, models }) =>
+        !checking && (verifiedAt ?? 0) > cachedAt && !error && models > 0)).toBe(true));
+      expect(pricingCalls().map(([, args]) => args.source)).toEqual(sources);
 
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Settings" }));
-    const settings = await screen.findByRole("dialog", { name: "Settings" });
-    await user.click(within(settings).getByRole("button", { name: "Model pricing" }));
-    const refresh = await within(settings).findByRole("button", { name: "Refresh prices" });
-    expect(pricingCalls()).toHaveLength(3);
-    expect(timers.mock.calls.filter(([, delay]) => delay === 6_000)).toHaveLength(1);
-    await user.click(refresh);
-    await waitFor(() => expect(pricingCalls()).toHaveLength(6));
-    await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
-    expect(pricingCalls().slice(3).map(([, args]) => args.source)).toEqual(sources);
-    first.unmount();
+      // Own the lazy module's readiness before measuring pricing on Settings
+      // open; the cold-loading regressions separately exercise that boundary.
+      const preload = settingsPrewarm.schedule.mock.calls.at(-1)?.[0] as (() => Promise<unknown>) | undefined;
+      expect(preload).toBeTypeOf("function");
+      await act(async () => { await preload!(); });
+      expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+      expect(pricingCalls()).toHaveLength(3);
 
-    const second = await renderApp();
-    expect(pricingCalls()).toHaveLength(6);
-    expect(await fireLaunchCheck()).toBe(2);
-    const secondPricing = await import("./lib/officialPricing");
-    await waitFor(() => expect(pricingCalls()).toHaveLength(9));
-    await waitFor(() => expect(secondPricing.officialPricingStatus().every(({ checking, error }) => !checking && !error)).toBe(true));
-    expect(pricingCalls().slice(6).map(([, args]) => args.source)).toEqual(sources);
-    second.unmount();
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      const settings = await screen.findByRole("dialog", { name: "Settings" });
+      await user.click(within(settings).getByRole("button", { name: "Model pricing" }));
+      const refresh = await within(settings).findByRole("button", { name: "Refresh prices" });
+      expect(pricingCalls()).toHaveLength(3);
+      expect(timers.mock.calls.filter(([, delay]) => delay === 6_000)).toHaveLength(1);
+      await user.click(refresh);
+      await waitFor(() => expect(pricingCalls()).toHaveLength(6));
+      await waitFor(() => expect(within(settings).getByRole("button", { name: "Refresh prices" })).toBeEnabled());
+      expect(pricingCalls().slice(3).map(([, args]) => args.source)).toEqual(sources);
+      first.unmount();
+
+      const second = await renderApp();
+      expect(pricingCalls()).toHaveLength(6);
+      expect(await fireLaunchCheck()).toBe(2);
+      const secondPricing = await import("./lib/officialPricing");
+      await waitFor(() => expect(pricingCalls()).toHaveLength(9));
+      await waitFor(() => expect(secondPricing.officialPricingStatus().every(({ checking, error }) => !checking && !error)).toBe(true));
+      expect(pricingCalls().slice(6).map(([, args]) => args.source)).toEqual(sources);
+      second.unmount();
+    });
   });
 
   it("settles the real startup refresh with the owned catalog before leaving the fixture", async () => {
