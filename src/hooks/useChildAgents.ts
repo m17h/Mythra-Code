@@ -8,6 +8,7 @@ import {
 } from "../lib/agentBridge";
 import {
   childAgentModel,
+  childAgentAutoCompactIssue,
   childAgentReasoningEffort,
   childAgentTargetIssue,
   childLifecycle,
@@ -36,6 +37,8 @@ import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
 import { MAX_RUN_COMMAND_LENGTH, sanitizeProjectRunCommand } from "../lib/projectRun";
 import { MAX_CHECK_COMMAND_LENGTH, sanitizeProjectCheckCommand } from "../lib/projectChecks";
+import { nativeDescendantIds, type NativeAgentLink } from "../lib/nativeAgentLinks";
+import type { AgentRecord } from "../components/StudioDock";
 import type { PendingApproval, ProjectCheckCommand, ProjectRunCommand, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
 
 /**
@@ -60,6 +63,9 @@ export interface ChildAgentContext {
   /** Bridge sessions keyed by session id, frozen when each root thread started. */
   policies: Record<string, ChildAgentPolicy>;
   links: Record<string, ChildAgentLink>;
+  /** Durable ownership for native children, including nested V2 descendants. */
+  nativeLinks?: Record<string, NativeAgentLink>;
+  persistNativeAgentLinks?: SetPersisted<Record<string, NativeAgentLink>>;
   persistChildAgentLinks: SetPersisted<Record<string, ChildAgentLink>>;
   openRouterModels: OpenRouterModel[];
   lmStudioModels?: LMStudioModel[];
@@ -77,6 +83,8 @@ export interface ChildAgentContext {
   rememberThread: (thread: Thread) => void;
   persistThreadModel: (threadId: string, model: string) => void;
   persistThreadReasoning: (threadId: string, reasoning: ThreadReasoning) => void;
+  /** Capture this child's own context policy for later turns and renderer reloads. */
+  persistThreadAutoCompactTokens?: (threadId: string, tokens?: number) => void;
   setThreads: Dispatch<SetStateAction<Thread[]>>;
   cursorSessionIdsRef: MutableRefObject<Record<string, string>>;
   scheduleClaudeThreadSave: (threadId: string) => void;
@@ -198,23 +206,163 @@ export function waitForChildTerminalStatus(threadId: string, timeoutMs: number):
  * Codex-hosted children are real runtime threads, and `turn/interrupt` is the
  * only cutoff their runtime exposes.
  */
-async function hardStopChild(provider: ChildAgentLink["provider"], childThreadId: string, turnId?: string): Promise<void> {
+async function hardStopChild(provider: ChildAgentLink["provider"], childThreadId: string, turnId?: string): Promise<TaskStatus> {
   if (provider === "claude") {
     await killClaudeTurn(childThreadId);
-    return;
+    return confirmedLocalTerminal(childThreadId) ?? "interrupted";
   }
   if (provider === "cursor") {
     await killCursorTurn(childThreadId);
-    return;
+    return confirmedLocalTerminal(childThreadId) ?? "interrupted";
   }
-  const activeTurnId = turnId ?? useTaskStore.getState().tasks[childThreadId]?.activeTurnId;
-  if (!activeTurnId) throw new Error("That sub-agent does not have an active task to stop.");
-  await rpc("turn/interrupt", { threadId: childThreadId, turnId: activeTurnId });
+  return stopCodexChild(childThreadId, turnId);
 }
 
 function cutoffAlreadySettled(reason: unknown): boolean {
   return /not currently running|no active task|unknown (?:thread|turn)|not found|already (?:finished|stopped|completed)|connection closed/i
     .test(friendlyError(reason));
+}
+
+function confirmedLocalTerminal(threadId: string): TaskStatus | null {
+  const status = useTaskStore.getState().statuses[threadId];
+  return status === "completed" || status === "interrupted" || status === "error" ? status : null;
+}
+
+function confirmedRuntimeTerminal(turn: Awaited<ReturnType<typeof latestCodexTurn>>): TaskStatus | null {
+  return turn?.status === "completed" || turn?.status === "failed" || turn?.status === "interrupted"
+    ? terminalTurnStatus(turn) : null;
+}
+
+/** Interrupt only a known running turn; a stale/absent turn is not a cutoff. */
+async function stopCodexChild(threadId: string, knownTurnId?: string, assertNativeActivation?: () => void): Promise<TaskStatus> {
+  // A resumed native agent can still carry the previous turn's terminal task.
+  // Only a fresh local terminal event or a runtime read proves this turn ended.
+  const initialTask = useTaskStore.getState().tasks[threadId];
+  const freshLocalTerminal = () => {
+    const current = useTaskStore.getState().tasks[threadId];
+    if (!current || current === initialTask) return null;
+    const terminal = confirmedLocalTerminal(threadId);
+    // Roster/usage updates also replace the task object; that cannot make a
+    // previous terminal status evidence of a new completion.
+    return terminal && (current.status !== initialTask?.status
+      || Boolean(initialTask?.activeTurnId && !current.activeTurnId)) ? terminal : null;
+  };
+  const readLatest = async () => {
+    try {
+      return await latestCodexTurn(threadId);
+    } catch (reason) {
+      throw new Error(`Could not confirm the native sub-agent's current turn: ${friendlyError(reason)}`);
+    }
+  };
+  let turnId = knownTurnId ?? useTaskStore.getState().tasks[threadId]?.activeTurnId;
+  let activationTask = initialTask;
+  const assertSameActivation = () => {
+    assertNativeActivation?.();
+    const current = useTaskStore.getState().tasks[threadId];
+    const replacedTurn = Boolean(current?.activeTurnId && current.activeTurnId !== turnId);
+    // Without a local turn ID, any changed active task is uncertain. Native
+    // reactivation always calls setActiveTurn(undefined), which replaces it
+    // even when the repeated status/ID values are unchanged.
+    const clearedForNewActivation = Boolean(current !== activationTask
+      && current && !current.activeTurnId && isChildActive(current.status));
+    if (replacedTurn || clearedForNewActivation) {
+      throw new Error("The native sub-agent started another turn before Stop settled. Its current turn remains active.");
+    }
+  };
+  if (!turnId) {
+    const latest = await readLatest();
+    const discoveredLocalTurn = useTaskStore.getState().tasks[threadId]?.activeTurnId;
+    if (discoveredLocalTurn && discoveredLocalTurn !== latest?.id) {
+      turnId = discoveredLocalTurn;
+    }
+    turnId ??= latest?.status === "inProgress" ? latest.id : undefined;
+    assertSameActivation();
+    const terminal = confirmedRuntimeTerminal(latest);
+    if (!turnId && terminal) {
+      const freshTerminal = freshLocalTerminal();
+      if (freshTerminal) return freshTerminal;
+      const currentTask = useTaskStore.getState().tasks[threadId];
+      if (isChildActive(initialTask?.status ?? "idle") || isChildActive(currentTask?.status ?? "idle")) {
+        throw new Error("Could not confirm the newly active native sub-agent's turn. The runtime only exposed an older terminal turn.");
+      }
+      return terminal;
+    }
+    if (!turnId && (latest?.status !== "inProgress" || !latest.id)) {
+      throw new Error("Could not confirm an active turn for this native sub-agent. Its stop status remains unknown.");
+    }
+    turnId ??= latest?.id;
+  }
+  activationTask = useTaskStore.getState().tasks[threadId];
+  try {
+    await rpc("turn/interrupt", { threadId, turnId });
+  } catch (reason) {
+    assertSameActivation();
+    const terminal = freshLocalTerminal();
+    if (terminal) return terminal;
+    if (cutoffAlreadySettled(reason)) {
+      const latest = await readLatest();
+      assertSameActivation();
+      const settled = confirmedRuntimeTerminal(latest);
+      if (settled && latest?.id === turnId) return settled;
+    }
+    throw new Error(`Could not confirm the native sub-agent stopped: ${friendlyError(reason)}`);
+  }
+  assertSameActivation();
+  const terminal = freshLocalTerminal();
+  if (terminal) return terminal;
+  return "interrupted";
+}
+
+type NativeChild = AgentRecord & { rootThreadId: string };
+
+function assertNativeChildActivation(agent: NativeChild): void {
+  const current = useTaskStore.getState().tasks[agent.rootThreadId]?.agents.find((entry) => entry.id === agent.id);
+  if (current?.activationId !== agent.activationId) {
+    throw new Error("The native sub-agent received another activation before Stop settled. Its current work remains active.");
+  }
+}
+
+/** Include durable descendants even when their conversations are not loaded. */
+function nativeChildrenFor(rootThreadId: string, links: Record<string, NativeAgentLink> = {}): NativeChild[] {
+  const tasks = useTaskStore.getState().tasks;
+  const children = new Map<string, NativeChild>();
+  const parents = [rootThreadId, ...nativeDescendantIds(links, rootThreadId)];
+  const seen = new Set<string>();
+  for (let index = 0; index < parents.length; index += 1) {
+    const parent = parents[index];
+    if (seen.has(parent)) continue;
+    seen.add(parent);
+    const link = links[parent];
+    if (parent !== rootThreadId && link) {
+      children.set(parent, {
+        id: parent, rootThreadId: link.rootThreadId, prompt: link.title,
+        status: link.status ?? "unknown", provider: link.provider, runtime: link.runtime, model: link.model, createdAt: link.createdAt,
+      });
+    }
+    for (const agent of tasks[parent]?.agents ?? []) {
+      if (agent.id === rootThreadId || agent.id === parent) continue;
+      const owner = links[agent.id]?.rootThreadId ?? parent;
+      if (owner !== parent) continue;
+      children.set(agent.id, { ...children.get(agent.id), ...agent, rootThreadId: owner });
+      if (!seen.has(agent.id)) parents.push(agent.id);
+    }
+  }
+  // Prefer hydrated records to durable status, regardless of graph traversal order.
+  return [...children.values()].map((child) => {
+    const hydrated = { ...child, ...tasks[child.rootThreadId]?.agents.find((agent) => agent.id === child.id) };
+    const ownStatus = tasks[child.id]?.status;
+    // A user can reopen and run the child independently of its parent. The
+    // child's current activation outranks a settled parent roster/link.
+    return { ...hydrated, ...(ownStatus && isChildActive(ownStatus) ? { status: ownStatus } : {}), rootThreadId: child.rootThreadId };
+  });
+}
+
+function settleStoppedChild(rootThreadId: string, childThreadId: string, prompt: string, status: TaskStatus): void {
+  const store = useTaskStore.getState();
+  store.setActiveTurn(childThreadId, undefined);
+  store.setTaskStatus(childThreadId, status);
+  const activityStatus = status === "interrupted" ? "cancelled" : status === "error" ? "failed" : "completed";
+  settleChildInParent(rootThreadId, childThreadId, prompt, status, activityStatus);
 }
 
 /**
@@ -232,6 +380,7 @@ function settleChildInParent(
   const store = useTaskStore.getState();
   const existing = store.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
   store.upsertAgent(rootThreadId, {
+    ...existing,
     id: childThreadId,
     prompt,
     status: agentStatus,
@@ -317,6 +466,19 @@ export function useChildAgents(context: ChildAgentContext): {
     return { ...links, ...Object.fromEntries(pendingLinksRef.current) };
   }, []);
 
+  const persistNativeSettlement = useCallback((expected: NativeAgentLink | undefined, status: TaskStatus) => {
+    if (!expected) return;
+    contextRef.current.persistNativeAgentLinks?.((current) => {
+      const latest = current[expected.childThreadId];
+      if (!latest || latest.rootThreadId !== expected.rootThreadId || latest.rootTurnId !== expected.rootTurnId || latest.createdAt !== expected.createdAt
+        || latest.activationId !== expected.activationId || latest.status !== expected.status) return current;
+      return {
+        ...current,
+        [expected.childThreadId]: { ...latest, status, finishedAt: isActiveAgentRecord(expected.status ?? "unknown") ? latest.finishedAt ?? Date.now() : Date.now() },
+      };
+    });
+  }, []);
+
   /** Live child count for a session, counting spawns still settling. */
   const reservedChildCount = useCallback((
     sessionId: string,
@@ -360,6 +522,8 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!target || !target.enabled) {
       throw new Error(`\`${targetId}\` is not an approved destination for this thread.`);
     }
+    const compactionError = childAgentAutoCompactIssue(target);
+    if (compactionError) throw new Error(compactionError);
     const prompt = String(request.arguments.prompt ?? "").trim();
     if (!prompt) throw new Error("`prompt` is required.");
     const title = decodeHtmlEntities(String(request.arguments.title ?? "").trim() || prompt.slice(0, 80));
@@ -445,6 +609,7 @@ export function useChildAgents(context: ChildAgentContext): {
     ctx.setThreads((current) => upsertThread(current, result.thread));
     ctx.persistThreadModel(childThreadId, result.model);
     ctx.persistThreadReasoning(childThreadId, { reasoningEffort, ultra: false });
+    ctx.persistThreadAutoCompactTokens?.(childThreadId, target.autoCompactTokens);
     if (result.cursorSessionId && !result.superseded && (!result.stopped || (result.turnId && cursorTurnCanSettle(childThreadId, result.turnId)))) ctx.cursorSessionIdsRef.current[childThreadId] = result.cursorSessionId;
 
     const taskStore = useTaskStore.getState();
@@ -519,11 +684,10 @@ export function useChildAgents(context: ChildAgentContext): {
     if (stoppedWhileStarting || rootForgotten) {
       try {
         if (isChildActive(taskStatusOf(childThreadId))) {
-          await hardStopChild(target.provider, childThreadId, result.turnId);
-          taskStore.setActiveTurn(childThreadId, undefined);
-          taskStore.setTaskStatus(childThreadId, "interrupted");
-          settleChildInParent(rootThreadId, childThreadId, title, "interrupted", "cancelled");
-          const interrupted = { ...link, terminalStatus: "cancelled" as const, finishedAt: Date.now() };
+          const status = await hardStopChild(target.provider, childThreadId, result.turnId);
+          settleStoppedChild(rootThreadId, childThreadId, title, status);
+          const terminalStatus = status === "interrupted" ? "cancelled" : status === "error" ? "failed" : "completed";
+          const interrupted: ChildAgentLink = { ...link, terminalStatus, finishedAt: Date.now() };
           pendingLinksRef.current.set(childThreadId, interrupted);
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: interrupted }));
         }
@@ -641,14 +805,15 @@ export function useChildAgents(context: ChildAgentContext): {
    *
    * Cross-provider children have a durable ownership link and use their
    * provider-specific interrupt path. Codex-native children are first-class
-   * runtime threads, so they can be interrupted when their child turn id has
-   * reached the task store. Unknown/native providers fail closed instead of
-   * pretending the work stopped.
+   * runtime threads, so their latest turn can be discovered before interrupting.
+   * Claude native children share the root process and cannot be stopped alone.
    */
   const stopChildAgent = useCallback(async (rootThreadId: string, childThreadId: string): Promise<void> => {
     const ctx = contextRef.current;
-    const taskStore = useTaskStore.getState();
     const link = linksIncludingPending(ctx.links)[childThreadId];
+    let status: TaskStatus;
+    let parentThreadId = rootThreadId;
+    let prompt = link?.title ?? "Delegated task";
     if (link) {
       if (link.rootThreadId !== rootThreadId) {
         throw new Error(`\`${childThreadId}\` was not started from this thread.`);
@@ -658,29 +823,22 @@ export function useChildAgents(context: ChildAgentContext): {
         settleChildInParent(rootThreadId, childThreadId, link.title, terminalStatus, terminalStatus);
         return;
       }
-      await hardStopChild(link.provider, childThreadId);
+      status = await hardStopChild(link.provider, childThreadId);
     } else {
-      const agent = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
+      const agent = nativeChildrenFor(rootThreadId, ctx.nativeLinks).find((entry) => entry.id === childThreadId);
       if (!agent) throw new Error(`\`${childThreadId}\` was not started from this thread.`);
-      const turnId = taskStore.tasks[childThreadId]?.activeTurnId;
-      if (!turnId) {
-        throw new Error("This provider has not exposed an individual stop control for that sub-agent.");
+      if (agent.runtime === "claude" || agent.provider === "claude" || childThreadId.startsWith("claude-native:")) {
+        throw new Error("Claude native sub-agents share their root process. Stop the root thread to stop them.");
       }
-      await rpc("turn/interrupt", { threadId: childThreadId, turnId });
+      parentThreadId = agent.rootThreadId;
+      prompt = agent.prompt;
+      status = await stopCodexChild(childThreadId, undefined, () => assertNativeChildActivation(agent));
     }
 
-    taskStore.setActiveTurn(childThreadId, undefined);
-    taskStore.setTaskStatus(childThreadId, "interrupted");
-    const existing = taskStore.tasks[rootThreadId]?.agents.find((entry) => entry.id === childThreadId);
-    settleChildInParent(
-      rootThreadId,
-      childThreadId,
-      link?.title ?? existing?.prompt ?? "Delegated task",
-      "interrupted",
-      "cancelled",
-    );
+    settleStoppedChild(parentThreadId, childThreadId, prompt, status);
+    if (!link) persistNativeSettlement(ctx.nativeLinks?.[childThreadId], status);
     void auditEvent("childAgent.stopped", { rootThreadId, childThreadId, kind: link ? "cross-provider" : "native" });
-  }, [linksIncludingPending]);
+  }, [linksIncludingPending, persistNativeSettlement]);
 
   const cancelChild = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
     const ctx = contextRef.current;
@@ -705,6 +863,12 @@ export function useChildAgents(context: ChildAgentContext): {
     const rawTargets = Array.isArray(request.arguments.targets)
       ? request.arguments.targets.map((target) => ({ ...(target as Record<string, unknown>), enabled: true }))
       : current.childAgents.targets;
+    if (Array.isArray(request.arguments.targets)) {
+      for (const candidate of rawTargets) {
+        const error = childAgentAutoCompactIssue(candidate as unknown as import("../types").ChildAgentTarget);
+        if (error) throw new Error(error);
+      }
+    }
     const next = sanitizeProjectSubagentSettings({
       // Older tool clients can still send the removed secondary switch.
       // Treat an explicit revocation as the single main switch being off.
@@ -747,7 +911,8 @@ export function useChildAgents(context: ChildAgentContext): {
           : target.reasoningMode === "agent"
             ? `agent decides up to ${target.reasoningMaxEffort}`
             : "inherits parent";
-        return `${target.label || target.id}: ${target.provider} / ${childAgentModel(target) || "provider default"} / ${reasoning}`;
+        const compaction = target.autoCompactTokens === undefined ? "auto-compaction: provider default" : `auto-compaction: ${target.autoCompactTokens.toLocaleString("en-US")} tokens`;
+        return `${target.label || target.id}: ${target.provider} / ${childAgentModel(target) || "provider default"} / ${reasoning} / ${compaction}`;
       })
       .join("\n") || "No configured sub-agents";
     useTaskStore.getState().enqueueApproval({
@@ -1034,52 +1199,85 @@ export function useChildAgents(context: ChildAgentContext): {
   }, [context.links, releaseSlot]);
 
   const cancelChildAgentsFor = useCallback(async (rootThreadId: string): Promise<void> => {
-    const ctx = contextRef.current;
     stopGenerationRef.current.set(rootThreadId, (stopGenerationRef.current.get(rootThreadId) ?? 0) + 1);
-    const taskStore = useTaskStore.getState();
-    const allLinks = linksIncludingPending(ctx.links);
-    const running = Object.values(allLinks).filter((link) => link.rootThreadId === rootThreadId
-      && isChildActive(taskStatusOf(link.childThreadId)));
-    const ownedIds = new Set(Object.values(allLinks)
-      .filter((link) => link.rootThreadId === rootThreadId)
-      .map((link) => link.childThreadId));
-    const native = (taskStore.tasks[rootThreadId]?.agents ?? []).filter((agent) => (
-      !ownedIds.has(agent.id) && isActiveAgentRecord(agent.status)
-    ));
-    // Every cutoff is dispatched in one pass. Waiting for the cross-provider
-    // children before even asking the native ones to stop would make Stop as
-    // slow as the slowest runtime in the fleet.
-    const results = await Promise.allSettled([
-      ...running.map(async (link) => {
-        try {
-          await hardStopChild(link.provider, link.childThreadId);
-        } catch (reason) {
-          if (!cutoffAlreadySettled(reason)) throw new Error(`Could not stop ${link.title}: ${friendlyError(reason)}`);
+    const attempted = new Set<string>();
+    // Runtime-native spawns can arrive while the first cutoff wave settles.
+    // Rescan a bounded number of waves, retaining visible uncertainty if the
+    // runtime continues to create or reactivate work after Stop.
+    for (let wave = 0; wave <= 3; wave += 1) {
+      const ctx = contextRef.current;
+      const allLinks = linksIncludingPending(ctx.links);
+      const running = Object.values(allLinks).filter((link) => link.rootThreadId === rootThreadId
+        && isChildActive(taskStatusOf(link.childThreadId)));
+      const ownedIds = new Set(Object.values(allLinks)
+        .filter((link) => link.rootThreadId === rootThreadId)
+        .map((link) => link.childThreadId));
+      const nativeChildren = nativeChildrenFor(rootThreadId, ctx.nativeLinks);
+      const native = nativeChildren.filter((agent) => (
+        !ownedIds.has(agent.id) && isActiveAgentRecord(agent.status)
+      ));
+      if (!running.length && !native.length) return;
+      if (wave === 3 || [...running.map((link) => link.childThreadId), ...native.map((agent) => agent.id)].some((id) => attempted.has(id))) {
+        throw new Error("Could not confirm every sub-agent stopped: the runtime created or reactivated work while Stop was settling. Remaining workers are still visible.");
+      }
+      for (const id of [...running.map((link) => link.childThreadId), ...native.map((agent) => agent.id)]) attempted.add(id);
+      const claudeNative = native.filter((agent) => agent.runtime === "claude" || agent.provider === "claude" || agent.id.startsWith("claude-native:"));
+      const claudeNativeIds = new Set(claudeNative.map((agent) => agent.id));
+      const claudeParents = new Map(nativeChildren
+        .filter((agent) => !ownedIds.has(agent.id) && (agent.runtime === "claude" || agent.provider === "claude" || agent.id.startsWith("claude-native:")))
+        .map((agent) => [agent.id, agent.rootThreadId]));
+      const claudeRoots = new Map<string, NativeChild[]>();
+      for (const agent of claudeNative) {
+        let processThreadId = agent.rootThreadId;
+        const seen = new Set([agent.id]);
+        while (claudeParents.has(processThreadId) && !seen.has(processThreadId)) {
+          seen.add(processThreadId);
+          processThreadId = claudeParents.get(processThreadId)!;
         }
-        taskStore.setActiveTurn(link.childThreadId, undefined);
-        taskStore.setTaskStatus(link.childThreadId, "interrupted");
-        settleChildInParent(rootThreadId, link.childThreadId, link.title, "interrupted", "cancelled");
-      }),
-      // Provider-native children have no cross-provider ownership link, but if
-      // their runtime exposed a turn id we can still cut them off independently.
-      // The rest die with the parent process the composer's Stop kills.
-      ...native.map(async (agent) => {
-        const turnId = useTaskStore.getState().tasks[agent.id]?.activeTurnId;
-        if (turnId) {
+        claudeRoots.set(processThreadId, [...(claudeRoots.get(processThreadId) ?? []), agent]);
+      }
+      // Dispatch every provider cutoff before awaiting any one runtime.
+      const results = await Promise.allSettled([
+        ...running.map(async (link) => {
           try {
-            await rpc("turn/interrupt", { threadId: agent.id, turnId });
+            const status = await hardStopChild(link.provider, link.childThreadId);
+            settleStoppedChild(rootThreadId, link.childThreadId, link.title, status);
           } catch (reason) {
-            if (!cutoffAlreadySettled(reason)) throw new Error(`Could not stop ${agent.prompt || "native sub-agent"}: ${friendlyError(reason)}`);
+            throw new Error(`Could not stop ${link.title}: ${friendlyError(reason)}`);
           }
-        }
-        taskStore.setActiveTurn(agent.id, undefined);
-        taskStore.setTaskStatus(agent.id, "interrupted");
-        settleChildInParent(rootThreadId, agent.id, agent.prompt, "interrupted", "cancelled");
-      }),
-    ]);
-    const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
-    if (failures.length) throw new Error(failures.join("\n"));
-  }, [linksIncludingPending]);
+        }),
+        ...native.filter((agent) => !claudeNativeIds.has(agent.id)).map(async (agent) => {
+          try {
+            const status = await stopCodexChild(agent.id, undefined, () => assertNativeChildActivation(agent));
+            settleStoppedChild(agent.rootThreadId, agent.id, agent.prompt, status);
+            persistNativeSettlement(ctx.nativeLinks?.[agent.id], status);
+          } catch (reason) {
+            throw new Error(`Could not stop ${agent.prompt || "native sub-agent"}: ${friendlyError(reason)}`);
+          }
+        }),
+        ...[...claudeRoots].map(async ([processThreadId, agents]) => {
+          const rootTurnId = useTaskStore.getState().tasks[processThreadId]?.activeTurnId;
+          await killClaudeTurn(processThreadId);
+          const currentTurnId = useTaskStore.getState().tasks[processThreadId]?.activeTurnId;
+          if (currentTurnId && currentTurnId !== rootTurnId) {
+            throw new Error("Claude started another root turn while Stop was settling. Native worker status remains unknown.");
+          }
+          for (const agent of agents) {
+            const current = useTaskStore.getState().tasks[agent.rootThreadId]?.agents.find((entry) => entry.id === agent.id);
+            if (current && !isActiveAgentRecord(current.status)) continue;
+            if (current?.createdAt !== undefined && agent.createdAt !== undefined && current.createdAt !== agent.createdAt) {
+              throw new Error("A newer Claude native worker appeared while Stop was settling. Its status remains unknown.");
+            }
+            // Synthetic Claude IDs never create independent app thread state.
+            settleChildInParent(agent.rootThreadId, agent.id, agent.prompt, "interrupted", "cancelled");
+            persistNativeSettlement(ctx.nativeLinks?.[agent.id], "interrupted");
+          }
+        }),
+      ]);
+      const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
+      if (failures.length) throw new Error(failures.join("\n"));
+    }
+  }, [linksIncludingPending, persistNativeSettlement]);
 
   return { cancelChildAgentsFor, hasChildStartInFlight, respondToSettingsProposal, stopChildAgent };
 }

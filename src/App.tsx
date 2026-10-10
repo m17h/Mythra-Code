@@ -18,12 +18,13 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { flushPendingStateWrites, loadStored, readStoredRaw, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
+import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { compactSidebarIndex, countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, reconcileSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
@@ -35,7 +36,7 @@ import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
 import { MythraMark } from "./components/MythraMark";
 import { confirmDialog } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
-import { ModelPowerControl, openAiModelOptions, type RuntimeModel } from "./components/ModelPowerControl";
+import { ModelPowerControl, openAiModelOptions, type ReasoningEffort, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
 import { CursorModelControl } from "./components/CursorModelControl";
@@ -73,7 +74,7 @@ import {
   markPullRequestReady,
   mergePullRequest,
 } from "./lib/pullRequests";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, Thread, ThreadHandoff, ThreadReasoning, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
@@ -166,8 +167,9 @@ import { primaryModifierLabel } from "./lib/platform";
 import { archiveAfterTitleCancellation, activeThreadArchiveBlockedReason, archivedThreadsForInbox, finishThreadBlockedReason, providerForArchivedThread } from "./lib/threadArchive";
 import { sanitizeProjectDefaultOverrides } from "./lib/projectDefaults";
 import { EMPTY_PROJECT_PROMPT_PROFILES, updateProjectPromptOverrides, type ProjectPromptProfileState } from "./lib/projectPromptProfiles";
-import { sanitizeThreadSubagentSettings, settingsForThreadSubagents } from "./lib/threadSubagentSettings";
+import { DEFAULT_THREAD_SUBAGENT_SETTINGS, nativeSubagentUnavailableReason, sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions, sanitizeSubagentEngine, sanitizeThreadSubagentSettings, settingsForThreadSubagents, threadSubagentSettingsFromApp } from "./lib/threadSubagentSettings";
 import { sanitizePendingHandoff } from "./lib/providerHandoff";
+import { stopWithChildren, waitForRootCutoff } from "./lib/stopWithChildren";
 import { deleteThreadTurnDurations } from "./lib/turnDurations";
 import {
   uniqueChildAgentPresetId,
@@ -194,9 +196,9 @@ import {
 } from "./lib/childAgents";
 import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
-import { canOwnThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type OwnershipLinks } from "./lib/nativeAgentLinks";
-import { autoArchiveSubagentCandidates } from "./lib/subAgentArchive";
-import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive, type SubAgentWorker } from "./lib/subAgentActivity";
+import { boundedNativeText, canOwnNativeThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
+import { autoArchiveSubagentCandidates, nativeArchiveActivity } from "./lib/subAgentArchive";
+import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
@@ -499,6 +501,8 @@ function permissionLabel(mode: PermissionMode): string {
   return "Ask to act";
 }
 
+class RuntimeCapabilityBusyError extends Error {}
+
 function providerLabel(provider: AppSettings["provider"]): string {
   if (provider === "openrouter") return "OpenRouter";
   if (provider === "lmstudio") return "LM Studio";
@@ -674,10 +678,10 @@ export default function App() {
   // Cross-provider delegation: one frozen policy per bridge session, plus the
   // parent/child ownership record that outlives a reload.
   const [childAgentPolicies, persistChildAgentPolicies] = usePersistedState<Record<string, ChildAgentPolicy>>("kiwi.childAgentPolicies", {}, { init: (load) => sanitizeChildAgentPolicies(load()) });
-  const [threadSubagentSettings, persistThreadSubagentSettings, threadSubagentSettingsRef] = usePersistedStateRef<Record<string, boolean>>("kiwi.threadSubagentSettings", {}, { init: (load) => sanitizeThreadSubagentSettings(load()) });
-  const [draftSubagentSettings, setDraftSubagentSettings] = useState(false);
+  const [threadSubagentSettings, persistThreadSubagentSettings, threadSubagentSettingsRef] = usePersistedStateRef<Record<string, ThreadSubagentSettings>>("kiwi.threadSubagentSettings", {}, { init: (load) => sanitizeThreadSubagentSettings(load()) });
+  const [draftSubagentSettings, setDraftSubagentSettings] = useState<ThreadSubagentSettings>(DEFAULT_THREAD_SUBAGENT_SETTINGS);
   const [childAgentLinks, persistChildAgentLinks] = usePersistedState<Record<string, ChildAgentLink>>("kiwi.childAgentLinks", {}, { init: (load) => sanitizeChildAgentLinks(load()) });
-  const [nativeAgentLinks, persistNativeAgentLinks] = usePersistedState<Record<string, NativeAgentLink>>("kiwi.nativeAgentLinks", {}, { init: (load) => sanitizeNativeAgentLinks(load()) });
+  const [nativeAgentLinks, persistNativeAgentLinks, nativeAgentLinksRef] = usePersistedStateRef<Record<string, NativeAgentLink>>("kiwi.nativeAgentLinks", {}, { init: (load) => sanitizeNativeAgentLinks(load()) });
   const [pendingHandoff, setPendingHandoff] = usePersistedState<ThreadHandoff | null>("kiwi.pendingHandoff", null, {
     init: (load) => sanitizePendingHandoff(load()),
   });
@@ -748,6 +752,11 @@ export default function App() {
   const [claudeUsageSnapshot, setClaudeUsageSnapshot] = useState<AccountUsageSnapshot | null>(null);
   const [claudeAccountKey, setClaudeAccountKey] = useState("");
   const claudeAccountKeyRef = useRef("");
+  const runtimeModelsRequestRef = useRef(0);
+  const runtimeModelRefreshRef = useRef<ModelRefreshState<RuntimeModel>>({});
+  const claudeModelsRequestRef = useRef(0);
+  const claudeModelRefreshRef = useRef<ModelRefreshState<ClaudeModel>>({});
+  const refreshAvailableModelsRef = useRef<(manual?: boolean) => Promise<void>>(async () => {});
   const [usageSnapshotClock, setUsageSnapshotClock] = useState(0);
   const [skillsFolder, setSkillsFolder] = usePersistedState<string>("kiwi.skillsFolder", "");
   const [skillFiles, setSkillFiles] = useState<LocalSkillFile[]>([]);
@@ -991,6 +1000,21 @@ export default function App() {
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
     cursorReady: Boolean(cursorStatus?.available && cursorStatus.loggedIn),
   }), [account?.type, claudeStatus, cursorStatus, lmStudioReady, openRouterReady, runtimeStatus?.available]);
+  const nativeReasoningEfforts = useMemo<Partial<Record<string, ReasoningEffort[]>>>(() => Object.fromEntries(runtimeModels.map((model) => [model.model || model.id, model.supportedReasoningEfforts.flatMap((option) => ["low", "medium", "high", "xhigh", "max", "ultra"].includes(option.reasoningEffort) ? [option.reasoningEffort as ReasoningEffort] : [])])), [runtimeModels]);
+  const nativeUnavailableReason = nativeSubagentUnavailableReason(activeProvider, {
+    codexRuntime: runtimeStatus,
+    claudeRuntime: claudeStatus,
+    readiness: childAgentReadiness,
+    nativeOptions: effectiveSettings.nativeSubagentOptions,
+    nativeDefaultModel: effectiveSettings.model,
+    autoCompactTokens: effectiveSettings.autoCompactTokens,
+    nativeReasoningEfforts,
+  });
+  const nativeSelectionUnavailableReason = nativeSubagentUnavailableReason(activeProvider, {
+    codexRuntime: runtimeStatus,
+    claudeRuntime: claudeStatus,
+    readiness: childAgentReadiness,
+  });
 
   // One line for the composer and the thread summary; the roster itself is
   // edited in Settings so the composer stays uncluttered.
@@ -1010,8 +1034,9 @@ export default function App() {
    * command center may stage a replacement for the next turn. */
   const subagentPolicyMode = useMemo<SubAgentPolicyMode>(() => {
     if (activeThreadIsChild) return "child";
+    if (effectiveSettings.subagentEngine === "native") return "open";
     return activeDelegationPolicy ? "captured" : "open";
-  }, [activeDelegationPolicy, activeThreadIsChild]);
+  }, [activeDelegationPolicy, activeThreadIsChild, effectiveSettings.subagentEngine]);
   const childAgentSummary = useMemo(() => {
     // The frozen roster is what a thread would delegate to, but only while the
     // live switches still expose it — the runtime re-reads those every turn.
@@ -1019,8 +1044,9 @@ export default function App() {
       ? { enabled: effectiveSettings.childAgents.enabled, targets: activeDelegationPolicy.targets }
       : effectiveSettings.childAgents;
     if (!effectiveSettings.subagentsEnabled) return "Sub-agents off";
+    if (effectiveSettings.subagentEngine === "native") return nativeUnavailableReason ?? `Native sub-agents · requested limit ${sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax)}`;
     return describeChildAgentRoster(roster, childAgentReadiness);
-  }, [activeDelegationPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.subagentsEnabled]);
+  }, [activeDelegationPolicy, childAgentReadiness, effectiveSettings.childAgents, effectiveSettings.nativeSubagentMax, effectiveSettings.subagentEngine, effectiveSettings.subagentsEnabled, nativeUnavailableReason]);
   // The composer's command center edits this shape directly until a thread has
   // captured a crew of its own.
   const composerSubagentPolicy = useMemo(
@@ -1031,7 +1057,7 @@ export default function App() {
   // shown immediately so the UI never appears to discard an edit while it is
   // waiting for the next prompt to promote it.
   const activeThreadSubagentPolicy = useMemo<ProjectSubagentSettings>(() => {
-    if (!activeDelegationPolicy) return composerSubagentPolicy;
+    if (!activeDelegationPolicy || effectiveSettings.subagentEngine === "native") return composerSubagentPolicy;
     const pending = activeDelegationPolicy.pendingRecapture;
     return {
       enabled: effectiveSettings.subagentsEnabled,
@@ -1041,7 +1067,7 @@ export default function App() {
         targets: pending?.targets ?? activeDelegationPolicy.targets,
       },
     };
-  }, [activeDelegationPolicy, composerSubagentPolicy, effectiveSettings.childAgents.enabled, effectiveSettings.subagentsEnabled]);
+  }, [activeDelegationPolicy, composerSubagentPolicy, effectiveSettings.childAgents.enabled, effectiveSettings.subagentEngine, effectiveSettings.subagentsEnabled]);
   // Must stay the same catalog the Settings roster builds: a destination the
   // user configured in one picker has to be the same provider/model pair in
   // the other, and both are the pair readiness and the spawn path receive.
@@ -1068,6 +1094,7 @@ export default function App() {
         label: entry.displayName,
         detail: entry.description || entry.resolvedModel,
         keywords: entry.resolvedModel,
+        resolvedModel: entry.resolvedModel,
       })),
     } : {}),
     openrouter: openRouterModels.map((entry) => ({
@@ -1082,6 +1109,11 @@ export default function App() {
       detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+
+  const nativeModelCatalogs = useMemo<Partial<Record<Provider, SubAgentModelOption[]>>>(() => ({
+    openai: subAgentModelCatalogs.openai,
+    claude: visibleClaudeModels(claudeModels).filter((entry) => !entry.disabled).map((entry) => ({ id: entry.resolvedModel || entry.id, label: entry.displayName, detail: entry.description || entry.resolvedModel })),
+  }), [subAgentModelCatalogs.openai, claudeModels]);
 
   const runDiscoveryCatalogs = useMemo(() => ({
     openai: subAgentModelCatalogs.openai?.map((entry) => ({ ...entry, efforts: runtimeModels.find((model) => (model.model || model.id) === entry.id)?.supportedReasoningEfforts.map((option) => option.reasoningEffort) })),
@@ -1620,10 +1652,68 @@ export default function App() {
    * Composer choices grant authority only to this conversation. Settings keeps
    * the reusable project/app crew; it cannot opt a future thread into spawning.
    */
+  const canEditThreadSubagents = useCallback(() => {
+    const latest = useTaskStore.getState();
+    const status = activeThreadId ? latest.statuses[activeThreadId] : undefined;
+    const task = activeThreadId ? latest.tasks[activeThreadId] : undefined;
+    const workers = collectSubAgentWorkers({
+      rootThreadId: activeThreadId,
+      links: childAgentLinks,
+      nativeLinks: nativeAgentLinksRef.current,
+      statuses: latest.statuses,
+      agents: task?.agents ?? [],
+      runStartedAt: task?.agentRunStartedAt,
+    });
+    if (activeThreadIsChild || running || hasQueuedWork || status === "starting" || status === "running"
+      || Boolean(activeThreadId && latest.workflowOwners[activeThreadId])
+      || workers.some((worker) => isSubAgentWorkerActive(worker.status) || worker.status === "unknown")) {
+      showToast("Finish or stop the parent and every sub-agent before changing this setup", "info");
+      return false;
+    }
+    return true;
+  }, [activeThreadId, activeThreadIsChild, childAgentLinks, hasQueuedWork, nativeAgentLinksRef, running, showToast]);
+
+  const persistThreadSubagentChoice = useCallback((choice: Partial<ThreadSubagentSettings>) => {
+    if (activeThreadId) {
+      persistThreadSubagentSettings((current) => ({
+        ...current,
+        [activeThreadId]: { ...(current[activeThreadId] ?? threadSubagentSettingsFromApp(effectiveSettings)), ...choice },
+      }));
+    } else {
+      setDraftSubagentSettings((current) => ({ ...current, ...choice }));
+    }
+  }, [activeThreadId, effectiveSettings, persistThreadSubagentSettings]);
+
+  const persistComposerSubagentEngine = useCallback((engine: SubagentEngine) => {
+    if (!canEditThreadSubagents()) return;
+    if (engine === "native" && nativeSelectionUnavailableReason) {
+      showToast(nativeSelectionUnavailableReason, "info");
+      return;
+    }
+    persistThreadSubagentChoice({ engine });
+  }, [canEditThreadSubagents, nativeSelectionUnavailableReason, persistThreadSubagentChoice, showToast]);
+
+  const persistComposerNativeSubagentMax = useCallback((nativeMaxConcurrent: number) => {
+    if (!canEditThreadSubagents()) return;
+    persistThreadSubagentChoice({ nativeMaxConcurrent: sanitizeNativeSubagentMax(nativeMaxConcurrent) });
+  }, [canEditThreadSubagents, persistThreadSubagentChoice]);
+
+  const persistComposerNativeOptions = useCallback((nativeOptions: import("./types").NativeSubagentOptions) => {
+    if (!canEditThreadSubagents()) return;
+    persistThreadSubagentChoice({ nativeOptions: sanitizeNativeSubagentOptions(nativeOptions) });
+  }, [canEditThreadSubagents, persistThreadSubagentChoice]);
+
+  const persistComposerAutoCompactTokens = useCallback((autoCompactTokens?: number) => {
+    if (!canEditThreadSubagents()) return;
+    persistThreadSubagentChoice({ autoCompactTokens });
+  }, [canEditThreadSubagents, persistThreadSubagentChoice]);
+
   const persistComposerSubagentPolicy = useCallback(
     (next: ProjectSubagentSettings) => {
-      if (activeThreadId) persistThreadSubagentSettings((current) => ({ ...current, [activeThreadId]: next.enabled }));
-      else setDraftSubagentSettings(next.enabled);
+      if (!canEditThreadSubagents()) return;
+      persistThreadSubagentChoice({ enabled: next.enabled });
+      // Native authority does not write through to the retained Mythra crew.
+      if (effectiveSettings.subagentEngine === "native") return;
       // Preserve reusable roster/limit editing; the enable switch alone is
       // local authority. An enabled stored default is legacy state only.
       if (next.maxConcurrent === projectSettings.subagentMax && JSON.stringify(next.childAgents) === JSON.stringify(projectSettings.childAgents)) return;
@@ -1635,7 +1725,7 @@ export default function App() {
           : project));
       }
     },
-    [activeProject, activeThreadId, persistSettings, persistThreadSubagentSettings, projectSettings, setProjects, settings.subagentsEnabled],
+    [activeProject, canEditThreadSubagents, effectiveSettings.subagentEngine, persistSettings, persistThreadSubagentChoice, projectSettings, setProjects, settings.subagentsEnabled],
   );
 
   /** Replace or clear one project's Run button command. */
@@ -1731,6 +1821,10 @@ export default function App() {
    * atomically by the next prompt.
    */
   const persistActiveThreadSubagentPolicy = useCallback((next: ProjectSubagentSettings) => {
+    if (effectiveSettings.subagentEngine === "native") {
+      persistComposerSubagentPolicy(next);
+      return;
+    }
     const existing = activeDelegationPolicy;
     if (!existing || !activeThreadId) {
       persistComposerSubagentPolicy(next);
@@ -1740,12 +1834,12 @@ export default function App() {
     // so a click that lands in the same tick as a run cannot mutate its crew.
     const latestStatus = useTaskStore.getState().statuses[activeThreadId] ?? "idle";
     const parentActive = latestStatus === "starting" || latestStatus === "running" || hasQueuedWork;
-    if (parentActive || childrenRunning) {
+    if (parentActive || childrenRunning || !canEditThreadSubagents()) {
       setTransientStatus("Finish or stop the parent and every sub-agent before changing this setup");
       return;
     }
 
-    persistThreadSubagentSettings((current) => ({ ...current, [activeThreadId]: next.enabled }));
+    persistThreadSubagentChoice({ enabled: next.enabled });
 
     const crewChanged = next.maxConcurrent !== activeThreadSubagentPolicy.maxConcurrent
       || JSON.stringify(next.childAgents.targets) !== JSON.stringify(activeThreadSubagentPolicy.childAgents.targets);
@@ -1777,11 +1871,13 @@ export default function App() {
     activeDelegationPolicy,
     activeThreadSubagentPolicy,
     activeThreadId,
+    canEditThreadSubagents,
     childAgentReadiness,
     childrenRunning,
     persistChildAgentPolicies,
     persistComposerSubagentPolicy,
-    persistThreadSubagentSettings,
+    persistThreadSubagentChoice,
+    effectiveSettings.subagentEngine,
     hasQueuedWork,
     setTransientStatus,
   ]);
@@ -1984,6 +2080,10 @@ export default function App() {
 
   const refreshClaudeStatus = useCallback(async () => {
     const request = ++claudeStatusRequestRef.current;
+    claudeModelsRequestRef.current += 1;
+    claudeModelRefreshRef.current.pending = undefined;
+    claudeModelRefreshRef.current.lastSuccess = undefined;
+    setClaudeModelsLoading(false);
     setAccountCheck("claude", "Checking connection…");
     try {
       const result = await getClaudeRuntimeStatus();
@@ -1993,6 +2093,9 @@ export default function App() {
       if (result.loggedIn) {
         const accountKey = subscriptionAccountKey("claude", result.email, request, claudeAccountKeyRef.current);
         if (claudeAccountKeyRef.current !== accountKey) {
+          claudeModelsRequestRef.current += 1;
+          claudeModelRefreshRef.current.pending = undefined;
+          setClaudeModels([]);
           claudeUsageRequestRef.current += 1;
           claudeAccountKeyRef.current = accountKey;
           setClaudeAccountKey(accountKey);
@@ -2006,6 +2109,11 @@ export default function App() {
           setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
         }
       } else {
+        claudeModelsRequestRef.current += 1;
+        claudeModelRefreshRef.current.pending = undefined;
+        setClaudeModels([]);
+        setClaudeModelsLoading(false);
+        setClaudeModelsError("");
         claudeUsageRequestRef.current += 1;
         claudeAccountKeyRef.current = "";
         setClaudeAccountKey("");
@@ -2138,13 +2246,13 @@ export default function App() {
           // that a cross-provider child belongs in the child inbox.
           if (!childAgentLinksRef.current[thread.id]) delete ownershipGraph[thread.id];
         }
-        const discoveredRootIds = new Set(ownershipRootIds(ownershipGraph));
         for (const thread of allThreads) {
           const link = nativeAgentLinkFromThread(thread);
           if (!link) continue;
-          if (!canOwnThread(ownershipGraph, link.rootThreadId, link.childThreadId, discoveredRootIds)) continue;
+          if (childAgentLinksRef.current[link.rootThreadId] || !canOwnNativeThread(ownershipGraph, link.rootThreadId, link.childThreadId)) continue;
+          const knownChild = knownThreadsRef.current?.[link.childThreadId];
+          if (knownChild && !isSubAgentThread(knownChild, childThreadLinksRef.current)) continue;
           ownershipGraph[link.childThreadId] = link;
-          discoveredRootIds.add(link.rootThreadId);
           discoveredNativeLinks[link.childThreadId] = link;
           const rootPath = threadProjectBindingsRef.current?.[link.rootThreadId]
             ?? knownThreadsRef.current?.[link.rootThreadId]?.cwd
@@ -2155,7 +2263,13 @@ export default function App() {
           persistNativeAgentLinks((current) => {
             const next = { ...current };
             for (const threadId of listedRootIds) delete next[threadId];
-            return sanitizeNativeAgentLinks({ ...next, ...discoveredNativeLinks });
+            for (const [id, discovered] of Object.entries(discoveredNativeLinks)) {
+              const existing = current[id];
+              next[id] = existing?.rootThreadId === discovered.rootThreadId
+                ? { ...existing, ...discovered, title: existing.title || discovered.title, createdAt: existing.createdAt, ...(existing.modelSource === "execution" || (existing.model === "" && existing.activationId) ? { model: existing.model, modelSource: existing.modelSource } : {}) }
+                : discovered;
+            }
+            return sanitizeNativeAgentLinks(next);
           });
         }
         const localThreads = await localThreadsPromise;
@@ -2197,6 +2311,12 @@ export default function App() {
     openAiAccountRequestRef.current += 1;
     openAiUsageRequestRef.current += 1;
     openAiAccountKeyRef.current = "";
+    runtimeModelsRequestRef.current += 1;
+    runtimeModelRefreshRef.current.pending = undefined;
+    runtimeModelRefreshRef.current = {};
+    setRuntimeModels([]);
+    setRuntimeModelsLoading(false);
+    setRuntimeModelsError("");
     setOpenAiAccountKey("");
     setAccount(null);
     setAccountCheck("openai", "Sign-in required");
@@ -2233,6 +2353,10 @@ export default function App() {
 
   const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
     const request = ++openAiAccountRequestRef.current;
+    runtimeModelsRequestRef.current += 1;
+    runtimeModelRefreshRef.current.pending = undefined;
+    runtimeModelRefreshRef.current.lastSuccess = undefined;
+    setRuntimeModelsLoading(false);
     setAccountCheck("openai", "Checking connection…");
     try {
       const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean }>("account/read", { refreshToken });
@@ -2242,6 +2366,9 @@ export default function App() {
       if (result.account?.type === "chatgpt") {
         const accountKey = subscriptionAccountKey("openai", result.account.email, request, openAiAccountKeyRef.current);
         if (openAiAccountKeyRef.current !== accountKey) {
+          runtimeModelsRequestRef.current += 1;
+          runtimeModelRefreshRef.current.pending = undefined;
+          setRuntimeModels([]);
           openAiUsageRequestRef.current += 1;
           openAiAccountKeyRef.current = accountKey;
           setOpenAiAccountKey(accountKey);
@@ -2251,6 +2378,11 @@ export default function App() {
         setError(null);
         setStatus("Ready");
       } else {
+        runtimeModelsRequestRef.current += 1;
+        runtimeModelRefreshRef.current.pending = undefined;
+        setRuntimeModels([]);
+        setRuntimeModelsLoading(false);
+        setRuntimeModelsError("");
         openAiUsageRequestRef.current += 1;
         openAiAccountKeyRef.current = "";
         setOpenAiAccountKey("");
@@ -2276,12 +2408,12 @@ export default function App() {
     else if (runtimeStatus?.available) void refreshAccount(true);
   }, [settingsOpen, effectiveSettings.provider, runtimeStatus?.available, refreshAccount, refreshClaudeStatus]);
 
-  const runtimeModelsRequestRef = useRef(0);
-  const refreshModels = useCallback(() => refreshProviderModels(
+  const refreshModels = useCallback(() => shareModelRefresh(runtimeModelRefreshRef.current,
+    `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, () => refreshProviderModels(
     runtimeModelsRequestRef, listRuntimeModels, setRuntimeModelsLoading,
     (models) => { if (models.length) setRuntimeModels(models); },
-    setRuntimeModelsError, "OpenAI returned an empty model catalog.", false,
-  ), []);
+    (error) => { runtimeModelRefreshRef.current.error = error; setRuntimeModelsError(error); }, "OpenAI returned an empty model catalog.", false,
+  )), []);
 
   const openRouterModelsRequestRef = useRef(0);
   const refreshOpenRouterModels = useCallback(() => refreshProviderModels(
@@ -2318,15 +2450,15 @@ export default function App() {
    * subcommand, so this rides the stream-json control protocol; an older CLI
    * or a signed-out install leaves the labelled built-in list in place.
    */
-  const claudeModelsRequestRef = useRef(0);
-  const refreshClaudeModels = useCallback(() => refreshProviderModels(
+  const refreshClaudeModels = useCallback(() => claudeAccountKeyRef.current ? shareModelRefresh(claudeModelRefreshRef.current,
+    `${claudeAccountKeyRef.current}:${claudeStatusRequestRef.current}`, () => refreshProviderModels(
     claudeModelsRequestRef, listClaudeModels, setClaudeModelsLoading,
-    setClaudeModels, setClaudeModelsError, "Claude Code returned no models.",
-  ), []);
+    (models) => { if (models.length) setClaudeModels(models); }, (error) => { claudeModelRefreshRef.current.error = error; setClaudeModelsError(error); }, "Claude Code returned no models.", false,
+  )) : Promise.resolve([]), []);
 
   const refreshClaudeCatalog = useCallback(async () => {
-    const [, models] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
-    return models;
+    const status = await refreshClaudeStatus();
+    return status.available && status.loggedIn ? refreshClaudeModels() : [];
   }, [refreshClaudeModels, refreshClaudeStatus]);
 
   const toggleModelFavorite = useCallback((provider: Provider, model: string) => {
@@ -2993,6 +3125,137 @@ export default function App() {
 
   // The event context is rebuilt each render so callbacks always see fresh
   // state; useCodexEvents reads it through a ref and subscribes exactly once.
+  const onNativeAgentDiscovered = (rootThreadId: string, childThreadId: string, details: {
+    prompt?: string; path?: string; model?: string; status?: string; provider?: Provider; runtime?: "codex" | "claude"; rootTurnId?: string; activatedAt?: number; compactionInheritedFromParent?: boolean;
+  } & NativeAgentReadout) => {
+    const now = Date.now();
+    const rootThread = knownThreadsRef.current?.[rootThreadId] ?? threads.find((entry) => entry.id === rootThreadId);
+    const existingThread = knownThreadsRef.current?.[childThreadId] ?? threads.find((entry) => entry.id === childThreadId);
+    const logicalPath = threadProjectBindingsRef.current?.[rootThreadId] ?? rootThread?.cwd;
+    const title = details.prompt?.trim()
+      || (details.path ? basename(details.path).replaceAll("_", " ") : undefined)
+      || existingThread?.preview
+      || "Delegated task";
+    let accepted = false;
+    let replaceThreadModel = false;
+    persistNativeAgentLinks((current) => {
+      const graph = { ...current, ...childAgentLinksRef.current };
+      // Native V2 can nest, but a runtime event cannot adopt a known main
+      // conversation or change an existing child's owner. This check runs
+      // against the synchronous persistence ref before any sidebar mutation.
+      if (childAgentLinksRef.current[rootThreadId] || !canOwnNativeThread(graph, rootThreadId, childThreadId)
+        || Boolean(existingThread && !isSubAgentThread(existingThread, graph))) return current;
+      accepted = true;
+      const existing = current[childThreadId];
+      const activatedAt = typeof details.activatedAt === "number" && Number.isFinite(details.activatedAt) && details.activatedAt > 0 ? details.activatedAt : undefined;
+      const newActivation = Boolean(details.activationId && (existing?.activationId ? details.activationId !== existing.activationId : activatedAt !== undefined));
+      const rootTask = useTaskStore.getState().tasks[rootThreadId];
+      const enrichAssignment = !existing?.task && Boolean(details.task?.trim())
+        && Boolean(details.rootTurnId && rootTask?.activeTurnId === details.rootTurnId)
+        && Boolean(rootTask && ["starting", "running"].includes(rootTask.status));
+      replaceThreadModel = newActivation || details.model === "";
+      const model = details.model !== undefined ? details.model : newActivation ? "" : existing?.model !== undefined ? existing.model : existingThread?.model || undefined;
+      const status = details.status ?? existing?.status;
+      const settled = status !== undefined && ["completed", "cancelled", "failed", "idle"].includes(workerStatusFromAgentRecord(status));
+      const link: NativeAgentLink = {
+        childThreadId,
+        rootThreadId,
+        title: newActivation || enrichAssignment ? title : existing?.title || title,
+        ...(details.path || existing?.path ? { path: details.path || existing?.path } : {}),
+        createdAt: newActivation ? activatedAt ?? now : existing?.createdAt ?? now,
+        provider: details.provider ?? existing?.provider ?? providerFromThread(rootThread, "openai"),
+        ...(model !== undefined ? { model } : {}),
+        runtime: details.runtime ?? existing?.runtime ?? "codex",
+        ...(details.rootTurnId ?? existing?.rootTurnId ? { rootTurnId: details.rootTurnId ?? existing?.rootTurnId } : {}),
+        task: details.task !== undefined ? boundedNativeText(details.task, "task") : existing?.task ?? boundedNativeText(details.prompt, "task"),
+        requestedModel: details.requestedModel !== undefined ? details.requestedModel : newActivation ? "" : existing?.requestedModel,
+        modelSource: model === "" ? undefined : details.modelSource ?? (newActivation ? undefined : existing?.modelSource ?? (existingThread?.model ? "configured" : undefined)),
+        progress: details.progress !== undefined ? boundedNativeText(details.progress, "progress") : existing?.progress,
+        result: details.result !== undefined ? boundedNativeText(details.result, "result") : existing?.result,
+        activationId: details.activationId ?? existing?.activationId,
+        ...(status ? { status } : {}),
+        ...(settled ? { finishedAt: newActivation ? now : existing?.finishedAt ?? now } : {}),
+      };
+      return { ...current, [childThreadId]: link };
+    });
+    if (!accepted) {
+      if (childThreadId && childThreadId !== rootThreadId) void auditEvent("nativeAgent.ownershipRejected", { rootThreadId, childThreadId }).catch(() => {});
+      return false;
+    }
+    // Claude's IDs identify work within the root process. They are durable
+    // activity records, never resumable app sessions or sidebar conversations.
+    if (details.runtime === "claude") return true;
+    // Native Codex workers inherit the parent's startup compaction policy.
+    // Capture it once so opening the worker after a runtime refresh does not
+    // replace its original window with provider default or a later parent edit.
+    const rootState = useTaskStore.getState();
+    if (details.compactionInheritedFromParent && details.rootTurnId && rootState.tasks[rootThreadId]?.activeTurnId === details.rootTurnId
+      && ["starting", "running"].includes(rootState.statuses[rootThreadId] ?? "")) {
+      persistThreadSubagentSettings((current) => Object.hasOwn(current, childThreadId) ? current : {
+        ...current,
+        [childThreadId]: {
+          ...DEFAULT_THREAD_SUBAGENT_SETTINGS,
+          autoCompactTokens: current[rootThreadId]?.autoCompactTokens,
+        },
+      });
+    }
+    if (logicalPath) bindThreadToProject(childThreadId, logicalPath);
+    const childThread: Thread = {
+      id: childThreadId,
+      name: existingThread?.name ?? null,
+      preview: replaceThreadModel ? title : existingThread?.preview || title,
+      cwd: existingThread?.cwd || rootThread?.cwd || logicalPath || "",
+      updatedAt: Math.max(existingThread?.updatedAt ?? 0, Math.floor(now / 1000)),
+      modelProvider: existingThread?.modelProvider || details.provider || rootThread?.modelProvider || "openai",
+      model: replaceThreadModel ? details.model || "" : existingThread?.model ?? details.model,
+      parentThreadId: rootThreadId,
+      threadSource: "subagent",
+      agentPath: details.path || existingThread?.agentPath,
+    };
+    rememberThread(childThread);
+    setThreads((current) => upsertThread(current, childThread));
+    return true;
+  };
+
+  const persistCompletedNativeChild = (threadId: string) => {
+    const status = useTaskStore.getState().statuses[threadId] ?? "completed";
+    if (status === "starting" || status === "running") return;
+    persistNativeAgentLinks((current) => {
+      const link = current[threadId];
+      return link ? { ...current, [threadId]: { ...link, status, finishedAt: Date.now() } } : current;
+    });
+  };
+
+  const reconcileIdleClaudeNativeChildren = async (threadId: string) => {
+    const before = useTaskStore.getState();
+    const expectedTurnId = before.tasks[threadId]?.activeTurnId;
+    const expectedStatus = before.statuses[threadId];
+    const candidates = Object.values(nativeAgentLinksRef.current).filter((link) => link.rootThreadId === threadId && link.runtime === "claude"
+      && (!link.status || workerStatusFromAgentRecord(link.status) === "unknown" || isActiveAgentRecord(link.status)));
+    if (!candidates.length) return;
+    const active = await isClaudeTurnActive(threadId).catch(() => null);
+    const latest = useTaskStore.getState();
+    if (active !== false || latest.tasks[threadId]?.activeTurnId !== expectedTurnId || latest.statuses[threadId] !== expectedStatus) return;
+    const settledIds: string[] = [];
+    persistNativeAgentLinks((current) => {
+      const next = { ...current };
+      for (const candidate of candidates) {
+        const link = next[candidate.childThreadId];
+        if (!link || link.createdAt !== candidate.createdAt || link.rootTurnId !== candidate.rootTurnId || link.rootThreadId !== threadId || link.finishedAt) continue;
+        if (link.status && !isActiveAgentRecord(link.status) && workerStatusFromAgentRecord(link.status) !== "unknown") continue;
+        next[candidate.childThreadId] = { ...link, status: "interrupted", finishedAt: Date.now() };
+        settledIds.push(candidate.childThreadId);
+      }
+      return next;
+    });
+    for (const id of settledIds) {
+      const record = useTaskStore.getState().tasks[threadId]?.agents.find((agent) => agent.id === id);
+      if (record && (isActiveAgentRecord(record.status) || workerStatusFromAgentRecord(record.status) === "unknown")) {
+        useTaskStore.getState().upsertAgent(threadId, { ...record, status: "interrupted" });
+      }
+    }
+  };
+
   useCodexEvents({
     bindingFor: (threadId) => {
       const logicalPath = threadProjectBindingsRef.current?.[threadId];
@@ -3028,55 +3291,7 @@ export default function App() {
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
       if (providerFromThread(thread, "openai") === "openrouter") providerRepairThreadsRef.current.add(threadId);
     },
-    onNativeAgentDiscovered: (rootThreadId, childThreadId, details) => {
-      // Ownership is durable and it decides which inbox a conversation lives
-      // in. A self, reversed, or cyclic claim is refused outright rather than
-      // recorded, because writing `parentThreadId` onto a root thread record
-      // would move the user's main conversation into the Sub-agents inbox and
-      // keep it there across reloads.
-      if (!canOwnThread(childThreadLinksRef.current, rootThreadId, childThreadId)) {
-        if (childThreadId && childThreadId !== rootThreadId) {
-          void auditEvent("nativeAgent.ownershipRejected", { rootThreadId, childThreadId }).catch(() => {});
-        }
-        return;
-      }
-      const now = Date.now();
-      const rootThread = threads.find((entry) => entry.id === rootThreadId) ?? knownThreadsRef.current?.[rootThreadId];
-      const existingThread = threads.find((entry) => entry.id === childThreadId) ?? knownThreadsRef.current?.[childThreadId];
-      const logicalPath = threadProjectBindingsRef.current?.[rootThreadId] ?? rootThread?.cwd;
-      const title = details.prompt?.trim()
-        || (details.path ? basename(details.path).replaceAll("_", " ") : undefined)
-        || existingThread?.preview
-        || "Delegated task";
-      persistNativeAgentLinks((current) => {
-        // Re-check against the newest persisted graph: two discoveries can be
-        // dispatched before either state update renders.
-        if (!canOwnThread({ ...current, ...childAgentLinks }, rootThreadId, childThreadId)) return current;
-        const existing = current[childThreadId];
-        const link: NativeAgentLink = {
-          childThreadId,
-          rootThreadId,
-          title: existing?.title || title,
-          ...(details.path || existing?.path ? { path: details.path || existing?.path } : {}),
-          createdAt: existing?.createdAt ?? now,
-        };
-        return { ...current, [childThreadId]: link };
-      });
-      if (logicalPath) bindThreadToProject(childThreadId, logicalPath);
-      const childThread: Thread = {
-        id: childThreadId,
-        name: existingThread?.name ?? null,
-        preview: existingThread?.preview || title,
-        cwd: existingThread?.cwd || rootThread?.cwd || logicalPath || "",
-        updatedAt: Math.max(existingThread?.updatedAt ?? 0, Math.floor(now / 1000)),
-        modelProvider: existingThread?.modelProvider || rootThread?.modelProvider || "openai",
-        parentThreadId: rootThreadId,
-        threadSource: "subagent",
-        agentPath: details.path || existingThread?.agentPath,
-      };
-      rememberThread(childThread);
-      setThreads((current) => upsertThread(current, childThread));
-    },
+    onNativeAgentDiscovered,
     onApprovalRequested: (threadId) => {
       if (!settings.notificationsEnabled || useTaskStore.getState().activeThreadId === threadId) return;
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
@@ -3088,6 +3303,7 @@ export default function App() {
       })().catch(() => {});
     },
     onTurnCompleted: (threadId, turn) => {
+      persistCompletedNativeChild(threadId);
       void finalizeRunCheckpoint(threadId, turn?.id);
       autoArchiveCompletionRef.current(threadId);
       const needsProviderRepair = providerRepairThreadsRef.current.delete(threadId);
@@ -3165,6 +3381,7 @@ export default function App() {
   });
 
   useClaudeEvents({
+    onNativeAgentDiscovered,
     bindingFor: (threadId) => {
       const logicalPath = threadProjectBindingsRef.current?.[threadId];
       return logicalPath ? executionPathFor(threadId, logicalPath) : undefined;
@@ -3191,6 +3408,7 @@ export default function App() {
       })().catch(() => {});
     },
     onTurnCompleted: (threadId) => {
+      persistCompletedNativeChild(threadId);
       void finalizeRunCheckpoint(threadId);
       autoArchiveCompletionRef.current(threadId);
       const task = useTaskStore.getState().tasks[threadId];
@@ -3308,19 +3526,19 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  // Check after startup and while a long-running app remains open. The lazy
-  // refresh itself enforces once per day per source (hourly after failure),
-  // so this timer does not make repeated page requests between due times.
+  // Refresh once per launch without blocking startup. Later routine checks
+  // retain the existing per-source TTL; manual Refresh forces another check.
   useEffect(() => {
     if (!isTauri()) return;
-    const check = () => {
+    const check = (force = false) => {
       void import("./lib/officialPricing")
-        .then(({ refreshOfficialPricing }) => refreshOfficialPricing())
+        .then(({ refreshOfficialPricing }) => refreshOfficialPricing({ force }))
         .then(() => setPricingCatalogRevision(pricingRevision()))
         .catch(() => undefined);
+      void refreshAvailableModelsRef.current(false).catch(() => undefined);
     };
-    const timer = window.setTimeout(check, 6_000);
-    const interval = window.setInterval(check, 6 * 3_600_000);
+    const timer = window.setTimeout(() => check(true), 6_000);
+    const interval = window.setInterval(() => check(), 6 * 3_600_000);
     return () => {
       window.clearTimeout(timer);
       window.clearInterval(interval);
@@ -3341,7 +3559,7 @@ export default function App() {
   // sign-in rather than as part of the startup sequence.
   useEffect(() => {
     if (claudeStatus?.available && claudeStatus.loggedIn) void refreshClaudeModels();
-  }, [claudeStatus?.available, claudeStatus?.loggedIn, refreshClaudeModels]);
+  }, [claudeAccountKey, claudeStatus?.available, claudeStatus?.loggedIn, refreshClaudeModels]);
 
   // Workspace-change side effects are keyed on the workspace *path* and
   // discovery inputs, with refreshTools read through a ref. Depending on
@@ -3373,7 +3591,7 @@ export default function App() {
     selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
-    setDraftSubagentSettings(false);
+    setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
     setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === projectDefaultProvider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
     setDraftThreadModel(pendingHandoffForWorkspace ? modelForProvider(pendingHandoffForWorkspace.targetProvider, "") : null);
     // Attachments are keyed by draft identity, so a workspace switch simply
@@ -3411,10 +3629,13 @@ export default function App() {
   // still handling turns. Only the explicit picker refresh may replace it,
   // and only after checking that no Codex-backed task or approval would be
   // orphaned by the restart. Startup/account refreshes keep using refreshModels.
-  const refreshOpenAiModelsFromPicker = useCallback(() => refreshProviderModels(
+  const refreshOpenAiModelsFromPicker = useCallback(() => shareModelRefresh(runtimeModelRefreshRef.current,
+    `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, () => refreshProviderModels(
     runtimeModelsRequestRef,
     async () => {
+      const request = runtimeModelsRequestRef.current;
       const runtime = await refreshCodexRuntimeStatus();
+      if (runtimeModelsRequestRef.current !== request) return [];
       if (!runtime.available || !runtime.path || !runtime.version) {
         throw new Error(runtime.warning || "The installed Codex runtime could not be checked. The current model catalog is still available; try again later.");
       }
@@ -3425,6 +3646,7 @@ export default function App() {
         // any new work until the replacement finishes or the lease is released.
         const reservation = await reserveRuntimeRestart();
         try {
+          if (runtimeModelsRequestRef.current !== request) return [];
           const taskState = useTaskStore.getState();
           const hasActiveRuntimeTask = Object.entries(taskState.statuses).some(([threadId, status]) =>
             (status === "starting" || status === "running")
@@ -3440,7 +3662,16 @@ export default function App() {
             || terminal.running
             || terminal.runningElsewhere.length > 0
             || workflowRuns.some((run) => run.status === "running");
-          if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand) {
+          const nativeRoots = new Set(Object.values(nativeAgentLinksRef.current)
+            .filter((link) => link.runtime !== "claude" && link.provider !== "claude" && link.provider !== "cursor")
+            .map((link) => link.rootThreadId));
+          const unresolvedNativeWork = [...nativeRoots].some((rootId) => {
+            const activity = nativeArchiveActivity({ threadId: rootId, nativeLinks: nativeAgentLinksRef.current,
+              statuses: taskState.statuses, agentRecordsByThread: Object.fromEntries(Object.entries(taskState.tasks).map(([id, task]) => [id, task.agents])) });
+            return activity.activeSelf || activity.activeDescendants;
+          }) || Object.values(taskState.tasks).some((task) => task.agents.some((agent) => agent.runtime !== "claude" && agent.provider !== "claude" && agent.provider !== "cursor" && isActiveAgentRecord(agent.status)))
+            || Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
+          if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand || unresolvedNativeWork) {
             throw new Error("A newer Codex runtime is installed, but an AI task, terminal command, workflow, or approval is still using the current runtime. Finish active work and respond to pending approvals, then refresh the model catalog again.");
           }
           await deliberateRestartRuntime(() => restartRuntimeReserved(reservation));
@@ -3454,10 +3685,30 @@ export default function App() {
     },
     setRuntimeModelsLoading,
     (models) => { if (models.length) setRuntimeModels(models); },
-    setRuntimeModelsError,
+    (error) => { runtimeModelRefreshRef.current.error = error; setRuntimeModelsError(error); },
     "OpenAI returned an empty model catalog.",
     false,
-  ), [deliberateRestartRuntime, terminal.running, terminal.runningElsewhere, workflowRuns]);
+  ), "manual"), [deliberateRestartRuntime, nativeAgentLinksRef, terminal.running, terminal.runningElsewhere, workflowRuns]);
+
+  const refreshAvailableModels = useCallback(async (manual = true) => {
+    const reads: Array<{ provider: string; read: () => Promise<unknown[]>; stillCurrent: () => boolean; error: () => string | undefined }> = [];
+    const recent = (state: ModelRefreshState<unknown>, key: string) => !manual && modelCatalogRecentlyRefreshed(state, key);
+    const openAiKey = `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`;
+    const claudeKey = `${claudeAccountKeyRef.current}:${claudeStatusRequestRef.current}`;
+    if (runtimeStatus?.available && account?.type === "chatgpt" && openAiAccountKeyRef.current
+      && !recent(runtimeModelRefreshRef.current, openAiKey)) reads.push({ provider: "OpenAI", read: manual ? refreshOpenAiModelsFromPicker : refreshModels,
+        stillCurrent: () => openAiKey === `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, error: () => runtimeModelRefreshRef.current.error });
+    if (claudeStatus?.available && claudeStatus.loggedIn && claudeAccountKeyRef.current
+      && !recent(claudeModelRefreshRef.current, claudeKey)) reads.push({ provider: "Claude", read: refreshClaudeModels,
+        stillCurrent: () => claudeKey === `${claudeAccountKeyRef.current}:${claudeStatusRequestRef.current}`, error: () => claudeModelRefreshRef.current.error });
+    const results = await Promise.allSettled(reads.map(({ read }) => read()));
+    const failures = results.flatMap((result, index) => {
+      const read = reads[index]!;
+      return read.stillCurrent() && (result.status === "rejected" || !result.value.length) ? [`${read.provider}: ${read.error() || "The available model catalog could not be read."}`] : [];
+    });
+    if (failures.length) throw new Error(`${failures.join(" ")} The previous available models are retained.`);
+  }, [account?.type, claudeStatus?.available, claudeStatus?.loggedIn, refreshClaudeModels, refreshModels, refreshOpenAiModelsFromPicker, runtimeStatus?.available]);
+  refreshAvailableModelsRef.current = refreshAvailableModels;
   /**
    * Replace the app-server so an already loaded thread can be given different
    * startup-only sub-agent config, and report the identity of the runtime that
@@ -3465,17 +3716,41 @@ export default function App() {
    * every thread the old process was running dies with it, and a thread whose
    * provider is unknown is assumed to be one of them.
    */
-  const restartRuntimeForCapabilities = useCallback(async (threadId: string) => {
-    const anotherCodexRun = Object.entries(useTaskStore.getState().statuses).some(([candidateId, candidateStatus]) => {
-      if (candidateId === threadId || (candidateStatus !== "starting" && candidateStatus !== "running")) return false;
-      return !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]);
-    });
-    if (anotherCodexRun) {
-      throw new Error("Sub-agent settings are ready, but another OpenAI, OpenRouter, or LM Studio task is still running. Your message was not sent; try again when that task finishes so Mythra Code can safely refresh the runtime without interrupting it.");
+  const threadBusyReason = useCallback((threadId: string, ignoreOwnStarting = false): string | null => {
+    const state = useTaskStore.getState();
+    const nativeActivity = nativeArchiveActivity({ threadId, nativeLinks: nativeAgentLinksRef.current, statuses: state.statuses, agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])) });
+    const ownStatus = state.statuses[threadId];
+    const managedBusy = Object.values(childAgentLinksRef.current).some((link) => (link.rootThreadId === threadId || link.childThreadId === threadId) && !link.terminalStatus);
+    const task = state.tasks[threadId];
+    if ((!ignoreOwnStarting && ownStatus === "starting") || ownStatus === "running" || state.workflowOwners[threadId] || task?.approvals.length || nativeActivity.activeSelf || nativeActivity.activeDescendants || managedBusy || task?.agents.some((agent) => isSubAgentWorkerActive(workerStatusFromAgentRecord(agent.status)) || workerStatusFromAgentRecord(agent.status) === "unknown")) return "Finish or stop this thread and every sub-agent, and resolve pending approvals, before starting a scheduled turn.";
+    return null;
+  }, [childAgentLinksRef, nativeAgentLinksRef]);
+  const restartRuntimeForCapabilities = useCallback(async (threadId: string, allowOwnStarting = false) => {
+    const assertRuntimeIdle = () => {
+      const state = useTaskStore.getState();
+      const anotherCodexRun = Object.entries(state.statuses).some(([candidateId, candidateStatus]) => (candidateStatus === "running" || (candidateStatus === "starting" && !(candidateId === threadId && allowOwnStarting))) && !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]));
+      const activeCodexWorkflow = Object.keys(state.workflowOwners).some((candidateId) => !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]));
+      const pendingApproval = Object.values(state.tasks).some((task) => !isLocalSubscriptionThread(knownThreadsRef.current?.[task.threadId]) && task.approvals.some((approval) => !approval.method.startsWith("claude/") && !approval.method.startsWith("cursor/") && !approval.method.startsWith("openkiwi/")));
+      const nativeRootIds = new Set(Object.values(nativeAgentLinksRef.current).filter((link) => link.runtime !== "claude" && link.provider !== "claude" && link.provider !== "cursor").map((link) => link.rootThreadId));
+      const nativeBusy = [...nativeRootIds].some((rootId) => {
+        const activity = nativeArchiveActivity({ threadId: rootId, nativeLinks: nativeAgentLinksRef.current, statuses: state.statuses, agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])) });
+        return activity.activeSelf || activity.activeDescendants;
+      });
+      const managedBusy = Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
+      if (anotherCodexRun || activeCodexWorkflow || pendingApproval || nativeBusy || managedBusy || terminal.running || terminal.runningElsewhere.length > 0 || workflowRuns.some((run) => run.status === "running")) {
+        throw new RuntimeCapabilityBusyError("Sub-agent settings are ready, but another runtime task, unresolved sub-agent, terminal command, workflow, or approval is still active. Your message was not sent; finish or stop that work before Mythra Code safely refreshes the runtime.");
+      }
+    };
+    assertRuntimeIdle();
+    const reservation = await reserveRuntimeRestart();
+    try {
+      assertRuntimeIdle();
+      await deliberateRestartRuntime(() => restartRuntimeReserved(reservation));
+      return runtimeInstanceId();
+    } finally {
+      await releaseRuntimeRestart(reservation).catch(() => undefined);
     }
-    await deliberateRestartRuntime();
-    return runtimeInstanceId();
-  }, [deliberateRestartRuntime]);
+  }, [childAgentLinksRef, deliberateRestartRuntime, nativeAgentLinksRef, terminal.running, terminal.runningElsewhere.length, workflowRuns]);
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
@@ -3982,7 +4257,7 @@ export default function App() {
     );
     setError(null);
     setStatus("Loading thread");
-    setDraftSubagentSettings(false);
+    setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
@@ -4017,6 +4292,7 @@ export default function App() {
         setThreadOpenCommitToken(requestId);
         markThreadRuntimeReady(thread.id);
         setStatus("Ready");
+        if (localProvider === "claude") void reconcileIdleClaudeNativeChildren(thread.id);
         return;
       }
       if (isClaudeThread(thread)) {
@@ -4049,6 +4325,7 @@ export default function App() {
         setThreadOpenCommitToken(requestId);
         markThreadRuntimeReady(resolvedThread.id);
         setStatus("Ready");
+        void reconcileIdleClaudeNativeChildren(resolvedThread.id);
         return;
       }
       if (isCursorThread(thread)) {
@@ -4099,6 +4376,11 @@ export default function App() {
       const threadIsChild = Boolean(childThreadLinks[thread.id]) || isSubAgentThread(thread, childThreadLinks, childThreadRootIds);
       const threadProviderSettings = threadIsChild
         ? settingsWithoutChildDelegation(targetSettings)
+        : targetSettings.subagentEngine === "native" && nativeSubagentUnavailableReason(provider, {
+          codexRuntime: runtimeStatus, claudeRuntime: claudeStatus, readiness: childAgentReadiness,
+          nativeOptions: targetSettings.nativeSubagentOptions, nativeDefaultModel: targetSettings.model, autoCompactTokens: targetSettings.autoCompactTokens, nativeReasoningEfforts,
+        }) !== null
+          ? { ...targetSettings, subagentsEnabled: false }
         : targetSettings;
       // Make repeat navigation paint from the in-memory task immediately. A
       // cold task follows with a metadata-only read, which is deliberately
@@ -4126,7 +4408,7 @@ export default function App() {
         reasoningEffort: threadProviderSettings.ultra ? "ultra" : threadProviderSettings.reasoningEffort,
         serviceTier: threadProviderSettings.serviceTier,
         readiness: childAgentReadiness,
-        settingsProposalsEnabled: true,
+        settingsProposalsEnabled: threadProviderSettings.subagentEngine !== "native",
       }) : Promise.resolve(null);
       void childBridgePromise.catch(() => undefined);
       let loaded: LoadedThreadHistory;
@@ -4179,9 +4461,11 @@ export default function App() {
         cacheChildAgentPolicy(policy);
         persistChildAgentPolicies((current) => ({ ...current, [policy.sessionId]: policy }));
       }
-      const resumedSubagentMax = childBridge?.policy.maxConcurrent
-        ?? childAgentPolicyForThread(childAgentPolicies, thread.id)?.maxConcurrent
-        ?? threadProviderSettings.subagentMax;
+      const resumedSubagentMax = threadProviderSettings.subagentEngine === "native"
+        ? sanitizeNativeSubagentMax(threadProviderSettings.nativeSubagentMax)
+        : childBridge?.policy.maxConcurrent
+          ?? childAgentPolicyForThread(childAgentPolicies, thread.id)?.maxConcurrent
+          ?? threadProviderSettings.subagentMax;
       const resumedSettings = resumedSubagentMax === threadProviderSettings.subagentMax
         ? threadProviderSettings
         : { ...threadProviderSettings, subagentMax: resumedSubagentMax };
@@ -4195,7 +4479,13 @@ export default function App() {
       let resumedRuntimeInstance = resumedRuntimeState?.instance ?? null;
       const resumedRuntimeLoaded = resumedRuntimeState?.loaded ?? false;
       const capabilitySignature = subagentCapabilitySignature({
-        subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
+        subagentsEnabled: threadProviderSettings.subagentEngine === "native"
+          ? threadProviderSettings.subagentsEnabled && nativeSubagentUnavailableReason(provider, { codexRuntime: runtimeStatus, claudeRuntime: claudeStatus, readiness: childAgentReadiness, nativeOptions: threadProviderSettings.nativeSubagentOptions, nativeDefaultModel: threadProviderSettings.model, autoCompactTokens: threadProviderSettings.autoCompactTokens, nativeReasoningEfforts }) === null
+          : Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
+        subagentEngine: threadProviderSettings.subagentEngine,
+        nativeSubagentMax: threadProviderSettings.nativeSubagentMax,
+        nativeSubagentOptions: threadProviderSettings.nativeSubagentOptions,
+        autoCompactTokens: threadProviderSettings.autoCompactTokens,
         subagentMax: resumedSubagentMax,
         bridgeInstanceId: childBridge?.launch.configPath,
       });
@@ -4214,7 +4504,7 @@ export default function App() {
             // Navigation must remain available while another task is running.
             // Read the durable transcript without claiming startup config was
             // applied; the next send will retry the guarded refresh.
-            if (/another OpenAI, OpenRouter, or LM Studio task is still running/i.test(friendlyError(reason))) {
+            if (reason instanceof RuntimeCapabilityBusyError) {
               capabilityRefreshDeferred = true;
             } else {
               throw reason;
@@ -4339,7 +4629,7 @@ export default function App() {
     selectThreadRequestRef.current += 1;
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
-    setDraftSubagentSettings(false);
+    setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
     setDraftThreadProvider(null);
     setDraftThreadModel(null);
     setDraftThreadIsolated(false);
@@ -4387,7 +4677,7 @@ export default function App() {
         messages: task?.messages ?? [],
       });
       setPendingHandoff(handoff);
-      setDraftSubagentSettings(false);
+      setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
       selectThreadRequestRef.current += 1;
       setActiveThread(null);
       useTaskStore.getState().setActiveThread(null);
@@ -4409,10 +4699,16 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  const handleThreadCreated = useCallback((threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean }) => {
+  const handleThreadCreated = useCallback((threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: import("./types").NativeSubagentOptions; autoCompactTokens?: number }) => {
     // This callback is captured with the sending draft, even if the user
     // navigates while provider preparation is in flight.
-    persistThreadSubagentSettings((current) => ({ ...current, [threadId]: options?.subagentsEnabled ?? effectiveSettings.subagentsEnabled }));
+    persistThreadSubagentSettings((current) => ({ ...current, [threadId]: {
+      enabled: options?.subagentsEnabled ?? effectiveSettings.subagentsEnabled,
+      engine: sanitizeSubagentEngine(options?.subagentEngine ?? effectiveSettings.subagentEngine),
+      nativeMaxConcurrent: sanitizeNativeSubagentMax(options?.nativeSubagentMax ?? effectiveSettings.nativeSubagentMax),
+      nativeOptions: sanitizeNativeSubagentOptions(options ? options.nativeSubagentOptions : effectiveSettings.nativeSubagentOptions),
+      autoCompactTokens: options ? options.autoCompactTokens : effectiveSettings.autoCompactTokens,
+    } }));
     // A scheduled first prompt never consumes the visible draft's handoff.
     if (options?.deferred || !pendingHandoffForWorkspace) return;
     persistThreadHandoffs((current) => ({ ...current, [threadId]: pendingHandoffForWorkspace }));
@@ -4501,6 +4797,7 @@ export default function App() {
     openRouterModels,
     lmStudioModels,
     runtimeStatus,
+    nativeReasoningEfforts,
     claudeStatus,
     cursorStatus,
     account,
@@ -4568,7 +4865,9 @@ export default function App() {
       && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
     if (!project) throw new Error("Project sub-agent settings only exist for saved projects, and this conversation is not in one.");
     assertChildAgentProposalAvailable(childAgentPolicies, childAgentLinks, rootThreadId);
-    persistThreadSubagentSettings((current) => ({ ...current, [rootThreadId]: next.enabled }));
+    persistThreadSubagentSettings((current) => ({ ...current, [rootThreadId]: {
+      ...(current[rootThreadId] ?? DEFAULT_THREAD_SUBAGENT_SETTINGS), enabled: next.enabled,
+    } }));
     setProjects((current) => current.map((entry) => entry.id === project.id
       ? { ...entry, overrides: { ...entry.overrides, subagents: { ...next, enabled: entry.overrides?.subagents?.enabled ?? settings.subagentsEnabled } } }
       : entry));
@@ -4672,6 +4971,8 @@ export default function App() {
   const { cancelChildAgentsFor, hasChildStartInFlight, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     policies: childAgentPolicies,
     links: childAgentLinks,
+    nativeLinks: nativeAgentLinks,
+    persistNativeAgentLinks,
     persistChildAgentLinks,
     openRouterModels,
     lmStudioModels,
@@ -4695,6 +4996,9 @@ export default function App() {
     persistThreadModel,
     persistThreadReasoning,
     setThreads,
+    persistThreadAutoCompactTokens: (threadId, autoCompactTokens) => {
+      persistThreadSubagentSettings((current) => ({ ...current, [threadId]: { ...DEFAULT_THREAD_SUBAGENT_SETTINGS, autoCompactTokens } }));
+    },
     cursorSessionIdsRef,
     scheduleClaudeThreadSave,
     scheduleCursorThreadSave,
@@ -4770,11 +5074,11 @@ export default function App() {
     const workflowOwner = rootThreadId ? useTaskStore.getState().workflowOwners[rootThreadId] : undefined;
     // Dispatch every cutoff before awaiting any provider. One slow runtime must
     // never delay the other agents from receiving Stop.
-    const results = await Promise.allSettled([
-      workflowOwner ? stopWorkflowRef.current?.(workflowOwner.workflowId) ?? Promise.resolve(false) : stopTurn(),
-      ...(rootThreadId ? [cancelChildAgentsFor(rootThreadId)] : []),
-    ]);
-    const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
+    const failures = (await stopWithChildren(
+      () => workflowOwner ? stopWorkflowRef.current?.(workflowOwner.workflowId) ?? Promise.resolve(false) : stopTurn(),
+      () => rootThreadId ? cancelChildAgentsFor(rootThreadId) : Promise.resolve(),
+      () => rootThreadId ? waitForRootCutoff(rootThreadId) : Promise.resolve(),
+    )).map(friendlyError);
     if (failures.length) setError(`Stop could not confirm every cutoff:\n${failures.join("\n")}`);
   }, [cancelChildAgentsFor, setError, stopTurn]);
 
@@ -4978,12 +5282,23 @@ export default function App() {
 
   const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean): Promise<boolean> => {
     const label = thread.name || thread.preview || "Untitled thread";
-    const archiveActivityBlock = () => activeThreadArchiveBlockedReason(
-      useTaskStore.getState().tasks[thread.id],
-      Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
-        || hasChildStartInFlight(thread.id),
-      Boolean(useTaskStore.getState().workflowOwners[thread.id]),
-    );
+    const archiveActivityBlock = () => {
+      const state = useTaskStore.getState();
+      const nativeActivity = nativeArchiveActivity({
+        threadId: thread.id,
+        nativeLinks: nativeAgentLinksRef.current,
+        statuses: state.statuses,
+        agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])),
+      });
+      if (nativeActivity.activeSelf) return "Finish or stop this thread before archiving it.";
+      return activeThreadArchiveBlockedReason(
+        state.tasks[thread.id],
+        nativeActivity.activeDescendants
+          || Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === thread.id && !link.terminalStatus)
+          || hasChildStartInFlight(thread.id),
+        Boolean(state.workflowOwners[thread.id]),
+      );
+    };
     const initialBlock = archiveActivityBlock();
     if (initialBlock) {
       if (confirmArchive) setError(initialBlock);
@@ -5061,10 +5376,13 @@ export default function App() {
   // that genuinely outlives the parent sweeps itself when its own turn ends.
   autoArchiveCompletionRef.current = (completedThreadId) => {
     if (!settings.autoArchiveSubagentThreads) return;
+    const state = useTaskStore.getState();
     const childIds = autoArchiveSubagentCandidates({
       completedThreadId,
-      links: childThreadLinks,
-      statuses: useTaskStore.getState().statuses,
+      links: { ...nativeAgentLinksRef.current, ...childAgentLinksRef.current },
+      nativeLinks: nativeAgentLinksRef.current,
+      statuses: state.statuses,
+      agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])),
       archivedThreadIds: archivedThreads.map((record) => record.id),
     });
     for (const childThreadId of childIds) {
@@ -5104,6 +5422,22 @@ export default function App() {
       setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
       return false;
     }
+    const nativeDeletionBusy = () => {
+      const current = useTaskStore.getState();
+      const activity = nativeArchiveActivity({
+        threadId,
+        nativeLinks: nativeAgentLinksRef.current,
+        statuses: current.statuses,
+        agentRecordsByThread: Object.fromEntries(Object.entries(current.tasks).map(([id, task]) => [id, task.agents])),
+      });
+      return activity.activeSelf || activity.activeDescendants
+        || current.statuses[threadId] === "starting" || current.statuses[threadId] === "running"
+        || Boolean(current.workflowOwners[threadId]);
+    };
+    if (nativeDeletionBusy()) {
+      setError("Finish or stop this task and its native sub-agents before deleting it.");
+      return false;
+    }
     if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
       || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))
       || hasChildStartInFlight(threadId)) {
@@ -5129,6 +5463,10 @@ export default function App() {
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
     try {
       await automaticTitles.cancel(threadId);
+      if (nativeDeletionBusy()) {
+        setError("Finish or stop this task and its native sub-agents before deleting it.");
+        return false;
+      }
       localTranscriptSaves.cancel(threadId);
       if (provider === "claude") await deleteClaudeTranscript(threadId);
       else if (provider === "cursor") await deleteCursorTranscript(threadId);
@@ -5254,11 +5592,11 @@ export default function App() {
 
   const promptAudit = useMemo(() => [
     { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "Mythra Code + project" : "project") : "Mythra Code"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
-    { label: "Developer instruction", value: `Mythra Code internal · ${mythraCodeDeveloperInstructions(effectiveSettings.subagentsEnabled, effectiveSettings.subagentsEnabled).length} chars` },
+    { label: "Developer instruction", value: `Mythra Code internal · ${mythraCodeDeveloperInstructions(effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine !== "native", effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine !== "native", undefined, undefined, effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native").length} chars` },
     { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
     { label: "Model", value: effectiveSettings.model || "provider default" },
     { label: "Reasoning", value: effectiveSettings.reasoningEffort },
-    { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? `on · max ${effectiveSettings.subagentMax}` : "off" },
+    { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? effectiveSettings.subagentEngine === "native" ? `native · requested limit ${sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax)}` : `Mythra Code · max ${effectiveSettings.subagentMax}` : "off" },
     { label: "Configured sub-agents", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
     { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
     { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
@@ -5300,6 +5638,10 @@ export default function App() {
   const openAgent = async (threadId: string) => {
     const localLink = childAgentLinks[threadId];
     const nativeLink = nativeAgentLinks[threadId];
+    if (nativeLink?.runtime === "claude" || threadId.startsWith("claude-native:")) {
+      setError("Claude Code runs this sub-agent inside its parent process. Open the parent conversation to view its activity.");
+      return;
+    }
     const logicalPath = threadProjectBindingsRef.current?.[threadId]
       ?? (nativeLink ? threadProjectBindingsRef.current?.[nativeLink.rootThreadId] : undefined)
       ?? activeWorkspace?.path;
@@ -5354,7 +5696,7 @@ export default function App() {
       await waitForThreadPreparation(checkpoint?.threadId ?? activeThread.id);
       await ensureSkillRoots();
       const modelProvider = runtimeModelProviderId(effectiveSettings.provider);
-      const forkParams = { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig(effectiveSettings, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: "", developerInstructions: mythraCodeDeveloperInstructions(false) };
+      const forkParams = { threadId: checkpoint?.threadId ?? activeThread.id, lastTurnId: checkpoint?.turnId, cwd: activeWorkspace?.path, runtimeWorkspaceRoots: activeWorkspace ? [activeWorkspace.path] : undefined, model: effectiveSettings.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig({ ...effectiveSettings, subagentsEnabled: false }, { customAgents, modelContextWindow: effectiveSettings.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === effectiveSettings.model)?.context_length : effectiveSettings.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === effectiveSettings.model)?.maxContextLength : undefined }), baseInstructions: "", developerInstructions: mythraCodeDeveloperInstructions(false) };
       let result: { thread: Thread };
       let forkedWithoutTurns = false;
       try {
@@ -5364,7 +5706,7 @@ export default function App() {
         if (!isExcludeTurnsUnsupported(reason)) throw reason;
         result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
       }
-      persistThreadSubagentSettings((current) => ({ ...current, [result.thread.id]: false }));
+      persistThreadSubagentSettings((current) => ({ ...current, [result.thread.id]: { ...DEFAULT_THREAD_SUBAGENT_SETTINGS, autoCompactTokens: effectiveSettings.autoCompactTokens } }));
       if (activeWorkspace) bindThreadToProject(result.thread.id, activeWorkspace.path);
       const loaded = forkedWithoutTurns
         ? await loadThreadHistory({ threadId: result.thread.id, includeTurns: false }, { threadId: result.thread.id, includeTurns: true })
@@ -6757,7 +7099,7 @@ export default function App() {
     discardRunCheckpoint,
     updateWorkflow,
     recordRun: recordWorkflowRun,
-    onThreadCreated: (threadId) => persistThreadSubagentSettings((current) => ({ ...current, [threadId]: false })),
+    onThreadCreated: (threadId) => persistThreadSubagentSettings((current) => ({ ...current, [threadId]: { ...DEFAULT_THREAD_SUBAGENT_SETTINGS } })),
     onLocalThreadUpdated: (thread: Thread, cursorSessionId?: string, run?: ScheduleRunSettings) => {
       if (cursorSessionId) cursorSessionIdsRef.current[thread.id] = cursorSessionId;
       const remembered = knownThreadsRef.current?.[thread.id];
@@ -6912,8 +7254,13 @@ export default function App() {
     bindThreadToProject,
     beginRunCheckpoint,
     discardRunCheckpoint,
-    onThreadCreated: (threadId) => {
-      persistThreadSubagentSettings((current) => ({ ...current, [threadId]: false }));
+    restartRuntimeForCapabilities,
+    threadBusyReason,
+    onThreadDelegationDisabled: (threadId, options) => {
+      persistThreadSubagentSettings((current) => ({ ...current, [threadId]: { ...(current[threadId] ?? DEFAULT_THREAD_SUBAGENT_SETTINGS), enabled: false, autoCompactTokens: options.autoCompactTokens } }));
+    },
+    onThreadCreated: (threadId, _project, options) => {
+      persistThreadSubagentSettings((current) => ({ ...current, [threadId]: { ...DEFAULT_THREAD_SUBAGENT_SETTINGS, autoCompactTokens: options?.autoCompactTokens } }));
     },
     onThreadStarted: (workspace) => {
       if (workspace.isChat ? workspaceMode === "chat" : activeProject?.id === workspace.id) {
@@ -7649,6 +7996,22 @@ export default function App() {
                     </div>
                     <SubAgentCommandCenter
                       policy={activeThreadSubagentPolicy}
+                      engine={sanitizeSubagentEngine(effectiveSettings.subagentEngine)}
+                      provider={effectiveSettings.provider}
+                      nativeUnavailableReason={nativeUnavailableReason}
+                      nativeSelectionUnavailableReason={nativeSelectionUnavailableReason}
+                      nativeMaxConcurrent={sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax)}
+                      nativeOptions={effectiveSettings.nativeSubagentOptions}
+                      claudeVersion={claudeStatus?.version}
+                      nativeModelCatalogs={nativeModelCatalogs}
+                      nativeReasoningEfforts={nativeReasoningEfforts}
+                      nativeDefaultModel={effectiveSettings.model}
+                      autoCompactTokens={effectiveSettings.autoCompactTokens}
+                      onAutoCompactTokensChange={persistComposerAutoCompactTokens}
+                      onNativeOptionsChange={persistComposerNativeOptions}
+                      onEngineChange={persistComposerSubagentEngine}
+                      onNativeMaxConcurrentChange={persistComposerNativeSubagentMax}
+                      contextKey={activeThreadId ?? `new:${activeWorkspace?.path ?? ""}`}
                       capturedPolicy={activeDelegationPolicy ?? null}
                       mode={subagentPolicyMode}
                       readiness={childAgentReadiness}
@@ -7924,6 +8287,7 @@ export default function App() {
             throw new Error("Some pricing sources could not be checked");
           }
         }}
+        onRefreshAvailableModels={refreshAvailableModels}
         openRouterPricingError={openRouterModelsError}
         onClose={closeSettings}
         onSave={(next) => {

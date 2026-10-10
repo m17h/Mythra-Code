@@ -255,12 +255,53 @@ export interface ClaudeTurnOptions {
   attachments: ClaudeAttachment[];
   subagentMax: number;
   customAgents: CustomAgentProfile[];
+  /** Explicit opt-in to Claude's own agents; absent preserves Mythra containment. */
+  nativeSubagents?: boolean;
+  /** Native spawn admission limit, separate from the Mythra crew limit. */
+  nativeSubagentMax?: number;
+  /** Explicit model for ordinary native children; omitted leaves provider selection unchanged. */
+  nativeSubagentModel?: string;
+  /** This conversation's auto-compact window; also used for managed child turns. */
+  autoCompactTokens?: number;
+  /** Selected native child model's window; distinct model required for different windows. */
+  nativeAutoCompactTokens?: number;
   skillsPluginPath?: string;
   /**
    * Path to the cross-provider delegation MCP configuration. Set only for a
    * root thread, so a child Claude process never receives delegation tools.
    */
   childAgentBridgeConfig?: string;
+}
+
+/** First-party identity keys supported by the verified Claude Code resolver. */
+export function claudeCompactionModelKey(model: string | null | undefined): string | null {
+  const spelling = (model ?? "").trim().toLowerCase().replace(/\[1m\]$/, "");
+  const aliases: Record<string, string> = {
+    opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5",
+    haiku: "claude-haiku-5-5", fable: "claude-fable-5-1",
+  };
+  const canonical = (aliases[spelling] ?? spelling).replace(/-\d{8}$/, "");
+  return new Set([
+    "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5",
+    "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet-5-5",
+    "claude-haiku-4-5", "claude-haiku-5-5", "claude-fable-5", "claude-fable-5-1",
+  ]).has(canonical) ? canonical : null;
+}
+
+export function claudeNativeCompactionConflict(
+  parentModel: string | null | undefined,
+  parentTokens: number | null | undefined,
+  childModel: string | null | undefined,
+  childTokens: number | null | undefined,
+): string | null {
+  if (childTokens == null || childTokens === parentTokens) return null;
+  const parent = claudeCompactionModelKey(parentModel);
+  const child = claudeCompactionModelKey(childModel);
+  if (!parent) return "Separate native auto-compact windows require an explicit supported parent model. Choose a model instead of Provider default, or use Mythra Code sub-agents.";
+  if (!child) return "Separate native auto-compact windows require an explicit supported child model. Choose a child model, or use Mythra Code sub-agents.";
+  return parent === child
+    ? "Claude native parent and children using the same model share that model's auto-compact window. Choose a different child model, use the same window, or choose Mythra Code sub-agents."
+    : null;
 }
 
 export interface ClaudeTranscript {

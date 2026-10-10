@@ -201,7 +201,6 @@ describe("timelineFromTurns", () => {
       agent: {
         action: "spawn",
         provider: "openai",
-        task: "/root/audio_regression_audit",
         count: 1,
       },
     });

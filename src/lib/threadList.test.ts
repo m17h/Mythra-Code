@@ -35,7 +35,6 @@ describe("thread sidebar list", () => {
   it("indexes the ownership graph once for a mixed inbox without changing root precedence or order", () => {
     const links = {
       child: { rootThreadId: "root" },
-      root: { rootThreadId: "reversed-claim" },
       unrelated: { rootThreadId: "elsewhere" },
     };
     const threads = [
@@ -64,6 +63,16 @@ describe("thread sidebar list", () => {
     } finally {
       values.mockRestore();
     }
+  });
+
+  it("keeps a native intermediate parent in the child inbox with the cached graph", () => {
+    const links = { parent: { rootThreadId: "root" }, child: { rootThreadId: "parent" } };
+    const parent = makeThread("parent", { parentThreadId: "root", threadSource: "subagent" });
+    const threads = [makeThread("root"), parent, makeThread("child")];
+    const roots = ownershipRootIds(links);
+    expect(filterThreadsByKind(threads, links, "main", roots).map((thread) => thread.id)).toEqual(["root"]);
+    expect(filterThreadsByKind(threads, links, "subagents", roots).map((thread) => thread.id)).toEqual(["parent", "child"]);
+    expect(repairRootThreadMetadata(parent, links, roots)).toBe(parent);
   });
 
   it("shows a newly started thread immediately with its first message", () => {
@@ -241,6 +250,16 @@ describe("thread sidebar list", () => {
     const main = makeThread("main", { parentThreadId: "main" });
     expect(filterThreadsByKind([main], {}, "main")).toEqual([main]);
     expect(filterThreadsByKind([main], {}, "subagents")).toEqual([]);
+  });
+
+  it("keeps an intermediate native child in the child inbox when it owns descendants", () => {
+    const root = makeThread("root");
+    const child = makeThread("child", { parentThreadId: "root", threadSource: "subagent" });
+    const descendant = makeThread("descendant", { parentThreadId: "child", threadSource: "subagent" });
+    const graph = { child: { rootThreadId: "root" }, descendant: { rootThreadId: "child" } };
+    expect(filterThreadsByKind([root, child, descendant], graph, "main")).toEqual([root]);
+    expect(filterThreadsByKind([root, child, descendant], graph, "subagents")).toEqual([child, descendant]);
+    expect(repairRootThreadMetadata(child, graph)).toBe(child);
   });
 
   it("strips poisoned child metadata from a proven root before its last link disappears", () => {

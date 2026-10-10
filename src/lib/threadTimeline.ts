@@ -84,12 +84,17 @@ function activityFromItem(
     if (detail) return { id, kind: "reasoning", title: "Model thinking", detail, status: "completed", timelineOrder, turnId, turnStatus };
   }
   if (item.type === "collabAgentToolCall") {
+    const childIds = [...new Set([...(item.receiverThreadIds ?? []), ...Object.keys(item.agentsStates ?? {})])];
     const titles: Record<string, string> = {
       spawnAgent: `Spawn sub-agent${item.receiverThreadIds?.length === 1 ? "" : "s"}`,
       sendInput: "Send input to sub-agent",
       resumeAgent: "Resume sub-agent",
       wait: "Wait for sub-agents",
       closeAgent: "Close sub-agent",
+      sendMessage: "Message sub-agent",
+      followupTask: "Continue sub-agent task",
+      interruptAgent: "Stop sub-agent",
+      listAgents: "List sub-agents",
     };
     const actions = {
       spawnAgent: "spawn",
@@ -97,6 +102,10 @@ function activityFromItem(
       resumeAgent: "resume",
       wait: "wait",
       closeAgent: "close",
+      sendMessage: "sendInput",
+      followupTask: "resume",
+      interruptAgent: "close",
+      listAgents: "status",
     } as const;
     return {
       id,
@@ -108,6 +117,8 @@ function activityFromItem(
         action: item.tool ? actions[item.tool] : "status",
         provider: "openai",
         task: item.prompt ?? undefined,
+        count: childIds.length,
+        threadIds: childIds,
       },
       timelineOrder,
       turnId,

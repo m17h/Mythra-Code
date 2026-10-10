@@ -347,7 +347,9 @@ describe("compact activity in the timeline", () => {
       try {
         act(() => { document.body.append(approval); });
         await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-        expect(document.activeElement).toBe(within(approval).getByLabelText("Approval answer"));
+        // Removal commits before ChatTimeline's passive focus handoff effect.
+        // Observe the handoff itself rather than racing the DOM removal.
+        await waitFor(() => expect(document.activeElement).toBe(within(approval).getByLabelText("Approval answer")));
         // The run keeps going: closing for the approval never stops it.
         expect(appKeys).not.toHaveBeenCalled();
         expect(screen.getByRole("button", { name: /^Executing commands\. View activity/ })).toBeInTheDocument();

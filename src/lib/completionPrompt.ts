@@ -36,6 +36,14 @@ export const MYTHRA_CODE_NATIVE_DELEGATION_POLICY = [
   "When the mythra_agents MCP bridge exposes spawn_mythra_agent, use that uniquely named tool exclusively and obey its exact approved destination list; when it is absent, do not spawn sub-agents.",
 ].join(" ");
 
+/** Native mode has one authority too: the selected provider, never the crew bridge. */
+export const MYTHRA_CODE_PROVIDER_DELEGATION_INSTRUCTIONS = [
+  "Provider-native sub-agent delegation is enabled for this conversation.",
+  "Use this provider's native agent tools when delegation helps; the provider selects its own agents and available models.",
+  "Mythra Code's mixed-provider crew is not active: do not use spawn_mythra_agent or interpret its saved roster as native agent configuration.",
+  "Native agents inherit this turn's project and permission boundaries. Collect their results before finishing, and report any failed or unfinished delegated work honestly.",
+].join(" ");
+
 export const MYTHRA_CODE_DELEGATION_INSTRUCTIONS = [
   "Mythra Code-managed sub-agent delegation is active for this conversation.",
   "Always interpret a user request to spawn, use, or delegate work to sub-agents as a request for the Mythra Code-managed crew, and use only the mythra_agents MCP bridge tools (spawn_mythra_agent, agent_status, collect_agent, cancel_agent, and propose_agent_settings; provider runtimes may render them as mythra_agents.<tool> or mcp__mythra_agents__<tool>).",
@@ -68,18 +76,19 @@ export interface CheckButtonPromptContext {
   check: ProjectCheckCommand | null | undefined;
 }
 
-export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null): string {
+export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false): string {
   const sections = [MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS, MYTHRA_CODE_COMPLETION_INSTRUCTIONS];
-  if (delegationEnabled) sections.push(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
+  if (nativeDelegation) sections.push(MYTHRA_CODE_PROVIDER_DELEGATION_INSTRUCTIONS);
+  else if (delegationEnabled) sections.push(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
   else if (settingsProposalsEnabled) sections.push(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
   if (checkButton?.toolAvailable) sections.push(checkButtonInstructions(checkButton.check));
   return sections.join("\n\n");
 }
 
-export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null): string {
+export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false): string {
   const prompt = systemPrompt.trim();
-  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton);
+  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation);
   return prompt
     ? `${prompt}\n\n${internalInstructions}`
     : internalInstructions;

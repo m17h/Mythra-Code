@@ -10,22 +10,19 @@ type NativeSubAgentPresentation = Pick<Activity, "kind" | "title" | "detail" | "
  * dependent and causes restored transcripts to disagree with live ones.
  */
 export function nativeSubAgentPresentation(item: ThreadItem): NativeSubAgentPresentation {
-  const action = item.kind === "started"
-    ? "started"
-    : item.kind === "interrupted"
-      ? "interrupted"
-      : "working";
-  const task = item.agentPath?.trim() || item.agentThreadId?.trim() || "Delegated task";
+  const titles: Record<string, string> = { started: "started", interrupted: "interrupted", completed: "completed", failed: "failed", errored: "failed" };
+  const action = titles[item.kind ?? ""] ?? "working";
+  const identity = item.agentPath?.trim() || item.agentThreadId?.trim() || "Delegated task";
 
   return {
     kind: "agent",
     title: `Sub-agent ${action}`,
-    detail: task,
+    detail: identity,
     status: item.kind,
     agent: {
       action: "spawn",
       provider: "openai",
-      task,
+      ...(item.agentModel ? { model: item.agentModel } : {}),
       count: 1,
       ...(item.agentThreadId ? { threadIds: [item.agentThreadId] } : {}),
     },

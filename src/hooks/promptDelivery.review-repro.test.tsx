@@ -14,7 +14,12 @@ const runtime = vi.hoisted(() => ({
   saveCursor: vi.fn<(value: { messages: Array<{ role: string }> }) => Promise<void>>(async () => {}),
   killClaude: vi.fn(async () => {}), killCursor: vi.fn(async () => {}),
 }));
-vi.mock("../lib/codex", () => ({ rpc: runtime.rpc, auditEvent: runtime.auditEvent }));
+vi.mock("../lib/codex", () => ({
+  rpc: runtime.rpc,
+  auditEvent: runtime.auditEvent,
+  runtimeInstanceId: async () => "prompt-delivery-fixture-runtime",
+  runtimeThreadState: async () => ({ instance: "prompt-delivery-fixture-runtime", loaded: false }),
+}));
 vi.mock("../lib/preferenceLearningStore", () => ({
   getPreferenceLearningHydrated: () => true,
   loadPreferenceLearning: async () => {},

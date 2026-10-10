@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import type { ReasoningEffort } from "../components/ModelPowerControl";
 import { respond, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus } from "../lib/codex";
 import {
   isClaudeThreadBusyError,
@@ -19,7 +20,8 @@ import type { AgentQuestionSubmission } from "../lib/agentQuestionContext";
 import { beginCursorTurnStart, cursorTurnOwner, isCurrentCursorTurnStart, rejectCursorTurnStart, type CursorStartAttempt } from "../lib/cursorTurnOwnership";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSession, type ChildAgentBridgeResult } from "../lib/childAgentSessions";
-import { childAgentPolicyForThread, type ChildAgentLink, type ChildAgentPolicy, type ChildAgentReadiness } from "../lib/childAgents";
+import { childAgentPolicyForThread, settingsWithoutChildDelegation, type ChildAgentLink, type ChildAgentPolicy, type ChildAgentReadiness } from "../lib/childAgents";
+import { nativeSubagentUnavailableReason, parentAutoCompactionUnavailableReason, sanitizeNativeSubagentMax } from "../lib/threadSubagentSettings";
 import {
   planSubagentCapabilities,
   recordSubagentCapabilities,
@@ -69,7 +71,7 @@ import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { AttachmentRecord } from "../components/StudioDock";
-import type { Account, AppSettings, ChatMessage, CustomAgentProfile, Project, Provider, SettingsSection, Thread, ThreadReasoning, Turn } from "../types";
+import type { Account, AppSettings, ChatMessage, CustomAgentProfile, NativeSubagentOptions, Project, Provider, SettingsSection, SubagentEngine, Thread, ThreadReasoning, Turn } from "../types";
 
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
 const activeQueuedDeliveries = new Set<string>();
@@ -248,6 +250,7 @@ export interface TurnRunnerContext {
   openRouterModels: OpenRouterModel[];
   lmStudioModels?: LMStudioModel[];
   runtimeStatus: CodexRuntimeStatus | null;
+  nativeReasoningEfforts?: Partial<Record<string, ReasoningEffort[]>>;
   claudeStatus: ClaudeRuntimeStatus | null;
   cursorStatus: CursorRuntimeStatus | null;
   account: Account | null;
@@ -285,7 +288,7 @@ export interface TurnRunnerContext {
   currentThread?: (threadId: string) => Thread | null | undefined;
   /** `deferred` marks a scheduled first prompt, which must not consume the
    * visible draft's pending handoff; `subagentsEnabled` is its snapshot. */
-  onThreadCreated: (threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean }) => void;
+  onThreadCreated: (threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: NativeSubagentOptions; autoCompactTokens?: number }) => void;
   onThreadTitlePending?: (threadId: string, prompt: string) => void;
   onThreadTitleCancelled?: (threadId: string) => void;
   onThreadTitleRequested?: (threadId: string, prompt: string) => void;
@@ -300,7 +303,7 @@ export interface TurnRunnerContext {
   /** Restart the shared Codex app-server between idle turns so startup-only
    * capability config can be reapplied to an already loaded thread. Resolves
    * with the identity of the app-server that replaced it. */
-  restartRuntimeForCapabilities: (threadId: string) => Promise<string>;
+  restartRuntimeForCapabilities: (threadId: string, allowOwnStarting?: boolean) => Promise<string>;
   /** Wait for view-first OpenAI navigation to finish preparing its runtime. */
   waitForThreadPreparation: (threadId: string) => Promise<void>;
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
@@ -386,7 +389,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     };
     const {
       activeThread, activeWorkspace, activeProject, running, attachments, deferredDelivery,
-      effectiveSettings, subscriptionSystemPrompts, customAgents, openRouterModels, lmStudioModels = [],
+      effectiveSettings: configuredSettings, subscriptionSystemPrompts, customAgents, openRouterModels, lmStudioModels = [],
       runtimeStatus, claudeStatus, cursorStatus, account, openRouterReady, lmStudioReady,
       workspaceGitInfo, draftThreadIsolated, worktreeBusy, skillsFolder, resolveSkillPrompt,
       childAgentPolicies, childAgentLinks, activeThreadIsChild, childAgentReadiness, persistChildAgentPolicies,
@@ -399,11 +402,33 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setStartingDraftTurn, setError, setStatus, setTransientStatus,
       setRuntimeSetupOpen, setAuthRequiredOpen, openSettings,
     } = ctx;
+    const effectiveSettings = activeThreadIsChild ? settingsWithoutChildDelegation(configuredSettings) : configuredSettings;
+    const nativeDelegation = effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native";
     if (!text || !activeWorkspace) return false;
+    const compactionReason = parentAutoCompactionUnavailableReason(effectiveSettings.provider, effectiveSettings.autoCompactTokens);
+    if (compactionReason) {
+      setError(compactionReason);
+      return false;
+    }
     if (activeThread && archiveOwnsThread(activeThread.id)) return false;
     if (isPullRequestMutationRunning(executionPathFor(activeThread?.id, activeWorkspace.path))) {
       setError("Wait for the pull request operation to finish before starting another model turn.");
       return false;
+    }
+    if (nativeDelegation) {
+      const reason = nativeSubagentUnavailableReason(effectiveSettings.provider, {
+        codexRuntime: runtimeStatus,
+        claudeRuntime: claudeStatus,
+        readiness: childAgentReadiness,
+        nativeOptions: effectiveSettings.nativeSubagentOptions,
+        nativeDefaultModel: effectiveSettings.model,
+        autoCompactTokens: effectiveSettings.autoCompactTokens,
+        nativeReasoningEfforts: ctx.nativeReasoningEfforts,
+      });
+      if (reason) {
+        setError(reason);
+        return false;
+      }
     }
     for (const attachment of attachments) {
       const reason = attachment.kind === "image" ? unsupportedImageReason(attachment.path) : undefined;
@@ -682,7 +707,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
         rememberThread(thread);
         contextRef.current.onThreadTitlePending?.(thread.id, text);
-        onThreadCreated(thread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled });
+        onThreadCreated(thread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentEngine: effectiveSettings.subagentEngine, nativeSubagentMax: effectiveSettings.nativeSubagentMax, nativeSubagentOptions: effectiveSettings.nativeSubagentOptions, autoCompactTokens: effectiveSettings.autoCompactTokens });
         persistThreadModel(thread.id, effectiveSettings.model);
         persistThreadReasoning(thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         useTaskStore.getState().ensureTask(thread.id, executionPath);
@@ -832,21 +857,21 @@ export function useTurnRunner(context: TurnRunnerContext): {
         reasoningEffort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
-        settingsProposalsEnabled: Boolean(activeProject),
+        settingsProposalsEnabled: Boolean(activeProject) && effectiveSettings.subagentEngine !== "native",
         // Thread selection may attach a bridge, but only sending a prompt is
         // allowed to consume a staged thread-local crew edit.
         promoteStagedEdits: true,
       });
       assertCanStart();
-      // A captured cross-provider policy freezes one concurrency budget for
-      // the whole conversation. Use that same budget for provider-native
-      // sub-agents too, so the number displayed by the command center is the
-      // number Claude/Codex actually receives. Threads that never captured a
-      // roster continue to use the live project setting.
+      // A managed crew retains its captured budget. Native delegation uses
+      // the conversation's separate budget, even after switching away from a
+      // previously captured Mythra crew.
       const capturedPolicy = childAgentPolicyForThread(childAgentPolicies, activeThread?.id);
-      const runtimeSubagentMax = childBridge?.policy.maxConcurrent
-        ?? capturedPolicy?.maxConcurrent
-        ?? effectiveSettings.subagentMax;
+      const runtimeSubagentMax = effectiveSettings.subagentEngine === "native"
+        ? sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax)
+        : childBridge?.policy.maxConcurrent
+          ?? capturedPolicy?.maxConcurrent
+          ?? effectiveSettings.subagentMax;
       const runtimeSettings = { ...effectiveSettings, systemPrompt: resolvedSystemPrompt, subagentMax: runtimeSubagentMax };
       // The Run button is a project feature: the model is told about it (and
       // its current command) only when this thread's bridge can change it.
@@ -867,7 +892,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // Appending the optimistic user message cannot flip assistant
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             return { turnId: result.turnId };
           },
           afterStart: (threadId) => scheduleClaudeThreadSave(threadId),
@@ -888,7 +913,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton),
+              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -917,7 +942,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       assertCanStart();
       let runtimeInstance = currentRuntime.instance;
       const capabilities = subagentCapabilitySignature({
-        subagentsEnabled: Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
+        subagentsEnabled: nativeDelegation || Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")),
+        subagentEngine: effectiveSettings.subagentEngine,
+        nativeSubagentMax: effectiveSettings.nativeSubagentMax,
+        nativeSubagentOptions: effectiveSettings.nativeSubagentOptions,
+        autoCompactTokens: effectiveSettings.autoCompactTokens,
         subagentMax: runtimeSubagentMax,
         // The same policy receives a new token/config path whenever its bridge
         // is rebuilt. App-server must be refreshed so it starts that process,
@@ -942,7 +971,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
         rememberThread(startedThread);
         contextRef.current.onThreadTitlePending?.(startedThread.id, text);
-        onThreadCreated(startedThread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled });
+        onThreadCreated(startedThread.id, { deferred: Boolean(deferredDelivery), subagentsEnabled: effectiveSettings.subagentsEnabled, subagentEngine: effectiveSettings.subagentEngine, nativeSubagentMax: effectiveSettings.nativeSubagentMax, nativeSubagentOptions: effectiveSettings.nativeSubagentOptions, autoCompactTokens: effectiveSettings.autoCompactTokens });
         persistThreadModel(startedThread.id, effectiveSettings.model.trim() || (typeof runtimeTurnModel === "string" ? runtimeTurnModel.trim() : ""));
         persistThreadReasoning(startedThread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
         recordSubagentCapabilities(startedThread.id, runtimeInstance, capabilities);
@@ -964,7 +993,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // switch real; a runtime that restarted since then has nothing loaded
         // and takes the new config from the resume alone.
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
-        if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId);
+        if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId, true);
         assertCanStart();
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
@@ -1016,6 +1045,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")),
           runButton,
           checkButton,
+          nativeDelegation,
         ),
       }));
       recordAuthoredPrompt(threadId, sentMessageId);

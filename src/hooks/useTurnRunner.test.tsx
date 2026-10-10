@@ -58,7 +58,10 @@ vi.mock("../lib/preferenceLearningStore", () => ({
 beforeEach(() => { preferences.scopes = {}; preferences.hydrated = true; preferences.load.mockReset().mockImplementation(async () => { preferences.hydrated = true; }); });
 
 vi.mock("../lib/codex", () => codex);
-vi.mock("../lib/claude", () => claude);
+vi.mock("../lib/claude", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/claude")>(),
+  ...claude,
+}));
 vi.mock("../lib/cursor", () => cursor);
 vi.mock("../lib/worktrees", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/worktrees")>(),
@@ -69,7 +72,7 @@ vi.mock("../lib/childAgentSessions", async (importOriginal) => ({
   ...childSessions,
 }));
 
-import { forgetSubagentCapabilities } from "../lib/threadCapabilities";
+import { forgetSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "../lib/threadCapabilities";
 import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./useTurnRunner";
 
 const OPENAI_THREAD: Thread = {
@@ -1984,6 +1987,163 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     childSessions.ensureChildAgentBridge.mockResolvedValue(null);
   });
 
+  it("uses the native budget independently of a frozen Mythra crew", async () => {
+    const captured = bridgeResult({ maxConcurrent: 1 }).policy;
+    const deps = openAiContext({
+      effectiveSettings: { ...ENABLED, autoCompactTokens: 150_000, subagentEngine: "native", nativeSubagentMax: 8, nativeSubagentOptions: { codex: { model: "gpt-6.1-sol", reasoningEffort: "high" }, claude: { model: "claude-opus-5", autoCompactTokens: 300_000 } } },
+      childAgentPolicies: { [captured.sessionId]: captured },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "/codex", version: "0.161.0", compatible: true, warning: null },
+      childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: false, cursorReady: false },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("use native helpers")).toBe(true); });
+    expect(resumeCall()?.[1]).toMatchObject({ config: { agents: { max_threads: 8, default_subagent_model: "gpt-6.1-sol", default_subagent_reasoning_effort: "high" }, model_auto_compact_token_limit: 150_000, features: { multi_agent: true, multi_agent_v2: { enabled: true } } } });
+    expect(JSON.stringify(resumeCall()?.[1])).not.toContain("claude-opus-5");
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ settingsProposalsEnabled: false, settings: expect.objectContaining({ subagentEngine: "native" }) }));
+    expect(codex.rpc.mock.calls.find(([method]) => method === "turn/start")![1].collaborationMode.settings.developer_instructions).not.toContain("Mythra Code-managed sub-agent delegation is active");
+  });
+
+  it.each([null, "0.160.0", "unknown"])("blocks native starts before dispatch with unsupported Codex version %s", async (version) => {
+    const deps = openAiContext({
+      effectiveSettings: { ...ENABLED, subagentEngine: "native", nativeSubagentMax: 6 },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "/codex", version, compatible: true, warning: null },
+      childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: false, cursorReady: false },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("delegate")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("0.161.0"));
+    expect(codex.rpc).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("never grants native delegation to a reopened child", async () => {
+    const deps = openAiContext({ activeThreadIsChild: true, effectiveSettings: { ...ENABLED, subagentEngine: "native", nativeSubagentMax: 8 } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("continue the child")).toBe(true); });
+    expect(childSessions.ensureChildAgentBridge).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ subagentsEnabled: false, subagentMax: 1 }), isChildThread: true }));
+    const resumed = resumeCall()?.[1];
+    if (resumed) expect(resumed.config).toMatchObject({ agents: { max_threads: 1 }, features: { multi_agent: false, multi_agent_v2: false } });
+  });
+
+  it("hands explicit native controls to a new Claude process", async () => {
+    const deps = claudeContext({
+      running: false,
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5-5", autoCompactTokens: 1_000_000, subagentsEnabled: true, subagentEngine: "native", nativeSubagentMax: 7, subagentMax: 1, nativeSubagentOptions: { claude: { model: "claude-haiku-5-5", autoCompactTokens: 100_000 }, codex: { model: "gpt-other", autoCompactTokens: 200_000 } } },
+      claudeStatus: { available: true, loggedIn: true, version: "2.1.293", path: "/claude", email: null, authMethod: null, subscriptionType: null, warning: null },
+      childAgentReadiness: { codexRuntimeAvailable: false, openAiSignedIn: false, openRouterReady: false, claudeReady: true, cursorReady: false },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("delegate in Claude")).toBe(true); });
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ autoCompactTokens: 1_000_000, nativeSubagents: true, nativeSubagentMax: 7, subagentMax: 7, nativeSubagentModel: "claude-haiku-5-5", nativeAutoCompactTokens: 100_000 }));
+    expect(deps.onThreadCreated).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ autoCompactTokens: 1_000_000, subagentsEnabled: true, subagentEngine: "native", nativeSubagentMax: 7, nativeSubagentOptions: deps.effectiveSettings.nativeSubagentOptions }));
+  });
+
+  it.each(["mythra", "native"] as const)("does not apply inactive Claude preferences in %s mode", async (subagentEngine) => {
+    const deps = claudeContext({ running: false, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", autoCompactTokens: 100_000, subagentsEnabled: false, subagentEngine, nativeSubagentOptions: { claude: { model: "claude-haiku-5-5", autoCompactTokens: 150_000 } } } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("ordinary turn")).toBe(true); });
+    const options = claude.startClaudeTurn.mock.calls[0][0];
+    expect(options.autoCompactTokens).toBe(100_000);
+    expect(options.nativeSubagents).toBe(false);
+    expect(options.nativeSubagentModel).toBeUndefined();
+    expect(options.nativeAutoCompactTokens).toBeUndefined();
+  });
+
+  it("keeps parent compaction when Mythra delegation is enabled", async () => {
+    const deps = claudeContext({ running: false, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5-5", autoCompactTokens: 100_000, subagentsEnabled: true, subagentEngine: "mythra" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("use the managed crew")).toBe(true); });
+    expect(claude.startClaudeTurn).toHaveBeenCalledWith(expect.objectContaining({ autoCompactTokens: 100_000, nativeSubagents: false }));
+  });
+
+  it.each(["claude-opus-5-5", undefined])("rejects conflicting native Claude compaction for child model %s before preparation", async (model) => {
+    const deps = claudeContext({
+      running: false,
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", model: "claude-opus-5-5", autoCompactTokens: 1_000_000, subagentsEnabled: true, subagentEngine: "native", nativeSubagentOptions: { claude: { model, autoCompactTokens: 100_000 } } },
+      claudeStatus: { available: true, loggedIn: true, version: "2.1.293", path: "/claude", email: null, authMethod: null, subscriptionType: null, warning: null },
+      childAgentReadiness: { codexRuntimeAvailable: false, openAiSignedIn: false, openRouterReady: false, claudeReady: true, cursorReady: false },
+    });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("conflicting windows")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining(model ? "same model" : "explicit supported child model"));
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(deps.onThreadCreated).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 99_999, 100_000.5, 1_000_001, Number.NaN])("blocks malformed parent compaction %s before creating a thread", async (autoCompactTokens) => {
+    const deps = claudeContext({ running: false, activeThread: null, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", autoCompactTokens } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("send nothing")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("whole number"));
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(deps.onThreadCreated).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("blocks an explicit Cursor parent compaction choice before preparation", async () => {
+    const deps = context({ activeThread: null, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "cursor", autoCompactTokens: 100_000 } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("send nothing")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("Cursor"));
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    expect(deps.onThreadCreated).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+  });
+
+  it("blocks a separate native Codex worker threshold rather than assigning it to the parent", async () => {
+    const deps = openAiContext({ effectiveSettings: { ...ENABLED, autoCompactTokens: 1_000_000, subagentEngine: "native", nativeSubagentOptions: { codex: { autoCompactTokens: 100_000 } } }, runtimeStatus: { available: true, source: "Codex CLI", path: "/codex", version: "0.161.0", compatible: true, warning: null }, childAgentReadiness: { codexRuntimeAvailable: true, openAiSignedIn: true, openRouterReady: false, claudeReady: false, cursorReady: false } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("send nothing")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("Codex"));
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
+  it("persists a fresh OpenAI parent's compaction setting before a failed first turn", async () => {
+    codex.rpc.mockImplementation(async (method: string) => {
+      if (method === "thread/start") return { thread: { ...OPENAI_THREAD, id: "fresh-parent" } };
+      if (method === "turn/start") throw new Error("provider failed");
+      return {};
+    });
+    const deps = openAiContext({ activeThread: null, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "openai", autoCompactTokens: 100_000 } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("first turn")).toBe(false); });
+    expect(deps.onThreadCreated).toHaveBeenCalledWith("fresh-parent", expect.objectContaining({ autoCompactTokens: 100_000 }));
+    const started = codex.rpc.mock.calls.find(([method]) => method === "thread/start")!;
+    expect(started[1].config.model_auto_compact_token_limit).toBe(100_000);
+  });
+
+  it("blocks Haiku 5.5 native preferences on old Claude before preparation", async () => {
+    const deps = claudeContext({ running: false, effectiveSettings: { ...DEFAULT_SETTINGS, provider: "claude", subagentsEnabled: true, subagentEngine: "native", nativeSubagentOptions: { claude: { model: "claude-haiku-5-5" } } }, claudeStatus: { available: true, loggedIn: true, version: "2.1.292", path: "/claude", email: null, authMethod: null, subscriptionType: null, warning: null }, childAgentReadiness: { codexRuntimeAvailable: false, openAiSignedIn: false, openRouterReady: false, claudeReady: true, cursorReady: false } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("delegate")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("2.1.293"));
+    expect(claude.startClaudeTurn).not.toHaveBeenCalled();
+    expect(childSessions.ensureChildAgentBridge).not.toHaveBeenCalled();
+    expect(deps.beginRunCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("blocks explicit invalid native preferences rather than dropping them", async () => {
+    const deps = openAiContext({ effectiveSettings: { ...ENABLED, subagentEngine: "native", nativeSubagentOptions: { codex: { autoCompactTokens: 150_000.5 } } } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("delegate")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("whole number"));
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
+  it("blocks explicit unsupported native Codex effort with a known catalog", async () => {
+    const deps = openAiContext({ effectiveSettings: { ...ENABLED, model: "gpt-known", subagentEngine: "native", nativeSubagentOptions: { codex: { reasoningEffort: "max" } } }, nativeReasoningEfforts: { "gpt-known": ["low", "high"] } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    await act(async () => { expect(await result.current.sendMessage("delegate")).toBe(false); });
+    expect(deps.setError).toHaveBeenCalledWith(expect.stringContaining("does not support max"));
+    expect(codex.rpc).not.toHaveBeenCalled();
+  });
+
   it("passes resolved skill instructions through the Codex-family turn input", async () => {
     const resolveSkillPrompt = vi.fn(async () => "resolved skill context\n\n@review this");
     const deps = openAiContext({ resolveSkillPrompt });
@@ -2070,6 +2230,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
   });
 
   it("sends current resolved system instructions and an explicit clear on every loaded Codex turn", async () => {
+    recordSubagentCapabilities(OPENAI_THREAD.id, "runtime-1", subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 1 }));
     const skillReferences = [{ start: 4, end: 11, name: "review", path: "/skills/review/SKILL.md" }];
     const resolveSkillPrompts = vi.fn(async (prompt: string, systemPrompt: string) => ({ prompt: `resolved ${prompt}`, systemPrompt: systemPrompt ? `resolved ${systemPrompt}` : "", skillReferences, skillsFolder: "/skills" }));
     const deps = openAiContext({ resolveSkillPrompts, effectiveSettings: { ...ENABLED, systemPrompt: "Use @policy" } });
@@ -2171,7 +2332,8 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
     await act(async () => { await result.current.sendMessage("split this up"); });
 
-    expect(resumeCall()).toBeUndefined();
+    expect(resumeCall()?.[1]).toMatchObject({ config: { features: { multi_agent: false, multi_agent_v2: false } } });
+    expect(deps.restartRuntimeForCapabilities).toHaveBeenCalledOnce();
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
   });
 
@@ -2350,7 +2512,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
       initialProps: { deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: ENABLED }) },
     });
     await act(async () => { await result.current.sendMessage("split this up"); });
-    expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id);
+    expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id, true);
 
     // Only a fresh app-server can replace startup-only config on a thread it
     // has already loaded, so raising the limit has to go through one.
@@ -2361,7 +2523,7 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     rerender({ deps: openAiContext({ restartRuntimeForCapabilities, effectiveSettings: { ...ENABLED, subagentMax: 6 } }) });
     await act(async () => { await result.current.sendMessage("more of them"); });
 
-    expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id);
+    expect(restartRuntimeForCapabilities).toHaveBeenCalledExactlyOnceWith(OPENAI_THREAD.id, true);
     // The raised limit belongs to the Mythra Code bridge, which enforces it per
     // spawn. It is deliberately not mirrored into Codex's own agent runtime,
     // which would otherwise get a second budget stacked on the bridge's.
@@ -2451,15 +2613,15 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
     expect(params).not.toHaveProperty("config.mcp_servers");
   });
 
-  it("leaves an unknown pre-feature disabled thread alone", async () => {
+  it("refreshes an unknown loaded disabled thread instead of assuming its startup authority is off", async () => {
     const restartRuntimeForCapabilities = vi.fn(async () => "runtime-2");
     const deps = openAiContext({ restartRuntimeForCapabilities });
     const { result } = renderHook(() => useTurnRunner(deps));
 
     await act(async () => { await result.current.sendMessage("just answer"); });
 
-    expect(resumeCall()).toBeUndefined();
-    expect(restartRuntimeForCapabilities).not.toHaveBeenCalled();
+    expect(resumeCall()?.[1]).toMatchObject({ config: { features: { multi_agent: false, multi_agent_v2: false } } });
+    expect(restartRuntimeForCapabilities).toHaveBeenCalledOnce();
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
   });
 
@@ -2521,7 +2683,8 @@ describe("useTurnRunner activating sub-agents mid-conversation", () => {
 
     await act(async () => { await result.current.sendMessage("stay with native agents"); });
 
-    expect(resumeCall()).toBeUndefined();
+    expect(resumeCall()?.[1]).toMatchObject({ config: { features: { multi_agent: false, multi_agent_v2: false } } });
+    expect(deps.restartRuntimeForCapabilities).toHaveBeenCalledOnce();
     expect(codex.rpc).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: OPENAI_THREAD.id }));
   });
 

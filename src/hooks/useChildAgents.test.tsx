@@ -93,6 +93,7 @@ function context(overrides: Partial<ChildAgentContext> = {}): ChildAgentContext 
     rememberThread: vi.fn(),
     persistThreadModel: vi.fn(),
     persistThreadReasoning: vi.fn(),
+    persistThreadAutoCompactTokens: vi.fn(),
     setThreads: vi.fn(),
     cursorSessionIdsRef: { current: {} },
     scheduleClaudeThreadSave: vi.fn(),
@@ -148,7 +149,7 @@ describe("useChildAgents", () => {
   beforeEach(() => {
     resetTaskStore();
     persistedLinks = {};
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     bridge.respondToChildAgentRequest.mockResolvedValue(undefined);
     bridge.reportChildAgentFinished.mockResolvedValue(undefined);
     claude.interruptClaudeTurn.mockResolvedValue(undefined);
@@ -168,6 +169,40 @@ describe("useChildAgents", () => {
   });
 
   describe("routing", () => {
+    it("shows and preserves a proposed worker window in the user's approval", async () => {
+      const view = await mount();
+      await view.send(request({ tool: "propose_agent_settings", arguments: { targets: [{ ...TARGETS[1], autoCompactTokens: 100_000 }], reason: "Use a smaller reviewer context." } }));
+      const approval = useTaskStore.getState().tasks["root-1"].approvals[0];
+      expect(String(approval.params.command)).toContain("auto-compaction: 100,000 tokens");
+      expect(approval.params.settings).toMatchObject({ childAgents: { targets: [expect.objectContaining({ autoCompactTokens: 100_000 })] } });
+    });
+
+    it("rejects a malformed explicit proposed window instead of approving a parked/default worker", async () => {
+      const view = await mount();
+      await view.send(request({ tool: "propose_agent_settings", arguments: { targets: [{ ...TARGETS[1], autoCompactTokens: "100000" }] } }));
+      expect(useTaskStore.getState().tasks["root-1"]?.approvals ?? []).toEqual([]);
+      expect(lastResponse()?.[2]).toContain("whole number");
+    });
+
+    it.each([100_000, 1_000_000, undefined])("persists the approved worker's own %j window for reload and subsequent turns", async (autoCompactTokens) => {
+      const persistThreadAutoCompactTokens = vi.fn();
+      const worker = { ...TARGETS[1], autoCompactTokens };
+      const view = await mount({ policies: { "session-1": { ...POLICY, targets: [worker] } }, persistThreadAutoCompactTokens });
+      await view.send(request({ arguments: { target: "reviewer", prompt: "Review." } }));
+      expect(childRun.startChildAgentTurn).toHaveBeenCalledWith(expect.objectContaining({ autoCompactTokens }), "Review.", expect.any(Object));
+      expect(persistThreadAutoCompactTokens).toHaveBeenCalledExactlyOnceWith("child-reviewer", autoCompactTokens);
+    });
+
+    it("blocks an invalid frozen worker window before provider start and persistence", async () => {
+      const persistThreadAutoCompactTokens = vi.fn();
+      const view = await mount({ policies: { "session-1": { ...POLICY, targets: [{ ...TARGETS[0], autoCompactTokens: 0 }] } }, persistThreadAutoCompactTokens });
+      await view.send(request());
+      expect(childRun.startChildAgentTurn).not.toHaveBeenCalled();
+      expect(persistThreadAutoCompactTokens).not.toHaveBeenCalled();
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toContain("whole number");
+    });
+
     it("keeps one bridge listener while live child state rerenders", async () => {
       const view = await mount();
       expect(bridge.onChildAgentRequest).toHaveBeenCalledTimes(1);
@@ -1001,13 +1036,62 @@ describe("useChildAgents", () => {
       expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("cancelled");
     });
 
-    it("fails closed when a native provider did not expose an individual turn", async () => {
+    it("discovers a native child turn when its task has not been hydrated", async () => {
+      codex.rpc.mockResolvedValueOnce({ data: [{ id: "native-turn", status: "inProgress", items: [] }] });
       const view = await mount();
       act(() => {
         useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
       });
-      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/has not exposed/);
-      expect(codex.rpc).not.toHaveBeenCalled();
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "native-turn" });
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("interrupted");
+    });
+
+    it("fails closed when the native runtime cannot confirm a turn", async () => {
+      codex.rpc.mockResolvedValueOnce({ data: [] });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/confirm/);
+      expect(codex.rpc).not.toHaveBeenCalledWith("turn/interrupt", expect.anything());
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("inProgress");
+    });
+
+    it("preserves a followup arriving during the missing-turn lookup", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "starting" });
+        useTaskStore.getState().setTaskStatus("native-1", "starting");
+      });
+      codex.rpc.mockImplementationOnce(async () => {
+        useTaskStore.getState().setActiveTurn("native-1", undefined);
+        useTaskStore.getState().setTaskStatus("native-1", "starting");
+        return { data: [{ id: "old-turn", status: "inProgress", items: [] }] };
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/another turn/);
+      expect(codex.rpc).not.toHaveBeenCalledWith("turn/interrupt", expect.anything());
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("starting");
+    });
+
+    it.each(["lookup", "interrupt"])("correlates native activation IDs across the %s boundary", async (boundary) => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "running", activationId: "activation-1" });
+        useTaskStore.getState().setTaskStatus("native-1", "running");
+        if (boundary === "interrupt") useTaskStore.getState().setActiveTurn("native-1", "known-turn");
+      });
+      const initialChildTask = useTaskStore.getState().tasks["native-1"];
+      codex.rpc.mockImplementationOnce(async () => {
+        // A new active-child steering operation can preserve the same task
+        // status and actual turn ID; only the parent operation ID changes.
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "New followup", status: "running", activationId: "activation-2" });
+        return boundary === "lookup" ? { data: [{ id: "known-turn", status: "inProgress", items: [] }] } : {};
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/another activation/);
+      expect(useTaskStore.getState().tasks["native-1"]).toBe(initialChildTask);
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("running");
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].activationId).toBe("activation-2");
     });
 
     it("rejects a tool the bridge does not implement", async () => {
@@ -1066,6 +1150,8 @@ describe("useChildAgents", () => {
     });
 
     it("settles provider-native children whatever word their runtime used", async () => {
+      codex.rpc.mockImplementation(async (method) => method === "thread/turns/list"
+        ? { data: [{ id: "queued-turn", status: "inProgress", items: [] }] } : {});
       const view = await mount();
       act(() => {
         useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Queued native", status: "queued" });
@@ -1078,6 +1164,300 @@ describe("useChildAgents", () => {
       expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-2", turnId: "native-turn" });
       expect(useTaskStore.getState().tasks["root-1"].agents.map((agent) => agent.status))
         .toEqual(["interrupted", "interrupted"]);
+    });
+
+    it("keeps a native child active when bulk cancellation cannot discover its turn", async () => {
+      codex.rpc.mockResolvedValueOnce({ data: [] });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "queued" });
+      });
+      await expect(view.result.current.cancelChildAgentsFor("root-1")).rejects.toThrow(/confirm/);
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("queued");
+      expect(useTaskStore.getState().statuses["native-1"]).not.toBe("interrupted");
+    });
+
+    it.each(["offline", "unknown runtime status"])("keeps unknown native work visible after %s", async (failure) => {
+      if (failure === "offline") codex.rpc.mockRejectedValueOnce(new Error("Runtime offline"));
+      else codex.rpc.mockResolvedValueOnce({ data: [{ id: "native-turn", status: "unrecognized", items: [] }] });
+      const view = await mount();
+      act(() => { useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "unknown" }); });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/confirm/);
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("unknown");
+      expect(useTaskStore.getState().statuses["native-1"]).not.toBe("interrupted");
+    });
+
+    it("preserves a terminal runtime result instead of inventing an interruption", async () => {
+      codex.rpc.mockResolvedValueOnce({ data: [{ id: "finished-turn", status: "completed", items: [] }] });
+      const view = await mount();
+      act(() => { useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "unknown" }); });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
+      expect(codex.rpc).not.toHaveBeenCalledWith("turn/interrupt", expect.anything());
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("completed");
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("completed");
+    });
+
+    it.each(["completed", "failed"])("rechecks a settled interrupt race and preserves %s", async (status) => {
+      codex.rpc.mockRejectedValueOnce(new Error("Turn already completed"));
+      codex.rpc.mockResolvedValueOnce({ data: [{ id: "native-turn", status, items: [] }] });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+        useTaskStore.getState().setActiveTurn("native-1", "native-turn");
+      });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
+      expect(useTaskStore.getState().statuses["native-1"]).toBe(status === "failed" ? "error" : "completed");
+    });
+
+    it.each(["individual", "bulk"])("keeps the current native turn active when %s Stop only reads an older terminal turn", async (mode) => {
+      codex.rpc.mockImplementation(async (method: string) => {
+        if (method === "turn/interrupt") throw new Error("Turn not found");
+        return { data: [{ id: "previous-turn", status: "completed", items: [] }] };
+      });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+        useTaskStore.getState().setActiveTurn("native-1", "current-turn");
+        useTaskStore.getState().setTaskStatus("native-1", "running");
+      });
+      if (mode === "individual") {
+        await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/confirm/);
+      } else {
+        await expect(view.result.current.cancelChildAgentsFor("root-1")).rejects.toThrow(/confirm/);
+      }
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "current-turn" });
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("running");
+      expect(useTaskStore.getState().tasks["native-1"].activeTurnId).toBe("current-turn");
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("inProgress");
+    });
+
+    it("does not accept an already-settled error without terminal evidence", async () => {
+      codex.rpc.mockRejectedValueOnce(new Error("Turn not found"));
+      codex.rpc.mockResolvedValueOnce({ data: [] });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+        useTaskStore.getState().setActiveTurn("native-1", "native-turn");
+        useTaskStore.getState().setTaskStatus("native-1", "running");
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/confirm/);
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("running");
+      expect(useTaskStore.getState().tasks["native-1"].activeTurnId).toBe("native-turn");
+    });
+
+    it("preserves a newer active turn that appears while Stop is settling", async () => {
+      codex.rpc.mockImplementationOnce(async () => { useTaskStore.getState().setActiveTurn("native-1", "new-turn"); });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+        useTaskStore.getState().setActiveTurn("native-1", "old-turn");
+        useTaskStore.getState().setTaskStatus("native-1", "running");
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/another turn/);
+      expect(useTaskStore.getState().tasks["native-1"].activeTurnId).toBe("new-turn");
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("running");
+    });
+
+    it.each([
+      ["acknowledged", true], ["already completed", true],
+      ["acknowledged", false], ["already completed", false],
+    ] as const)("preserves a new activation with no turn ID after %s cutoff (initial local turn: %s)", async (outcome, localTurnKnown) => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
+        if (localTurnKnown) useTaskStore.getState().setActiveTurn("native-1", "old-turn");
+        useTaskStore.getState().setTaskStatus("native-1", localTurnKnown ? "running" : "starting");
+      });
+      if (!localTurnKnown) codex.rpc.mockResolvedValueOnce({ data: [{ id: "old-turn", status: "inProgress", items: [] }] });
+      codex.rpc.mockImplementationOnce(async () => {
+        useTaskStore.getState().setActiveTurn("native-1", undefined);
+        useTaskStore.getState().setTaskStatus("native-1", "starting");
+        if (outcome === "already completed") throw new Error("Turn already completed");
+        return {};
+      });
+      if (outcome === "already completed") codex.rpc.mockResolvedValueOnce({ data: [{ id: "old-turn", status: "completed", items: [] }] });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/another turn/);
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("starting");
+      expect(useTaskStore.getState().tasks["native-1"].activeTurnId).toBeUndefined();
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("inProgress");
+    });
+
+    it("discovers the resumed turn despite a previous terminal local task", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setTaskStatus("native-1", "completed");
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Resumed task", status: "inProgress" });
+      });
+      codex.rpc.mockResolvedValueOnce({ data: [{ id: "resumed-turn", status: "inProgress", items: [] }] });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "resumed-turn" });
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("interrupted");
+    });
+
+    it.each(["starting", "running"] as const)("preserves a newly %s native task when only its previous terminal turn is visible", async (status) => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setTaskStatus("native-1", status);
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Resumed task", status: "inProgress" });
+      });
+      codex.rpc.mockResolvedValueOnce({ data: [{ id: "old-turn", status: "completed", items: [] }] });
+      await expect(view.result.current.stopChildAgent("root-1", "native-1")).rejects.toThrow(/older terminal turn/);
+      expect(codex.rpc).not.toHaveBeenCalledWith("turn/interrupt", expect.anything());
+      expect(useTaskStore.getState().statuses["native-1"]).toBe(status);
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("inProgress");
+    });
+
+    it.each(["starting", "running"] as const)("bulk Stop cuts off a reopened %s child despite settled native ownership", async (status) => {
+      let nativeLinks = {
+        "native-1": { childThreadId: "native-1", rootThreadId: "root-1", title: "Reopened child", createdAt: 1, status: "completed", finishedAt: 2 },
+      };
+      const persistNativeAgentLinks: ChildAgentContext["persistNativeAgentLinks"] = (update) => {
+        nativeLinks = (typeof update === "function" ? update(nativeLinks) : update) as typeof nativeLinks;
+      };
+      const view = await mount({ nativeLinks, persistNativeAgentLinks });
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Reopened child", status: "completed", runtime: "codex" });
+        useTaskStore.getState().setActiveTurn("native-1", "reopened-turn");
+        useTaskStore.getState().setTaskStatus("native-1", status);
+      });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "reopened-turn" });
+      expect(useTaskStore.getState().statuses["native-1"]).toBe("interrupted");
+      expect(nativeLinks["native-1"].status).toBe("interrupted");
+      expect(nativeLinks["native-1"].finishedAt).toBeGreaterThan(2);
+    });
+
+    it("stops durable nested native descendants absent from the root roster", async () => {
+      const nativeLinks = {
+        "native-1": { childThreadId: "native-1", rootThreadId: "root-1", title: "Child", createdAt: 1, status: "running" },
+        "native-2": { childThreadId: "native-2", rootThreadId: "native-1", title: "Grandchild", createdAt: 2, status: "unknown" },
+      };
+      codex.rpc.mockImplementation(async (method, params) => method === "thread/turns/list"
+        ? { data: [{ id: `turn-${params.threadId}`, status: "inProgress", items: [] }] } : {});
+      const view = await mount({ nativeLinks });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "turn-native-1" });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-2", turnId: "turn-native-2" });
+      expect(useTaskStore.getState().tasks["native-1"].agents.find((agent) => agent.id === "native-2")?.status).toBe("interrupted");
+    });
+
+    it("allows the root to stop a durable nested child individually", async () => {
+      const view = await mount({ nativeLinks: {
+        "native-1": { childThreadId: "native-1", rootThreadId: "root-1", title: "Child", createdAt: 1 },
+        "native-2": { childThreadId: "native-2", rootThreadId: "native-1", title: "Grandchild", createdAt: 2 },
+      } });
+      codex.rpc.mockResolvedValueOnce({ data: [{ id: "grandchild-turn", status: "inProgress", items: [] }] });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "native-2"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-2", turnId: "grandchild-turn" });
+      expect(useTaskStore.getState().statuses["native-1"]).not.toBe("interrupted");
+    });
+
+    it("rescans for a nested child spawned during the first cutoff wave", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Child", status: "running" });
+        useTaskStore.getState().setActiveTurn("native-1", "child-turn");
+      });
+      codex.rpc.mockImplementation(async (method, params) => {
+        if (method === "turn/interrupt" && params.threadId === "native-1") {
+          useTaskStore.getState().upsertAgent("native-1", { id: "native-2", prompt: "Late grandchild", status: "running", runtime: "codex" });
+          useTaskStore.getState().setActiveTurn("native-2", "grandchild-turn");
+        }
+        return {};
+      });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-2", turnId: "grandchild-turn" });
+      expect(useTaskStore.getState().tasks["native-1"].agents[0].status).toBe("interrupted");
+    });
+
+    it("bounds cutoff rescans and reports continuing native spawns", async () => {
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Child", status: "running" });
+        useTaskStore.getState().setActiveTurn("native-1", "turn-1");
+      });
+      let count = 1;
+      codex.rpc.mockImplementation(async () => {
+        count += 1;
+        useTaskStore.getState().upsertAgent("root-1", { id: `native-${count}`, prompt: "Late child", status: "running" });
+        useTaskStore.getState().setActiveTurn(`native-${count}`, `turn-${count}`);
+        return {};
+      });
+      await expect(view.result.current.cancelChildAgentsFor("root-1")).rejects.toThrow(/created or reactivated work/);
+      expect(codex.rpc).toHaveBeenCalledTimes(3);
+      expect(useTaskStore.getState().tasks["root-1"].agents.find((agent) => agent.id === "native-4")?.status).toBe("running");
+    });
+
+    it("never sends Claude native task IDs to Codex, and bulk Stop kills the root", async () => {
+      const view = await mount();
+      const id = "claude-native:root-1:task-1";
+      act(() => { useTaskStore.getState().upsertAgent("root-1", { id, prompt: "Claude task", status: "running", runtime: "claude", provider: "claude" }); });
+      await expect(view.result.current.stopChildAgent("root-1", id)).rejects.toThrow(/root process/);
+      expect(codex.rpc).not.toHaveBeenCalled();
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(claude.killClaudeTurn).toHaveBeenCalledExactlyOnceWith("root-1");
+      expect(codex.rpc).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("interrupted");
+      expect(useTaskStore.getState().tasks[id]).toBeUndefined();
+    });
+
+    it("preserves Claude native workers when the root process cutoff fails", async () => {
+      claude.killClaudeTurn.mockRejectedValueOnce(new Error("Root process did not exit"));
+      const view = await mount();
+      act(() => { useTaskStore.getState().upsertAgent("root-1", { id: "claude-task", prompt: "Claude task", status: "unknown", runtime: "claude", provider: "claude" }); });
+      await expect(view.result.current.cancelChildAgentsFor("root-1")).rejects.toThrow(/Root process did not exit/);
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("unknown");
+      expect(codex.rpc).not.toHaveBeenCalled();
+    });
+
+    it("preserves Claude native workers belonging to a newer root turn", async () => {
+      claude.killClaudeTurn.mockImplementationOnce(async () => { useTaskStore.getState().setActiveTurn("root-1", "new-root-turn"); });
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setActiveTurn("root-1", "old-root-turn");
+        useTaskStore.getState().upsertAgent("root-1", { id: "claude-task", prompt: "Claude task", status: "unknown", runtime: "claude", provider: "claude" });
+      });
+      await expect(view.result.current.cancelChildAgentsFor("root-1")).rejects.toThrow(/another root turn/);
+      expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("unknown");
+    });
+
+    it.each(["createdAt", "rootTurnId"])("persists only the confirmed Claude worker generation when %s changes", async (generation) => {
+      const id = "claude-native:root-1:task";
+      let nativeLinks = {
+        [id]: { childThreadId: id, rootThreadId: "root-1", rootTurnId: "root-turn-1", title: "Claude worker", createdAt: 1, status: "running", runtime: "claude" as const },
+      };
+      const persistNativeAgentLinks: NonNullable<ChildAgentContext["persistNativeAgentLinks"]> = (update) => {
+        nativeLinks = (typeof update === "function" ? update(nativeLinks) : update) as typeof nativeLinks;
+      };
+      const view = await mount({ nativeLinks, persistNativeAgentLinks });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(nativeLinks[id]).toMatchObject({ status: "interrupted", finishedAt: expect.any(Number) });
+      expect(useTaskStore.getState().tasks[id]).toBeUndefined();
+
+      nativeLinks = { [id]: { ...nativeLinks[id], createdAt: 2, rootTurnId: "root-turn-2", status: "running" } };
+      view.rerender({ nativeLinks, persistNativeAgentLinks });
+      act(() => {
+        useTaskStore.getState().beginAgentRun("root-1", 2);
+        useTaskStore.getState().upsertAgent("root-1", { id, prompt: "Claude worker", status: "running", runtime: "claude", createdAt: 2 });
+      });
+      claude.killClaudeTurn.mockImplementationOnce(async () => {
+        nativeLinks = { [id]: { ...nativeLinks[id], createdAt: generation === "createdAt" ? 3 : 2, rootTurnId: "root-turn-3", status: "running" } };
+      });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(nativeLinks[id]).toMatchObject({ createdAt: generation === "createdAt" ? 3 : 2, rootTurnId: "root-turn-3", status: "running" });
+    });
+
+    it("cuts off a nested Claude native tree through its actual app session", async () => {
+      persistedLinks = { "child-1": link({ provider: "claude", terminalStatus: "completed" }) };
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().upsertAgent("root-1", { id: "child-1", prompt: "Claude session", status: "completed" });
+        useTaskStore.getState().upsertAgent("child-1", { id: "claude-native:child-1:task", prompt: "Claude child task", status: "running", runtime: "claude", provider: "claude" });
+      });
+      await act(async () => { await view.result.current.cancelChildAgentsFor("root-1"); });
+      expect(claude.killClaudeTurn).toHaveBeenCalledExactlyOnceWith("child-1");
+      expect(codex.rpc).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().tasks["child-1"].agents[0].status).toBe("interrupted");
     });
   });
 it("does not report an unhydrated live child as finished on reload", async () => {

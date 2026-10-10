@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { deleteClaudeTranscript, saveClaudeTranscript, startClaudeTurn } from "./claude";
 import { deleteCursorTranscript, saveCursorTranscript, startCursorTurn } from "./cursor";
 import { friendlyError } from "./errors";
-import { childAgentModel } from "./childAgents";
+import { childAgentAutoCompactIssue, childAgentModel } from "./childAgents";
 import { withMythraCodeCompletionInstructions } from "./completionPrompt";
 import { threadStartParams, turnStartParams } from "./turnConfig";
 import { optimisticStartedThread } from "./threadList";
@@ -79,6 +79,8 @@ export interface ChildRunResult {
  * surface — the structural half of the depth-one rule.
  */
 export function childRunSettings(target: ChildAgentTarget, context: ChildRunContext): ScheduleRunSettings {
+  const compactionError = childAgentAutoCompactIssue(target);
+  if (compactionError) throw new Error(compactionError);
   return {
     provider: target.provider,
     model: childAgentModel(target),
@@ -88,6 +90,7 @@ export function childRunSettings(target: ChildAgentTarget, context: ChildRunCont
     projectInstructionsEnabled: context.projectInstructionsEnabled,
     subagentsEnabled: false,
     subagentMax: 1,
+    ...(target.autoCompactTokens !== undefined ? { autoCompactTokens: target.autoCompactTokens } : {}),
     reasoningEffort: context.reasoningEffort,
     ultra: false,
     serviceTier: context.serviceTier,
@@ -130,6 +133,7 @@ export async function startChildAgentTurn(
     if (context.isStartCancelled?.()) throw new Error("The sub-agent start was cancelled before its model turn began.");
   };
   assertCanStart();
+  const childSettings = childRunSettings(target, context);
   const resolved: ResolvedSkillPrompts = context.resolveSkillPrompts
     ? await context.resolveSkillPrompts(prompt, context.systemPrompt)
     : { prompt: await context.resolveSkillPrompt(prompt), systemPrompt: context.systemPrompt };
@@ -138,7 +142,7 @@ export async function startChildAgentTurn(
   assertCanStart();
   const learnedSystemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, context.projectId ?? null);
   assertCanStart();
-  const run = { ...childRunSettings(target, context), systemPrompt: learnedSystemPrompt };
+  const run = { ...childSettings, systemPrompt: learnedSystemPrompt };
   const systemPrompt = withMythraCodeCompletionInstructions(learnedSystemPrompt);
   const providerPrompt = resolved.prompt;
   const provenance = { skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
@@ -190,6 +194,7 @@ export async function startChildAgentTurn(
         attachments: [],
         subagentMax: 1,
         customAgents: [],
+        ...(run.autoCompactTokens !== undefined ? { autoCompactTokens: run.autoCompactTokens } : {}),
         ...(languageBridge ? { childAgentBridgeConfig: languageBridge.configPath } : {}),
       });
     } catch (reason) {

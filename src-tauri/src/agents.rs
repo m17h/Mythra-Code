@@ -132,6 +132,22 @@ pub(super) struct ChildAgentTarget {
     pub reasoning_effort: String,
     #[serde(default = "default_reasoning_max_effort")]
     pub reasoning_max_effort: String,
+    /// An explicit child compaction window. Omission uses the provider default.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_target_auto_compact_tokens"
+    )]
+    pub auto_compact_tokens: Option<u64>,
+}
+
+fn deserialize_target_auto_compact_tokens<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // A present value must be an integer. In particular, null must not turn
+    // an explicit request into an omitted provider default silently.
+    u64::deserialize(deserializer).map(Some)
 }
 
 fn default_reasoning_mode() -> String {
@@ -193,6 +209,20 @@ pub(super) fn validate_targets(targets: &[ChildAgentTarget]) -> Result<(), Strin
                 "The `{}` destination has an oversized model, label, or description.",
                 target.id
             ));
+        }
+        if let Some(tokens) = target.auto_compact_tokens {
+            if !(100_000..=1_000_000).contains(&tokens) {
+                return Err(format!(
+                    "The `{}` destination's autoCompactTokens must be an integer between 100000 and 1000000.",
+                    target.id
+                ));
+            }
+            if target.provider == "cursor" {
+                return Err(format!(
+                    "The `{}` destination uses Cursor, which cannot honor an explicit auto-compaction window.",
+                    target.id
+                ));
+            }
         }
         if !["inherit", "fixed", "agent"].contains(&target.reasoning_mode.as_str())
             || !REASONING_EFFORTS.contains(&target.reasoning_effort.as_str())
@@ -271,6 +301,7 @@ struct ChildAgentSession {
     project_path: Option<PathBuf>,
     permission: String,
     child_thread: bool,
+    native_delegation: bool,
     provider: String,
     directory: PathBuf,
     runtime: Arc<Mutex<SessionRuntime>>,
@@ -348,6 +379,33 @@ pub(super) async fn child_agent_bridge_config_registered(
         .await
         .values()
         .any(|session| session.directory.join("mcp.json") == path)
+}
+
+/** Detect dual authority using the actual registered bridge, never argv text claims. */
+pub(super) async fn child_agent_bridge_config_allows_spawning(
+    state: &ChildAgentState,
+    config_path: &str,
+) -> bool {
+    let path = Path::new(config_path);
+    state
+        .sessions
+        .lock()
+        .await
+        .values()
+        .any(|session| session.directory.join("mcp.json") == path && !session.targets.is_empty())
+}
+
+pub(super) async fn child_agent_bridge_launch_allows_spawning(
+    state: &ChildAgentState,
+    args: &[String],
+) -> bool {
+    if args.len() != 2 || args[0] != "--openkiwi-agent-bridge" {
+        return false;
+    }
+    let path = Path::new(&args[1]);
+    state.sessions.lock().await.values().any(|session| {
+        session.directory.join("session.json") == path && !session.targets.is_empty()
+    })
 }
 
 /**
@@ -445,6 +503,8 @@ pub(super) struct ChildAgentSessionOptions {
     permission: String,
     #[serde(default)]
     child_thread: bool,
+    #[serde(default)]
+    native_delegation: bool,
     /// Actual provider supplied by the app, not by model tool arguments.
     #[serde(default)]
     provider: String,
@@ -536,9 +596,13 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 ),
                 _ => "reasoning inherited from the parent".to_string(),
             };
+            let compaction = match target.auto_compact_tokens {
+                Some(tokens) => format!("auto-compaction at {tokens} tokens"),
+                None => "provider default auto-compaction".to_string(),
+            };
             format!(
-                "`{}`: {} / {} / {}{}",
-                target.id, target.provider, model, reasoning, description
+                "`{}`: {} / {} / {} / {}{}",
+                target.id, target.provider, model, reasoning, compaction, description
             )
         })
         .collect::<Vec<_>>()
@@ -646,6 +710,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                                 "reasoningMode": { "type": "string", "enum": ["inherit", "fixed", "agent"] },
                                 "reasoningEffort": { "type": "string", "enum": REASONING_EFFORTS },
                                 "reasoningMaxEffort": { "type": "string", "enum": REASONING_EFFORTS },
+                                "autoCompactTokens": { "type": "integer", "minimum": 100000, "maximum": 1000000, "description": "Optional child auto-compaction window in tokens, independent of the parent model. Omit to use the selected provider's default. Explicit values are unavailable for Cursor and require support from the selected model/runtime." },
                             },
                             "required": ["id", "provider", "model", "label", "reasoningMode"],
                             "additionalProperties": false,
@@ -792,6 +857,37 @@ fn scoped_tool_catalog(
         tools.retain(|tool| tool["name"] != TOOL_LANGUAGE_INSTALL);
     }
     Value::Array(tools)
+}
+
+fn bridge_tool_catalog(
+    targets: &[ChildAgentTarget],
+    max_concurrent: usize,
+    project: bool,
+    child: bool,
+    permission: &str,
+    native: bool,
+) -> Value {
+    let mut catalog = scoped_tool_catalog(targets, max_concurrent, project, child, permission);
+    if native {
+        // The native runtime is the only delegation authority. Keep the
+        // parent's project/language tools, never expose managed crew controls.
+        catalog
+            .as_array_mut()
+            .expect("tool catalog is an array")
+            .retain(|tool| {
+                matches!(
+                    tool["name"].as_str(),
+                    Some(
+                        TOOL_SET_RUN
+                            | TOOL_SET_CHECK
+                            | TOOL_LANGUAGE_STATUS
+                            | TOOL_LANGUAGE_INSTALL
+                            | TOOL_LANGUAGE_QUERY
+                    )
+                )
+            });
+    }
+    catalog
 }
 
 /// Keep the first paragraph useful on its own, including for language-only
@@ -997,6 +1093,9 @@ pub(super) fn validate_tool_call(
             Ok(())
         }
         TOOL_SPAWN => {
+            if object.contains_key("autoCompactTokens") {
+                return Err("`autoCompactTokens` belongs to the user-approved destination policy; use propose_agent_settings to request a different child compaction window.".into());
+            }
             let target = text("target");
             if target.is_empty() {
                 return Err("`target` is required: name one of the approved destinations.".into());
@@ -1085,6 +1184,18 @@ pub(super) fn validate_tool_call(
             Ok(())
         }
         TOOL_PROPOSE_SETTINGS => {
+            if object.keys().any(|key| {
+                ![
+                    "reason",
+                    "enabled",
+                    "crossProviderEnabled",
+                    "maxConcurrent",
+                    "targets",
+                ]
+                .contains(&key.as_str())
+            }) {
+                return Err("The settings proposal contains an unsupported property; autoCompactTokens must be set on each proposed destination.".into());
+            }
             let reason = text("reason").trim();
             if reason.is_empty() || reason.len() > 400 {
                 return Err("`reason` is required and limited to 400 bytes.".into());
@@ -1110,6 +1221,31 @@ pub(super) fn validate_tool_call(
                 }
             }
             if let Some(targets) = object.get("targets") {
+                if let Some(targets) = targets.as_array() {
+                    for target in targets {
+                        if target.as_object().is_some_and(|target| {
+                            target.keys().any(|key| {
+                                ![
+                                    "id",
+                                    "provider",
+                                    "model",
+                                    "label",
+                                    "description",
+                                    "reasoningMode",
+                                    "reasoningEffort",
+                                    "reasoningMaxEffort",
+                                    "autoCompactTokens",
+                                ]
+                                .contains(&key.as_str())
+                            })
+                        }) {
+                            return Err(
+                                "The proposed crew contains an unsupported destination property."
+                                    .into(),
+                            );
+                        }
+                    }
+                }
                 let targets: Vec<ChildAgentTarget> = serde_json::from_value(targets.clone())
                     .map_err(|error| format!("The proposed crew is invalid: {error}"))?;
                 validate_targets(&targets)?;
@@ -1289,12 +1425,13 @@ async fn dispatch_tool(
     tool: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    let catalog = scoped_tool_catalog(
+    let catalog = bridge_tool_catalog(
         &session.targets,
         session.max_concurrent,
         session.project_path.is_some(),
         session.child_thread,
         &session.permission,
+        session.native_delegation,
     );
     if !catalog
         .as_array()
@@ -1502,12 +1639,13 @@ async fn handle_bridge_request(
 
     match request.method.as_str() {
         "describe" => json_response(StatusCode::OK, {
-            let tools = scoped_tool_catalog(
+            let tools = bridge_tool_catalog(
                 &session.targets,
                 session.max_concurrent,
                 session.project_path.is_some(),
                 session.child_thread,
                 &session.permission,
+                session.native_delegation,
             );
             json!({ "ok": true, "result": { "instructions": bridge_instructions(&tools, &session.provider), "tools": tools } })
         }),
@@ -1585,6 +1723,9 @@ pub(super) async fn child_agent_session_start(
     if options.child_thread && !options.targets.is_empty() {
         return Err("A child thread cannot acquire delegation tools.".into());
     }
+    if options.native_delegation && !options.targets.is_empty() {
+        return Err("Native delegation cannot also acquire Mythra crew tools.".into());
+    }
     if !options.provider.is_empty()
         && !agent_bridge_providers().contains(&options.provider.as_str())
     {
@@ -1620,12 +1761,13 @@ pub(super) async fn child_agent_session_start(
     }
 
     let session_path = directory.join("session.json");
-    let catalog = scoped_tool_catalog(
+    let catalog = bridge_tool_catalog(
         &options.targets,
         max_concurrent,
         project_path.is_some(),
         options.child_thread,
         &options.permission,
+        options.native_delegation,
     );
     let session_file = serde_json::to_string(&BridgeSessionFile {
         url,
@@ -1700,6 +1842,7 @@ pub(super) async fn child_agent_session_start(
             project_path,
             permission: options.permission,
             child_thread: options.child_thread,
+            native_delegation: options.native_delegation,
             provider: options.provider,
             directory,
             runtime,
@@ -2048,6 +2191,193 @@ mod tests {
     use super::*;
 
     #[test]
+    fn child_compaction_serialization_preserves_explicit_policy_and_omission() {
+        let legacy = json!({"id": "reviewer", "provider": "claude"});
+        let target: ChildAgentTarget = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(target.auto_compact_tokens, None);
+        assert!(serde_json::to_value(&target)
+            .unwrap()
+            .get("autoCompactTokens")
+            .is_none());
+        for tokens in [100_000, 1_000_000] {
+            let mut value = legacy.clone();
+            value["autoCompactTokens"] = json!(tokens);
+            let target: ChildAgentTarget = serde_json::from_value(value).unwrap();
+            assert_eq!(target.auto_compact_tokens, Some(tokens));
+            assert_eq!(
+                serde_json::to_value(target).unwrap()["autoCompactTokens"],
+                tokens
+            );
+        }
+        for malformed in [
+            json!(null),
+            json!("100000"),
+            json!(100000.5),
+            json!(-1),
+            json!(true),
+        ] {
+            let mut value = legacy.clone();
+            value["autoCompactTokens"] = malformed.clone();
+            assert!(
+                serde_json::from_value::<ChildAgentTarget>(value).is_err(),
+                "{malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn child_compaction_validation_checks_boundaries_and_provider_support() {
+        for provider in ["openai", "openrouter", "lmstudio", "claude"] {
+            for tokens in [100_000, 550_000, 1_000_000] {
+                let target: ChildAgentTarget = serde_json::from_value(json!({
+                    "id": "reviewer", "provider": provider, "autoCompactTokens": tokens,
+                }))
+                .unwrap();
+                assert!(validate_targets(&[target]).is_ok(), "{provider}: {tokens}");
+            }
+        }
+        for tokens in [0, 99_999, 1_000_001, u64::MAX] {
+            let target: ChildAgentTarget = serde_json::from_value(json!({
+                "id": "reviewer", "provider": "claude", "autoCompactTokens": tokens,
+            }))
+            .unwrap();
+            assert!(validate_targets(&[target])
+                .unwrap_err()
+                .contains("autoCompactTokens"));
+        }
+        let mut cursor: ChildAgentTarget = serde_json::from_value(json!({
+            "id": "reviewer", "provider": "cursor", "autoCompactTokens": 100_000,
+        }))
+        .unwrap();
+        assert!(validate_targets(&[cursor.clone()])
+            .unwrap_err()
+            .contains("Cursor"));
+        cursor.auto_compact_tokens = None;
+        assert!(validate_targets(&[cursor]).is_ok());
+    }
+
+    #[test]
+    fn child_compaction_proposals_accept_policy_and_reject_unhonored_choices() {
+        let mut proposal = json!({
+            "reason": "Use a shorter child context",
+            "targets": [{"id": "reviewer", "provider": "claude", "autoCompactTokens": 100_000}],
+        });
+        let known = HashSet::new();
+        assert!(validate_tool_call(&[], &known, TOOL_PROPOSE_SETTINGS, &proposal).is_ok());
+        let mut misplaced = proposal.clone();
+        misplaced["autoCompactTokens"] = json!(100_000);
+        assert!(
+            validate_tool_call(&[], &known, TOOL_PROPOSE_SETTINGS, &misplaced)
+                .unwrap_err()
+                .contains("each proposed destination")
+        );
+        for invalid in [
+            json!(null),
+            json!(99_999),
+            json!(1_000_001),
+            json!("100000"),
+            json!(100000.5),
+        ] {
+            proposal["targets"][0]["autoCompactTokens"] = invalid.clone();
+            assert!(
+                validate_tool_call(&[], &known, TOOL_PROPOSE_SETTINGS, &proposal).is_err(),
+                "{invalid}"
+            );
+        }
+        proposal["targets"][0]["autoCompactTokens"] = json!(100_000);
+        proposal["targets"][0]["provider"] = json!("cursor");
+        assert!(
+            validate_tool_call(&[], &known, TOOL_PROPOSE_SETTINGS, &proposal)
+                .unwrap_err()
+                .contains("Cursor")
+        );
+        proposal["targets"][0]["provider"] = json!("claude");
+        proposal["targets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("autoCompactTokens");
+        proposal["targets"][0]["auto_compact_tokens"] = json!(100_000);
+        assert!(
+            validate_tool_call(&[], &known, TOOL_PROPOSE_SETTINGS, &proposal)
+                .unwrap_err()
+                .contains("unsupported destination property")
+        );
+        let target: ChildAgentTarget = serde_json::from_value(json!({
+            "id": "reviewer", "provider": "claude", "autoCompactTokens": 100_000,
+        }))
+        .unwrap();
+        let direct_override =
+            json!({"target": "reviewer", "prompt": "Review", "autoCompactTokens": 1_000_000});
+        assert!(
+            validate_tool_call(&[target], &known, TOOL_SPAWN, &direct_override)
+                .unwrap_err()
+                .contains("user-approved destination policy")
+        );
+    }
+
+    #[test]
+    fn child_compaction_catalog_discloses_approved_window_and_proposal_schema() {
+        let targets = [100_000, 1_000_000].map(|tokens| {
+            serde_json::from_value::<ChildAgentTarget>(json!({
+            "id": format!("reviewer-{tokens}"), "provider": "claude", "autoCompactTokens": tokens,
+        })).unwrap()
+        });
+        let catalog = tool_catalog(&targets, 2);
+        let spawn = &catalog[0];
+        for tokens in [100_000, 1_000_000] {
+            assert!(spawn["description"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("auto-compaction at {tokens} tokens")));
+            assert!(spawn["inputSchema"]["properties"]["target"]["description"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("auto-compaction at {tokens} tokens")));
+        }
+        let proposal = catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == TOOL_PROPOSE_SETTINGS)
+            .unwrap();
+        let item = &proposal["inputSchema"]["properties"]["targets"]["items"];
+        assert_eq!(item["additionalProperties"], false);
+        let compaction = &item["properties"]["autoCompactTokens"];
+        assert_eq!(compaction["type"], "integer");
+        assert_eq!(compaction["minimum"], 100_000);
+        assert_eq!(compaction["maximum"], 1_000_000);
+        let default_target: ChildAgentTarget = serde_json::from_value(json!({
+            "id": "default-reviewer", "provider": "claude",
+        }))
+        .unwrap();
+        let catalog = tool_catalog(&[default_target], 1);
+        let description = catalog[0]["description"].as_str().unwrap();
+        assert!(description.contains("provider default auto-compaction"));
+        assert!(!description.contains("auto-compaction inherited from the parent"));
+    }
+
+    #[test]
+    fn native_bridge_has_project_tools_without_managed_delegation_or_proposals() {
+        let catalog = bridge_tool_catalog(&[], 6, true, false, "read-only", true);
+        let names: Vec<_> = catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&TOOL_SET_RUN));
+        assert!(names.contains(&TOOL_SET_CHECK));
+        assert!(names.contains(&TOOL_LANGUAGE_QUERY));
+        assert!(!names.contains(&TOOL_LANGUAGE_INSTALL));
+        assert!(!names.contains(&TOOL_SPAWN));
+        assert!(!names.contains(&TOOL_PROPOSE_SETTINGS));
+        let instructions = bridge_instructions(&catalog, "claude");
+        assert!(!instructions.contains("only permitted sub-agent"));
+        assert!(!instructions.contains("authoritative delegation route"));
+        assert!(!instructions.contains("propose_agent_settings"));
+    }
+
+    #[test]
     fn project_language_catalog_preserves_child_depth_and_normal_chat_scope() {
         let names = |catalog: Value| {
             catalog
@@ -2118,6 +2448,7 @@ mod tests {
             reasoning_mode: default_reasoning_mode(),
             reasoning_effort: default_reasoning_effort(),
             reasoning_max_effort: default_reasoning_max_effort(),
+            auto_compact_tokens: None,
         };
         let parent = bridge_instructions(
             &scoped_tool_catalog(&[target], 1, true, false, "full"),
@@ -2184,17 +2515,13 @@ mod tests {
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, payload.to_string());
         assert!(!response["result"]["isError"].as_bool().unwrap());
-        assert!(
-            response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
-        );
+        assert!(response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT);
         // An inner payload can fit while double escaping exceeds the envelope.
         let escapes = json!({"result": "\"".repeat(100_000)});
         assert!(escapes.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT);
         let response = mcp_call_response(json!("id"), TOOL_LANGUAGE_QUERY, &escapes, false);
         assert_eq!(response["result"]["isError"], true);
-        assert!(
-            response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
-        );
+        assert!(response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT);
         for tool in [
             TOOL_LANGUAGE_QUERY,
             TOOL_LANGUAGE_STATUS,
@@ -2202,9 +2529,7 @@ mod tests {
         ] {
             let response =
                 mcp_call_response(json!(1), tool, &json!({"error":"x".repeat(300_000)}), true);
-            assert!(
-                response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT
-            );
+            assert!(response.to_string().len() < super::super::language_queries::MAX_BRIDGE_RESULT);
             assert_eq!(response["result"]["isError"], true);
         }
         let oversized_id = mcp_call_response(

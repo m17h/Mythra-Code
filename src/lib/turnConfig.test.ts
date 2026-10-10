@@ -4,7 +4,7 @@ import { MYTHRA_CODE_DELEGATION_INSTRUCTIONS, MYTHRA_CODE_NATIVE_DELEGATION_POLI
 
 /** Skill-mention plus completion guidance: what every turn carries. */
 const BASE_INSTRUCTIONS = mythraCodeDeveloperInstructions(false);
-import { childAgentMcpConfig, normalizeLmStudioBaseUrl, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams, withCurrentSystemPrompt } from "./turnConfig";
+import { childAgentMcpConfig, nativeCodexSubagentUnavailableReason, normalizeLmStudioBaseUrl, scheduleRunSnapshot, threadResumeParams, threadRuntimeConfig, threadStartParams, turnStartParams, withCurrentSystemPrompt } from "./turnConfig";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
 import { codexModelProviderId, providerFromThread } from "./threadProvider";
 
@@ -394,5 +394,130 @@ describe("cross-provider sub-agent bridge", () => {
       multi_agent_mode: { custom: expect.stringContaining("Never use collaboration.spawn_agent") },
       mcp_servers: { mythra_agents: { command: bridge.command } },
     });
+  });
+});
+
+describe("provider-native Codex sub-agents", () => {
+  const nativeRun: ScheduleRunSettings = { ...baseRun, subagentEngine: "native", nativeSubagentMax: 8 };
+
+  it("passes the native engine and its budget through unattended snapshots", () => {
+    expect(scheduleRunSnapshot(nativeRun)).toMatchObject({ subagentEngine: "native", nativeSubagentMax: 8 });
+  });
+
+  it("grants one V2 native route on start and resume with an independent budget", () => {
+    for (const params of [
+      threadStartParams(nativeRun, "/project", { interactive: true, customAgents: [{ id: "forced", name: "forced", enabled: true, description: "Force Mythra model", instructions: "", model: "forced-model", reasoningEffort: "high" }] }),
+      threadResumeParams(nativeRun, "thread", "/project"),
+    ]) {
+      expect(params.config).toMatchObject({
+        multi_agent_mode: "explicitRequestOnly",
+        agents: { enabled: true, max_threads: 8, max_concurrent_threads_per_session: 8 },
+        features: { multi_agent: true, multi_agent_v2: { enabled: true, expose_spawn_agent_model_overrides: true, max_concurrent_threads_per_session: 9 } },
+      });
+      expect(params.config).not.toHaveProperty("agents.forced");
+      expect(params.config).not.toHaveProperty("mcp_servers");
+      expect(params.developerInstructions).not.toContain("Provider-native task, team, and agent-spawning features are not allowed");
+      expect(params.developerInstructions).toContain("Provider-native sub-agent delegation is enabled");
+    }
+  });
+
+  it("sends current native delegation instructions through the per-turn override", () => {
+    const params = turnStartParams(nativeRun, "thread", "/project", [], [], true, { systemPrompt: "system" });
+    expect(params).toMatchObject({ collaborationMode: { settings: { developer_instructions: expect.stringContaining("Provider-native sub-agent delegation is enabled") } } });
+  });
+
+  it("sets child model defaults independently of the parent's compaction trigger", () => {
+    const run: ScheduleRunSettings = { ...nativeRun, autoCompactTokens: 100_000, nativeSubagentOptions: {
+      codex: { model: "gpt-6-luna", reasoningEffort: "high" },
+      claude: { model: "opus", autoCompactTokens: 200_000 },
+    } };
+    for (const params of [threadStartParams(run, "/project", { interactive: true }), threadResumeParams(run, "thread", "/project")]) {
+      expect(params.model).not.toBe("gpt-6-luna");
+      expect(params.config).not.toHaveProperty("model", "gpt-6-luna");
+      expect(params.config).toMatchObject({
+        agents: { default_subagent_model: "gpt-6-luna", default_subagent_reasoning_effort: "high" },
+        model_auto_compact_token_limit: 100_000,
+        model_auto_compact_token_limit_scope: "total",
+      });
+      expect(params.config).not.toHaveProperty("model_context_window");
+    }
+    expect(scheduleRunSnapshot(run).nativeSubagentOptions).toEqual(run.nativeSubagentOptions);
+  });
+
+  it("omits cleared or inactive preferences on resume and leaves model-only reasoning to Codex", () => {
+    const preferred: ScheduleRunSettings = { ...nativeRun, nativeSubagentOptions: { codex: { model: "gpt-6-luna", reasoningEffort: "high" } } };
+    expect(threadResumeParams(preferred, "thread", "/project").config).toHaveProperty("agents.default_subagent_model", "gpt-6-luna");
+    const modelOnly: ScheduleRunSettings = { ...preferred, nativeSubagentOptions: { codex: { model: "gpt-6-luna" } } };
+    expect(threadRuntimeConfig(modelOnly)).not.toHaveProperty("agents.default_subagent_reasoning_effort");
+    for (const run of [
+      { ...preferred, nativeSubagentOptions: undefined },
+      { ...preferred, subagentsEnabled: false },
+      { ...preferred, subagentEngine: "mythra" as const },
+      { ...preferred, provider: "claude" as const },
+    ]) {
+      const config = threadResumeParams(run, "thread", "/project", { refreshRuntimeConfig: true }).config;
+      expect(config).not.toHaveProperty("agents.default_subagent_model");
+      expect(config).not.toHaveProperty("agents.default_subagent_reasoning_effort");
+      expect(config).not.toHaveProperty("model_auto_compact_token_limit");
+      expect(config).not.toHaveProperty("model_auto_compact_token_limit_scope");
+    }
+  });
+
+  it.each([{ model: "bad\n[agents]" }, { reasoningEffort: "bogus" }, { autoCompactTokens: 99_999 }, { autoCompactTokens: 100_000.5 }])("rejects invalid explicit native defaults instead of silently launching provider defaults: %j", (codex) => {
+    const run = { ...nativeRun, nativeSubagentOptions: { codex } } as ScheduleRunSettings;
+    expect(() => threadRuntimeConfig(run)).toThrow();
+    expect(() => threadStartParams(run, "/project", { interactive: true })).toThrow();
+    expect(() => threadResumeParams(run, "thread", "/project")).toThrow();
+    expect(() => scheduleRunSnapshot(run)).toThrow();
+  });
+
+  it("rejects unsupported child-only Codex windows instead of changing the parent", () => {
+    const run = { ...nativeRun, autoCompactTokens: 1_000_000, nativeSubagentOptions: { codex: { autoCompactTokens: 100_000 } } };
+    expect(() => threadRuntimeConfig(run)).toThrow("shares the parent");
+  });
+
+  it("retains own context with delegation off and snapshots it without enlarging model capacity", () => {
+    const run = { ...nativeRun, subagentsEnabled: false, autoCompactTokens: 1_000_000 };
+    expect(threadRuntimeConfig(run)).toMatchObject({ model_auto_compact_token_limit: 1_000_000, model_auto_compact_token_limit_scope: "total", agents: { enabled: false } });
+    expect(threadRuntimeConfig(run)).not.toHaveProperty("model_context_window");
+    expect(scheduleRunSnapshot(run).autoCompactTokens).toBe(1_000_000);
+  });
+
+  it.each([0, 99_999, 1_000_001, 100_000.5, Number.NaN])("rejects invalid own windows even without native delegation: %s", (autoCompactTokens) => {
+    const run = { ...nativeRun, subagentsEnabled: false, autoCompactTokens };
+    expect(() => threadRuntimeConfig(run)).toThrow("whole number");
+    expect(() => scheduleRunSnapshot(run)).toThrow("whole number");
+  });
+
+  it("cannot enable native Codex on other providers or a disabled thread", () => {
+    for (const run of [{ ...nativeRun, subagentsEnabled: false }, ...(["claude", "cursor", "openrouter", "lmstudio"] as const).map((provider) => ({ ...nativeRun, provider }))]) {
+      expect(threadRuntimeConfig(run)).toMatchObject({ agents: { enabled: false, max_threads: 1 }, features: { multi_agent: false, multi_agent_v2: false } });
+    }
+  });
+
+  it("refuses to attach a Mythra spawning bridge alongside native delegation", () => {
+    const bridge = { name: "mythra_agents", command: "mythra", args: [], configPath: "/bridge", toolNames: ["spawn_mythra_agent"] };
+    expect(() => threadStartParams(nativeRun, "/project", { interactive: true, childAgentBridge: bridge })).toThrow("cannot share a thread");
+    expect(() => threadResumeParams(nativeRun, "thread", "/project", { childAgentBridge: bridge })).toThrow("cannot share a thread");
+  });
+
+  it("retains project controls with native delegation without adding Mythra spawning", () => {
+    const bridge = { name: "mythra_agents", command: "mythra", args: [], configPath: "/bridge", toolNames: ["set_project_run_command"] };
+    expect(threadRuntimeConfig(nativeRun, { childAgentBridge: bridge })).toMatchObject({ mcp_servers: { mythra_agents: { command: "mythra" } }, features: { multi_agent: true } });
+  });
+
+  it.each([[undefined, 6], [Number.NaN, 6], [0, 1], [-2, 1], [3.8, 3], [99, 24]] as const)("normalizes native concurrency %s to %s", (nativeSubagentMax, expected) => {
+    expect(threadRuntimeConfig({ ...nativeRun, nativeSubagentMax })).toMatchObject({
+      agents: { max_threads: expected, max_concurrent_threads_per_session: expected },
+      features: { multi_agent_v2: { max_concurrent_threads_per_session: expected + 1 } },
+    });
+  });
+
+  it.each(["codex-cli 0.161.0", "0.161.1", "codex-cli 0.162.0-alpha.1", "1.0.0"])("accepts the verified contract or newer %s", (version) => {
+    expect(nativeCodexSubagentUnavailableReason(version)).toBeNull();
+  });
+
+  it.each([undefined, null, "", "codex-cli unknown", "codex-cli 0.160.9", "codex-cli 0.161.0-alpha.1"])("fails closed for an unverified native contract %s", (version) => {
+    expect(nativeCodexSubagentUnavailableReason(version)).toContain("0.161.0");
   });
 });

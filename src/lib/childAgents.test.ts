@@ -90,6 +90,35 @@ describe("child agent identities", () => {
   });
 });
 
+describe("worker compaction policy", () => {
+  it("retains independent windows in presets, frozen and staged crew policies, and backend options", () => {
+    const targets = [target({ id: "haiku", provider: "claude", model: "claude-haiku-5-5", autoCompactTokens: 100_000 }), target({ id: "sol", autoCompactTokens: 1_000_000 })];
+    const presets = sanitizeChildAgentPresets([{ id: "crew", name: "Crew", policy: { enabled: true, maxConcurrent: 2, childAgents: { enabled: true, targets } } }]);
+    expect(presets[0].policy.childAgents.targets).toEqual(targets);
+    const policy = childAgentPolicyFor({ sessionId: "session", rootThreadId: "root", childAgents: presets[0].policy.childAgents, subagentsEnabled: true, subagentMax: 2, permission: "ask", systemPrompt: "", projectInstructionsEnabled: false, reasoningEffort: "high", serviceTier: null, readiness: EVERYTHING_READY })!;
+    targets[0].autoCompactTokens = 1_000_000;
+    expect(policy.targets[0].autoCompactTokens).toBe(100_000);
+    const stored = sanitizeChildAgentPolicies({ session: { ...policy, pendingRecapture: { targets: [{ ...policy.targets[0], autoCompactTokens: 1_000_000 }], maxConcurrent: 1, approvedAt: 2 } } }).session;
+    expect(stored.targets[0].autoCompactTokens).toBe(100_000);
+    expect(stored.pendingRecapture?.targets[0].autoCompactTokens).toBe(1_000_000);
+    expect(childAgentSessionOptions(stored).targets).toEqual(expect.arrayContaining([expect.objectContaining({ id: "haiku", autoCompactTokens: 100_000 }), expect.objectContaining({ id: "sol", autoCompactTokens: 1_000_000 })]));
+  });
+
+  it.each([99_999, 1_000_001, 100_000.5, NaN, Infinity, "100000", null])("parks malformed explicit worker windows without replacing them with provider default: %j", (autoCompactTokens) => {
+    const first = sanitizeChildAgentSettings({ targets: [{ ...target(), autoCompactTokens }] });
+    const restored = sanitizeChildAgentSettings(JSON.parse(JSON.stringify(first)));
+    expect(restored.targets[0]).toMatchObject({ enabled: false, autoCompactTokens: 0 });
+    expect(childAgentTargetIssue({ ...restored.targets[0], enabled: true }, EVERYTHING_READY)).toContain("whole number");
+    expect(readyChildAgentTargets(restored, EVERYTHING_READY)).toEqual([]);
+  });
+
+  it("leaves omitted worker preferences to provider defaults and rejects unsupported explicit Cursor windows", () => {
+    expect(sanitizeChildAgentSettings({ targets: [target()] }).targets[0]).not.toHaveProperty("autoCompactTokens");
+    expect(childAgentTargetIssue(target({ provider: "cursor", autoCompactTokens: 100_000 }), EVERYTHING_READY)).toContain("Cursor");
+    expect(childAgentTargetIssue(target({ provider: "cursor" }), EVERYTHING_READY)).toBeNull();
+  });
+});
+
 describe("crew presets", () => {
   it("sanitizes complete reusable policies and returns fresh destination objects", () => {
     const source = [{

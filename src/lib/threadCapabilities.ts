@@ -27,11 +27,12 @@
  */
 
 import { loadStored, storeValue } from "./storage";
+import type { NativeSubagentOptions } from "../types";
+import { sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions } from "./threadSubagentSettings";
 
 const STORAGE_KEY = "kiwi.threadSubagentCapabilities";
 /** Bump whenever startup-only routing policy changes for loaded threads. */
-const RUNTIME_POLICY_REVISION = "managed-v2";
-const NEUTRAL = `${RUNTIME_POLICY_REVISION}:off:1:`;
+const RUNTIME_POLICY_REVISION = "managed-v3";
 /** Longest signature worth trusting from disk; real ones are far shorter. */
 const MAX_SIGNATURE_LENGTH = 1024;
 
@@ -62,6 +63,10 @@ function persistApplied(): void {
 export interface SubagentCapabilities {
   subagentsEnabled: boolean;
   subagentMax: number;
+  subagentEngine?: "mythra" | "native";
+  nativeSubagentMax?: number;
+  nativeSubagentOptions?: NativeSubagentOptions;
+  autoCompactTokens?: number;
   /** Concrete bridge launch backing delegation, including its fresh token file. */
   bridgeInstanceId?: string;
 }
@@ -69,8 +74,11 @@ export interface SubagentCapabilities {
 export function subagentCapabilitySignature(capabilities: SubagentCapabilities): string {
   // A parallel limit only means something while sub-agents are on, so nudging
   // it with the feature switched off is not a reason to reconfigure anything.
-  const max = capabilities.subagentsEnabled ? Math.max(1, Math.floor(capabilities.subagentMax) || 1) : 1;
-  return `${RUNTIME_POLICY_REVISION}:${capabilities.subagentsEnabled ? "on" : "off"}:${max}:${capabilities.bridgeInstanceId ?? ""}`;
+  const route = capabilities.subagentsEnabled ? capabilities.subagentEngine === "native" ? "native" : "on" : "off";
+  const max = route === "native" ? sanitizeNativeSubagentMax(capabilities.nativeSubagentMax)
+    : capabilities.subagentsEnabled ? Math.max(1, Math.floor(capabilities.subagentMax) || 1) : 1;
+  const nativeOptions = route === "native" ? sanitizeNativeSubagentOptions(capabilities.nativeSubagentOptions)?.codex : undefined;
+  return `${RUNTIME_POLICY_REVISION}:${route}:${max}:${capabilities.bridgeInstanceId ?? ""}${route === "native" ? `:${JSON.stringify(nativeOptions ?? {})}` : ""}:compact=${capabilities.autoCompactTokens ?? "default"}`;
 }
 
 export interface SubagentCapabilityPlan {
@@ -90,9 +98,8 @@ const UNCHANGED: SubagentCapabilityPlan = { restartRuntime: false, resume: false
  * What has to happen before this thread's next turn so the runtime really has
  * the capabilities the app is showing.
  *
- * `NEUTRAL` is what the app-managed `config.toml` gives an unconfigured
- * thread — sub-agents off, one agent, no bridge — so a thread that wants
- * exactly that needs nothing done for it.
+ * Even an off-policy thread requires evidence for a loaded process. Managed
+ * defaults do not prove how an unknown thread was originally configured.
  */
 export function planSubagentCapabilities(
   threadId: string,
@@ -112,10 +119,10 @@ export function planSubagentCapabilities(
   if (record && record.instance !== runtimeInstance) {
     return { restartRuntime: true, resume: true };
   }
-  // An unknown pre-feature thread may already be loaded in this long-lived
-  // process. A resume alone can silently ignore non-neutral startup config,
-  // so refresh before granting delegation. Neutral matches managed defaults.
-  if (!record) return signature === NEUTRAL ? UNCHANGED : { restartRuntime: true, resume: true };
+  // Missing evidence is not an off-policy guarantee: this process may have
+  // loaded the thread through another path or restored a native transcript.
+  // A warm resume ignores startup config, including explicit disabled flags.
+  if (!record) return { restartRuntime: true, resume: true };
   if (record.signature === signature) return UNCHANGED;
   return { restartRuntime: true, resume: true };
 }
@@ -127,11 +134,10 @@ export function recordSubagentCapabilities(threadId: string, runtimeInstance: st
 }
 
 /**
- * Record a thread this renderer opened, without overwriting what the same
- * app-server was already told about it. Opening a thread resumes it with the
- * current config, which that runtime honours only if it did not already have
- * the thread loaded — exactly the case where no record for this instance
- * exists yet.
+ * Compatibility helper for a verified cold startup, without overwriting what
+ * the same app-server was already told. A missing record does not prove the
+ * thread was unloaded: callers must establish that separately before seeding.
+ * Current startup paths record only after their guarded startup succeeds.
  */
 export function seedSubagentCapabilities(threadId: string, runtimeInstance: string, signature: string): void {
   const record = applied.get(threadId);

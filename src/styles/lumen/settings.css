@@ -49,7 +49,9 @@
 }
 .app-shell[data-theme][data-color-scheme] .settings-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
 .app-shell[data-theme][data-color-scheme] .settings-search-clear { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 16px; padding: 0 12px 18px; }
+/* Fit the full category list in the standard sheet without shrinking its
+   36px navigation targets. Short and narrow windows retain their overrides. */
+.app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 8px; padding: 0 12px 12px; }
 .app-shell[data-theme][data-color-scheme] .settings-nav-group { gap: 2px; }
 .app-shell[data-theme][data-color-scheme] .settings-nav-label { padding: 0 10px 6px; color: var(--muted-2); }
 .app-shell[data-theme][data-color-scheme] .settings-nav button {

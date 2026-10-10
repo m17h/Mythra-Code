@@ -8,7 +8,7 @@ import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
 import "./SettingsModal.css";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => false }));
 const fixture = preferenceLearningFixture();
 const props = {
   projects: [{ id: "browser-project", name: "Browser project", path: "/fixture/browser" }],

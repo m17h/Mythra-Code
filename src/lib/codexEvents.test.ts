@@ -30,6 +30,220 @@ function makeContext(overrides: Partial<CodexEventContext> = {}): CodexEventCont
 describe("routeCodexEvent", () => {
   beforeEach(() => { localStorage.clear(); resetTaskStore(); });
 
+  it("enriches a lifecycle-first child from its authoritative spawn assignment", () => {
+    const ctx = makeContext();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "root", turn: { id: "current" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "current", item: { id: "lifecycle", type: "subAgentActivity", kind: "started", agentThreadId: "child" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "current", item: { id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "The actual assignment", model: "requested-model", receiverThreadIds: ["child"], agentsStates: { child: { status: "inProgress" } } } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ prompt: "The actual assignment", task: "The actual assignment", requestedModel: "requested-model", activationId: "spawn" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "older", item: { id: "older-spawn", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Old assignment", model: "old-model", receiverThreadIds: ["child"], agentsStates: { child: { status: "inProgress" } } } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ prompt: "The actual assignment", task: "The actual assignment", requestedModel: "requested-model", activationId: "spawn" });
+  });
+
+  it("does not refill a newer activation from an unrelated late spawn with a matching status", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh", type: "collabAgentToolCall", tool: "followupTask", prompt: "Fresh task", receiverThreadIds: ["child"] } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "unseen-old-spawn", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Old assignment", model: "old-requested", receiverThreadIds: ["child"], agentsStates: { child: { status: "starting", model: "old-model", message: "Old progress" } } } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "Fresh task", activationId: "fresh", model: "", requestedModel: "", progress: "", result: "" });
+  });
+
+  it("clears finished readout when a native child's own conversation starts a fresh turn", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.upsertAgent("root", { id: "child", prompt: "Old assignment", task: "Old assignment", status: "completed", runtime: "codex", activationId: "spawn", model: "old-model", modelSource: "execution", requestedModel: "old-requested", progress: "Old progress", result: "Old result" });
+    store.setActiveTurn("child", "old-child-turn");
+    store.completeTurn("child", "old-child-turn", "completed");
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "old-child-turn" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0].result).toBe("Old result");
+    expect(useTaskStore.getState().statuses.child).toBe("completed");
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "fresh-child-turn" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ prompt: "Task not reported", task: "", status: "inProgress", activationId: "turn:fresh-child-turn", requestedModel: "", model: "", progress: "", result: "" });
+    expect(useTaskStore.getState().tasks.root.agents[0].modelSource).toBeUndefined();
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenLastCalledWith("root", "child", expect.objectContaining({ prompt: "Task not reported", activationId: "turn:fresh-child-turn", result: "", model: "", activatedAt: expect.any(Number) }));
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "fresh-child-turn", item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Fresh result" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0].result).toBe("Fresh result");
+    expect(useTaskStore.getState().tasks.root.messages).toHaveLength(0);
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "child", turn: { id: "fresh-child-turn", status: "completed" } } }, ctx);
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "old-child-turn" } } }, ctx);
+    expect(useTaskStore.getState().statuses.child).toBe("completed");
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ result: "Fresh result", activationId: "turn:fresh-child-turn" });
+  });
+
+  it("keeps a native child's fresh assigned readout when its turn identity arrives", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.upsertAgent("root", { id: "child", prompt: "Assigned work", task: "Assigned work", status: "starting", runtime: "codex", activationId: "fresh-spawn", requestedModel: "fresh-requested" });
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "child-turn" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "Assigned work", prompt: "Assigned work", requestedModel: "fresh-requested", activationId: "fresh-spawn", status: "inProgress" });
+  });
+
+  it.each(["starting", "running"] as const)("does not settle a %s native activation from an old completion before its new turn starts", (status) => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.setActiveTurn("child", "old-child-turn");
+    store.completeTurn("child", "old-child-turn", "completed");
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh", type: "collabAgentToolCall", tool: "followupTask", prompt: "Fresh task", receiverThreadIds: ["child"] } } }, ctx);
+    store.setTaskStatus("child", status);
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "child", turn: { id: "old-child-turn", status: "completed" } } }, ctx);
+    expect(useTaskStore.getState().statuses.child).toBe(status);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ prompt: "Fresh task", status: "starting", activationId: "fresh" });
+    expect(ctx.onTurnCompleted).not.toHaveBeenCalled();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "old-child-turn" } } }, ctx);
+    expect(useTaskStore.getState().tasks.child.activeTurnId).toBeUndefined();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "fresh-child-turn" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "fresh-child-turn", item: { id: "fresh-answer", type: "agentMessage", phase: "final_answer", text: "Fresh result" } } }, ctx);
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "child", turn: { id: "fresh-child-turn", status: "completed" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ status: "completed", result: "Fresh result" });
+    expect(ctx.onTurnCompleted).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, ""])("does not treat a provider completion with turn id %j as a pending native activation's hard cutoff", (id) => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.beginNativeActivation("child", "fresh");
+    store.setTaskStatus("child", "starting");
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "child", turn: { id, status: "completed" } } }, ctx);
+    expect(useTaskStore.getState().tasks.child).toMatchObject({ status: "starting", pendingNativeActivationId: "fresh" });
+    expect(ctx.onTurnCompleted).not.toHaveBeenCalled();
+  });
+
+  it("retains the activation fence across an uncorrelated idle notification and retired final output", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.setActiveTurn("child", "old-child-turn");
+    store.completeTurn("child", "old-child-turn", "completed");
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh", type: "collabAgentToolCall", tool: "followupTask", prompt: "Fresh task", receiverThreadIds: ["child"] } } }, ctx);
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "child", status: { type: "idle" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "old-child-turn", item: { id: "old-answer", type: "agentMessage", phase: "final_answer", text: "Old result" } } }, ctx);
+    expect(useTaskStore.getState().tasks.child).toMatchObject({ status: "starting", pendingNativeActivationId: "fresh" });
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "Fresh task", progress: "", result: "" });
+    routeCodexEvent({ method: "turn/started", params: { threadId: "child", turn: { id: "fresh-child-turn" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "fresh-child-turn", item: { id: "fresh-answer", type: "agentMessage", phase: "final_answer", text: "Fresh result" } } }, ctx);
+    routeCodexEvent({ method: "turn/completed", params: { threadId: "child", turn: { id: "fresh-child-turn", status: "completed" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "old-child-turn", item: { id: "old-answer-replay", type: "agentMessage", phase: "final_answer", text: "Old result replay" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0].result).toBe("Fresh result");
+  });
+
+  it("settles a pending activation from a wait that started for that exact activation", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "root", turn: { id: "root-turn" } } }, ctx);
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh", type: "collabAgentToolCall", tool: "followupTask", prompt: "Fresh task", receiverThreadIds: ["child"] } } }, ctx);
+    routeCodexEvent({ method: "item/started", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh-wait", type: "collabAgentToolCall", tool: "wait" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh-wait", type: "collabAgentToolCall", tool: "wait", receiverThreadIds: ["child"], agentsStates: { child: { status: "completed", message: "Fresh result" } } } } }, ctx);
+    expect(useTaskStore.getState().statuses.child).toBe("completed");
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "Fresh task", status: "completed", result: "Fresh result", activationId: "fresh" });
+    expect(ctx.onTurnCompleted).toHaveBeenCalledWith("child", null);
+  });
+
+  it("cannot settle a fresh activation from a wait started before its activation", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    routeCodexEvent({ method: "turn/started", params: { threadId: "root", turn: { id: "root-turn" } } }, ctx);
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old" });
+    routeCodexEvent({ method: "item/started", params: { threadId: "root", turnId: "root-turn", item: { id: "old-wait", type: "collabAgentToolCall", tool: "wait" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh", type: "collabAgentToolCall", tool: "followupTask", prompt: "Fresh task", receiverThreadIds: ["child"] } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "old-wait", type: "collabAgentToolCall", tool: "wait", receiverThreadIds: ["child"], agentsStates: { child: { status: "completed", message: "Old result" } } } } }, ctx);
+    expect(useTaskStore.getState().statuses.child).toBe("starting");
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "Fresh task", status: "starting", result: "", activationId: "fresh" });
+    expect(ctx.onTurnCompleted).not.toHaveBeenCalled();
+  });
+
+  it.each(["activation", "root-turn", "replayed-start"])("does not reuse a wait snapshot across %s changes", (change) => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    const emit = (id: string, tool: string, lifecycle: "started" | "completed", turnId = "root-turn", report = false) => routeCodexEvent({ method: `item/${lifecycle}`, params: { threadId: "root", turnId, item: { id, type: "collabAgentToolCall", tool, prompt: "Fresh assignment", receiverThreadIds: ["child"], ...(report ? { agentsStates: { child: { status: "completed", message: "Stale result" } } } : {}) } } }, ctx);
+    routeCodexEvent({ method: "turn/started", params: { threadId: "root", turn: { id: "root-turn" } } }, ctx);
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old" });
+    emit("activation-1", "followupTask", "completed");
+    emit("wait", "wait", "started");
+    if (change === "activation") emit("activation-2", "followupTask", "completed");
+    if (change === "root-turn") routeCodexEvent({ method: "turn/started", params: { threadId: "root", turn: { id: "root-turn-2" } } }, ctx);
+    if (change === "replayed-start") {
+      emit("wait", "wait", "completed", "root-turn", true);
+      emit("activation-2", "followupTask", "completed");
+      emit("wait", "wait", "started");
+    }
+    emit("wait", "wait", "completed", "root-turn", true);
+    expect(useTaskStore.getState().statuses.child).toBe("starting");
+    expect(useTaskStore.getState().tasks.root.agents[0].result).toBe("");
+    if (change !== "root-turn") {
+      emit("fresh-wait", "wait", "started");
+      emit("fresh-wait", "wait", "completed", "root-turn", true);
+      expect(useTaskStore.getState().statuses.child).toBe("completed");
+    }
+  });
+
+  it("settles a pending native activation on a real provider system error", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.beginNativeActivation("child", "fresh");
+    store.setTaskStatus("child", "starting");
+    routeCodexEvent({ method: "thread/status/changed", params: { threadId: "child", status: { type: "systemError" } } }, ctx);
+    expect(useTaskStore.getState().statuses.child).toBe("error");
+    expect(useTaskStore.getState().tasks.child.pendingNativeActivationId).toBeUndefined();
+  });
+
+  it("preserves assignments across native lifecycle and passive snapshots, separating requested and configured models", () => {
+    const ctx = makeContext();
+    const emit = (item: Record<string, unknown>, lifecycle = "completed") => routeCodexEvent({ method: `item/${lifecycle}`, params: { threadId: "root", turnId: "root-turn", item } }, ctx);
+    emit({ id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Audit actual ownership", model: "requested-model", receiverThreadIds: ["child"], agentsStates: { child: { status: "running", message: "Reviewing event adapters" } } });
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "Audit actual ownership", requestedModel: "requested-model", progress: "Reviewing event adapters" });
+    expect(useTaskStore.getState().tasks.root.agents[0].model).toBeUndefined();
+    emit({ id: "native", type: "subAgentActivity", kind: "started", agentThreadId: "child", agentPath: "0/1" });
+    emit({ id: "wait", type: "collabAgentToolCall", tool: "wait", agentsStates: { child: { status: "running" } }, receiverThreadIds: [] });
+    routeCodexEvent({ method: "thread/started", params: { thread: { id: "child", model: "actual-configured" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ prompt: "Audit actual ownership", task: "Audit actual ownership", requestedModel: "requested-model", model: "actual-configured", modelSource: "configured" });
+    routeCodexEvent({ method: "thread/settings/updated", params: { threadId: "child", threadSettings: { model: "new-configured" } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "child-turn", item: { id: "answer", type: "agentMessage", phase: "final_answer", text: "Actual child result" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ model: "new-configured", result: "Actual child result", progress: "Actual child result" });
+    expect(useTaskStore.getState().tasks.root.messages).toHaveLength(0);
+    expect(useTaskStore.getState().tasks.root.agents).toHaveLength(1);
+  });
+
+  it("clears old result on a new native activation but preserves it through passive events", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "turn");
+    store.upsertAgent("root", { id: "child", prompt: "Old task", task: "Old task", status: "completed", runtime: "codex", result: "Old result", progress: "Old progress", activationId: "old", requestedModel: "current-requested", model: "current-configured" });
+    store.upsertActivity("root", { id: "old", kind: "agent", title: "Spawn", turnId: "turn", agent: { action: "spawn", threadIds: ["child"] } });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "turn", item: { id: "new", type: "collabAgentToolCall", tool: "followupTask", prompt: "New task", receiverThreadIds: ["child"] } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ task: "New task", result: "", progress: "", activationId: "new", status: "starting" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "old-turn", item: { id: "late-old-answer", type: "agentMessage", phase: "final_answer", text: "Old result replay" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0].result).toBe("");
+    store.setTaskStatus("child", "running");
+    routeCodexEvent({ method: "item/completed", params: { threadId: "child", turnId: "old-turn", item: { id: "late-old-running-answer", type: "agentMessage", phase: "final_answer", text: "Old result replay while running" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0].result).toBe("");
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "turn", item: { id: "wait", type: "collabAgentToolCall", tool: "wait", receiverThreadIds: ["child"], agentsStates: { child: { status: "completed", message: "Old result replay", model: "old-model" } } } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "turn", item: { id: "old", type: "collabAgentToolCall", tool: "spawnAgent", prompt: "Old task", model: "old-requested", receiverThreadIds: ["child"], agentsStates: { child: { status: "running", message: "Old progress replay", model: "old-model" } } } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ prompt: "New task", task: "New task", activationId: "new", result: "", progress: "", requestedModel: "", model: "" });
+  });
+
+  it("does not carry previous activation model evidence into a fresh native followup", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.upsertAgent("root", { id: "child", prompt: "Old task", status: "completed", runtime: "codex", activationId: "old", model: "old-executed", modelSource: "execution", requestedModel: "old-requested", result: "Old result" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh", type: "collabAgentToolCall", tool: "followupTask", prompt: "Fresh task", receiverThreadIds: ["child"] } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ model: "", requestedModel: "", result: "", progress: "" });
+    expect(useTaskStore.getState().tasks.root.agents[0].modelSource).toBeUndefined();
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenLastCalledWith("root", "child", expect.objectContaining({ model: "", requestedModel: "", activationId: "fresh" }));
+    routeCodexEvent({ method: "thread/settings/updated", params: { threadId: "child", threadSettings: { model: "fresh-configured" } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ model: "fresh-configured", modelSource: "configured" });
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "root-turn", item: { id: "fresh-no-task", type: "collabAgentToolCall", tool: "followupTask", model: "fresh-requested", receiverThreadIds: ["child"], agentsStates: { child: { status: "running", model: "fresh-reported" } } } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ model: "fresh-reported", requestedModel: "fresh-requested", task: "", prompt: "Task not reported" });
+    expect(useTaskStore.getState().tasks.root.agents[0].modelSource).toBeUndefined();
+  });
+
   it("retains provider-native explicit skill inputs without guessing use from catalog updates or prose", () => {
     const ctx = makeContext();
     routeCodexEvent({ method: "skills/changed", params: {} }, ctx);
@@ -97,7 +311,7 @@ describe("routeCodexEvent", () => {
     expect(useTaskStore.getState().tasks.thread.activities[0]).toMatchObject({ detail: source === "content" ? "Authoritative thinking" : "Initial thinking continues", status: "completed" });
   });
 
-  it.each(["collabAgentToolCall", "subAgentActivity"])("settles late %s children unless their own task is live", (type) => {
+  it.each(["collabAgentToolCall", "subAgentActivity"])("does not infer late %s child completion from its parent", (type) => {
     const ctx = makeContext();
     const store = useTaskStore.getState();
     store.setActiveTurn("thread", "old");
@@ -108,7 +322,7 @@ describe("routeCodexEvent", () => {
       item: { id, type, status: "inProgress", tool: "spawnAgent", receiverThreadIds: [child], agentThreadId: child, kind: "started" },
     } });
     routeCodexEvent(event("settled-spawn", "settled-child"), ctx);
-    expect(useTaskStore.getState().tasks.thread.agents[0]).toMatchObject({ id: "settled-child", status: "completed" });
+    expect(useTaskStore.getState().tasks.thread.agents[0]).toMatchObject({ id: "settled-child", status: type === "collabAgentToolCall" ? "starting" : "started" });
     store.setTaskStatus("live-child", "running");
     routeCodexEvent(event("live-spawn", "live-child"), ctx);
     expect(useTaskStore.getState().tasks.thread.agents[1]).toMatchObject({ id: "live-child", status: "inProgress" });
@@ -119,7 +333,7 @@ describe("routeCodexEvent", () => {
     store.setActiveTurn("thread", "turn");
     store.setTaskStatus("child", "running");
     routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "turn", item: {
-      id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", status: "completed", receiverThreadIds: ["child"],
+      id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", status: "completed", receiverThreadIds: ["child"], agentsStates: { child: { status: "completed" } },
     } } }, makeContext());
     expect(useTaskStore.getState().tasks.thread.agents[0]).toMatchObject({ id: "child", status: "inProgress" });
   });
@@ -130,9 +344,81 @@ describe("routeCodexEvent", () => {
     store.setActiveTurn("thread", "old");
     store.completeTurn("thread", "old", "interrupted");
     routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "old", item: {
-      id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", status: "completed", receiverThreadIds: ["child"],
+      id: "spawn", type: "collabAgentToolCall", tool: "spawnAgent", status: "completed", receiverThreadIds: ["child"], agentsStates: { child: { status: "completed" } },
     } } }, ctx);
     expect(useTaskStore.getState().tasks.thread.agents[0]).toMatchObject({ id: "child", status: "completed" });
+  });
+
+  it("reactivates a completed native child only for a fresh current-turn activation", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread", "new");
+    store.setTaskStatus("child", "completed");
+    store.upsertAgent("thread", { id: "child", prompt: "Review", status: "completed", runtime: "codex" });
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "new", item: {
+      id: "new-input", type: "collabAgentToolCall", tool: "sendInput", receiverThreadIds: ["child"], agentsStates: { child: { status: "running", model: "actual-child" } },
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.agents[0]).toMatchObject({ status: "inProgress", model: "actual-child", activationId: "new-input" });
+    store.completeTurn("child", undefined, "completed");
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "new", item: {
+      id: "new-input", type: "collabAgentToolCall", tool: "sendInput", receiverThreadIds: ["child"], agentsStates: { child: { status: "running" } },
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.agents[0].status).toBe("completed");
+    expect(useTaskStore.getState().tasks.thread.agents[0].activationId).toBe("new-input");
+  });
+
+  it("reopens a V2 followup when receiver identity first arrives on tool completion", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("thread", "new");
+    store.setTaskStatus("child", "completed");
+    store.upsertAgent("thread", { id: "child", prompt: "Review", status: "completed", runtime: "codex" });
+    routeCodexEvent({ method: "item/started", params: { threadId: "thread", turnId: "new", item: {
+      id: "followup", type: "collabAgentToolCall", tool: "followupTask", status: "inProgress",
+    } } }, ctx);
+    routeCodexEvent({ method: "item/completed", params: { threadId: "thread", turnId: "new", item: {
+      id: "followup", type: "collabAgentToolCall", tool: "followupTask", status: "completed", receiverThreadIds: ["child"],
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.thread.agents[0].status).toBe("starting");
+    expect(useTaskStore.getState().tasks.child.activeTurnId).toBeUndefined();
+  });
+
+  it("preserves the known active child turn when a new input steers that same work", () => {
+    const ctx = makeContext();
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.setActiveTurn("child", "actual-active-turn");
+    store.setTaskStatus("child", "running");
+    routeCodexEvent({ method: "item/started", params: { threadId: "root", turnId: "root-turn", item: {
+      id: "steer", type: "collabAgentToolCall", tool: "sendInput", receiverThreadIds: ["child"],
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.child.activeTurnId).toBe("actual-active-turn");
+    expect(useTaskStore.getState().tasks.root.agents[0]).toMatchObject({ status: "inProgress", activationId: "steer" });
+  });
+
+  it.each(["collabAgentToolCall", "subAgentActivity"])("does not mutate a foreign main task when %s ownership is rejected", (type) => {
+    const ctx = makeContext({ onNativeAgentDiscovered: vi.fn(() => false) });
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "turn");
+    store.setTaskStatus("foreign-main", "completed");
+    const foreignTask = useTaskStore.getState().tasks["foreign-main"];
+    routeCodexEvent({ method: "item/completed", params: { threadId: "root", turnId: "turn", item: {
+      id: "rejected", type, tool: "followupTask", status: "completed", receiverThreadIds: ["foreign-main"], agentThreadId: "foreign-main", kind: "started",
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents).toEqual([]);
+    expect(useTaskStore.getState().tasks.root.activities).toEqual([]);
+    expect(useTaskStore.getState().tasks["foreign-main"]).toBe(foreignTask);
+    expect(useTaskStore.getState().statuses["foreign-main"]).toBe("completed");
+  });
+
+  it("excludes rejected receiver IDs from a mixed native wave", () => {
+    const ctx = makeContext({ onNativeAgentDiscovered: vi.fn((_root: string, child: string) => child !== "foreign-main") });
+    routeCodexEvent({ method: "item/started", params: { threadId: "root", turnId: "turn", item: {
+      id: "wave", type: "collabAgentToolCall", tool: "spawnAgent", receiverThreadIds: ["child", "foreign-main"],
+    } } }, ctx);
+    expect(useTaskStore.getState().tasks.root.agents.map((agent) => agent.id)).toEqual(["child"]);
+    expect(useTaskStore.getState().tasks.root.activities[0].agent).toMatchObject({ count: 1, threadIds: ["child"] });
+    expect(useTaskStore.getState().tasks["foreign-main"]).toBeUndefined();
   });
 
   it("keeps many late rows before the next prompt without floating-point rank drift", () => {
@@ -608,13 +894,12 @@ describe("routeCodexEvent", () => {
       agent: {
         action: "spawn",
         provider: "openai",
-        task: "/root/worker",
         count: 1,
         threadIds: ["child"],
       },
     }));
     expect(useTaskStore.getState().tasks.child.workspacePath).toBe("/workspace");
-    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { path: "/root/worker" });
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { path: "/root/worker", status: "interacted", model: undefined, provider: "openai", runtime: "codex" });
   });
 
   it("renders a native Codex start as a structured Relay spawn", () => {
@@ -641,7 +926,6 @@ describe("routeCodexEvent", () => {
       agent: {
         action: "spawn",
         provider: "openai",
-        task: "/root/audio_regression_audit",
         count: 1,
         threadIds: ["child"],
       },
@@ -680,7 +964,7 @@ describe("routeCodexEvent", () => {
       },
     }));
     expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledTimes(1);
-    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", { prompt: "Split the work" });
+    expect(ctx.onNativeAgentDiscovered).toHaveBeenCalledWith("root", "child", expect.objectContaining({ prompt: "Split the work", task: "Split the work", status: "starting", model: undefined, provider: "openai", runtime: "codex" }));
   });
 
   it("keeps fallback model metadata warnings in diagnostics instead of the chat", () => {

@@ -20,6 +20,12 @@ const RESUME_ONLY = { restartRuntime: false, resume: true };
 const REFRESH = { restartRuntime: true, resume: true };
 
 describe("subagentCapabilitySignature", () => {
+  it("tracks own compaction while delegation is off, including reset to provider default", () => {
+    const small = subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 4, autoCompactTokens: 100_000 });
+    const large = subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 4, autoCompactTokens: 1_000_000 });
+    expect(new Set([OFF, small, large]).size).toBe(3);
+    expect(subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 4, autoCompactTokens: undefined })).toBe(OFF);
+  });
   it("separates the three things a runtime thread has to be told", () => {
     expect(new Set([OFF, ON, BRIDGED]).size).toBe(3);
   });
@@ -34,13 +40,34 @@ describe("subagentCapabilitySignature", () => {
   it("ignores a parallel limit that cannot matter because sub-agents are off", () => {
     expect(subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 12 })).toBe(OFF);
   });
+
+  it("records the engine and its own native concurrency independently of the Mythra budget", () => {
+    const native = subagentCapabilitySignature({ subagentsEnabled: true, subagentMax: 4, subagentEngine: "native", nativeSubagentMax: 6 });
+    expect(native).not.toBe(ON);
+    expect(subagentCapabilitySignature({ subagentsEnabled: true, subagentMax: 24, subagentEngine: "native", nativeSubagentMax: 6 })).toBe(native);
+    expect(subagentCapabilitySignature({ subagentsEnabled: true, subagentMax: 4, subagentEngine: "native", nativeSubagentMax: 7 })).not.toBe(native);
+    expect(subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 24, subagentEngine: "native", nativeSubagentMax: 7 })).toBe(OFF);
+  });
+
+  it("tracks Codex child defaults and compaction only when native delegation is active", () => {
+    const base = { subagentsEnabled: true, subagentMax: 4, subagentEngine: "native" as const, nativeSubagentMax: 6 };
+    const empty = subagentCapabilitySignature(base);
+    const preferred = subagentCapabilitySignature({ ...base, nativeSubagentOptions: { codex: { model: "gpt-6-luna", reasoningEffort: "high", autoCompactTokens: 100_000 } } });
+    expect(preferred).not.toBe(empty);
+    expect(subagentCapabilitySignature({ ...base, nativeSubagentOptions: { claude: { model: "opus" } } })).toBe(empty);
+    for (const codex of [{ model: "gpt-6-luna" }, { reasoningEffort: "high" as const }, { autoCompactTokens: 100_000 }]) {
+      expect(subagentCapabilitySignature({ ...base, nativeSubagentOptions: { codex } })).not.toBe(empty);
+    }
+    expect(subagentCapabilitySignature({ ...base, subagentsEnabled: false, nativeSubagentOptions: { codex: { autoCompactTokens: 100_000 } } })).toBe(OFF);
+  });
 });
 
 describe("planSubagentCapabilities", () => {
   beforeEach(() => forgetSubagentCapabilities());
 
-  it("leaves an unknown pre-feature thread alone while it wants nothing special", () => {
-    expect(planSubagentCapabilities("thread-1", RUNTIME, OFF)).toEqual(NOTHING);
+  it("refreshes an unknown loaded thread before claiming native delegation is disabled", () => {
+    expect(planSubagentCapabilities("thread-1", RUNTIME, OFF)).toEqual(REFRESH);
+    expect(planSubagentCapabilities("thread-1", RUNTIME, OFF, false)).toEqual(RESUME_ONLY);
   });
 
   it("refreshes an unknown loaded thread before granting sub-agent powers", () => {
@@ -62,6 +89,24 @@ describe("planSubagentCapabilities", () => {
   it("refreshes a thread recorded before the managed routing-policy revision", () => {
     recordSubagentCapabilities("thread-1", RUNTIME, "on:4:/bridge/one/mcp.json");
     expect(planSubagentCapabilities("thread-1", RUNTIME, BRIDGED)).toEqual(REFRESH);
+  });
+
+  it("refreshes a loaded thread when its delegation engine changes", () => {
+    recordSubagentCapabilities("thread-1", RUNTIME, ON);
+    const native = subagentCapabilitySignature({ subagentsEnabled: true, subagentMax: 4, subagentEngine: "native", nativeSubagentMax: 6 });
+    expect(planSubagentCapabilities("thread-1", RUNTIME, native)).toEqual(REFRESH);
+    expect(planSubagentCapabilities("thread-1", RESTARTED, native, false)).toEqual(RESUME_ONLY);
+  });
+
+  it("refreshes when startup-only native preferences are set and cleared", () => {
+    const base = { subagentsEnabled: true, subagentMax: 4, subagentEngine: "native" as const, nativeSubagentMax: 6 };
+    const cleared = subagentCapabilitySignature(base);
+    const preferred = subagentCapabilitySignature({ ...base, nativeSubagentOptions: { codex: { model: "gpt-6-luna", autoCompactTokens: 100_000 } } });
+    recordSubagentCapabilities("thread-options", RUNTIME, cleared);
+    expect(planSubagentCapabilities("thread-options", RUNTIME, preferred)).toEqual(REFRESH);
+    recordSubagentCapabilities("thread-options", RUNTIME, preferred);
+    expect(planSubagentCapabilities("thread-options", RUNTIME, cleared)).toEqual(REFRESH);
+    expect(planSubagentCapabilities("thread-options", RESTARTED, cleared, false)).toEqual(RESUME_ONLY);
   });
 
   it("only resumes when the app-server that held the thread has since been replaced", () => {

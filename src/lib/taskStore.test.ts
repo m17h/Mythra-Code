@@ -20,6 +20,32 @@ describe("task store", () => {
     resetTaskStore();
   });
 
+  it("requires a fresh turn identity before a pending native activation can finish", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("child", "old");
+    store.completeTurn("child", "old", "completed");
+    store.beginNativeActivation("child", "followup");
+    store.setTaskStatus("child", "starting");
+    expect(store.completeTurn("child", "old", "completed")).toBe(false);
+    expect(store.completeTurn("child", "unproven", "error")).toBe(false);
+    expect(store.setActiveTurn("child", "old")).toBe(false);
+    expect(useTaskStore.getState().tasks.child).toMatchObject({ status: "starting", pendingNativeActivationId: "followup", lastCompletedTurnId: "old" });
+    expect(store.setActiveTurn("child", "fresh")).toBe(true);
+    store.setTaskStatus("child", "running");
+    expect(store.completeTurn("child", "fresh", "completed")).toBe(true);
+    expect(store.completeTurn("child", "old", "error")).toBe(false);
+    expect(useTaskStore.getState().tasks.child).toMatchObject({ status: "completed", lastCompletedTurnId: "fresh" });
+  });
+
+  it("allows a hard runtime cutoff to settle a pending native activation without inventing a turn", () => {
+    const store = useTaskStore.getState();
+    store.beginNativeActivation("child", "followup");
+    store.setTaskStatus("child", "starting");
+    expect(store.completeTurn("child", undefined, "interrupted")).toBe(true);
+    expect(useTaskStore.getState().tasks.child.status).toBe("interrupted");
+    expect(useTaskStore.getState().tasks.child.pendingNativeActivationId).toBeUndefined();
+  });
+
   it("preserves skill evidence through partial activity updates and stale history with accurate budgeting", () => {
     const store = useTaskStore.getState();
     const activity: Activity = { id: "skill", kind: "command", title: "Skill", status: "completed",
@@ -1213,11 +1239,11 @@ describe("task store", () => {
     expect(useTaskStore.getState().tasks["thread-a"].agents[0].status).toBe("inProgress");
   });
 
-  it("settles a stale native child and Relay card when the parent finishes", () => {
+  it("preserves an unresolved Codex child after its parent finishes", () => {
     const store = useTaskStore.getState();
     store.ensureTask("native-child");
     store.setActiveTurn("thread-a", "turn-a");
-    store.upsertAgent("thread-a", { id: "native-child", prompt: "Delegated task", status: "started" });
+    store.upsertAgent("thread-a", { id: "native-child", prompt: "Delegated task", status: "started", runtime: "codex" });
     store.upsertActivity("thread-a", {
       id: "native-spawn",
       kind: "agent",
@@ -1228,12 +1254,24 @@ describe("task store", () => {
 
     store.completeTurn("thread-a", "turn-a", "completed");
 
-    expect(useTaskStore.getState().tasks["thread-a"].agents[0].status).toBe("completed");
+    expect(useTaskStore.getState().tasks["thread-a"].agents[0].status).toBe("started");
     expect(useTaskStore.getState().tasks["thread-a"].activities[0]).toMatchObject({
-      status: "completed",
+      status: "started",
       turnStatus: "completed",
       agent: { action: "spawn", threadIds: ["native-child"] },
     });
+  });
+
+  it("reconciles native child completion into its parent without settling a live sibling", () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn("root", "root-turn");
+    store.setActiveTurn("child", "child-turn");
+    store.setTaskStatus("sibling", "running");
+    store.upsertAgent("root", { id: "child", prompt: "Audit", status: "working", runtime: "codex" });
+    store.upsertActivity("root", { id: "wave", kind: "agent", title: "Spawn", status: "working", agent: { action: "spawn", threadIds: ["child", "sibling"] } });
+    store.completeTurn("child", "child-turn", "error");
+    expect(useTaskStore.getState().tasks.root.agents[0].status).toBe("failed");
+    expect(useTaskStore.getState().tasks.root.activities[0].status).toBe("working");
   });
 
   it("does not let a late provider event restart a stopped Relay card", () => {

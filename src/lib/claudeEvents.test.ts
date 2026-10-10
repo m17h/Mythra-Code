@@ -18,6 +18,7 @@ const context: ClaudeEventContext = {
   onApprovalRequested: vi.fn(),
   onTranscriptChanged: vi.fn(),
   onUnsupportedControlRequest: vi.fn(),
+  onNativeAgentDiscovered: vi.fn(),
 };
 
 function send(message: Record<string, unknown>, turnId = "turn-1") {
@@ -33,6 +34,70 @@ describe("Claude event routing", () => {
     resetTaskStore();
     useClaudeContinuationStore.setState({ byThread: {} });
     vi.clearAllMocks();
+  });
+
+  it("tracks Agent and native lifecycle without pretending child output is the root answer", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { id: "root-call", content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "Audit", prompt: "Review ownership and report evidence", model: "requested" } }] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0]).toMatchObject({ requestedModel: "requested", task: "Review ownership and report evidence" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0].model).toBeUndefined();
+    send({ type: "assistant", parent_tool_use_id: "agent-tool", message: { id: "child-answer", model: "actual-model", content: [{ type: "text", text: "Private child progress" }] } });
+    send({ type: "system", subtype: "task_started", task_id: "task", tool_use_id: "agent-tool", description: "Audit" });
+    send({ type: "system", subtype: "task_notification", task_id: "task", status: "completed", summary: "Audit done" });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.messages.some((message) => message.id === "child-answer")).toBe(false);
+    expect(task.agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:agent-tool", runtime: "claude", provider: "claude", model: "actual-model", modelSource: "execution", requestedModel: "requested", task: "Review ownership and report evidence", progress: "Private child progress", result: "Audit done", status: "completed" })]);
+    expect(task.activities[0]).toMatchObject({ kind: "agent", status: "completed", agent: { threadIds: ["claude-native:thread-1:agent-tool"] } });
+    expect(useTaskStore.getState().tasks["claude-native:thread-1:agent-tool"]).toBeUndefined();
+    expect(context.onNativeAgentDiscovered).toHaveBeenCalledWith("thread-1", "claude-native:thread-1:agent-tool", expect.objectContaining({ runtime: "claude", status: "completed" }));
+  });
+
+  it("bounds forwarded native text and keeps task descriptions separate from assignments", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "bounded", name: "Agent", input: { description: "Short title", prompt: "Actual assignment" } }] } });
+    send({ type: "assistant", parent_tool_use_id: "bounded", message: { content: [{ type: "text", text: "a".repeat(16000) + "recent" }] } });
+    send({ type: "system", subtype: "task_progress", task_id: "task", tool_use_id: "bounded", description: "Changed progress description", summary: "Checked ownership" });
+    let agent = useTaskStore.getState().tasks["thread-1"].agents[0];
+    expect(agent).toMatchObject({ prompt: "Short title", task: "Actual assignment", progress: "Checked ownership" });
+    send({ type: "assistant", parent_tool_use_id: "bounded", message: { content: [{ type: "text", text: "a".repeat(16000) + "recent" }] } });
+    agent = useTaskStore.getState().tasks["thread-1"].agents[0];
+    expect(agent.progress?.length).toBe(8001);
+    expect(agent.progress).toMatch(/recent$/);
+    send({ type: "user", parent_tool_use_id: "bounded", message: { model: "not-assistant-execution", content: [{ type: "tool_result", content: "Actual child tool output" }] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0]).toMatchObject({ progress: "Actual child tool output" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0].model).toBeUndefined();
+    expect(useTaskStore.getState().tasks["thread-1"].messages.some((entry) => entry.text.includes("recent"))).toBe(false);
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toHaveLength(1);
+  });
+
+  it("keeps child permission requests on the actual root control channel", () => {
+    send({ type: "control_request", parent_tool_use_id: "agent-tool", request_id: "approval", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "pwd" } } });
+    expect(useTaskStore.getState().tasks["thread-1"].approvals[0]).toMatchObject({ id: "approval", threadId: "thread-1" });
+  });
+
+  it("preserves a failed native child when the root finishes successfully", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "Audit" } }] } });
+    send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "agent-tool", is_error: true, content: "Failed child" }] } });
+    send({ type: "result", subtype: "success", result: "Recovered in the parent" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0].status).toBe("failed");
+  });
+
+  it("persists native child failure on process exit without a final result", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "Audit" } }] } });
+    send({ type: "openkiwi_exit", message: "Process crashed" });
+    expect(context.onNativeAgentDiscovered).toHaveBeenLastCalledWith("thread-1", "claude-native:thread-1:agent-tool", expect.objectContaining({ status: "failed", rootTurnId: "turn-1" }));
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0].status).toBe("failed");
+  });
+
+  it("does not settle a replacement turn's native children from an old process exit", () => {
+    send({ type: "system", subtype: "init" }, "new-turn");
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "new-agent", name: "Agent", input: { description: "New task" } }] } }, "new-turn");
+    const callbacks = vi.mocked(context.onNativeAgentDiscovered!).mock.calls.length;
+    send({ type: "openkiwi_exit", message: "Old process crashed" }, "old-turn");
+    expect(vi.mocked(context.onNativeAgentDiscovered!).mock.calls).toHaveLength(callbacks);
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0]).toMatchObject({ status: "inProgress", rootTurnId: "new-turn" });
   });
 
   it("counts native Skill only after a successful result, preserving streamed/replayed identity and reload", () => {
@@ -445,11 +510,13 @@ describe("Claude event routing", () => {
           input: {
             description: "Audit the Rust bridge",
             prompt: "Inspect the bridge and report risks.",
-            model: "claude-opus-5",
+            model: "opus",
           },
         }],
       },
     });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0].model).toBeUndefined();
+    send({ type: "assistant", parent_tool_use_id: "spawn-1", message: { id: "child-model", model: "claude-opus-5", content: [] } });
     send({
       type: "user",
       message: {
@@ -466,7 +533,7 @@ describe("Claude event routing", () => {
         action: "spawn",
         provider: "claude",
         model: "claude-opus-5",
-        task: "Audit the Rust bridge",
+        task: "Inspect the bridge and report risks.",
         count: 1,
       },
     });

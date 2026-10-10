@@ -38,7 +38,7 @@ export type ThreadKindView = "main" | "subagents";
  * Sub-agents inbox.
  */
 export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLinks, rootIds?: ReadonlySet<string>): Thread {
-  if (!ownsChildren(childLinks, thread.id, rootIds)) return thread;
+  if (childLinks[thread.id] || !ownsChildren(childLinks, thread.id, rootIds)) return thread;
   const hasChildMetadata = Boolean(
     thread.parentThreadId
     || thread.threadSource === "subagent"
@@ -70,8 +70,8 @@ export function repairRootThreadMetadata(thread: Thread, childLinks: OwnershipLi
  * the thread record and would keep answering yes forever after.
  */
 export function isSubAgentThread(thread: Thread, childLinks: OwnershipLinks, rootIds?: ReadonlySet<string>): boolean {
-  if (ownsChildren(childLinks, thread.id, rootIds)) return false;
   if (childLinks[thread.id]) return true;
+  if (ownsChildren(childLinks, thread.id, rootIds)) return false;
   // A thread reported as its own parent is a runtime artifact, not a child.
   if (thread.parentThreadId && thread.parentThreadId !== thread.id) return true;
   return thread.threadSource === "subagent";

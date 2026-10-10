@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef } from "react";
-import { auditEvent, rpc } from "../lib/codex";
+import { auditEvent, rpc, runtimeInstanceId, runtimeThreadState } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
 import { scheduleRunSnapshot, threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
+import { planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "../lib/threadCapabilities";
+import { isActiveAgentRecord } from "../lib/subAgentActivity";
+import { parentAutoCompactionUnavailableReason } from "../lib/threadSubagentSettings";
 import type { AppSettings, Project, Provider, ScheduleRunRecord, ScheduleRunSettings, ScheduledTask, Thread } from "../types";
 
 export interface SchedulerDeps {
@@ -28,7 +31,13 @@ export interface SchedulerDeps {
   discardRunCheckpoint: (threadId: string, expectedCheckpointId?: string) => void;
   onThreadStarted: (project: Project) => void;
   /** Persist fresh-thread defaults before any turn preparation can fail. */
-  onThreadCreated?: (threadId: string, project: Project) => void;
+  onThreadCreated?: (threadId: string, project: Project, options?: { autoCompactTokens?: number }) => void;
+  /** App owns the shared-runtime reservation and complete cross-thread guards. */
+  restartRuntimeForCapabilities?: (threadId: string, allowOwnStarting?: boolean) => Promise<string>;
+  /** Reflect the admitted off policy and own window, including provider-default clearing. */
+  onThreadDelegationDisabled?: (threadId: string, options: { autoCompactTokens?: number }) => void;
+  /** Includes durable/unresolved native children that may not have loaded tasks. */
+  threadBusyReason?: (threadId: string, ignoreOwnStarting?: boolean) => string | null;
   recordRun: (run: ScheduleRunRecord) => void;
 }
 
@@ -141,7 +150,21 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (run.provider === "openrouter" && !current.openRouterReady) return;
     if (run.provider === "lmstudio" && !current.lmStudioReady) return;
     const reuseThread = scheduled.threadMode === "reuse" && Boolean(scheduled.lastThreadId);
-    if (reuseThread && scheduleThreadIsBusy(scheduled.lastThreadId!)) {
+    const preparationAnchors = new Map<string, { activeTurnId?: string; pendingTurnStartOrder?: number }>();
+    const busyReason = (threadId: string, ownStarting = false): string | null => {
+      const state = useTaskStore.getState();
+      const task = state.tasks[threadId];
+      const external = current.threadBusyReason?.(threadId, ownStarting);
+      if (external) return external;
+      if (scheduleThreadIsBusy(threadId, ownStarting) || state.statuses[threadId] === "running" || state.statuses[threadId] === "starting" && !ownStarting
+        || state.workflowOwners[threadId] || task?.approvals.length || task?.agents.some((agent) => isActiveAgentRecord(agent.status))
+        || ownStarting && (task?.activeTurnId !== preparationAnchors.get(threadId)?.activeTurnId
+          || task?.pendingTurnStartOrder !== preparationAnchors.get(threadId)?.pendingTurnStartOrder)) {
+        return "Finish or stop this thread and every sub-agent before starting a scheduled turn.";
+      }
+      return null;
+    };
+    if (reuseThread && scheduled.lastThreadId && busyReason(scheduled.lastThreadId)) {
       // A recurring prompt must never collide with the previous unattended
       // turn in the same conversation. Retry soon without creating a second
       // thread or recording a misleading failed run.
@@ -172,13 +195,31 @@ export function useScheduler(deps: SchedulerDeps): void {
     let unconfirmedAcknowledgement = false;
     let turnDispatched = false;
     let turnStarted = false;
+    const assertIdle = (threadId: string, ownStarting = false) => {
+      if (scheduleThreadIsBusy(threadId, ownStarting)) throw new BusyScheduleThread();
+      const reason = busyReason(threadId, ownStarting);
+      if (reason) throw new Error(reason);
+    };
+    const claimPreparation = (threadId: string) => {
+      const state = useTaskStore.getState();
+      state.ensureTask(threadId, project.path);
+      state.setTaskStatus(threadId, "starting");
+      ownsStartingStatus = true;
+      const task = useTaskStore.getState().tasks[threadId];
+      preparationAnchors.set(threadId, { activeTurnId: task?.activeTurnId, pendingTurnStartOrder: task?.pendingTurnStartOrder });
+    };
     const stillOwnsStartingStatus = (threadId: string) => {
       const state = useTaskStore.getState();
-      return ownsStartingStatus && state.statuses[threadId] === "starting"
-        && !state.tasks[threadId]?.activeTurnId && !state.workflowOwners[threadId];
+      const task = state.tasks[threadId];
+      const anchor = preparationAnchors.get(threadId);
+      return ownsStartingStatus && state.statuses[threadId] === "starting" && anchor
+        && !task?.activeTurnId && !state.workflowOwners[threadId]
+        && task?.activeTurnId === anchor.activeTurnId && task?.pendingTurnStartOrder === anchor.pendingTurnStartOrder;
     };
     try {
       assertCurrent();
+      const compactionReason = parentAutoCompactionUnavailableReason(run.provider, run.autoCompactTokens);
+      if (compactionReason) throw new Error(compactionReason);
       const resolved: ResolvedSkillPrompts = current.resolveSkillPrompts
         ? await current.resolveSkillPrompts(scheduled.prompt, run.systemPrompt)
         : { prompt: await current.resolveSkillPrompt(scheduled.prompt), systemPrompt: run.systemPrompt };
@@ -188,13 +229,17 @@ export function useScheduler(deps: SchedulerDeps): void {
       await current.ensureSkillRoots();
       assertCurrent();
       const providerPrompt = resolved.prompt;
-      let runtimeRun = { ...run, systemPrompt };
+      // Scheduled roots retain their off policy on every iteration, including
+      // old snapshots that predate thread-local delegation authority.
+      const runtimeRun = { ...run, systemPrompt, subagentsEnabled: false, subagentEngine: "mythra" as const, nativeSubagentOptions: undefined };
+      const capabilities = subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 1, autoCompactTokens: run.autoCompactTokens });
       const modelContextWindow = run.provider === "lmstudio"
         ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
         : undefined;
       const startFreshThread = async () => {
         assertCurrent();
-        runtimeRun = { ...runtimeRun, subagentsEnabled: false };
+        const instance = await runtimeInstanceId();
+        assertCurrent();
         const started = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(runtimeRun, project.path, {
           serviceName: "Mythra Code",
           modelContextWindow,
@@ -202,30 +247,55 @@ export function useScheduler(deps: SchedulerDeps): void {
           perTurnSystemPrompt: true,
         }));
         startedThreadId = started.thread.id;
-        current.onThreadCreated?.(started.thread.id, project);
+        current.onThreadCreated?.(started.thread.id, project, { autoCompactTokens: run.autoCompactTokens });
+        recordSubagentCapabilities(started.thread.id, instance, capabilities);
         assertCurrent();
         return started;
       };
       let started: { thread: Thread; model?: unknown };
       if (reuseThread && scheduled.lastThreadId) {
+        const threadId = scheduled.lastThreadId;
+        assertIdle(threadId);
+        startedThreadId = threadId;
+        claimPreparation(threadId);
+        const runtime = await runtimeThreadState(threadId);
+        assertIdle(threadId, true);
+        const plan = planSubagentCapabilities(threadId, runtime.instance, capabilities, runtime.loaded);
+        let instance = runtime.instance;
+        if (plan.restartRuntime) {
+          if (!current.restartRuntimeForCapabilities) throw new Error("This scheduled thread needs a safe runtime refresh before delegation can be disabled. The scheduled prompt was not sent.");
+          instance = await current.restartRuntimeForCapabilities(threadId, true);
+          assertIdle(threadId, true);
+        }
         try {
           assertCurrent();
-          if (scheduleThreadIsBusy(scheduled.lastThreadId)) throw new BusyScheduleThread();
+          assertIdle(threadId, true);
           started = await rpc<{ thread: Thread; model?: unknown }>("thread/resume", threadResumeParams(
             runtimeRun,
             scheduled.lastThreadId,
             project.path,
             { modelContextWindow, refreshRuntimeConfig: true, interactive: false, perTurnSystemPrompt: true },
           ));
+          recordSubagentCapabilities(started.thread.id, instance, capabilities);
           startedThreadId = started.thread.id;
           assertCurrent();
         } catch (reason) {
           // A revoked resume must not create a replacement conversation.
           assertCurrent();
-          if (reason instanceof BusyScheduleThread || scheduleThreadIsBusy(scheduled.lastThreadId)) throw new BusyScheduleThread();
+          if (reason instanceof BusyScheduleThread) throw reason;
           // The user may have deleted the earlier run's conversation. Keep the
           // schedule useful by establishing a new thread that later triggers
           // can reuse, rather than failing forever on a stale id.
+          const message = reason instanceof Error ? reason.message : String(reason);
+          if (!/no rollout found for thread id|thread.{0,30}(?:not found|does not exist|missing)|unknown thread/i.test(message)) {
+            if (scheduleThreadIsBusy(threadId, true)) throw new BusyScheduleThread();
+            throw reason;
+          }
+          const competingClaim = busyReason(threadId, true);
+          if (competingClaim) throw new Error(competingClaim);
+          assertIdle(threadId, true);
+          useTaskStore.getState().setTaskStatus(threadId, "completed");
+          startedThreadId = undefined;
           started = await startFreshThread();
         }
       } else {
@@ -233,22 +303,22 @@ export function useScheduler(deps: SchedulerDeps): void {
       }
       startedThreadId = started.thread.id;
       assertCurrent();
-      if (scheduleThreadIsBusy(started.thread.id)) throw new BusyScheduleThread();
+      assertIdle(started.thread.id, reuseThread && started.thread.id === scheduled.lastThreadId);
       current.bindThreadToProject(started.thread.id, project.path);
-      useTaskStore.getState().ensureTask(started.thread.id, project.path);
-      useTaskStore.getState().setTaskStatus(started.thread.id, "starting");
-      ownsStartingStatus = true;
+      claimPreparation(started.thread.id);
       // Snapshot before the unattended turn edits anything; the Codex event
       // router finalizes it on turn completion like any user turn.
       try {
         assertCurrent();
         ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
         assertCurrent();
-        if (scheduleThreadIsBusy(started.thread.id, ownsStartingStatus)) throw new BusyScheduleThread();
+        assertIdle(started.thread.id, true);
         const model = started.model;
         const params = turnStartParams(runtimeRun, started.thread.id, project.path, [
           { type: "text", text: providerPrompt, text_elements: [] },
         ], [], false, { systemPrompt, model: typeof model === "string" ? model : undefined });
+        current.onThreadDelegationDisabled?.(started.thread.id, { autoCompactTokens: run.autoCompactTokens });
+        assertIdle(started.thread.id, true);
         assertCurrent();
         // Preparation and parameter validation can fail without a request.
         // Append only when dispatch is next, so history never claims delivery.
@@ -256,8 +326,10 @@ export function useScheduler(deps: SchedulerDeps): void {
         completedTurnBeforeDispatch = useTaskStore.getState().tasks[started.thread.id]?.lastCompletedTurnId;
         useTaskStore.getState().appendUserMessage(started.thread.id, { id: pendingMessageId, role: "user", text: scheduled.prompt, skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies });
         pendingMessageOrder = useTaskStore.getState().tasks[started.thread.id]?.messages.find((message) => message.id === pendingMessageId)?.timelineOrder;
+        const task = useTaskStore.getState().tasks[started.thread.id];
+        preparationAnchors.set(started.thread.id, { activeTurnId: task?.activeTurnId, pendingTurnStartOrder: task?.pendingTurnStartOrder });
         assertCurrent();
-        if (scheduleThreadIsBusy(started.thread.id, ownsStartingStatus)) throw new BusyScheduleThread();
+        assertIdle(started.thread.id, true);
         turnDispatched = true;
         await rpc("turn/start", params);
       } catch (reason) {
@@ -281,7 +353,17 @@ export function useScheduler(deps: SchedulerDeps): void {
           const message = reason instanceof Error ? reason.message : reason;
           unconfirmedAcknowledgement = turnDispatched && (observedRuntimeAfterDispatch
             || message === "Codex App Server timed out while handling turn/start");
-          if (pendingMessageId && !unconfirmedAcknowledgement) useTaskStore.getState().removeMessage(started.thread.id, pendingMessageId);
+          if (pendingMessageId && !unconfirmedAcknowledgement) {
+            const ownsPendingStart = stillOwnsStartingStatus(started.thread.id);
+            useTaskStore.getState().removeMessage(started.thread.id, pendingMessageId);
+            // Removing our undelivered prompt also clears its pending order.
+            // Keep the preparation receipt aligned without adopting another
+            // turn's claim so cleanup can settle only our own starting status.
+            if (ownsPendingStart) {
+              const task = useTaskStore.getState().tasks[started.thread.id];
+              preparationAnchors.set(started.thread.id, { activeTurnId: task?.activeTurnId, pendingTurnStartOrder: task?.pendingTurnStartOrder });
+            }
+          }
           // Runtime activity without this prompt's echo is ambiguous. Keep its
           // checkpoint and status, but do not report that the schedule started.
           if (ownedCheckpointId && !unconfirmedAcknowledgement) current.discardRunCheckpoint(started.thread.id, ownedCheckpointId);

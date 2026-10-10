@@ -1,0 +1,75 @@
+/* -- Settings: model pricing --
+   A read-only reference table. Company marks take the text colour so the page
+   stays as quiet as the rest of Settings; rates use tabular figures so columns
+   line up without a heavier grid. Below ~560px each model becomes a small
+   labelled card instead of a table that scrolls sideways. */
+.frontier-pricing { container-type: inline-size; display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
+.frontier-pricing-intro, .frontier-pricing-footnote { margin: 0; max-width: 72ch; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.frontier-pricing-footnote { margin-top: calc(-1 * var(--s-1)); }
+
+.frontier-pricing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
+.frontier-pricing-filter { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); }
+.frontier-pricing-filter > button { display: inline-flex; align-items: center; gap: 6px; min-height: calc(var(--ctl-sm) - 4px); padding: 0 10px; border: 0; border-radius: calc(var(--r-md) - 2px); color: var(--muted); background: transparent; font-size: var(--fs-meta); font-weight: 600; cursor: pointer; }
+.frontier-pricing-filter > button:hover { color: var(--ink-2); }
+.frontier-pricing-filter > button.active { color: var(--ink-2); background: var(--panel-3, var(--panel-2)); }
+.frontier-pricing-search { flex: 1 1 180px; min-width: 0; max-width: 300px; display: flex; align-items: center; gap: 6px; min-height: var(--ctl-sm); padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted-2); background: var(--field); }
+.frontier-pricing-search:focus-within { border-color: var(--line-strong); }
+.frontier-pricing-search > input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; color: var(--text); background: transparent; font: inherit; font-size: var(--fs-meta); }
+.frontier-pricing-search > button { display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: var(--muted-2); background: transparent; cursor: pointer; }
+.frontier-pricing-refresh { margin-left: auto; min-height: var(--ctl-sm); }
+
+/* Monochrome company marks: the brand sprite's fixed fills give way to the
+   heading colour, so neither mark sits on a coloured tile here. */
+.frontier-pricing-mark { flex: 0 0 auto; fill: currentColor; }
+
+.frontier-pricing-provider { display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
+.frontier-pricing-provider-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s-3); padding: 0 2px; }
+.frontier-pricing-provider-head > h4 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--ink-2); font-size: var(--fs-ui); font-weight: 650; letter-spacing: var(--track-tight); }
+.frontier-pricing-status { display: inline-flex; align-items: center; gap: 6px; margin: 0; min-width: 0; color: var(--muted-2); font-size: var(--fs-meta); }
+.frontier-pricing-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); opacity: .7; }
+.frontier-pricing-status.ok .frontier-pricing-dot { background: var(--green); opacity: 1; }
+.frontier-pricing-status.warn { color: var(--ink-2); }
+.frontier-pricing-status.warn .frontier-pricing-dot { background: var(--orange, var(--red)); opacity: 1; }
+.frontier-pricing-source { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 2px 4px; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); cursor: pointer; }
+.frontier-pricing-source:hover { color: var(--ink-2); text-decoration: underline; }
+.frontier-pricing-error { margin: 0; padding: 0 2px; color: var(--red); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
+.frontier-pricing-empty { margin: 0; padding: var(--s-3) var(--s-4); border: 1px dashed var(--line); border-radius: var(--r-md); color: var(--muted-2); font-size: var(--fs-meta); }
+
+.frontier-pricing-table-wrap { overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--panel-2) 46%, transparent); }
+.frontier-pricing-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--fs-meta); }
+.frontier-pricing-table :is(th, td) { padding: 7px 10px; text-align: right; vertical-align: top; font-weight: 400; }
+.frontier-pricing-table :is(th, td):first-child { width: 34%; padding-left: var(--s-4); text-align: left; }
+.frontier-pricing-table :is(th, td):last-child { padding-right: var(--s-4); }
+.frontier-pricing-table thead th { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; border-bottom: 1px solid var(--line); }
+.frontier-pricing-model + .frontier-pricing-model { border-top: 1px solid var(--line); }
+.frontier-pricing-name { display: block; color: var(--ink-2); font-weight: 600; overflow-wrap: anywhere; }
+.frontier-pricing-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; }
+.frontier-pricing-meta:empty { display: none; }
+.frontier-pricing-meta code { color: var(--muted-2); font-family: var(--font-mono); font-size: var(--fs-micro); overflow-wrap: anywhere; }
+.frontier-pricing-badge { padding: 0 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: var(--fs-micro); line-height: 16px; white-space: nowrap; }
+.frontier-pricing-tier { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-micro); }
+.frontier-pricing-rate { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.frontier-pricing-missing { color: var(--muted-2); font-size: var(--fs-micro); font-style: italic; white-space: nowrap; }
+.frontier-pricing-cache-write { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.frontier-pricing-cache-write small { color: var(--muted-2); font-size: var(--fs-micro); }
+
+/* Long context: indented and quieter, read as a qualifier of the row above. */
+.frontier-pricing-long > :is(th, td) { padding-top: 3px; color: var(--muted); }
+.frontier-pricing-long > th { padding-left: calc(var(--s-4) + 12px); border-left: 2px solid var(--line); }
+.frontier-pricing-long .frontier-pricing-tier { margin: 0; color: var(--ink-2); font-size: var(--fs-meta); }
+.frontier-pricing-long .frontier-pricing-rate { color: var(--muted); }
+.frontier-pricing-condition { display: block; margin-top: 1px; color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.4; }
+
+@container (max-width: 560px) {
+  .frontier-pricing-refresh { margin-left: 0; }
+  .frontier-pricing-search { max-width: none; }
+  .frontier-pricing-table, .frontier-pricing-table :is(tbody, tr, th, td) { display: block; width: auto; }
+  .frontier-pricing-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .frontier-pricing-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px var(--s-3); padding: 8px var(--s-3); }
+  .frontier-pricing-table :is(th, td), .frontier-pricing-table :is(th, td):first-child, .frontier-pricing-table :is(th, td):last-child { width: auto; padding: 0; text-align: left; }
+  .frontier-pricing-table th[scope="row"] { grid-column: 1 / -1; }
+  .frontier-pricing-table td::before { content: attr(data-label); display: block; color: var(--muted-2); font-size: var(--fs-micro); }
+  .frontier-pricing-cache-write { align-items: flex-start; }
+  .frontier-pricing-long { margin: 0 var(--s-3) 6px; padding: 6px var(--s-3) !important; border-left: 2px solid var(--line); }
+  .frontier-pricing-long > th { padding-left: 0; border-left: 0; }
+}

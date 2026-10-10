@@ -17,6 +17,8 @@ export interface ProjectBridgeContext {
   permission: PermissionMode;
   provider?: Provider;
   childThread?: boolean;
+  /** Native delegation retains project tools, never Mythra spawning/crew proposals. */
+  nativeDelegation?: boolean;
 }
 
 /** How a provider runtime should register the bridge as an MCP server. */

@@ -2,14 +2,15 @@ import { saveQuestionRequest } from "./agentQuestionRecords";
 import { agentMessagePhase, timelineFromTurns } from "./threadTimeline";
 import { isAuthenticationError } from "./errors";
 import type { CodexEvent, JsonObject } from "./codex";
-import type { ChatMessage, ThreadItem, Turn } from "../types";
-import { isActiveAgentRecord } from "./subAgentActivity";
+import type { Activity, ChatMessage, ThreadItem, Turn } from "../types";
 import { useTaskStore } from "./taskStore";
+import { isActiveAgentRecord, workerStatusFromAgentRecord } from "./subAgentActivity";
 import { parseCodexRateLimits, type ProviderRateLimits } from "./providerUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 import { codexCompactionStatus, compactionActivity, compactionState } from "./contextCompaction";
 import { recordOpenRouterCharge, reportThreadServiceTier } from "./usageLedger";
+import { boundedNativeText, type NativeAgentReadout } from "./nativeAgentLinks";
 
 /**
  * Events that arrive without a threadId are routed to this bucket instead of
@@ -17,6 +18,10 @@ import { recordOpenRouterCharge, reportThreadServiceTier } from "./usageLedger";
  * never be misattributed to the thread the user is looking at.
  */
 export const RUNTIME_THREAD_ID = "runtime";
+
+// Receipt-only operation evidence. Restored history and completion-only
+// snapshots cannot manufacture a wait's ownership of a newer activation.
+const nativeOperationActivations = new WeakMap<Activity, { rootTurnId: string; activations: Map<string, string> }>();
 
 const FALLBACK_MODEL_METADATA_WARNING = /^Model metadata for [`'“].+?[`'”] not found\. Defaulting to fallback metadata/i;
 
@@ -121,17 +126,54 @@ export interface CodexEventContext {
   onAccountUpdated: () => void;
   onLoginFailed: (message: string) => void;
   onProviderToolCompatibilityError: (threadId: string) => void;
-  onNativeAgentDiscovered: (rootThreadId: string, childThreadId: string, details: { prompt?: string; path?: string }) => void;
+  onNativeAgentDiscovered: (rootThreadId: string, childThreadId: string, details: NativeAgentReadout & { prompt?: string; path?: string; model?: string; status?: string; provider?: "openai"; runtime?: "codex"; rootTurnId?: string; compactionInheritedFromParent?: boolean }) => boolean | void;
 }
 
-function nativeChildStatus(threadId: string, itemId: string, childId: string, incoming: string): string {
+/** Update only already accepted ownership; child output never becomes root text. */
+function nativeChildEvidence(childId: string, details: NativeAgentReadout & { model?: string }, ctx: CodexEventContext, sourceTurnId?: string): void {
+  const store = useTaskStore.getState();
+  const childTask = store.tasks[childId];
+  if ((childTask?.pendingNativeActivationId && details.modelSource !== "configured")
+    || (sourceTurnId && childTask?.retiredNativeTurnIds?.includes(sourceTurnId))) return;
+  if (sourceTurnId && store.tasks[childId]?.activeTurnId && store.tasks[childId].activeTurnId !== sourceTurnId) return;
+  // Reactivated children have no concrete new turn yet. An old completed
+  // message must not refill the newly cleared result during that gap.
+  if (sourceTurnId && ["starting", "running"].includes(store.tasks[childId]?.status ?? "") && !store.tasks[childId].activeTurnId) return;
+  for (const [parentId, task] of Object.entries(store.tasks)) {
+    const agent = task.agents.find((entry) => entry.id === childId && entry.runtime === "codex");
+    if (!agent) continue;
+    if (ctx.onNativeAgentDiscovered(parentId, childId, { ...details, status: agent.status, provider: "openai", runtime: "codex" }) === false) continue;
+    store.upsertAgent(parentId, { ...agent, ...details });
+  }
+}
+
+function nativeChildStatus(parentId: string, childId: string, incoming: string): string {
   const state = useTaskStore.getState();
   const child = state.statuses[childId];
   if (child === "starting" || child === "running") return child === "starting" ? "starting" : "inProgress";
-  if (!isActiveAgentRecord(incoming)) return incoming;
-  const parentStatus = state.tasks[threadId]?.activities.find((activity) => activity.id === itemId)?.turnStatus;
-  if (!parentStatus || parentStatus === "inProgress") return incoming;
-  return child === "error" ? "failed" : child === "interrupted" ? "interrupted" : parentStatus;
+  if (child === "completed") return "completed";
+  if (child === "error") return "failed";
+  if (child === "interrupted") return "interrupted";
+  const existing = state.tasks[parentId]?.agents.find((agent) => agent.id === childId);
+  if (existing && ["cancelled", "interrupted"].includes(existing.status)) return existing.status;
+  if (existing && ["completed", "failed", "error"].includes(existing.status) && isActiveAgentRecord(incoming)) return existing.status;
+  return incoming;
+}
+
+/** A native worker can be resumed from its own app conversation. */
+function nativeChildTurnStarted(childId: string, turnId: string, ctx: CodexEventContext): void {
+  const store = useTaskStore.getState();
+  for (const [parentId, task] of Object.entries(store.tasks)) {
+    const agent = task.agents.find((entry) => entry.id === childId && entry.runtime === "codex");
+    if (!agent) continue;
+    const freshActivation = !isActiveAgentRecord(agent.status);
+    const readout = freshActivation ? {
+      prompt: "Task not reported", task: "", requestedModel: "", model: "", modelSource: undefined,
+      progress: "", result: "", activationId: `turn:${turnId}`, activatedAt: Date.now(), lifecycleTurnId: undefined,
+    } : {};
+    if (ctx.onNativeAgentDiscovered(parentId, childId, { ...readout, status: "inProgress", provider: "openai", runtime: "codex" }) === false) continue;
+    store.upsertAgent(parentId, { ...agent, ...readout, status: "inProgress" });
+  }
 }
 
 export function handleThreadItem(
@@ -182,6 +224,10 @@ export function handleThreadItem(
       ...(phase ? { phase } : {}), turnId };
     if (lifecycle === "started") taskStore.startAssistantMessage(threadId, message);
     else taskStore.completeMessage(threadId, message);
+    if (lifecycle === "completed" && item.text?.trim()) nativeChildEvidence(threadId, {
+      progress: boundedNativeText(item.text, "progress"),
+      ...(phase === "final" ? { result: boundedNativeText(item.text, "result") } : {}),
+    }, ctx, turnId);
     return;
   }
   if (item.type === "commandExecution") {
@@ -193,6 +239,7 @@ export function handleThreadItem(
       detail: truncatedDetail(item.aggregatedOutput ?? item.cwd),
       status: item.status,
     });
+    if (item.command) nativeChildEvidence(threadId, { progress: boundedNativeText(`${item.command}${lifecycle === "completed" && item.aggregatedOutput ? `\n${item.aggregatedOutput}` : ""}`, "progress") }, ctx, turnId);
     return;
   }
   if (item.type === "fileChange") {
@@ -232,12 +279,29 @@ export function handleThreadItem(
     return;
   }
   if (item.type === "collabAgentToolCall") {
+    const childIds = [...new Set([...(item.receiverThreadIds ?? []), ...Object.keys(item.agentsStates ?? {})])].filter((childId) => childId && childId !== threadId);
+    const previousItem = taskStore.tasks[threadId]?.activities.find((activity) => activity.id === id);
+    const previousOperation = previousItem ? nativeOperationActivations.get(previousItem) : undefined;
+    const activeRoot = Boolean(turnId && taskStore.tasks[threadId]?.activeTurnId === turnId)
+      && ["starting", "running"].includes(taskStore.statuses[threadId] ?? "");
+    const operation = lifecycle === "started" && (item.tool === "wait" || item.tool === "listAgents") && activeRoot
+      ? previousOperation?.rootTurnId === turnId ? previousOperation
+        : !previousItem ? { rootTurnId: turnId!, activations: new Map((taskStore.tasks[threadId]?.agents ?? [])
+          .filter((agent) => agent.runtime === "codex" && agent.activationId)
+          .map((agent) => [agent.id, agent.activationId!])) } : undefined
+      : previousOperation;
+    const currentActivation = Boolean(turnId && taskStore.tasks[threadId]?.activeTurnId === turnId)
+      && (item.tool === "sendInput" || item.tool === "resumeAgent" || item.tool === "followupTask");
     const titles: Record<string, string> = {
       spawnAgent: `Spawn sub-agent${item.receiverThreadIds?.length === 1 ? "" : "s"}`,
       sendInput: "Send input to sub-agent",
       resumeAgent: "Resume sub-agent",
       wait: "Wait for sub-agents",
       closeAgent: "Close sub-agent",
+      sendMessage: "Message sub-agent",
+      followupTask: "Continue sub-agent task",
+      interruptAgent: "Stop sub-agent",
+      listAgents: "List sub-agents",
     };
     const actions = {
       spawnAgent: "spawn",
@@ -245,44 +309,101 @@ export function handleThreadItem(
       resumeAgent: "resume",
       wait: "wait",
       closeAgent: "close",
+      sendMessage: "sendInput",
+      followupTask: "resume",
+      interruptAgent: "close",
+      listAgents: "status",
     } as const;
-    taskStore.upsertActivity(threadId, {
-      id,
-      turnId,
-      kind: "agent",
-      title: titles[item.tool ?? ""] ?? "Sub-agent activity",
-      detail: item.prompt ?? undefined,
-      status: item.status,
-      agent: {
-        action: item.tool ? actions[item.tool] : "status",
-        provider: "openai",
-        task: item.prompt ?? undefined,
-        count: item.receiverThreadIds?.filter((childThreadId) => childThreadId && childThreadId !== threadId).length,
-        threadIds: item.receiverThreadIds?.filter((childThreadId) => childThreadId && childThreadId !== threadId),
-      },
-    });
-    if (item.receiverThreadIds?.length) {
-      for (const childThreadId of item.receiverThreadIds) {
+    const acceptedIds: string[] = [];
+    const settledChildren: string[] = [];
+    if (childIds.length) {
+      for (const childThreadId of childIds) {
         // A runtime that names the thread itself as its own receiver would
         // otherwise add the root to its own worker list, where it holds a
         // concurrency slot and shows up in Live agents as a third agent.
         if (!childThreadId || childThreadId === threadId) continue;
-        taskStore.upsertAgent(threadId, { id: childThreadId, prompt: item.prompt ?? "Delegated task", status: nativeChildStatus(threadId, id, childThreadId, item.status ?? "inProgress") });
-        ctx.onNativeAgentDiscovered(threadId, childThreadId, { prompt: item.prompt ?? undefined });
+        const reported = item.agentsStates?.[childThreadId];
+        const reportedStatus = typeof reported === "string" ? reported : reported?.status;
+        const previousAgent = useTaskStore.getState().tasks[threadId]?.agents.find((agent) => agent.id === childThreadId);
+        const reactivating = currentActivation && !previousItem?.agent?.threadIds?.includes(childThreadId)
+          && (!reportedStatus || isActiveAgentRecord(reportedStatus));
+        const childTask = useTaskStore.getState().tasks[childThreadId];
+        const childAlreadyActive = childTask?.status === "running" || childTask?.status === "starting";
+        // The collaboration tool finishing is not child completion evidence.
+        const incoming = reportedStatus || ((item.tool === "closeAgent" || item.tool === "interruptAgent") && lifecycle === "completed" && item.status === "completed" ? "interrupted" : item.tool === "spawnAgent" ? "starting" : "unknown");
+        const reportedTerminal = reportedStatus && ["completed", "cancelled", "failed"].includes(workerStatusFromAgentRecord(reportedStatus));
+        const correlatedTerminal = lifecycle === "completed" && (item.tool === "wait" || item.tool === "listAgents") && activeRoot
+          && operation?.rootTurnId === turnId && reportedTerminal && previousAgent?.activationId
+          && operation?.activations.get(childThreadId) === previousAgent.activationId
+          && childTask?.pendingNativeActivationId === previousAgent.activationId && !childTask.activeTurnId;
+        const status = correlatedTerminal ? reportedStatus! : reactivating ? (reportedStatus || childAlreadyActive ? "inProgress" : "starting") : nativeChildStatus(threadId, childThreadId, incoming);
+        const activationItem = previousAgent?.activationId ? taskStore.tasks[threadId]?.activities.find((activity) => activity.id === previousAgent.activationId) : undefined;
+        const staleSnapshot = !reactivating && ((turnId && taskStore.tasks[threadId]?.activeTurnId && turnId !== taskStore.tasks[threadId].activeTurnId)
+          || (previousItem && activationItem && (previousItem.timelineOrder ?? Infinity) < (activationItem.timelineOrder ?? 0)));
+        const statusMatches = !reportedStatus || workerStatusFromAgentRecord(status) === workerStatusFromAgentRecord(reportedStatus);
+        const enrichLifecycle = item.tool === "spawnAgent" && Boolean(turnId && taskStore.tasks[threadId]?.activeTurnId === turnId)
+          && previousAgent?.lifecycleTurnId === turnId && !previousAgent?.task && !staleSnapshot;
+        const ownsAssignment = !previousAgent || reactivating || previousAgent.activationId === id || enrichLifecycle;
+        const acceptEvidence = !staleSnapshot && statusMatches && (item.tool !== "spawnAgent" || ownsAssignment);
+        const assignedTask = ownsAssignment && !staleSnapshot ? boundedNativeText(item.prompt, "task") : undefined;
+        const model = acceptEvidence && typeof reported === "object" ? reported.model : undefined;
+        const observedModel = reactivating ? model || "" : model;
+        const prompt = reactivating ? assignedTask || "Task not reported" : assignedTask || previousAgent?.prompt || "Delegated task";
+        const reportMessage = acceptEvidence && typeof reported === "object" ? reported.message : undefined;
+        const readout: NativeAgentReadout = {
+          ...(enrichLifecycle ? { activationId: id, lifecycleTurnId: undefined } : {}),
+          task: reactivating ? assignedTask || "" : previousAgent?.task || assignedTask,
+          requestedModel: reactivating ? item.model?.trim() || "" : (ownsAssignment && !staleSnapshot ? item.model?.trim() : undefined) || previousAgent?.requestedModel,
+          ...(reactivating ? { activationId: id, activatedAt: Date.now(), progress: "", result: "", modelSource: undefined } : {}),
+          ...(reportMessage ? { progress: boundedNativeText(reportMessage, "progress"), ...(!isActiveAgentRecord(reportedStatus ?? "unknown") ? { result: boundedNativeText(reportMessage, "result") } : {}) } : {}),
+        };
+        if (ctx.onNativeAgentDiscovered(threadId, childThreadId, { ...readout, prompt: reactivating ? prompt : assignedTask, status, model: observedModel, provider: "openai", runtime: "codex", ...(acceptEvidence && turnId ? { rootTurnId: turnId, ...(item.tool === "spawnAgent" ? { compactionInheritedFromParent: true } : {}) } : {}) }) === false) continue;
+        acceptedIds.push(childThreadId);
+        if (correlatedTerminal) {
+          const terminal = workerStatusFromAgentRecord(status);
+          taskStore.completeTurn(childThreadId, undefined, terminal === "failed" ? "error" : terminal === "cancelled" ? "interrupted" : "completed");
+          settledChildren.push(childThreadId);
+        }
+        if (reactivating && (!childAlreadyActive || childTask?.pendingNativeActivationId)) {
+          // A real new activation may reuse a completed child. Its old local
+          // turn is no longer cutoff/completion evidence for this operation.
+          taskStore.beginNativeActivation(childThreadId, id);
+          taskStore.setTaskStatus(childThreadId, reportedStatus ? "running" : "starting");
+        }
+        taskStore.upsertAgent(threadId, { ...readout, id: childThreadId, prompt, status, provider: "openai", runtime: "codex", ...(observedModel !== undefined ? { model: observedModel } : {}),
+          ...((reactivating || !previousAgent) ? { activationId: id } : {}) });
         taskStore.ensureTask(childThreadId, ctx.bindingFor(threadId));
       }
     }
+    if (childIds.length && !acceptedIds.length) return;
+    taskStore.upsertActivity(threadId, {
+      id, turnId, kind: "agent", title: titles[item.tool ?? ""] ?? "Sub-agent activity", detail: item.prompt ?? undefined, status: item.status,
+      agent: { action: item.tool ? actions[item.tool] : "status", provider: "openai", task: boundedNativeText(item.prompt, "task"), requestedModel: item.model || undefined, count: acceptedIds.length, threadIds: acceptedIds },
+    });
+    if (lifecycle === "started" && operation) {
+      const activity = useTaskStore.getState().tasks[threadId]?.activities.find((entry) => entry.id === id);
+      if (activity) nativeOperationActivations.set(activity, operation);
+    }
+    for (const childId of settledChildren) ctx.onTurnCompleted(childId, null);
     return;
   }
   if (item.type === "subAgentActivity") {
+    const liveStart = item.kind === "started" && Boolean(turnId && taskStore.tasks[threadId]?.activeTurnId === turnId)
+      && ["starting", "running"].includes(taskStore.statuses[threadId] ?? "");
+    if (item.agentThreadId && item.agentThreadId !== threadId) {
+      const status = nativeChildStatus(threadId, item.agentThreadId, item.kind ?? "unknown");
+      if (ctx.onNativeAgentDiscovered(threadId, item.agentThreadId, { path: item.agentPath, status, model: item.agentModel, provider: "openai", runtime: "codex", ...(liveStart ? { rootTurnId: turnId, compactionInheritedFromParent: true } : {}) }) === false) return;
+    }
     taskStore.upsertActivity(threadId, {
       id,
       turnId,
       ...nativeSubAgentPresentation(item),
     });
     if (item.agentThreadId && item.agentThreadId !== threadId) {
-      taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: "Delegated task", status: nativeChildStatus(threadId, id, item.agentThreadId, item.kind ?? "working"), path: item.agentPath });
-      ctx.onNativeAgentDiscovered(threadId, item.agentThreadId, { path: item.agentPath });
+      const status = nativeChildStatus(threadId, item.agentThreadId, item.kind ?? "unknown");
+      const previousAgent = useTaskStore.getState().tasks[threadId]?.agents.find((agent) => agent.id === item.agentThreadId);
+      taskStore.upsertAgent(threadId, { id: item.agentThreadId, prompt: previousAgent?.prompt || "Delegated task", status, path: item.agentPath, provider: "openai", runtime: "codex", ...(item.agentModel ? { model: item.agentModel } : {}),
+        ...(!previousAgent ? { activationId: id, ...(liveStart ? { lifecycleTurnId: turnId } : {}) } : {}) });
       taskStore.ensureTask(item.agentThreadId, ctx.bindingFor(threadId));
     }
   }
@@ -306,6 +427,12 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     return;
   }
   const eventThreadId = typeof params.threadId === "string" ? params.threadId : RUNTIME_THREAD_ID;
+  if (method === "thread/started" || method === "thread/settings/updated") {
+    const metadata = (method === "thread/started" ? params.thread : params.threadSettings) as { id?: string; model?: string | null } | undefined;
+    const childId = method === "thread/started" ? metadata?.id : eventThreadId;
+    if (childId && metadata?.model) nativeChildEvidence(childId, { model: metadata.model, modelSource: "configured" }, ctx);
+    return;
+  }
   if (method === "serverRequest/resolved") {
     if (typeof params.requestId === "string" || typeof params.requestId === "number") useTaskStore.getState().resolveApproval(eventThreadId, params.requestId);
     return;
@@ -420,9 +547,15 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   if (method === "turn/started") {
     const taskStore = useTaskStore.getState();
     const turn = params.turn && typeof params.turn === "object" ? (params.turn as unknown as Turn) : null;
+    const childTask = taskStore.tasks[eventThreadId];
+    const nativeChild = Object.values(taskStore.tasks).some((task) => task.agents.some((agent) => agent.id === eventThreadId && agent.runtime === "codex"));
+    if (turn?.id && nativeChild && (childTask?.lastCompletedTurnId === turn.id
+      || childTask?.messages.some((message) => message.turnId === turn.id && message.turnStatus && message.turnStatus !== "inProgress")
+      || childTask?.activities.some((activity) => activity.turnId === turn.id && activity.turnStatus && activity.turnStatus !== "inProgress"))) return;
     reportThreadServiceTier(eventThreadId, (params.turn as { serviceTier?: unknown } | undefined)?.serviceTier);
-    if (turn?.id) taskStore.setActiveTurn(eventThreadId, turn.id);
+    if (turn?.id && !taskStore.setActiveTurn(eventThreadId, turn.id)) return;
     taskStore.setTaskStatus(eventThreadId, "running");
+    if (turn?.id) nativeChildTurnStarted(eventThreadId, turn.id, ctx);
     ctx.audit("turn.started", {}, eventThreadId);
     if (useTaskStore.getState().activeThreadId === eventThreadId) ctx.onStatus("Working");
     return;
@@ -430,9 +563,12 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
   if (method === "turn/completed") {
     const taskStore = useTaskStore.getState();
     const turn = params.turn && typeof params.turn === "object" ? (params.turn as unknown as Turn) : null;
+    // An ID-less provider notification is not the explicit process cutoff
+    // used by Stop; it cannot settle an activation still awaiting its turn.
+    if (taskStore.tasks[eventThreadId]?.pendingNativeActivationId && !turn?.id?.trim()) return;
     reportThreadServiceTier(eventThreadId, (params.turn as { serviceTier?: unknown } | undefined)?.serviceTier);
     const nextStatus = turn?.status === "interrupted" ? "interrupted" : turn?.status === "failed" ? "error" : "completed";
-    taskStore.completeTurn(eventThreadId, turn?.id, nextStatus);
+    if (!taskStore.completeTurn(eventThreadId, turn?.id, nextStatus)) return;
     ctx.audit("turn.completed", {}, eventThreadId);
     ctx.onTurnCompleted(eventThreadId, turn);
     if (useTaskStore.getState().activeThreadId === eventThreadId) ctx.onStatus(nextStatus === "interrupted" ? "Stopped" : nextStatus === "error" ? "Task failed" : "Ready");
@@ -452,6 +588,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     if (nextStatus) {
       const store = useTaskStore.getState();
       const task = store.tasks[eventThreadId];
+      if (nextStatus === "idle" && task?.pendingNativeActivationId) return;
       if (nextStatus === "error" && (task?.activeTurnId || task?.status === "running" || task?.status === "starting")) {
         // A system error can be terminal without a turn/completed event.
         // Drain queued deltas and seal the active turn before reporting error.

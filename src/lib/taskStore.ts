@@ -166,6 +166,10 @@ export interface ThreadTaskState {
   pendingTurnDurationMs?: number;
   lastCompletedTurnId?: string;
   lastCompletedTurnStatus?: TaskStatus;
+  /** Native follow-up admitted, but the provider has not identified its turn. */
+  pendingNativeActivationId?: string;
+  /** Prior native turns cannot satisfy a newer activation's cutoff. */
+  retiredNativeTurnIds?: string[];
   workspacePath?: string;
   status: TaskStatus;
   messages: ChatMessage[];
@@ -229,8 +233,9 @@ interface TaskStoreState {
   flushDeltas: () => void;
   completeMessage: (threadId: string, message: ChatMessage) => void;
   upsertActivity: (threadId: string, activity: Activity) => void;
-  setActiveTurn: (threadId: string, turnId?: string) => void;
-  completeTurn: (threadId: string, turnId: string | undefined, status: TaskStatus, preserveThreadState?: boolean) => void;
+  beginNativeActivation: (threadId: string, activationId: string) => void;
+  setActiveTurn: (threadId: string, turnId?: string) => boolean;
+  completeTurn: (threadId: string, turnId: string | undefined, status: TaskStatus, preserveThreadState?: boolean) => boolean;
   setTaskStatus: (threadId: string, status: TaskStatus, error?: string) => void;
   setDiff: (threadId: string, diff: ReviewDiff) => void;
   /** `turnId` attributes the usage to a prompt turn; it defaults to the active turn. */
@@ -1168,10 +1173,27 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       } } };
     });
   },
+  beginNativeActivation: (threadId, activationId) => set((state) => {
+    const task = state.tasks[threadId] ?? emptyTask(threadId);
+    const retired = new Set(task.retiredNativeTurnIds ?? []);
+    for (const id of [task.activeTurnId, task.lastCompletedTurnId, ...task.messages.map((message) => message.turnId), ...task.activities.map((activity) => activity.turnId)]) {
+      if (id) retired.add(id);
+    }
+    return { tasks: { ...state.tasks, [threadId]: {
+      ...task, activeTurnId: undefined, assistantOutputTurnId: undefined,
+      pendingNativeActivationId: activationId, retiredNativeTurnIds: [...retired], updatedAt: Date.now(),
+    } } };
+  }),
   setActiveTurn: (threadId, turnId) => {
+    if (turnId && get().tasks[threadId]?.retiredNativeTurnIds?.includes(turnId)) return false;
     bindRuntimePerformanceTurn(threadId, turnId);
     set((state) => {
       const task = state.tasks[threadId] ?? emptyTask(threadId);
+      const nativeChild = turnId && Object.values(state.tasks).some((parent) => parent.agents.some((agent) => agent.id === threadId && agent.runtime === "codex"));
+      const retired = new Set(task.retiredNativeTurnIds ?? []);
+      if (nativeChild) for (const previousId of [task.activeTurnId, task.lastCompletedTurnId]) {
+        if (previousId && previousId !== turnId) retired.add(previousId);
+      }
       const threshold = turnId ? task.pendingTurnStartOrder : undefined;
       const messages = threshold === undefined
         ? task.messages
@@ -1185,6 +1207,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       return { tasks: { ...state.tasks, [threadId]: {
         ...task,
         activeTurnId: turnId,
+        pendingNativeActivationId: turnId ? undefined : task.pendingNativeActivationId,
+        ...(nativeChild ? { retiredNativeTurnIds: [...retired] } : {}),
         assistantOutputTurnId,
         pendingTurnStartOrder: turnId ? undefined : task.pendingTurnStartOrder,
         messages,
@@ -1195,9 +1219,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         updatedAt: Date.now(),
       } } };
     });
+    return true;
   },
   completeTurn: (threadId, turnId, status, preserveThreadState = false) => {
     const previousTask = get().tasks[threadId];
+    // A completion without a freshly identified child turn is not evidence
+    // that a follow-up stopped. Hard runtime/process cutoffs use no turn ID.
+    if (turnId && (previousTask?.pendingNativeActivationId || previousTask?.retiredNativeTurnIds?.includes(turnId))) return false;
     // A local provider may own a replacement start before its native turn ID
     // is acknowledged. Its predecessor may seal history without ending that
     // pending start or clearing its timing, prompts, and approvals.
@@ -1270,6 +1298,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       : task.agents.map((agent) => {
           if (!isActiveAgentRecord(agent.status)) return agent;
           const childStatus = state.statuses[agent.id];
+          // Codex descendants can outlive their parent's turn. Missing child
+          // telemetry is unresolved work, not evidence of completion.
+          if (agent.runtime === "codex" && (!childStatus || childStatus === "idle")) return agent;
           // A child is live only when its own task says so. Provider-native
           // `started` records occasionally arrive without a matching terminal
           // event; letting the parent record win forever leaves Stop and the
@@ -1304,11 +1335,27 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           })()
         : activity)
       : task.activities;
+    const parentUpdates: Record<string, ThreadTaskState> = {};
+    if (!newerTurnActive) for (const parent of Object.values(state.tasks)) {
+      if (parent.threadId === threadId || !parent.agents.some((agent) => agent.id === threadId)) continue;
+      parentUpdates[parent.threadId] = {
+        ...parent,
+        agents: parent.agents.map((agent) => agent.id === threadId ? { ...agent, status: terminalAgentStatus } : agent),
+        activities: parent.activities.map((activity) => {
+          if (!activity.agent?.threadIds?.includes(threadId)) return activity;
+          const siblingLive = activity.agent.threadIds.some((id) => id !== threadId
+            && (state.statuses[id] === "running" || state.statuses[id] === "starting"
+              || parent.agents.some((agent) => agent.id === id && isActiveAgentRecord(agent.status))));
+          return siblingLive ? activity : { ...activity, status: terminalAgentStatus };
+        }),
+      };
+    }
     const approvals = task.approvals.filter((approval) => approval.method.startsWith("openkiwi/")
       || (newerTurnActive && approval.params.turnId !== completedTurnId));
     return {
       tasks: {
         ...state.tasks,
+        ...parentUpdates,
         [threadId]: {
           ...task,
           messages,
@@ -1321,6 +1368,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           // proposals have their own lifetime and remain answerable.
           approvals,
           activeTurnId: task.activeTurnId === turnId || !turnId ? undefined : task.activeTurnId,
+          pendingNativeActivationId: newerTurnActive ? task.pendingNativeActivationId : undefined,
           assistantOutputTurnId: completedTurnId === task.assistantOutputTurnId
             ? undefined
             : task.assistantOutputTurnId,
@@ -1353,6 +1401,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         turnId,
       );
     }
+    return true;
   },
   setTaskStatus: (threadId, status, error) => {
     const previousTask = get().tasks[threadId];
@@ -1396,6 +1445,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         [threadId]: {
           ...task,
           status,
+          pendingNativeActivationId: isWorking ? task.pendingNativeActivationId : undefined,
           error,
           activities,
           estimatedTranscriptBytes,
