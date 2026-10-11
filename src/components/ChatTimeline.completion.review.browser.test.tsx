@@ -146,13 +146,25 @@ describe("independent completion review: exact reading position and reveal cance
     expect(masked()).toBe(false);
   });
 
-  it.each(["failed", "interrupted"] as const)("does not animate an answer exposed by a %s turn", async (status) => {
+  it("does not animate an answer exposed by a failed turn", async () => {
     const view = render(live());
     await frames();
-    view.rerender(<Shell entries={messages(REVEAL_TEXT, status)} running={false} />);
+    view.rerender(<Shell entries={messages(REVEAL_TEXT, "failed")} running={false} />);
     expect(masked()).toBe(false);
     await frames();
     expect(masked()).toBe(false);
+  });
+
+  it("keeps interrupted final-channel output hidden after the live row settles", async () => {
+    const view = render(live());
+    await frames();
+    const before = readingPosition();
+    view.rerender(<Shell entries={messages(REVEAL_TEXT, "interrupted")} running={false} />);
+    expect(row("review-answer")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Work Stopped\. View activity/ })).toBeVisible();
+    expectRetained(before);
+    await frames();
+    expect(row("review-answer")).toBeNull();
   });
 
   it.each(["search", "copy", "authoritative correction"])("finishes an active reveal on %s and never replays it", async (action) => {

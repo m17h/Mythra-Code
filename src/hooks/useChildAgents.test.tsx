@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import { acceptCursorTurnStart, beginCursorTurnStart, retireCursorTurnOwner } from "../lib/cursorTurnOwnership";
+import { consumeProviderStopIntent } from "../lib/providerStopIntent";
 import type { ChildAgentLink, ChildAgentPolicy } from "../lib/childAgents";
 import type { ChildAgentRequest } from "../lib/agentBridge";
 import type { ChildRunContext } from "../lib/childRun";
@@ -1169,6 +1170,76 @@ describe("useChildAgents", () => {
       expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "child-1", turnId: "turn-9" });
     });
 
+    it.each(["openai", "claude", "cursor"] as const)("seals %s child work when its cutoff has no terminal event", async (provider) => {
+      persistedLinks = { "child-1": link({ provider }) };
+      const scheduleClaudeThreadSave = vi.fn();
+      const scheduleCursorThreadSave = vi.fn();
+      const view = await mount({ scheduleClaudeThreadSave, scheduleCursorThreadSave });
+      act(() => {
+        const store = useTaskStore.getState();
+        store.setActiveTurn("child-1", "turn-stop");
+        store.setTaskStatus("child-1", "running");
+        store.queueAssistantDelta("child-1", "partial", "Child progress", "turn-stop");
+        store.queueReasoningDelta("child-1", "thinking", "Child thinking", "content", "turn-stop");
+      });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "child-1"); });
+      const task = useTaskStore.getState().tasks["child-1"];
+      expect(task).toMatchObject({ status: "interrupted", activeTurnId: undefined, lastCompletedTurnId: "turn-stop" });
+      expect(task.messages[0]).toMatchObject({ text: "Child progress", streaming: false, turnStatus: "interrupted" });
+      expect(task.activities[0]).toMatchObject({ detail: "Child thinking", turnStatus: "interrupted" });
+      if (provider === "claude") expect(scheduleClaudeThreadSave).toHaveBeenCalledWith("child-1");
+      if (provider === "cursor") expect(scheduleCursorThreadSave).toHaveBeenCalledWith("child-1");
+    });
+
+    it("records Claude child stop intent before its kill emits an exit", async () => {
+      persistedLinks = { "child-1": link({ provider: "claude" }) };
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setActiveTurn("child-1", "turn-stop");
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+      });
+      claude.killClaudeTurn.mockImplementationOnce(async () => {
+        const userStopped = consumeProviderStopIntent("child-1", "turn-stop");
+        useTaskStore.getState().completeTurn("child-1", "turn-stop", userStopped ? "interrupted" : "error");
+      });
+      await act(async () => { await view.result.current.stopChildAgent("root-1", "child-1"); });
+      expect(useTaskStore.getState().statuses["child-1"]).toBe("interrupted");
+      expect(useTaskStore.getState().tasks["root-1"].agents.find((agent) => agent.id === "child-1")?.status).toBe("cancelled");
+    });
+
+    it("does not settle a replacement Claude child turn after the old kill responds", async () => {
+      persistedLinks = { "child-1": link({ provider: "claude" }) };
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setActiveTurn("child-1", "turn-stop");
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+      });
+      claude.killClaudeTurn.mockImplementationOnce(async () => {
+        useTaskStore.getState().setActiveTurn("child-1", "turn-new");
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+      });
+      await expect(view.result.current.stopChildAgent("root-1", "child-1")).rejects.toThrow(/another turn/);
+      expect(useTaskStore.getState().tasks["child-1"]).toMatchObject({ activeTurnId: "turn-new", status: "running" });
+    });
+
+    it.each(["claude", "openai"] as const)("preserves a newer completed %s child while the old cutoff responds", async (provider) => {
+      persistedLinks = { "child-1": link({ provider }) };
+      const view = await mount();
+      act(() => {
+        useTaskStore.getState().setActiveTurn("child-1", "turn-stop");
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+      });
+      const finishNewTurn = async () => {
+        useTaskStore.getState().setActiveTurn("child-1", "turn-new");
+        useTaskStore.getState().setTaskStatus("child-1", "running");
+        useTaskStore.getState().completeTurn("child-1", "turn-new", "completed");
+      };
+      if (provider === "claude") claude.killClaudeTurn.mockImplementationOnce(finishNewTurn);
+      else codex.rpc.mockImplementationOnce(finishNewTurn);
+      await expect(view.result.current.stopChildAgent("root-1", "child-1")).rejects.toThrow(/another turn/);
+      expect(useTaskStore.getState().tasks["child-1"]).toMatchObject({ status: "completed", lastCompletedTurnId: "turn-new", lastCompletedTurnStatus: "completed" });
+    });
+
     it("treats cancelling a finished child as a no-op", async () => {
       persistedLinks = { "child-1": link() };
       const view = await mount();
@@ -1222,7 +1293,7 @@ describe("useChildAgents", () => {
       expect(codex.rpc).toHaveBeenCalledWith("turn/interrupt", { threadId: "native-1", turnId: "native-turn" });
       expect(useTaskStore.getState().statuses["native-1"]).toBe("interrupted");
       expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("interrupted");
-      expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("cancelled");
+      expect(useTaskStore.getState().tasks["root-1"].activities[0].status).toBe("interrupted");
     });
 
     it("discovers a native child turn when its task has not been hydrated", async () => {

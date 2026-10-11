@@ -20,6 +20,11 @@ export function sanitizeAutoArchiveSubagentThreads(value: unknown): boolean {
   return value === true;
 }
 
+/** Preserve the existing Escape shortcut unless the user explicitly disables it. */
+export function sanitizeEscapeStopsRun(value: unknown): boolean {
+  return value !== false;
+}
+
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CLAUDE_MODEL = "claude-fable-5";
 export const DEFAULT_CURSOR_MODEL = "auto";
@@ -92,6 +97,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "mythra",
   effortSlider: "aurora",
   chatFont: "system",
+  escapeStopsRun: true,
   notificationsEnabled: true,
   automaticThreadTitles: false,
   threadTitleProvider: "openai",

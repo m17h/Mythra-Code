@@ -370,9 +370,14 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
     const task = useTaskStore.getState().tasks[threadId];
     const thinking = task?.activities.find((activity) => activity.id === `thinking-${turnId}`);
     if (thinking?.detail) store.upsertActivity(threadId, { ...thinking, status: "completed" });
-    const interrupted = consumeProviderStopIntent(threadId, turnId) || ownership.stopped
-      || settledPromptResults(message).some((result) => result.stopReason === "cancelled")
-      || (!newerTurnActive && task?.status === "interrupted");
+    const stopRequested = consumeProviderStopIntent(threadId, turnId);
+    const results = settledPromptResults(message);
+    // A real ACP end_turn response may beat the pending process cutoff.
+    // Cancelled/legacy outcomes and a confirmed cutoff still remain stopped.
+    const explicitCompletion = results.length > 0 && results.every((result) => result.stopReason === "end_turn");
+    const alreadyInterrupted = task?.lastCompletedTurnId === turnId && task.lastCompletedTurnStatus === "interrupted";
+    const interrupted = (stopRequested && !explicitCompletion) || ownership.stopped
+      || results.some((result) => result.stopReason === "cancelled") || alreadyInterrupted;
     store.completeTurn(threadId, turnId, interrupted ? "interrupted" : "completed", newerTurnActive);
     ctx.onTranscriptChanged(threadId);
     if (!newerTurnActive) {

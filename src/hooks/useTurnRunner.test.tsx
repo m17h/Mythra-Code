@@ -5,6 +5,7 @@ import { PendingTurnStarts } from "../lib/pendingTurnStarts";
 import { resetTaskStore, useTaskStore } from "../lib/taskStore";
 import { acceptCursorTurnStart, beginCursorTurnStart, cursorTurnOwner, retireCursorTurnOwner } from "../lib/cursorTurnOwnership";
 import { routeCursorEvent } from "../lib/cursorEvents";
+import { routeClaudeEvent } from "../lib/claudeEvents";
 import type { SkillDependencyReport, Thread } from "../types";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
 import { friendlyError } from "../lib/errors";
@@ -13,6 +14,7 @@ import { acquirePullRequestMutation, releasePullRequestMutation } from "../lib/p
 
 const codex = vi.hoisted(() => ({
   rpc: vi.fn(),
+  auditEvent: vi.fn(async () => {}),
   respond: vi.fn(async () => {}),
   // Identity of the app-server that will serve the next RPC; a restart makes
   // this change, which is how a turn knows nothing is loaded any more.
@@ -1226,6 +1228,121 @@ describe("useTurnRunner", () => {
     expect(deps.pendingTurnStartsRef.current.finish(CURSOR_THREAD.id, pending)).toBe(true);
   });
 
+  it.each([OPENAI_THREAD, CLAUDE_THREAD, CURSOR_THREAD])("seals stopped $modelProvider history even when cutoff emits no terminal event", async (thread) => {
+    const store = useTaskStore.getState();
+    store.ensureTask(thread.id, thread.cwd);
+    store.setActiveTurn(thread.id, "turn-stop");
+    store.setTaskStatus(thread.id, "running");
+    store.appendUserMessage(thread.id, { id: "prompt", role: "user", text: "Work" });
+    store.queueAssistantDelta(thread.id, "partial", "Partial progress", "turn-stop");
+    store.queueReasoningDelta(thread.id, "thinking", "Recorded thinking", "content", "turn-stop");
+    store.upsertActivity(thread.id, { id: "tool", kind: "command", title: "Read", status: "inProgress", turnId: "turn-stop" });
+    const deps = context({ activeThread: thread, running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.stopTurn(); });
+
+    const stopped = useTaskStore.getState().tasks[thread.id];
+    expect(stopped).toMatchObject({ status: "interrupted", activeTurnId: undefined, lastCompletedTurnId: "turn-stop" });
+    expect(stopped.messages).toContainEqual(expect.objectContaining({ id: "partial", text: "Partial progress", streaming: false, turnStatus: "interrupted" }));
+    expect(stopped.activities).toContainEqual(expect.objectContaining({ id: "thinking", detail: "Recorded thinking", turnStatus: "interrupted" }));
+    expect(stopped.activities).toContainEqual(expect.objectContaining({ id: "tool", status: "interrupted", turnStatus: "interrupted" }));
+    const save = thread.modelProvider === "claude" ? deps.scheduleClaudeThreadSave : deps.scheduleCursorThreadSave;
+    if (thread.modelProvider !== "openai") expect(save).toHaveBeenCalledWith(thread.id);
+    const persisted = { messages: stopped.messages, activities: stopped.activities };
+    resetTaskStore();
+    useTaskStore.getState().hydrateTask(thread.id, persisted.messages, persisted.activities, thread.cwd);
+    expect(useTaskStore.getState().tasks[thread.id].messages.every((message) => message.turnStatus === "interrupted")).toBe(true);
+  });
+
+  it.each(["completed", "error"] as const)("preserves a genuine %s result racing the stop response", async (status) => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn(OPENAI_THREAD.id, "turn-stop");
+    store.setTaskStatus(OPENAI_THREAD.id, "running");
+    store.completeMessage(OPENAI_THREAD.id, { id: "answer", role: "assistant", text: "Result", turnId: "turn-stop" });
+    codex.rpc.mockImplementationOnce(async () => { store.completeTurn(OPENAI_THREAD.id, "turn-stop", status); });
+    const deps = context({ activeThread: OPENAI_THREAD, running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.stopTurn(); });
+
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].status).toBe(status);
+    expect(useTaskStore.getState().tasks[OPENAI_THREAD.id].messages[0].turnStatus).toBe(status === "error" ? "failed" : "completed");
+    expect(deps.setTransientStatus).not.toHaveBeenCalledWith("Stopped");
+  });
+
+  it.each([CLAUDE_THREAD, CURSOR_THREAD])("preserves an actual $modelProvider success event while its kill is awaiting", async (thread) => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn(thread.id, "router-race");
+    store.setTaskStatus(thread.id, "running");
+    store.queueAssistantDelta(thread.id, "answer", "Natural final answer", "router-race");
+    const eventContext = {
+      bindingFor: () => thread.cwd, onStatus: vi.fn(), onError: vi.fn(), onTurnCompleted: vi.fn(),
+      onApprovalRequested: vi.fn(), onTranscriptChanged: vi.fn(), onUnsupportedControlRequest: vi.fn(),
+    };
+    if (thread === CLAUDE_THREAD) claude.killClaudeTurn.mockImplementationOnce(async () => {
+      routeClaudeEvent({ threadId: thread.id, turnId: "router-race", message: { type: "result", subtype: "success", result: "Natural final answer" } }, eventContext);
+    });
+    else cursor.killCursorTurn.mockImplementationOnce(async () => {
+      routeCursorEvent({ threadId: thread.id, turnId: "router-race", message: { type: "result", result: { stopReason: "end_turn" } } }, eventContext);
+    });
+    const deps = context({ activeThread: thread, running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.stopTurn(); });
+
+    const task = useTaskStore.getState().tasks[thread.id];
+    expect(task).toMatchObject({ status: "completed", lastCompletedTurnId: "router-race", lastCompletedTurnStatus: "completed" });
+    expect(task.messages.find((message) => message.id === "answer")).toMatchObject({ text: "Natural final answer", turnStatus: "completed", streaming: false });
+    expect(deps.setTransientStatus).not.toHaveBeenCalledWith("Stopped");
+  });
+
+  it("seals only the stop target when another turn starts before its response", async () => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn(OPENAI_THREAD.id, "turn-stop");
+    store.setTaskStatus(OPENAI_THREAD.id, "running");
+    store.completeMessage(OPENAI_THREAD.id, { id: "old", role: "assistant", text: "Old progress", turnId: "turn-stop" });
+    codex.rpc.mockImplementationOnce(async () => {
+      store.setActiveTurn(OPENAI_THREAD.id, "turn-new");
+      store.setTaskStatus(OPENAI_THREAD.id, "running");
+      store.queueAssistantDelta(OPENAI_THREAD.id, "new", "New output", "turn-new");
+    });
+    const deps = context({ activeThread: OPENAI_THREAD, running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.stopTurn(); });
+
+    const task = useTaskStore.getState().tasks[OPENAI_THREAD.id];
+    expect(task).toMatchObject({ activeTurnId: "turn-new", status: "running" });
+    expect(task.messages.find((message) => message.id === "old")).toMatchObject({ turnStatus: "interrupted" });
+    expect(task.messages.find((message) => message.id === "new")).toMatchObject({ text: "New output", streaming: true });
+    expect(deps.setTransientStatus).not.toHaveBeenCalledWith("Stopped");
+  });
+
+  it.each([true, false])("preserves a newer completed turn while sealing the old target (old completed first: %s)", async (oldCompletedFirst) => {
+    const store = useTaskStore.getState();
+    store.setActiveTurn(OPENAI_THREAD.id, "turn-stop");
+    store.setTaskStatus(OPENAI_THREAD.id, "running");
+    store.completeMessage(OPENAI_THREAD.id, { id: "old", role: "assistant", text: "Old progress", turnId: "turn-stop" });
+    codex.rpc.mockImplementationOnce(async () => {
+      if (oldCompletedFirst) store.completeTurn(OPENAI_THREAD.id, "turn-stop", "completed");
+      store.setActiveTurn(OPENAI_THREAD.id, "turn-new");
+      store.setTaskStatus(OPENAI_THREAD.id, "running");
+      store.completeMessage(OPENAI_THREAD.id, { id: "new", role: "assistant", text: "New answer", turnId: "turn-new" });
+      store.completeTurn(OPENAI_THREAD.id, "turn-new", "completed");
+    });
+    const deps = context({ activeThread: OPENAI_THREAD, running: true });
+    const { result } = renderHook(() => useTurnRunner(deps));
+
+    await act(async () => { await result.current.stopTurn(); });
+
+    const task = useTaskStore.getState().tasks[OPENAI_THREAD.id];
+    expect(task).toMatchObject({ activeTurnId: undefined, status: "completed", lastCompletedTurnId: "turn-new", lastCompletedTurnStatus: "completed" });
+    expect(task.messages.find((message) => message.id === "old")).toMatchObject({ turnStatus: oldCompletedFirst ? "completed" : "interrupted" });
+    expect(task.messages.find((message) => message.id === "new")).toMatchObject({ turnStatus: "completed" });
+    expect(deps.setTransientStatus).not.toHaveBeenCalledWith("Stopped");
+  });
+
   it("uses the latest context without changing callback identity", async () => {
     const first = context({ activeThread: null, running: false });
     const second = context({ running: true });
@@ -1924,6 +2041,9 @@ describe("useTurnRunner", () => {
     acceptCursorTurnStart(CURSOR_THREAD.id, old, "old");
     useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "old");
     useTaskStore.getState().setTaskStatus(CURSOR_THREAD.id, "running");
+    useTaskStore.getState().queueAssistantDelta(CURSOR_THREAD.id, "old-progress", "Preserved old progress", "old");
+    useTaskStore.getState().queueReasoningDelta(CURSOR_THREAD.id, "old-thinking", "Preserved old thinking", "content", "old");
+    useTaskStore.getState().upsertActivity(CURSOR_THREAD.id, { id: "old-tool", kind: "command", title: "Read", status: "inProgress", turnId: "old" });
     let stopped!: () => void;
     cursor.killCursorTurn.mockImplementationOnce(() => new Promise<void>((resolve) => { stopped = resolve; }));
     const deps = context({ running: true });
@@ -1935,6 +2055,11 @@ describe("useTurnRunner", () => {
     useTaskStore.getState().setActiveTurn(CURSOR_THREAD.id, "new");
     await act(async () => { stopped(); await stop; });
     expect(useTaskStore.getState().tasks[CURSOR_THREAD.id]).toMatchObject({ activeTurnId: "new", status: "running" });
+    const task = useTaskStore.getState().tasks[CURSOR_THREAD.id];
+    expect(task.messages.find((message) => message.id === "old-progress")).toMatchObject({ text: "Preserved old progress", streaming: false, turnStatus: "interrupted" });
+    expect(task.activities.find((activity) => activity.id === "old-thinking")).toMatchObject({ detail: "Preserved old thinking", turnStatus: "interrupted" });
+    expect(task.activities.find((activity) => activity.id === "old-tool")).toMatchObject({ status: "interrupted", turnStatus: "interrupted" });
+    expect(cursorTurnOwner(CURSOR_THREAD.id)).toBe(next.owner);
   });
 
   it("does not let an older failed start clear its successor's status or checkpoint", async () => {

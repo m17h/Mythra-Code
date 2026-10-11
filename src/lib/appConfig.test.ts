@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, MAX_TERMINAL_TIMEOUT_MINUTES, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
+import { DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, MAX_TERMINAL_TIMEOUT_MINUTES, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
 
 describe("theme catalog", () => {
   it("places the Mythra pair above the Kiwi pair", () => {
@@ -120,5 +120,18 @@ describe("terminal timeout settings", () => {
     for (const value of [1, 15, 120, MAX_TERMINAL_TIMEOUT_MINUTES]) expect(sanitizeTerminalTimeoutMinutes(value)).toBe(value);
     expect(sanitizeTerminalTimeoutMinutes(0)).toBe(0);
     expect(sanitizeTerminalTimeoutMinutes(null)).toBe(0);
+  });
+});
+
+describe("Escape shortcut settings", () => {
+  it("keeps the existing shortcut enabled for legacy or malformed saved settings", () => {
+    expect(DEFAULT_SETTINGS.escapeStopsRun).toBe(true);
+    for (const value of [undefined, null, "false", "", 0, 1, {}, true]) {
+      expect(sanitizeEscapeStopsRun(value)).toBe(true);
+    }
+  });
+
+  it("honors an explicitly disabled shortcut", () => {
+    expect(sanitizeEscapeStopsRun(false)).toBe(false);
   });
 });

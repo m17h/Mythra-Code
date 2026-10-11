@@ -135,6 +135,18 @@ describe("ActivityStatus", () => {
     expect(onOpen).toHaveBeenCalledWith(button);
   });
 
+  it("labels stopped work exactly and uses a small static X on its existing history button", () => {
+    const onOpen = vi.fn();
+    const view = render(<ActivityStatus state="interrupted" summary="3 steps" onOpen={onOpen} />);
+    expect(screen.getByText("Work Stopped")).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Work Stopped. View activity: 3 steps" });
+    expect(button).toHaveAttribute("aria-haspopup", "dialog");
+    expect(view.container.querySelector(".activity-status-mark .lucide-x")).toHaveAttribute("width", "11");
+    expect(view.container.querySelector(".activity-status.live")).toBeNull();
+    fireEvent.click(button);
+    expect(onOpen).toHaveBeenCalledWith(button);
+  });
+
   it("marks live work with the dot-matrix mark only, and waiting or settled rows with a static icon", () => {
     const onOpen = vi.fn();
     for (const category of ["thinking", "working", "research", "files", "commands", "writing", "agents", "compaction"] as const) {

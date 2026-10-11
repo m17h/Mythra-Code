@@ -12,7 +12,7 @@
   margin: 0 0 0 38px;
 }
 .activity-status.state-failed { --activity-tone: var(--red); }
-.activity-status.state-interrupted { --activity-tone: var(--orange); }
+.activity-status.state-interrupted { --activity-tone: var(--red); }
 .activity-status.state-unknown { --activity-tone: var(--muted); }
 .activity-status.waiting { --activity-tone: var(--orange); }
 /* Idle without a terminal event: static and muted, neither live nor done. */

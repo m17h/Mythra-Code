@@ -729,10 +729,16 @@ export function routeClaudeEvent(
     recordResultUsage(threadId, turnId, message.usage, message.modelUsage, ctx.bindingFor(threadId));
     const subtype = text(message.subtype);
     const stopRequested = consumeProviderStopIntent(threadId, turnId);
-    const alreadyInterrupted =
-      useTaskStore.getState().tasks[threadId]?.status === "interrupted";
+    const task = useTaskStore.getState().tasks[threadId];
+    const alreadyInterrupted = task?.lastCompletedTurnId === turnId
+      && task.lastCompletedTurnStatus === "interrupted";
+    // Actual CLI results can finish while the process cutoff is still awaiting
+    // its acknowledgment. Only the tagged exit recovery is synthesized: it
+    // cannot overturn Stop, nor can a result arriving after this turn sealed.
+    const explicitResult = !message.openkiwi_recovered_from_assistant_end_turn
+      && (subtype === "success" || subtype.toLowerCase().startsWith("error") || Boolean(message.is_error));
     const interrupted =
-      stopRequested || alreadyInterrupted || subtype.toLowerCase().includes("interrupt");
+      (stopRequested && !explicitResult) || alreadyInterrupted || subtype.toLowerCase().includes("interrupt");
     const failed =
       !interrupted &&
       (Boolean(message.is_error) || subtype.toLowerCase().startsWith("error"));

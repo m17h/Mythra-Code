@@ -49,6 +49,7 @@ import { friendlyError } from "../lib/errors";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
+import { sealStoppedTurn } from "../lib/stopTurnHistory";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
 import { mythraCodeDeveloperInstructions, withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { RUN_COMMAND_TOOL } from "../lib/projectRun";
@@ -85,6 +86,7 @@ const newThreadDeliveries = new Map<string, TurnRunnerContext>();
 /** New-thread starts run one at a time so the shared-folder check sees each. */
 let newThreadDeliveryChain: Promise<void> = Promise.resolve();
 const newThreadDeliveriesInFlight = new Set<string>();
+
 /**
  * Last timed-prompt clock check in this renderer session. `null` until the
  * first check after launch/reload, so anything already due then is missed.
@@ -859,11 +861,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
           throw reason;
         }
         if (!cursorAttempt || isCurrentCursorTurnStart(thread.id, cursorAttempt)) {
-          useTaskStore.getState().setActiveTurn(thread.id, undefined);
-          useTaskStore.getState().setTaskStatus(thread.id, "interrupted");
+          if (sealStoppedTurn(thread.id, result.turnId)) setTransientStatus("Stopped");
+          strategy.afterStart?.(thread.id);
         }
         clearProviderStopIntent(thread.id, result.turnId);
-        setTransientStatus("Stopped");
       }
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       return true;
@@ -1140,9 +1141,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (pendingTurnStartsRef.current.finish(threadId, pendingStart) && !completedBeforeStartReturned) {
         // The user pressed stop while the turn was still starting.
         if (resultTurnId) await rpc("turn/interrupt", { threadId, turnId: resultTurnId });
-        useTaskStore.getState().setActiveTurn(threadId, undefined);
-        useTaskStore.getState().setTaskStatus(threadId, "interrupted");
-        setTransientStatus("Stopped");
+        if (resultTurnId) {
+          if (sealStoppedTurn(threadId, resultTurnId)) setTransientStatus("Stopped");
+        } else {
+          useTaskStore.getState().setTaskStatus(threadId, "interrupted");
+          setTransientStatus("Stopped");
+        }
       }
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       return true;
@@ -1881,15 +1885,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (isClaudeThread(activeThread)) await killClaudeTurn(activeThread.id);
       else if (isCursorThread(activeThread)) await killCursorTurn(activeThread.id);
       else await rpc("turn/interrupt", { threadId: activeThread.id, turnId });
-      if (cursorStopOwner && cursorTurnOwner(activeThread.id) !== cursorStopOwner) {
-        clearProviderStopIntent(activeThread.id, turnId);
-        return;
-      }
-      useTaskStore.getState().setActiveTurn(activeThread.id, undefined);
-      useTaskStore.getState().setTaskStatus(activeThread.id, "interrupted");
+      const stopped = sealStoppedTurn(activeThread.id, turnId);
+      if (isClaudeThread(activeThread)) ctx.scheduleClaudeThreadSave(activeThread.id);
+      else if (isCursorThread(activeThread)) ctx.scheduleCursorThreadSave(activeThread.id);
       if (localProvider) clearProviderStopIntent(activeThread.id, turnId);
-      setStartingDraftTurn(false);
-      setTransientStatus("Stopped");
+      if (stopped && contextRef.current.activeThread?.id === activeThread.id) {
+        setStartingDraftTurn(false);
+        setTransientStatus("Stopped");
+      }
     } catch (reason) {
       if (localProvider) clearProviderStopIntent(activeThread.id, turnId);
       if (cursorStopOwner && cursorTurnOwner(activeThread.id) !== cursorStopOwner) return;
