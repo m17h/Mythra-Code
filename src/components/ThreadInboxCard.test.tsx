@@ -15,6 +15,24 @@ describe("ThreadInboxCard", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it("shows and opens a renderer-owned starting row without creating a provider task", () => {
+    const onOpen = vi.fn();
+    const view = render(<ThreadInboxCard threadId="renderer-attempt" title="Start the project"
+      workspaceName="Project" directory="/projects/app" provider="claude" providerName="Claude"
+      pinned={false} pendingStatus="starting" onOpen={onOpen} />);
+    const button = screen.getByRole("button", { name: "Open Start the project" });
+    expect(button).toHaveAccessibleDescription("Starting");
+    button.click();
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(useTaskStore.getState().tasks["renderer-attempt"]).toBeUndefined();
+    expect(useTaskStore.getState().activeThreadId).toBeNull();
+    view.rerender(<ThreadInboxCard threadId="renderer-attempt" title="Start the project"
+      workspaceName="Project" directory="/projects/app" provider="claude" providerName="Claude"
+      pinned={false} pendingStatus="stopping" onOpen={onOpen} />);
+    expect(button).toHaveAccessibleDescription("Stopping");
+    expect(view.container.querySelector(".pixel-working-mark.live")).toBeNull();
+  });
+
   it("shows workspace, compact directory, provider identity, and live status", () => {
     vi.spyOn(Date, "now").mockReturnValue(75_000);
     useTaskStore.getState().setTaskStatus("thread-1", "running");

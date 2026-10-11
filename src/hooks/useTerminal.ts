@@ -3,6 +3,8 @@ import { rpc } from "../lib/codex";
 import { friendlyError } from "../lib/errors";
 import { shellCommand } from "../lib/shellCommand";
 import { commandSandbox } from "../lib/turnConfig";
+import { sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
+import { createTerminalSnapshotSanitizer, terminalSnapshotLimit, terminalSnapshotPrefix, terminalSnapshotTail, terminalSnapshotText, type ProjectTerminalSnapshot } from "../lib/terminalSnapshot";
 import type { PermissionMode } from "../types";
 
 /**
@@ -11,6 +13,8 @@ import type { PermissionMode } from "../types";
  * cheap, without ever copying a large buffer.
  */
 const MAX_CHUNK_LENGTH = 8192;
+const DEFAULT_SCROLLBACK_CHARACTERS = 100_000;
+const MAX_SCROLLBACK_CHARACTERS = 500_000;
 
 /**
  * How many idle execution paths keep their scrollback. Every project the user
@@ -66,8 +70,10 @@ export interface TerminalController {
    * Appends to `scope`'s buffer, defaulting to the selected one. Callers with
    * a long-running command pass the path it started in so its output cannot
    * land under whichever project the user has since switched to.
+   * Complete captured records use a fresh snapshot parser; streamed appends
+   * preserve their parser between chunks, including across Clear.
    */
-  append: (text: string, scope?: string) => void;
+  append: (text: string, scope?: string, options?: { complete?: boolean }) => void;
   /** Routes streamed runtime output by the process id that produced it. */
   appendProcess: (text: string, processId?: string) => void;
   /** Characters appended so far under `scope`, defaulting to the selected one. */
@@ -79,6 +85,8 @@ export interface TerminalController {
   runningIn: (scope: string) => { running: boolean; command: string };
   /** The last `characters` of `scope`'s buffer, for callers that cannot watch the panel. */
   tail: (scope: string, characters: number) => string;
+  /** Read-only retained terminal output; never creates or touches another session. */
+  snapshot: (scope: string, maxCharacters?: number) => ProjectTerminalSnapshot;
   clear: () => void;
   write: (value: string) => void;
   resize: (columns: number, rows: number) => void;
@@ -91,6 +99,10 @@ interface TerminalSession {
   runningCommand: string;
   processId: string | null;
   chunks: string[];
+  snapshotChunks: string[];
+  snapshotRetained: number;
+  snapshotDiscarded: boolean;
+  sanitizeSnapshot: (text: string) => string;
   retained: number;
   appended: number;
   generation: number;
@@ -107,6 +119,10 @@ function createSession(scope: string, touchedAt: number): TerminalSession {
     runningCommand: "",
     processId: null,
     chunks: [],
+    snapshotChunks: [],
+    snapshotRetained: 0,
+    snapshotDiscarded: false,
+    sanitizeSnapshot: createTerminalSnapshotSanitizer(),
     retained: 0,
     appended: 0,
     generation: 0,
@@ -154,6 +170,8 @@ function createSession(scope: string, touchedAt: number): TerminalSession {
 export function useTerminal(options: {
   scrollback: number;
   permission: PermissionMode;
+  /** Captured when a command launches. Zero disables its runtime deadline. */
+  timeoutMinutes?: number;
   /** Execution path the Terminal panel is currently showing. */
   scope: string;
   onError: (message: string) => void;
@@ -163,7 +181,7 @@ export function useTerminal(options: {
   optionsRef.current = options;
   const sizeRef = useRef({ cols: 100, rows: 30 });
   const sessionsRef = useRef(new Map<string, TerminalSession>());
-  const processScopesRef = useRef(new Map<string, string>());
+  const processScopesRef = useRef(new Map<string, { scope: string; sanitizeSnapshot: (text: string) => string }>());
   const clockRef = useRef(0);
 
   // Output lives outside React state: streamed command output can arrive many
@@ -203,7 +221,7 @@ export function useTerminal(options: {
 
   const active = sessionFor(options.scope);
 
-  const appendTo = useCallback((session: TerminalSession, text: string) => {
+  const appendTo = useCallback((session: TerminalSession, text: string, sanitizeSnapshot = session.sanitizeSnapshot) => {
     if (!text) return;
     // Small arrivals extend the newest chunk instead of adding an entry. A PTY
     // can emit a character at a time (progress spinners, raw-mode programs),
@@ -219,7 +237,31 @@ export function useTerminal(options: {
     }
     session.retained += text.length;
     session.appended += text.length;
-    const limit = Math.max(1, optionsRef.current.scrollback);
+    const scrollback = optionsRef.current.scrollback;
+    const limit = Number.isFinite(scrollback)
+      ? Math.min(MAX_SCROLLBACK_CHARACTERS, Math.max(1, Math.trunc(scrollback)))
+      : DEFAULT_SCROLLBACK_CHARACTERS;
+    // Keep a separately bounded plain-text stream. Sanitizing only a raw tail
+    // cannot recover an OSC/DCS opener already evicted from scrollback.
+    const plain = sanitizeSnapshot(text);
+    const snapshotChunks = session.snapshotChunks;
+    const newestSnapshot = snapshotChunks.length ? snapshotChunks[snapshotChunks.length - 1] : undefined;
+    if (plain && newestSnapshot !== undefined && newestSnapshot.length + plain.length <= MAX_CHUNK_LENGTH) snapshotChunks[snapshotChunks.length - 1] = `${newestSnapshot}${plain}`;
+    else if (plain) snapshotChunks.push(plain);
+    session.snapshotRetained += plain.length;
+    while (session.snapshotRetained > limit) {
+      session.snapshotDiscarded = true;
+      const oldest = snapshotChunks[0];
+      const excess = session.snapshotRetained - limit;
+      if (oldest.length <= excess) { snapshotChunks.shift(); session.snapshotRetained -= oldest.length; }
+      else {
+        // Preserve a final high surrogate until its matching next chunk arrives.
+        let start = excess;
+        if (oldest.charCodeAt(start) >= 0xdc00 && oldest.charCodeAt(start) <= 0xdfff) start += 1;
+        snapshotChunks[0] = oldest.slice(start);
+        session.snapshotRetained -= start;
+      }
+    }
     while (session.retained > limit) {
       const oldest = session.chunks[0];
       const excess = session.retained - limit;
@@ -234,13 +276,17 @@ export function useTerminal(options: {
     for (const listener of session.listeners) listener();
   }, []);
 
-  const append = useCallback((text: string, scope?: string) => {
-    appendTo(sessionFor(scope ?? optionsRef.current.scope), text);
+  const append = useCallback((text: string, scope?: string, appendOptions?: { complete?: boolean }) => {
+    appendTo(sessionFor(scope ?? optionsRef.current.scope), text, appendOptions?.complete ? terminalSnapshotText : undefined);
   }, [appendTo, sessionFor]);
 
   const appendProcess = useCallback((text: string, processId?: string) => {
-    const scope = processId ? processScopesRef.current.get(processId) : undefined;
-    appendTo(sessionFor(scope ?? optionsRef.current.scope), text);
+    const route = processId ? processScopesRef.current.get(processId) : undefined;
+    // Runtime streaming requires a client-owned process ID. Missing IDs and
+    // events for unowned/retired processes must not enter the
+    // selected project's buffer, which models can now read by project scope.
+    if (route === undefined) return;
+    appendTo(sessionFor(route.scope), text, route.sanitizeSnapshot);
   }, [appendTo, sessionFor]);
 
   const appendedLength = useCallback(
@@ -249,28 +295,30 @@ export function useTerminal(options: {
   );
 
   const run = useCallback(async (command: string, additionalWritableRoots: string[] = [], scope?: string, commandArgv?: string[]) => {
-    const cwd = scope ?? optionsRef.current.scope;
+    const launchOptions = optionsRef.current;
+    const cwd = scope ?? launchOptions.scope;
     if (!cwd) return;
     const session = sessionFor(cwd);
     const trimmed = session.running ? "" : command.trim();
     if (!trimmed) return;
     const id = crypto.randomUUID();
+    const sanitizeSnapshot = createTerminalSnapshotSanitizer();
     session.processId = id;
     session.running = true;
     session.runningCommand = trimmed;
     const processScopes = processScopesRef.current;
-    processScopes.set(id, cwd);
+    processScopes.set(id, { scope: cwd, sanitizeSnapshot });
     // Retire the oldest completed routes first. A process that is still
     // running keeps its route however many commands start after it, otherwise
     // a long-lived dev server's output would drift into the selected project.
-    for (const [routedId, routedScope] of processScopes) {
+    for (const [routedId, route] of processScopes) {
       if (processScopes.size <= MAX_PROCESS_ROUTES) break;
-      const owner = sessionsRef.current.get(routedScope);
+      const owner = sessionsRef.current.get(route.scope);
       if (owner?.running && owner.processId === routedId) continue;
       processScopes.delete(routedId);
     }
     bumpRender();
-    appendTo(session, `${session.appended ? "\n" : ""}$ ${trimmed}\n`);
+    appendTo(session, `${session.appended ? "\n" : ""}$ ${trimmed}\n`, terminalSnapshotText);
     try {
       const result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
         command: commandArgv ?? shellCommand(trimmed),
@@ -280,12 +328,15 @@ export function useTerminal(options: {
         streamStdin: true,
         size: sizeRef.current,
         cwd,
-        timeoutMs: 300000,
-        sandboxPolicy: commandSandbox(optionsRef.current.permission, cwd, additionalWritableRoots),
+        ...(sanitizeTerminalTimeoutMinutes(launchOptions.timeoutMinutes) === 0
+          ? { disableTimeout: true }
+          : { timeoutMs: sanitizeTerminalTimeoutMinutes(launchOptions.timeoutMinutes) * 60_000 }),
+        sandboxPolicy: commandSandbox(launchOptions.permission, cwd, additionalWritableRoots),
       });
-      appendTo(session, `${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`);
+      appendTo(session, `${result.stdout}${result.stderr}`, sanitizeSnapshot);
+      appendTo(session, `\n[exit ${result.exitCode}]\n`, terminalSnapshotText);
     } catch (reason) {
-      appendTo(session, `\n${friendlyError(reason)}\n`);
+      appendTo(session, `\n${friendlyError(reason)}\n`, terminalSnapshotText);
     } finally {
       session.running = false;
       session.runningCommand = "";
@@ -315,10 +366,40 @@ export function useTerminal(options: {
     return session.store.read(Math.max(0, session.appended - Math.max(0, characters))).text;
   }, []);
 
+  const snapshot = useCallback((scope: string, maxCharacters?: number): ProjectTerminalSnapshot => {
+    const session = sessionsRef.current.get(scope);
+    const limit = terminalSnapshotLimit(maxCharacters);
+    // Read only the requested tail. Joining all retained scrollback would
+    // allocate up to 500k characters to return at most 20k on each tool read.
+    let needed = limit;
+    const parts: string[] = [];
+    const chunks = session?.snapshotChunks ?? [];
+    for (let index = chunks.length - 1; index >= 0 && needed > 0; index -= 1) {
+      const chunk = chunks[index];
+      parts.push(chunk.length <= needed ? chunk : chunk.slice(-needed));
+      needed -= Math.min(needed, chunk.length);
+    }
+    const text = parts.reverse().join("");
+    return {
+      scope,
+      available: Boolean(session),
+      running: Boolean(session?.running),
+      command: terminalSnapshotPrefix(terminalSnapshotText(session?.runningCommand ?? ""), 2_000),
+      text: terminalSnapshotTail(text, limit),
+      truncated: Boolean(session && (session.snapshotDiscarded || session.snapshotRetained > limit)),
+      retainedCharacters: session?.snapshotRetained ?? 0,
+      generation: session?.generation ?? 0,
+      lifetime: "app-session",
+    };
+  }, []);
+
   const clear = useCallback(() => {
     const session = sessionFor(optionsRef.current.scope);
     if (!session.appended && !session.chunks.length) return;
     session.chunks = [];
+    session.snapshotChunks = [];
+    session.snapshotRetained = 0;
+    session.snapshotDiscarded = false;
     session.retained = 0;
     session.appended = 0;
     session.generation += 1;
@@ -362,6 +443,7 @@ export function useTerminal(options: {
     stop,
     runningIn,
     tail,
+    snapshot,
     clear,
     write,
     resize,

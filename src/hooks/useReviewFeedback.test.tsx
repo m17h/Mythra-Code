@@ -12,6 +12,25 @@ beforeEach(() => {
 });
 
 describe("useReviewFeedback", () => {
+  it("reads a background workspace draft's latest notes through a stable getter and excludes unrelated scopes", () => {
+    const key = "new:C:\\projects\\review";
+    const { result, rerender } = renderHook(({ thread, cwd }) => useReviewFeedback(thread, cwd), {
+      initialProps: { thread: key, cwd: "C:/projects/review" },
+    });
+    const read = result.current.notesForDraftKey;
+    act(() => { result.current.addNote(anchor, "Recover without composer text"); });
+    const originalId = result.current.notes[0].id;
+    rerender({ thread: "new:/other", cwd: "/other" });
+    expect(result.current.notesForDraftKey).toBe(read);
+    expect(read(key).map((note) => note.comment)).toEqual(["Recover without composer text"]);
+    rerender({ thread: key, cwd: "/unrelated-execution-folder" });
+    act(() => { result.current.addNote(anchor, "Wrong folder"); });
+    expect(read(key).map((note) => note.comment)).toEqual(["Recover without composer text"]);
+    rerender({ thread: key, cwd: "C:/projects/review" });
+    act(() => { result.current.removeNote(originalId); });
+    expect(read(key)).toEqual([]);
+  });
+
   it("keeps independent drafts across threads and folders, including remount", () => {
     const { result, rerender, unmount } = renderHook(
       ({ thread, cwd }) => useReviewFeedback(thread, cwd),

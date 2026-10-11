@@ -4,6 +4,17 @@ import type { AppSettings, ChatFont, ChildAgentSettings, EffortSliderStyle, Prom
 /** Cross-provider delegation is off by default; every enabled destination is user-approved. */
 export const DEFAULT_CHILD_AGENT_SETTINGS: ChildAgentSettings = { enabled: false, targets: [] };
 
+export const DEFAULT_TERMINAL_TIMEOUT_MINUTES = 5;
+/** Keep conversion to protocol milliseconds exact. */
+export const MAX_TERMINAL_TIMEOUT_MINUTES = Math.floor(Number.MAX_SAFE_INTEGER / 60_000);
+
+/** Only an explicit zero/null disables the deadline; malformed old settings retain the default. */
+export function sanitizeTerminalTimeoutMinutes(value: unknown): number {
+  if (value === null || value === 0) return 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= MAX_TERMINAL_TIMEOUT_MINUTES
+    ? value : DEFAULT_TERMINAL_TIMEOUT_MINUTES;
+}
+
 /** Keep finished conversations visible unless automatic archiving was explicitly enabled. */
 export function sanitizeAutoArchiveSubagentThreads(value: unknown): boolean {
   return value === true;
@@ -86,6 +97,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   threadTitleProvider: "openai",
   threadTitleModel: "",
   terminalScrollback: 100_000,
+  terminalTimeoutMinutes: DEFAULT_TERMINAL_TIMEOUT_MINUTES,
   uiScale: 100,
   usageDisplay: DEFAULT_USAGE_DISPLAY,
 };

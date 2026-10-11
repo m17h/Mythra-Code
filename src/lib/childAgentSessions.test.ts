@@ -6,7 +6,7 @@ const bridge = vi.hoisted(() => ({
 }));
 vi.mock("./agentBridge", () => bridge);
 
-import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSessions, resetChildAgentLaunches } from "./childAgentSessions";
+import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, projectTerminalScopeForSession, releaseChildAgentSessions, resetChildAgentLaunches } from "./childAgentSessions";
 import type { ChildAgentBridgeLaunch } from "./agentBridge";
 import type { ChildAgentLink, ChildAgentPolicy, ChildAgentReadiness } from "./childAgents";
 import type { ChildAgentSettings, ChildAgentTarget } from "../types";
@@ -94,6 +94,53 @@ describe("ensureChildAgentBridge", () => {
     const result = await ensureChildAgentBridge(input());
     expect(result).toEqual({ policy: expect.objectContaining({ sessionId: "session-1", rootThreadId: "" }), launch: LAUNCH, captured: true });
     expect(bridge.startChildAgentSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes only the captured root terminal scope while its read capability is registered", async () => {
+    bridge.startChildAgentSession.mockResolvedValue({ ...LAUNCH, toolNames: [...LAUNCH.toolNames, "read_project_terminal"] });
+    const root = await ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project/worktree" }));
+    expect(projectTerminalScopeForSession(root!.policy.sessionId)).toBe("/project/worktree");
+    expect(projectTerminalScopeForSession("unknown")).toBeUndefined();
+    await releaseChildAgentSessions({ [root!.policy.sessionId]: root!.policy }, "thread-1");
+    expect(projectTerminalScopeForSession(root!.policy.sessionId)).toBeUndefined();
+  });
+
+  it("does not expose terminal scope for language-only children or a bridge without the read tool", async () => {
+    const root = await ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project" }));
+    expect(projectTerminalScopeForSession(root!.policy.sessionId)).toBeUndefined();
+    bridge.startChildAgentSession.mockResolvedValue({ ...LAUNCH, toolNames: ["read_project_terminal"] });
+    const child = await ensureChildAgentBridge(input({ threadId: "child-1", projectPath: "/project", isChildThread: true, newSessionId: () => "child-session" }));
+    expect(projectTerminalScopeForSession(child!.policy.sessionId)).toBeUndefined();
+  });
+
+  it("replaces the captured terminal scope on project re-registration and clears it on reload", async () => {
+    bridge.startChildAgentSession.mockResolvedValue({ ...LAUNCH, toolNames: [...LAUNCH.toolNames, "read_project_terminal"] });
+    const first = await ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project/first" }));
+    await ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project/second", policies: { [first!.policy.sessionId]: first!.policy } }));
+    expect(projectTerminalScopeForSession(first!.policy.sessionId)).toBe("/project/second");
+    resetChildAgentLaunches();
+    expect(projectTerminalScopeForSession(first!.policy.sessionId)).toBeUndefined();
+  });
+
+  it("retains active read authority through a next-turn invalidation but removes it during context replacement", async () => {
+    const terminalLaunch = { ...LAUNCH, toolNames: [...LAUNCH.toolNames, "read_project_terminal"] };
+    bridge.startChildAgentSession.mockResolvedValue(terminalLaunch);
+    const first = await ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project/first" }));
+    const sessionId = first!.policy.sessionId;
+    invalidateChildAgentLaunch(sessionId);
+    expect(projectTerminalScopeForSession(sessionId)).toBe("/project/first");
+    let resolveLaunch!: (launch: ChildAgentBridgeLaunch) => void;
+    bridge.startChildAgentSession.mockImplementationOnce(() => new Promise<ChildAgentBridgeLaunch>((resolve) => { resolveLaunch = resolve; }));
+    const second = ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project/second", policies: { [sessionId]: first!.policy } }));
+    await vi.waitFor(() => expect(resolveLaunch).toBeDefined());
+    expect(projectTerminalScopeForSession(sessionId)).toBeUndefined();
+    resolveLaunch(terminalLaunch);
+    await second;
+    expect(projectTerminalScopeForSession(sessionId)).toBe("/project/second");
+    invalidateChildAgentLaunch(sessionId);
+    bridge.startChildAgentSession.mockResolvedValue(LAUNCH);
+    await ensureChildAgentBridge(input({ threadId: "thread-1", projectPath: "/project/second", policies: { [sessionId]: first!.policy } }));
+    expect(projectTerminalScopeForSession(sessionId)).toBeUndefined();
   });
 
   it("native project mode revokes managed spawning but preserves the stored roster for switching back", async () => {

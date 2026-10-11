@@ -281,6 +281,160 @@ describe("terminal scoping", () => {
   });
 });
 
+describe("terminal command deadlines", () => {
+  it("retains five minutes by default and sends custom whole minutes", async () => {
+    const { result } = terminal(1_000);
+    await act(async () => { await result.current.run("test-default"); });
+    expect(rpcMock).toHaveBeenLastCalledWith("command/exec", expect.objectContaining({ timeoutMs: 300_000 }));
+    const custom = renderHook(() => useTerminal({ scrollback: 1_000, permission: "ask", scope: "/custom", timeoutMinutes: 45, onError: () => {} }));
+    await act(async () => { await custom.result.current.run("test-custom"); });
+    expect(rpcMock).toHaveBeenLastCalledWith("command/exec", expect.objectContaining({ timeoutMs: 2_700_000 }));
+  });
+
+  it("explicitly disables the runtime deadline and keeps Stop targeting that process", async () => {
+    let finish: (value: { exitCode: number; stdout: string; stderr: string }) => void = () => {};
+    rpcMock.mockImplementation((method) => method === "command/exec"
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve({}));
+    const { result } = renderHook(() => useTerminal({ scrollback: 1_000, permission: "ask", scope: "/project", timeoutMinutes: 0, onError: () => {} }));
+    let pending: Promise<void> = Promise.resolve();
+    act(() => { pending = result.current.run("dev-server"); });
+    const [, params] = rpcMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(params.disableTimeout).toBe(true);
+    expect(params).not.toHaveProperty("timeoutMs");
+    expect(result.current.running).toBe(true);
+    await act(async () => { await result.current.stop(); });
+    expect(rpcMock).toHaveBeenLastCalledWith("command/exec/terminate", { processId: params.processId });
+    await act(async () => { finish({ exitCode: 130, stdout: "", stderr: "" }); await pending; });
+    expect(result.current.running).toBe(false);
+  });
+
+  it("applies changed settings to the next launch without retiming the current command", async () => {
+    let finish: (value: { exitCode: number; stdout: string; stderr: string }) => void = () => {};
+    rpcMock.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const { result, rerender } = renderHook(({ timeoutMinutes }) => useTerminal({ scrollback: 1_000, permission: "ask", scope: "/project", timeoutMinutes, onError: () => {} }), { initialProps: { timeoutMinutes: 17 } });
+    let pending: Promise<void> = Promise.resolve();
+    act(() => { pending = result.current.run("first"); });
+    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(rpcMock.mock.calls[0][1]).toMatchObject({ timeoutMs: 1_020_000 });
+    rerender({ timeoutMinutes: 0 });
+    expect(rpcMock).toHaveBeenCalledTimes(1);
+    expect(result.current.running).toBe(true);
+    await act(async () => { finish({ exitCode: 0, stdout: "", stderr: "" }); await pending; });
+    rpcMock.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    await act(async () => { await result.current.run("second"); });
+    expect(rpcMock.mock.calls[1][1]).toMatchObject({ disableTimeout: true });
+    expect(rpcMock.mock.calls[1][1]).not.toHaveProperty("timeoutMs");
+  });
+});
+
+describe("read-only terminal snapshots", () => {
+  it("ignores explicitly unknown process routes instead of leaking them into the selected project", () => {
+    const { result } = terminal(1_000, "/project-b");
+    act(() => result.current.appendProcess("private project-a output", "unknown-project-a-process"));
+    act(() => result.current.appendProcess("private no-owner output", ""));
+    expect(result.current.outputStore.read(0).text).toBe("");
+    expect(result.current.snapshot("/project-b").text).toBe("");
+    // Missing runtime ownership is also ignored; direct output uses append().
+    act(() => result.current.appendProcess("unlabelled output"));
+    expect(result.current.snapshot("/project-b").text).toBe("");
+    act(() => result.current.append("direct output"));
+    expect(result.current.snapshot("/project-b").text).toBe("direct output");
+  });
+
+  it("strips split string payloads even after raw scrollback evicts their opener", () => {
+    const { result } = terminal(30);
+    act(() => result.current.append("ready\n\u001b"));
+    act(() => result.current.append("]52;c;private-"));
+    act(() => result.current.append("secret".repeat(30)));
+    expect(result.current.outputStore.read(0).text).not.toContain("\u001b]");
+    expect(result.current.snapshot("/project")).toMatchObject({ text: "ready\n", truncated: false });
+    act(() => result.current.clear());
+    // Clear must not reset the parser midway through a private string.
+    act(() => result.current.append("still-private\u001b"));
+    act(() => result.current.append("\\visible\n\u001bPother-private"));
+    act(() => result.current.append("-payload\u001b\\tail"));
+    expect(result.current.snapshot("/project")).toMatchObject({ text: "visible\ntail", generation: 1 });
+  });
+
+  it("keeps an incomplete escape owned by its process through exit, next launch and late output", async () => {
+    const { result } = terminal(2_000);
+    await act(async () => {
+      await result.current.run("first");
+    });
+    const firstId = rpcMock.mock.calls[0][1].processId as string;
+    act(() => result.current.appendProcess("old-visible\n\u001b]unterminated", firstId));
+    let finish: (value: { exitCode: number; stdout: string; stderr: string }) => void = () => {};
+    rpcMock.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    let pending: Promise<void> = Promise.resolve();
+    act(() => { pending = result.current.run("second"); });
+    const secondId = rpcMock.mock.calls[1][1].processId as string;
+    act(() => result.current.appendProcess("private-old-payload", firstId));
+    act(() => result.current.appendProcess("new-visible\n", secondId));
+    expect(result.current.snapshot("/project").text).toContain("$ second\nnew-visible\n");
+    expect(result.current.snapshot("/project").text).not.toContain("private-old-payload");
+    act(() => result.current.appendProcess("\u001bPunfinished", secondId));
+    await act(async () => { finish({ exitCode: 0, stdout: "", stderr: "" }); await pending; });
+    expect(result.current.snapshot("/project").text).toContain("[exit 0]");
+  });
+
+  it("never returns half a Unicode pair at tail, scrollback or command boundaries", async () => {
+    const { result } = terminal(3);
+    act(() => result.current.append("abc😀"));
+    expect(result.current.snapshot("/project", 1).text).toBe("");
+    expect(result.current.snapshot("/project", 2).text).toBe("😀");
+    act(() => result.current.append("x"));
+    expect(result.current.snapshot("/project", 2).text).toBe("x");
+    let finish: (value: { exitCode: number; stdout: string; stderr: string }) => void = () => {};
+    rpcMock.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    let pending: Promise<void> = Promise.resolve();
+    act(() => { pending = result.current.run(`${"x".repeat(1_999)}😀`); });
+    expect(result.current.snapshot("/project").command).toBe("x".repeat(1_999));
+    await act(async () => { finish({ exitCode: 0, stdout: "", stderr: "" }); await pending; });
+  });
+
+  it("reports an unseen scope without creating, selecting or evicting a session", () => {
+    const { result } = terminal(1_000, "/shown");
+    act(() => result.current.append("shown output"));
+    const active = result.current.outputStore;
+    const generation = active.generation();
+    for (let index = 0; index < 50; index += 1) {
+      expect(result.current.snapshot(`/unseen-${index}`)).toEqual({
+        scope: `/unseen-${index}`, available: false, running: false, command: "", text: "", truncated: false, retainedCharacters: 0, generation: 0, lifetime: "app-session",
+      });
+    }
+    expect(result.current.outputStore).toBe(active);
+    expect(active.generation()).toBe(generation);
+    expect(result.current.snapshot("/shown").text).toBe("shown output");
+  });
+
+  it("reads the original project's running command and sanitized retained tail after navigation", async () => {
+    let finish: (value: { exitCode: number; stdout: string; stderr: string }) => void = () => {};
+    rpcMock.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const { result, rerender } = terminal(1_000, "/project-a");
+    let pending: Promise<void> = Promise.resolve();
+    act(() => { pending = result.current.run("dev-server"); });
+    act(() => result.current.append("\u001b[31mready\u001b[0m\n\u001b]52;c;secret-clipboard\u0007tail\u0000", "/project-a"));
+    rerender({ path: "/project-b" });
+    const snapshot = result.current.snapshot("/project-a", 10);
+    expect(snapshot).toMatchObject({ scope: "/project-a", available: true, running: true, command: "dev-server", text: "ready\ntail", truncated: true });
+    expect(result.current.outputStore.read(0).text).toBe("");
+    // Taking a model snapshot must not strip xterm's live color/control stream.
+    rerender({ path: "/project-a" });
+    expect(result.current.outputStore.read(0).text).toContain("\u001b[31mready");
+    await act(async () => { finish({ exitCode: 0, stdout: "", stderr: "" }); await pending; });
+    expect(result.current.snapshot("/project-a").running).toBe(false);
+  });
+
+  it("bounds the tail, reports scrollback loss and retains clear generation", () => {
+    const { result } = terminal(25_000);
+    act(() => result.current.append("x".repeat(30_000)));
+    expect(result.current.snapshot("/project", 40_000)).toMatchObject({ text: "x".repeat(20_000), truncated: true, retainedCharacters: 25_000 });
+    expect(result.current.snapshot("/project", -10).text).toBe("x");
+    act(() => result.current.clear());
+    expect(result.current.snapshot("/project")).toMatchObject({ available: true, text: "", truncated: false, generation: 1 });
+  });
+});
+
 describe("useTerminal scoped runs", () => {
   it("runs under an explicit scope and exposes its state and output to callers", async () => {
     let finish: ((value: { exitCode: number; stdout: string; stderr: string }) => void) | undefined;

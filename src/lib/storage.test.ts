@@ -31,6 +31,23 @@ describe("durable storage", () => {
     expect(DURABLE_STORAGE_KEYS).toContain("kiwi.threadReasoning");
   });
 
+  it("restores active and recovered new-thread draft ownership with native authored drafts after cache loss", async () => {
+    isTauri.mockReturnValue(true);
+    const workspace = "/fixture/project";
+    const older = `new:${workspace}`;
+    const newer = `new:${workspace}:draft:00000000-0000-4000-8000-000000000000`;
+    const saved: Record<string, unknown> = {
+      "kiwi.workspaceDraftKeys": { [workspace]: newer },
+      "kiwi.savedWorkspaceDraftKeys": { [workspace]: [older] },
+      "kiwi.drafts": { [older]: "Recovered first prompt", [newer]: "Independent newer draft" },
+    };
+    invoke.mockImplementation(async (command: string, args?: { key: string }) => command === "state_read" ? saved[args?.key ?? ""] ?? null : null);
+    await hydrateNativeStorage();
+    expect(loadStored("kiwi.drafts", {})).toEqual(saved["kiwi.drafts"]);
+    expect(loadStored("kiwi.workspaceDraftKeys", {})).toEqual(saved["kiwi.workspaceDraftKeys"]);
+    expect(loadStored("kiwi.savedWorkspaceDraftKeys", {})).toEqual(saved["kiwi.savedWorkspaceDraftKeys"]);
+  });
+
   it("restores scheduled new conversations from native storage without relying on the webview cache", async () => {
     const prompts = { workspace: [{
       id: "scheduled", threadId: "new:workspace", workspacePath: "workspace", workspaceName: "Test workspace",

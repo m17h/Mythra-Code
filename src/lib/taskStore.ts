@@ -209,6 +209,31 @@ export function isAssistantOutputActive(task: ThreadTaskState | undefined): bool
   );
 }
 
+export interface HistoryReadBoundary {
+  /** Entries newer than this snapshot, including its live turn, survive a stale read. */
+  preserveAfterOrder: number;
+  messageSnapshots: ReadonlyMap<string, ChatMessage>;
+  activitySnapshots: ReadonlyMap<string, Activity>;
+}
+
+/** Capture before requesting history, while the pending/live identity is still known. */
+export function captureHistoryReadBoundary(task: ThreadTaskState | undefined): HistoryReadBoundary {
+  let lastOrder = 0;
+  let firstLiveOrder = Infinity;
+  for (const entries of [task?.messages ?? [], task?.activities ?? []]) {
+    for (const entry of entries) {
+      lastOrder = Math.max(lastOrder, entry.timelineOrder ?? 0);
+      if (task?.activeTurnId && entry.turnId === task.activeTurnId) firstLiveOrder = Math.min(firstLiveOrder, entry.timelineOrder ?? Infinity);
+    }
+  }
+  const preserveAfterOrder = Math.min(lastOrder,
+    task?.pendingTurnStartOrder === undefined ? Infinity : task.pendingTurnStartOrder - 1, firstLiveOrder - 1);
+  return { preserveAfterOrder,
+    messageSnapshots: new Map((task?.messages ?? []).filter((entry) => (entry.timelineOrder ?? -1) > preserveAfterOrder).map((entry) => [entry.id, entry])),
+    activitySnapshots: new Map((task?.activities ?? []).filter((entry) => (entry.timelineOrder ?? -1) > preserveAfterOrder).map((entry) => [entry.id, entry])),
+  };
+}
+
 interface TaskStoreState {
   activeThreadId: string | null;
   tasks: Record<string, ThreadTaskState>;
@@ -220,7 +245,7 @@ interface TaskStoreState {
   setWorkflowOwner: (threadId: string, owner: WorkflowThreadOwner | null) => void;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
-  hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState) => void;
+  hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState, readBoundary?: HistoryReadBoundary) => void;
   setHistory: (threadId: string, patch: Partial<ThreadHistoryState>) => void;
   prependHistory: (threadId: string, messages: ChatMessage[], activities: Activity[], patch: Partial<ThreadHistoryState>) => void;
   setTranscriptDirty: (threadId: string, dirty: boolean) => void;
@@ -359,6 +384,60 @@ function withTimelineOrder<T extends { timelineOrder?: number }>(entry: T): T {
     return entry;
   }
   return { ...entry, timelineOrder: ++timelineSequence };
+}
+
+type HydrationEntry = { kind: "message"; entry: ChatMessage } | { kind: "activity"; entry: Activity };
+
+/** Merge the read's chronology with locally observed rows using shared IDs as anchors. */
+function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskState | undefined, boundary: HistoryReadBoundary): HydrationEntry[] {
+  type Node = { value: HydrationEntry; previous?: Node; next?: Node };
+  let first: Node | undefined;
+  let last: Node | undefined;
+  const anchors = new Map<string, Node>();
+  const keyFor = (value: HydrationEntry) => `${value.kind}:${value.entry.id}`;
+  for (const value of incoming.sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0))) {
+    const node: Node = { value, previous: last };
+    if (last) last.next = node; else first = node;
+    last = node;
+    anchors.set(keyFor(value), node);
+    if (value.kind === "message" && value.entry.clientMessageId) anchors.set(`message:${value.entry.clientMessageId}`, node);
+  }
+  const local: HydrationEntry[] = [
+    ...(task?.messages ?? []).map((entry) => ({ kind: "message" as const, entry })),
+    ...(task?.activities ?? []).map((entry) => ({ kind: "activity" as const, entry })),
+  ].filter((value) => (value.entry.timelineOrder ?? -1) > boundary.preserveAfterOrder)
+    .sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0));
+  const nextAnchor: (Node | undefined)[] = [];
+  let next: Node | undefined;
+  for (let index = local.length - 1; index >= 0; index -= 1) {
+    nextAnchor[index] = next;
+    next = anchors.get(keyFor(local[index])) ?? next;
+  }
+  let previous: Node | undefined;
+  for (const [index, value] of local.entries()) {
+    const anchor = anchors.get(keyFor(value));
+    if (anchor) {
+      const snapshot = value.kind === "message" ? boundary.messageSnapshots.get(value.entry.id) : boundary.activitySnapshots.get(value.entry.id);
+      if (value.entry !== snapshot) {
+        // The store updates rows immutably. A changed reference proves this
+        // payload is newer than the read; keep the durable row's identity.
+        anchor.value = { ...value, entry: { ...anchor.value.entry, ...value.entry, id: anchor.value.entry.id } } as HydrationEntry;
+      }
+      previous = anchor;
+      continue;
+    }
+    const following = nextAnchor[index];
+    const node: Node = { value, previous: following ? following.previous : previous ?? last, next: following ?? previous?.next };
+    if (node.previous) node.previous.next = node; else first = node;
+    if (node.next) node.next.previous = node; else last = node;
+    previous = node;
+  }
+  const result: HydrationEntry[] = [];
+  for (let node = first; node; node = node.next) {
+    const { timelineOrder: _oldOrder, ...entry } = node.value.entry;
+    result.push({ ...node.value, entry: withTimelineOrder({ ...entry, timelineOrder: undefined }) } as HydrationEntry);
+  }
+  return result;
 }
 
 function emptyTask(threadId: string, workspacePath?: string): ThreadTaskState {
@@ -692,7 +771,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       statuses: { ...state.statuses, [threadId]: "idle" },
     };
   }),
-  hydrateTask: (threadId, messages, activities, workspacePath, history) => set((state) => {
+  hydrateTask: (threadId, messages, activities, workspacePath, history, readBoundary) => set((state) => {
     const existing = state.tasks[threadId];
     const existingMessagesById = new Map((existing?.messages ?? []).map((message) => [message.id, message]));
     const existingActivitiesById = new Map((existing?.activities ?? []).map((activity) => [activity.id, activity]));
@@ -704,7 +783,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         ? { phase: existingMessagesById.get(message.id)!.phase } : {}),
       turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
     }));
-    // The turns-derived history excludes the incomplete turn's partially
+    // The turns-derived history may exclude the incomplete turn's partially
     // streamed assistant message. Keep it, along with an optimistic user
     // message that may have been appended while the paged read was in flight,
     // so hydration cannot erase a send that is already on screen.
@@ -718,6 +797,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         || Boolean(message.questions?.length)
         || (message.role === "user" && !message.turnId)
         || Boolean(existing?.activeTurnId && message.turnId === existing.activeTurnId)
+        || Boolean(readBoundary && (message.timelineOrder ?? -1) > readBoundary.preserveAfterOrder)
       ) && !hydratedMessageIds.has(message.id) && !reconciled.matchedIds.has(message.id))
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => withTimelineOrder({
@@ -731,6 +811,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .filter((activity) => (
         activity.status === "inProgress"
         || Boolean(existing?.activeTurnId && activity.turnId === existing.activeTurnId)
+        || Boolean(readBoundary && (activity.timelineOrder ?? -1) > readBoundary.preserveAfterOrder)
       ) && !hydratedActivityIds.has(activity.id))
       .map((entry) => ({ kind: "activity" as const, entry })));
     preservedEntries.sort((left, right) => (left.entry.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.entry.timelineOrder ?? Number.MAX_SAFE_INTEGER));
@@ -741,8 +822,13 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       if (preserved.kind === "message") inFlight.push(withTimelineOrder(entry as ChatMessage));
       else inFlightActivities.push(withTimelineOrder(restoreHistoryActivity(entry as Activity, existing)));
     }
-    const nextMessages = [...hydratedMessages, ...inFlight];
-    const nextActivities = [...hydratedActivities, ...inFlightActivities];
+    const mergedReadEntries = readBoundary ? mergeHistoryReadEntries([
+      ...hydratedMessages.map((entry) => ({ kind: "message" as const, entry })),
+      ...hydratedActivities.map((entry) => ({ kind: "activity" as const, entry })),
+      ...preservedEntries.filter((value) => (value.entry.timelineOrder ?? -1) <= readBoundary.preserveAfterOrder),
+    ], existing, readBoundary) : undefined;
+    const nextMessages = mergedReadEntries ? mergedReadEntries.flatMap((value) => value.kind === "message" ? [value.entry] : []) : [...hydratedMessages, ...inFlight];
+    const nextActivities = mergedReadEntries ? mergedReadEntries.flatMap((value) => value.kind === "activity" ? [value.entry] : []) : [...hydratedActivities, ...inFlightActivities];
     const nextTasks = {
       ...state.tasks,
       [threadId]: {

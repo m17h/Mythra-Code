@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
+import { DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, MAX_TERMINAL_TIMEOUT_MINUTES, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme, THEMES } from "./appConfig";
 
 describe("theme catalog", () => {
   it("places the Mythra pair above the Kiwi pair", () => {
@@ -105,5 +105,20 @@ describe("sub-agent cleanup defaults", () => {
     expect(sanitizeAutoArchiveSubagentThreads("invalid")).toBe(false);
     expect(sanitizeAutoArchiveSubagentThreads(true)).toBe(true);
     expect(sanitizeAutoArchiveSubagentThreads(false)).toBe(false);
+  });
+});
+
+describe("terminal timeout settings", () => {
+  it("preserves the five minute deadline for missing or malformed saved settings", () => {
+    expect(DEFAULT_SETTINGS.terminalTimeoutMinutes).toBe(5);
+    for (const value of [undefined, "0", "15", "", false, true, {}, -1, 1.5, NaN, Infinity, MAX_TERMINAL_TIMEOUT_MINUTES + 1]) {
+      expect(sanitizeTerminalTimeoutMinutes(value)).toBe(5);
+    }
+  });
+
+  it("accepts whole minutes and only explicit disabled values", () => {
+    for (const value of [1, 15, 120, MAX_TERMINAL_TIMEOUT_MINUTES]) expect(sanitizeTerminalTimeoutMinutes(value)).toBe(value);
+    expect(sanitizeTerminalTimeoutMinutes(0)).toBe(0);
+    expect(sanitizeTerminalTimeoutMinutes(null)).toBe(0);
   });
 });

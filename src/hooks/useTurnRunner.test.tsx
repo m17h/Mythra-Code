@@ -323,6 +323,119 @@ describe("useTurnRunner", () => {
     expect(cursor.startCursorTurn).not.toHaveBeenCalled();
   });
 
+  it.each(["claude", "openai"] as const)("keeps the first %s prompt visible through preparation and its created identity without persisting it early", async (provider) => {
+    let releaseSkills!: (text: string) => void;
+    let releaseCheckpoint!: () => void;
+    const skills = new Promise<string>((resolve) => { releaseSkills = resolve; });
+    const checkpoint = new Promise<void>((resolve) => { releaseCheckpoint = resolve; });
+    const deps = context({
+      activeThread: null,
+      effectiveSettings: { ...DEFAULT_SETTINGS, provider },
+      claudeStatus: { available: true, loggedIn: true, version: "test", path: "/claude", authMethod: null, email: null, subscriptionType: null, warning: null },
+      runtimeStatus: { available: true, source: "Codex CLI", path: "/codex", version: "99.0.0", compatible: true, warning: null },
+      account: { type: "chatgpt", email: "fixture@example.com", planType: "pro" },
+      resolveSkillPrompt: vi.fn(() => skills),
+      beginRunCheckpoint: vi.fn(async () => { await checkpoint; return "checkpoint"; }),
+    });
+    codex.rpc.mockImplementation(async (method: string) => method === "thread/start"
+      ? { thread: { ...OPENAI_THREAD, id: "new-openai" } }
+      : { turn: { id: "new-turn" } });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("My first prompt"); });
+    expect(result.current.pendingFirstPrompts).toEqual([expect.objectContaining({ text: "My first prompt", workspacePath: "/tmp/project", status: "starting" })]);
+    expect(deps.onThreadCreated).not.toHaveBeenCalled();
+    expect(Object.values(useTaskStore.getState().tasks).flatMap((task) => task.messages)).toEqual([]);
+    await act(async () => { releaseSkills("resolved first prompt"); });
+    await waitFor(() => expect(deps.beginRunCheckpoint).toHaveBeenCalledOnce());
+    const threadId = vi.mocked(deps.onThreadCreated).mock.calls[0][0];
+    expect(result.current.pendingFirstPrompts).toEqual([expect.objectContaining({ threadId, text: "My first prompt" })]);
+    expect(useTaskStore.getState().tasks[threadId].messages).toEqual([]);
+    await act(async () => { releaseCheckpoint(); expect(await delivered).toBe(true); });
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(useTaskStore.getState().tasks[threadId].messages).toEqual([expect.objectContaining({ text: "My first prompt" })]);
+  });
+
+  it("retains a stopped first prompt until preparation settles and leaves its draft recoverable", async () => {
+    let release!: (text: string) => void;
+    const deps = context({ activeThread: null, resolveSkillPrompt: vi.fn(() => new Promise<string>((resolve) => { release = resolve; })) });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("Keep this prompt"); });
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    expect(result.current.pendingFirstPrompts).toEqual([expect.objectContaining({ text: "Keep this prompt", status: "stopping" })]);
+    await act(async () => { release("resolved"); expect(await delivered).toBe(false); });
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(Object.values(useTaskStore.getState().tasks).flatMap((task) => task.messages)).toEqual([]);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges attachment preparation once and prevents dispatch after Stop during that wait", async () => {
+    const deps = context({ activeThread: null, attachments: [{ path: "/tmp/reference.png", name: "reference.png", kind: "image" }] });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let attempt!: string;
+    await act(async () => { attempt = result.current.beginFirstPrompt("Look at my image")!; });
+    expect(result.current.pendingFirstPrompts).toEqual([expect.objectContaining({ text: "Look at my image", attachmentNames: ["reference.png"] })]);
+    expect(deps.setStartingDraftTurn).toHaveBeenCalledWith(true);
+    deps.running = true;
+    await act(async () => { await result.current.stopTurn(); });
+    await act(async () => {
+      expect(await result.current.sendMessage("Look at my image", { firstPromptAttemptId: attempt })).toBe(false);
+      result.current.finishFirstPrompt(attempt);
+    });
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(deps.resolveSkillPrompt).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+  });
+
+  it("reuses a foreground attachment acknowledgement when the first prompt can start", async () => {
+    let release!: (text: string) => void;
+    const deps = context({ activeThread: null, resolveSkillPrompt: vi.fn(() => new Promise<string>((resolve) => { release = resolve; })) });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let attempt!: string;
+    let delivered!: Promise<boolean>;
+    await act(async () => { attempt = result.current.beginFirstPrompt("Start after the image copy")!; });
+    deps.running = true;
+    await act(async () => { delivered = result.current.sendMessage("Start after the image copy", { firstPromptAttemptId: attempt }); });
+    expect(result.current.pendingFirstPrompts).toHaveLength(1);
+    expect(result.current.pendingFirstPrompts[0].id).toBe(attempt);
+    await act(async () => { release("Start after the image copy"); expect(await delivered).toBe(true); });
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(cursor.startCursorTurn).toHaveBeenCalledOnce();
+  });
+
+  it("does not acknowledge a deferred first prompt in the visible composer", async () => {
+    let release!: (text: string) => void;
+    const deps = context({ activeThread: null, deferredDelivery: true, resolveSkillPrompt: vi.fn(() => new Promise<string>((resolve) => { release = resolve; })) });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("A scheduled first prompt"); });
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    await act(async () => { release("A scheduled first prompt"); expect(await delivered).toBe(true); });
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(deps.setStartingDraftTurn).not.toHaveBeenCalledWith(true);
+  });
+
+  it.each([false, true])("returns a rejected first send to its original draft only while it owns the created selection (navigated: %s)", async (navigated) => {
+    let releaseCheckpoint!: () => void;
+    const checkpoint = new Promise<void>((resolve) => { releaseCheckpoint = resolve; });
+    const deps = context({ activeThread: null, beginRunCheckpoint: vi.fn(async () => { await checkpoint; throw new Error("Snapshot failed"); }) });
+    const { result } = renderHook(() => useTurnRunner(deps));
+    let delivered!: Promise<boolean>;
+    await act(async () => { delivered = result.current.sendMessage("Recover this first prompt"); });
+    await waitFor(() => expect(deps.beginRunCheckpoint).toHaveBeenCalledOnce());
+    const created = useTaskStore.getState().activeThreadId!;
+    if (navigated) useTaskStore.getState().setActiveThread("unrelated-thread");
+    await act(async () => { releaseCheckpoint(); expect(await delivered).toBe(false); });
+    expect(useTaskStore.getState().activeThreadId).toBe(navigated ? "unrelated-thread" : null);
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(useTaskStore.getState().tasks[created].messages).toEqual([]);
+    expect(cursor.startCursorTurn).not.toHaveBeenCalled();
+    if (navigated) expect(deps.setActiveThread).not.toHaveBeenCalledWith(null);
+    else expect(deps.setActiveThread).toHaveBeenLastCalledWith(null);
+  });
+
   it("preserves the prompt while a pull request operation owns the checkout", async () => {
     const deps = context();
     const lease = acquirePullRequestMutation("/tmp/project")!;

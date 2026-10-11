@@ -154,6 +154,8 @@ interface ThreadInboxCardProps {
   threadId: string;
   title: string;
   titlePending?: boolean;
+  /** Renderer-owned first send, before the provider assigns a thread ID. */
+  pendingStatus?: "starting" | "stopping";
   workspaceName: string;
   directory: string;
   provider: Provider;
@@ -185,6 +187,7 @@ export function ThreadInboxCard({
   threadId,
   title,
   titlePending = false,
+  pendingStatus,
   workspaceName,
   directory,
   provider,
@@ -198,11 +201,12 @@ export function ThreadInboxCard({
   onOpen,
 }: ThreadInboxCardProps) {
   const statusId = useId();
-  const lifecycle = useTaskStore((state) => threadCardLifecycle(
+  const storedLifecycle = useTaskStore((state) => threadCardLifecycle(
     state.statuses[threadId] ?? "idle",
     Boolean(state.tasks[threadId]?.unread),
     state.tasks[threadId]?.approvals.length ?? 0,
   ));
+  const lifecycle = pendingStatus ? "live" : storedLifecycle;
   // A labelled button hides its own contents from a screen reader, so the pill
   // below would otherwise be seen by sighted people only. It is named here too.
   const accessibleTitle = titlePending ? "Generating title" : title;
@@ -219,7 +223,10 @@ export function ThreadInboxCard({
           {isolated ? <GitBranch size={14} /> : <Folder size={14} />}
           <span>{isolated ? branch || "Isolated" : workspaceName}</span>
         </span>
-        <ThreadInboxStatus threadId={threadId} id={statusId} active={active} />
+        {pendingStatus ? <span id={statusId} className="thread-card-status working" role="status">
+          <PixelWorkingMark className="thread-card-working-mark" live={pendingStatus === "starting"} />
+          <span>{pendingStatus === "stopping" ? "Stopping" : "Starting"}</span>
+        </span> : <ThreadInboxStatus threadId={threadId} id={statusId} active={active} />}
       </span>
       <ThreadTitle className="thread-card-title" title={title} pending={titlePending} />
       <span className="thread-card-meta">

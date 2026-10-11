@@ -37,7 +37,7 @@ import {
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
-import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_SETTINGS, EFFORT_SLIDER_STYLES, RELEASE_NOTES_URL, THEMES } from "../lib/appConfig";
+import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_SETTINGS, DEFAULT_TERMINAL_TIMEOUT_MINUTES, EFFORT_SLIDER_STYLES, MAX_TERMINAL_TIMEOUT_MINUTES, RELEASE_NOTES_URL, THEMES, sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { formatGitError, friendlyError } from "../lib/errors";
 import { resolveProviderSystemPrompt } from "../lib/systemPrompt";
@@ -152,7 +152,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "System",
     items: [
-      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory diagnostics logs errors performance onboarding getting started" },
+      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory and timeout, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory timeout time limit stop kill command local server dev server long-running minutes diagnostics logs errors performance onboarding getting started" },
       { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
     ],
   },
@@ -169,6 +169,14 @@ function settingsNavMatches(item: { label: string; detail: string; keywords: str
 }
 
 const SETTINGS_PANES = new Map(SETTINGS_NAV.flatMap((section) => section.items.map((item) => [item.id, item] as const)));
+
+/** Typed timeout minutes, or null while the text is not a whole number in range. */
+function parseTerminalTimeoutMinutes(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const minutes = Number(trimmed);
+  return Number.isSafeInteger(minutes) && minutes > 0 && minutes <= MAX_TERMINAL_TIMEOUT_MINUTES ? minutes : null;
+}
 
 // Picker-only metadata stays in the lazy Settings chunk. The actual stacks
 // live in CSS, while startup only needs the compact persisted id sanitizer.
@@ -576,7 +584,11 @@ export function SettingsModal({
   const [creatingPreset, setCreatingPreset] = useState(false);
   const [presetDraftName, setPresetDraftName] = useState("");
   const [policyNotice, setPolicyNotice] = useState("");
+  // Minutes as typed. null mirrors the draft setting; while disabled it keeps
+  // the last limit so switching back on restores it.
+  const [terminalTimeoutText, setTerminalTimeoutText] = useState<string | null>(null);
   const subagentPanelId = useId();
+  const terminalTimeoutId = useId();
   const [apiKey, setApiKey] = useState("");
   const [lmStudioToken, setLmStudioToken] = useState("");
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
@@ -656,7 +668,15 @@ export function SettingsModal({
 
   // Buffered edits (theme, prompt, toggles) are discarded on close — warn
   // before silently throwing away work like a hand-written system prompt.
-  const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects));
+  // Settings saved before the timeout existed read as the five-minute default.
+  const terminalTimeoutMinutes = sanitizeTerminalTimeoutMinutes(local.terminalTimeoutMinutes);
+  const terminalTimeoutEnabled = terminalTimeoutMinutes > 0;
+  const terminalTimeoutTyped = terminalTimeoutEnabled && terminalTimeoutText !== null
+    ? parseTerminalTimeoutMinutes(terminalTimeoutText) : terminalTimeoutMinutes;
+  // Invalid text never reaches the draft, so it blocks Save instead of being
+  // silently replaced by the previous limit or read as "disabled".
+  const terminalTimeoutInvalid = terminalTimeoutTyped === null;
+  const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || terminalTimeoutTyped !== terminalTimeoutMinutes);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
@@ -694,6 +714,7 @@ export function SettingsModal({
       setCreatingPreset(false);
       setPresetDraftName("");
       setPolicyNotice("");
+      setTerminalTimeoutText(null);
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
       onThemePreview(initialDraft?.appearance ? seeded.theme : activeDefaults?.theme ?? seeded.theme);
       onEffortSliderPreview(initialDraft?.appearance ? seeded.effortSlider : activeDefaults?.effortSlider ?? seeded.effortSlider);
@@ -705,8 +726,12 @@ export function SettingsModal({
     const baseline = draftBaselineRef.current;
     if (settings !== baseline.settings) {
       // Adopt external settings changes only when the draft is untouched, so
-      // the dirty check keeps meaning "you have unsaved edits".
-      setLocal((current) => (JSON.stringify(current) === JSON.stringify(baseline.settings) ? settings : current));
+      // the dirty check keeps meaning "you have unsaved edits". Timeout text
+      // that differs from the draft is an edit even before it parses into it.
+      if (terminalTimeoutTyped === terminalTimeoutMinutes && JSON.stringify(local) === JSON.stringify(baseline.settings)) {
+        setLocal(settings);
+        setTerminalTimeoutText(null);
+      }
     }
     if (projects !== baseline.projects) {
       // Merge external project changes: new projects appear, removed ones
@@ -723,7 +748,7 @@ export function SettingsModal({
       });
     }
     draftBaselineRef.current = { settings, projects };
-  }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, open, projects, settings]);
+  }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
 
   useEffect(() => {
     if (open && initialSection === "general" && !initialDraft?.appearance && appUpdater.phase === "available") {
@@ -1017,6 +1042,22 @@ export function SettingsModal({
   // A soft fade at the bottom of the pane says "there is more" without
   // adding chrome; it disappears once the pane is scrolled to its end.
   const contentRef = useRef<HTMLDivElement>(null);
+  const terminalTimeoutInputRef = useCallback((input: HTMLInputElement | null) => {
+    if (!input) return;
+    const onWheel = (event: WheelEvent) => {
+      const pane = input.closest<HTMLElement>(".settings-content");
+      if (!pane || input.ownerDocument.activeElement !== input || event.ctrlKey) return;
+      // Chromium steps a focused number input on wheel. Keep the edit and
+      // keyboard focus intact, and scroll its pane as an ordinary wheel would.
+      event.preventDefault();
+      const lineHeight = Number.parseFloat(getComputedStyle(pane).lineHeight) || 16;
+      const xScale = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? pane.clientWidth : 1;
+      const yScale = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? pane.clientHeight : 1;
+      pane.scrollBy({ left: event.deltaX * xScale, top: event.deltaY * yScale, behavior: "instant" });
+    };
+    input.addEventListener("wheel", onWheel, { passive: false });
+    return () => input.removeEventListener("wheel", onWheel);
+  }, []);
   const [moreBelow, setMoreBelow] = useState(false);
   useEffect(() => {
     const node = contentRef.current;
@@ -1043,6 +1084,7 @@ export function SettingsModal({
       : null;
 
   const saveSettings = () => {
+    if (!projectDefaultsComplete || terminalTimeoutInvalid) return;
     const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects));
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
     onProjects(nextProjects);
@@ -1051,7 +1093,24 @@ export function SettingsModal({
       childAgents: normalizedSubagents.childAgents,
       childAgentPresets: sanitizeChildAgentPresets(local.childAgentPresets),
       subagentMax: normalizedSubagents.maxConcurrent,
+      terminalTimeoutMinutes,
     });
+  };
+  const setTerminalTimeoutEnabled = (enabled: boolean) => {
+    if (enabled) {
+      const restored = terminalTimeoutText === null ? null : parseTerminalTimeoutMinutes(terminalTimeoutText);
+      setLocal({ ...local, terminalTimeoutMinutes: restored ?? DEFAULT_TERMINAL_TIMEOUT_MINUTES });
+      setTerminalTimeoutText(null);
+    } else {
+      // Remember the last valid limit, not half-typed text.
+      setLocal({ ...local, terminalTimeoutMinutes: 0 });
+      setTerminalTimeoutText(String(terminalTimeoutMinutes));
+    }
+  };
+  const editTerminalTimeout = (text: string) => {
+    setTerminalTimeoutText(text);
+    const minutes = parseTerminalTimeoutMinutes(text);
+    if (minutes !== null) setLocal({ ...local, terminalTimeoutMinutes: minutes });
   };
 
   return (
@@ -1537,6 +1596,42 @@ export function SettingsModal({
                   <AppSelectMenu value={String(local.terminalScrollback)} options={TERMINAL_SCROLLBACK_OPTIONS} ariaLabel="Terminal scrollback" onChange={(value) => setLocal({ ...local, terminalScrollback: Number(value) })} />
                 </div>
               </div>
+              <div className="set-row terminal-timeout-row">
+                <div className="set-copy">
+                  <strong>Terminal and local-server timeout</strong>
+                  <small id={`${terminalTimeoutId}-help`}>Applies to new commands started in Mythra Code’s Terminal; commands already running keep the limit they launched with. With no timeout, a command runs until it exits or you stop it. Provider tool runs and project checks keep their own limits.</small>
+                </div>
+                <div className="set-control">
+                  <button type="button" role="switch" aria-label="Automatically stop terminal commands" aria-describedby={`${terminalTimeoutId}-help`} aria-checked={terminalTimeoutEnabled} className={`toggle-switch ${terminalTimeoutEnabled ? "on" : ""}`} onClick={() => setTerminalTimeoutEnabled(!terminalTimeoutEnabled)}><span /></button>
+                </div>
+                {terminalTimeoutEnabled ? (
+                  <div className="terminal-timeout-detail">
+                    <label id={`${terminalTimeoutId}-label`} htmlFor={`${terminalTimeoutId}-minutes`}>Timeout</label>
+                    <input
+                      ref={terminalTimeoutInputRef}
+                      id={`${terminalTimeoutId}-minutes`}
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MAX_TERMINAL_TIMEOUT_MINUTES}
+                      step={1}
+                      autoComplete="off"
+                      aria-labelledby={`${terminalTimeoutId}-label ${terminalTimeoutId}-unit`}
+                      aria-describedby={terminalTimeoutInvalid ? `${terminalTimeoutId}-error` : undefined}
+                      aria-invalid={terminalTimeoutInvalid}
+                      value={terminalTimeoutText ?? String(terminalTimeoutMinutes)}
+                      onChange={(event) => editTerminalTimeout(event.target.value)}
+                      onBlur={() => { if (!terminalTimeoutInvalid) setTerminalTimeoutText(null); }}
+                    />
+                    <span id={`${terminalTimeoutId}-unit`}>minutes</span>
+                    {terminalTimeoutInvalid && <p id={`${terminalTimeoutId}-error`} className="terminal-timeout-error" role="alert">
+                      {/^\d+$/.test(terminalTimeoutText?.trim() ?? "") && Number(terminalTimeoutText) > 0
+                        ? `Enter ${MAX_TERMINAL_TIMEOUT_MINUTES.toLocaleString()} minutes or fewer, or turn the timeout off.`
+                        : "Enter a whole number of minutes, 1 or more."}
+                    </p>}
+                  </div>
+                ) : <p className="terminal-timeout-detail">No automatic timeout</p>}
+              </div>
             </div>
           </div>
 
@@ -1929,9 +2024,9 @@ export function SettingsModal({
           </section>}
             </div>
             <div className="modal-footer">
-              {dirty && <span className="unsaved-hint">Unsaved changes</span>}
+              {dirty && <span className="unsaved-hint"><span>Unsaved changes</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}</span>}
               <button className="secondary-button" onClick={requestClose}>Cancel</button>
-              <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete}>Save settings</button>
+              <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete || terminalTimeoutInvalid}>Save settings</button>
             </div>
           </div>
         </div>

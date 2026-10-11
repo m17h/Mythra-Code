@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import { respond, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus } from "../lib/codex";
 import {
@@ -67,6 +67,7 @@ import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
+import type { PendingFirstPrompt } from "../lib/pendingFirstPrompt";
 import type { SetPersisted } from "./usePersistedState";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
@@ -243,6 +244,12 @@ export interface TurnRunnerContext {
    * window on a modal prompt.
    */
   deferredDelivery?: boolean;
+  /** Renderer acknowledgement owned by this foreground first-send attempt. */
+  firstPromptAttemptId?: string;
+  /** View-only attempt identity; never sent to or persisted by a provider. */
+  activeFirstPromptIdRef?: MutableRefObject<string | null>;
+  onFirstPromptStarted?: (prompt: PendingFirstPrompt) => void;
+  onFirstPromptFinished?: (id: string) => void;
   attachments: AttachmentRecord[];
   effectiveSettings: AppSettings;
   subscriptionSystemPrompts: Record<"openai" | "claude", string> & Partial<Record<Provider, string>>;
@@ -326,6 +333,15 @@ export interface TurnRunnerContext {
   openSettings: (section?: SettingsSection) => void;
 }
 
+interface SendMessageOptions {
+  useComposerAttachments?: boolean;
+  resolveSkillMentions?: boolean;
+  skillInvocationText?: string;
+  firstPromptAttemptId?: string;
+  /** Durable attachments from the sending draft, even after navigation. */
+  attachments?: AttachmentRecord[];
+}
+
 /**
  * Owns the send/steer/stop turn lifecycle for all providers. The context is
  * rebuilt by App on every render and read through a ref, so the stable
@@ -334,7 +350,10 @@ export interface TurnRunnerContext {
  * mid-flight awaits keep operating on the workspace the send started in.
  */
 export function useTurnRunner(context: TurnRunnerContext): {
-  sendMessage: (text: string, options?: { useComposerAttachments?: boolean; resolveSkillMentions?: boolean; skillInvocationText?: string }) => Promise<boolean>;
+  pendingFirstPrompts: readonly PendingFirstPrompt[];
+  beginFirstPrompt: (text: string) => string | undefined;
+  finishFirstPrompt: (id: string | undefined) => void;
+  sendMessage: (text: string, options?: SendMessageOptions) => Promise<boolean>;
   answerQuestions: (threadId: string, text: string, submission?: AgentQuestionSubmission) => Promise<boolean>;
   steerMessage: (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string }) => Promise<boolean>;
   steerQueuedMessage: (queuedTurnId: string) => Promise<void>;
@@ -354,8 +373,52 @@ export function useTurnRunner(context: TurnRunnerContext): {
 } {
   const contextRef = useRef(context);
   contextRef.current = context;
+  const [pendingFirstPrompts, setPendingFirstPrompts] = useState<PendingFirstPrompt[]>([]);
+  const firstPromptAttemptsRef = useRef(new Map<string, PendingFirstPrompt>());
+  const firstPromptContextsRef = useRef(new Map<string, TurnRunnerContext>());
+  const deliveringFirstPromptIdsRef = useRef(new Set<string>());
+  const beginFirstPrompt = useCallback((text: string): string | undefined => {
+    const ctx = contextRef.current;
+    if (ctx.activeThread || ctx.deferredDelivery || !ctx.activeWorkspace) return undefined;
+    const selectedAttempt = ctx.activeFirstPromptIdRef?.current;
+    if (selectedAttempt && firstPromptAttemptsRef.current.has(selectedAttempt)) return undefined;
+    const id = crypto.randomUUID();
+    const prompt: PendingFirstPrompt = {
+      id, workspacePath: normalizedProjectPath(ctx.activeWorkspace.path), text, status: "starting",
+      attachmentNames: ctx.attachments.map((attachment) => attachment.name),
+      provider: ctx.effectiveSettings.provider,
+      model: ctx.effectiveSettings.model,
+      isolated: ctx.draftThreadIsolated,
+    };
+    firstPromptAttemptsRef.current.set(id, prompt);
+    firstPromptContextsRef.current.set(id, ctx);
+    ctx.onFirstPromptStarted?.(prompt);
+    setPendingFirstPrompts((current) => [...current, prompt]);
+    ctx.setStartingDraftTurn(true);
+    return id;
+  }, []);
+  const finishFirstPrompt = useCallback((id: string | undefined) => {
+    if (!id) return;
+    const attempt = firstPromptAttemptsRef.current.get(id);
+    if (!attempt) return;
+    firstPromptAttemptsRef.current.delete(id);
+    firstPromptContextsRef.current.delete(id);
+    setPendingFirstPrompts((current) => current.filter((prompt) => prompt.id !== id));
+    const ctx = contextRef.current;
+    if (attempt && !ctx.activeThread && ctx.activeWorkspacePathRef.current === attempt.workspacePath
+      && (!ctx.activeFirstPromptIdRef || ctx.activeFirstPromptIdRef.current === id)) ctx.setStartingDraftTurn(false);
+    ctx.onFirstPromptFinished?.(id);
+  }, []);
+  const createdFirstPromptThreadsRef = useRef(new Map<string, string>());
+  const bindPendingFirstPrompt = useCallback((attemptId: string | undefined, threadId: string) => {
+    if (!attemptId) return;
+    createdFirstPromptThreadsRef.current.set(attemptId, threadId);
+    const attempt = firstPromptAttemptsRef.current.get(attemptId);
+    if (attempt) firstPromptAttemptsRef.current.set(attemptId, { ...attempt, threadId });
+    setPendingFirstPrompts((current) => current.map((prompt) => prompt.id === attemptId ? { ...prompt, threadId } : prompt));
+  }, []);
   const draftGenerationRef = useRef(0);
-  const ordinarySharedDraftStartsRef = useRef(new Set<symbol>());
+  const ordinarySharedDraftStartsRef = useRef(new Map<symbol, string | undefined>());
 
   const archiveOwnsThread = useCallback((threadId: string): boolean => {
     const current = contextRef.current;
@@ -398,10 +461,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel, persistThreadReasoning,
       persistThreadWorktrees, restartRuntimeForCapabilities, waitForThreadPreparation, beginRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
-      setThreads, setActiveThread, setAttachments, setDraftThreadIsolated,
-      setStartingDraftTurn, setError, setStatus, setTransientStatus,
+      setThreads, setActiveThread, setAttachments, setDraftThreadIsolated: setContextDraftThreadIsolated,
+      setStartingDraftTurn: setContextStartingDraftTurn, setError, setStatus, setTransientStatus,
       setRuntimeSetupOpen, setAuthRequiredOpen, openSettings,
     } = ctx;
+    const ownsVisibleDraft = () => !(ctx.firstPromptAttemptId && ctx.activeFirstPromptIdRef
+        && ctx.activeFirstPromptIdRef.current !== ctx.firstPromptAttemptId
+        && useTaskStore.getState().activeThreadId !== createdFirstPromptThreadsRef.current.get(ctx.firstPromptAttemptId));
+    const setStartingDraftTurn = (starting: boolean) => { if (ownsVisibleDraft()) setContextStartingDraftTurn(starting); };
+    const setDraftThreadIsolated = (isolated: boolean) => { if (ownsVisibleDraft()) setContextDraftThreadIsolated(isolated); };
     const effectiveSettings = activeThreadIsChild ? settingsWithoutChildDelegation(configuredSettings) : configuredSettings;
     const nativeDelegation = effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native";
     if (!text || !activeWorkspace) return false;
@@ -619,6 +687,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const workspaceChangedMidSend = () => activeWorkspacePathRef.current !== sendWorkspacePath;
     const threadSelectionChangedMidSend = () => {
       const selectedThread = useTaskStore.getState().activeThreadId;
+      if (ctx.firstPromptAttemptId && ctx.activeFirstPromptIdRef
+        && ctx.activeFirstPromptIdRef.current !== ctx.firstPromptAttemptId
+        && (!activatedCreatedThreadId || selectedThread !== activatedCreatedThreadId)) return true;
       return selectedThread !== selectedThreadAtSend && selectedThread !== activatedCreatedThreadId;
     };
     let pendingStart: PendingTurnStart | undefined;
@@ -640,11 +711,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
       draftGeneration = ++draftGenerationRef.current;
       setStartingDraftTurn(true);
     }
-    const draftCancelled = () => draftGeneration !== undefined && draftGeneration !== draftGenerationRef.current;
+    const draftCancelled = () => ctx.firstPromptAttemptId
+      ? firstPromptAttemptsRef.current.get(ctx.firstPromptAttemptId)?.status !== "starting"
+      : draftGeneration !== undefined && draftGeneration !== draftGenerationRef.current;
     setStatus("Starting");
 
     let startedThreadId: string | undefined;
     let sentMessageId: string | undefined;
+    let providerAccepted = false;
     let provisionalWorktree: CreatedWorktree | undefined;
     let provisionalPersisted = false;
     let childBridge: ChildAgentBridgeResult | null = null;
@@ -698,6 +772,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!thread) {
         thread = { id: crypto.randomUUID(), name: null, preview: text.slice(0, 140), cwd: executionPath, updatedAt: Math.floor(Date.now() / 1000), modelProvider: provider };
         startedThreadId = thread.id;
+        bindPendingFirstPrompt(ctx.firstPromptAttemptId, thread.id);
         bindThreadToProject(thread.id, activeWorkspace.path);
         if (provisionalWorktree && activeProject) {
           const record = threadWorktreeRecord(thread.id, activeProject, provisionalWorktree);
@@ -760,6 +835,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         attachments: messageImageAttachments(sentAttachments),
       });
       const result = await strategy.startTurn(thread);
+      providerAccepted = true;
       recordAuthoredPrompt(thread.id, sentMessageId);
       // Provider events can race ahead of the start RPC response. If a very
       // short turn already delivered its result, reinstalling it here would
@@ -799,7 +875,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // alone is invisible to other background deliveries until a thread id
         // exists; the reservation bridges that identity gap.
         pendingSharedDraftStarts.set(sharedDraftStart, sendWorkspacePath);
-        if (!deferredDelivery) ordinarySharedDraftStartsRef.current.add(sharedDraftStart);
+        if (!deferredDelivery) ordinarySharedDraftStartsRef.current.set(sharedDraftStart, ctx.firstPromptAttemptId);
       }
       // Skill scans can wait on disk or startup preparation. They are part of
       // starting a turn, so expose Stop before awaiting them and honor it
@@ -962,6 +1038,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         runtimeTurnModel = result.model;
         threadId = startedThread.id;
         startedThreadId = threadId;
+        bindPendingFirstPrompt(ctx.firstPromptAttemptId, threadId);
         bindThreadToProject(startedThread.id, activeWorkspace.path);
         if (provisionalWorktree && activeProject) {
           const record = threadWorktreeRecord(startedThread.id, activeProject, provisionalWorktree);
@@ -1048,6 +1125,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           nativeDelegation,
         ),
       }));
+      providerAccepted = true;
       recordAuthoredPrompt(threadId, sentMessageId);
       const resultTurnId = result.turn?.id;
       const completedBeforeStartReturned = Boolean(
@@ -1078,6 +1156,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // resolved its thread must still clear the "starting" mark applied at
       // the top of this function.
       const failedThreadId = startedThreadId ?? startingThreadId;
+      // A failed interruption or post-start callback is not a failed send.
+      // Keep the accepted prompt/checkpoint and live turn; restoring its draft
+      // would invite a duplicate send while the provider is still working.
+      if (providerAccepted && failedThreadId) {
+        if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
+        setAttachments((current) => withoutSentAttachments(current, sentAttachments));
+        setError(friendlyError(reason));
+        return true;
+      }
       if (!activeThread && failedThreadId) contextRef.current.onThreadTitleCancelled?.(failedThreadId);
       // `captured` is cleared the moment the policy is bound to a thread and
       // persisted. Anything still flagged as captured was registered with the
@@ -1125,7 +1212,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ordinarySharedDraftStartsRef.current.delete(sharedDraftStart);
       }
     }
-  }, [archiveOwnsThread]);
+  }, [archiveOwnsThread, bindPendingFirstPrompt]);
 
   const pumpQueuedThread = useCallback(async (threadId: string, force = false): Promise<void> => {
     if (activeQueuedDeliveries.has(threadId)) return;
@@ -1473,20 +1560,46 @@ export function useTurnRunner(context: TurnRunnerContext): {
     return !delivered && unavailable ? queueFollowUp(ctx, text) : delivered;
   }, [archiveOwnsThread, deliverMessage, queueFollowUp]);
 
-  const sendMessage = useCallback(async (text: string, options?: { useComposerAttachments?: boolean; resolveSkillMentions?: boolean; skillInvocationText?: string }): Promise<boolean> => {
+  const sendMessage = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
     const current = contextRef.current;
+    const acknowledgedAttempt = options?.firstPromptAttemptId ? firstPromptAttemptsRef.current.get(options.firstPromptAttemptId) : undefined;
+    if (options?.firstPromptAttemptId && (!acknowledgedAttempt || acknowledgedAttempt.status !== "starting"
+      || acknowledgedAttempt.text !== text || deliveringFirstPromptIdsRef.current.has(acknowledgedAttempt.id))) return false;
+    const captured = acknowledgedAttempt ? firstPromptContextsRef.current.get(acknowledgedAttempt.id) ?? current : current;
     const ctx = {
-      ...current,
+      ...captured,
+      attachments: options?.attachments ?? current.attachments,
       ...(options?.useComposerAttachments === false ? { attachments: [], setAttachments: () => undefined } : {}),
       ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message } : {}),
       ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
     };
     if (!text || !ctx.activeWorkspace) return false;
+    const workspacePath = normalizedProjectPath(ctx.activeWorkspace.path);
     if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
-    if (ctx.running && !ctx.activeThread) return false;
+    if (ctx.running && !ctx.activeThread && !acknowledgedAttempt) return false;
     if (ctx.activeThread && (ctx.running || hasEligibleQueuedTurns(useTaskStore.getState().tasks[ctx.activeThread.id]?.queuedTurns))) return queueFollowUp(ctx, text);
-    return deliverMessage(ctx, text, "turn");
-  }, [deliverMessage, queueFollowUp]);
+    if (ctx.activeThread || ctx.deferredDelivery) return deliverMessage(ctx, text, "turn");
+    const id = acknowledgedAttempt?.id ?? beginFirstPrompt(text);
+    if (!id) return false;
+    deliveringFirstPromptIdsRef.current.add(id);
+    let delivered = false;
+    try {
+      delivered = await deliverMessage({ ...ctx, firstPromptAttemptId: id }, text, "turn");
+      return delivered;
+    } finally {
+      const createdThreadId = createdFirstPromptThreadsRef.current.get(id);
+      // Composer restores a rejected first prompt to its original draft key.
+      // Return there only while this attempt still owns the visible selection.
+      if (!delivered && createdThreadId && useTaskStore.getState().activeThreadId === createdThreadId
+        && ctx.activeWorkspacePathRef.current === workspacePath) {
+        ctx.setActiveThread(null);
+        useTaskStore.getState().setActiveThread(null);
+      }
+      createdFirstPromptThreadsRef.current.delete(id);
+      deliveringFirstPromptIdsRef.current.delete(id);
+      finishFirstPrompt(id);
+    }
+  }, [beginFirstPrompt, deliverMessage, finishFirstPrompt, queueFollowUp]);
 
   const steerMessage = useCallback(async (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string }): Promise<boolean> => {
     const current = contextRef.current;
@@ -1715,6 +1828,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const ctx = contextRef.current;
     const { activeThread, running, pendingTurnStartsRef, setError, setStatus, setStartingDraftTurn, setTransientStatus } = ctx;
     if (!running) return;
+    const selectedAttemptId = ctx.activeFirstPromptIdRef?.current;
+    const ownsPrompt = (id: string, prompt: PendingFirstPrompt) => activeThread
+      ? prompt.threadId === activeThread.id
+      : !prompt.threadId && (ctx.activeFirstPromptIdRef ? id === selectedAttemptId
+        : prompt.workspacePath === normalizedProjectPath(ctx.activeWorkspace?.path ?? ""));
+    for (const [id, prompt] of firstPromptAttemptsRef.current) {
+      if (ownsPrompt(id, prompt)) {
+        firstPromptAttemptsRef.current.set(id, { ...prompt, status: "stopping" });
+      }
+    }
+    setPendingFirstPrompts((current) => current.map((prompt) => ownsPrompt(prompt.id, prompt)
+      ? { ...prompt, status: "stopping" } : prompt));
     // A draft send has no thread to interrupt yet, and its runtime call may not
     // even have been made. Advancing the generation is the cutoff: whichever
     // point the send has reached, it aborts as soon as it learns its thread id.
@@ -1723,8 +1848,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // A stopped draft cannot dispatch after its preparation resumes. Release
       // its folder now even if a skill scan remains pending; scheduled starts
       // have separate ownership and are unaffected by the visible draft Stop.
-      for (const token of ordinarySharedDraftStartsRef.current) pendingSharedDraftStarts.delete(token);
-      ordinarySharedDraftStartsRef.current.clear();
+      for (const [token, id] of ordinarySharedDraftStartsRef.current) {
+        if (ctx.activeFirstPromptIdRef && id !== selectedAttemptId) continue;
+        pendingSharedDraftStarts.delete(token);
+        ordinarySharedDraftStartsRef.current.delete(token);
+      }
       setStartingDraftTurn(false);
       setTransientStatus("Stopped");
       return;
@@ -1771,6 +1899,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   }, []);
 
   return {
+    pendingFirstPrompts, beginFirstPrompt, finishFirstPrompt,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,

@@ -141,8 +141,8 @@ static LMSTUDIO_KEY_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None))
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
-// The pipe lock and a blocked write must consume the same deadline as the
-// response. A provider that stops reading must not wedge every later RPC.
+// The pipe lock and a blocked write share a bounded deadline even when a
+// deliberately long-lived command has no response deadline.
 async fn write_server_message<W: AsyncWrite + Unpin>(
     stdin: &Mutex<W>,
     message: &[u8],
@@ -156,6 +156,144 @@ async fn write_server_message<W: AsyncWrite + Unpin>(
     .await
     .map_err(|_| "Codex App Server timed out while writing input".to_string())?
     .map_err(|error: std::io::Error| format!("Could not write Codex App Server input: {error}"))
+}
+
+fn app_server_request_deadlines(
+    method: &str,
+    params: &Value,
+    now: Instant,
+) -> Result<(Instant, Option<Instant>), String> {
+    let write_limit = now + Duration::from_secs(120);
+    let response_timeout = if method == "command/exec" {
+        if params.get("disableTimeout").and_then(Value::as_bool) == Some(true) {
+            if params.get("timeoutMs").is_some_and(|value| !value.is_null()) {
+                return Err("command/exec cannot combine disableTimeout with timeoutMs".into());
+            }
+            None
+        } else {
+            let milliseconds = match params.get("timeoutMs").filter(|value| !value.is_null()) {
+                Some(value) => value
+                    .as_u64()
+                    .filter(|value| *value <= i64::MAX as u64)
+                    .ok_or_else(|| "command/exec timeoutMs must be a nonnegative integer".to_string())?,
+                None => 300_000,
+            };
+            Some(Duration::from_millis(milliseconds.saturating_add(30_000)))
+        }
+    } else {
+        Some(Duration::from_secs(120))
+    };
+    let response_deadline = response_timeout
+        .map(|duration| now.checked_add(duration).ok_or_else(|| "command/exec timeoutMs is too large".to_string()))
+        .transpose()?;
+    Ok((response_deadline.map_or(write_limit, |deadline| deadline.min(write_limit)), response_deadline))
+}
+
+fn validate_command_timeout_runtime(method: &str, params: &Value, version: &str) -> Result<(), String> {
+    // 0.145 is the supported protocol floor and includes disableTimeout.
+    // Older runtimes may silently ignore unknown fields and restore a default
+    // deadline, so an explicitly unlimited command must fail before launch.
+    if method == "command/exec"
+        && params.get("disableTimeout").and_then(Value::as_bool) == Some(true)
+        && parsed_runtime_version(version)
+            .is_none_or(|version| version < semver::Version::new(0, 145, 0))
+    {
+        return Err("Disabling the app terminal timeout needs Codex 0.145.0 or newer. Update Codex or choose a terminal timeout before starting this command.".into());
+    }
+    Ok(())
+}
+
+async fn receive_server_reply(
+    receiver: oneshot::Receiver<Result<Value, String>>,
+    method: &str,
+    deadline: Option<Instant>,
+) -> Result<Value, String> {
+    let reply = match deadline {
+        Some(deadline) => timeout_at(deadline, receiver)
+            .await
+            .map_err(|_| format!("Codex App Server timed out while handling {method}"))?,
+        // command/exec replies at process exit. Stop and app-server shutdown
+        // still settle this receiver; the stdin write remains bounded above.
+        None => receiver.await,
+    };
+    reply.map_err(|_| "Codex App Server stopped before replying".to_string())?
+}
+
+#[cfg(test)]
+mod command_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn unlimited_commands_require_the_supported_runtime_contract() {
+        let unlimited = json!({ "disableTimeout": true });
+        for version in ["0.145.0", "codex-cli 0.147.0", "0.161.0"] {
+            assert!(validate_command_timeout_runtime("command/exec", &unlimited, version).is_ok());
+        }
+        for version in ["0.144.0", "unknown"] {
+            assert!(validate_command_timeout_runtime("command/exec", &unlimited, version).is_err());
+            assert!(validate_command_timeout_runtime("command/exec", &json!({"timeoutMs": 300_000}), version).is_ok());
+            assert!(validate_command_timeout_runtime("command/exec/terminate", &unlimited, version).is_ok());
+        }
+    }
+
+    #[test]
+    fn disabled_command_lifetime_keeps_the_write_bounded() {
+        let now = Instant::now();
+        let (write, response) = app_server_request_deadlines("command/exec", &json!({ "disableTimeout": true }), now).unwrap();
+        assert_eq!(write, now + Duration::from_secs(120));
+        assert_eq!(response, None);
+        // A numeric zero is an immediate runtime timeout, not a disabled one.
+        let (write, response) = app_server_request_deadlines("command/exec", &json!({ "timeoutMs": 0 }), now).unwrap();
+        assert_eq!(write, now + Duration::from_secs(30));
+        assert_eq!(response, Some(write));
+    }
+
+    #[test]
+    fn command_deadlines_follow_the_launch_timeout_with_reply_grace() {
+        let now = Instant::now();
+        let (write, response) = app_server_request_deadlines("command/exec", &json!({ "timeoutMs": 2_700_000 }), now).unwrap();
+        assert_eq!(write, now + Duration::from_secs(120));
+        assert_eq!(response, Some(now + Duration::from_secs(2730)));
+        let (_, response) = app_server_request_deadlines("command/exec", &json!({}), now).unwrap();
+        assert_eq!(response, Some(now + Duration::from_secs(330)));
+        let (write, response) = app_server_request_deadlines("command/exec/terminate", &json!({ "disableTimeout": true }), now).unwrap();
+        assert_eq!(response, Some(write));
+        assert_eq!(write, now + Duration::from_secs(120));
+    }
+
+    #[test]
+    fn invalid_timeouts_fail_before_entering_the_pending_queue() {
+        let now = Instant::now();
+        for params in [
+            json!({ "disableTimeout": true, "timeoutMs": 300_000 }),
+            json!({ "timeoutMs": -1 }),
+            json!({ "timeoutMs": 1.5 }),
+            json!({ "timeoutMs": "300000" }),
+            json!({ "timeoutMs": u64::MAX }),
+        ] {
+            assert!(app_server_request_deadlines("command/exec", &params, now).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_reply_wait_settles_on_completion_or_server_shutdown() {
+        let (sender, receiver) = oneshot::channel();
+        let task = tokio::spawn(receive_server_reply(receiver, "command/exec", None));
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        sender.send(Ok(json!({ "exitCode": 130 }))).unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), json!({ "exitCode": 130 }));
+        let (sender, receiver) = oneshot::channel();
+        drop(sender);
+        assert_eq!(receive_server_reply(receiver, "command/exec", None).await.unwrap_err(), "Codex App Server stopped before replying");
+    }
+
+    #[tokio::test]
+    async fn bounded_reply_wait_reports_a_runtime_timeout() {
+        let (_sender, receiver) = oneshot::channel();
+        let error = receive_server_reply(receiver, "command/exec", Some(Instant::now())).await.unwrap_err();
+        assert_eq!(error, "Codex App Server timed out while handling command/exec");
+    }
 }
 
 struct AppServer {
@@ -1586,34 +1724,26 @@ impl AppServer {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        validate_command_timeout_runtime(method, &params, &self.runtime_version)?;
         let activity_guard = self.lifecycle.begin_activity(
             &self.instance,
             method,
             params.get("threadId").and_then(Value::as_str),
         )?;
         let result = async {
+            let (write_deadline, response_deadline) =
+                app_server_request_deadlines(method, &params, Instant::now())?;
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let (sender, receiver) = oneshot::channel();
             self.pending.lock().await.insert(id, sender);
-
-            let request_timeout = if method == "command/exec" {
-                params
-                    .get("timeoutMs")
-                    .and_then(Value::as_u64)
-                    .map(|milliseconds| Duration::from_millis(milliseconds.saturating_add(30_000)))
-                    .unwrap_or_else(|| Duration::from_secs(330))
-            } else {
-                Duration::from_secs(120)
-            };
 
             let tracking_thread_id = params
                 .get("threadId")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             let message = json!({ "method": method, "id": id, "params": params });
-            let deadline = Instant::now() + request_timeout;
             if let Err(error) =
-                write_server_message(&self.stdin, format!("{message}\n").as_bytes(), deadline).await
+                write_server_message(&self.stdin, format!("{message}\n").as_bytes(), write_deadline).await
             {
                 // A timed-out write may have sent a partial JSON line. Do not
                 // reuse this stream for another request.
@@ -1622,21 +1752,13 @@ impl AppServer {
                 return Err(error);
             }
 
-            match timeout_at(deadline, receiver).await {
-                Ok(Ok(result)) => {
-                    if let Ok(value) = &result {
-                        self.track_successful_request(method, tracking_thread_id.as_deref(), value);
-                    }
-                    result
-                }
-                Ok(Err(_)) => Err("Codex App Server stopped before replying".into()),
-                Err(_) => {
-                    self.pending.lock().await.remove(&id);
-                    Err(format!(
-                        "Codex App Server timed out while handling {method}"
-                    ))
-                }
+            let result = receive_server_reply(receiver, method, response_deadline).await;
+            if let Ok(value) = &result {
+                self.track_successful_request(method, tracking_thread_id.as_deref(), value);
+            } else {
+                self.pending.lock().await.remove(&id);
             }
+            result
         }
         .await;
         if let Some(activity_guard) = activity_guard {
