@@ -6429,6 +6429,8 @@ describe("local workflow threads", () => {
     expect(useTaskStore.getState().tasks["isolated-thread"].queuedTurns[0]).toMatchObject({ status: "queued" });
   });
 
+  // Complete workflow launch, typed rename and durable flush are a multi-step
+  // correctness replay, not a five-second performance budget (hosted macOS: 5.4s).
   it("keeps a renamed Claude workflow thread in the sidebar and durable transcript", async () => {
     const user = userEvent.setup();
     const command = deferred<{ exitCode: number; stdout: string; stderr: string }>();
@@ -6495,7 +6497,7 @@ describe("local workflow threads", () => {
     ));
     expect(savedThread()?.name).toBe("My Claude review");
     expect(screen.getAllByText("My Claude review").length).toBeGreaterThan(0);
-  });
+  }, 10_000);
 });
 
 describe("workspace attachments", () => {
