@@ -1,10 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands, page } from "vitest/browser";
 import { resetTaskStore, useTaskStore } from "./lib/taskStore";
 import { resetChildAgentLaunches } from "./lib/childAgentSessions";
 import { preferenceLearningFixture } from "./test/preferenceLearningFixture";
+import { resetDraftStoreForTests } from "./components/Composer";
 import type { ComponentProps } from "react";
 
 // Real App and browser rendering; native commands are isolated fixtures. These
@@ -154,10 +155,10 @@ async function renderApp(provider: "openai" | "claude") {
 }
 
 beforeEach(async () => {
+  resetDraftStoreForTests();
   localStorage.clear(); resetTaskStore(); resetChildAgentLaunches(); learned.reset(); calls = []; checkpoint = undefined; releaseCheckpoint = undefined; startFailure = false; imageCopy = undefined; releaseImageCopy = undefined;
   completeBeforeStartReturns = false; timelineGate = undefined; releaseTimelineGate = undefined;
   historyPage = undefined; releaseHistoryPage = undefined; historySnapshotThread = undefined;
-  const { resetDraftStoreForTests } = await import("./components/Composer"); resetDraftStoreForTests();
   bridge = new Promise((resolve, reject) => {
     releaseBridge = () => resolve({ name: "fixture_tools", command: "/fixture/bridge", args: [], configPath: "/fixture/bridge.json", toolNames: ["set_project_run_command", "set_project_check_command"] });
     rejectBridge = reject;
@@ -165,7 +166,15 @@ beforeEach(async () => {
   await commands.setStreamTestReducedMotion(true);
 });
 afterEach(async () => {
-  releaseBridge?.(); releaseCheckpoint?.(); releaseImageCopy?.(); releaseTimelineGate?.(); releaseHistoryPage?.(); timelineGate = undefined; bridge = undefined; resetTaskStore(); resetChildAgentLaunches(); localStorage.clear();
+  // Unmount and settle captured sends before resetting their stores. Otherwise
+  // a restored draft's 400ms timer can repopulate a cleared fixture cache.
+  await act(async () => {
+    cleanup();
+    releaseBridge?.(); releaseCheckpoint?.(); releaseImageCopy?.(); releaseTimelineGate?.(); releaseHistoryPage?.();
+    resetChildAgentLaunches();
+  });
+  timelineGate = undefined; bridge = undefined;
+  resetDraftStoreForTests(); resetTaskStore(); localStorage.clear();
   await commands.setStreamTestReducedMotion(false);
 });
 

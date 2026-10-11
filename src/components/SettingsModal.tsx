@@ -1599,7 +1599,7 @@ export function SettingsModal({
               <div className="set-row terminal-timeout-row">
                 <div className="set-copy">
                   <strong>Terminal and local-server timeout</strong>
-                  <small id={`${terminalTimeoutId}-help`}>Applies to new commands started in Mythra Code’s Terminal; commands already running keep the limit they launched with. With no timeout, a command runs until it exits or you stop it. Provider tool runs and project checks keep their own limits.</small>
+                  <small id={`${terminalTimeoutId}-help`}>Applies to new commands launched from Terminal or Run; commands already running keep the limit they launched with. With no timeout, a command runs until it exits or you stop it. Provider tool runs, Project Actions and project checks keep their own limits.</small>
                 </div>
                 <div className="set-control">
                   <button type="button" role="switch" aria-label="Automatically stop terminal commands" aria-describedby={`${terminalTimeoutId}-help`} aria-checked={terminalTimeoutEnabled} className={`toggle-switch ${terminalTimeoutEnabled ? "on" : ""}`} onClick={() => setTerminalTimeoutEnabled(!terminalTimeoutEnabled)}><span /></button>

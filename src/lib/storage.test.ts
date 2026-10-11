@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri }));
 
 import { DURABLE_STORAGE_KEYS, STORAGE_SCHEMA_VERSION, resetStorageMemoryForTests, flushPendingStateWrites, hydrateNativeStorage, loadStored, migrateStorage, removeStoredValue, storeValue } from "./storage";
 import { sanitizeStoredNewThreadPrompts } from "./newThreadTimedPrompts";
+import { createWorkspaceDraftKey, sanitizeWorkspaceDraftKeys } from "./newThreadDraftKeys";
 
 describe("durable storage", () => {
   afterEach(resetStorageMemoryForTests);
@@ -35,7 +36,7 @@ describe("durable storage", () => {
     isTauri.mockReturnValue(true);
     const workspace = "/fixture/project";
     const older = `new:${workspace}`;
-    const newer = `new:${workspace}:draft:00000000-0000-4000-8000-000000000000`;
+    const newer = createWorkspaceDraftKey(workspace, "00000000-0000-4000-8000-000000000000");
     const saved: Record<string, unknown> = {
       "kiwi.workspaceDraftKeys": { [workspace]: newer },
       "kiwi.savedWorkspaceDraftKeys": { [workspace]: [older] },
@@ -45,6 +46,7 @@ describe("durable storage", () => {
     await hydrateNativeStorage();
     expect(loadStored("kiwi.drafts", {})).toEqual(saved["kiwi.drafts"]);
     expect(loadStored("kiwi.workspaceDraftKeys", {})).toEqual(saved["kiwi.workspaceDraftKeys"]);
+    expect(sanitizeWorkspaceDraftKeys(loadStored("kiwi.workspaceDraftKeys", {}))).toEqual(saved["kiwi.workspaceDraftKeys"]);
     expect(loadStored("kiwi.savedWorkspaceDraftKeys", {})).toEqual(saved["kiwi.savedWorkspaceDraftKeys"]);
   });
 

@@ -1,7 +1,7 @@
 import { flushSync } from "react-dom";
 import { pendingFirstPromptForView, type PendingFirstPrompt as PendingPrompt } from "./lib/pendingFirstPrompt";
 import { PendingFirstPrompt } from "./components/PendingFirstPrompt";
-import { isWorkspaceDraftKey, retainSavedWorkspaceDraftKeys, sanitizeSavedWorkspaceDraftKeys, sanitizeWorkspaceDraftKeys } from "./lib/newThreadDraftKeys";
+import { createWorkspaceDraftKey, isWorkspaceDraftKey, retainSavedWorkspaceDraftKeys, sanitizeSavedWorkspaceDraftKeys, sanitizeWorkspaceDraftKeys } from "./lib/newThreadDraftKeys";
 import { renameLocalTranscript } from "./lib/localTranscriptPersistence";
 import { clipboardImages, createAttachmentPreparationTracker, imageBase64 } from "./lib/clipboardImages";
 import { forgetQuestionRecords, hasUnansweredQuestionRequests } from "./lib/agentQuestionRecords";
@@ -4662,7 +4662,7 @@ export default function App() {
     if (activeWorkspace && [...firstPromptDraftKeysRef.current.values()].includes(workspaceDraftKey)) {
       const workspacePath = normalizedProjectPath(activeWorkspace.path);
       setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath, key: workspaceDraftKey }));
-      setWorkspaceDraftKeys((current) => ({ ...current, [normalizedProjectPath(activeWorkspace.path)]: `new:${activeWorkspace.path}:draft:${crypto.randomUUID()}` }));
+      setWorkspaceDraftKeys((current) => ({ ...current, [normalizedProjectPath(activeWorkspace.path)]: createWorkspaceDraftKey(activeWorkspace.path) }));
     }
     clearFirstPromptSelection();
     setActiveThread(null);
