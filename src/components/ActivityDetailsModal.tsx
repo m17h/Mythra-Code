@@ -14,7 +14,8 @@ import "./ActivityDetailsModal.css";
 
 /** Searchable text for one transcript entry, shared with timeline search. */
 export function workEntrySearchText(entry: CompactWorkEntry): string {
-  if (entry.kind === "message") return entry.value.text;
+  if (entry.kind === "message") return [entry.value.text,
+    ...(entry.value.questions?.flatMap((question) => [question.title, ...(question.options ?? [])]) ?? [])].join(" ");
   if (entry.kind === "activity") return `${entry.value.title} ${entry.value.detail ?? ""}`;
   return entry.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ");
 }
@@ -40,7 +41,7 @@ function stepsFor(entries: readonly CompactWorkEntry[]): ActivityStep[] {
 }
 
 function stepSearchText(step: ActivityStep): string {
-  if (step.kind === "message") return step.value.text;
+  if (step.kind === "message") return workEntrySearchText({ kind: "message", value: step.value });
   if (step.kind === "activity") return `${step.value.title} ${step.value.detail ?? ""}`;
   return step.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ");
 }
@@ -627,7 +628,7 @@ export function ActivityDetailsModal({
             live={live}
             renderMessage={renderMessage}
             renderSubAgents={renderSubAgents}
-            onAnswerQuestion={onAnswerQuestion}
+            onAnswerQuestion={run.state === "interrupted" ? undefined : onAnswerQuestion}
           />
         ))}
       </ol>

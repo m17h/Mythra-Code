@@ -884,7 +884,8 @@ describe("Claude event routing", () => {
       type: "stream_event",
       event: { type: "message_start", message: { id: "message-1" } },
     });
-    useTaskStore.getState().setTaskStatus("thread-1", "interrupted");
+    useTaskStore.getState().completeTurn("thread-1", "turn-1", "interrupted");
+    vi.clearAllMocks();
     send({
       type: "result",
       subtype: "error_during_execution",
@@ -896,7 +897,7 @@ describe("Claude event routing", () => {
       "interrupted",
     );
     expect(context.onError).not.toHaveBeenCalled();
-    expect(context.onStatus).toHaveBeenCalledWith("Stopped");
+    expect(context.onStatus).not.toHaveBeenCalled();
   });
 
   it("honors explicit stop intent when exit races ahead of the stopped status write", () => {
@@ -910,17 +911,44 @@ describe("Claude event routing", () => {
     expect(context.onStatus).toHaveBeenCalledWith("Stopped");
   });
 
-  it("honors explicit stop intent when Claude returns an empty success", () => {
+  it("honors explicit stop intent when Claude synthesizes an empty recovery success", () => {
     useTaskStore.getState().setActiveThread("thread-1");
     send({ type: "system", subtype: "init" });
     markProviderStopIntent("thread-1", "turn-1");
-    send({ type: "result", subtype: "success", is_error: false, result: "" });
+    send({ type: "result", subtype: "success", is_error: false, result: "", openkiwi_recovered_from_assistant_end_turn: true });
 
     const task = useTaskStore.getState().tasks["thread-1"];
     expect(task.status).toBe("interrupted");
     expect(task.activities).toHaveLength(0);
     expect(context.onError).not.toHaveBeenCalled();
     expect(context.onStatus).toHaveBeenCalledWith("Stopped");
+  });
+
+  it.each([
+    { subtype: "success", is_error: false, result: "Authoritative answer", expected: "completed" },
+    { subtype: "error_during_execution", is_error: true, result: "Provider failed", expected: "error" },
+  ])("keeps a genuine $expected result arriving before Stop seals the turn", ({ expected, ...message }) => {
+    send({ type: "system", subtype: "init" });
+    markProviderStopIntent("thread-1", "turn-1");
+    send({ type: "result", ...message });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe(expected);
+    if (expected === "completed") expect(task.messages).toContainEqual(expect.objectContaining({ text: "Authoritative answer", phase: "final", turnStatus: "completed" }));
+  });
+
+  it("keeps an exact confirmed cutoff interrupted when genuine output arrives later", () => {
+    send({ type: "system", subtype: "init" });
+    useTaskStore.getState().completeTurn("thread-1", "turn-1", "interrupted");
+    send({ type: "result", subtype: "success", result: "Late final answer" });
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({ status: "interrupted", lastCompletedTurnStatus: "interrupted", messages: [] });
+  });
+
+  it("does not mistake another turn's interrupted status for this genuine result", () => {
+    send({ type: "system", subtype: "init" });
+    useTaskStore.getState().completeTurn("thread-1", "older-turn", "interrupted");
+    useTaskStore.getState().setTaskStatus("thread-1", "interrupted");
+    send({ type: "result", subtype: "success", result: "Actual answer" });
+    expect(useTaskStore.getState().tasks["thread-1"].status).toBe("completed");
   });
 
   it("does not disguise a recovered provider exit as a user stop", () => {

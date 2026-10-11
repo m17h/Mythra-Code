@@ -138,6 +138,38 @@ beforeEach(() => {
 });
 
 describe("SettingsModal", () => {
+  it("edits the app-wide Escape shortcut only when settings are saved", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ onSave })} />);
+    const toggle = screen.getByRole("switch", { name: "Escape stops the active run" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveAccessibleDescription(/Escape still dismisses menus and dialogs/);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ escapeStopsRun: false }));
+  });
+
+  it("restores a saved disabled Escape shortcut and can enable it again", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ settings: { ...DEFAULT_SETTINGS, escapeStopsRun: false }, onSave })} />);
+    const toggle = screen.getByRole("switch", { name: "Escape stops the active run" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ escapeStopsRun: true }));
+  });
+
+  it("finds the Escape shortcut through settings search", () => {
+    render(<SettingsModal {...modalProps({ initialSection: "models" })} />);
+    const search = screen.getByRole("textbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "escape stop" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(screen.getByRole("heading", { level: 3, name: "Interface" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Escape stops the active run" })).toBeInTheDocument();
+  });
+
   it("finds a pane by what the setting is called, not just its section name", () => {
     render(<SettingsModal {...modalProps()} />);
     const nav = screen.getByRole("navigation", { name: "Settings categories" });

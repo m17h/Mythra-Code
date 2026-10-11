@@ -49,6 +49,32 @@ function oldLongThread(): { messages: Array<{
 }
 
 describe("ChatTimeline", () => {
+  it("keeps a stopped question readable in history without an unavailable answer-in-chat action", async () => {
+    render(<ChatTimeline messages={[
+      { id: "prompt", role: "user", text: "Inspect the project", timelineOrder: 1, turnId: "turn", turnStatus: "interrupted" },
+      { id: "question", role: "assistant", text: "", questions: [{ title: "Which folder should I inspect?", options: ["Source", "Tests"] }], timelineOrder: 2, turnId: "turn", turnStatus: "interrupted" },
+    ]} activities={[]} running={false} thinkingLabel="Working" />);
+    expect(screen.queryByText("Which folder should I inspect?")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Work Stopped\. View activity/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Activity" });
+    expect(within(dialog).getByText("Which folder should I inspect?")).toBeInTheDocument();
+    expect(within(dialog).getByText("Source")).toBeInTheDocument();
+    expect(within(dialog).getByText("Tests")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Answer in chat" })).not.toBeInTheDocument();
+  });
+
+  it.each([undefined, "stopped-turn"])("opens an earlier stopped prompt's own history with identity %s when it has no provider output", async (turnId) => {
+    render(<ChatTimeline messages={[
+      { id: "stopped-prompt", role: "user", text: "Stopped before work started", timelineOrder: 1, turnId, turnStatus: "interrupted" },
+      { id: "later-prompt", role: "user", text: "A later request", timelineOrder: 2, turnId: "later-turn", turnStatus: "completed" },
+      { id: "later-answer", role: "assistant", text: "The later completed answer", phase: "final", timelineOrder: 3, turnId: "later-turn", turnStatus: "completed" },
+    ]} activities={[]} running={false} thinkingLabel="Working" />);
+    fireEvent.click(screen.getByRole("button", { name: /^Work Stopped\. View activity/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Activity" });
+    expect(within(dialog).getByText("Stopped before work started")).toBeInTheDocument();
+    expect(within(dialog).queryByText("The later completed answer")).not.toBeInTheDocument();
+  });
+
   it("shows sent images in their own bubble with the prompt text in a bubble underneath", () => {
     const view = render(<ChatTimeline
       messages={[{

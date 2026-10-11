@@ -125,7 +125,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   {
     group: "Workspace",
     items: [
-      { id: "general", label: "Interface", icon: Palette, detail: "Theme, size, effort-slider style, chat typeface, and provider marks. Everything previews instantly; save to keep it.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look" },
+      { id: "general", label: "Interface", icon: Palette, detail: "Appearance and keyboard shortcuts. Appearance previews instantly; save to keep your changes.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look keyboard shortcut escape esc stop cancel active run" },
       { id: "projects", label: "Projects", icon: FolderCog, detail: "Name new threads automatically and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository automatic thread title titles naming rename luna" },
     ],
   },
@@ -589,6 +589,7 @@ export function SettingsModal({
   const [terminalTimeoutText, setTerminalTimeoutText] = useState<string | null>(null);
   const subagentPanelId = useId();
   const terminalTimeoutId = useId();
+  const escapeStopsRunId = useId();
   const [apiKey, setApiKey] = useState("");
   const [lmStudioToken, setLmStudioToken] = useState("");
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
@@ -1184,6 +1185,16 @@ export function SettingsModal({
           {settingsSection === "general" &&
           <section className="settings-section theme-settings-section">
             {activeProjectHasAppearanceOverride && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Save updates app-wide defaults. This project has appearance overrides; edit them in Projects.</span></p>}
+            <div className="set-group">
+              <h4>Keyboard shortcuts</h4>
+              <div className="set-card"><div className="set-row">
+                <div className="set-copy">
+                  <strong>Escape stops the active run</strong>
+                  <small id={escapeStopsRunId}>Applies across the app. Escape still dismisses menus and dialogs when this is off. Editable fields keep their own Escape behavior.</small>
+                </div>
+                <button type="button" role="switch" aria-label="Escape stops the active run" aria-describedby={escapeStopsRunId} aria-checked={local.escapeStopsRun} className={`toggle-switch ${local.escapeStopsRun ? "on" : ""}`} onClick={() => setLocal({ ...local, escapeStopsRun: !local.escapeStopsRun })}><span /></button>
+              </div></div>
+            </div>
             <div className="set-group">
               <h4>Theme</h4>
               <div className="set-card bare"><div className="set-body">

@@ -32,6 +32,8 @@ import { decodeHtmlEntities } from "../lib/text";
 import { upsertThread } from "../lib/threadList";
 import { timelineFromTurns } from "../lib/threadTimeline";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
+import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
+import { sealStoppedTurn } from "../lib/stopTurnHistory";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
 import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
@@ -209,16 +211,36 @@ export function waitForChildTerminalStatus(threadId: string, timeoutMs: number):
  * Codex-hosted children are real runtime threads, and `turn/interrupt` is the
  * only cutoff their runtime exposes.
  */
-async function hardStopChild(provider: ChildAgentLink["provider"], childThreadId: string, turnId?: string): Promise<TaskStatus> {
-  if (provider === "claude") {
-    await killClaudeTurn(childThreadId);
+async function hardStopChild(provider: ChildAgentLink["provider"], childThreadId: string, turnId?: string, ctx?: ChildAgentContext): Promise<TaskStatus> {
+  if (provider !== "claude" && provider !== "cursor") return stopCodexChild(childThreadId, turnId);
+  const initialTask = useTaskStore.getState().tasks[childThreadId];
+  const targetTurnId = turnId ?? initialTask?.activeTurnId;
+  if (targetTurnId) markProviderStopIntent(childThreadId, targetTurnId);
+  try {
+    if (provider === "claude") await killClaudeTurn(childThreadId);
+    else await killCursorTurn(childThreadId);
+    const store = useTaskStore.getState();
+    const current = store.tasks[childThreadId];
+    if (current?.activeTurnId && current.activeTurnId !== targetTurnId
+      || current !== initialTask && current && !current.activeTurnId && isChildActive(current.status)
+      || current?.lastCompletedTurnId && current.lastCompletedTurnId !== targetTurnId
+        && current.lastCompletedTurnId !== initialTask?.lastCompletedTurnId) {
+      throw new Error("The sub-agent started another turn before Stop settled. Its current turn remains active.");
+    }
+    const terminal = confirmedLocalTerminal(childThreadId);
+    if (!terminal) {
+      if (targetTurnId) sealStoppedTurn(childThreadId, targetTurnId);
+      else {
+        store.flushDeltas();
+        store.completeTurn(childThreadId, undefined, "interrupted");
+      }
+    }
+    if (provider === "claude") ctx?.scheduleClaudeThreadSave(childThreadId);
+    else ctx?.scheduleCursorThreadSave(childThreadId);
     return confirmedLocalTerminal(childThreadId) ?? "interrupted";
+  } finally {
+    if (targetTurnId) clearProviderStopIntent(childThreadId, targetTurnId);
   }
-  if (provider === "cursor") {
-    await killCursorTurn(childThreadId);
-    return confirmedLocalTerminal(childThreadId) ?? "interrupted";
-  }
-  return stopCodexChild(childThreadId, turnId);
 }
 
 function cutoffAlreadySettled(reason: unknown): boolean {
@@ -268,7 +290,9 @@ async function stopCodexChild(threadId: string, knownTurnId?: string, assertNati
     // even when the repeated status/ID values are unchanged.
     const clearedForNewActivation = Boolean(current !== activationTask
       && current && !current.activeTurnId && isChildActive(current.status));
-    if (replacedTurn || clearedForNewActivation) {
+    const newerCompletedTurn = Boolean(current?.lastCompletedTurnId && current.lastCompletedTurnId !== turnId
+      && current.lastCompletedTurnId !== activationTask?.lastCompletedTurnId);
+    if (replacedTurn || clearedForNewActivation || newerCompletedTurn) {
       throw new Error("The native sub-agent started another turn before Stop settled. Its current turn remains active.");
     }
   };
@@ -306,13 +330,19 @@ async function stopCodexChild(threadId: string, knownTurnId?: string, assertNati
       const latest = await readLatest();
       assertSameActivation();
       const settled = confirmedRuntimeTerminal(latest);
-      if (settled && latest?.id === turnId) return settled;
+      if (settled && latest?.id === turnId) {
+        const store = useTaskStore.getState();
+        store.flushDeltas();
+        store.completeTurn(threadId, turnId, settled);
+        return settled;
+      }
     }
     throw new Error(`Could not confirm the native sub-agent stopped: ${friendlyError(reason)}`);
   }
   assertSameActivation();
   const terminal = freshLocalTerminal();
   if (terminal) return terminal;
+  sealStoppedTurn(threadId, turnId!);
   return "interrupted";
 }
 
@@ -362,7 +392,6 @@ function nativeChildrenFor(rootThreadId: string, links: Record<string, NativeAge
 
 function settleStoppedChild(rootThreadId: string, childThreadId: string, prompt: string, status: TaskStatus): void {
   const store = useTaskStore.getState();
-  store.setActiveTurn(childThreadId, undefined);
   store.setTaskStatus(childThreadId, status);
   const activityStatus = status === "interrupted" ? "cancelled" : status === "error" ? "failed" : "completed";
   settleChildInParent(rootThreadId, childThreadId, prompt, status, activityStatus);
@@ -687,7 +716,7 @@ export function useChildAgents(context: ChildAgentContext): {
     if (stoppedWhileStarting || rootForgotten) {
       try {
         if (isChildActive(taskStatusOf(childThreadId))) {
-          const status = await hardStopChild(target.provider, childThreadId, result.turnId);
+          const status = await hardStopChild(target.provider, childThreadId, result.turnId, ctx);
           settleStoppedChild(rootThreadId, childThreadId, title, status);
           const terminalStatus = status === "interrupted" ? "cancelled" : status === "error" ? "failed" : "completed";
           const interrupted: ChildAgentLink = { ...link, terminalStatus, finishedAt: Date.now() };
@@ -826,7 +855,7 @@ export function useChildAgents(context: ChildAgentContext): {
         settleChildInParent(rootThreadId, childThreadId, link.title, terminalStatus, terminalStatus);
         return;
       }
-      status = await hardStopChild(link.provider, childThreadId);
+      status = await hardStopChild(link.provider, childThreadId, undefined, ctx);
     } else {
       const agent = nativeChildrenFor(rootThreadId, ctx.nativeLinks).find((entry) => entry.id === childThreadId);
       if (!agent) throw new Error(`\`${childThreadId}\` was not started from this thread.`);
@@ -1281,7 +1310,7 @@ export function useChildAgents(context: ChildAgentContext): {
       const results = await Promise.allSettled([
         ...running.map(async (link) => {
           try {
-            const status = await hardStopChild(link.provider, link.childThreadId);
+            const status = await hardStopChild(link.provider, link.childThreadId, undefined, ctx);
             settleStoppedChild(rootThreadId, link.childThreadId, link.title, status);
           } catch (reason) {
             throw new Error(`Could not stop ${link.title}: ${friendlyError(reason)}`);
@@ -1298,7 +1327,15 @@ export function useChildAgents(context: ChildAgentContext): {
         }),
         ...[...claudeRoots].map(async ([processThreadId, agents]) => {
           const rootTurnId = useTaskStore.getState().tasks[processThreadId]?.activeTurnId;
-          await killClaudeTurn(processThreadId);
+          try {
+            await hardStopChild("claude", processThreadId, rootTurnId, ctx);
+          } catch (reason) {
+            const currentTurnId = useTaskStore.getState().tasks[processThreadId]?.activeTurnId;
+            if (currentTurnId && currentTurnId !== rootTurnId) {
+              throw new Error("Claude started another root turn while Stop was settling. Native worker status remains unknown.");
+            }
+            throw reason;
+          }
           const currentTurnId = useTaskStore.getState().tasks[processThreadId]?.activeTurnId;
           if (currentTurnId && currentTurnId !== rootTurnId) {
             throw new Error("Claude started another root turn while Stop was settling. Native worker status remains unknown.");

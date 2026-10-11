@@ -15,6 +15,8 @@ export type CompactPresentationEntry = CompactWorkEntry | {
   value: CompactWorkEntry[];
   state: CompactWorkState;
   turnId?: string;
+  /** Stable source identity when a stopped run has no hidden output yet. */
+  anchorId?: string;
 };
 
 export interface CompactActivityOptions {
@@ -128,7 +130,8 @@ function isolateImportantActivities(entries: readonly CompactWorkEntry[]): Compa
 /**
  * Presentation only: never modifies or discards transcript data. All routine
  * assistant text, including a native final channel, waits for turn completion.
- * Questions/errors and stopped output remain actionable in chat.
+ * Questions/errors remain actionable while work can continue. Interrupted
+ * output stays in one history disclosure, including its unfinished answer.
  */
 export function compactActivityPresentation(
   entries: readonly CompactWorkEntry[], options: CompactActivityOptions,
@@ -155,6 +158,43 @@ export function compactActivityPresentation(
     const unconfirmed = !active && Boolean(options.activeTurnId) && index === activeSegment
       && !hasTerminalTurnEvidence(segment, options.activeTurnId);
     const state = unconfirmed ? "unknown" : stateFor(segment, active);
+    if (state === "interrupted") {
+      // Stopping does not turn progress or a partial final-channel response
+      // into an answer. Keep the same single history opener across steering,
+      // and retain every operation/status for the existing details window.
+      // A completed final belonging to a separate recovered provider turn is
+      // still an answer; interruption must never swallow unrelated results.
+      const output: CompactPresentationEntry[] = [];
+      const stoppedTurnIds = new Set(segment.flatMap(values)
+        .filter((value) => value.turnStatus === "interrupted" && value.turnId).map((value) => value.turnId));
+      const lastCompletedAssistant = new Map<string, CompactWorkEntry>();
+      for (const entry of segment) {
+        if (entry.kind === "message" && entry.value.role === "assistant" && entry.value.turnId
+          && entry.value.turnStatus === "completed" && meaningful(entry.value) && !entry.value.questions?.length) {
+          lastCompletedAssistant.set(entry.value.turnId, entry);
+        }
+      }
+      let stoppedWork: Extract<CompactPresentationEntry, { kind: "work" }> | undefined;
+      for (const entry of segment) {
+        if (entry.kind === "message" && (entry.value.role === "user"
+          || (entry.value.role === "assistant" && (entry.value.phase === "final"
+              || (!entry.value.phase && entry.value.turnId && lastCompletedAssistant.get(entry.value.turnId) === entry))
+            && entry.value.turnStatus === "completed" && !entry.value.streaming
+            && entry.value.turnId && !stoppedTurnIds.has(entry.value.turnId)))) {
+          output.push(entry);
+        } else {
+          if (!stoppedWork) {
+            stoppedWork = { kind: "work", value: [], state, turnId: turnId(segment[0]) };
+            output.push(stoppedWork);
+          }
+          stoppedWork.value.push(entry);
+        }
+      }
+      // A stop before the first provider output still settles the existing
+      // live opener. Its details contain the retained opening user prompt.
+      if (!stoppedWork) output.push({ kind: "work", value: [], state, turnId: turnId(segment[0]), anchorId: values(segment[0])[0]?.id });
+      return output;
+    }
     const assistants = segment.filter((entry) => entry.kind === "message" && entry.value.role === "assistant"
       && !entry.value.questions?.length && meaningful(entry.value));
     const lastAssistant = assistants.at(-1);
@@ -174,7 +214,7 @@ export function compactActivityPresentation(
       const visible = entry.kind === "message"
         ? entry.value.role === "user" || Boolean(entry.value.questions?.length)
           || (meaningful(entry.value) && ((!active && !unconfirmed && entry.value.phase === "final") || entry === fallback
-            || (!unconfirmed && (state === "failed" || state === "interrupted" || state === "unknown"))
+            || (!unconfirmed && (state === "failed" || state === "unknown"))
             || entry.value.turnStatus === "failed" || entry.value.turnStatus === "interrupted"))
         : values(entry).some((value) => importantActivity(value as Activity));
       if (active || unconfirmed) {

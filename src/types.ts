@@ -504,6 +504,8 @@ export interface AppSettings {
   effortSlider: EffortSliderStyle;
   /** Typeface for chat prose and the composer. Absent before the font selector shipped. */
   chatFont: ChatFont;
+  /** App-wide Escape shortcut for stopping the active run; missing legacy values default on. */
+  escapeStopsRun: boolean;
   notificationsEnabled: boolean;
   /** Opt-in OpenAI Luna naming for new threads, regardless of their provider. */
   automaticThreadTitles: boolean;

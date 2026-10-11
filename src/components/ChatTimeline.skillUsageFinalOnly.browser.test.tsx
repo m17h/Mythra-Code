@@ -80,11 +80,22 @@ it("refreshes a memoized metadata opener when history supplies an additional loa
 });
 
 it.each([
-  ["failed", "Run failed"], ["interrupted", "Run stopped"], [undefined, "Activity"],
+  ["failed", "Run failed"], [undefined, "Activity"],
 ] as const)("keeps the truthful %s outcome for a metadata-only skill run", (status, label) => {
   const messages = finalOnlyRun().map((message) => ({ ...message, turnStatus: status, ...(status === undefined ? { turnId: undefined } : {}) }));
   render(shell(messages));
   expect(screen.getByRole("button", { name: /View activity/ })).toHaveAccessibleName(`${label}. View activity: 1 skill used`);
+});
+
+it("retains a stopped final-only skill run's partial answer in history with its loaded skills", async () => {
+  const messages = finalOnlyRun().map((message) => ({ ...message, turnStatus: "interrupted" as const }));
+  render(shell(messages));
+  expect(screen.queryByText(messages[1].text)).not.toBeInTheDocument();
+  const opener = screen.getByRole("button", { name: /^Work Stopped\. View activity/ });
+  await userEvent.click(opener);
+  const dialog = await screen.findByRole("dialog", { name: "Activity" });
+  await waitFor(() => expect(within(dialog).getByText(messages[1].text)).toBeVisible());
+  expect(within(dialog).getByRole("button", { name: /1 skill used/ })).toBeVisible();
 });
 
 it("keeps an open final-only run's details through completion and returns focus to its metadata opener", async () => {

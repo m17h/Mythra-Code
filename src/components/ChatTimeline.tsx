@@ -384,8 +384,8 @@ function presentTimeline(
       output.push(entry);
       continue;
     }
-    const firstId = entry.value[0] ? workItemId(entry.value[0]) : undefined;
-    const runKey = (firstId && runs.keyById.get(firstId)) || runs.list.at(-1)?.key || LIVE_RUN_KEY;
+    const firstId = entry.value[0] ? workItemId(entry.value[0]) : entry.anchorId;
+    const runKey = (firstId && runs.keyById.get(firstId)) || runForTurn(runs, entry.turnId)?.key || runs.list.at(-1)?.key || LIVE_RUN_KEY;
     // The helper keeps an idle-but-unfinished current turn as `unknown`
     // work tagged with the actual turn; older unknown history is untagged
     // by that identity and reads as plain settled activity.
@@ -1205,7 +1205,14 @@ export function formatCompletedDuration(durationMs: number): string {
 function renderActivityMessage(message: ChatMessage): ReactNode {
   return message.role === "user"
     ? <UserMessageMarkdown text={message.text} references={message.skillReferences} />
-    : <AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />;
+    : <><AssistantMessageMarkdown text={message.text} streaming={Boolean(message.streaming)} />
+      {Boolean(message.questions?.length) && <div className="message-text rich-markdown" aria-label="Recorded questions">
+        {message.questions!.map((question, index) => <div key={question.id ?? index}>
+          <p>{question.title}</p>
+          {Boolean(question.options?.length) && <ul>{question.options!.map((option, optionIndex) => <li key={optionIndex}>{option}</li>)}</ul>}
+        </div>)}
+      </div>}
+    </>;
 }
 
 function renderActivitySubAgents(activities: Activity[]): ReactNode {

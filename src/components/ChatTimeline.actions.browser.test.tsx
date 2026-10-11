@@ -154,6 +154,18 @@ it.each(workCases)("reserves actions after a $kind row across $status and reopen
   expect(view.container.querySelectorAll(".activity-status.live")).toHaveLength(1);
   expect(view.container.querySelector(".message.assistant .message-actions")).toBeNull();
   view.rerender(transcript(false));
+  if (status === "interrupted") {
+    const verifyStopped = (container: HTMLElement) => {
+      expect(container.querySelector(".message.assistant")).toBeNull();
+      expect(container.querySelectorAll(".activity-status.state-interrupted")).toHaveLength(1);
+      expect(container.querySelector(".activity-status-label")).toHaveTextContent(/^Work Stopped$/);
+      expect(container.querySelector(".message.assistant .message-actions")).toBeNull();
+    };
+    verifyStopped(view.container);
+    view.unmount();
+    verifyStopped(render(transcript(false)).container);
+    return;
+  }
   expect(view.container.querySelectorAll(".message.assistant")).toHaveLength(1);
   const verify = async (container: HTMLElement) => {
     const reply = container.querySelector<HTMLElement>(".message.assistant")!;

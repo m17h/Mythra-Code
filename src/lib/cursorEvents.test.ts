@@ -81,6 +81,21 @@ describe("Cursor event routing", () => {
     expect(context.onStatus).toHaveBeenCalledWith("Stopped");
   });
 
+  it("keeps an explicit normal result arriving before Stop seals the turn", () => {
+    sessionUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Actual answer" } });
+    markProviderStopIntent("thread-1", "turn-1");
+    send({ type: "result", result: { stopReason: "end_turn" } });
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({ status: "completed", lastCompletedTurnStatus: "completed" });
+  });
+
+  it("keeps exact confirmed cutoff output interrupted when a normal result arrives later", () => {
+    sessionUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Partial answer" } });
+    useTaskStore.getState().flushDeltas();
+    useTaskStore.getState().completeTurn("thread-1", "turn-1", "interrupted");
+    send({ type: "result", result: { stopReason: "end_turn" } });
+    expect(useTaskStore.getState().tasks["thread-1"]).toMatchObject({ status: "interrupted", lastCompletedTurnStatus: "interrupted" });
+  });
+
   it("finalizes Markdown and places the final answer after tool activity", () => {
     sessionUpdate({
       sessionUpdate: "agent_message_chunk",

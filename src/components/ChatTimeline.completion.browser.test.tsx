@@ -159,13 +159,23 @@ describe("main chat completion keeps the reader where they were", () => {
     expect(fromEnd(timeline)).toBeLessThanOrEqual(1);
   });
 
-  it.each(["failed", "interrupted"] as const)("keeps the reader in place but does not reveal %s output", async (status) => {
+  it("keeps the reader in place but does not animate failed output", async () => {
     const view = render(live("Partial work"));
     await frames();
     const before = position();
-    view.rerender(done("Partial work that stopped early.", { status }));
+    view.rerender(done("Partial work that failed.", { status: "failed" }));
     expect(row("message-answer")).not.toBeNull();
     expect(masked(answerText())).toBe(false);
+    expectUnmoved(before);
+  });
+
+  it("keeps the reader in place and stopped output in the existing history button", async () => {
+    const view = render(live("Partial work"));
+    await frames();
+    const before = position();
+    view.rerender(done("Partial work that stopped early.", { status: "interrupted" }));
+    expect(row("message-answer")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Work Stopped\. View activity/ })).toBeVisible();
     expectUnmoved(before);
   });
 

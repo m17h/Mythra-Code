@@ -14,6 +14,62 @@ const visibleIds = (entries: ReturnType<typeof present>) => entries.filter((entr
   .flatMap((entry) => entry.kind === "message" || entry.kind === "activity" ? [entry.value.id] : entry.value.map((value) => value.id));
 
 describe("compact activity presentation", () => {
+  it("retains the history opener when stopped before the first provider output", () => {
+    const prompt = user("prompt", { turnStatus: "interrupted" });
+    expect(present([prompt])).toEqual([prompt, { kind: "work", value: [], state: "interrupted", turnId: "turn", anchorId: "prompt" }]);
+  });
+  it("keeps stopped thinking, partial answers and failed operations behind one history opener", () => {
+    const entries = [user("prompt", { turnStatus: "interrupted" }),
+      message("comment", "Checking the implementation", { phase: "commentary", turnStatus: "interrupted" }),
+      activity("thought", { kind: "reasoning", detail: "Retained thinking", turnStatus: "interrupted" }),
+      activity("failed-file", { kind: "file", status: "failed", detail: "Permission denied", turnStatus: "interrupted" }),
+      user("steer", { turnStatus: "interrupted" }),
+      activity("warning", { kind: "warning", title: "The operation failed", turnStatus: "interrupted" }),
+      message("partial", "The unfinished final response", { phase: "final", turnStatus: "interrupted" })];
+    for (const activeTurnId of ["turn", undefined]) {
+      const result = present(entries, false, activeTurnId);
+      expect(visibleIds(result)).toEqual(["prompt", "steer"]);
+      const work = result.filter((entry) => entry.kind === "work");
+      expect(work).toHaveLength(1);
+      expect(work[0]).toMatchObject({ state: "interrupted", value: entries.filter((entry) => entry.kind !== "message" || entry.value.role !== "user") });
+    }
+    expect(entries.at(-1)).toMatchObject({ value: { text: "The unfinished final response", phase: "final", turnStatus: "interrupted" } });
+  });
+
+  it("keeps unrelated completed final answers visible before and after a stopped turn", () => {
+    const entries = [user("earlier-prompt", { turnId: "earlier" }),
+      message("earlier-answer", "Earlier completed answer", { turnId: "earlier", phase: "final", turnStatus: "completed" }),
+      user(), message("partial", "Unfinished response", { phase: "final", turnStatus: "interrupted" }),
+      user("next-prompt", { turnId: "next" }),
+      message("next-answer", "Next completed answer", { turnId: "next", phase: "final", turnStatus: "completed" })];
+    expect(visibleIds(present(entries))).toEqual(["earlier-prompt", "earlier-answer", "prompt", "next-prompt", "next-answer"]);
+    expect(present(entries).filter((entry) => entry.kind === "work")).toMatchObject([{ state: "interrupted" }]);
+  });
+
+  it("preserves an explicitly completed final from a separate recovered turn in stopped history", () => {
+    const entries = [user(), message("earlier-answer", "A completed recovered result", { turnId: "earlier", phase: "final", turnStatus: "completed" }),
+      message("partial", "Unfinished response", { phase: "final", turnStatus: "interrupted" })];
+    expect(visibleIds(present(entries))).toEqual(["prompt", "earlier-answer"]);
+    expect(present(entries).at(-1)).toMatchObject({ kind: "work", state: "interrupted", value: [entries.at(-1)] });
+  });
+
+  it("preserves only the terminal unphased answer from a separate completed recovered turn", () => {
+    const entries = [user(), message("earlier-progress", "Earlier progress", { turnId: "earlier", turnStatus: "completed" }),
+      message("earlier-answer", "A completed recovered result", { turnId: "earlier", turnStatus: "completed" }),
+      message("partial", "Unfinished response", { phase: "final", turnStatus: "interrupted" })];
+    expect(visibleIds(present(entries))).toEqual(["prompt", "earlier-answer"]);
+    expect(present(entries).filter((entry) => entry.kind === "work")).toHaveLength(1);
+    const terminalCommentary = [...entries.slice(0, 3), message("commentary", "More work", { turnId: "earlier", phase: "commentary", turnStatus: "completed" }), entries[3]];
+    expect(visibleIds(present(terminalCommentary))).toEqual(["prompt"]);
+  });
+
+  it("does not promote stale completed metadata from the same stopped turn", () => {
+    const entries = [user(), message("partial", "Unfinished response", { phase: "final", turnStatus: "completed" }),
+      activity("stopped", { turnStatus: "interrupted" })];
+    expect(visibleIds(present(entries))).toEqual(["prompt"]);
+    expect(present(entries).at(-1)).toMatchObject({ kind: "work", state: "interrupted", value: entries.slice(1) });
+  });
+
   it.each(["inProgress", "completed", "failed", "error", "interrupted", "cancelled", "declined", undefined])(
     "never promotes a command with status %s into chat", (status) => {
       const command: Activity = { id: "command", kind: "command", title: "npm test", detail: "Full output", status, turnId: "turn" };
@@ -140,7 +196,8 @@ describe("compact activity presentation", () => {
     expect(result.at(-1)).toMatchObject({ kind: "work", state: "running" });
   });
 
-  it.each(["failed", "interrupted"] as const)("retains meaningful output from a %s turn", (turnStatus) => {
+  it("retains meaningful output from a failed provider turn", () => {
+    const turnStatus = "failed";
     const result = present([user("prompt", { turnStatus }), message("partial", "The partial result", { turnStatus, phase: "commentary" }), activity("tool", { status: "completed", turnStatus })]);
     expect(visibleIds(result)).toEqual(["prompt", "partial"]);
     expect(result.at(-1)).toMatchObject({ kind: "work", state: turnStatus });

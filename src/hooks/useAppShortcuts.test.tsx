@@ -50,6 +50,33 @@ describe("useAppShortcuts", () => {
     input.remove();
   });
 
+  it("leaves Escape unhandled when run stopping is disabled", () => {
+    const deps = context({ escapeStopsRun: false });
+    renderHook(() => useAppShortcuts(deps));
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(escape);
+    expect(deps.stopTurn).not.toHaveBeenCalled();
+    expect(escape.defaultPrevented).toBe(false);
+  });
+
+  it("still dismisses the Workspace during a run with Escape stopping disabled", () => {
+    const deps = context({ escapeStopsRun: false, workspaceOpen: true });
+    renderHook(() => useAppShortcuts(deps));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(deps.closeWorkspace).toHaveBeenCalledOnce();
+    expect(deps.stopTurn).not.toHaveBeenCalled();
+  });
+
+  it("reads changes to the Escape preference without reinstalling the listener", () => {
+    const deps = context({ escapeStopsRun: true });
+    const { rerender } = renderHook(({ enabled }) => useAppShortcuts({ ...deps, escapeStopsRun: enabled }), { initialProps: { enabled: false } });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(deps.stopTurn).not.toHaveBeenCalled();
+    rerender({ enabled: true });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(deps.stopTurn).toHaveBeenCalledOnce();
+  });
+
   it("does not open app-level commands over a blocking modal", () => {
     const deps = context({ modalOpen: true });
     renderHook(() => useAppShortcuts(deps));
