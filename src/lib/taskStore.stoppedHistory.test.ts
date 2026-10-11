@@ -86,6 +86,42 @@ it.each(["completed", "failed"] as const)("accepts authoritative %s history afte
   expect(task.activities).toEqual([expect.objectContaining({ id: "tool", detail: "Durable terminal output", status: turnStatus, turnStatus })]);
 });
 
+it.each([
+  ["completed", "runtime-user"], ["completed", "local-user"],
+  ["failed", "runtime-user"], ["failed", "local-user"],
+] as const)("accepts authoritative %s history with %s when Stop settles during a pending live-turn read", (turnStatus, userId) => {
+  const store = useTaskStore.getState();
+  store.setTaskStatus("thread", "starting");
+  store.appendUserMessage("thread", { id: "local-user", role: "user", text: "First prompt" });
+  store.setActiveTurn("thread", "stopped-turn");
+  store.upsertActivity("thread", { id: "tool", kind: "command", title: "Tool", detail: "Observed partial output", status: "inProgress", turnId: "stopped-turn" });
+  store.upsertActivity("thread", { id: "omitted", kind: "reasoning", title: "Omitted old reasoning", status: "completed", turnId: "stopped-turn" });
+  store.startAssistantMessage("thread", { id: "answer", role: "assistant", text: "Observed partial answer", turnId: "stopped-turn" });
+  const boundary = captureHistoryReadBoundary(useTaskStore.getState().tasks.thread);
+  store.completeTurn("thread", "stopped-turn", "interrupted");
+  store.hydrateTask("thread", [
+    { id: userId, role: "user", text: "First prompt", turnId: "stopped-turn", turnStatus, timelineOrder: 1 },
+    { id: "answer", role: "assistant", text: "Durable terminal answer", turnId: "stopped-turn", turnStatus, timelineOrder: 3 },
+  ], [{ id: "tool", kind: "command", title: "Tool", detail: "Durable terminal output", status: turnStatus, turnId: "stopped-turn", turnStatus, timelineOrder: 2 }], "/fixture", undefined, boundary);
+  const task = useTaskStore.getState().tasks.thread;
+  expect(task.messages[0]).toMatchObject({ id: userId, turnStatus });
+  expect(task.messages[1]).toMatchObject({ text: "Durable terminal answer", turnStatus });
+  expect(task.activities).toEqual([expect.objectContaining({ id: "tool", detail: "Durable terminal output", status: turnStatus, turnStatus })]);
+});
+
+it("keeps locally newer live output when a pending read reports terminal history", () => {
+  const store = useTaskStore.getState();
+  store.setTaskStatus("thread", "running");
+  store.setActiveTurn("thread", "live-turn");
+  store.startAssistantMessage("thread", { id: "answer", role: "assistant", text: "Observed", turnId: "live-turn" });
+  const boundary = captureHistoryReadBoundary(useTaskStore.getState().tasks.thread);
+  store.queueAssistantDelta("thread", "answer", " newer live output", "live-turn");
+  store.flushDeltas();
+  store.hydrateTask("thread", [{ id: "answer", role: "assistant", text: "Earlier read output", turnStatus: "completed", turnId: "live-turn" }], [], "/fixture", undefined, boundary);
+  expect(useTaskStore.getState().tasks.thread.messages[0]).toMatchObject({ text: "Observed newer live output", streaming: true });
+  expect(useTaskStore.getState().tasks.thread.activeTurnId).toBe("live-turn");
+});
+
 it("places omitted work from each stopped turn before intervening completed turns", () => {
   const store = stopTurn();
   store.appendUserMessage("thread", { id: "middle-user", role: "user", text: "Middle prompt", turnId: "middle-turn" });

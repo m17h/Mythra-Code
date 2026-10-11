@@ -330,7 +330,12 @@ async function stopCodexChild(threadId: string, knownTurnId?: string, assertNati
       const latest = await readLatest();
       assertSameActivation();
       const settled = confirmedRuntimeTerminal(latest);
-      if (settled && latest?.id === turnId) return settled;
+      if (settled && latest?.id === turnId) {
+        const store = useTaskStore.getState();
+        store.flushDeltas();
+        store.completeTurn(threadId, turnId, settled);
+        return settled;
+      }
     }
     throw new Error(`Could not confirm the native sub-agent stopped: ${friendlyError(reason)}`);
   }

@@ -389,7 +389,7 @@ function withTimelineOrder<T extends { timelineOrder?: number }>(entry: T): T {
 type HydrationEntry = { kind: "message"; entry: ChatMessage } | { kind: "activity"; entry: Activity };
 
 /** Merge the read's chronology with locally observed rows using shared IDs as anchors. */
-function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskState | undefined, boundary: HistoryReadBoundary, preservedTurnIds: ReadonlySet<string> = new Set()): HydrationEntry[] {
+function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskState | undefined, boundary: HistoryReadBoundary, preservedTurnIds: ReadonlySet<string> = new Set(), authoritativeTerminalTurnIds: ReadonlySet<string> = new Set()): HydrationEntry[] {
   type Node = { value: HydrationEntry; previous?: Node; next?: Node };
   let first: Node | undefined;
   let last: Node | undefined;
@@ -407,9 +407,11 @@ function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskSta
   const local: HydrationEntry[] = [
     ...(task?.messages ?? []).map((entry) => ({ kind: "message" as const, entry })),
     ...(task?.activities ?? []).map((entry) => ({ kind: "activity" as const, entry })),
-  ].filter((value) => anchors.has(keyFor(value))
+  ].filter((value) => !(value.entry.turnStatus === "interrupted" && value.entry.turnId
+      && authoritativeTerminalTurnIds.has(value.entry.turnId))
+    && (anchors.has(keyFor(value))
     || (value.entry.timelineOrder ?? -1) > boundary.preserveAfterOrder
-    || Boolean(value.entry.turnId && preservedTurnIds.has(value.entry.turnId)))
+    || Boolean(value.entry.turnId && preservedTurnIds.has(value.entry.turnId))))
     .sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0));
   const nextAnchor: (Node | undefined)[] = [];
   let next: Node | undefined;
@@ -777,6 +779,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   }),
   hydrateTask: (threadId, messages, activities, workspacePath, history, readBoundary) => set((state) => {
     const existing = state.tasks[threadId];
+    const incomingMessagesById = new Map(messages.map((message) => [message.id, message]));
     const existingMessagesById = new Map((existing?.messages ?? []).map((message) => [message.id, message]));
     const existingActivitiesById = new Map((existing?.activities ?? []).map((activity) => [activity.id, activity]));
     const representedTurnIds = new Set([...messages, ...activities].flatMap((entry) => entry.turnId ? [entry.turnId] : []));
@@ -784,6 +787,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .filter((entry) => !("role" in entry && entry.role === "user")
         && (entry.turnStatus === "completed" || entry.turnStatus === "failed"))
       .flatMap((entry) => entry.turnId ? [entry.turnId] : []));
+    const supersededStoppedEntry = (entry: ChatMessage | Activity) => entry.turnStatus === "interrupted"
+      && Boolean(entry.turnId && authoritativeTerminalTurnIds.has(entry.turnId));
     // A new read can omit partially streamed items even after Stop sealed them.
     // Retain that observed evidence only inside turns represented by this page:
     // old pages and deleted history must not reappear from the renderer cache.
@@ -802,6 +807,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         ...message,
         ...(stopped && previous?.turnId === message.turnId ? { ...previous, id: message.id, timelineOrder: message.timelineOrder } : {}),
         ...(stopped ? { turnStatus: "interrupted" as const, streaming: false } : {}),
+        // Same-ID user reconciliation retains local presentation metadata.
+        // Once non-user history proves a terminal result, its durable prompt
+        // status must also supersede the local Stop snapshot.
+        ...(message.role === "user" && supersededStoppedEntry(message) && incomingMessagesById.has(message.id)
+          ? { turnStatus: incomingMessagesById.get(message.id)!.turnStatus } : {}),
         ...(message.phase === undefined && previous?.phase ? { phase: previous.phase } : {}),
         turnDurationMs: message.turnDurationMs ?? durationForTurn(threadId, message.turnId),
       });
@@ -822,7 +832,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         || Boolean(existing?.activeTurnId && message.turnId === existing.activeTurnId)
         || Boolean(readBoundary && (message.timelineOrder ?? -1) > readBoundary.preserveAfterOrder)
         || Boolean(message.turnId && preservedStoppedTurnIds.has(message.turnId))
-      ) && !hydratedMessageIds.has(message.id) && !reconciled.matchedIds.has(message.id))
+      ) && !supersededStoppedEntry(message) && !hydratedMessageIds.has(message.id) && !reconciled.matchedIds.has(message.id))
       .map((entry) => ({ kind: "message" as const, entry }));
     const hydratedActivities = activities.map((activity) => {
       const previous = existingActivitiesById.get(activity.id);
@@ -847,7 +857,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         || Boolean(existing?.activeTurnId && activity.turnId === existing.activeTurnId)
         || Boolean(readBoundary && (activity.timelineOrder ?? -1) > readBoundary.preserveAfterOrder)
         || Boolean(activity.turnId && preservedStoppedTurnIds.has(activity.turnId))
-      ) && !hydratedActivityIds.has(activity.id))
+      ) && !supersededStoppedEntry(activity) && !hydratedActivityIds.has(activity.id))
       .map((entry) => ({ kind: "activity" as const, entry })));
     preservedEntries.sort((left, right) => (left.entry.timelineOrder ?? Number.MAX_SAFE_INTEGER) - (right.entry.timelineOrder ?? Number.MAX_SAFE_INTEGER));
     const inFlight: ChatMessage[] = [];
@@ -865,7 +875,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       ...hydratedActivities.map((entry) => ({ kind: "activity" as const, entry })),
       ...preservedEntries.filter((value) => (value.entry.timelineOrder ?? -1) <= mergeBoundary.preserveAfterOrder
         && !(value.entry.turnId && preservedStoppedTurnIds.has(value.entry.turnId))),
-    ], existing, mergeBoundary, preservedStoppedTurnIds) : undefined;
+    ], existing, mergeBoundary, preservedStoppedTurnIds, authoritativeTerminalTurnIds) : undefined;
     const nextMessages = mergedReadEntries ? mergedReadEntries.flatMap((value) => value.kind === "message" ? [value.entry] : []) : [...hydratedMessages, ...inFlight];
     const nextActivities = mergedReadEntries ? mergedReadEntries.flatMap((value) => value.kind === "activity" ? [value.entry] : []) : [...hydratedActivities, ...inFlightActivities];
     const nextTasks = {

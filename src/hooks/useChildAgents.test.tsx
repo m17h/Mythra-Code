@@ -1457,16 +1457,25 @@ describe("useChildAgents", () => {
       expect(useTaskStore.getState().tasks["root-1"].agents[0].status).toBe("completed");
     });
 
-    it.each(["completed", "failed"])("rechecks a settled interrupt race and preserves %s", async (status) => {
+    it.each(["completed", "failed", "interrupted"])("rechecks a settled interrupt race and seals its authentic %s history", async (status) => {
       codex.rpc.mockRejectedValueOnce(new Error("Turn already completed"));
       codex.rpc.mockResolvedValueOnce({ data: [{ id: "native-turn", status, items: [] }] });
       const view = await mount();
       act(() => {
         useTaskStore.getState().upsertAgent("root-1", { id: "native-1", prompt: "Native task", status: "inProgress" });
         useTaskStore.getState().setActiveTurn("native-1", "native-turn");
+        useTaskStore.getState().setTaskStatus("native-1", "running");
+        useTaskStore.getState().appendUserMessage("native-1", { id: "prompt", role: "user", text: "Native task", turnId: "native-turn" });
+        useTaskStore.getState().queueAssistantDelta("native-1", "answer", "Native progress", "native-turn");
+        useTaskStore.getState().queueReasoningDelta("native-1", "reasoning", "Native thinking", "content", "native-turn");
       });
       await act(async () => { await view.result.current.stopChildAgent("root-1", "native-1"); });
-      expect(useTaskStore.getState().statuses["native-1"]).toBe(status === "failed" ? "error" : "completed");
+      const taskStatus = status === "failed" ? "error" : status;
+      expect(useTaskStore.getState().statuses["native-1"]).toBe(taskStatus);
+      const task = useTaskStore.getState().tasks["native-1"];
+      expect(task).toMatchObject({ activeTurnId: undefined, lastCompletedTurnId: "native-turn", lastCompletedTurnStatus: taskStatus });
+      expect(task.messages).toContainEqual(expect.objectContaining({ id: "answer", text: "Native progress", streaming: false, turnStatus: status }));
+      expect(task.activities).toContainEqual(expect.objectContaining({ id: "reasoning", detail: "Native thinking", turnStatus: status }));
     });
 
     it.each(["individual", "bulk"])("keeps the current native turn active when %s Stop only reads an older terminal turn", async (mode) => {
