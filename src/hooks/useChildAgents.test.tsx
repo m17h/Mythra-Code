@@ -7,6 +7,8 @@ import type { ChildAgentRequest } from "../lib/agentBridge";
 import type { ChildRunContext } from "../lib/childRun";
 import type { ChildAgentTarget, SkillDependencyReport, Thread } from "../types";
 import { SKILL_DEPENDENCY_LIMITS, SkillDependencyError } from "../lib/skillDependencies";
+import { ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, resetChildAgentLaunches } from "../lib/childAgentSessions";
+import type { ProjectTerminalSnapshot } from "../lib/terminalSnapshot";
 
 const DEPENDENCIES: SkillDependencyReport = {
   version: 1, limits: { ...SKILL_DEPENDENCY_LIMITS }, roots: [{ nodeId: "policy", channel: "system", name: "policy" }],
@@ -14,6 +16,8 @@ const DEPENDENCIES: SkillDependencyReport = {
 };
 
 const bridge = vi.hoisted(() => ({
+  startChildAgentSession: vi.fn(),
+  endChildAgentSession: vi.fn(),
   onChildAgentRequest: vi.fn(),
   respondToChildAgentRequest: vi.fn(),
   reportChildAgentFinished: vi.fn(),
@@ -145,11 +149,34 @@ function lastResponse() {
   return bridge.respondToChildAgentRequest.mock.calls.at(-1);
 }
 
+const TERMINAL_SCOPE = "/tmp/project/.worktrees/a";
+const TERMINAL_SNAPSHOT: ProjectTerminalSnapshot = {
+  scope: TERMINAL_SCOPE, available: true, running: true, command: "npm run dev",
+  text: "ready on :5173\n", truncated: false, retainedCharacters: 15, generation: 2, lifetime: "app-session",
+};
+
+async function registerTerminalBridge(overrides: Partial<Parameters<typeof ensureChildAgentBridge>[0]> = {}) {
+  return ensureChildAgentBridge({
+    threadId: POLICY.rootThreadId, policies: { [POLICY.sessionId]: POLICY }, links: {},
+    settings: { childAgents: { enabled: true, targets: TARGETS }, subagentsEnabled: true, subagentMax: 2, subagentEngine: "mythra" },
+    permission: "read-only", systemPrompt: "Be careful.", projectInstructionsEnabled: false,
+    reasoningEffort: "medium", serviceTier: null, readiness: context().readiness,
+    projectPath: TERMINAL_SCOPE, ...overrides,
+  });
+}
+
+function terminalRequest(overrides: Partial<ChildAgentRequest> = {}): ChildAgentRequest {
+  return request({ tool: "read_project_terminal", arguments: {}, terminalScope: TERMINAL_SCOPE, ...overrides });
+}
+
 describe("useChildAgents", () => {
   beforeEach(() => {
     resetTaskStore();
+    resetChildAgentLaunches();
     persistedLinks = {};
     vi.resetAllMocks();
+    bridge.startChildAgentSession.mockResolvedValue({ name: "mythra_agents", command: "/app", args: [], configPath: "/config", toolNames: ["read_project_terminal", "spawn_mythra_agent"] });
+    bridge.endChildAgentSession.mockResolvedValue(undefined);
     bridge.respondToChildAgentRequest.mockResolvedValue(undefined);
     bridge.reportChildAgentFinished.mockResolvedValue(undefined);
     claude.interruptClaudeTurn.mockResolvedValue(undefined);
@@ -503,6 +530,168 @@ describe("useChildAgents", () => {
       await view.send(request({ requestId: "request-2", tool: "set_project_check_command", arguments: { command: "npm test" }, sessionId: "missing" }));
       expect(lastResponse()?.[2]).toMatch(/not inside a saved project/);
       expect(applyProjectCheckCommand).not.toHaveBeenCalled();
+    });
+
+    it("reads the captured execution terminal without resolving selected project paths or writing tasks", async () => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const projectPathForThread = vi.fn(() => "/unrelated/selected-project");
+      const executionPathFor = vi.fn(() => "/unrelated/worktree");
+      const view = await mount({ readProjectTerminal, projectPathForThread, executionPathFor });
+      const before = useTaskStore.getState();
+      await view.send(terminalRequest());
+      expect(readProjectTerminal).toHaveBeenCalledExactlyOnceWith(TERMINAL_SCOPE, 12_000);
+      expect(projectPathForThread).not.toHaveBeenCalled();
+      expect(executionPathFor).not.toHaveBeenCalled();
+      expect(lastResponse()?.[1]).toMatchObject(TERMINAL_SNAPSHOT);
+      expect(lastResponse()?.[1]).not.toHaveProperty("terminalScope");
+      expect(useTaskStore.getState()).toBe(before);
+      expect(childRun.startChildAgentTurn).not.toHaveBeenCalled();
+    });
+
+    it.each(["native", "off"])("keeps terminal reads available with %s delegation and read-only access", async (mode) => {
+      await registerTerminalBridge({ settings: { childAgents: { enabled: false, targets: [] }, subagentsEnabled: false, subagentMax: 2, subagentEngine: mode === "native" ? "native" : "mythra" } });
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest({ arguments: { maxCharacters: 20_000 } }));
+      expect(readProjectTerminal).toHaveBeenCalledExactlyOnceWith(TERMINAL_SCOPE, 20_000);
+      expect(lastResponse()?.[2]).toBeUndefined();
+    });
+
+    it("keeps the active terminal readable when an approved crew edit queues a fresh next-turn launch", async () => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const view = await mount({ readProjectTerminal });
+      invalidateChildAgentLaunch(POLICY.sessionId);
+      await view.send(terminalRequest());
+      expect(readProjectTerminal).toHaveBeenCalledExactlyOnceWith(TERMINAL_SCOPE, 12_000);
+      expect(lastResponse()?.[1]).toMatchObject(TERMINAL_SNAPSHOT);
+      expect(lastResponse()?.[2]).toBeUndefined();
+    });
+
+    it("reports unavailable app-session history without creating activity or pretending a command ran", async () => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => ({ ...TERMINAL_SNAPSHOT, available: false, running: false, command: "", text: "", retainedCharacters: 0, generation: 0 }));
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[1]).toMatchObject({ available: false, running: false, text: "", lifetime: "app-session", note: expect.stringContaining("before an app restart") });
+      expect(useTaskStore.getState().tasks).toEqual({});
+    });
+
+    it.each([0, -1, 20_001, 1.5, "12000", null, NaN])("rejects invalid terminal maxCharacters %j", async (maxCharacters) => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest({ arguments: { maxCharacters } }));
+      expect(readProjectTerminal).not.toHaveBeenCalled();
+      expect(lastResponse()?.[2]).toMatch(/whole number from 1 to 20000/);
+    });
+
+    it("accepts the minimum output bound and preserves explicit truncation metadata", async () => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => ({ ...TERMINAL_SNAPSHOT, text: "\n", truncated: true }));
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest({ arguments: { maxCharacters: 1 } }));
+      expect(readProjectTerminal).toHaveBeenCalledExactlyOnceWith(TERMINAL_SCOPE, 1);
+      expect(lastResponse()?.[1]).toMatchObject({ text: "\n", truncated: true, retainedCharacters: 15, generation: 2, note: expect.stringContaining("earlier output was omitted") });
+    });
+
+    it("returns a truthful tool error when the terminal controller is absent or fails", async () => {
+      await registerTerminalBridge();
+      const view = await mount();
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[2]).toMatch(/not available to inspect/);
+      const readProjectTerminal = vi.fn(() => { throw new Error("Terminal controller stopped."); });
+      await view.rerender({ readProjectTerminal });
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toMatch(/Terminal controller stopped/);
+      expect(useTaskStore.getState().tasks).toEqual({});
+    });
+
+    it.each([undefined, "/unrelated/selected-project"])("rejects a missing or mismatched backend terminal scope %j", async (terminalScope) => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest({ terminalScope }));
+      expect(readProjectTerminal).not.toHaveBeenCalled();
+      expect(lastResponse()?.[2]).toMatch(/captured execution folder/);
+    });
+
+    it.each(["path", "cwd", "scope", "terminalScope"])("rejects caller-controlled %s even when backend scope matches", async (key) => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest({ arguments: { [key]: "/elsewhere" } }));
+      expect(readProjectTerminal).not.toHaveBeenCalled();
+      expect(lastResponse()?.[2]).toMatch(/scope is assigned by the app/);
+    });
+
+    it("refuses unknown, projectless, revoked and child sessions without falling back to the current project", async () => {
+      const readProjectTerminal = vi.fn(() => TERMINAL_SNAPSHOT);
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[2]).toMatch(/No active root project terminal bridge/);
+      await registerTerminalBridge({ projectPath: undefined });
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[2]).toMatch(/No active root project terminal bridge/);
+      await registerTerminalBridge();
+      await view.send(terminalRequest({ sessionId: "unknown" }));
+      expect(lastResponse()?.[2]).toMatch(/No active root project terminal bridge/);
+      await releaseChildAgentSession(POLICY.sessionId);
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[2]).toMatch(/No active root project terminal bridge/);
+      await registerTerminalBridge({ isChildThread: true, newSessionId: () => POLICY.sessionId });
+      await view.send(terminalRequest());
+      expect(lastResponse()?.[2]).toMatch(/No active root project terminal bridge/);
+      expect(readProjectTerminal).not.toHaveBeenCalled();
+    });
+
+    it.each(["scope", "limit"])("refuses a terminal snapshot that violates its %s boundary", async (boundary) => {
+      await registerTerminalBridge();
+      const readProjectTerminal = vi.fn(() => boundary === "scope" ? { ...TERMINAL_SNAPSHOT, scope: "/elsewhere" } : { ...TERMINAL_SNAPSHOT, text: "too much" });
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest({ arguments: { maxCharacters: 1 } }));
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toMatch(/outside the requested scope or character limit/);
+    });
+
+    it("refuses output when its bridge is revoked while the read resolves", async () => {
+      await registerTerminalBridge();
+      let resolveRead!: (snapshot: ProjectTerminalSnapshot) => void;
+      const readProjectTerminal = vi.fn(() => new Promise<ProjectTerminalSnapshot>((resolve) => { resolveRead = resolve; }));
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest());
+      await releaseChildAgentSession(POLICY.sessionId);
+      await act(async () => { resolveRead(TERMINAL_SNAPSHOT); });
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toMatch(/bridge changed/);
+    });
+
+    it("refuses old execution-folder output after the same session registers another worktree", async () => {
+      await registerTerminalBridge();
+      let resolveRead!: (snapshot: ProjectTerminalSnapshot) => void;
+      const readProjectTerminal = vi.fn(() => new Promise<ProjectTerminalSnapshot>((resolve) => { resolveRead = resolve; }));
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest());
+      await registerTerminalBridge({ projectPath: "/tmp/project/.worktrees/b" });
+      await act(async () => { resolveRead(TERMINAL_SNAPSHOT); });
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toMatch(/bridge changed/);
+    });
+
+    it.each(["managed", "native"])("refuses pending output when the root is discovered to be a %s child", async (ownership) => {
+      await registerTerminalBridge();
+      let resolveRead!: (snapshot: ProjectTerminalSnapshot) => void;
+      const readProjectTerminal = vi.fn(() => new Promise<ProjectTerminalSnapshot>((resolve) => { resolveRead = resolve; }));
+      const view = await mount({ readProjectTerminal });
+      await view.send(terminalRequest());
+      await view.rerender({ readProjectTerminal, ...(ownership === "managed"
+        ? { links: { "root-1": link({ childThreadId: "root-1", rootThreadId: "another-root" }) } }
+        : { nativeLinks: { "root-1": { childThreadId: "root-1", rootThreadId: "another-root", title: "Discovered child", provider: "openai", createdAt: 1 } } }) });
+      await act(async () => { resolveRead(TERMINAL_SNAPSHOT); });
+      expect(lastResponse()?.[1]).toBeNull();
+      expect(lastResponse()?.[2]).toMatch(/bridge changed|root project/);
     });
 
     it("queues a project-scoped settings proposal and applies it only after approval", async () => {

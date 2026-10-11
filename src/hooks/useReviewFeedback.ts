@@ -6,6 +6,7 @@ import {
   type FeedbackNote,
 } from "../lib/reviewFeedback";
 import { usePersistedStateRef } from "./usePersistedState";
+import { isWorkspaceDraftKey } from "../lib/newThreadDraftKeys";
 
 export const REVIEW_FEEDBACK_STORAGE_KEY = "kiwi.reviewFeedback";
 const MAX_FEEDBACK_SCOPES = 100;
@@ -37,10 +38,23 @@ function withScope(drafts: FeedbackDrafts, scope: string, notes: FeedbackNote[])
  */
 export function useReviewFeedback(threadKey: string, cwd: string) {
   const scope = feedbackScopeKey(threadKey, cwd);
-  const [drafts, setDrafts] = usePersistedStateRef<FeedbackDrafts>(REVIEW_FEEDBACK_STORAGE_KEY, {}, {
+  const [drafts, setDrafts, draftsRef] = usePersistedStateRef<FeedbackDrafts>(REVIEW_FEEDBACK_STORAGE_KEY, {}, {
     init: (load) => sanitizeFeedbackDrafts(load()),
   });
   const notes = useMemo(() => drafts[scope] ?? [], [drafts, scope]);
+
+  // Background recovery must read the original draft's latest notes even
+  // after this hook has switched to another composer. Draft keys encode their
+  // workspace; exclude notes saved under a different execution folder.
+  const notesForDraftKey = useCallback((key: string): readonly FeedbackNote[] => {
+    return Object.entries(draftsRef.current).flatMap(([savedScope, savedNotes]) => {
+      try {
+        const identity: unknown = JSON.parse(savedScope);
+        return Array.isArray(identity) && identity.length === 2 && identity[0] === key
+          && typeof identity[1] === "string" && isWorkspaceDraftKey(key, identity[1]) ? savedNotes : [];
+      } catch { return []; }
+    });
+  }, [draftsRef]);
 
   const addNote = useCallback((anchor: FeedbackAnchor, comment: string): FeedbackNote | null => {
     const created: FeedbackNote = {
@@ -94,5 +108,5 @@ export function useReviewFeedback(threadKey: string, cwd: string) {
     });
   }, [scope, setDrafts]);
 
-  return { notes, addNote, updateNote, removeNote, removeNotes, clearNotes };
+  return { notes, notesForDraftKey, addNote, updateNote, removeNote, removeNotes, clearNotes };
 }

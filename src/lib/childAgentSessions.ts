@@ -39,14 +39,35 @@ const launches = new Map<string, ChildAgentBridgeLaunch>();
 const activePolicies = new Map<string, ChildAgentPolicy>();
 /** Security context belongs to the launch, not the frozen delegation roster. */
 const launchContexts = new Map<string, string>();
+/** Registered read authority outlives a descriptor invalidated for the next turn. */
+const terminalScopes = new Map<string, string>();
 /** Children receive language tools without persisting a delegation policy. */
 const childProjectSessions = new Map<string, string>();
+/** Start/end must reach Rust in order: stale cleanup cannot revoke a newer token. */
+const sessionOperations = new Map<string, Promise<void>>();
+const sessionRegistrations = new Map<string, object>();
+const sessionLifetimes = new Map<string, object>();
+/** Only pending child ensures are retained; ownership starts before async hashing. */
+const pendingChildRegistrations = new Map<string, object>();
+const pendingThreadReleases = new Map<string, Promise<void>>();
+
+function queueSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = sessionOperations.get(sessionId);
+  const result = previous ? previous.then(operation, operation) : operation();
+  const settled = result.then(() => undefined, () => undefined);
+  sessionOperations.set(sessionId, settled);
+  void settled.then(() => {
+    if (sessionOperations.get(sessionId) === settled) sessionOperations.delete(sessionId);
+  });
+  return result;
+}
 
 /** Bind the first-turn language bridge once app-server returns its child ID. */
 export function registerChildProjectLaunch(threadId: string, sessionId: string, launch: ChildAgentBridgeLaunch, context: ProjectBridgeContext): void {
   childProjectSessions.set(threadId, sessionId);
   launches.set(sessionId, launch);
   launchContexts.set(sessionId, JSON.stringify(context));
+  terminalScopes.delete(sessionId);
 }
 
 async function childProjectSessionId(threadId: string): Promise<string> {
@@ -61,7 +82,11 @@ export function resetChildAgentLaunches(): void {
   launches.clear();
   activePolicies.clear();
   launchContexts.clear();
+  terminalScopes.clear();
   childProjectSessions.clear();
+  sessionRegistrations.clear();
+  sessionLifetimes.clear();
+  pendingChildRegistrations.clear();
 }
 
 /** Queue a fresh launch for the next root turn without revoking the bridge
@@ -79,6 +104,11 @@ export function childAgentPolicyForSession(
   sessionId: string,
 ): ChildAgentPolicy | undefined {
   return activePolicies.get(sessionId) ?? policies[sessionId];
+}
+
+/** Only a currently registered root bridge may inspect its captured terminal. */
+export function projectTerminalScopeForSession(sessionId: string): string | undefined {
+  return terminalScopes.get(sessionId);
 }
 
 export interface ChildAgentBridgeInput {
@@ -133,44 +163,89 @@ export async function ensureChildAgentBridge(
     ...(input.settings.subagentEngine === "native" ? { nativeDelegation: true } : {}),
   };
   const contextIdentity = JSON.stringify(projectContext);
+  let invocationCurrent = () => true;
+  let lifetime: object | undefined;
   const cachedLaunch = async (sessionId: string) => {
-    if (launches.has(sessionId) && launchContexts.get(sessionId) !== contextIdentity) {
+    lifetime = sessionLifetimes.get(sessionId) ?? {};
+    sessionLifetimes.set(sessionId, lifetime);
+    if (launchContexts.has(sessionId) && launchContexts.get(sessionId) !== contextIdentity) {
       // session_start rotates the old token while retaining live child
       // accounting. Ending it here would drop reserved/concurrent children.
       launches.delete(sessionId);
       launchContexts.delete(sessionId);
+      terminalScopes.delete(sessionId);
     }
     return launches.get(sessionId);
   };
+  const assertLifetime = (sessionId: string) => {
+    if (!lifetime || sessionLifetimes.get(sessionId) !== lifetime) {
+      throw new Error("This project bridge registration was cancelled.");
+    }
+  };
   const startSession = async (policy: ChildAgentPolicy, known: string[], finished: string[] = []) => {
-    // Keep the existing call shape for non-project sessions.
-    const launch = input.projectPath
-      ? await startChildAgentSession(policy, known, finished, projectContext)
-      : await startChildAgentSession(policy, known, ...(finished.length ? [finished] : []));
-    launches.set(policy.sessionId, launch);
-    launchContexts.set(policy.sessionId, contextIdentity);
-    return launch;
+    assertLifetime(policy.sessionId);
+    const registration = {};
+    sessionRegistrations.set(policy.sessionId, registration);
+    return queueSessionOperation(policy.sessionId, async () => {
+      const current = () => invocationCurrent() && sessionRegistrations.get(policy.sessionId) === registration;
+      if (!current()) throw new Error("This project bridge registration was cancelled.");
+      // Keep the existing call shape for non-project sessions.
+      const launch = input.projectPath
+        ? await startChildAgentSession(policy, known, finished, projectContext)
+        : await startChildAgentSession(policy, known, ...(finished.length ? [finished] : []));
+      if (!current()) {
+        // This operation still owns the native session until the next queued
+        // start/end. Retire it here, before a newer registration can reach Rust.
+        await endChildAgentSession(policy.sessionId).catch(() => undefined);
+        throw new Error("This project bridge registration was cancelled.");
+      }
+      launches.set(policy.sessionId, launch);
+      launchContexts.set(policy.sessionId, contextIdentity);
+      if (!projectContext.childThread && projectContext.projectPath?.trim()
+        && launch.toolNames.includes("read_project_terminal")) {
+        terminalScopes.set(policy.sessionId, projectContext.projectPath);
+      } else terminalScopes.delete(policy.sessionId);
+      return launch;
+    });
   };
   if (childThread) {
     if (!input.projectPath || !input.threadId) return null;
-    const sessionId = childProjectSessions.get(input.threadId)
-      ?? input.links[input.threadId]?.languageSessionId
-      ?? (input.newSessionId ? input.newSessionId() : await childProjectSessionId(input.threadId));
-    const policy: ChildAgentPolicy = {
-      sessionId,
-      rootThreadId: input.threadId,
-      targets: [],
-      maxConcurrent: 1,
-      permission: input.permission,
-      systemPrompt: input.systemPrompt,
-      projectInstructionsEnabled: input.projectInstructionsEnabled,
-      reasoningEffort: input.reasoningEffort,
-      serviceTier: input.serviceTier,
-      capturedAt: Date.now(),
-    };
-    const cached = await cachedLaunch(sessionId);
-    childProjectSessions.set(input.threadId, sessionId);
-    return { policy, launch: cached ?? await startSession(policy, []), captured: false };
+    const threadId = input.threadId;
+    const invocation = {};
+    pendingChildRegistrations.set(threadId, invocation);
+    invocationCurrent = () => pendingChildRegistrations.get(threadId) === invocation;
+    try {
+      // A release can itself await the stable child identity. A newer ensure
+      // must not register a session that this older release will then end.
+      const pendingRelease = pendingThreadReleases.get(threadId);
+      if (pendingRelease) await pendingRelease;
+      if (!invocationCurrent()) throw new Error("This project bridge registration was cancelled.");
+      const sessionId = childProjectSessions.get(threadId)
+        ?? input.links[threadId]?.languageSessionId
+        ?? (input.newSessionId ? input.newSessionId() : await childProjectSessionId(threadId));
+      if (!invocationCurrent()) throw new Error("This project bridge registration was cancelled.");
+      const policy: ChildAgentPolicy = {
+        sessionId,
+        rootThreadId: threadId,
+        targets: [],
+        maxConcurrent: 1,
+        permission: input.permission,
+        systemPrompt: input.systemPrompt,
+        projectInstructionsEnabled: input.projectInstructionsEnabled,
+        reasoningEffort: input.reasoningEffort,
+        serviceTier: input.serviceTier,
+        capturedAt: Date.now(),
+      };
+      // Publish provisional ownership before yielding, including random IDs
+      // used by delegated first turns. Release must retire this exact session.
+      childProjectSessions.set(threadId, sessionId);
+      const cached = await cachedLaunch(sessionId);
+      if (!invocationCurrent()) throw new Error("This project bridge registration was cancelled.");
+      assertLifetime(sessionId);
+      return { policy, launch: cached ?? await startSession(policy, []), captured: false };
+    } finally {
+      if (invocationCurrent()) pendingChildRegistrations.delete(threadId);
+    }
   }
 
   const persistedStored = childAgentPolicyForThread(input.policies, input.threadId);
@@ -255,7 +330,8 @@ export async function ensureChildAgentBridge(
       && (input.settings.subagentEngine === "native" || cached.toolNames.includes("propose_agent_settings"))) {
       return { policy, launch: cached, captured: !stored };
     }
-    if (cached || existing) await releaseChildAgentSession(policy.sessionId);
+    if (cached || existing) await revokeChildAgentSession(policy.sessionId, lifetime);
+    assertLifetime(policy.sessionId);
     cacheChildAgentPolicy(policy);
     const launch = await startSession(policy, []);
     // The emptied roster serves only this session's bridge. Persisting it over
@@ -307,7 +383,8 @@ export async function ensureChildAgentBridge(
   // branch makes in the other direction — it is ended and replaced with a
   // spawn-capable bridge.
   if (cached) {
-    await releaseChildAgentSession(policy.sessionId);
+    await revokeChildAgentSession(policy.sessionId, lifetime);
+    assertLifetime(policy.sessionId);
     cacheChildAgentPolicy(policy);
   }
 
@@ -333,6 +410,25 @@ export async function releaseChildAgentSessions(
   links: Record<string, ChildAgentLink> = {},
   isChildThread = false,
 ): Promise<string[]> {
+  // Revocation cannot wait for the same hash computation it must cancel.
+  pendingChildRegistrations.delete(threadId);
+  const previous = pendingThreadReleases.get(threadId);
+  const operation = () => releaseChildAgentSessionsInner(policies, threadId, links, isChildThread);
+  const result = previous ? previous.then(operation, operation) : operation();
+  const settled = result.then(() => undefined, () => undefined);
+  pendingThreadReleases.set(threadId, settled);
+  void settled.then(() => {
+    if (pendingThreadReleases.get(threadId) === settled) pendingThreadReleases.delete(threadId);
+  });
+  return result;
+}
+
+async function releaseChildAgentSessionsInner(
+  policies: Record<string, ChildAgentPolicy>,
+  threadId: string,
+  links: Record<string, ChildAgentLink>,
+  isChildThread: boolean,
+): Promise<string[]> {
   const released: string[] = [];
   const childSession = childProjectSessions.get(threadId) ?? links[threadId]?.languageSessionId
     ?? (links[threadId] || isChildThread ? await childProjectSessionId(threadId) : undefined);
@@ -350,13 +446,24 @@ export async function releaseChildAgentSessions(
 
 /** Drop one provisional or attached bridge session. */
 export async function releaseChildAgentSession(sessionId: string): Promise<void> {
+  return revokeChildAgentSession(sessionId);
+}
+
+async function revokeChildAgentSession(sessionId: string, preservedLifetime?: object): Promise<void> {
+  if (preservedLifetime && sessionLifetimes.get(sessionId) !== preservedLifetime) {
+    throw new Error("This project bridge registration was cancelled.");
+  }
+  // Revoke renderer authority before waiting for an in-flight native start.
+  if (!preservedLifetime) sessionLifetimes.delete(sessionId);
+  sessionRegistrations.delete(sessionId);
   launches.delete(sessionId);
   activePolicies.delete(sessionId);
   launchContexts.delete(sessionId);
+  terminalScopes.delete(sessionId);
   for (const [threadId, childSession] of childProjectSessions) {
     if (childSession === sessionId) childProjectSessions.delete(threadId);
   }
-  await endChildAgentSession(sessionId).catch(() => undefined);
+  await queueSessionOperation(sessionId, () => endChildAgentSession(sessionId).catch(() => undefined));
 }
 
 /** An approval must not silently replace a direct edit or a live child's policy. */

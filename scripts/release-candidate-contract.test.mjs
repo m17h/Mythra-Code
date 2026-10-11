@@ -52,10 +52,11 @@ function fixture() {
   return { root, stateRoot, plan, args, rows, lease, active, git };
 }
 
+// This fixture launches real Git processes; Windows process setup can exceed 5s.
 test('a clean frozen provisional candidate needs a matching live coordinator, native worker and actual ancestry', () => {
   const f = fixture();
   expect(assertCandidateContract(f.args)).toMatchObject({ provisional: true, commit: f.plan.commit, planHash: f.plan.planHash });
-});
+}, process.platform === 'win32' ? 15_000 : 5_000);
 
 test.each(['--allow-dirty', '--skip-install', '--skip-verify', '--skip-launch-smoke'])('provisional ownership never grants %s', (flag) => {
   const f = fixture(); expect(() => assertCandidateContract({ ...f.args, flags: [flag] })).toThrow(/reject/);

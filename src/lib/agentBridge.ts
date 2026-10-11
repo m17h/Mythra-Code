@@ -10,7 +10,7 @@ import type { PermissionMode, Provider } from "../types";
  * launch descriptor is only an executable path plus a session-file path.
  */
 
-export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "language_tools_status" | "install_language_tool" | "language_tool_query";
+export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "read_project_terminal" | "language_tools_status" | "install_language_tool" | "language_tool_query";
 
 export interface ProjectBridgeContext {
   projectPath?: string;
@@ -36,6 +36,8 @@ export interface ChildAgentRequest {
   sessionId: string;
   tool: ChildAgentTool;
   arguments: Record<string, unknown>;
+  /** Backend-owned execution folder; a model cannot supply or override it. */
+  terminalScope?: string;
 }
 
 export async function startChildAgentSession(

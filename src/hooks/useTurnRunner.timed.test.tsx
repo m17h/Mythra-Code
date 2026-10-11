@@ -355,6 +355,20 @@ describe("timed prompts in a thread", () => {
 });
 
 describe("timed first prompt of a new thread", () => {
+  it("keeps a deferred first prompt out of the foreground acknowledgement and selection", async () => {
+    let release!: (text: string) => void;
+    const ctx = context({ activeThread: null, resolveSkillPrompt: vi.fn(() => new Promise<string>((resolve) => { release = resolve; })) });
+    const { result } = renderHook(() => useTurnRunner(ctx));
+    await act(async () => { await result.current.scheduleMessage("Scheduled only", NOW + 10_000); });
+    await advance(10_010);
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    await act(async () => { release("Scheduled only"); });
+    await advance(0);
+    expect(result.current.pendingFirstPrompts).toEqual([]);
+    expect(ctx.setActiveThread).not.toHaveBeenCalled();
+    expect(cursor.startCursorTurn).toHaveBeenCalledWith(expect.objectContaining({ prompt: "Scheduled only" }));
+  });
+
   it("holds a scheduled new conversation behind an ordinary draft still preparing without a thread id", async () => {
     useTaskStore.getState().setActiveThread(null);
     let finishOrdinary!: () => void;

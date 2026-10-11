@@ -1,0 +1,2 @@
+.pending-first-prompt .activity-status-pill { cursor: default; }
+.pending-prompt-attachments { margin-top: 6px; font-size: var(--fs-meta); color: var(--muted); overflow-wrap: anywhere; }

@@ -19,7 +19,7 @@ import {
   type ChildAgentLink,
   type ChildAgentPolicy,
 } from "../lib/childAgents";
-import { childAgentPolicyForSession } from "../lib/childAgentSessions";
+import { childAgentPolicyForSession, projectTerminalScopeForSession } from "../lib/childAgentSessions";
 import { startChildAgentTurn } from "../lib/childRun";
 import { auditEvent, rpc, type JsonObject } from "../lib/codex";
 import { isClaudeTurnActive, killClaudeTurn, loadClaudeTranscript } from "../lib/claude";
@@ -37,6 +37,7 @@ import type { LMStudioModel } from "../lib/lmStudio";
 import type { SetPersisted } from "./usePersistedState";
 import { MAX_RUN_COMMAND_LENGTH, sanitizeProjectRunCommand } from "../lib/projectRun";
 import { MAX_CHECK_COMMAND_LENGTH, sanitizeProjectCheckCommand } from "../lib/projectChecks";
+import type { ProjectTerminalSnapshot } from "../lib/terminalSnapshot";
 import { nativeDescendantIds, type NativeAgentLink } from "../lib/nativeAgentLinks";
 import type { AgentRecord } from "../components/StudioDock";
 import type { PendingApproval, ProjectCheckCommand, ProjectRunCommand, ProjectSubagentSettings, Provider, Thread, ThreadReasoning } from "../types";
@@ -103,6 +104,8 @@ export interface ChildAgentContext {
    * with the output so far, so the model can report an immediate failure.
    */
   runProjectCommand: (rootThreadId: string, run: ProjectRunCommand) => Promise<ProjectRunOutcome>;
+  /** Inspect an existing terminal at the bridge's captured execution folder. */
+  readProjectTerminal?: (scope: string, maxCharacters: number) => ProjectTerminalSnapshot | Promise<ProjectTerminalSnapshot>;
   /** Automatic pre-turn file snapshots for child turns, same as user turns. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string) => void;
@@ -1040,7 +1043,7 @@ export function useChildAgents(context: ChildAgentContext): {
       output: (outcome.output ?? "").slice(-1_500),
       note: outcome.exited
         ? "The command already exited; read the output above before telling the user it works."
-        : "Running in the app's Terminal panel. The user can stop it with the Stop button next to Run in the top bar; you cannot see further output from here.",
+        : "Running in the app's Terminal panel. Use `read_project_terminal` to inspect retained output. The user can stop it with the Stop button next to Run in the top bar.",
     };
   }, []);
 
@@ -1068,6 +1071,43 @@ export function useChildAgents(context: ChildAgentContext): {
     return { saved: true, command: next?.command ?? null, note: "Saved for this project. Nothing was executed." };
   }, []);
 
+  const readTerminal = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    const scope = projectTerminalScopeForSession(request.sessionId);
+    if (!policy?.rootThreadId || !scope || ctx.links[policy.rootThreadId] || ctx.nativeLinks?.[policy.rootThreadId]) {
+      throw new Error("No active root project terminal bridge is registered for this conversation.");
+    }
+    if (request.terminalScope !== scope) throw new Error("The terminal request does not match this conversation's captured execution folder.");
+    if (Object.keys(request.arguments).some((key) => key !== "maxCharacters")) {
+      throw new Error("Only `maxCharacters` is accepted; terminal scope is assigned by the app.");
+    }
+    const maxCharacters = request.arguments.maxCharacters === undefined ? 12_000 : request.arguments.maxCharacters;
+    if (typeof maxCharacters !== "number" || !Number.isInteger(maxCharacters) || maxCharacters < 1 || maxCharacters > 20_000) {
+      throw new Error("`maxCharacters` must be a whole number from 1 to 20000.");
+    }
+    if (!ctx.readProjectTerminal) throw new Error("The app's Terminal panel is not available to inspect.");
+    const snapshot = await ctx.readProjectTerminal(scope, maxCharacters);
+    // A session can be revoked or rebound while a controller is resolving.
+    const current = contextRef.current;
+    if (projectTerminalScopeForSession(request.sessionId) !== scope
+      || childAgentPolicyForSession(current.policies, request.sessionId)?.rootThreadId !== policy.rootThreadId
+      || current.links[policy.rootThreadId] || current.nativeLinks?.[policy.rootThreadId]) {
+      throw new Error("This conversation's terminal bridge changed while its output was being read.");
+    }
+    if (snapshot.scope !== scope || snapshot.text.length > maxCharacters) {
+      throw new Error("The Terminal panel returned output outside the requested scope or character limit.");
+    }
+    return {
+      ...snapshot,
+      note: !snapshot.available
+        ? "No terminal output is retained for this project in the current app session. Commands outside this Terminal panel or before an app restart are not represented."
+        : snapshot.truncated
+          ? "This is the retained terminal output tail for the current app session; earlier output was omitted."
+          : "This is the retained terminal output for the current app session. Commands outside this Terminal panel or before an app restart are not represented.",
+    };
+  }, []);
+
   const handleRequest = useCallback(async (request: ChildAgentRequest): Promise<void> => {
     try {
       let result: Record<string, unknown>;
@@ -1078,6 +1118,7 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "propose_agent_settings") result = await proposeSettings(request);
       else if (request.tool === "set_project_run_command") result = await setRunCommand(request);
       else if (request.tool === "set_project_check_command") result = await setCheckCommand(request);
+      else if (request.tool === "read_project_terminal") result = await readTerminal(request);
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
     } catch (reason) {
@@ -1087,7 +1128,7 @@ export function useChildAgents(context: ChildAgentContext): {
       // the parent model can read why and choose a different destination.
       await respondToChildAgentRequest(request.requestId, null, message).catch(() => undefined);
     }
-  }, [cancelChild, collectChild, proposeSettings, reportStatus, setCheckCommand, setRunCommand, spawnChild]);
+  }, [cancelChild, collectChild, proposeSettings, readTerminal, reportStatus, setCheckCommand, setRunCommand, spawnChild]);
 
   // Tauri events are fire-and-forget. Re-subscribing this listener whenever a
   // child changes state creates a small window with no receiver at all; a tool

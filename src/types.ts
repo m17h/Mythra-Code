@@ -511,6 +511,8 @@ export interface AppSettings {
   /** Empty means automatically choose an available Luna model for OpenAI. */
   threadTitleModel: string;
   terminalScrollback: number;
+  /** Deadline for newly launched app terminal commands, in minutes. Zero disables it. */
+  terminalTimeoutMinutes: number;
   uiScale: number;
   /** Direction provider quota percentages are shown in. Absent before 1.7.6. */
   usageDisplay: UsageDisplayMode;

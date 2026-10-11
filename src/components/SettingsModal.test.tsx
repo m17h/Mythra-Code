@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS } from "../lib/appConfig";
+import { DEFAULT_SETTINGS, MAX_TERMINAL_TIMEOUT_MINUTES } from "../lib/appConfig";
 import type { AppUpdater } from "../lib/appUpdater";
 import { SettingsModal } from "./SettingsModal";
 import type { RuntimeModel } from "./ModelPowerControl";
@@ -370,6 +370,149 @@ describe("SettingsModal", () => {
     // Runtime fields use the shared menu, not native selects.
     expect(screen.getByRole("button", { name: "OpenAI service tier" })).toHaveAttribute("aria-haspopup", "menu");
     expect(screen.getByRole("button", { name: "Terminal scrollback" })).toHaveAttribute("aria-haspopup", "menu");
+  });
+
+  it("finds terminal timeout controls through settings search", () => {
+    render(<SettingsModal {...modalProps()} />);
+    const search = screen.getByRole("textbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "terminal timeout" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Automatically stop terminal commands" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(5);
+  });
+
+  it("saves custom terminal timeout minutes only when settings are saved", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave })} />);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "45" } });
+
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 45 }));
+  });
+
+  it("disables terminal timeout and restores the custom limit when reenabled", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave, settings: { ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 23 } })} />);
+    const toggle = screen.getByRole("switch", { name: "Automatically stop terminal commands" });
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByRole("spinbutton", { name: "Timeout minutes" })).not.toBeInTheDocument();
+    expect(screen.getByText("No automatic timeout")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 0 }));
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(23);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "45" } });
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(45);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 45 }));
+  });
+
+  it("starts an explicitly disabled timeout at the default when enabled", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave, settings: { ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 0 } })} />);
+    const toggle = screen.getByRole("switch", { name: "Automatically stop terminal commands" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(5);
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 5 }));
+  });
+
+  it("can turn off an invalid timeout draft and restores its last valid limit", () => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave, settings: { ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 23 } })} />);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("switch", { name: "Automatically stop terminal commands" }));
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 0 }));
+    fireEvent.click(screen.getByRole("switch", { name: "Automatically stop terminal commands" }));
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(23);
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
+  });
+
+  it.each(["", "0", "-1", "1.5", "1e2", String(MAX_TERMINAL_TIMEOUT_MINUTES + 1)])("blocks saving invalid terminal timeout text (%j), including from another pane", (value) => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave })} />);
+    const input = screen.getByRole("spinbutton", { name: "Timeout minutes" });
+    fireEvent.change(input, { target: { value } });
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+    expect(screen.getByText(/Fix the terminal timeout in Runtime to save/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Interface" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Runtime" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "12" } });
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 12 }));
+  });
+
+  it.each([undefined, -1, 1.5, "15"])("normalizes older malformed terminal settings (%j) without marking an untouched draft dirty", (value) => {
+    const onSave = vi.fn();
+    render(<SettingsModal {...modalProps({ initialSection: "system", onSave, settings: { ...DEFAULT_SETTINGS, terminalTimeoutMinutes: value as unknown as number } })} />);
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(5);
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 5 }));
+  });
+
+  it("discards a terminal timeout draft on cancel and reseeds it on reopening", async () => {
+    const props = modalProps({ initialSection: "system", settings: { ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 23 } });
+    const { rerender } = render(<SettingsModal {...props} />);
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    try {
+      fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "" } });
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(props.onClose).toHaveBeenCalledOnce());
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(props.onSave).not.toHaveBeenCalled();
+      rerender(<SettingsModal {...props} open={false} />);
+      rerender(<SettingsModal {...props} />);
+      expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(23);
+      expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
+      expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("adopts external terminal timeout updates only when the draft is untouched", () => {
+    const props = modalProps({ initialSection: "system" });
+    const { rerender } = render(<SettingsModal {...props} />);
+    rerender(<SettingsModal {...props} settings={{ ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 23 }} />);
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(23);
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "" } });
+    rerender(<SettingsModal {...props} settings={{ ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 0 }} />);
+    expect(screen.getByRole("switch", { name: "Automatically stop terminal commands" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  });
+
+  it("clears equivalent timeout text when adopting an external setting update", () => {
+    const props = modalProps({ initialSection: "system" });
+    const { rerender } = render(<SettingsModal {...props} />);
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Timeout minutes" }), { target: { value: "05" } });
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    rerender(<SettingsModal {...props} settings={{ ...DEFAULT_SETTINGS, terminalTimeoutMinutes: 23 }} />);
+    expect(screen.getByRole("spinbutton", { name: "Timeout minutes" })).toHaveValue(23);
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(props.onSave).toHaveBeenCalledWith(expect.objectContaining({ terminalTimeoutMinutes: 23 }));
   });
 
   it("offers automatic thread titles as a draft, off until it is asked for", () => {

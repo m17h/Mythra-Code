@@ -2361,6 +2361,9 @@ pub(super) async fn prepare_project(
 ) -> Result<Option<PathBuf>, String> {
     prepare_project_inner(app, cwd, allow_install, permission, true).await
 }
+fn project_provisioning_allowed(allow_install: bool, permission: &str) -> bool {
+    allow_install && permission == "full"
+}
 /// Frontend setup retains install-before-turn semantics; only Claude's actual
 /// native launch needs an immutable plugin descriptor.
 pub(super) async fn prepare_project_tools(
@@ -2369,7 +2372,46 @@ pub(super) async fn prepare_project_tools(
     allow_install: bool,
     permission: &str,
 ) -> Result<Option<PathBuf>, String> {
+    // Provisioning cannot do work in these modes. Avoid scanning the project
+    // or opening private tool storage before the first prompt is dispatched.
+    if !project_provisioning_allowed(allow_install, permission) {
+        return Ok(None);
+    }
     prepare_project_inner(app, cwd, allow_install, permission, false).await
+}
+async fn prepare_tool_at_scoped(
+    app: Option<&AppHandle>,
+    root: &Path,
+    runtime: &Runtime,
+    id: &str,
+    project: &Path,
+) {
+    let settings = runtime.settings.lock().await.clone();
+    let Ok(tool) = tool(id) else {
+        return;
+    };
+    // Persisted failures are not retried automatically on every turn.
+    if (tool.packages.is_empty() && id != "go")
+        || !settings.auto_install
+        || !settings.enabled.get(id).copied().unwrap_or(true)
+        || settings.errors.contains_key(id)
+    {
+        return;
+    }
+    // This is optional provisioning before the conversation is created, not
+    // permission to execute a language server. Existing launch files need no
+    // cold health probe here. Queries and Claude plugin registration still
+    // validate exact contents, project scope and protocol health themselves.
+    let launches = launches(tool, managed_prefix(root, &settings, id).as_deref());
+    if launches.len() == tool.servers.len().max(1)
+        && launches
+            .iter()
+            .all(|launch| validate_launch_project(launch, project).is_ok())
+        && tool_identities_inner(id, &launches, false).is_some()
+    {
+        return;
+    }
+    let _ = install_at_scoped(app, root, runtime, id, true, Some(project)).await;
 }
 async fn prepare_project_inner(
     app: &AppHandle,
@@ -2394,10 +2436,13 @@ async fn prepare_project_inner(
     }
     let root = root(app)?;
     let runtime = runtime(&root)?;
-    if allow_install && permission == "full" {
+    if project_provisioning_allowed(allow_install, permission) {
         for id in &detected {
+            if !build_plugin {
+                prepare_tool_at_scoped(Some(app), &root, &runtime, id, &canonical).await;
+                continue;
+            }
             let settings = runtime.settings.lock().await.clone();
-            // Persisted failure is not retried automatically on every turn.
             if (!tool(id)?.packages.is_empty() || id == "go")
                 && settings.auto_install
                 && settings.enabled.get(id).copied().unwrap_or(true)
@@ -2444,6 +2489,16 @@ async fn prepare_project_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_provisioning_requires_explicit_install_and_full_access() {
+        for permission in ["read-only", "ask", "full", "", "unknown"] {
+            assert!(!project_provisioning_allowed(false, permission));
+            assert_eq!(
+                project_provisioning_allowed(true, permission),
+                permission == "full"
+            );
+        }
+    }
     fn temporary() -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("mythra-language-tools-{}", uuid::Uuid::new_v4()));
@@ -2809,6 +2864,21 @@ mod tests {
             timings.insert(name.into(), json!(start.elapsed().as_secs_f64() * 1000.0));
         }
         let project = temporary();
+        if let Ok(path) = std::env::var("MYTHRA_LANGUAGE_EFFICIENCY_PROJECT") {
+            let start = Instant::now();
+            let (_, detected) = detect_project(Path::new(&path)).unwrap();
+            timings.insert(
+                "projectDetectionMs".into(),
+                json!(start.elapsed().as_secs_f64() * 1000.0),
+            );
+            timings.insert("projectDetectedTools".into(), json!(detected));
+        }
+        let start = Instant::now();
+        prepare_tool_at_scoped(None, &root, &runtime, &id, &project).await;
+        timings.insert(
+            "preparePresentColdMs".into(),
+            json!(start.elapsed().as_secs_f64() * 1000.0),
+        );
         for name in ["verifyColdMs", "verifyWarmMs"] {
             let start = Instant::now();
             assert!(
@@ -2819,6 +2889,12 @@ mod tests {
             );
             timings.insert(name.into(), json!(start.elapsed().as_secs_f64() * 1000.0));
         }
+        let start = Instant::now();
+        prepare_tool_at_scoped(None, &root, &runtime, &id, &project).await;
+        timings.insert(
+            "preparePresentWarmMs".into(),
+            json!(start.elapsed().as_secs_f64() * 1000.0),
+        );
         let start = Instant::now();
         let snapshot = metadata_snapshot(
             &root,
@@ -3536,6 +3612,55 @@ mod tests {
             .contains("disabled"));
         assert!(!root.join("tools").exists());
         assert!(runtime.installing.lock().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn project_preparation_reuses_present_tools_without_certifying_health() {
+        if system_binary("node").is_none() {
+            panic!("This native regression requires Node.js.");
+        }
+        let root = temporary();
+        let project = temporary();
+        let runtime = runtime(&root).unwrap();
+        let receipt = uuid::Uuid::new_v4().to_string();
+        let package = root
+            .join("tools/python")
+            .join(&receipt)
+            .join("node_modules/pyright");
+        fs::create_dir_all(&package).unwrap();
+        let script = package.join("langserver.index.js");
+        fs::write(&script, "require('fs').appendFileSync('probe-count','1');process.stdin.on('data',()=>{const m=JSON.stringify({jsonrpc:'2.0',id:1,result:{capabilities:{}}});process.stdout.write('Content-Length: '+Buffer.byteLength(m)+'\\r\\n\\r\\n'+m);});").unwrap();
+        runtime
+            .settings
+            .lock()
+            .await
+            .installations
+            .insert("python".into(), receipt);
+        prepare_tool_at_scoped(None, &root, &runtime, "python", &project).await;
+        assert!(
+            !root.join("probe-count").exists(),
+            "Optional project preparation must not initialize an installed server."
+        );
+        assert!(
+            !proofs()
+                .lock()
+                .unwrap()
+                .contains_key(&(root.clone(), "python".into())),
+            "Presence must not certify health."
+        );
+        let settings = runtime.settings.lock().await.clone();
+        verified_launches_scoped(tool("python").unwrap(), &root, &settings, Some(&project))
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(root.join("probe-count")).unwrap(), "1");
+        fs::write(script, "process.exit(42)").unwrap();
+        assert!(
+            verified_launches_scoped(tool("python").unwrap(), &root, &settings, Some(&project))
+                .await
+                .is_err(),
+            "Execution must retain exact identity and protocol verification."
+        );
+        fs::remove_dir_all(project).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]

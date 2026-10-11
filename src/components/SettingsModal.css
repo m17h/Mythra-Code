@@ -182,3 +182,9 @@
   clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
   background: linear-gradient(180deg, #e07ae8, #ab48e0 58%, #7c2f9e);
 }
+/* Terminal timeout: a minutes field under its switch, in the field-label idiom. */
+.terminal-timeout-row > .terminal-timeout-detail { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s-2); margin: 0; color: var(--muted-2); font-size: var(--fs-meta); }
+.terminal-timeout-detail > input { width: 11ch; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease; }
+.terminal-timeout-detail > input:focus { border-color: var(--green-line); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 9%, transparent); }
+.terminal-timeout-detail > input[aria-invalid="true"] { border-color: var(--red); }
+.terminal-timeout-detail > .terminal-timeout-error { flex-basis: 100%; margin: 0; color: var(--red); line-height: 1.5; }

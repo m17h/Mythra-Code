@@ -45,6 +45,11 @@ export default defineConfig({
         async setMouseButton({ page }, down: boolean) {
           await (down ? page.mouse.down() : page.mouse.up());
         },
+        async wheelOverTerminalTimeout({ page, iframe }, deltaY: number) {
+          await iframe.getByRole("spinbutton", { name: "Timeout minutes" }).hover();
+          await page.mouse.wheel(0, deltaY);
+          await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        },
         async setForcedColors({ page }, active: boolean) {
           await page.emulateMedia({ forcedColors: active ? "active" : "none" });
           await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));

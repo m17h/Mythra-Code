@@ -1,4 +1,7 @@
 import { flushSync } from "react-dom";
+import { pendingFirstPromptForView, type PendingFirstPrompt as PendingPrompt } from "./lib/pendingFirstPrompt";
+import { PendingFirstPrompt } from "./components/PendingFirstPrompt";
+import { createWorkspaceDraftKey, isWorkspaceDraftKey, retainSavedWorkspaceDraftKeys, sanitizeSavedWorkspaceDraftKeys, sanitizeWorkspaceDraftKeys } from "./lib/newThreadDraftKeys";
 import { renameLocalTranscript } from "./lib/localTranscriptPersistence";
 import { clipboardImages, createAttachmentPreparationTracker, imageBase64 } from "./lib/clipboardImages";
 import { forgetQuestionRecords, hasUnansweredQuestionRequests } from "./lib/agentQuestionRecords";
@@ -23,7 +26,7 @@ import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadC
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { flushPendingStateWrites, loadStored, readStoredRaw, storeValue } from "./lib/storage";
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
 import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
@@ -48,7 +51,7 @@ import { ScheduledCountBadge } from "./components/ScheduledCountBadge";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
-import { Composer, discardDraft, type ComposerHandle } from "./components/Composer";
+import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
@@ -78,7 +81,7 @@ import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMess
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
-import { selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
+import { captureHistoryReadBoundary, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
 import { hasEligibleQueuedTurns } from "./lib/timedPrompts";
 import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
@@ -467,7 +470,7 @@ const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialPro
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -597,6 +600,21 @@ export default function App() {
   // the starting/running state — never a global flag, so a start in one
   // thread cannot make another thread look busy.
   const [startingDraftTurn, setStartingDraftTurn] = useState(false);
+  // This ID belongs only to the renderer. Provider RPCs and durable thread
+  // metadata continue to use IDs assigned by the provider.
+  const [activeFirstPrompt, setActiveFirstPrompt] = useState<PendingPrompt | null>(null);
+  const activeFirstPromptIdRef = useRef<string | null>(null);
+  const firstPromptDraftKeysRef = useRef(new Map<string, string>());
+  const firstPromptDraftMetadataRef = useRef(new Map<string, PendingPrompt>());
+  const [workspaceDraftKeys, setWorkspaceDraftKeys] = usePersistedState<Record<string, string>>("kiwi.workspaceDraftKeys", {}, { init: (load) => sanitizeWorkspaceDraftKeys(load()) });
+  // Key history exposes original drafts recovered by Composer after a send
+  // settles in the background. Authored text remains in the existing draft store.
+  const [savedWorkspaceDraftKeys, setSavedWorkspaceDraftKeys] = usePersistedState<Record<string, string[]>>("kiwi.savedWorkspaceDraftKeys", {}, { init: (load) => sanitizeSavedWorkspaceDraftKeys(load()) });
+  const [, refreshSavedDrafts] = useState(0);
+  const clearFirstPromptSelection = useCallback(() => {
+    activeFirstPromptIdRef.current = null;
+    setActiveFirstPrompt(null);
+  }, []);
   const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const [headerUsageWindows, setHeaderUsageWindows] = usePersistedState<HeaderUsageWindows>("kiwi.headerUsageWindows", {}, {
     init: (load) => sanitizeHeaderUsageWindows(load()),
@@ -744,6 +762,8 @@ export default function App() {
   const [gitRoute, setGitRoute] = useState<GitRoute | null>(null);
   const gitRouteNonceRef = useRef(0);
   const [attachmentDrafts, setAttachmentDrafts] = useState<AttachmentDrafts>({});
+  const attachmentsByKeyRef = useRef(attachmentDrafts);
+  attachmentsByKeyRef.current = attachmentDrafts;
   const [openAiUsageSnapshot, setOpenAiUsageSnapshot] = useState<AccountUsageSnapshot | null>(null);
   const [openAiAccountKey, setOpenAiAccountKey] = useState("");
   const openAiAccountKeyRef = useRef("");
@@ -850,6 +870,7 @@ export default function App() {
     ? pendingHandoff
     : null;
   const activeThreadId = activeThread?.id ?? null;
+  const selectedFirstPrompt = !activeThread && activeFirstPrompt?.workspacePath === activeWorkspacePathRef.current ? activeFirstPrompt : null;
   // The whole durable ownership graph, both generations. Inbox classification
   // and the cycle guards below have to see every record: a root proved by a
   // cross-provider link must not be reclassified by a native one, or the
@@ -900,9 +921,16 @@ export default function App() {
   // owns them by id, an unsent one by its workspace. Switching conversations
   // therefore cannot carry a file into another thread's next turn, and coming
   // back to a draft still finds the files chosen for it.
-  const attachmentKey = activeThreadId ?? (activeWorkspace ? `new:${activeWorkspace.path}` : "new:");
+  const defaultDraftKey = activeWorkspace ? `new:${activeWorkspace.path}` : "new:";
+  const workspaceDraftKey = activeWorkspace ? workspaceDraftKeys[normalizedProjectPath(activeWorkspace.path)] || defaultDraftKey : defaultDraftKey;
+  const attachmentKey = activeThreadId ?? (selectedFirstPrompt ? firstPromptDraftKeysRef.current.get(selectedFirstPrompt.id) ?? workspaceDraftKey : workspaceDraftKey);
   const attachments = attachmentsFor(attachmentDrafts, attachmentKey);
   const feedback = useReviewFeedback(attachmentKey, activeExecutionPath);
+  const notesForDraftKey = feedback.notesForDraftKey;
+  const hasSavedDraftContent = useCallback((key: string) => Boolean(draftFor(key).trim())
+    || attachmentsFor(attachmentsByKeyRef.current, key).length > 0 || notesForDraftKey(key).length > 0, [notesForDraftKey]);
+  const savedDraftTitle = (key: string): string => draftFor(key).trim().slice(0, 140)
+    || (notesForDraftKey(key).length ? "Review feedback" : attachmentsFor(attachmentDrafts, key).every((entry) => entry.kind === "image") ? "Image attachments" : "Attachments");
   const feedbackScope = feedbackScopeKey(attachmentKey, activeExecutionPath);
   const feedbackScopeRef = useRef(feedbackScope);
   feedbackScopeRef.current = feedbackScope;
@@ -920,7 +948,7 @@ export default function App() {
   }, [attachmentKey, setAttachmentsForKey]);
   const projectDefaults = activeProject?.overrides?.defaults;
   const projectDefaultProvider = projectDefaults?.provider ?? settings.provider;
-  const activeProvider = activeThread ? providerFromThread(activeThread, projectDefaultProvider) : (draftThreadProvider ?? projectDefaultProvider);
+  const activeProvider = activeThread ? providerFromThread(activeThread, projectDefaultProvider) : (selectedFirstPrompt?.provider ?? draftThreadProvider ?? projectDefaultProvider);
   // Resolve project policy independently of the open conversation. Thread
   // selection needs this unclamped shape: the previously active thread may be
   // a depth-one child while the thread being opened is a root (or vice versa).
@@ -947,7 +975,7 @@ export default function App() {
   // Opt-in project defaults win over global defaults, while provider and model
   // are resolved for the active thread (or the unsent new-thread draft).
   const effectiveSettings = useMemo<AppSettings>(() => {
-    const threadModel = activeThreadId ? threadModels[activeThreadId] : draftThreadModel;
+    const threadModel = activeThreadId ? threadModels[activeThreadId] : (selectedFirstPrompt?.model ?? draftThreadModel);
     const rememberedReasoning = activeThreadId ? threadReasoning[activeThreadId] : undefined;
     const providerPrompt = activeProvider === "openai" || activeProvider === "claude"
       ? subscriptionSystemPrompts[activeProvider]
@@ -964,7 +992,7 @@ export default function App() {
     return activeThread && isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, projectSettings, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
   // Destructive Git confirmations recheck the permission visible when they finish.
   const gitPermissionRef = useRef(effectiveSettings.permission);
   gitPermissionRef.current = effectiveSettings.permission;
@@ -973,8 +1001,9 @@ export default function App() {
     if (!pendingHandoff || !activeWorkspace || activeThread) return;
     if (normalizedProjectPath(pendingHandoff.workspacePath) !== normalizedProjectPath(activeWorkspace.path)) {
       // The abandoned handoff draft loses both halves of its content.
-      discardDraft(`new:${pendingHandoff.workspacePath}`);
-      setAttachmentDrafts((current) => forgetAttachmentDraft(current, `new:${pendingHandoff.workspacePath}`));
+      const handoffDraftKey = workspaceDraftKeys[normalizedProjectPath(pendingHandoff.workspacePath)] || `new:${pendingHandoff.workspacePath}`;
+      discardDraft(handoffDraftKey);
+      setAttachmentDrafts((current) => forgetAttachmentDraft(current, handoffDraftKey));
       setPendingHandoff(null);
       setDraftThreadProvider(null);
       setDraftThreadModel(null);
@@ -987,7 +1016,7 @@ export default function App() {
     setDraftThreadProvider(pendingHandoff.targetProvider === projectDefaultProvider ? null : pendingHandoff.targetProvider);
     setDraftThreadModel(pendingHandoff.targetProvider === projectDefaultProvider ? null : modelForProvider(pendingHandoff.targetProvider, ""));
     setDraftThreadIsolated(false);
-  }, [activeThread, activeWorkspace, pendingHandoff, projectDefaultProvider, setPendingHandoff]);
+  }, [activeThread, activeWorkspace, pendingHandoff, projectDefaultProvider, setPendingHandoff, workspaceDraftKeys]);
 
   // Which providers a cross-provider child could actually be started on right
   // now. Unusable destinations are filtered out of a thread's policy instead
@@ -1136,7 +1165,7 @@ export default function App() {
     permission: effectiveSettings.permission,
     additionalWritableRoots: activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : [],
   });
-  const terminal = useTerminal({ scrollback: settings.terminalScrollback, permission: effectiveSettings.permission, scope: activeExecutionPath, onError: setError });
+  const terminal = useTerminal({ scrollback: settings.terminalScrollback, timeoutMinutes: settings.terminalTimeoutMinutes, permission: effectiveSettings.permission, scope: activeExecutionPath, onError: setError });
   const timelineEmpty = useTaskStore((state) => {
     if (!activeThreadId) return true;
     const task = state.tasks[activeThreadId];
@@ -1227,7 +1256,7 @@ export default function App() {
     }),
     [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
-  const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : startingDraftTurn;
+  const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : Boolean(selectedFirstPrompt) && startingDraftTurn;
   // Root-owned telemetry; shown only for the visible thread's live turn.
   const claudeContinuation = useClaudeContinuation(activeThreadId, activeTurnId, running);
   useEffect(() => {
@@ -3587,6 +3616,7 @@ export default function App() {
     // Invalidate any in-flight thread selection: a slow thread/resume issued
     // from the previous workspace must not re-install its thread here.
     selectThreadRequestRef.current += 1;
+    clearFirstPromptSelection();
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
@@ -3598,7 +3628,7 @@ export default function App() {
     setThreadSearch("");
     setSearchResults(null);
     if (!activeProject) setStudioOpen(false);
-  }, [activeProject, activeWorkspace, claudeStatus?.available, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, projectDefaultProvider, runtimeStatus?.available, runtimeStatus?.dataHome]);
+  }, [activeProject, activeWorkspace, claudeStatus?.available, clearFirstPromptSelection, cursorStatus?.available, loadThreads, pendingHandoffForWorkspace, projectDefaultProvider, runtimeStatus?.available, runtimeStatus?.dataHome]);
 
   // Every surfaced error also lands in the diagnostics ring buffer/audit log.
   useEffect(() => {
@@ -4233,6 +4263,7 @@ export default function App() {
       setError("That thread belongs to a different chat or project and cannot be opened here.");
       return;
     }
+    clearFirstPromptSelection();
     // Clicking two threads quickly must open the one clicked last, not the
     // one whose resume RPC happened to finish last.
     const requestId = ++selectThreadRequestRef.current;
@@ -4391,6 +4422,7 @@ export default function App() {
       // Bridge preparation is independent of durable history, so overlap it
       // with the fast view-only read. The promise is handled immediately to
       // avoid a transient unhandled rejection while history wins the race.
+      const historyReadBoundary = captureHistoryReadBoundary(useTaskStore.getState().tasks[thread.id]);
       const childBridgePromise = activeProject ? ensureChildAgentBridge({
         provider: threadProviderSettings.provider,
         projectPath: executionPath,
@@ -4433,7 +4465,7 @@ export default function App() {
       rememberThread(loaded.thread);
       setActiveThread(loaded.thread);
       const history = timelineFromTurns(loaded.turns, { includeContextCompaction: provider === "openai" });
-      useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history);
+      useTaskStore.getState().hydrateTask(loaded.thread.id, history.messages, history.activities, executionPath, loaded.history, historyReadBoundary);
       useTaskStore.getState().setActiveThread(loaded.thread.id);
       durableHistoryLoaded = true;
       markThreadHistoryHydrated(loaded.thread.id, {
@@ -4625,6 +4657,14 @@ export default function App() {
 
   const newThread = () => {
     selectThreadRequestRef.current += 1;
+    // A still-submitting first send owns its original composer and attachment
+    // draft. New must have another key so failure recovery cannot write into it.
+    if (activeWorkspace && [...firstPromptDraftKeysRef.current.values()].includes(workspaceDraftKey)) {
+      const workspacePath = normalizedProjectPath(activeWorkspace.path);
+      setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath, key: workspaceDraftKey }));
+      setWorkspaceDraftKeys((current) => ({ ...current, [normalizedProjectPath(activeWorkspace.path)]: createWorkspaceDraftKey(activeWorkspace.path) }));
+    }
+    clearFirstPromptSelection();
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
@@ -4677,6 +4717,7 @@ export default function App() {
       setPendingHandoff(handoff);
       setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
       selectThreadRequestRef.current += 1;
+      clearFirstPromptSelection();
       setActiveThread(null);
       useTaskStore.getState().setActiveThread(null);
       setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
@@ -4688,6 +4729,7 @@ export default function App() {
     }
     if (pendingHandoffForWorkspace) setPendingHandoff({ ...pendingHandoffForWorkspace, targetProvider: provider });
     selectThreadRequestRef.current += 1;
+    clearFirstPromptSelection();
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
@@ -4779,6 +4821,7 @@ export default function App() {
     },
   });
   const {
+    pendingFirstPrompts, beginFirstPrompt, finishFirstPrompt,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
@@ -4816,6 +4859,34 @@ export default function App() {
     threadWorktreesRef,
     threadProjectBindingsRef,
     activeWorkspacePathRef,
+    activeFirstPromptIdRef,
+    onFirstPromptStarted: (prompt) => {
+      firstPromptDraftKeysRef.current.set(prompt.id, attachmentKey);
+      firstPromptDraftMetadataRef.current.set(attachmentKey, prompt);
+      activeFirstPromptIdRef.current = prompt.id;
+      setActiveFirstPrompt(prompt);
+      selectThreadRequestRef.current += 1;
+      setThreadKindView("main");
+      setThreadSearch("");
+      setSearchResults(null);
+    },
+    onFirstPromptFinished: (id) => {
+      const draftKey = firstPromptDraftKeysRef.current.get(id);
+      firstPromptDraftKeysRef.current.delete(id);
+      // Composer restores an undelivered background prompt after this callback
+      // returns. Refresh once after that restoration so its saved draft is reachable.
+      window.setTimeout(() => {
+        const activeKeys = new Set(firstPromptDraftKeysRef.current.values());
+        for (const key of firstPromptDraftMetadataRef.current.keys()) {
+          if (!activeKeys.has(key) && !hasSavedDraftContent(key)) firstPromptDraftMetadataRef.current.delete(key);
+        }
+        setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, activeKeys));
+        refreshSavedDrafts((revision) => revision + 1);
+      }, 0);
+      if (activeFirstPromptIdRef.current !== id) return;
+      if (draftKey && activeWorkspace) setWorkspaceDraftKeys((current) => ({ ...current, [normalizedProjectPath(activeWorkspace.path)]: draftKey }));
+      clearFirstPromptSelection();
+    },
     pendingTurnStartsRef,
     skillRuntimeRootRef,
     cursorSessionIdsRef,
@@ -4853,6 +4924,60 @@ export default function App() {
     setAuthRequiredOpen,
     openSettings,
   });
+
+  const visiblePendingFirstPrompt = pendingFirstPromptForView(pendingFirstPrompts, activeThreadId, activeWorkspace?.path, selectedFirstPrompt?.id);
+  const workspacePendingFirstPrompts = pendingFirstPrompts.filter((prompt) => !prompt.threadId
+    && prompt.workspacePath === activeWorkspacePathRef.current);
+  const displayedPendingFirstPrompts = threadKindView === "main" ? workspacePendingFirstPrompts.filter((prompt) => prompt.text.toLowerCase().includes(threadSearch.trim().toLowerCase())) : [];
+  const storedWorkspaceDraftKeys = activeWorkspace ? savedWorkspaceDraftKeys[normalizedProjectPath(activeWorkspace.path)] : undefined;
+  const displayedSavedDraftKeys = threadKindView === "main" && activeWorkspace && Array.isArray(storedWorkspaceDraftKeys)
+    ? storedWorkspaceDraftKeys.filter((key) => isWorkspaceDraftKey(key, activeWorkspace.path) && key !== attachmentKey
+      && hasSavedDraftContent(key) && [draftFor(key), savedDraftTitle(key), ...notesForDraftKey(key).map((note) => note.comment), ...attachmentsFor(attachmentDrafts, key).map((entry) => entry.name)]
+        .join("\n").toLowerCase().includes(threadSearch.trim().toLowerCase()))
+    : [];
+  const openSavedDraft = (key: string) => {
+    if (!activeWorkspace || !isWorkspaceDraftKey(key, activeWorkspace.path)) return;
+    const workspacePath = normalizedProjectPath(activeWorkspace.path);
+    if (hasSavedDraftContent(workspaceDraftKey)) setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath, key: workspaceDraftKey }));
+    selectThreadRequestRef.current += 1;
+    clearFirstPromptSelection();
+    setWorkspaceDraftKeys((current) => ({ ...current, [normalizedProjectPath(activeWorkspace.path)]: key }));
+    setActiveThread(null);
+    useTaskStore.getState().setActiveThread(null);
+    const metadata = firstPromptDraftMetadataRef.current.get(key);
+    setDraftThreadProvider(metadata?.provider ?? null);
+    setDraftThreadModel(metadata?.model ?? null);
+    setDraftThreadIsolated(metadata?.isolated ?? false);
+    setError(null);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  };
+  const openPendingFirstPrompt = (prompt: PendingPrompt) => {
+    if (prompt.workspacePath !== activeWorkspacePathRef.current) return;
+    if (activeWorkspace && hasSavedDraftContent(workspaceDraftKey)) {
+      setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath: activeWorkspace.path, key: workspaceDraftKey }));
+    }
+    selectThreadRequestRef.current += 1;
+    activeFirstPromptIdRef.current = prompt.id;
+    setActiveFirstPrompt(prompt);
+    setActiveThread(null);
+    useTaskStore.getState().setActiveThread(null);
+    setDraftThreadProvider(prompt.provider);
+    setDraftThreadModel(prompt.model);
+    setDraftThreadIsolated(prompt.isolated);
+    setStartingDraftTurn(prompt.status === "starting");
+    setError(null);
+  };
+  const loadingFirstUserMessage = useTaskStore((state) => {
+    const task = activeThreadId ? state.tasks[activeThreadId] : undefined;
+    return task?.messages[0]?.role === "user" ? task.messages[0] : undefined;
+  });
+  // A cold timeline chunk can outlive turn/start. Keep the accepted message
+  // visible during that load even after the transient send owner has settled.
+  const firstPromptLoadingFallback = visiblePendingFirstPrompt ?? (loadingFirstUserMessage ? {
+    id: loadingFirstUserMessage.id, workspacePath: activeWorkspace?.path ?? "", threadId: activeThreadId ?? undefined,
+    text: loadingFirstUserMessage.text, status: "starting" as const,
+    provider: activeProvider, model: effectiveSettings.model, isolated: Boolean(activeThreadWorktree),
+  } : undefined);
 
   // Turns the delegation requests a root agent makes into real per-provider
   // child turns. Children inherit the parent's execution folder and permission
@@ -5007,6 +5132,7 @@ export default function App() {
     projectCheckCommandForThread: (rootThreadId) => projectForThread(rootThreadId)?.overrides?.check,
     projectRunCommandForThread: (rootThreadId) => projectForThread(rootThreadId)?.overrides?.run,
     runProjectCommand: runProjectCommandForThread,
+    readProjectTerminal: (scope, maxCharacters) => terminal.snapshot(scope, maxCharacters),
     beginRunCheckpoint,
     discardRunCheckpoint,
     resolveSkillPrompt,
@@ -6140,21 +6266,27 @@ export default function App() {
     // must remain exact evidence without becoming skill invocations. Carry
     // this source separately through the durable queue and provider resolver.
     const skillInvocationText = notes.length ? feedbackSkillInvocationText(text, notes) : undefined;
+    const firstPromptAttemptId = mode === "sendMessage" ? beginFirstPrompt(prompt) : undefined;
     try {
-      await attachmentPreparations.wait(attachmentKey);
-    } catch (reason) {
-      setError(friendlyError(reason));
-      return false;
+      try {
+        await attachmentPreparations.wait(attachmentKey);
+      } catch (reason) {
+        setError(friendlyError(reason));
+        return false;
+      }
+      // First sends keep their captured draft and settings through navigation;
+      // use its completed attachment copies without reading the new draft.
+      // Existing-thread sends retain their selection check.
+      if (!firstPromptAttemptId && (attachmentKeyRef.current !== attachmentKey || feedbackScopeRef.current !== feedbackScope)) return false;
+      const accepted = await attachmentDeliveryRef.current[mode](prompt, { skillInvocationText, firstPromptAttemptId,
+        ...(firstPromptAttemptId ? { attachments: attachmentsFor(attachmentsByKeyRef.current, attachmentKey) } : {}),
+      });
+      if (accepted) feedback.removeNotes(notes);
+      return accepted;
+    } finally {
+      finishFirstPrompt(firstPromptAttemptId);
     }
-    // Preparations synchronously commit durable paths before resolving. If the user
-    // selected another draft meanwhile, let Composer restore this prompt into
-    // the original draft instead of sending it into the new conversation.
-    if (attachmentKeyRef.current !== attachmentKey || feedbackScopeRef.current !== feedbackScope) return false;
-    const accepted = await attachmentDeliveryRef.current[mode](prompt,
-      skillInvocationText === undefined ? undefined : { skillInvocationText });
-    if (accepted) feedback.removeNotes(notes);
-    return accepted;
-  }, [attachmentKey, attachmentPreparations, feedback, feedbackScope]);
+  }, [attachmentKey, attachmentPreparations, beginFirstPrompt, feedback, feedbackScope, finishFirstPrompt]);
 
   // Scheduling persists the prompt and its attachments now, so it waits for
   // durable attachment copies exactly like Send does.
@@ -6759,13 +6891,13 @@ export default function App() {
     // project happens to be selected when it finishes.
     const commandPath = activeExecutionPath || activeProject.path;
     setStudioTab("terminal");
-    terminal.append(`${terminal.appendedLength(commandPath) ? "\n" : ""}$ ${action.command}\n`, commandPath);
+    terminal.append(`${terminal.appendedLength(commandPath) ? "\n" : ""}$ ${action.command}\n`, commandPath, { complete: true });
     try {
       const result = await executeCommand(shellCommand(action.command), commandPath, activeThreadWorktree?.gitDir ? [activeThreadWorktree.gitDir] : []);
-      terminal.append(`${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`, commandPath);
+      terminal.append(`${result.stdout}${result.stderr}\n[exit ${result.exitCode}]\n`, commandPath, { complete: true });
       void auditEvent("action.completed", { actionId: action.id, command: action.command, exitCode: result.exitCode }, activeThreadId ?? undefined).catch(() => {});
     } catch (reason) {
-      terminal.append(`${friendlyError(reason)}\n`, commandPath);
+      terminal.append(`${friendlyError(reason)}\n`, commandPath, { complete: true });
     }
   };
 
@@ -7406,7 +7538,7 @@ export default function App() {
           <div className="section-label-row">
             <span className="section-label">Threads</span>
             {activeWorkspace && <div className="thread-kind-switch" role="group" aria-label="Thread type">
-              <button className={threadKindView === "main" ? "active" : ""} onClick={() => setThreadKindView("main")} aria-pressed={threadKindView === "main"}>Main <span>{threadKindCounts.main}</span></button>
+              <button className={threadKindView === "main" ? "active" : ""} onClick={() => setThreadKindView("main")} aria-pressed={threadKindView === "main"}>Main <span>{threadKindCounts.main + workspacePendingFirstPrompts.length}</span></button>
               <button className={threadKindView === "subagents" ? "active" : ""} onClick={() => setThreadKindView("subagents")} aria-pressed={threadKindView === "subagents"}>Sub-agents <span>{threadKindCounts.subagents}</span></button>
             </div>}
           </div>
@@ -7428,6 +7560,23 @@ export default function App() {
             </div>
           )}
           <div className="thread-list">
+            {displayedPendingFirstPrompts.map((prompt) => (
+              <div key={prompt.id} className={`thread-row-wrap ${selectedFirstPrompt?.id === prompt.id ? "active" : ""}`}>
+                <ThreadInboxCard
+                  active={sidebarOpen && !settingsOpen && !onboardingOpen}
+                  threadId={prompt.id}
+                  title={prompt.text || "New thread"}
+                  pendingStatus={prompt.status}
+                  workspaceName={activeWorkspace?.name ?? "Chats"}
+                  directory={activeWorkspace?.path ?? prompt.workspacePath}
+                  provider={prompt.provider}
+                  providerName={providerLabel(prompt.provider)}
+                  pinned={false}
+                  isolated={prompt.isolated}
+                  onOpen={() => openPendingFirstPrompt(prompt)}
+                />
+              </div>
+            ))}
             {displayedThreads.map((thread) => (
               <div key={thread.id} className={`thread-row-wrap ${activeThread?.id === thread.id ? "active" : ""}`}>
                 {renamingThreadId === thread.id ? (
@@ -7479,7 +7628,18 @@ export default function App() {
                 />
               </div>
             ))}
-            {activeWorkspace && !displayedThreads.length && <div className="empty-threads">{threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}</div>}
+            {displayedSavedDraftKeys.length > 0 && <>
+              <span className="section-label">Saved drafts</span>
+              {displayedSavedDraftKeys.map((key) => (
+                <div key={key} className="thread-row-wrap">
+                  <button className="thread-card" onClick={() => openSavedDraft(key)} aria-label={`Open saved draft: ${savedDraftTitle(key)}`}>
+                    <span className="thread-card-context"><span className="thread-card-workspace"><MessageSquare size={14} /><span>Draft</span></span></span>
+                    <ThreadTitle className="thread-card-title" title={savedDraftTitle(key)} pending={false} />
+                  </button>
+                </div>
+              ))}
+            </>}
+            {activeWorkspace && !displayedThreads.length && !displayedPendingFirstPrompts.length && <div className="empty-threads">{threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}</div>}
           </div>
           {workspaceArchived.length > 0 && (
             <div className="archived-threads">
@@ -7546,7 +7706,7 @@ export default function App() {
               <span>{activeWorkspace?.isChat ? "Normal chat" : (activeProject?.name ?? "No project selected")}</span>
               <small>{activeThreadWorktree && activeThreadWorktree.status !== "removed"
                 ? `${activeThreadWorktree.branch} · ${activeThreadWorktree.path}`
-                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
+                : activeThread ? <ThreadTitle key={activeThread.id} title={activeThread.name || activeThread.preview || "New thread"} pending={automaticTitles.pendingIds.has(activeThread.id)} /> : visiblePendingFirstPrompt ? <ThreadTitle key={visiblePendingFirstPrompt.id} title={visiblePendingFirstPrompt.text || "New thread"} pending={false} /> : activeWorkspace?.isChat ? "No project folder" : (activeProject?.path ?? "Choose a project or use Chats")}</small>
             </div>
             {activeThreadWorktree && activeThreadWorktree.status !== "removed" && (
               <button className="isolation-chip" onClick={() => void revealItemInDir(activeThreadWorktree.path)} title={activeThreadWorktree.path}>
@@ -7751,7 +7911,9 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {timelineEmpty || !activeThreadId ? (
+              {visiblePendingFirstPrompt && timelineEmpty ? (
+                <PendingFirstPrompt prompt={visiblePendingFirstPrompt} />
+              ) : timelineEmpty || !activeThreadId ? (
                 <div className="thread-empty-state">
                   {pendingHandoffForWorkspace && (
                     <div className="handoff-draft-banner">
@@ -7848,6 +8010,8 @@ export default function App() {
                 <ErrorBoundary label="conversation" key={timelineView.attempt} resetKey={activeThreadId} onRetry={() => setTimelineView((current) => ({ View: lazy(loadChatTimeline), attempt: current.attempt + 1 }))}>
                   <Suspense
                     fallback={
+                      firstPromptLoadingFallback
+                        ? <PendingFirstPrompt prompt={firstPromptLoadingFallback} accepted={!visiblePendingFirstPrompt} activityStatus={visiblePendingFirstPrompt?.status ?? (taskStatus === "starting" ? "starting" : taskStatus === "running" ? "working" : null)} /> :
                       <div className="timeline-loading">
                         <LoaderCircle className="spin" size={15} /> Loading conversation…
                       </div>
