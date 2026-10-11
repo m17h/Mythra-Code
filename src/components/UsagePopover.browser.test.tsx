@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { commands } from "vitest/browser";
+import { commands, page } from "vitest/browser";
 import { providerHeaderUsage, type AccountUsageView } from "../lib/providerUsage";
 import { UsagePopover } from "./UsagePopover";
 import "../styles.css";
@@ -80,7 +80,9 @@ describe("usage popover browser layout", () => {
     expect(getComputedStyle(reopened).opacity).toBe("1");
     expect(reopened.getAnimations()).toHaveLength(0);
     await commands.setStreamTestReducedMotion(false);
-    fireEvent.click(view.getByRole("button", { name: "Close usage details" }));
+    // Move the real pointer to the close button too: a synthetic click leaves
+    // it over the trigger, where a trusted hover can reverse the exit.
+    await page.getByRole("button", { name: "Close usage details" }).click();
     reopened.getAnimations()[0].pause();
     await commands.setStreamTestReducedMotion(true);
     await waitFor(() => expect(reopened.isConnected).toBe(false));
