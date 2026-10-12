@@ -7,6 +7,7 @@ import { usageTotals } from "./usageLedger";
 import { useClaudeContinuationStore } from "./claudeContinuation";
 import { compactActivityPresentation } from "./compactActivity";
 import { usedSkillsForRun } from "./skillUsage";
+import { isActiveAgentRecord } from "./subAgentActivity";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 
@@ -19,6 +20,7 @@ const context: ClaudeEventContext = {
   onTranscriptChanged: vi.fn(),
   onUnsupportedControlRequest: vi.fn(),
   onNativeAgentDiscovered: vi.fn(),
+  onNativeAgentReidentified: vi.fn(),
 };
 
 function send(message: Record<string, unknown>, turnId = "turn-1") {
@@ -36,6 +38,60 @@ describe("Claude event routing", () => {
     vi.clearAllMocks();
   });
 
+  it("isolates child partial streams without losing the root message or pending tool input", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "outer-agent", name: "Agent", input: { prompt: "Child assignment" } }] } });
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "root-stream" } } });
+    send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "root-command", name: "Bash" } } });
+    send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":"echo root"}' } } });
+    const childStream = (event: Record<string, unknown>) => send({ type: "stream_event", parent_tool_use_id: "outer-agent", event });
+    childStream({ type: "message_start", message: { id: "child-stream", model: "child-model" } });
+    childStream({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Private child text" } });
+    childStream({ type: "content_block_delta", index: 2, delta: { type: "thinking_delta", thinking: "Private child thinking" } });
+    childStream({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "nested-agent", name: "Agent" } });
+    childStream({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"prompt":"Nested child"}' } });
+    childStream({ type: "content_block_stop", index: 0 });
+    send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    send({ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Root reply" } } });
+    useTaskStore.getState().flushDeltas();
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.messages).toEqual([expect.objectContaining({ id: "root-stream", text: "Root reply" })]);
+    expect(task.activities).toEqual([
+      expect.objectContaining({ id: "outer-agent", kind: "agent" }),
+      expect.objectContaining({ id: "root-command", kind: "command", title: "echo root" }),
+    ]);
+    expect(task.agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:outer-agent", model: undefined })]);
+  });
+
+  it.each([
+    { type: "result", subtype: "success", result: "Child final output" },
+    { type: "openkiwi_exit", message: "Child process ended" },
+    { type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitGraceActive: true } },
+    { type: "system", subtype: "task_started", task_id: "nested-task", task_type: "local_agent" },
+  ])("does not attribute parent-linked $type lifecycle or telemetry to the root", (message) => {
+    send({ type: "system", subtype: "init" });
+    send({ ...message, parent_tool_use_id: "outer-agent" });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.status).toBe("running");
+    expect(task.messages).toEqual([]);
+    expect(task.activities).toEqual([]);
+    expect(task.agents).toEqual([]);
+    expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
+    expect(context.onTurnCompleted).not.toHaveBeenCalled();
+  });
+
+  it("does not attribute unversioned task-only completion to a resumed versioned agent", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "versioned-task", run_id: "001", tool_use_id: "old-versioned-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "versioned-task", run_id: "001", status: "completed" });
+    send({ type: "system", subtype: "task_started", task_id: "versioned-task", run_id: "002", tool_use_id: "current-versioned-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "versioned-task", status: "completed", summary: "Unattributable outcome" });
+    send({ type: "system", subtype: "task_notification", task_id: "versioned-task", tool_use_id: "old-versioned-tool", status: "completed", summary: "Old tool outcome" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents.find((agent) => agent.id === "claude-native:thread-1:current-versioned-tool")).toMatchObject({ status: "inProgress", result: undefined });
+    send({ type: "system", subtype: "task_notification", task_id: "versioned-task", tool_use_id: "current-versioned-tool", status: "completed", summary: "Current tool outcome" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents.find((agent) => agent.id === "claude-native:thread-1:current-versioned-tool")).toMatchObject({ status: "completed", result: "Current tool outcome" });
+  });
+
   it("tracks Agent and native lifecycle without pretending child output is the root answer", () => {
     send({ type: "system", subtype: "init" });
     send({ type: "assistant", message: { id: "root-call", content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "Audit", prompt: "Review ownership and report evidence", model: "requested" } }] } });
@@ -50,6 +106,293 @@ describe("Claude event routing", () => {
     expect(task.activities[0]).toMatchObject({ kind: "agent", status: "completed", agent: { threadIds: ["claude-native:thread-1:agent-tool"] } });
     expect(useTaskStore.getState().tasks["claude-native:thread-1:agent-tool"]).toBeUndefined();
     expect(context.onNativeAgentDiscovered).toHaveBeenCalledWith("thread-1", "claude-native:thread-1:agent-tool", expect.objectContaining({ runtime: "claude", status: "completed" }));
+  });
+
+  it("does not turn background command tasks into sub-agents", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "shell-tool", name: "Bash", input: { command: "npm run dev", run_in_background: true } }] } });
+    send({ type: "system", subtype: "task_started", task_id: "shell-task", tool_use_id: "shell-tool", task_type: "local_bash", description: "Development server" });
+    send({ type: "system", subtype: "task_progress", task_id: "shell-task", tool_use_id: "shell-tool", summary: "Server listening" });
+    send({ type: "system", subtype: "task_notification", task_id: "shell-task", status: "completed", summary: "Server stopped" });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.agents).toEqual([]);
+    expect(context.onNativeAgentDiscovered).not.toHaveBeenCalled();
+    expect(task.activities).toEqual([expect.objectContaining({ id: "shell-tool", kind: "command", title: "npm run dev" })]);
+  });
+
+  it("does not guess that untyped or unknown background tasks are agents", () => {
+    send({ type: "system", subtype: "init" });
+    for (const taskType of [undefined, "mcp_task", "local_bash", "future_task"]) {
+      const taskId = taskType || "untyped";
+      send({ type: "system", subtype: "task_started", task_id: taskId, task_type: taskType, owned_by_subagent: true, description: "Working" });
+      send({ type: "system", subtype: "task_progress", task_id: taskId, summary: "Progress" });
+      send({ type: "system", subtype: "task_notification", task_id: taskId, status: "completed" });
+    }
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([]);
+    expect(context.onNativeAgentDiscovered).not.toHaveBeenCalled();
+  });
+
+  it("tracks positively identified agents when lifecycle arrives before the Agent tool", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "native-task", tool_use_id: "agent-first", task_type: "local_agent", description: "Review code" });
+    send({ type: "system", subtype: "task_progress", task_id: "native-task", summary: "Reviewed parser" });
+    send({ type: "system", subtype: "task_notification", task_id: "native-task", status: "completed", summary: "Review complete" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:agent-first", status: "completed", progress: "Reviewed parser", result: "Review complete" })]);
+  });
+
+  it("does not reuse another turn's native task binding", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "reused", tool_use_id: "old-agent", task_type: "local_agent" });
+    send({ type: "result", subtype: "success", result: "Done" });
+    send({ type: "system", subtype: "init" }, "turn-2");
+    send({ type: "system", subtype: "task_progress", task_id: "reused", tool_use_id: "old-agent", summary: "Not new agent evidence" }, "turn-2");
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:old-agent", status: "completed", rootTurnId: "turn-1" })]);
+  });
+
+  it("keeps a task-only native start, later tool identity and forwarded child as one worker", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "canonical-task", task_type: "local_agent", description: "Audit" });
+    send({ type: "system", subtype: "task_started", task_id: "canonical-task", tool_use_id: "canonical-tool", task_type: "local_agent" });
+    send({ type: "assistant", parent_tool_use_id: "canonical-tool", agent_id: "canonical-task", message: { model: "reported-model", content: [{ type: "text", text: "Checking" }] } });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "canonical-tool", name: "Agent", input: { description: "Audit", prompt: "Check code" } }] } });
+    send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "canonical-tool", content: "Done" }] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:task:turn-1:canonical-task", model: "reported-model", status: "completed", result: "Done" })]);
+  });
+
+  it("correlates a forwarded child's agent_id before any task_started event", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", parent_tool_use_id: "child-tool", agent_id: "child-task", message: { content: [{ type: "text", text: "Checking" }] } });
+    send({ type: "system", subtype: "task_notification", task_id: "child-task", status: "completed", summary: "Done" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:child-tool", status: "completed", result: "Done" })]);
+  });
+
+  it.each(["child", "lifecycle"])("merges a late %s task/tool join after both identities were recorded", (join) => {
+    const links = new Map<string, object>();
+    const mergedContext: ClaudeEventContext = {
+      ...context,
+      onNativeAgentDiscovered: (_root, id, details) => { links.set(id, details); },
+      onNativeAgentReidentified: (_root, previousId, canonicalId) => {
+        expect(links.get(canonicalId)).toMatchObject({ task: "Full assignment", status: "failed", result: "Failure evidence" });
+        links.delete(previousId);
+      },
+    };
+    const route = (message: Record<string, unknown>) => routeClaudeEvent({ threadId: "thread-1", turnId: "turn-1", message }, mergedContext);
+    const canonicalId = "claude-native:thread-1:task:turn-1:late-task";
+    route({ type: "system", subtype: "init" });
+    route({ type: "system", subtype: "task_started", task_id: "late-task", task_type: "local_agent", description: "Audit" });
+    route({ type: "system", subtype: "task_notification", task_id: "late-task", status: "completed", summary: "Earlier completion evidence" });
+    route({ type: "assistant", message: { content: [{ type: "tool_use", id: "late-tool", name: "Agent", input: { description: "Audit", prompt: "Full assignment", model: "requested-only" } }] } });
+    route({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "late-tool", is_error: true, content: "Failure evidence" }] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toHaveLength(2);
+    expect(links.size).toBe(2);
+    route(join === "child"
+      ? { type: "assistant", parent_tool_use_id: "late-tool", agent_id: "late-task", message: { content: [{ type: "text", text: "Late progress" }] } }
+      : { type: "system", subtype: "task_started", task_id: "late-task", tool_use_id: "late-tool", task_type: "local_agent" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id: canonicalId, task: "Full assignment", requestedModel: "requested-only", model: undefined, status: "failed", result: "Failure evidence" })]);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ status: "failed", agent: { threadIds: [canonicalId], result: "Failure evidence" } });
+    expect([...links.keys()]).toEqual([canonicalId]);
+    route({ type: "system", subtype: "task_notification", task_id: "late-task", status: "failed", summary: "Final failure evidence" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toHaveLength(1);
+  });
+
+  it("keeps terminal agent activities settled through late tool and lifecycle replay", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "settled-task", tool_use_id: "settled-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "settled-task", status: "completed", summary: "Completed evidence" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "settled-tool", name: "Agent", input: { prompt: "Assignment", model: "requested-only" } }] } });
+    send({ type: "system", subtype: "task_progress", task_id: "settled-task", summary: "Late progress" });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.agents[0]).toMatchObject({ status: "completed", result: "Completed evidence", model: undefined });
+    expect(task.activities[0]).toMatchObject({ status: "completed", agent: { result: "Completed evidence", requestedModel: "requested-only" } });
+  });
+
+  it("preserves a duplicate worker when durable ownership refuses the identity join", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "refused-task", task_type: "local_agent" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "refused-tool", name: "Agent", input: {} }] } });
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-1", message: { type: "assistant", parent_tool_use_id: "refused-tool", agent_id: "refused-task", message: { content: [] } } }, {
+      ...context, onNativeAgentReidentified: () => false,
+    });
+    expect(useTaskStore.getState().tasks["thread-1"].agents.map((agent) => agent.id)).toEqual([
+      "claude-native:thread-1:task:turn-1:refused-task", "claude-native:thread-1:refused-tool",
+    ]);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0].agent?.threadIds).toEqual(["claude-native:thread-1:refused-tool"]);
+  });
+
+  it("leaves conflicting execution models unknown at a late identity join until fresh confirmation", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "model-task", task_type: "local_agent" });
+    send({ type: "assistant", parent_tool_use_id: "first-model-tool", agent_id: "model-task", message: { model: "model-a", content: [] } });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "second-model-tool", name: "Agent", input: {} }] } });
+    send({ type: "assistant", parent_tool_use_id: "second-model-tool", message: { model: "model-b", content: [] } });
+    send({ type: "system", subtype: "task_started", task_id: "model-task", tool_use_id: "second-model-tool", task_type: "local_agent" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ model: "", modelSource: undefined })]);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0].agent).toMatchObject({ model: "", modelSource: undefined });
+    send({ type: "assistant", parent_tool_use_id: "second-model-tool", agent_id: "model-task", message: { model: "model-c", content: [] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ model: "model-c", modelSource: "execution" })]);
+  });
+
+  it.each([false, true])("counts only the current positively resumed activation when its launch tool is reused=%s", (reused) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "active-prior-tool", name: "Agent", input: { prompt: "Original assignment" } }] } });
+    send({ type: "system", subtype: "task_started", task_id: "active-prior-task", run_id: "001", tool_use_id: "active-prior-tool", task_type: "local_agent" });
+    send({ type: "assistant", parent_tool_use_id: "active-prior-tool", agent_id: "active-prior-task", message: { model: "original-model", content: [{ type: "text", text: "Original progress" }] } });
+    const newTool = reused ? "active-prior-tool" : "active-resume-tool";
+    send({ type: "system", subtype: "task_started", task_id: "active-prior-task", run_id: "002", tool_use_id: newTool, task_type: "local_agent" });
+    const agents = () => useTaskStore.getState().tasks["thread-1"].agents;
+    expect(agents().filter((agent) => isActiveAgentRecord(agent.status))).toHaveLength(1);
+    expect(agents()[0]).toMatchObject({ status: "idle", task: "Original assignment", model: "original-model", progress: "Original progress", result: undefined });
+    send({ type: "assistant", parent_tool_use_id: "active-prior-tool", agent_id: "active-prior-task", message: { model: "late-old-model", content: [{ type: "text", text: "Late old child" }] } });
+    send({ type: "system", subtype: "task_progress", task_id: "active-prior-task", run_id: "001", tool_use_id: "active-prior-tool", summary: "Late old progress" });
+    expect(agents()[0]).toMatchObject({ status: "idle", task: "Original assignment", model: "original-model", progress: "Original progress", result: undefined });
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ status: "idle" });
+    send({ type: "system", subtype: "task_notification", task_id: "active-prior-task", run_id: "002", tool_use_id: newTool, status: "completed", summary: "Current outcome" });
+    expect(agents().filter((agent) => isActiveAgentRecord(agent.status))).toHaveLength(0);
+    expect(agents()[1]).toMatchObject({ status: "completed", result: "Current outcome" });
+  });
+
+  it("retains a stopped source and its outcome when a late positive join merges it into an active canonical agent", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "active-canonical-task", task_type: "local_agent", description: "Active canonical" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "stopped-source-tool", name: "Agent", input: { prompt: "Source assignment" } }] } });
+    send({ type: "system", subtype: "task_started", task_id: "stopped-source-task", tool_use_id: "stopped-source-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "stopped-source-task", tool_use_id: "stopped-source-tool", status: "stopped", summary: "Stopped source outcome" });
+    send({ type: "system", subtype: "task_started", task_id: "active-canonical-task", tool_use_id: "stopped-source-tool", task_type: "local_agent" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([
+      expect.objectContaining({ id: "claude-native:thread-1:task:turn-1:active-canonical-task", status: "stopped", result: "Stopped source outcome" }),
+    ]);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ status: "stopped", agent: { result: "Stopped source outcome", threadIds: ["claude-native:thread-1:task:turn-1:active-canonical-task"] } });
+  });
+
+  it("routes versioned lifecycle to a resumed activation when Claude reuses its original launch tool", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "shared-resume-tool", name: "Agent", input: { prompt: "Original assignment" } }] } });
+    send({ type: "system", subtype: "task_started", task_id: "shared-resume-task", run_id: "0m1aaaaaa-11111111", tool_use_id: "shared-resume-tool", task_type: "local_agent", description: "Original assignment", is_backgrounded: true });
+    send({ type: "system", subtype: "task_notification", task_id: "shared-resume-task", run_id: "0m1aaaaaa-11111111", tool_use_id: "shared-resume-tool", status: "completed", summary: "Original outcome" });
+    // Claude's automatic resume falls back to the task's previous toolUseId.
+    send({ type: "system", subtype: "task_started", task_id: "shared-resume-task", run_id: "0m1aaaaab-22222222", tool_use_id: "shared-resume-tool", task_type: "local_agent", description: "Resumed assignment", is_backgrounded: true });
+    send({ type: "assistant", parent_tool_use_id: "shared-resume-tool", agent_id: "shared-resume-task", message: { model: "ambiguous-model", content: [{ type: "text", text: "Unversioned child frame" }] } });
+    send({ type: "system", subtype: "task_progress", task_id: "shared-resume-task", run_id: "0m1aaaaab-22222222", tool_use_id: "shared-resume-tool", description: "Resumed assignment", usage: { total_tokens: 10, tool_uses: 1, duration_ms: 100 }, summary: "Resumed progress" });
+    send({ type: "system", subtype: "task_notification", task_id: "shared-resume-task", run_id: "0m1aaaaab-22222222", tool_use_id: "shared-resume-tool", status: "completed", summary: "Resumed outcome" });
+    const agents = useTaskStore.getState().tasks["thread-1"].agents;
+    expect(agents).toHaveLength(2);
+    expect(agents[0]).toMatchObject({ id: "claude-native:thread-1:shared-resume-tool", status: "completed", result: "Original outcome" });
+    expect(agents[1]).toMatchObject({ id: "claude-native:thread-1:task:turn-1:shared-resume-task:0m1aaaaab-22222222", status: "completed", progress: "Resumed progress", result: "Resumed outcome", model: undefined });
+  });
+
+  it.each(["stopped", "canceled", "shutdown", "failure", "succeeded"])("keeps the terminal %s agent settled through same-run replay", (status) => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "terminal-task", run_id: "001", tool_use_id: "terminal-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "terminal-task", run_id: "001", status, summary: "Terminal outcome" });
+    send({ type: "system", subtype: "task_progress", task_id: "terminal-task", run_id: "001", summary: "Late progress" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "terminal-tool", name: "Agent", input: { prompt: "Assignment" } }] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0]).toMatchObject({ status, result: "Terminal outcome" });
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ status });
+  });
+
+  it("does not merge a new launch tool into a versioned active run before its positive resumed start", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "paused-old-tool", name: "Agent", input: { prompt: "Original assignment" } }] } });
+    send({ type: "system", subtype: "task_started", task_id: "paused-task", run_id: "001", tool_use_id: "paused-old-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_updated", task_id: "paused-task", run_id: "001", patch: { status: "paused" } });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "paused-new-tool", name: "Agent", input: { prompt: "Resumed assignment" } }] } });
+    send({ type: "assistant", parent_tool_use_id: "paused-new-tool", agent_id: "paused-task", message: { content: [{ type: "text", text: "Resumed child before lifecycle" }] } });
+    send({ type: "system", subtype: "task_started", task_id: "paused-task", run_id: "002", tool_use_id: "paused-new-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "paused-task", run_id: "002", tool_use_id: "paused-new-tool", status: "completed", summary: "Resumed outcome" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([
+      expect.objectContaining({ id: "claude-native:thread-1:paused-old-tool", task: "Original assignment", result: undefined }),
+      expect.objectContaining({ id: "claude-native:thread-1:paused-new-tool", task: "Resumed assignment", status: "completed", result: "Resumed outcome" }),
+    ]);
+  });
+
+  it("keeps a newer resumed task active and refuses old run or child frames in the same root turn", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "resumed-task", run_id: "001", tool_use_id: "old-run-tool", task_type: "local_agent" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "old-run-tool", name: "Agent", input: { prompt: "Old assignment" } }] } });
+    send({ type: "system", subtype: "task_notification", task_id: "resumed-task", run_id: "001", status: "completed", summary: "Old result" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "new-run-tool", name: "Agent", input: { prompt: "Resume assignment" } }] } });
+    send({ type: "assistant", parent_tool_use_id: "new-run-tool", agent_id: "resumed-task", message: { content: [{ type: "text", text: "Resume child before start" }] } });
+    send({ type: "system", subtype: "task_progress", task_id: "resumed-task", run_id: "002", tool_use_id: "new-run-tool", summary: "Unconfirmed run progress" });
+    send({ type: "system", subtype: "task_started", task_id: "resumed-task", run_id: "002", tool_use_id: "new-run-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "resumed-task", run_id: "001", tool_use_id: "old-run-tool", status: "failed", summary: "Late old failure" });
+    send({ type: "system", subtype: "task_started", task_id: "resumed-task", run_id: "001", tool_use_id: "old-run-tool", task_type: "local_agent" });
+    send({ type: "assistant", parent_tool_use_id: "old-run-tool", agent_id: "resumed-task", message: { model: "old-model", content: [{ type: "text", text: "Old child progress" }] } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([
+      expect.objectContaining({ id: "claude-native:thread-1:old-run-tool", status: "completed", result: "Old result" }),
+      expect.objectContaining({ id: "claude-native:thread-1:new-run-tool", status: "inProgress", task: "Resume assignment", model: undefined, progress: "Resume child before start", result: undefined }),
+    ]);
+    send({ type: "assistant", parent_tool_use_id: "new-run-tool", agent_id: "resumed-task", message: { model: "new-model", content: [{ type: "text", text: "Current child progress" }] } });
+    send({ type: "system", subtype: "task_notification", task_id: "resumed-task", run_id: "002", status: "completed", summary: "Resume result" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[1]).toMatchObject({ model: "new-model", progress: "Current child progress", result: "Resume result", status: "completed" });
+    expect(context.onNativeAgentReidentified).not.toHaveBeenCalled();
+  });
+
+  it("gives task-only runs separate identities and keeps earlier tool aliases on their own activation", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "task-only-resume", run_id: "001", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_started", task_id: "task-only-resume", run_id: "001", tool_use_id: "old-only-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "task-only-resume", run_id: "001", status: "completed", summary: "Prior outcome" });
+    send({ type: "system", subtype: "task_started", task_id: "task-only-resume", run_id: "002", task_type: "local_agent" });
+    send({ type: "assistant", parent_tool_use_id: "old-only-tool", agent_id: "task-only-resume", message: { content: [{ type: "text", text: "Prior child" }] } });
+    send({ type: "assistant", parent_tool_use_id: "new-only-tool", agent_id: "task-only-resume", message: { content: [{ type: "text", text: "Resumed child" }] } });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "new-only-tool", name: "Agent", input: { prompt: "Resume" } }] } });
+    const task = useTaskStore.getState().tasks["thread-1"];
+    expect(task.agents).toEqual([
+      expect.objectContaining({ id: "claude-native:thread-1:task:turn-1:task-only-resume:001", status: "completed", result: "Prior outcome", progress: "Prior child" }),
+      expect.objectContaining({ id: "claude-native:thread-1:task:turn-1:task-only-resume:002", status: "inProgress", task: "Resume", progress: "Resumed child", result: undefined }),
+    ]);
+    expect(task.activities[0].agent?.threadIds).toEqual(["claude-native:thread-1:task:turn-1:task-only-resume:002"]);
+  });
+
+  it("does not bind a run-bearing progress event before that run is positively started", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "assistant", message: { content: [{ type: "tool_use", id: "early-tool", name: "Agent", input: {} }] } });
+    send({ type: "system", subtype: "task_progress", task_id: "early-task", run_id: "001", tool_use_id: "early-tool", summary: "Premature progress" });
+    send({ type: "system", subtype: "task_notification", task_id: "early-task", run_id: "001", status: "completed", summary: "Premature result" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0]).toMatchObject({ status: "inProgress", progress: undefined, result: undefined });
+    send({ type: "system", subtype: "task_started", task_id: "early-task", run_id: "001", tool_use_id: "early-tool", task_type: "local_agent" });
+    send({ type: "system", subtype: "task_notification", task_id: "early-task", run_id: "001", status: "completed", summary: "Confirmed result" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents[0]).toMatchObject({ status: "completed", result: "Confirmed result" });
+  });
+
+  it("does not promote generic parent-tool progress to a native agent", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "tool_progress", parent_tool_use_id: "shell-tool", tool_name: "Bash" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([]);
+  });
+
+  it("recognizes a native lifecycle during streamed Agent input without promoting Bash", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "stream-agent", name: "Agent" } } });
+    send({ type: "system", subtype: "task_started", task_id: "agent-task", tool_use_id: "stream-agent" });
+    send({ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "stream-shell", name: "Bash" } } });
+    send({ type: "system", subtype: "task_started", task_id: "shell-task", tool_use_id: "stream-shell" });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id: "claude-native:thread-1:stream-agent" })]);
+  });
+
+  it("does not reuse an abandoned Agent stream block on a new turn's text", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "abandoned-agent", name: "Agent" } } });
+    useTaskStore.getState().completeTurn("thread-1", "turn-1", "interrupted");
+    send({ type: "system", subtype: "init" }, "turn-2");
+    send({ type: "stream_event", event: { type: "message_start", message: { id: "new-answer" } } }, "turn-2");
+    send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } }, "turn-2");
+    send({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }, "turn-2");
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([]);
+  });
+
+  it("clears old readout when a confirmed task identity is used by a new root turn", () => {
+    send({ type: "system", subtype: "init" });
+    send({ type: "system", subtype: "task_started", task_id: "reusable-task", task_type: "local_agent", description: "Old task" });
+    send({ type: "system", subtype: "task_notification", task_id: "reusable-task", status: "completed", summary: "Old result" });
+    send({ type: "result", subtype: "success", result: "Parent done" });
+    send({ type: "system", subtype: "init" }, "turn-2");
+    send({ type: "system", subtype: "task_started", task_id: "reusable-task", task_type: "local_agent", description: "New task" }, "turn-2");
+    const agents = useTaskStore.getState().tasks["thread-1"].agents;
+    expect(agents).toEqual([
+      expect.objectContaining({ id: "claude-native:thread-1:task:turn-1:reusable-task", status: "completed", result: "Old result" }),
+      expect.objectContaining({ id: "claude-native:thread-1:task:turn-2:reusable-task", status: "inProgress", rootTurnId: "turn-2", prompt: "New task", result: undefined, model: undefined }),
+    ]);
   });
 
   it("bounds forwarded native text and keeps task descriptions separate from assignments", () => {
@@ -73,6 +416,9 @@ describe("Claude event routing", () => {
   it("keeps child permission requests on the actual root control channel", () => {
     send({ type: "control_request", parent_tool_use_id: "agent-tool", request_id: "approval", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "pwd" } } });
     expect(useTaskStore.getState().tasks["thread-1"].approvals[0]).toMatchObject({ id: "approval", threadId: "thread-1" });
+    send({ type: "control_cancel_request", parent_tool_use_id: "agent-tool", request_id: "approval" });
+    expect(useTaskStore.getState().tasks["thread-1"].approvals).toEqual([]);
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([]);
   });
 
   it("preserves a failed native child when the root finishes successfully", () => {

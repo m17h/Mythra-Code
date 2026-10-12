@@ -201,7 +201,7 @@ import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAg
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { boundedNativeText, canOwnNativeThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates, nativeArchiveActivity } from "./lib/subAgentArchive";
-import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, type SubAgentWorker } from "./lib/subAgentActivity";
+import { collectSubAgentWorkers, createClaudeCommandWorkerReconciler, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, type SubAgentWorker } from "./lib/subAgentActivity";
 import { useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
 import {
@@ -1238,6 +1238,13 @@ export default function App() {
   }, [activeThreadId, feedback.notes, reviewDiff, taskStatus]);
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   const threadWorkflowOwners = useTaskStore((state) => state.workflowOwners);
+  const commandWorkerReconciler = useMemo(() => createClaudeCommandWorkerReconciler(activeThreadId), [activeThreadId]);
+  const [commandWorkerProtectedAgents, setCommandWorkerProtectedAgents] = useState<ReadonlySet<string>>(() => new Set());
+  const retainCommandWorkerProof = useCallback(() => {
+    const protectedIds = commandWorkerReconciler.protectedAgentIds;
+    setCommandWorkerProtectedAgents((current) => current.size === protectedIds.size && [...current].every((id) => protectedIds.has(id))
+      ? current : new Set(protectedIds));
+  }, [commandWorkerReconciler]);
   // Live crew for the composer panel: Mythra Code-owned cross-provider children
   // merged with whatever native agents the root task reported.
   const subAgentWorkers = useMemo(
@@ -1246,6 +1253,8 @@ export default function App() {
       links: childAgentLinks,
       statuses: threadTaskStatuses,
       agents: agentRecords,
+      rootActivities: activeThreadId ? useTaskStore.getState().tasks[activeThreadId]?.activities : undefined,
+      protectedNativeAgentIds: commandWorkerProtectedAgents,
       runStartedAt: agentRunStartedAt,
       // A provider-native child runs inside this thread's own runtime, so the
       // row names this thread's provider and model rather than leaving the
@@ -1254,9 +1263,57 @@ export default function App() {
       nativeProvider: activeProvider,
       nativeModel: effectiveSettings.model,
     }),
-    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
+    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, commandWorkerProtectedAgents, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : Boolean(selectedFirstPrompt) && startingDraftTurn;
+  useEffect(() => {
+    if (!activeThreadId) return;
+    let timer: number | undefined;
+    const reconcileCommandWorkers = () => {
+      timer = undefined;
+      const state = useTaskStore.getState();
+      if (state.activeThreadId !== activeThreadId) return;
+      const task = state.tasks[activeThreadId];
+      if (!task) return;
+      const obsolete = new Set(commandWorkerReconciler({
+        rootThreadId: activeThreadId,
+        agents: task.agents,
+        nativeLinks: nativeAgentLinksRef.current,
+        rootActivities: task.activities,
+      }));
+      // Only new ownership proof refreshes the App, never reasoning details.
+      retainCommandWorkerProof();
+      if (!obsolete.size) return;
+      // Earlier versions incorrectly persisted shell task IDs as native
+      // children. Remove only those exact same-turn command-proven aliases;
+      // leave the original commands, transcripts and unknown agents intact.
+      persistNativeAgentLinks((current) => {
+        const next = { ...current };
+        for (const id of obsolete) delete next[id];
+        return next;
+      });
+      useTaskStore.setState((state) => {
+        const current = state.tasks[activeThreadId];
+        if (!current?.agents.some((agent) => obsolete.has(agent.id))) return state;
+        return { tasks: { ...state.tasks, [activeThreadId]: { ...current, agents: current.agents.filter((agent) => !obsolete.has(agent.id)) } } };
+      });
+    };
+    reconcileCommandWorkers();
+    // Coalesce changes outside React. Reasoning detail flushes change this
+    // array too; compare immutable row references at a bounded interval,
+    // then update command proof for changed rows rather than rebuilding sets.
+    const unsubscribe = useTaskStore.subscribe((state, previous) => {
+      const activities = state.tasks[activeThreadId]?.activities;
+      if (!activities || activities === previous.tasks[activeThreadId]?.activities) return;
+      commandWorkerReconciler.observeActivities(activities);
+      if (timer !== undefined) return;
+      timer = window.setTimeout(reconcileCommandWorkers, 180);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeThreadId, agentRecords, commandWorkerReconciler, nativeAgentLinks, nativeAgentLinksRef, persistNativeAgentLinks, retainCommandWorkerProof]);
   // Root-owned telemetry; shown only for the visible thread's live turn.
   const claudeContinuation = useClaudeContinuation(activeThreadId, activeTurnId, running);
   useEffect(() => {
@@ -1682,6 +1739,8 @@ export default function App() {
    * the reusable project/app crew; it cannot opt a future thread into spawning.
    */
   const canEditThreadSubagents = useCallback(() => {
+    commandWorkerReconciler.flushObservedActivities();
+    retainCommandWorkerProof();
     const latest = useTaskStore.getState();
     const status = activeThreadId ? latest.statuses[activeThreadId] : undefined;
     const task = activeThreadId ? latest.tasks[activeThreadId] : undefined;
@@ -1691,6 +1750,8 @@ export default function App() {
       nativeLinks: nativeAgentLinksRef.current,
       statuses: latest.statuses,
       agents: task?.agents ?? [],
+      rootActivities: task?.activities,
+      protectedNativeAgentIds: commandWorkerReconciler.protectedAgentIds,
       runStartedAt: task?.agentRunStartedAt,
     });
     if (activeThreadIsChild || running || hasQueuedWork || status === "starting" || status === "running"
@@ -1700,7 +1761,7 @@ export default function App() {
       return false;
     }
     return true;
-  }, [activeThreadId, activeThreadIsChild, childAgentLinks, hasQueuedWork, nativeAgentLinksRef, running, showToast]);
+  }, [activeThreadId, activeThreadIsChild, childAgentLinks, commandWorkerReconciler, hasQueuedWork, nativeAgentLinksRef, retainCommandWorkerProof, running, showToast]);
 
   const persistThreadSubagentChoice = useCallback((choice: Partial<ThreadSubagentSettings>) => {
     if (activeThreadId) {
@@ -3409,8 +3470,33 @@ export default function App() {
     },
   });
 
+  const onClaudeNativeAgentReidentified = (rootThreadId: string, previousId: string, canonicalId: string, rootTurnId: string) => {
+    const prefix = `claude-native:${rootThreadId}:`;
+    if (previousId === canonicalId || !previousId.startsWith(prefix) || !canonicalId.startsWith(prefix)) return false;
+    let accepted = false;
+    persistNativeAgentLinks((current) => {
+      const previous = current[previousId];
+      const canonical = current[canonicalId];
+      if (!canonical || canonical.runtime !== "claude" || canonical.rootThreadId !== rootThreadId || canonical.rootTurnId !== rootTurnId) return current;
+      if (previous && (previous.runtime !== "claude" || previous.rootThreadId !== rootThreadId || previous.rootTurnId !== rootTurnId)) return current;
+      accepted = true;
+      if (!previous) return current;
+      // The router has already copied the positively joined worker evidence
+      // into canonical. Retire only that same-turn synthetic alias, retaining
+      // the earliest timestamps rather than erasing unrelated worker history.
+      const next = { ...current, [canonicalId]: { ...canonical,
+        createdAt: Math.min(previous.createdAt, canonical.createdAt),
+        ...(canonical.finishedAt && previous.finishedAt ? { finishedAt: Math.min(previous.finishedAt, canonical.finishedAt) } : {}),
+      } };
+      delete next[previousId];
+      return next;
+    });
+    return accepted;
+  };
+
   useClaudeEvents({
     onNativeAgentDiscovered,
+    onNativeAgentReidentified: onClaudeNativeAgentReidentified,
     bindingFor: (threadId) => {
       const logicalPath = threadProjectBindingsRef.current?.[threadId];
       return logicalPath ? executionPathFor(threadId, logicalPath) : undefined;

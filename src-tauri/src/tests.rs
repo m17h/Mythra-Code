@@ -326,6 +326,37 @@ fn claude_native_route_does_not_shadow_provider_agents_with_mythra_profiles() {
 }
 
 #[test]
+fn claude_disabled_agents_override_ambient_catalog_and_fork_gates() {
+    let mut command = Command::new("claude");
+    // Seed the child command directly: exercising hostile inherited values
+    // must not mutate the test runner's environment or other active sessions.
+    for key in [
+        "CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS",
+        "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS",
+    ] {
+        command.env(key, "0");
+    }
+    for key in ["CLAUDE_CODE_FORK_SUBAGENT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] {
+        command.env(key, "1");
+    }
+    command.env("CLAUDE_CODE_SUBAGENT_MODEL", "ambient-model");
+    configure_claude_agents_disabled(&mut command);
+    let environment = command.as_std().get_envs().collect::<HashMap<_, _>>();
+    for (key, value) in [
+        ("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS", "1"),
+        ("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS", "1"),
+        ("CLAUDE_CODE_FORK_SUBAGENT", "0"),
+        ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "0"),
+    ] {
+        assert_eq!(environment.get(std::ffi::OsStr::new(key)).copied().flatten(), Some(std::ffi::OsStr::new(value)));
+    }
+    for key in ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] {
+        assert_eq!(environment.get(std::ffi::OsStr::new(key)), Some(&None));
+    }
+    assert!(!command.as_std().get_args().any(|argument| argument == "--forward-subagent-text"));
+}
+
+#[test]
 fn claude_native_limits_are_process_local_foreground_and_depth_one() {
     for (requested, expected) in [
         (None, "6"),
@@ -344,6 +375,7 @@ fn claude_native_limits_are_process_local_foreground_and_depth_one() {
             ("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", expected),
             ("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "1"),
             ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1"),
+            ("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "0"),
         ] {
             assert_eq!(
                 environment

@@ -907,15 +907,22 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     onChange(next);
   }, [onChange, props.presets, selectedPresetId]);
 
-  const triggerLabel = native && delegationOn
+  // OFF is the next-turn admission policy, not proof that an existing or
+  // unexpectedly reported worker stopped. Keep both facts visible without
+  // presenting the unrelated saved Mythra concurrency limit as a native cap.
+  const triggerLabel = !delegationOn
+    ? statusUnknown
+      ? counts.starting + counts.working > 0
+        ? `Sub-agents off · ${counts.starting + counts.working} active · status unknown`
+        : "Sub-agents off · status unknown"
+      : counts.active > 0 ? `Sub-agents off · ${counts.active} active` : "Sub-agents off"
+    : native
     ? counts.active > 0
       ? `Native ${counts.active}/${nativeMax}`
       : nativeUnavailable ? "Native unavailable" : `Native: ${nativeMax}`
     : counts.active > 0
       ? `Sub-agents ${counts.active}/${maxConcurrent}`
-      : delegationOn
-        ? `Sub-agents: ${maxConcurrent}${rosterReady ? " ↗" : ""}`
-        : "Sub-agents off";
+      : `Sub-agents: ${maxConcurrent}${rosterReady ? " ↗" : ""}`;
   const nativeLimitEditable = native && !runLocked && Boolean(props.onNativeMaxConcurrentChange);
   const setNativeMax = (next: number) => props.onNativeMaxConcurrentChange?.(clampNativeLimit(next));
 

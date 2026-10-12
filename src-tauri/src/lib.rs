@@ -5163,6 +5163,20 @@ fn configure_claude_compaction(command: &mut Command, settings: Option<&Value>) 
         .arg("--settings").arg(settings.to_string());
 }
 
+fn configure_claude_agents_disabled(command: &mut Command) {
+    // --tools/--disallowedTools remove provider delegation from the exposed
+    // tool set. Also close the supported internal catalog/fork gates so an
+    // inherited CLI environment cannot re-enable them for an off/Mythra turn.
+    // These overrides belong only to this child process, including resumes.
+    command
+        .env("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS", "1")
+        .env("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS", "1")
+        .env("CLAUDE_CODE_FORK_SUBAGENT", "0")
+        .env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "0")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL")
+        .env_remove("CLAUDE_CODE_SUBAGENT_MODEL_FORCE");
+}
+
 fn configure_claude_native_agents(
     command: &mut Command,
     maximum: Option<usize>,
@@ -5187,6 +5201,9 @@ fn configure_claude_native_agents(
         .env_remove("CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS")
         .env_remove("CLAUDE_CODE_SUBAGENT_MODEL")
         .env_remove("CLAUDE_CODE_SUBAGENT_MODEL_FORCE")
+        // Native mode opens ordinary in-session children, not teams. Pin the
+        // supported gate instead of inheriting an unrelated CLI opt-in.
+        .env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "0")
         // Forks inherit the parent context/model and require background work,
         // which this per-turn process does not support.
         .env("CLAUDE_CODE_FORK_SUBAGENT", "0");
@@ -5421,6 +5438,8 @@ async fn claude_turn_start(
             &mut command, options.native_subagent_max,
             options.native_subagent_model.as_deref(),
         );
+    } else {
+        configure_claude_agents_disabled(&mut command);
     }
     command.args(claude_system_prompt_arguments(
         &options.system_prompt,

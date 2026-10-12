@@ -95,6 +95,26 @@ function trigger() {
   return screen.getByRole("button", { name: /Sub-agents/ });
 }
 
+it("keeps OFF explicit when native worker activity is reported instead of using the Mythra limit", () => {
+  view({
+    engine: "native",
+    provider: "claude",
+    nativeMaxConcurrent: 6,
+    policy: { ...POLICY, enabled: false, maxConcurrent: 1 },
+    workers: [{ id: "reported-child", kind: "native", status: "working", title: "Reported task", detail: "Claude · provider managed", provider: "claude", createdAt: Date.now() }],
+  });
+  expect(trigger()).toHaveTextContent("Sub-agents off · 1 active");
+  expect(trigger()).not.toHaveTextContent("1/1");
+});
+
+it("does not describe an unresolved worker as confirmed active while OFF", () => {
+  view({ engine: "native", provider: "claude", policy: { ...POLICY, enabled: false }, workers: [
+    { id: "unresolved", kind: "native", status: "unknown", title: "Unconfirmed task", detail: "Claude · provider managed", createdAt: 1 },
+  ] });
+  expect(trigger()).toHaveTextContent("Sub-agents off · status unknown");
+  expect(trigger()).not.toHaveTextContent("1 active");
+});
+
 async function open(overrides: Partial<SubAgentCommandCenterProps> = {}) {
   const handlers = view(overrides);
   await userEvent.click(trigger());

@@ -144,6 +144,43 @@ invoked through Mythra continue to be expanded into the prompt and used inline;
 this does not delete or alter the user's skill files. Native mode uses ordinary
 Agent/Task delegation, not the unsupported fork route.
 
+When native delegation is off, Claude's process-local built-in agent catalog,
+Explore/Plan agents, context forks and experimental teams are also disabled.
+Inherited CLI environment settings cannot opt the thread back into these
+integrated routes. These controls apply to fresh and resumed turns, without
+changing the user's global Claude settings. Ordinary terminal work remains
+available under the thread's permissions.
+
+Claude's `task_started`, `task_progress` and `task_notification` messages cover
+background commands and MCP work as well as agents. Only a positively identified
+local-agent start, an actual Agent/Task tool invocation, or forwarded child
+assistant/user output establishes an agent record. Terminal commands therefore
+do not inflate the sub-agent count. Late task/tool identity correlation retains
+one worker and its reported model, progress and result.
+Child partial streams and non-control child telemetry cannot change the root's
+answer, pending tool input or run status. A resumed task can reuse its launch
+tool; versioned lifecycle events still target that exact activation. A confirmed
+newer activation moves its earlier active-looking record to neutral idle
+history, without inventing a completed, failed or stopped outcome. Delayed
+older frames cannot revive that record or finish the new activation.
+When older histories load, obsolete synthetic worker links are removed only
+when exact command/turn evidence proves the misclassification. Original command
+history is retained; conflicting or uncertain agent evidence prevents cleanup.
+This repair is coalesced outside rendering and caches command proof, so reasoning
+updates do not repeatedly rebuild the full history index. It still detects newly
+loaded pages and same-size replacements, and cancels deferred work on navigation.
+Within the active view, positive agent evidence is retained across intermediate page replacements, even
+before the corresponding worker record arrives. Cleanup and the composer use
+that same evidence so a genuine worker cannot be removed or hidden just because
+its launch page is no longer loaded.
+
+If existing or unexpected agent activity is reported while spawning is off,
+the composer keeps both facts visible as `Sub-agents off · N active`, with the
+worker details still available. Off prevents new integrated delegation; it is
+not proof that an earlier or externally started worker has stopped.
+Unresolved worker status is labelled `status unknown`, not counted as confirmed
+active work; its ownership remains protected until it can be resolved.
+
 These are harness/tool boundaries, not an operating-system sandbox. Full Access
 still permits authorized shell programs, and cannot promise that an unrestricted
 model could never launch a separate CLI through a shell command.
