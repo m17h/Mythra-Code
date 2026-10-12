@@ -67,13 +67,62 @@ export function createNativeContract({ root, stateRoot, plan, platform }) {
   return { ...contract, contractHash: objectHash(contract) };
 }
 
+// Selected checks carry portable marked instructions; unrelated classifications
+// stay in the contract. Preserve exact block bytes rather than summarizing them.
+function selectedNativeInstructions(checks) {
+  const blocks = new Map();
+  let bytes = 0;
+  const invalid = (detail) => { throw new Error(`Invalid marked native instructions: ${detail}`); };
+  for (const check of checks) {
+    const reason = check.reason ?? '';
+    if (typeof reason !== 'string') invalid('check reason must be text');
+    let open = null;
+    // The planner prefixes additions with source paths, predecessor tags and
+    // '; '. Recognize those prefixes outside a block, leaving its body intact.
+    for (const marker of reason.matchAll(/(^|; |: )(BEGIN|END)(?=[ \t\r\n]|$)/gm)) {
+      if (marker[1] && (open || marker[2] === 'END')) continue;
+      const start = marker.index + marker[1].length;
+      const newline = reason.indexOf('\n', start);
+      const line = reason.slice(start, newline < 0 ? reason.length : newline);
+      // A prefixed header must be a complete marked BEGIN, not ordinary prose.
+      if (marker[1] && !/^BEGIN [A-Z][A-Z0-9_]*(?:\r?$|;)/.test(line)) continue;
+      const parsed = /^(BEGIN|END) ([A-Z][A-Z0-9_]*)(\r?|;[^\n]*)$/.exec(line);
+      if (!parsed) invalid('malformed BEGIN/END marker');
+      const [, kind, name, suffix] = parsed;
+      if (kind === 'BEGIN') {
+        if (suffix.startsWith(';')) invalid('BEGIN marker must occupy its own line');
+        if (open) invalid('nested BEGIN marker');
+        open = { name, start, bodyStart: start + line.length + 1 };
+      } else {
+        if (!open || open.name !== name) invalid('missing or mismatched BEGIN marker');
+        if (!reason.slice(open.bodyStart, start).trim()) invalid('empty body');
+        // The planner joins following reason prose with '; ' after END.
+        const end = start + kind.length + 1 + name.length + (suffix === '\r' ? 1 : 0);
+        const block = reason.slice(open.start, end + (reason[end] === '\n' ? 1 : 0));
+        if (blocks.has(name) && blocks.get(name) !== block) invalid(`ambiguous repeated marker ${name}`);
+        if (!blocks.has(name)) {
+          bytes += (blocks.size ? 1 : 0) + Buffer.byteLength(block, 'utf8');
+          if (bytes > 32768) invalid('selected delivery exceeds 32768 UTF-8 bytes');
+          blocks.set(name, block);
+        }
+        open = null;
+      }
+    }
+    if (open) invalid('missing END marker');
+  }
+  return [...blocks.values()].join('\n');
+}
+
 export function nativePrompt(contract, contractPath, stateRoot) {
+  const selectedInstructions = selectedNativeInstructions(contract.checks);
   const languagePreferencePaths = ['src-tauri/src/language_tools.rs', 'src/components/LanguageToolsSettings.tsx', 'src/lib/languageTools.ts'];
   const languageStorage = contract.checks.some((c) => c.id.startsWith('native-storage:'))
     && [contract.releaseScope?.changedFiles ?? [], ...(contract.releaseScope?.predecessors ?? []).map((p) => p.changedFiles ?? [])]
       .some((files) => files.some((file) => languagePreferencePaths.includes(file)));
   return `Execute the authorized Mythra Code native release validation contract at ${contractPath}.
-The human already authorized this release and bounded native QA. Read the exact contract and frozen repository instructions. Work only on its final package, disposable profile and evidence files under ${stateRoot}; never edit tracked source, rebuild, publish, stop the working user's app, or read/copy their application/provider profile or credentials.
+${selectedInstructions ? `\nSelected marked native instructions from this contract's selected checks:
+Before launching the candidate or interacting with its UI, read the complete marked instructions below and execute them within the contract's existing permissions. These exact instructions are supplied in this initial prompt; do not substitute a truncated contract dump or generic observations.
+${selectedInstructions}\n` : ''}The human already authorized this release and bounded native QA. Read the exact contract and frozen repository instructions. Work only on its final package, disposable profile and evidence files under ${stateRoot}; never edit tracked source, rebuild, publish, stop the working user's app, or read/copy their application/provider profile or credentials.
 
 First preflight your actual supported computer-use capability. On Windows use the installed Windows/Sky skill and its normal review controls. On macOS use the available supported CUA surface. Inventory and capture the native surface through that tool. If unavailable or denied, return blocked with exact tool/capability evidence; do not invent a shell/UI fallback or treat a normal automatic review as rejection. Verify your actual model/high reasoning and danger-full-access/approval_policy never from session metadata without printing private context. This worker is persisted; no child agents.
 

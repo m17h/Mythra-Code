@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createPlan } from './release-plan.mjs';
 import { atomicJson, fileHash, objectHash } from './release-state.mjs';
 import { assertNativeContract, assertQaSourceSupport, nativePrompt, validateNativeObservations, validateNativeResult } from './release-native-check.mjs';
 const roots = [];
@@ -59,6 +60,102 @@ function closeFaultFixture() {
   persistEvents(root, result, events);
   return { ...f, proof };
 }
+test('initial native prompt delivers the complete marked selected scope despite a large contract', () => {
+  const { contract } = fixture();
+  const intro = '# Selected native observations\nRuntime12 save and unchanged reopen → preserve drafts, language, history, onboarding and close-fault tasks.\n';
+  const body = intro + 'x'.repeat(11011 - Buffer.byteLength(intro) - 1) + '\n';
+  const block = `BEGIN PORTABLE_NATIVE_OBSERVATIONS\n${body}END PORTABLE_NATIVE_OBSERVATIONS`;
+  contract.checks = [{ id: 'native-storage:darwin-aarch64', reason: 'unrelated classification; '.repeat(28000) + '\n' + block + '; trailing predecessor classifications'  }];
+  contract.releaseScope = { classifications: [{ id: 'native-storage:darwin-aarch64', reason: 'BEGIN UNSELECTED_SCOPE\nDo not deliver this.\nEND UNSELECTED_SCOPE\n' }] };
+  const prompt = nativePrompt(contract, '/fixture/contract.json', '/fixture/state');
+  expect(Buffer.byteLength(JSON.stringify(contract))).toBeGreaterThan(665000);
+  expect(Buffer.byteLength(body)).toBe(11011);
+  expect(prompt).toContain(block);
+  expect(prompt).toContain('Before launching the candidate or interacting with its UI');
+  expect(prompt).not.toContain('unrelated classification;');
+  expect(prompt).not.toContain('trailing predecessor classifications');
+  expect(prompt).not.toContain('Do not deliver this.');
+  expect(Buffer.byteLength(prompt)).toBeLessThan(24000);
+});
+test.each(['classification', 'predecessor classification', 'override', 'known issue', 'boundary hint'])('initial native prompt preserves marked %s after maintained planner prefixes', (kind) => {
+  const { contract } = fixture();
+  const block = 'BEGIN PORTABLE_SCOPE\nInspect 日本語 → retained state.\nEND PORTABLE_SCOPE';
+  const changedFiles = ['src/main.tsx'];
+  const classification = { path: changedFiles[0], reason: block, evidence: 'fixture source review', boundaries: ['native-startup'] };
+  const addition = { check: 'native-startup', reason: block };
+  const selected = kind === 'classification' ? { classifications: [classification] }
+    : kind === 'predecessor classification' ? { predecessors: [{ tag: 'v1.2.2', commit: 'c'.repeat(40), reason: 'fixture shipped source', changedFiles, classifications: [classification] }] }
+      : kind === 'override' ? { overrides: [addition] }
+        : kind === 'known issue' ? { knownIssues: [addition] } : { boundaryHints: [addition] };
+  const plan = createPlan({ commit: 'a'.repeat(40), version: '1.2.3', baseline: { tag: 'v1.2.1', commit: 'b'.repeat(40), reason: 'fixture baseline' }, policyHash: 'd'.repeat(64), changedFiles, ...selected });
+  contract.checks = plan.checks.filter((c) => c.kind === 'native' && c.required && c.platform === 'darwin-aarch64');
+  const prompt = nativePrompt(contract, '/fixture/contract.json', '/fixture/state');
+  expect(prompt.split(block)).toHaveLength(2);
+  expect(prompt).not.toContain('src/main.tsx: BEGIN');
+  expect(prompt).not.toContain('v1.2.2:src/main.tsx: BEGIN');
+});
+test('initial native prompt delivers consecutive planner additions while retaining body prose', () => {
+  const { contract } = fixture();
+  const first = 'BEGIN FIRST_SCOPE\r\nInspect exact bytes: BEGIN is ordinary prose.\r\nNotes: END FIRST_SCOPE is also body prose.\r\nEND FIRST_SCOPE';
+  const second = 'BEGIN SECOND_SCOPE\nInspect other state.\nEND SECOND_SCOPE';
+  contract.checks = [{ id: 'native-startup:darwin-aarch64', reason: `src/main.tsx; ${first}; src/App.tsx: ${second}; trailing classification` }];
+  const prompt = nativePrompt(contract, '/fixture/contract.json', '/fixture/state');
+  expect(prompt.split(first)).toHaveLength(2);
+  expect(prompt.split(second)).toHaveLength(2);
+  expect(prompt.indexOf(first)).toBeLessThan(prompt.indexOf(second));
+  expect(prompt).not.toContain('trailing classification');
+});
+test('initial native prompt preserves Unicode, final newlines and exact duplicate scope blocks', () => {
+  const { contract } = fixture();
+  const block = 'BEGIN PORTABLE_SCOPE\nInspect 日本語 → retained state.\n\nEND PORTABLE_SCOPE\n';
+  contract.checks = [{ id: 'native-storage:darwin-aarch64', reason: block }, { id: 'native-close:darwin-aarch64', reason: block }];
+  const prompt = nativePrompt(contract, '/fixture/contract.json', '/fixture/state');
+  expect(prompt.split(block)).toHaveLength(2);
+  expect(Buffer.from(prompt).includes(Buffer.from(block))).toBe(true);
+  contract.checks.push({ id: 'native-onboarding:darwin-aarch64', reason: 'BEGIN OTHER_SCOPE\nDifferent selected instructions.\nEND OTHER_SCOPE' });
+  expect(nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toContain('END OTHER_SCOPE\n');
+});
+test.each([
+  ['missing end', 'BEGIN PORTABLE_SCOPE\nInspect state.\n'],
+  ['orphan end', 'END PORTABLE_SCOPE\n'],
+  ['mismatched end', 'BEGIN PORTABLE_SCOPE\nInspect state.\nEND OTHER_SCOPE\n'],
+  ['nested begin', 'BEGIN PORTABLE_SCOPE\nBEGIN OTHER_SCOPE\nInspect state.\nEND OTHER_SCOPE\nEND PORTABLE_SCOPE\n'],
+  ['BEGIN with trailing prose', 'BEGIN PORTABLE_SCOPE; classification\nInspect state.\nEND PORTABLE_SCOPE\n'],
+  ['END with ambiguous trailing prose', 'BEGIN PORTABLE_SCOPE\nInspect state.\nEND PORTABLE_SCOPE extra\n'],
+  ['invalid marker', 'BEGIN portable-scope\nInspect state.\nEND portable-scope\n'],
+  ['empty body', 'BEGIN PORTABLE_SCOPE\n\nEND PORTABLE_SCOPE\n'],
+])('initial native prompt refuses %s in marked selected instructions', (_name, reason) => {
+  const { contract } = fixture(); contract.checks = [{ reason }];
+  expect(() => nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toThrow(/marked native instructions/);
+});
+test('initial native prompt refuses ambiguous marker contents and oversized UTF-8 delivery', () => {
+  const { contract } = fixture();
+  const block = body => `BEGIN PORTABLE_SCOPE\n${body}\nEND PORTABLE_SCOPE\n`;
+  contract.checks = [{ id: 'native-storage:darwin-aarch64', reason: block('Inspect first state.') }, { id: 'native-close:darwin-aarch64', reason: block('Inspect different state.') }];
+  expect(() => nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toThrow(/ambiguous/);
+  contract.checks = [{ id: 'native-storage:darwin-aarch64', reason: block('界'.repeat(12000)) }];
+  expect(() => nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toThrow(/32768 UTF-8 bytes/);
+  contract.checks = [{ id: 'native-storage:darwin-aarch64', reason: block('x'.repeat(17000)) }, { id: 'native-close:darwin-aarch64', reason: `BEGIN SECOND_SCOPE\n${'x'.repeat(17000)}\nEND SECOND_SCOPE\n` }];
+  expect(() => nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toThrow(/32768 UTF-8 bytes/);
+});
+test('planner-prefixed marked BEGIN with a prose suffix fails closed even without an END', () => {
+  const { contract } = fixture();
+  contract.checks[0].reason = 'src/main.tsx; BEGIN PORTABLE_SCOPE; classification';
+  expect(() => nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toThrow(/marked native instructions/);
+});
+test.each(['Classify phase: END state only.', 'Phase; BEGIN a normal sentence.', 'Reason: BEGIN STATE extra.'])('planner-delimited unmarked prose retains the ordinary native prompt: %s', (reason) => {
+  const { contract } = fixture();
+  const original = nativePrompt(contract, '/fixture/contract.json', '/fixture/state');
+  contract.checks[0].reason = reason;
+  expect(nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toBe(original);
+});
+test('unmarked legacy contract reasons retain the ordinary native prompt unchanged', () => {
+  const { contract } = fixture();
+  const original = nativePrompt(contract, '/fixture/contract.json', '/fixture/state');
+  contract.checks[0].reason = 'Inspect ordinary native shell and existing storage.';
+  expect(nativePrompt(contract, '/fixture/contract.json', '/fixture/state')).toBe(original);
+  expect(original).not.toContain('Selected marked native instructions');
+});
 test('affected language storage uses existing observations and preserves metadata-only isolation', () => {
   const { contract } = fixture();
   contract.checks = [{ id: 'native-storage:darwin-aarch64' }];
