@@ -24,6 +24,12 @@ function Shell({ text, streaming = true }: { text: string; streaming?: boolean }
 
 describe("stream cadence replay", () => {
   it("measures frame-by-frame presentation of bursty text", async () => {
+    const nativeAnimationFrame = window.requestAnimationFrame.bind(window);
+    // ResizeObserver runs during native rendering, independently of the mocked
+    // pacing clock. Sample after that rendering step, not inside its rAF phase.
+    const afterRender = () => new Promise<void>((resolve) => {
+      nativeAnimationFrame(() => setTimeout(resolve, 0));
+    });
     let now = 1200;
     let nextId = 0;
     const frames = new Map<number, FrameRequestCallback>();
@@ -42,6 +48,7 @@ describe("stream cadence replay", () => {
         while (index < chunks.length && chunks[index].at <= elapsed) text += chunks[index++].text;
         view.rerender(<Shell text={text} streaming={index < chunks.length} />);
       });
+      await afterRender();
       const length = body.textContent!.length;
       let ink = length;
       for (const [name, highlight] of CSS.highlights) {
@@ -73,5 +80,5 @@ describe("stream cadence replay", () => {
     expect(body.textContent).toContain("resource independence");
     expect(frames.size).toBe(0);
     expect(document.querySelectorAll("style[data-mythra-stream-fade]")).toHaveLength(0);
-  });
+  }, 20_000);
 });
