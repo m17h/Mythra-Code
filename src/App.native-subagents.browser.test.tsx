@@ -654,20 +654,43 @@ it.each([false, true])("retains a transient Agent page across navigation before 
   const before = commandWorkerReconcileCalls;
   const positive: Activity = { id: "retained-agent-tool", kind: "agent", title: "Actual Agent", turnId: "old-turn", agent: { action: "spawn", provider: "claude", threadIds: [id] } };
   const command: Activity = { id: "retained-agent-tool", kind: "command", title: "Conflicting restored command", turnId: "old-turn" };
-  await act(async () => {
-    // Local history hydration can replace the loaded array. Both pages arrive
-    // before deferred command matching, and only the latest remains loaded.
-    useTaskStore.getState().hydrateTask(ROOT.id, [], [positive], PROJECT.path);
-    useTaskStore.getState().hydrateTask(ROOT.id, [], [command], PROJECT.path);
-  });
-  if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
-  else await waitFor(() => expect(commandWorkerReconcileCalls).toBeGreaterThan(before));
-  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
-  expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([expect.objectContaining(command)]);
-  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
-  await userEvent.click(screen.getByTitle("Start a thread in Native fixture"));
-  expect(useTaskStore.getState().activeThreadId).toBeNull();
-  if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+  // Only hold this App subscriber's deferred matcher. Real browser clicks can
+  // exceed its 180 ms deadline; all other timers and the reconciler stay real.
+  const deferredTimers: number[] = [];
+  const schedule = window.setTimeout.bind(window);
+  const scheduleSpy = navigateBeforeReconcile ? vi.spyOn(window, "setTimeout").mockImplementation((handler, delay, ...args) => {
+    if (typeof handler === "function" && handler.name === "reconcileCommandWorkers" && delay === 180) {
+      const timer = schedule(() => {}, delay);
+      deferredTimers.push(timer);
+      return timer;
+    }
+    return schedule(handler, delay, ...args);
+  }) : undefined;
+  const cancelSpy = navigateBeforeReconcile ? vi.spyOn(window, "clearTimeout") : undefined;
+  try {
+    await act(async () => {
+      // Local history hydration can replace the loaded array. Both pages arrive
+      // before deferred command matching, and only the latest remains loaded.
+      useTaskStore.getState().hydrateTask(ROOT.id, [], [positive], PROJECT.path);
+      useTaskStore.getState().hydrateTask(ROOT.id, [], [command], PROJECT.path);
+    });
+    if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+    else await waitFor(() => expect(commandWorkerReconcileCalls).toBeGreaterThan(before));
+    expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
+    expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([expect.objectContaining(command)]);
+    expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+    await userEvent.setup({ delay: navigateBeforeReconcile ? 100 : 0 }).click(screen.getByTitle("Start a thread in Native fixture"));
+    expect(useTaskStore.getState().activeThreadId).toBeNull();
+    if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+    if (navigateBeforeReconcile) {
+      expect(deferredTimers).toHaveLength(1);
+      expect(cancelSpy).toHaveBeenCalledWith(deferredTimers[0]);
+    }
+  } finally {
+    scheduleSpy?.mockRestore();
+    cancelSpy?.mockRestore();
+    for (const timer of deferredTimers) window.clearTimeout(timer);
+  }
   // The same launch-tool suffix in another root still has independent command
   // proof. Retaining the genuine root must not suppress this safe repair.
   localTranscriptPage = { thread: otherThread, messages: [], activities: [command], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
