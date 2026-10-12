@@ -128,7 +128,7 @@ jobs:
     # Keep the OS pin, serial file isolation and bounded batches: newer hosted
     # WebKit and concurrent file workers stalled. No browser coverage is removed.
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
