@@ -77,19 +77,27 @@ function selectedNativeInstructions(checks) {
     const reason = check.reason ?? '';
     if (typeof reason !== 'string') invalid('check reason must be text');
     let open = null;
-    for (const marker of reason.matchAll(/^(?:BEGIN|END)(?:[ \t][^\n]*)?\r?$/gm)) {
-      const parsed = /^(BEGIN|END) ([A-Z][A-Z0-9_]*)(\r?|;[^\n]*)$/.exec(marker[0]);
+    // The planner prefixes additions with source paths, predecessor tags and
+    // '; '. Recognize those prefixes outside a block, leaving its body intact.
+    for (const marker of reason.matchAll(/(^|; |: )(BEGIN|END)(?=[ \t\r\n]|$)/gm)) {
+      if (marker[1] && (open || marker[2] === 'END')) continue;
+      const start = marker.index + marker[1].length;
+      const newline = reason.indexOf('\n', start);
+      const line = reason.slice(start, newline < 0 ? reason.length : newline);
+      // A prefixed header must be a complete marked BEGIN, not ordinary prose.
+      if (marker[1] && !/^BEGIN [A-Z][A-Z0-9_]*(?:\r?$|;)/.test(line)) continue;
+      const parsed = /^(BEGIN|END) ([A-Z][A-Z0-9_]*)(\r?|;[^\n]*)$/.exec(line);
       if (!parsed) invalid('malformed BEGIN/END marker');
       const [, kind, name, suffix] = parsed;
       if (kind === 'BEGIN') {
         if (suffix.startsWith(';')) invalid('BEGIN marker must occupy its own line');
         if (open) invalid('nested BEGIN marker');
-        open = { name, start: marker.index, bodyStart: marker.index + marker[0].length + 1 };
+        open = { name, start, bodyStart: start + line.length + 1 };
       } else {
         if (!open || open.name !== name) invalid('missing or mismatched BEGIN marker');
-        if (!reason.slice(open.bodyStart, marker.index).trim()) invalid('empty body');
+        if (!reason.slice(open.bodyStart, start).trim()) invalid('empty body');
         // The planner joins following reason prose with '; ' after END.
-        const end = marker.index + kind.length + 1 + name.length + (suffix === '\r' ? 1 : 0);
+        const end = start + kind.length + 1 + name.length + (suffix === '\r' ? 1 : 0);
         const block = reason.slice(open.start, end + (reason[end] === '\n' ? 1 : 0));
         if (blocks.has(name) && blocks.get(name) !== block) invalid(`ambiguous repeated marker ${name}`);
         if (!blocks.has(name)) {
