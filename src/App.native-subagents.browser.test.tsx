@@ -866,7 +866,7 @@ it.each(["completed", "failed", "interrupted", "running", "unknown"].flatMap((pr
   await routeCurrent({ type: "system", subtype: "init" });
   // An older legacy page can omit the activity turn even though durable
   // ownership still proves that this raw launch identity is historical.
-  const legacy: Activity = { id: "cross-turn-tool", kind: "agent", title: "Original assignment", status: "completed", agent: { action: "spawn", provider: "claude", threadIds: [originalId] } };
+  const legacy: Activity = { id: "cross-turn-tool", kind: "agent", title: "Original assignment", status: priorStatus, agent: { action: "spawn", provider: "claude", threadIds: [originalId] } };
   await act(async () => { useTaskStore.getState().hydrateTask(ROOT.id, [], [legacy], PROJECT.path); });
   const legacySnapshot = useTaskStore.getState().tasks[ROOT.id].activities[0];
   await routeCurrent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "cross-turn-tool", is_error: true, content: "Old legacy tool result replay" }] } });
