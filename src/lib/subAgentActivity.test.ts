@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   collectSubAgentWorkers,
+  createClaudeCommandWorkerReconciler,
   describeSubAgentActivity,
   isActiveAgentRecord,
   isSubAgentWorkerActive,
+  knownClaudeCommandWorkerIds,
   subAgentStatusLabel,
   summarizeSubAgentWorkers,
   workerStatusFromAgentRecord,
@@ -12,6 +14,8 @@ import {
 import type { ChildAgentLink } from "./childAgents";
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
+import type { Activity } from "../types";
+import type { NativeAgentLink } from "./nativeAgentLinks";
 
 function link(overrides: Partial<ChildAgentLink> = {}): ChildAgentLink {
   return {
@@ -231,6 +235,60 @@ describe("collectSubAgentWorkers", () => {
     expect(workers[0]).toMatchObject({ detail: "Claude · actual-model", canOpen: false, canStop: false });
   });
 
+  it("excludes positively identified legacy Claude command workers without deleting durable links", () => {
+    const id = "claude-native:root:shell-tool";
+    const durable: NativeAgentLink = { childThreadId: id, rootThreadId: "root", rootTurnId: "old-turn", runtime: "claude", provider: "claude", title: "Development server", createdAt: 1, status: "running" };
+    const nativeLinks = { [id]: durable };
+    const rootActivities: Activity[] = [{ id: "shell-tool", kind: "command", title: "npm run dev", status: "completed", turnId: "old-turn" }];
+    const input = { rootThreadId: "root", links: {}, statuses: {}, nativeLinks, rootActivities, runStartedAt: 100 };
+    expect(collectSubAgentWorkers({ ...input, agents: [] })).toEqual([]);
+    expect(knownClaudeCommandWorkerIds({ ...input, agents: [] })).toEqual([id]);
+    expect(collectSubAgentWorkers({ ...input, agents: [{ id, prompt: "Development server", runtime: "claude", rootTurnId: "old-turn", status: "running" }] })).toEqual([]);
+    expect(nativeLinks[id]).toBe(durable);
+    expect(nativeLinks[id].status).toBe("running");
+    expect(knownClaudeCommandWorkerIds({ ...input, agents: [], nativeLinks: { [id]: { ...durable, rootTurnId: undefined } } })).toEqual([]);
+  });
+
+  it.each([
+    { runtime: undefined, rootTurnId: "old-turn", commandTurnId: "old-turn", commandId: "shell-tool" },
+    { runtime: "codex" as const, rootTurnId: "old-turn", commandTurnId: "old-turn", commandId: "shell-tool" },
+    { runtime: "claude" as const, rootTurnId: undefined, commandTurnId: "old-turn", commandId: "shell-tool" },
+    { runtime: "claude" as const, rootTurnId: "old-turn", commandTurnId: "other-turn", commandId: "shell-tool" },
+    { runtime: "claude" as const, rootTurnId: "old-turn", commandTurnId: "old-turn", commandId: "other-tool" },
+  ])("preserves a worker when runtime, turn or command identity lacks exact proof: %j", ({ runtime, rootTurnId, commandTurnId, commandId }) => {
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", links: {}, statuses: {}, agents: [
+      { id: "claude-native:root:shell-tool", runtime, rootTurnId, prompt: "Reported work", status: "running" },
+    ], rootActivities: [{ id: commandId, kind: "command", title: "npm run dev", turnId: commandTurnId }] });
+    expect(workers).toHaveLength(1);
+    expect(workers[0].status).toBe("working");
+  });
+
+  it.each([
+    { rootThreadId: "foreign-root", runtime: "claude" as const, rootTurnId: "turn" },
+    { rootThreadId: "root", runtime: "codex" as const, rootTurnId: "turn" },
+    { rootThreadId: "root", runtime: "claude" as const, rootTurnId: "different-turn" },
+  ])("preserves conflicting ownership evidence rather than trusting a command-shaped root record: %j", (ownership) => {
+    const id = "claude-native:root:shared-tool";
+    const input = { rootThreadId: "root", links: {}, statuses: {}, agents: [
+      { id, runtime: "claude" as const, rootTurnId: "turn", prompt: "Reported work", status: "running" },
+    ], nativeLinks: {
+      [id]: { childThreadId: id, title: "Durable work", createdAt: 1, status: "running", ...ownership },
+    }, rootActivities: [{ id: "shared-tool", kind: "command" as const, title: "Command evidence", turnId: "turn" }] };
+    expect(knownClaudeCommandWorkerIds(input)).toEqual([]);
+    expect(collectSubAgentWorkers(input)).toEqual([expect.objectContaining({ id, status: "working" })]);
+  });
+
+  it.each(["turn", "another-turn", undefined])("preserves positive Agent evidence on turn %s even when a command ID conflicts", (agentTurnId) => {
+    const id = "claude-native:root:shared-tool";
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", links: {}, statuses: {}, agents: [], nativeLinks: {
+      [id]: { childThreadId: id, rootThreadId: "root", rootTurnId: "turn", runtime: "claude", title: "Actual review", task: "Review ownership", createdAt: 1, status: "running" },
+    }, rootActivities: [
+      { id: "shared-tool", kind: "command", title: "Conflicting command", turnId: "turn" },
+      { id: "positive-agent", kind: "agent", title: "Actual Agent", turnId: agentTurnId, agent: { action: "spawn", provider: "claude", threadIds: [id] } },
+    ] });
+    expect(workers).toEqual([expect.objectContaining({ id, status: "working", task: "Review ownership" })]);
+  });
+
   it("never lists the root thread as one of its own workers", () => {
     // A reversed ownership record and a self-referential agent record are both
     // runtime artifacts; either one would otherwise burn a concurrency slot and
@@ -343,6 +401,15 @@ describe("describeSubAgentActivity", () => {
   });
 });
 
+it("preserves reported child-model evidence even when its launch is outside the loaded page", () => {
+  const id = "claude-native:root:shell-tool";
+  const input = { rootThreadId: "root", agents: [], rootActivities: [{ id: "shell-tool", kind: "command" as const, title: "Conflicting command", turnId: "turn" }], nativeLinks: {
+    [id]: { childThreadId: id, rootThreadId: "root", rootTurnId: "turn", runtime: "claude" as const, title: "Reported child", createdAt: 1, status: "running", model: "reported-model", modelSource: "execution" as const },
+  } };
+  expect(knownClaudeCommandWorkerIds(input)).toEqual([]);
+  expect(collectSubAgentWorkers({ ...input, links: {}, statuses: {} })).toEqual([expect.objectContaining({ id, model: "reported-model" })]);
+});
+
 describe("subAgentStatusLabel", () => {
   it("gives every state a readable word", () => {
     expect(subAgentStatusLabel("working")).toBe("Working");
@@ -351,5 +418,99 @@ describe("subAgentStatusLabel", () => {
     expect(subAgentStatusLabel("cancelled")).toBe("Stopped");
     expect(subAgentStatusLabel("failed")).toBe("Failed");
     expect(subAgentStatusLabel("idle")).toBe("Idle");
+  });
+});
+
+describe("Claude command-worker migration cache", () => {
+  const agent = { id: "claude-native:root:shell-tool", runtime: "claude" as const, rootTurnId: "turn", status: "unknown", prompt: "Possible worker" };
+  const reasoning: Activity = { id: "thinking", kind: "reasoning", title: "Thinking", turnId: "turn", detail: "Initial" };
+  const command: Activity = { id: "shell-tool", kind: "command", title: "npm test", turnId: "turn" };
+
+  it("updates exact proof after same-count replacement and removal", () => {
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const input = { rootThreadId: "root", agents: [agent] };
+    expect(reconcile({ ...input, rootActivities: [reasoning] })).toEqual([]);
+    expect(reconcile({ ...input, rootActivities: [command] })).toEqual([agent.id]);
+    expect(reconcile({ ...input, rootActivities: [{ ...command, turnId: "other" }] })).toEqual([]);
+    expect(reconcile({ ...input, rootActivities: [] })).toEqual([]);
+    expect(reconcile({ ...input, rootActivities: [{ ...command, id: "other-tool" }] })).toEqual([]);
+  });
+
+  it("retains positive Agent evidence and checks newly introduced candidates", () => {
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const positive: Activity = { id: "actual-agent", kind: "agent", title: "Review", agent: { action: "spawn", threadIds: [agent.id] } };
+    const input = { rootThreadId: "root", agents: [agent] };
+    expect(reconcile({ ...input, rootActivities: [positive, command] })).toEqual([]);
+    expect(reconcile({ ...input, rootActivities: [command] })).toEqual([]);
+    const newAgent = { ...agent, id: "claude-native:root:new-shell-tool" };
+    expect(reconcile({ ...input, agents: [agent, newAgent], rootActivities: [command, { ...command, id: "new-shell-tool" }] })).toEqual([newAgent.id]);
+  });
+
+  it("vetoes cached command proof when an Agent replaces its row", () => {
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const input = { rootThreadId: "root", agents: [agent] };
+    expect(reconcile({ ...input, rootActivities: [command] })).toEqual([agent.id]);
+    const positive: Activity = { ...command, kind: "agent", agent: { action: "spawn", threadIds: [agent.id] } };
+    expect(reconcile({ ...input, rootActivities: [positive] })).toEqual([]);
+    expect(reconcile({ ...input, rootActivities: [command] })).toEqual([]);
+  });
+
+  it("indexes existing command proof when a native candidate is introduced later", () => {
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const rootActivities = [command];
+    expect(reconcile({ rootThreadId: "root", agents: [], rootActivities })).toEqual([]);
+    expect(reconcile({ rootThreadId: "root", agents: [agent], rootActivities })).toEqual([agent.id]);
+    expect(reconcile({ rootThreadId: "root", agents: [{ ...agent, model: "reported-model", modelSource: "execution" }], rootActivities })).toEqual([]);
+  });
+
+  it("does not revisit unchanged proof rows for repeated reasoning details", () => {
+    let proofReads = 0;
+    const unrelated = { ...command, id: "unrelated", get kind() { proofReads++; return "command" as const; } };
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const input = { rootThreadId: "root", agents: [agent] };
+    expect(reconcile({ ...input, rootActivities: [unrelated, reasoning] })).toEqual([]);
+    const initialReads = proofReads;
+    for (let index = 0; index < 100; index++) {
+      expect(reconcile({ ...input, rootActivities: [unrelated, { ...reasoning, detail: String(index) }] })).toEqual([]);
+    }
+    expect(proofReads).toBe(initialReads);
+  });
+
+  it.each([false, true])("retains an Agent page before a cleanup candidate exists, execution-model veto: %s", (executionModelVeto) => {
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const positive: Activity = { id: "actual-agent", kind: "agent", title: "Review", agent: { action: "spawn", threadIds: [agent.id] } };
+    const initialAgents: AgentRecord[] = executionModelVeto ? [{ ...agent, model: "reported-model", modelSource: "execution" }] : [];
+    expect(reconcile({ rootThreadId: "root", agents: initialAgents, rootActivities: [positive] })).toEqual([]);
+    expect(reconcile({ rootThreadId: "root", agents: [agent], rootActivities: [command] })).toEqual([]);
+  });
+
+  it("shares retained positive proof with the worker collector after its page leaves", () => {
+    const reconcile = createClaudeCommandWorkerReconciler();
+    const positive: Activity = { id: "actual-agent", kind: "agent", title: "Review", agent: { action: "spawn", threadIds: [agent.id] } };
+    reconcile({ rootThreadId: "root", agents: [], rootActivities: [positive] });
+    const protectedNativeAgentIds = reconcile.protectedAgentIds;
+    const input = { rootThreadId: "root", agents: [agent], rootActivities: [command], protectedNativeAgentIds };
+    expect(knownClaudeCommandWorkerIds(input)).toEqual([]);
+    expect(collectSubAgentWorkers({ ...input, links: {}, statuses: {} })).toEqual([expect.objectContaining({ id: agent.id, status: "unknown" })]);
+  });
+
+  it.each([2, 100])("retains transient positive pages across %s queued history revisions", (revisions) => {
+    const reconcile = createClaudeCommandWorkerReconciler("root");
+    reconcile({ rootThreadId: "root", agents: [], rootActivities: [reasoning] });
+    const positive: Activity = { id: "actual-agent", kind: "agent", title: "Review", agent: { action: "spawn", threadIds: [agent.id] } };
+    reconcile.observeActivities([positive]);
+    for (let index = 0; index < revisions; index++) reconcile.observeActivities([command, { ...reasoning, detail: String(index) }]);
+    expect(reconcile({ rootThreadId: "root", agents: [agent], rootActivities: [command] })).toEqual([]);
+    expect(reconcile.protectedAgentIds.has(agent.id)).toBe(true);
+  });
+
+  it("makes queued proof available to an immediate settings guard without destructive matching", () => {
+    const reconcile = createClaudeCommandWorkerReconciler("root");
+    const positive: Activity = { id: "actual-agent", kind: "agent", title: "Review", agent: { action: "spawn", threadIds: [agent.id] } };
+    reconcile.observeActivities([positive]);
+    reconcile.observeActivities([command]);
+    reconcile.flushObservedActivities();
+    const workers = collectSubAgentWorkers({ rootThreadId: "root", agents: [agent], rootActivities: [command], links: {}, statuses: {}, protectedNativeAgentIds: reconcile.protectedAgentIds });
+    expect(workers).toEqual([expect.objectContaining({ id: agent.id, status: "unknown" })]);
   });
 });

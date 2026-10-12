@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands, page } from "vitest/browser";
-import type { Thread } from "./types";
+import type { Activity, Thread } from "./types";
 import type { AgentRecord } from "./components/StudioDock";
 import type { NativeAgentLink } from "./lib/nativeAgentLinks";
 import { resetTaskStore, useTaskStore } from "./lib/taskStore";
@@ -12,6 +12,8 @@ import { dateInputValue } from "./lib/timedPrompts";
 import { preferenceLearningFixture } from "./test/preferenceLearningFixture";
 import { officialPricingSnapshot, recordOfficialPricingResult, refreshOfficialPricing } from "./lib/officialPricing";
 import { OFFICIAL_PRICING_KEY, resetUsageLedgerCache } from "./lib/usageLedger";
+import { resetClaudeEventUsageState, routeClaudeEvent, type ClaudeEventContext } from "./lib/claudeEvents";
+import { createClaudeCommandWorkerReconciler } from "./lib/subAgentActivity";
 
 // Actual App and composer in browser engines. Native commands and provider RPCs
 // are explicit fixtures: this verifies App wiring, never CLI capability or quota.
@@ -30,6 +32,10 @@ let restartReservation: string | null = null;
 let appInstance = 0;
 let refreshedCodexModelAvailable = false;
 let publishedClaudeModelsAvailable = false;
+let claudeEventContext: ClaudeEventContext | undefined;
+let bridgeLaunches: Array<{ configPath: string; toolNames: string[] }> = [];
+let localTranscriptPage: Record<string, unknown> | null = null;
+let commandWorkerReconcileCalls = 0;
 const learnedFixture = preferenceLearningFixture();
 const capturedPricing = import.meta.glob<string>("../node_modules/.cache/pricing/*.md", { query: "?raw", import: "default", eager: true });
 const capturedPricingPage = (source: string) => Object.entries(capturedPricing).find(([path]) => path.endsWith(`/${source}.md`))?.[1];
@@ -67,6 +73,10 @@ vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/plugin-notification", () => ({ isPermissionGranted: vi.fn(async () => false), requestPermission: vi.fn(async () => "denied"), sendNotification: vi.fn() }));
 vi.mock("./components/XtermPanel", () => ({ XtermPanel: () => null }));
+// Capture the real App callbacks; events below still pass through the production
+// router, ownership persistence, task store and browser-rendered command center.
+vi.mock("./hooks/useClaudeEvents", () => ({ useClaudeEvents: (context: ClaudeEventContext) => { claudeEventContext = context; } }));
+vi.mock("./lib/subAgentActivity", { spy: true });
 
 function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
   calls.push({ command, args });
@@ -103,6 +113,7 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
     ] : [] };
     case "list_lmstudio_models": return { models: [] };
     case "claude_turn_start": return { turnId: "fixture-claude-turn" };
+    case "local_transcript_page_read": return localTranscriptPage;
     case "local_transcript_snapshot_write":
     case "local_transcript_tail_write":
     case "local_transcript_metadata_write": return { generation: 1, headSeq: 1, tailSeq: 2 };
@@ -119,7 +130,9 @@ function stubInvoke(command: string, args?: Record<string, unknown>): unknown {
       const options = args?.options as Record<string, unknown>;
       const native = options.nativeDelegation === true;
       const targets = options.targets as unknown[];
-      return { name: "fixture_project_tools", command: "/fixture/bridge", args: [], configPath: `/fixture/${native ? "native" : "mythra"}-bridge.json`, toolNames: ["set_project_run_command", "set_project_check_command", ...(native ? [] : ["propose_agent_settings", ...(targets?.length ? ["spawn_mythra_agent"] : [])])] };
+      const launch = { name: "fixture_project_tools", command: "/fixture/bridge", args: [], configPath: `/fixture/${native ? "native" : "mythra"}-bridge.json`, toolNames: ["set_project_run_command", "set_project_check_command", ...(native ? [] : ["propose_agent_settings", ...(targets?.length ? ["spawn_mythra_agent"] : [])])] };
+      bridgeLaunches.push(launch);
+      return launch;
     }
     case "codex_rpc": {
       const params = (args?.params ?? {}) as Record<string, unknown>;
@@ -168,6 +181,16 @@ function expectReservedRestart(): void {
 beforeEach(async () => {
   localStorage.clear();
   resetTaskStore();
+  resetClaudeEventUsageState();
+  claudeEventContext = undefined;
+  bridgeLaunches = [];
+  localTranscriptPage = null;
+  commandWorkerReconcileCalls = 0;
+  const actualActivity = await vi.importActual<typeof import("./lib/subAgentActivity")>("./lib/subAgentActivity");
+  vi.mocked(createClaudeCommandWorkerReconciler).mockImplementation((...args) => {
+    const reconcile = actualActivity.createClaudeCommandWorkerReconciler(...args);
+    return Object.assign((...input: Parameters<typeof reconcile>) => { commandWorkerReconcileCalls++; return reconcile(...input); }, { protectedAgentIds: reconcile.protectedAgentIds, observeActivities: reconcile.observeActivities, flushObservedActivities: reconcile.flushObservedActivities });
+  });
   resetNewThreadTimedPromptsForTests();
   forgetSubagentCapabilities();
   learnedFixture.reset();
@@ -213,6 +236,37 @@ async function enableNative(max = 6) {
 function composer() { return screen.getByPlaceholderText(/^(?:Ask Mythra Code to work in|Queue a follow-up for after this run)/); }
 async function send(text: string) { await userEvent.type(composer(), text); await userEvent.click(screen.getByRole("button", { name: "Send" })); }
 async function finishRoot() { await act(async () => { useTaskStore.getState().setActiveTurn(ROOT.id, undefined); useTaskStore.getState().setTaskStatus(ROOT.id, "completed"); }); }
+async function startClaudeNativeOffFixture() {
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } } });
+  const panel = await openPanel();
+  const native = within(panel).getByRole("radio", { name: /Native Claude Code/ });
+  await waitFor(() => expect(native).toBeEnabled());
+  await userEvent.click(native);
+  expect(native).toBeChecked();
+  expect(within(panel).getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+  await userEvent.click(within(panel).getByRole("button", { name: "Close sub-agent command center" }));
+  await send("Run the explicit local Claude fixture with sub-agents off");
+  await waitFor(() => expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(1));
+  const options = calls.find((call) => call.command === "claude_turn_start")!.args?.options as Record<string, unknown>;
+  expect(options).toMatchObject({ nativeSubagents: false, childAgentBridgeConfig: "/fixture/native-bridge.json" });
+  expect(options.systemPrompt).not.toContain("Provider-native sub-agent delegation is enabled");
+  const bridge = calls.find((call) => call.command === "child_agent_session_start")!.args?.options as Record<string, unknown>;
+  expect(bridge).toMatchObject({ nativeDelegation: true, targets: [] });
+  const launch = bridgeLaunches.find((entry) => entry.configPath === options.childAgentBridgeConfig)!;
+  expect(launch.toolNames).not.toContain("spawn_mythra_agent");
+  expect(launch.toolNames).not.toContain("propose_agent_settings");
+  expect(rpcCalls("thread/start")).toHaveLength(0);
+  const threadId = String(options.threadId);
+  expect(useTaskStore.getState().activeThreadId).toBe(threadId);
+  expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings")!)[threadId]).toMatchObject({ enabled: false, engine: "native" });
+  return threadId;
+}
+async function routeClaudeFixture(threadId: string, message: Record<string, unknown>) {
+  expect(claudeEventContext).toBeDefined();
+  await act(async () => {
+    routeClaudeEvent({ threadId, turnId: "fixture-claude-turn", message }, claudeEventContext!);
+  });
+}
 function expectNativeConfig(params: Record<string, unknown>, max: number) {
   const config = params.config as Record<string, unknown>;
   // Codex V2's session budget includes its primary agent; the user's native
@@ -462,6 +516,463 @@ it("explains an unsupported Codex runtime without changing the draft's selected 
   expect(within(panel).getByRole("radio", { name: /Mythra Code/ })).toBeChecked();
   expect(within(panel).getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
   expect(rpcCalls("thread/start")).toHaveLength(0);
+});
+
+it("keeps native Claude OFF through a routed Bash background-task lifecycle", async () => {
+  const threadId = await startClaudeNativeOffFixture();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "init" });
+  await routeClaudeFixture(threadId, { type: "assistant", message: { id: "fixture-shell-call", content: [{ type: "tool_use", id: "fixture-shell-tool", name: "Bash", input: { command: "npm run dev", run_in_background: true } }] } });
+  for (const message of [
+    { type: "system", subtype: "task_started", task_id: "fixture-shell-task", tool_use_id: "fixture-shell-tool", task_type: "local_bash", description: "Fixture development server" },
+    { type: "system", subtype: "task_progress", task_id: "fixture-shell-task", tool_use_id: "fixture-shell-tool", summary: "Fixture server listening" },
+    { type: "system", subtype: "task_notification", task_id: "fixture-shell-task", status: "completed", summary: "Fixture server stopped" },
+  ]) {
+    await routeClaudeFixture(threadId, message);
+    expect(useTaskStore.getState().tasks[threadId].agents).toEqual([]);
+    expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Sub-agents 1/1" })).toBeNull();
+    expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks") ?? "{}")).toEqual({});
+  }
+  expect(useTaskStore.getState().tasks[threadId].activities).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: "fixture-shell-tool", kind: "command", title: "npm run dev" }),
+  ]));
+  const panel = await openPanel();
+  expect(within(panel).getByRole("radio", { name: /Native Claude Code/ })).toBeChecked();
+  expect(within(panel).getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+  expect(within(panel).queryByText("Fixture development server")).toBeNull();
+});
+
+it.each([false, true])("removes only a restored command-proven Claude worker with an unknown neighbor: %s", async (keepUnknownNeighbor) => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const fakeId = `claude-native:${ROOT.id}:old-shell-tool`;
+  const unknownId = `claude-native:${ROOT.id}:unclassified-tool`;
+  const shell = { id: "old-shell-tool", kind: "command", title: "npm run dev", status: "completed", turnId: "old-fixture-turn" };
+  const nativeLinks = {
+    [fakeId]: { childThreadId: fakeId, rootThreadId: ROOT.id, rootTurnId: shell.turnId, runtime: "claude", provider: "claude", title: "Old fixture development server", createdAt: 1, status: "running" },
+    ...(keepUnknownNeighbor ? { [unknownId]: { childThreadId: unknownId, rootThreadId: ROOT.id, rootTurnId: shell.turnId, runtime: "claude", provider: "claude", title: "Unclassified existing fixture work", createdAt: 2, status: "unknown" } } : {}),
+  };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [shell], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 256 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": nativeLinks, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities).toEqual([expect.objectContaining(shell)]));
+  await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[fakeId]).toBeUndefined());
+  const retained = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(retained).toEqual(keepUnknownNeighbor ? { [unknownId]: expect.objectContaining(nativeLinks[unknownId]) } : {});
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual([]);
+  expect(screen.getByRole("button", { name: keepUnknownNeighbor ? "Sub-agents off · status unknown" : "Sub-agents off" })).toBeVisible();
+  const panel = await openPanel();
+  const toggle = within(panel).getByRole("switch", { name: "Allow sub-agent spawning" });
+  expect(toggle).not.toBeChecked();
+  if (keepUnknownNeighbor) {
+    expect(toggle).toBeDisabled();
+    expect(within(panel).getByText("Unclassified existing fixture work")).toBeVisible();
+  } else {
+    expect(toggle).toBeEnabled();
+    await userEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings")!)[ROOT.id].enabled).toBe(true);
+  }
+  expect(within(panel).queryByText("Old fixture development server")).toBeNull();
+  expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([expect.objectContaining(shell)]);
+  expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(0);
+});
+
+it("coalesces restored-worker proof during reasoning updates and repairs an older history page", async () => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const fakeId = `claude-native:${ROOT.id}:paged-shell-tool`;
+  const realId = `claude-native:${ROOT.id}:real-agent-tool`;
+  const links = {
+    [fakeId]: { childThreadId: fakeId, rootThreadId: ROOT.id, rootTurnId: "old-turn", runtime: "claude", title: "Old shell fixture", createdAt: 1, status: "unknown" },
+    [realId]: { childThreadId: realId, rootThreadId: ROOT.id, rootTurnId: "old-turn", runtime: "claude", title: "Actual retained review", createdAt: 2, status: "completed" },
+  };
+  const activities: Activity[] = [
+    { id: "real-agent-tool", kind: "agent", title: "Actual retained review", turnId: "old-turn", agent: { action: "spawn", provider: "claude", threadIds: [realId] } },
+    { id: "thinking-fixture", kind: "reasoning", title: "Thinking", turnId: "live-turn", detail: "Initial thought", status: "inProgress" },
+  ];
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities, generation: 1, headSeq: 1, tailSeq: 2, nextCursor: "older-page", byteLen: 256 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": links, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.history.nextCursor).toBe("older-page"));
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[fakeId]).toBeDefined();
+  await act(async () => {
+    useTaskStore.getState().setActiveTurn(ROOT.id, "live-turn");
+    useTaskStore.getState().setTaskStatus(ROOT.id, "running");
+  });
+  const before = commandWorkerReconcileCalls;
+  await act(async () => {
+    for (let index = 0; index < 100; index++) {
+      useTaskStore.getState().queueReasoningDelta(ROOT.id, "thinking-fixture", " more", "content", "live-turn");
+      useTaskStore.getState().flushDeltas();
+    }
+  });
+  expect(commandWorkerReconcileCalls).toBe(before);
+  await waitFor(() => expect(commandWorkerReconcileCalls).toBe(before + 1));
+  const shell: Activity = { id: "paged-shell-tool", kind: "command", title: "npm run dev", turnId: "old-turn", status: "completed" };
+  localTranscriptPage = { thread, messages: [], activities: [shell], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  let streamingRevisions = 0;
+  const streamTimer = window.setInterval(() => {
+    act(() => {
+      useTaskStore.getState().queueReasoningDelta(ROOT.id, "thinking-fixture", " more", "content", "live-turn");
+      useTaskStore.getState().flushDeltas();
+      streamingRevisions++;
+    });
+  }, 20);
+  try {
+    await userEvent.click(await screen.findByRole("button", { name: "Load earlier messages" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[fakeId]).toBeUndefined());
+    expect(streamingRevisions).toBeGreaterThan(1);
+  } finally { window.clearInterval(streamTimer); }
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[realId]).toMatchObject(links[realId]);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual(expect.arrayContaining([expect.objectContaining(shell)]));
+  expect(calls.filter((call) => call.command === "local_transcript_page_read").length).toBe(2);
+  expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(0);
+  await act(async () => {
+    useTaskStore.getState().queueReasoningDelta(ROOT.id, "thinking-fixture", " more", "content", "live-turn");
+    useTaskStore.getState().flushDeltas();
+  });
+  await userEvent.click(screen.getByTitle("Start a thread in Native fixture"));
+  expect(useTaskStore.getState().activeThreadId).toBeNull();
+  const afterNavigation = commandWorkerReconcileCalls;
+  await new Promise((resolve) => window.setTimeout(resolve, 220));
+  expect(commandWorkerReconcileCalls).toBe(afterNavigation);
+});
+
+it.each([false, true])("retains a transient Agent page across navigation before deferred matching: %s", async (navigateBeforeReconcile) => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const otherThread = { ...thread, id: "other-native-root", name: "Other native root" };
+  const id = `claude-native:${ROOT.id}:retained-agent-tool`;
+  const otherId = `claude-native:${otherThread.id}:retained-agent-tool`;
+  const link = { childThreadId: id, rootThreadId: ROOT.id, rootTurnId: "old-turn", runtime: "claude", title: "Genuine retained worker", createdAt: 1, status: "running" };
+  const otherLink = { ...link, childThreadId: otherId, rootThreadId: otherThread.id, title: "Other root shell command" };
+  inbox = [thread, otherThread];
+  localTranscriptPage = { thread, messages: [], activities: [{ id: "unrelated", kind: "reasoning", title: "Thinking" }], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [id]: link, [otherId]: otherLink }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities[0]?.id).toBe("unrelated"));
+  const before = commandWorkerReconcileCalls;
+  const positive: Activity = { id: "retained-agent-tool", kind: "agent", title: "Actual Agent", turnId: "old-turn", agent: { action: "spawn", provider: "claude", threadIds: [id] } };
+  const command: Activity = { id: "retained-agent-tool", kind: "command", title: "Conflicting restored command", turnId: "old-turn" };
+  await act(async () => {
+    // Local history hydration can replace the loaded array. Both pages arrive
+    // before deferred command matching, and only the latest remains loaded.
+    useTaskStore.getState().hydrateTask(ROOT.id, [], [positive], PROJECT.path);
+    useTaskStore.getState().hydrateTask(ROOT.id, [], [command], PROJECT.path);
+  });
+  if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+  else await waitFor(() => expect(commandWorkerReconcileCalls).toBeGreaterThan(before));
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([expect.objectContaining(command)]);
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await userEvent.click(screen.getByTitle("Start a thread in Native fixture"));
+  expect(useTaskStore.getState().activeThreadId).toBeNull();
+  if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+  // The same launch-tool suffix in another root still has independent command
+  // proof. Retaining the genuine root must not suppress this safe repair.
+  localTranscriptPage = { thread: otherThread, messages: [], activities: [command], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await userEvent.click(await screen.findByRole("button", { name: "Open Other native root" }));
+  await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[otherId]).toBeUndefined());
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(ROOT.id));
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await new Promise((resolve) => window.setTimeout(resolve, 220));
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
+  const panel = await openPanel();
+  expect(within(panel).getByText("Genuine retained worker")).toBeVisible();
+  expect(within(panel).getByRole("switch", { name: "Allow sub-agent spawning" })).toBeDisabled();
+  expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(0);
+});
+
+it("flushes transient Agent proof before an immediate stale settings action", async () => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [{ id: "unrelated", kind: "reasoning", title: "Thinking" }], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities[0]?.id).toBe("unrelated"));
+  const panel = await openPanel();
+  const toggle = within(panel).getByRole("switch", { name: "Allow sub-agent spawning" });
+  expect(toggle).toBeEnabled();
+  const id = `claude-native:${ROOT.id}:immediate-agent-tool`;
+  const positive: Activity = { id: "immediate-agent-tool", kind: "agent", title: "Actual Agent", turnId: "old-turn", agent: { action: "spawn", provider: "claude", threadIds: [id] } };
+  const command: Activity = { ...positive, kind: "command", agent: undefined, title: "Conflicting command" };
+  await act(async () => {
+    useTaskStore.getState().hydrateTask(ROOT.id, [], [positive], PROJECT.path);
+    useTaskStore.getState().hydrateTask(ROOT.id, [], [command], PROJECT.path);
+    useTaskStore.getState().upsertAgent(ROOT.id, { id, runtime: "claude", rootTurnId: "old-turn", prompt: "Unresolved genuine worker", status: "unknown" });
+    // The DOM still exposes the previously enabled control in this event batch.
+    // Its App guard must read current workers and queued positive proof.
+    toggle.click();
+  });
+  expect(toggle).not.toBeChecked();
+  expect(toggle).toBeDisabled();
+  expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings")!)[ROOT.id].enabled).toBe(false);
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual([expect.objectContaining({ id, status: "unknown" })]);
+  expect(screen.getByRole("button", { name: "Sub-agents off · status unknown" })).toBeVisible();
+});
+
+it("keeps root text and pending tools isolated from partial Claude child streams", async () => {
+  const threadId = await startClaudeNativeOffFixture();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "init" });
+  await routeClaudeFixture(threadId, { type: "assistant", message: { content: [{ type: "tool_use", id: "outer-agent", name: "Agent", input: { prompt: "Review fixture state" } }] } });
+  await routeClaudeFixture(threadId, { type: "stream_event", event: { type: "message_start", message: { id: "root-stream" } } });
+  await routeClaudeFixture(threadId, { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "root-command", name: "Bash" } } });
+  await routeClaudeFixture(threadId, { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":"echo root"}' } } });
+  for (const event of [
+    { type: "message_start", message: { id: "child-stream" } },
+    { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Private child text" } },
+    { type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "Private child thinking" } },
+    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "nested-agent", name: "Agent" } },
+    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"prompt":"Private nested task"}' } },
+    { type: "content_block_stop", index: 0 },
+  ]) await routeClaudeFixture(threadId, { type: "stream_event", parent_tool_use_id: "outer-agent", event });
+  await routeClaudeFixture(threadId, { type: "result", parent_tool_use_id: "outer-agent", subtype: "success", result: "Private child final" });
+  await routeClaudeFixture(threadId, { type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+  await routeClaudeFixture(threadId, { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Root reply" } } });
+  await act(async () => { useTaskStore.getState().flushDeltas(); });
+  const task = useTaskStore.getState().tasks[threadId];
+  expect(task.messages).toEqual(expect.arrayContaining([expect.objectContaining({ id: "root-stream", text: "Root reply" })]));
+  expect(task.messages.some((message) => /Private child/.test(message.text))).toBe(false);
+  expect(task.activities).toEqual(expect.arrayContaining([expect.objectContaining({ id: "root-command", kind: "command", title: "echo root" })]));
+  expect(task.activities.some((activity) => activity.id === "nested-agent" || activity.detail?.includes("Private child thinking"))).toBe(false);
+  expect(task.agents).toHaveLength(1);
+  expect(task.agents[0].id).toBe(`claude-native:${threadId}:outer-agent`);
+  expect(useTaskStore.getState().statuses[threadId]).toBe("running");
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeClaudeFixture(threadId, { type: "result", subtype: "success", result: "Root reply" });
+  expect(await screen.findByText("Root reply")).toBeVisible();
+});
+
+it("shows positively routed Claude Agent evidence while native delegation remains OFF", async () => {
+  const threadId = await startClaudeNativeOffFixture();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "init" });
+  await routeClaudeFixture(threadId, { type: "assistant", message: { id: "fixture-agent-call", content: [{ type: "tool_use", id: "fixture-agent-tool", name: "Agent", input: { description: "Fixture ownership review", prompt: "Inspect the explicit fixture ownership records", model: "claude-haiku-4-5" } }] } });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "fixture-agent-task", tool_use_id: "fixture-agent-tool", task_type: "local_agent", description: "Fixture ownership review" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_progress", task_id: "fixture-agent-task", summary: "Examining the fixture ownership graph" });
+  const agentId = `claude-native:${threadId}:fixture-agent-tool`;
+  expect(useTaskStore.getState().tasks[threadId].agents).toEqual([expect.objectContaining({ id: agentId, runtime: "claude", status: "inProgress", task: "Inspect the explicit fixture ownership records", progress: "Examining the fixture ownership graph" })]);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[agentId]).toMatchObject({ rootThreadId: threadId, runtime: "claude", status: "inProgress" });
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Sub-agents 1/1" })).toBeNull();
+  const panel = await openPanel();
+  expect(within(panel).getByRole("switch", { name: "Allow sub-agent spawning" })).not.toBeChecked();
+  const row = within(panel).getByText("Inspect the explicit fixture ownership records").closest("li")!;
+  await userEvent.click(within(row).getByRole("button", { name: "Details for Inspect the explicit fixture ownership records" }));
+  expect(nativeReadoutValue(row, "Assignment")).toHaveTextContent("Inspect the explicit fixture ownership records");
+  expect(within(row).getByText("Examining the fixture ownership graph")).toBeVisible();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "fixture-agent-task", status: "completed", summary: "Fixture review completed" });
+  expect(useTaskStore.getState().tasks[threadId].agents[0].status).toBe("completed");
+  expect(within(row).getByText("Fixture review completed")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+});
+
+it("consolidates late Claude task/tool identity in App without losing a failed result", async () => {
+  const threadId = await startClaudeNativeOffFixture();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "init" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "late-fixture-task", task_type: "local_agent", description: "Fixture identity review" });
+  await routeClaudeFixture(threadId, { type: "assistant", message: { id: "late-fixture-call", content: [{ type: "tool_use", id: "late-fixture-tool", name: "Agent", input: { description: "Fixture identity review", prompt: "Review fixture event identities" } }] } });
+  await routeClaudeFixture(threadId, { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "late-fixture-tool", is_error: true, content: "Fixture review could not finish" }] } });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "late-fixture-task", tool_use_id: "late-fixture-tool", task_type: "local_agent" });
+  const canonicalId = `claude-native:${threadId}:task:fixture-claude-turn:late-fixture-task`;
+  expect(useTaskStore.getState().tasks[threadId].agents).toEqual([expect.objectContaining({ id: canonicalId, status: "failed", task: "Review fixture event identities", result: "Fixture review could not finish" })]);
+  expect(useTaskStore.getState().tasks[threadId].agents[0].model).toBeUndefined();
+  const durable = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(Object.keys(durable)).toEqual([canonicalId]);
+  expect(durable[canonicalId]).toMatchObject({ status: "failed", task: "Review fixture event identities", result: "Fixture review could not finish" });
+  expect(durable[canonicalId].model).toBeUndefined();
+  const activity = useTaskStore.getState().tasks[threadId].activities.find((entry) => entry.id === "late-fixture-tool")!;
+  expect(activity).toMatchObject({ status: "failed", agent: { threadIds: [canonicalId] } });
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+  const panel = await openPanel();
+  const row = within(panel).getByText("Review fixture event identities").closest("li")!;
+  await userEvent.click(within(row).getByRole("button", { name: "Details for Review fixture event identities" }));
+  expect(within(row).getByText("Fixture review could not finish")).toBeVisible();
+});
+
+it("counts only the current Claude activation after a versioned resume supersedes active work", async () => {
+  const threadId = await startClaudeNativeOffFixture();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "init" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "active-resume-task", run_id: "001", tool_use_id: "active-resume-old", task_type: "local_agent", description: "Original active review" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_progress", task_id: "active-resume-task", run_id: "001", summary: "Original progress" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "active-resume-task", run_id: "002", tool_use_id: "active-resume-new", task_type: "local_agent", description: "Current resumed review" });
+  await routeClaudeFixture(threadId, { type: "assistant", parent_tool_use_id: "active-resume-old", agent_id: "active-resume-task", message: { content: [{ type: "text", text: "Late obsolete child progress" }] } });
+  const oldId = `claude-native:${threadId}:active-resume-old`;
+  const newId = `claude-native:${threadId}:active-resume-new`;
+  const agents = useTaskStore.getState().tasks[threadId].agents;
+  expect(agents).toHaveLength(2);
+  expect(agents.find((agent) => agent.id === oldId)).toMatchObject({ status: "idle", progress: "Original progress" });
+  expect(agents.find((agent) => agent.id === oldId)?.result).toBeUndefined();
+  expect(agents.find((agent) => agent.id === newId)).toMatchObject({ status: "inProgress" });
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  const durable = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(durable[oldId]).toMatchObject({ status: "idle", progress: "Original progress" });
+  expect(durable[newId]).toMatchObject({ status: "inProgress" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "active-resume-task", run_id: "002", status: "completed", summary: "Current review finished" });
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+});
+
+it("keeps a resumed Claude worker visible despite late completion from its previous activation", async () => {
+  const threadId = await startClaudeNativeOffFixture();
+  await routeClaudeFixture(threadId, { type: "system", subtype: "init" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "resume-task", run_id: "001", tool_use_id: "resume-old", task_type: "local_agent", description: "Initial fixture review" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "resume-task", run_id: "001", status: "completed", summary: "Old result" });
+  await routeClaudeFixture(threadId, { type: "assistant", message: { content: [{ type: "tool_use", id: "resume-new", name: "Agent", input: { description: "Resumed fixture review", prompt: "Continue the fixture review" } }] } });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_started", task_id: "resume-task", run_id: "002", tool_use_id: "resume-new", task_type: "local_agent", description: "Resumed fixture review" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "resume-task", run_id: "001", status: "failed", summary: "Late obsolete failure" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "resume-task", status: "completed", summary: "Unattributable obsolete completion" });
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  const durable = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(durable[`claude-native:${threadId}:resume-old`]).toMatchObject({ status: "completed", result: "Old result" });
+  expect(durable[`claude-native:${threadId}:resume-new`]).toMatchObject({ status: "inProgress", task: "Continue the fixture review" });
+  await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "resume-task", run_id: "002", status: "completed", summary: "Current result" });
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[`claude-native:${threadId}:resume-new`]).toMatchObject({ status: "completed", result: "Current result" });
+});
+
+it.each(["completed", "failed", "interrupted", "running", "unknown"].flatMap((priorStatus) => [
+  { missingOriginalTurn: false, canonicalOriginal: false },
+  { missingOriginalTurn: true, canonicalOriginal: false },
+  { missingOriginalTurn: false, canonicalOriginal: true },
+  { missingOriginalTurn: true, canonicalOriginal: true },
+].map((evidence) => ({ ...evidence, priorStatus, recordOriginalTurn: false }))).concat([
+  { missingOriginalTurn: true, canonicalOriginal: false, priorStatus: "running", recordOriginalTurn: true },
+  { missingOriginalTurn: true, canonicalOriginal: true, priorStatus: "unknown", recordOriginalTurn: true },
+]))("preserves a durable Claude outcome across root turns with prior evidence: %j", async ({ missingOriginalTurn, canonicalOriginal, priorStatus, recordOriginalTurn }) => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const originalId = canonicalOriginal ? `claude-native:${ROOT.id}:task:old-root-turn:cross-turn-task:001` : `claude-native:${ROOT.id}:cross-turn-tool`;
+  const currentTurn = "new-root-turn";
+  const resumedId = `claude-native:${ROOT.id}:task:${currentTurn}:cross-turn-task:002`;
+  const priorUnsettled = priorStatus === "running" || priorStatus === "unknown";
+  const originalLink = { childThreadId: originalId, rootThreadId: ROOT.id, ...(missingOriginalTurn ? {} : { rootTurnId: "old-root-turn" }), runtime: "claude", provider: "claude", title: "Original assignment", createdAt: 1, ...(priorUnsettled ? {} : { finishedAt: 2, result: "Original outcome" }), status: priorStatus, model: "original-child-model", modelSource: "execution", progress: "Original progress" };
+  const preservedOriginal = { ...originalLink, ...(priorUnsettled ? { status: "idle" } : {}) };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [originalId]: originalLink }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  const routeCurrent = async (message: Record<string, unknown>) => act(async () => {
+    routeClaudeEvent({ threadId: ROOT.id, turnId: currentTurn, message }, claudeEventContext!);
+  });
+  await act(async () => {
+    if (recordOriginalTurn) useTaskStore.getState().upsertAgent(ROOT.id, { id: originalId, runtime: "claude", rootTurnId: "old-root-turn", status: priorStatus, prompt: "Original assignment", model: "original-child-model", modelSource: "execution", progress: "Original progress", createdAt: 1 });
+    useTaskStore.getState().beginAgentRun(ROOT.id);
+    useTaskStore.getState().setActiveTurn(ROOT.id, currentTurn);
+    useTaskStore.getState().setTaskStatus(ROOT.id, "running");
+  });
+  const priorRecords = useTaskStore.getState().tasks[ROOT.id].agents;
+  expect(priorRecords).toHaveLength(recordOriginalTurn ? 1 : 0);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([]);
+  await routeCurrent({ type: "system", subtype: "init" });
+  // An older legacy page can omit the activity turn even though durable
+  // ownership still proves that this raw launch identity is historical.
+  const legacy: Activity = { id: "cross-turn-tool", kind: "agent", title: "Original assignment", status: priorStatus, agent: { action: "spawn", provider: "claude", threadIds: [originalId] } };
+  await act(async () => { useTaskStore.getState().hydrateTask(ROOT.id, [], [legacy], PROJECT.path); });
+  const legacySnapshot = useTaskStore.getState().tasks[ROOT.id].activities[0];
+  await routeCurrent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "cross-turn-tool", is_error: true, content: "Old legacy tool result replay" }] } });
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0]).toEqual(legacySnapshot);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(originalLink);
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual(priorRecords);
+  if (!canonicalOriginal) {
+    await act(async () => { useTaskStore.getState().hydrateTask(ROOT.id, [], [], PROJECT.path); });
+    expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([]);
+  }
+  await routeCurrent({ type: "assistant", parent_tool_use_id: "cross-turn-tool", agent_id: "cross-turn-task", message: { model: "stale-child-model", content: [{ type: "text", text: "Old forwarded replay before start" }] } });
+  await routeCurrent({ type: "assistant", message: { content: [{ type: "tool_use", id: "cross-turn-tool", name: "Agent", input: { prompt: "Old Agent invocation replay" } }] } });
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(originalLink);
+  await routeCurrent({ type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", description: "Current resumed assignment" });
+  expect(useTaskStore.getState().tasks[ROOT.id].agents.filter((agent) => agent.id === resumedId)).toEqual([expect.objectContaining({ id: resumedId, rootTurnId: currentTurn, prompt: "Current resumed assignment" })]);
+  const resumed = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === resumedId)!;
+  expect(resumed.model).toBeUndefined();
+  expect(resumed.progress).toBeUndefined();
+  expect(resumed.result).toBeUndefined();
+  if (recordOriginalTurn) {
+    const predecessor = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === originalId);
+    expect(predecessor).toMatchObject({ rootTurnId: "old-root-turn", status: "idle", model: "original-child-model", modelSource: "execution", createdAt: 1 });
+    expect(predecessor?.result).toBeUndefined();
+  }
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(preservedOriginal);
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "cross-turn-task", tool_use_id: "cross-turn-tool", status: "failed", summary: "Ambiguous old outcome" });
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_progress", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", summary: "Current progress" });
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", status: "completed", summary: "Current outcome" });
+  const durable = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(durable[originalId]).toEqual(preservedOriginal);
+  expect(durable[resumedId]).toMatchObject({ rootTurnId: currentTurn, status: "completed", progress: "Current progress", result: "Current outcome" });
+  expect(durable[resumedId].model).toBeUndefined();
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+  // Another activation still uses the original historical launch tool. It
+  // must receive a fresh scoped identity rather than reviving that old alias.
+  const nextId = `claude-native:${ROOT.id}:task:${currentTurn}:cross-turn-task:003`;
+  await routeCurrent({ type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", description: "Later current assignment" });
+  const next = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === nextId);
+  expect(next).toMatchObject({ rootTurnId: currentTurn, prompt: "Later current assignment" });
+  expect(next?.model).toBeUndefined();
+  expect(next?.progress).toBeUndefined();
+  expect(next?.result).toBeUndefined();
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_progress", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", summary: "Later progress" });
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", status: "failed", summary: "Later outcome" });
+  const finalLinks = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(finalLinks[originalId]).toEqual(preservedOriginal);
+  expect(finalLinks[resumedId]).toMatchObject({ status: "completed", progress: "Current progress", result: "Current outcome" });
+  expect(finalLinks[nextId]).toMatchObject({ rootTurnId: currentTurn, status: "failed", progress: "Later progress", result: "Later outcome" });
+  expect(finalLinks[nextId].model).toBeUndefined();
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+});
+
+it.each([
+  { canonicalOriginal: false, priorStatus: "completed" },
+  { canonicalOriginal: true, priorStatus: "failed" },
+  { canonicalOriginal: false, priorStatus: "inProgress" },
+])("preserves actual history readouts beside an unresolved durable mirror: %j", async ({ canonicalOriginal, priorStatus }) => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const originalId = canonicalOriginal ? `claude-native:${ROOT.id}:task:old-history-turn:history-task:001` : `claude-native:${ROOT.id}:history-tool`;
+  const originalLink = { childThreadId: originalId, rootThreadId: ROOT.id, rootTurnId: "old-history-turn", runtime: "claude", provider: "claude", title: "Original history assignment", createdAt: 1, status: "unknown", model: "original-child-model", modelSource: "execution" };
+  const terminalHistory = priorStatus !== "inProgress";
+  const originalHistory: Activity = { id: "history-tool", kind: "agent", title: "Original history assignment", turnId: "old-history-turn", status: priorStatus, detail: "Actual original readout", agent: { action: "spawn", provider: "claude", threadIds: [originalId], model: "original-child-model", modelSource: "execution", task: "Actual detailed assignment", progress: "Actual detailed progress", ...(terminalHistory ? { result: "Actual original outcome" } : {}) } };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [originalHistory], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [originalId]: originalLink }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities).toEqual([expect.objectContaining(originalHistory)]));
+  const historySnapshot = useTaskStore.getState().tasks[ROOT.id].activities[0];
+  const retainedHistory = { ...historySnapshot, ...(terminalHistory ? {} : { status: "idle" }) };
+  const retainedLink = { ...originalLink, ...(terminalHistory ? {} : { status: "idle" }) };
+  const currentTurn = "current-history-turn";
+  const resumedId = `claude-native:${ROOT.id}:task:${currentTurn}:history-task:002`;
+  const routeCurrent = async (message: Record<string, unknown>) => act(async () => {
+    routeClaudeEvent({ threadId: ROOT.id, turnId: currentTurn, message }, claudeEventContext!);
+  });
+  await act(async () => {
+    useTaskStore.getState().beginAgentRun(ROOT.id);
+    useTaskStore.getState().setActiveTurn(ROOT.id, currentTurn);
+    useTaskStore.getState().setTaskStatus(ROOT.id, "running");
+  });
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual([]);
+  await routeCurrent({ type: "system", subtype: "init" });
+  await routeCurrent({ type: "system", subtype: "task_started", task_type: "local_agent", task_id: "history-task", run_id: "002", tool_use_id: "history-tool", description: "New current assignment" });
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0]).toEqual(retainedHistory);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0].agent).toBe(historySnapshot.agent);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(retainedLink);
+  expect(useTaskStore.getState().tasks[ROOT.id].agents.filter((agent) => agent.id === resumedId)).toEqual([expect.objectContaining({ id: resumedId, rootTurnId: currentTurn, prompt: "New current assignment" })]);
+  const resumed = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === resumedId)!;
+  expect(resumed.model).toBeUndefined();
+  expect(resumed.result).toBeUndefined();
+  expect(screen.getByRole("button", { name: terminalHistory ? "Sub-agents off · 1 active · status unknown" : "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "history-task", run_id: "002", tool_use_id: "history-tool", status: "completed", summary: "New actual outcome" });
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0]).toEqual(retainedHistory);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0].agent).toBe(historySnapshot.agent);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(retainedLink);
+  expect(screen.getByRole("button", { name: terminalHistory ? "Sub-agents off · status unknown" : "Sub-agents off" })).toBeVisible();
+  await act(async () => { useTaskStore.getState().setActiveTurn(ROOT.id, undefined); useTaskStore.getState().setTaskStatus(ROOT.id, "completed"); });
+  const panel = await openPanel();
+  const toggle = within(panel).getByRole("switch", { name: "Allow sub-agent spawning" });
+  if (terminalHistory) expect(toggle).toBeDisabled();
+  else expect(toggle).toBeEnabled();
+  if (terminalHistory) expect(within(panel).getByText("Original history assignment")).toBeVisible();
+  expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(0);
 });
 
 it("dispatches the Claude native limit to its own provider without creating a Codex thread", async () => {

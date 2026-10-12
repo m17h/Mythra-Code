@@ -11,13 +11,14 @@ import { annotateThreadUsage, claudeCanonicalModel } from "./usageLedger";
 import { mergedUsageEvidence } from "./usageEvidence";
 import { claudeWrapUpLimitReachedText, parseClaudeContinuation, useClaudeContinuationStore } from "./claudeContinuation";
 import { CLAUDE_USAGE_LIMIT_EXPLANATION, claudeResultError } from "./claudeUsageLimit";
-import { isActiveAgentRecord } from "./subAgentActivity";
-import { boundedNativeText, type NativeAgentReadout } from "./nativeAgentLinks";
+import { isActiveAgentRecord, workerStatusFromAgentRecord } from "./subAgentActivity";
+import { boundedNativeText, type NativeAgentLink, type NativeAgentReadout } from "./nativeAgentLinks";
 
 interface ClaudeBlock {
   id: string;
   name: string;
   input: string;
+  turnId: string;
 }
 
 const assistantIds = new Map<string, string>();
@@ -297,6 +298,10 @@ function recordResultUsage(threadId: string, turnId: string, value: unknown, mod
 export function resetClaudeEventUsageState(): void {
   partialUsage.clear();
   claudeTaskTools.clear();
+  claudeNativeToolAliases.clear();
+  claudeTaskRuns.clear();
+  claudeNativeToolRuns.clear();
+  claudeRetiredNativeActivations.clear();
 }
 
 /**
@@ -406,28 +411,35 @@ function finalizeTool(threadId: string, turnId: string, block: ClaudeBlock, ctx:
   const skillUsage = claudeToolSkillUsage(block.name, input);
   const settledSkill = skillUsage.length > 0 && validSkillUsage(existing?.skillUsage)
     .some((usage) => usage.source === "claude-skill-tool" && usage.status !== "pending");
-  if (/^(agent|task)$/i.test(block.name) && !recordClaudeNativeAgent(threadId, block.id, {
+  const nativeToolId = canonicalClaudeNativeTool(threadId, turnId, block.id);
+  if (/^(agent|task)$/i.test(block.name) && !recordClaudeNativeAgent(threadId, nativeToolId, {
     prompt: text(input.description) || text(input.prompt) || "Delegated task", task: boundedNativeText(input.prompt, "task"),
     requestedModel: text(input.model) || undefined, status: "inProgress", rootTurnId: turnId,
   }, ctx)) return;
+  const nativeAgent = /^(agent|task)$/i.test(block.name)
+    ? useTaskStore.getState().tasks[threadId]?.agents.find((agent) => agent.id === claudeNativeId(threadId, nativeToolId))
+    : undefined;
   useTaskStore.getState().upsertActivity(threadId, {
     id: block.id,
     kind,
     ...(workType ? { workType } : {}),
     title: activityTitle(block.name, input),
     detail: settledSkill ? existing?.detail : activityDetail(input),
-    status: settledSkill ? existing?.status : "inProgress",
+    status: nativeAgent?.status ?? (settledSkill ? existing?.status : "inProgress"),
     ...(skillUsage.length ? { skillUsage: settledSkill ? existing?.skillUsage : skillUsage } : {}),
     turnId,
     ...(/^(agent|task)$/i.test(block.name) ? {
       agent: {
         action: "spawn" as const,
         provider: "claude" as const,
-        model: existing?.agent?.model,
-        requestedModel: text(input.model) || undefined,
-        task: boundedNativeText(input.prompt, "task") || text(input.description) || undefined,
+        model: nativeAgent?.model,
+        modelSource: nativeAgent?.modelSource,
+        requestedModel: nativeAgent?.requestedModel,
+        task: nativeAgent?.task || text(input.description) || undefined,
+        progress: nativeAgent?.progress,
+        result: nativeAgent?.result,
         count: 1,
-        threadIds: [claudeNativeId(threadId, block.id)],
+        threadIds: [claudeNativeId(threadId, nativeToolId)],
       },
     } : {}),
   });
@@ -438,23 +450,286 @@ function claudeNativeId(rootThreadId: string, id: string): string {
 }
 
 const claudeTaskTools = new Map<string, string>();
+const claudeNativeToolAliases = new Map<string, string>();
+const claudeTaskRuns = new Map<string, string>();
+const claudeNativeToolRuns = new Map<string, { taskId: string; runId: string }>();
+const claudeRetiredNativeActivations = new Set<string>();
 
-function recordClaudeNativeAgent(rootThreadId: string, id: string, details: NativeAgentReadout & { prompt?: string; model?: string; status: string; rootTurnId?: string }, ctx: ClaudeEventContext): boolean {
+function claudeTaskKey(threadId: string, turnId: string, id: string): string {
+  return JSON.stringify([threadId, turnId, id]);
+}
+
+function canonicalClaudeNativeTool(threadId: string, turnId: string, toolId: string): string {
+  return claudeNativeToolAliases.get(claudeTaskKey(threadId, turnId, toolId)) || toolId;
+}
+
+/** Only a provider frame joining a classified task and launch tool may merge
+ * their provisional rows. Never deduplicate by descriptions or bare IDs. */
+function reconcileClaudeNativeIdentity(threadId: string, turnId: string, previous: string, canonical: string, ctx: ClaudeEventContext): boolean {
+  const previousId = claudeNativeId(threadId, previous);
+  const canonicalId = claudeNativeId(threadId, canonical);
+  const task = useTaskStore.getState().tasks[threadId];
+  const source = task?.agents.find((agent) => agent.id === previousId);
+  if (!source) return true;
+  const target = task?.agents.find((agent) => agent.id === canonicalId);
+  if (source.runtime !== "claude" || source.rootTurnId !== turnId
+    || !target || target.runtime !== "claude" || target.rootTurnId !== turnId) return false;
+  const statuses = [target.status, source.status];
+  const status = statuses.find((value) => workerStatusFromAgentRecord(value) === "cancelled")
+    || statuses.find((value) => workerStatusFromAgentRecord(value) === "failed")
+    || statuses.find((value) => workerStatusFromAgentRecord(value) === "completed") || target.status;
+  const result = status === source.status && status !== target.status
+    ? source.result || target.result : target.result || source.result;
+  // Both identities may have execution evidence, without a shared message
+  // ordering that proves which model is current. Wait for fresh confirmation
+  // rather than arbitrarily attributing their combined activity to one model.
+  const model = target.model && source.model && target.model !== source.model
+    ? "" : target.model ?? source.model;
+  if (!recordClaudeNativeAgent(threadId, canonical, {
+    prompt: target.prompt !== "Delegated task" ? target.prompt : source.prompt,
+    task: target.task || source.task,
+    model,
+    requestedModel: target.requestedModel || source.requestedModel,
+    progress: target.progress || source.progress,
+    result,
+    status, rootTurnId: turnId,
+  }, ctx)) return false;
+  // Account for the canonical durable link before retiring its proven alias.
+  if (ctx.onNativeAgentReidentified?.(threadId, previousId, canonicalId, turnId) === false) return false;
+  useTaskStore.setState((state) => {
+    const current = state.tasks[threadId];
+    if (!current) return state;
+    return { tasks: { ...state.tasks, [threadId]: { ...current,
+      agents: current.agents.filter((agent) => !(agent.id === previousId && agent.runtime === "claude" && agent.rootTurnId === turnId))
+        .map((agent) => agent.id === canonicalId ? { ...agent, createdAt: Math.min(target.createdAt ?? Date.now(), source.createdAt ?? Date.now()) } : agent),
+    } } };
+  });
+  const merged = useTaskStore.getState().tasks[threadId]?.agents.find((agent) => agent.id === canonicalId);
+  for (const activity of useTaskStore.getState().tasks[threadId]?.activities ?? []) {
+    if (activity.turnId !== turnId || activity.agent?.provider !== "claude" || !activity.agent.threadIds?.includes(previousId)) continue;
+    useTaskStore.getState().upsertActivity(threadId, { ...activity, status: merged?.status ?? activity.status,
+      agent: { ...activity.agent, threadIds: [...new Set(activity.agent.threadIds.map((id) => id === previousId ? canonicalId : id))],
+        task: merged?.task, requestedModel: merged?.requestedModel, model: merged?.model, modelSource: merged?.modelSource,
+        progress: merged?.progress, result: merged?.result },
+    });
+  }
+  return true;
+}
+
+function bindClaudeNativeTask(threadId: string, turnId: string, taskId: string, toolId: string, ctx: ClaudeEventContext, verifiedRunId?: string): string {
+  const key = claudeTaskKey(threadId, turnId, taskId);
+  const previous = canonicalClaudeNativeTool(threadId, turnId, toolId);
+  const canonical = claudeTaskTools.get(key) || previous;
+  const runId = claudeTaskRuns.get(key);
+  // A resumed activation can refer to a launch tool from an older root turn.
+  // Only its versioned lifecycle identifies the current activation; forwarded
+  // child messages on that raw tool remain ambiguous and cannot join it.
+  if (claudeRetiredNativeActivations.has(claudeTaskKey(threadId, turnId, toolId))) {
+    return taskId && verifiedRunId === runId ? canonical : toolId;
+  }
+  const previousRun = claudeNativeToolRuns.get(claudeTaskKey(threadId, turnId, previous));
+  // Complete child messages have agent_id but no run_id. A known old launch
+  // tool remains attached to its own activation after that task is resumed.
+  if (taskId && runId && previousRun && (previousRun.taskId !== taskId || previousRun.runId !== runId)) {
+    // Automatic resumes may reuse their original launch tool. A versioned
+    // lifecycle frame names the activation exactly; the raw tool still belongs
+    // to the old activation for unversioned forwarded child frames.
+    if (verifiedRunId === runId && previousRun.taskId === taskId) return canonical;
+    return previous;
+  }
+  const target = useTaskStore.getState().tasks[threadId]?.agents.find((agent) => agent.id === claudeNativeId(threadId, canonical));
+  if (runId && !verifiedRunId && !previousRun && previous !== canonical && target) {
+    const hasLaunchTool = !canonical.startsWith(`task:${turnId}:${taskId}`)
+      || [...claudeNativeToolAliases.entries()].some(([alias, value]) => {
+        if (value !== canonical) return false;
+        const [root, turn] = JSON.parse(alias) as string[];
+        const aliasRun = claudeNativeToolRuns.get(alias);
+        return root === threadId && turn === turnId && aliasRun?.taskId === taskId && aliasRun.runId === runId;
+      });
+    // A new raw tool cannot prove it belongs to an already tool-identified run.
+    // Keep it provisional until a versioned start resolves its activation.
+    if (hasLaunchTool || !isActiveAgentRecord(target.status)) return previous;
+  }
+  if (previous !== canonical && !reconcileClaudeNativeIdentity(threadId, turnId, previous, canonical, ctx)) return previous;
+  if (taskId) claudeTaskTools.set(key, canonical);
+  if (previous !== canonical) {
+    for (const bindings of [claudeTaskTools, claudeNativeToolAliases]) {
+      for (const [binding, value] of bindings) {
+        const [root, turn] = JSON.parse(binding) as string[];
+        if (root === threadId && turn === turnId && value === previous) bindings.set(binding, canonical);
+      }
+    }
+  }
+  if (toolId !== canonical) claudeNativeToolAliases.set(claudeTaskKey(threadId, turnId, toolId), canonical);
+  if (taskId && runId) {
+    for (const id of [toolId, canonical]) claudeNativeToolRuns.set(claudeTaskKey(threadId, turnId, id), { taskId, runId });
+  }
+  return canonical;
+}
+
+function isKnownClaudeNativeTool(threadId: string, turnId: string, toolId: string): boolean {
+  const task = useTaskStore.getState().tasks[threadId];
+  const canonical = canonicalClaudeNativeTool(threadId, turnId, toolId);
+  if (task?.agents.some((agent) => agent.id === claudeNativeId(threadId, canonical)
+    && agent.runtime === "claude" && agent.rootTurnId === turnId)) return true;
+  return [...(blocks.get(threadId)?.values() ?? [])].some((block) =>
+    block.id === toolId && block.turnId === turnId && /^(agent|task)$/i.test(block.name));
+}
+
+function claudeNativeToolFromPreviousTurn(threadId: string, turnId: string, toolId: string, ctx: ClaudeEventContext): boolean {
+  const task = useTaskStore.getState().tasks[threadId];
+  const id = claudeNativeId(threadId, toolId);
+  const priorDurableIdentity = (childId: string) => {
+    const durable = ctx.nativeAgentLinkFor?.(childId);
+    return durable?.childThreadId === childId && durable.rootThreadId === threadId && durable.runtime === "claude"
+      && durable.rootTurnId !== turnId;
+  };
+  return Boolean(priorDurableIdentity(id)
+    || task?.agents.some((agent) => agent.id === id && agent.runtime === "claude"
+      && agent.rootTurnId && agent.rootTurnId !== turnId)
+    || task?.activities.some((activity) => activity.agent?.provider === "claude"
+      && (activity.id === toolId || activity.agent.threadIds?.includes(id))
+      && (activity.turnId && activity.turnId !== turnId || activity.agent.threadIds?.some(priorDurableIdentity))));
+}
+
+function retirePriorClaudeNativeTool(threadId: string, turnId: string, toolId: string, ctx: ClaudeEventContext): void {
+  const task = useTaskStore.getState().tasks[threadId];
+  const rawId = claudeNativeId(threadId, toolId);
+  const ids = new Set([rawId]);
+  for (const activity of task?.activities ?? []) {
+    if (activity.agent?.provider !== "claude" || activity.id !== toolId && !activity.agent.threadIds?.includes(rawId)) continue;
+    for (const id of activity.agent.threadIds ?? []) ids.add(id);
+  }
+  for (const id of ids) {
+    if (!id.startsWith(`claude-native:${threadId}:`)) continue;
+    const agent = task?.agents.find((entry) => entry.id === id && entry.runtime === "claude");
+    const link = ctx.nativeAgentLinkFor?.(id);
+    if (link && (link.childThreadId !== id || link.rootThreadId !== threadId || link.runtime !== "claude")) continue;
+    if (!agent && !link || agent?.rootTurnId === turnId || link?.rootTurnId === turnId
+      || agent?.rootTurnId && link?.rootTurnId && agent.rootTurnId !== link.rootTurnId) continue;
+    // Any actual terminal evidence wins over a stale active-looking mirror.
+    if (agent && !isActiveAgentRecord(agent.status) || link?.status && !isActiveAgentRecord(link.status)) continue;
+    const priorTurnId = agent?.rootTurnId ?? link?.rootTurnId;
+    const terminalHistory = task?.activities.some((activity) => activity.kind === "agent" && activity.agent?.provider === "claude"
+      && activity.agent.threadIds?.includes(id) && activity.turnId !== turnId
+      && (!activity.turnId || !priorTurnId || activity.turnId === priorTurnId)
+      && ["completed", "failed", "cancelled"].includes(workerStatusFromAgentRecord(activity.status ?? "")));
+    if (terminalHistory) continue;
+    // A legacy durable link may lack its turn even though a restored record
+    // knows it. Keep each source's original provenance rather than assigning
+    // the record's turn to the durable callback as a new assertion.
+    const rootTurnId = link ? link.rootTurnId : agent?.rootTurnId;
+    recordClaudeNativeAgent(threadId, id.slice(`claude-native:${threadId}:`.length), {
+      rootTurnId, status: "idle", prompt: agent?.prompt ?? link?.title,
+      model: agent?.model ?? link?.model, task: agent?.task ?? link?.task,
+      requestedModel: agent?.requestedModel ?? link?.requestedModel,
+      progress: agent?.progress ?? link?.progress, result: agent?.result ?? link?.result,
+    }, ctx, { createdAt: agent?.createdAt ?? link?.createdAt, modelSource: agent?.modelSource ?? link?.modelSource });
+  }
+}
+
+/** task_* is a shared background-work protocol, not a spawn notification.
+ * Shell commands and MCP tasks use it too. Only a positive local-agent start
+ * or this turn's actual Agent/Task evidence establishes native ownership. */
+function claudeNativeTaskTool(threadId: string, turnId: string, message: JsonObject, ctx: ClaudeEventContext): string | undefined {
+  const taskId = text(message.task_id);
+  const toolId = text(message.tool_use_id);
+  const taskType = text(message.task_type);
+  if (taskType && taskType !== "local_agent") return undefined;
+  const key = claudeTaskKey(threadId, turnId, taskId);
+  const bound = taskId ? claudeTaskTools.get(key) : undefined;
+  const positiveStart = message.subtype === "task_started" && taskType === "local_agent";
+  const runId = text(message.run_id);
+  const currentRun = claudeTaskRuns.get(key);
+  if (taskId && currentRun && !runId) {
+    // Once this task supplies activation IDs, a bare reused task_id cannot
+    // attribute an outcome to the current run. A known current launch tool
+    // still permits older CLI-shaped frames without guessing their owner.
+    const toolRun = toolId ? claudeNativeToolRuns.get(claudeTaskKey(threadId, turnId, canonicalClaudeNativeTool(threadId, turnId, toolId))) : undefined;
+    if (!toolRun || toolRun.taskId !== taskId || toolRun.runId !== currentRun) return undefined;
+  }
+  if (taskId && runId) {
+    // First-party run IDs sort lexically in activation order. Progress cannot
+    // establish a newer run or rebind an older one without its positive start.
+    if ((currentRun && runId < currentRun) || (runId !== currentRun && !positiveStart)) return undefined;
+    if (currentRun && runId > currentRun) {
+      const prior = bound && useTaskStore.getState().tasks[threadId]?.agents.find((agent) =>
+        agent.id === claudeNativeId(threadId, bound) && agent.runtime === "claude" && agent.rootTurnId === turnId);
+      if (bound && prior && isActiveAgentRecord(prior.status)
+        && recordClaudeNativeAgent(threadId, bound, { status: "idle", rootTurnId: turnId }, ctx)) {
+        // A newer activation proves the prior one is no longer executing, but
+        // supplies no success/failure outcome. Retain its actual readout and
+        // retire only that identity against late unversioned child replay.
+        claudeRetiredNativeActivations.add(claudeTaskKey(threadId, turnId, bound));
+      }
+      const previousToolRun = toolId ? claudeNativeToolRuns.get(claudeTaskKey(threadId, turnId, canonicalClaudeNativeTool(threadId, turnId, toolId))) : undefined;
+      const retiredTool = toolId && claudeRetiredNativeActivations.has(claudeTaskKey(threadId, turnId, toolId));
+      const id = toolId && !previousToolRun && !retiredTool ? toolId : `task:${turnId}:${taskId}:${runId}`;
+      claudeTaskRuns.set(key, runId);
+      claudeTaskTools.set(key, id);
+      claudeNativeToolRuns.set(claudeTaskKey(threadId, turnId, id), { taskId, runId });
+      return id;
+    }
+    if (!currentRun) {
+      claudeTaskRuns.set(key, runId);
+      if (positiveStart && toolId && claudeNativeToolFromPreviousTurn(threadId, turnId, toolId, ctx)) {
+        // Turn startup may prune terminal AgentRecords, but their launch
+        // history and durable ownership survive. Never reuse that identity or
+        // carry its model/result/timestamps into the newly confirmed run.
+        const id = `task:${turnId}:${taskId}:${runId}`;
+        retirePriorClaudeNativeTool(threadId, turnId, toolId, ctx);
+        claudeTaskTools.set(key, id);
+        claudeNativeToolRuns.set(claudeTaskKey(threadId, turnId, id), { taskId, runId });
+        claudeRetiredNativeActivations.add(claudeTaskKey(threadId, turnId, toolId));
+        return id;
+      }
+    }
+  }
+  if (bound) return bindClaudeNativeTask(threadId, turnId, taskId, toolId || bound, ctx, runId || undefined);
+  if (!positiveStart && (!toolId || !isKnownClaudeNativeTool(threadId, turnId, toolId))) return undefined;
+  // A task may be resumed in a later root turn with the same task_id. Until
+  // its launch tool is known, give this activation a turn-scoped identity.
+  const id = toolId || (taskId ? `task:${turnId}:${taskId}${runId ? `:${runId}` : ""}` : "");
+  return id ? bindClaudeNativeTask(threadId, turnId, taskId, id, ctx, runId || undefined) : undefined;
+}
+
+function clearClaudeNativeTaskBindings(threadId: string, turnId: string, keepCurrentTurn = false): void {
+  for (const bindings of [claudeTaskTools, claudeNativeToolAliases, claudeTaskRuns, claudeNativeToolRuns, claudeRetiredNativeActivations]) {
+    for (const key of bindings.keys()) {
+      const [root, turn] = JSON.parse(key) as string[];
+      if (root === threadId && (keepCurrentTurn ? turn !== turnId : turn === turnId)) bindings.delete(key);
+    }
+  }
+}
+
+function recordClaudeNativeAgent(rootThreadId: string, id: string, details: NativeAgentReadout & { prompt?: string; model?: string; status: string; rootTurnId?: string }, ctx: ClaudeEventContext, retainedIdentity?: { createdAt?: number; modelSource?: NativeAgentReadout["modelSource"] }): boolean {
+  if (details.rootTurnId && claudeNativeToolFromPreviousTurn(rootThreadId, details.rootTurnId, id, ctx)) return false;
   const childId = claudeNativeId(rootThreadId, id);
   const store = useTaskStore.getState();
   const existing = store.tasks[rootThreadId]?.agents.find((agent) => agent.id === childId);
-  const status = existing && (["cancelled", "interrupted"].includes(existing.status)
-    || (["completed", "failed", "error"].includes(existing.status) && isActiveAgentRecord(details.status))) ? existing.status : details.status;
+  if (details.rootTurnId && isActiveAgentRecord(details.status)
+    && claudeRetiredNativeActivations.has(claudeTaskKey(rootThreadId, details.rootTurnId, id))) return true;
+  const previousStatus = existing ? workerStatusFromAgentRecord(existing.status) : undefined;
+  const status = existing && (previousStatus === "cancelled"
+    || ((previousStatus === "completed" || previousStatus === "failed") && isActiveAgentRecord(details.status))) ? existing.status : details.status;
   const readout = { task: existing?.task || boundedNativeText(details.task, "task"), requestedModel: details.requestedModel || existing?.requestedModel,
-    modelSource: details.model ? "execution" as const : existing?.modelSource,
+    modelSource: details.model === "" ? undefined : retainedIdentity ? retainedIdentity.modelSource : details.model ? "execution" as const : existing?.modelSource,
     progress: boundedNativeText(details.progress, "progress") || existing?.progress,
     result: boundedNativeText(details.result, "result") || existing?.result };
   if (ctx.onNativeAgentDiscovered?.(rootThreadId, childId, { ...details, ...readout, status, provider: "claude", runtime: "claude" }) === false) return false;
-  store.upsertAgent(rootThreadId, { ...readout, id: childId, prompt: existing?.prompt && existing.prompt !== "Delegated task" ? existing.prompt : details.prompt || "Delegated task", model: details.model || existing?.model,
-    provider: "claude", runtime: "claude", status, rootTurnId: details.rootTurnId ?? existing?.rootTurnId, createdAt: existing?.createdAt ?? Date.now() });
+  store.upsertAgent(rootThreadId, { ...readout, id: childId, prompt: existing?.prompt && existing.prompt !== "Delegated task" ? existing.prompt : details.prompt || "Delegated task", model: details.model ?? existing?.model,
+    provider: "claude", runtime: "claude", status, rootTurnId: details.rootTurnId ?? existing?.rootTurnId, createdAt: existing?.createdAt ?? retainedIdentity?.createdAt ?? Date.now() });
   const recorded = useTaskStore.getState().tasks[rootThreadId]?.agents.find((agent) => agent.id === childId);
-  const activity = useTaskStore.getState().tasks[rootThreadId]?.activities.find((entry) => entry.agent?.threadIds?.includes(childId));
-  if (activity) store.upsertActivity(rootThreadId, { ...activity, agent: { ...activity.agent!, ...readout, model: recorded?.model } });
+  for (const activity of useTaskStore.getState().tasks[rootThreadId]?.activities ?? []) {
+    if (activity.turnId !== (details.rootTurnId ?? recorded?.rootTurnId) || !activity.agent?.threadIds?.includes(childId)) continue;
+    if (retainedIdentity && details.status === "idle") {
+      // Neutral retirement changes execution state, not historical evidence.
+      // A sparse durable mirror must not erase a richer immutable launch row.
+      store.upsertActivity(rootThreadId, { ...activity, status: recorded?.status ?? status });
+      continue;
+    }
+    store.upsertActivity(rootThreadId, { ...activity, status: recorded?.status ?? status, agent: { ...activity.agent, ...readout, model: recorded?.model } });
+  }
   return true;
 }
 
@@ -473,7 +748,10 @@ export interface ClaudeEventContext {
   onTurnCompleted: (threadId: string) => void;
   onApprovalRequested: (threadId: string) => void;
   onTranscriptChanged: (threadId: string) => void;
+  /** Synchronous ownership proof even when an older launch page is unloaded. */
+  nativeAgentLinkFor?: (childThreadId: string) => NativeAgentLink | undefined;
   onNativeAgentDiscovered?: (rootThreadId: string, childId: string, details: NativeAgentReadout & { prompt?: string; model?: string; status?: string; rootTurnId?: string; provider: "claude"; runtime: "claude" }) => boolean | void;
+  onNativeAgentReidentified?: (rootThreadId: string, previousId: string, canonicalId: string, rootTurnId: string) => boolean | void;
   /** Structured quota updates emitted by Claude Code during real turns. */
   onRateLimits?: (limits: ProviderRateLimits) => void;
   onUnsupportedControlRequest: (
@@ -505,27 +783,38 @@ export function routeClaudeEvent(
   // Native Claude children share the root CLI process. Their output must not
   // masquerade as the root assistant, or become fake resumable app sessions.
   const parentToolId = text(message.parent_tool_use_id);
-  if (parentToolId && type !== "control_request" && type !== "control_cancel_request") {
+  if (parentToolId && (type === "assistant" || type === "user")) {
+    if (claudeNativeToolFromPreviousTurn(threadId, turnId, parentToolId, ctx)) return;
     const childMessage = object(message.message);
     const content = Array.isArray(childMessage.content) ? childMessage.content.map(object) : [];
     const progress = content.map((entry) => entry.type === "text" ? text(entry.text)
       : entry.type === "tool_use" ? `Tool: ${text(entry.name)}`
         : entry.type === "tool_result" ? (Array.isArray(entry.content) ? entry.content.map(object).map((block) => text(block.text)).filter(Boolean).join("\n") : text(entry.content)) : "").filter(Boolean).join("\n\n");
-    recordClaudeNativeAgent(threadId, parentToolId, { model: type === "assistant" ? text(childMessage.model) || undefined : undefined, progress: boundedNativeText(progress, "progress"), status: "inProgress", rootTurnId: turnId }, ctx);
+    const nativeToolId = bindClaudeNativeTask(threadId, turnId, text(message.agent_id), parentToolId, ctx);
+    recordClaudeNativeAgent(threadId, nativeToolId, { model: type === "assistant" ? text(childMessage.model) || undefined : undefined, progress: boundedNativeText(progress, "progress"), status: "inProgress", rootTurnId: turnId }, ctx);
     ctx.onTranscriptChanged(threadId);
     return;
   }
+  // Child partial streams, lifecycle and telemetry are not root events.
+  // In particular, a child message_start must not replace the root's active
+  // assistant or pending tool blocks. Only complete child messages above
+  // establish worker evidence; generic parent-linked progress creates none.
+  // Permission controls still belong to the shared root CLI channel.
+  if (parentToolId && type !== "control_request" && type !== "control_cancel_request") return;
   if (type === "system" && ["task_started", "task_progress", "task_notification"].includes(text(message.subtype))) {
-    const taskId = text(message.task_id);
-    const toolId = text(message.tool_use_id) || (taskId ? claudeTaskTools.get(`${threadId}:${turnId}:${taskId}`) : undefined) || taskId;
+    const toolId = claudeNativeTaskTool(threadId, turnId, message, ctx);
     if (!toolId) return;
-    if (taskId) claudeTaskTools.set(`${threadId}:${turnId}:${taskId}`, toolId);
     const status = message.subtype === "task_notification" ? text(message.status) || "unknown" : "inProgress";
     const summary = text(message.summary);
     if (!recordClaudeNativeAgent(threadId, toolId, { prompt: text(message.description) || undefined, status, rootTurnId: turnId,
       ...(message.subtype === "task_notification" ? { result: boundedNativeText(summary, "result") } : { progress: boundedNativeText(summary || text(message.last_tool_name), "progress") }) }, ctx)) return;
-    const activity = store.tasks[threadId]?.activities.find((entry) => entry.agent?.threadIds?.includes(claudeNativeId(threadId, toolId)));
-    if (activity) store.upsertActivity(threadId, { ...activity, status, detail: text(message.summary) || activity.detail });
+    const latestTask = useTaskStore.getState().tasks[threadId];
+    const nativeAgent = latestTask?.agents.find((agent) => agent.id === claudeNativeId(threadId, toolId));
+    for (const activity of latestTask?.activities ?? []) {
+      if (activity.turnId === turnId && activity.agent?.threadIds?.includes(claudeNativeId(threadId, toolId))) {
+        store.upsertActivity(threadId, { ...activity, status: nativeAgent?.status ?? status, detail: text(message.summary) || activity.detail });
+      }
+    }
     ctx.onTranscriptChanged(threadId);
     return;
   }
@@ -596,6 +885,8 @@ export function routeClaudeEvent(
     const stream = object(message.event);
     const streamType = text(stream.type);
     if (streamType === "message_start") {
+      blocks.delete(threadId);
+      clearClaudeNativeTaskBindings(threadId, turnId, true);
       const assistant = object(stream.message);
       assistantIds.set(threadId, text(assistant.id) || `claude-${turnId}`);
       store.setActiveTurn(threadId, turnId);
@@ -611,6 +902,7 @@ export function routeClaudeEvent(
           id: text(block.id) || crypto.randomUUID(),
           name: text(block.name) || "Tool",
           input: "",
+          turnId,
         });
         blocks.set(threadId, byIndex);
       }
@@ -633,14 +925,14 @@ export function routeClaudeEvent(
         );
       } else if (delta.type === "input_json_delta") {
         const block = blocks.get(threadId)?.get(Number(stream.index ?? 0));
-        if (block) block.input += text(delta.partial_json);
+        if (block?.turnId === turnId) block.input += text(delta.partial_json);
       }
       if (delta.type === "text_delta" || delta.type === "thinking_delta") ctx.onTranscriptChanged(threadId);
       return;
     }
     if (streamType === "content_block_stop") {
       const block = blocks.get(threadId)?.get(Number(stream.index ?? 0));
-      if (block) {
+      if (block?.turnId === turnId) {
         finalizeTool(threadId, turnId, block, ctx);
         blocks.get(threadId)?.delete(Number(stream.index ?? 0));
         ctx.onTranscriptChanged(threadId);
@@ -684,6 +976,7 @@ export function routeClaudeEvent(
         id: text(entry.id) || crypto.randomUUID(),
         name: text(entry.name) || "Tool",
         input: JSON.stringify(object(entry.input)),
+        turnId,
       }, ctx);
     }
     ctx.onTranscriptChanged(threadId);
@@ -700,7 +993,8 @@ export function routeClaudeEvent(
       const existing = store.tasks[threadId]?.activities.find(
         (activity) => activity.id === id,
       );
-      if (!existing) continue;
+      if (!existing || existing.turnId && existing.turnId !== turnId) continue;
+      if (existing.agent?.provider === "claude" && claudeNativeToolFromPreviousTurn(threadId, turnId, id, ctx)) continue;
       const resultContent = Array.isArray(result.content)
         ? result.content
             .map(object)
@@ -716,7 +1010,7 @@ export function routeClaudeEvent(
           usage.source === "claude-skill-tool" ? { ...usage, status: result.is_error ? "failed" as const : "loaded" as const } : usage) } : {}),
       });
       if (existing.agent?.provider === "claude" && existing.agent.threadIds?.length === 1) {
-        recordClaudeNativeAgent(threadId, id, { status: result.is_error ? "failed" : "completed", result: boundedNativeText(resultContent, "result"), rootTurnId: turnId }, ctx);
+        recordClaudeNativeAgent(threadId, existing.agent.threadIds[0].slice(`claude-native:${threadId}:`.length), { status: result.is_error ? "failed" : "completed", result: boundedNativeText(resultContent, "result"), rootTurnId: turnId }, ctx);
       }
     }
     ctx.onTranscriptChanged(threadId);
@@ -743,6 +1037,7 @@ export function routeClaudeEvent(
       !interrupted &&
       (Boolean(message.is_error) || subtype.toLowerCase().startsWith("error"));
     settleClaudeNativeAgents(threadId, turnId, interrupted ? "interrupted" : failed ? "failed" : "completed", ctx);
+    clearClaudeNativeTaskBindings(threadId, turnId);
     // A successful result supplies authoritative final text. Earlier progress
     // or tool output is not evidence that the final assistant event arrived.
     // Reuse a matching last assistant message; otherwise recover the answer
@@ -844,6 +1139,7 @@ export function routeClaudeEvent(
       "Claude Code exited before completing the turn.";
     settleActiveCompaction(threadId, turnId, interrupted ? "interrupted" : "failed");
     settleClaudeNativeAgents(threadId, turnId, interrupted ? "interrupted" : "failed", ctx);
+    clearClaudeNativeTaskBindings(threadId, turnId);
     store.completeTurn(
       threadId,
       turnId,
@@ -945,6 +1241,7 @@ export function routeClaudeEvent(
     // inside this turn (a steered follow-up) does not end the allowance.
     const stale = useClaudeContinuationStore.getState().byThread[threadId];
     if (stale && stale.turnId !== turnId) useClaudeContinuationStore.getState().clear(threadId, stale.turnId);
+    clearClaudeNativeTaskBindings(threadId, turnId, true);
     store.setActiveTurn(threadId, turnId);
     store.setTaskStatus(threadId, "running");
   }

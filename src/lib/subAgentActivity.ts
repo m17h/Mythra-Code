@@ -2,7 +2,7 @@ import { childAgentModel, childLifecycleForLink, providerDisplayName, type Child
 import { nativeDescendantIds, type NativeAgentLink, type NativeAgentReadout } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
-import type { Provider } from "../types";
+import type { Activity, Provider } from "../types";
 import { decodeHtmlEntities } from "./text";
 
 /**
@@ -134,6 +134,10 @@ export interface SubAgentWorkerInput {
   statuses: Record<string, TaskStatus>;
   /** Agent records the root task collected, including native delegation. */
   agents: AgentRecord[];
+  /** Same-turn command evidence can identify legacy Claude task_* misclassification. */
+  rootActivities?: readonly Activity[];
+  /** Positive Agent evidence retained by the visible thread's migration index. */
+  protectedNativeAgentIds?: ReadonlySet<string>;
   /** Hide durable children from earlier root turns without deleting their
    * ownership records or their separately browsable threads. */
   runStartedAt?: number;
@@ -150,6 +154,158 @@ function isPathLike(value: string): boolean {
   return value.includes("/") || value.includes("\\");
 }
 
+function claudeCommandWorkerProof(rootThreadId: string, activities: readonly Activity[]) {
+  const commandIds = new Set<string>();
+  const agentIds = new Set<string>();
+  const key = (turnId: string, id: string) => JSON.stringify([turnId, id]);
+  for (const activity of activities) {
+    if (activity.kind === "agent") {
+      for (const id of activity.agent?.threadIds ?? []) agentIds.add(id);
+    }
+    if (activity.kind === "command" && activity.turnId) commandIds.add(key(activity.turnId, `claude-native:${rootThreadId}:${activity.id}`));
+  }
+  return (agent: Pick<AgentRecord, "id" | "runtime" | "rootTurnId">): boolean => {
+    if (agent.runtime !== "claude" || !agent.rootTurnId) return false;
+    const identity = key(agent.rootTurnId, agent.id);
+    return commandIds.has(identity) && !agentIds.has(agent.id);
+  };
+}
+
+/** Recognize only a positively identified legacy shell task.
+ * Conflicting Agent evidence wins; this pure check never changes history. */
+export function isClaudeCommandWorker(
+  rootThreadId: string,
+  agent: Pick<AgentRecord, "id" | "runtime" | "rootTurnId">,
+  activities: readonly Activity[] = [],
+): boolean {
+  return claudeCommandWorkerProof(rootThreadId, activities)(agent);
+}
+
+type ClaudeCommandWorkerInput = Pick<SubAgentWorkerInput, "rootThreadId" | "agents" | "nativeLinks" | "rootActivities" | "protectedNativeAgentIds">;
+
+function claudeCommandWorkerCandidates(input: ClaudeCommandWorkerInput): AgentRecord[] {
+  const rootThreadId = input.rootThreadId;
+  if (!rootThreadId || !input.rootActivities?.length) return [];
+  const records = new Map(input.agents.map((agent) => [agent.id, agent]));
+  for (const link of Object.values(input.nativeLinks ?? {})) {
+    if (link.rootThreadId !== rootThreadId || records.has(link.childThreadId)) continue;
+    records.set(link.childThreadId, { ...link, id: link.childThreadId, prompt: link.title, status: link.status ?? "unknown" });
+  }
+  return [...records.values()].filter((agent) => {
+    if (input.protectedNativeAgentIds?.has(agent.id)) return false;
+    const link = input.nativeLinks?.[agent.id];
+    // A reported child execution model is positive agent evidence even if
+    // its launch activity is outside the currently loaded history page.
+    if (agent.modelSource === "execution" && agent.model?.trim()
+      || link?.modelSource === "execution" && link.model?.trim()) return false;
+    if (link && (link.rootThreadId !== rootThreadId
+      || link.runtime !== undefined && link.runtime !== "claude"
+      || agent.rootTurnId && link.rootTurnId && agent.rootTurnId !== link.rootTurnId)) return false;
+    return (agent.runtime ?? link?.runtime) === "claude" && Boolean(agent.rootTurnId ?? link?.rootTurnId);
+  });
+}
+
+/** Exact IDs eligible for removing obsolete synthetic ownership, never history. */
+export function knownClaudeCommandWorkerIds(input: ClaudeCommandWorkerInput): string[] {
+  const rootThreadId = input.rootThreadId;
+  if (!rootThreadId || !input.rootActivities?.length) return [];
+  const candidates = claudeCommandWorkerCandidates(input);
+  if (!candidates.length) return [];
+  const provenCommand = claudeCommandWorkerProof(rootThreadId, input.rootActivities);
+  return candidates.filter((agent) => {
+    const link = input.nativeLinks?.[agent.id];
+    return provenCommand({
+      id: agent.id,
+      runtime: agent.runtime ?? link?.runtime,
+      rootTurnId: agent.rootTurnId ?? link?.rootTurnId,
+    });
+  }).map((agent) => agent.id);
+}
+
+/** Active-view migration cache. History arrays are immutable: compare their
+ * row references, then update proof only for changed command/Agent identities.
+ * Detail/status revisions never rebuild the history-wide sets. Retain positive
+ * Agent evidence for this view even if its page later leaves loaded history. */
+export interface ClaudeCommandWorkerReconciler {
+  (input: ClaudeCommandWorkerInput): string[];
+  readonly protectedAgentIds: ReadonlySet<string>;
+  /** Retain intermediate immutable pages until bounded command matching. */
+  observeActivities(activities: readonly Activity[]): void;
+  /** Observe queued identity proof before an immediate settings decision. */
+  flushObservedActivities(): void;
+}
+
+export function createClaudeCommandWorkerReconciler(initialRootThreadId?: string | null): ClaudeCommandWorkerReconciler {
+  let previous: readonly Activity[] = [];
+  let rootId = initialRootThreadId;
+  const commands = new Map<string, number>();
+  const positiveAgents = new Set<string>();
+  const pending: Array<readonly Activity[]> = [];
+  const commandKey = (activity: Activity) => JSON.stringify([activity.turnId, activity.id]);
+  const indexActivities = (activities: readonly Activity[]) => {
+    if (previous !== activities) {
+      for (let index = 0; index < Math.max(previous.length, activities.length); index++) {
+        const before = previous[index];
+        const after = activities[index];
+        if (before === after) continue;
+        const sameCommand = before?.kind === "command" && after?.kind === "command"
+          && before.id === after.id && before.turnId === after.turnId;
+        if (!sameCommand) {
+          if (before?.kind === "command" && before.turnId) {
+            const key = commandKey(before);
+            const count = commands.get(key) ?? 0;
+            if (count > 1) commands.set(key, count - 1);
+            else commands.delete(key);
+          }
+          if (after?.kind === "command" && after.turnId) {
+            const key = commandKey(after);
+            commands.set(key, (commands.get(key) ?? 0) + 1);
+          }
+        }
+        if (after?.kind === "agent") {
+          for (const id of after.agent?.threadIds ?? []) positiveAgents.add(id);
+        }
+      }
+      previous = activities;
+    }
+  };
+  const flushPending = () => {
+    for (const activities of pending) indexActivities(activities);
+    pending.length = 0;
+  };
+  const observeActivities = (activities: readonly Activity[]) => {
+    if (activities === previous || activities === pending[pending.length - 1]) return;
+    pending.push(activities);
+    // Bound retained array snapshots. Overflow only compares immutable row
+    // references and updates changed proof; it never deletes worker records.
+    if (pending.length >= 16) flushPending();
+  };
+  const reconcile = (input: ClaudeCommandWorkerInput): string[] => {
+    if (!input.rootThreadId) return [];
+    if (rootId !== input.rootThreadId) {
+      rootId = input.rootThreadId;
+      previous = [];
+      commands.clear();
+      positiveAgents.clear();
+      pending.length = 0;
+    }
+    // An Agent page can arrive before its record, or while an execution model
+    // vetoes cleanup. Capture every observed page before checking candidates,
+    // including pages replaced before the coalesced subscriber wakes.
+    flushPending();
+    indexActivities(input.rootActivities ?? []);
+    const candidates = claudeCommandWorkerCandidates(input).filter((agent) => !positiveAgents.has(agent.id));
+    if (!candidates.length) return [];
+    const prefix = `claude-native:${input.rootThreadId}:`;
+    return candidates.filter((agent) => {
+      if (positiveAgents.has(agent.id) || !agent.id.startsWith(prefix)) return false;
+      const turnId = agent.rootTurnId ?? input.nativeLinks?.[agent.id]?.rootTurnId;
+      return commands.has(JSON.stringify([turnId, agent.id.slice(prefix.length)]));
+    }).map((agent) => agent.id);
+  };
+  return Object.assign(reconcile, { protectedAgentIds: positiveAgents, observeActivities, flushObservedActivities: flushPending });
+}
+
 /**
  * Every sub-agent belonging to one root thread, newest live work first.
  *
@@ -162,6 +318,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
   if (!rootThreadId) return [];
   const workers: SubAgentWorker[] = [];
   const owned = new Set<string>();
+  const commandWorkers = new Set(knownClaudeCommandWorkerIds(input));
 
   for (const link of Object.values(input.links)) {
     if (link.rootThreadId !== rootThreadId) continue;
@@ -203,6 +360,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
     // Mythra Code wrote when it discovered this child carries the actual task and
     // when it started, so a native row reads as informatively as an owned one.
     const nativeLink = input.nativeLinks?.[agent.id];
+    if (commandWorkers.has(agent.id)) continue;
     const provider = agent.provider ?? nativeLink?.provider ?? input.nativeProvider;
     // Empty is an explicit new-activation clear, not missing metadata. Do not
     // resurrect an old execution model from the durable fallback during it.
