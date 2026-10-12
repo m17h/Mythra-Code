@@ -7,7 +7,8 @@ import { usageTotals } from "./usageLedger";
 import { useClaudeContinuationStore } from "./claudeContinuation";
 import { compactActivityPresentation } from "./compactActivity";
 import { usedSkillsForRun } from "./skillUsage";
-import { isActiveAgentRecord } from "./subAgentActivity";
+import { collectSubAgentWorkers, isActiveAgentRecord, isSubAgentWorkerActive } from "./subAgentActivity";
+import type { NativeAgentLink } from "./nativeAgentLinks";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 
@@ -78,6 +79,101 @@ describe("Claude event routing", () => {
     expect(task.agents).toEqual([]);
     expect(useClaudeContinuationStore.getState().byThread["thread-1"]).toBeUndefined();
     expect(context.onTurnCompleted).not.toHaveBeenCalled();
+  });
+
+  it.each(["running", "unknown", "completed", "failed", "stopped"].flatMap((status) => [false, true].flatMap((canonicalAlias) => (["execution", "configured", undefined] as const).map((modelSource) => ({ status, canonicalAlias, modelSource })))))("retires only active prior durable Claude activations with %j", ({ status, canonicalAlias, modelSource }) => {
+    const rawId = "claude-native:thread-1:prior-tool";
+    const priorId = canonicalAlias ? "claude-native:thread-1:task:old-turn:prior-task:001" : rawId;
+    const oldResult = isActiveAgentRecord(status) ? undefined : "Original outcome";
+    const prior: NativeAgentLink = { childThreadId: priorId, rootThreadId: "thread-1", rootTurnId: "old-turn", runtime: "claude", title: "Original assignment", createdAt: 1, status, model: "original-model", modelSource, progress: "Original progress", result: oldResult };
+    const links: Record<string, NativeAgentLink> = { [priorId]: prior };
+    const resumedContext: ClaudeEventContext = { ...context, nativeAgentLinkFor: (id) => links[id], onNativeAgentDiscovered: (_root, id, details) => {
+      links[id] = { ...links[id], ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)), childThreadId: id, rootThreadId: "thread-1", title: links[id]?.title ?? details.prompt ?? "Delegated task", createdAt: links[id]?.createdAt ?? 2 };
+    } };
+    useTaskStore.getState().ensureTask("thread-1");
+    if (canonicalAlias) useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activities: [{ id: "prior-tool", kind: "agent", title: "Old Agent", agent: { provider: "claude", action: "spawn", threadIds: [priorId] } }] } } }));
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "init" } }, resumedContext);
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "prior-task", run_id: "002", tool_use_id: "prior-tool" } }, resumedContext);
+    const workers = collectSubAgentWorkers({ rootThreadId: "thread-1", links: {}, statuses: {}, agents: useTaskStore.getState().tasks["thread-1"].agents, nativeLinks: links });
+    expect(workers.filter((worker) => isSubAgentWorkerActive(worker.status))).toHaveLength(1);
+    expect(links[priorId]).toMatchObject({ ...prior, status: isActiveAgentRecord(status) ? "idle" : status });
+    if (isActiveAgentRecord(status)) expect(useTaskStore.getState().tasks["thread-1"].agents.find((agent) => agent.id === priorId)).toMatchObject({ rootTurnId: "old-turn", createdAt: 1, model: "original-model", modelSource, status: "idle" });
+    expect(links["claude-native:thread-1:task:turn-2:prior-task:002"]).toMatchObject({ rootTurnId: "turn-2", status: "inProgress" });
+  });
+
+  it.each(["running", "unknown"].flatMap((status) => (["execution", "configured", undefined] as const).map((modelSource) => ({ status, modelSource }))))("preserves mixed legacy turn provenance during neutral retirement with %j", ({ status, modelSource }) => {
+    const id = "claude-native:thread-1:mixed-tool";
+    const old: NativeAgentLink = { childThreadId: id, rootThreadId: "thread-1", runtime: "claude", title: "Original assignment", status, model: "original-model", modelSource, progress: "Original progress", createdAt: 1 };
+    const links: Record<string, NativeAgentLink> = { [id]: old };
+    const resumedContext: ClaudeEventContext = { ...context, nativeAgentLinkFor: (childId) => links[childId], onNativeAgentDiscovered: (_root, childId, details) => {
+      links[childId] = { ...links[childId], ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)), childThreadId: childId, rootThreadId: "thread-1", title: links[childId]?.title ?? "Delegated task", createdAt: links[childId]?.createdAt ?? 2 };
+    } };
+    useTaskStore.getState().ensureTask("thread-1");
+    useTaskStore.getState().upsertAgent("thread-1", { id, prompt: "Original assignment", rootTurnId: "old-turn", runtime: "claude", status, model: old.model, modelSource, progress: old.progress, createdAt: 1 });
+    useTaskStore.getState().upsertActivity("thread-1", { id: "mixed-tool", kind: "agent", title: "Original assignment", turnId: "old-turn", status, agent: { action: "spawn", provider: "claude", threadIds: [id] } });
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "init" } }, resumedContext);
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "mixed-task", run_id: "002", tool_use_id: "mixed-tool" } }, resumedContext);
+    const agents = useTaskStore.getState().tasks["thread-1"].agents;
+    expect(agents.filter((agent) => isActiveAgentRecord(agent.status))).toHaveLength(1);
+    expect(agents.find((agent) => agent.id === id)).toMatchObject({ rootTurnId: "old-turn", status: "idle", model: old.model, modelSource, createdAt: 1 });
+    expect(links[id]).toMatchObject({ ...old, status: "idle" });
+    expect(links[id]).not.toHaveProperty("rootTurnId");
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ turnId: "old-turn", status: "idle" });
+  });
+
+  it.each(["completed", "failed", "interrupted", "stopped"].flatMap((status) => [false, true].flatMap((canonicalAlias) => [false, true].flatMap((missingLinkTurn) => [false, true].map((missingActivityTurn) => ({ status, canonicalAlias, missingLinkTurn, missingActivityTurn }))))))("preserves actual terminal history against an unknown legacy mirror with %j", ({ status, canonicalAlias, missingLinkTurn, missingActivityTurn }) => {
+    const rawId = "claude-native:thread-1:terminal-history-tool";
+    const priorId = canonicalAlias ? "claude-native:thread-1:task:old-turn:terminal-task:001" : rawId;
+    const prior: NativeAgentLink = { childThreadId: priorId, rootThreadId: "thread-1", ...(missingLinkTurn ? {} : { rootTurnId: "old-turn" }), runtime: "claude", title: "Original assignment", status: "unknown", createdAt: 1 };
+    const links: Record<string, NativeAgentLink> = { [priorId]: prior };
+    const activity = { id: "terminal-history-tool", kind: "agent" as const, title: "Original assignment", ...(missingActivityTurn ? {} : { turnId: "old-turn" }), status, agent: { action: "spawn" as const, provider: "claude" as const, threadIds: [priorId], task: "Actual assignment", model: "actual-model", modelSource: "execution" as const, progress: "Actual progress", result: "Actual terminal outcome" } };
+    const resumedContext: ClaudeEventContext = { ...context, nativeAgentLinkFor: (id) => links[id], onNativeAgentDiscovered: (_root, id, details) => {
+      links[id] = { ...links[id], ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)), childThreadId: id, rootThreadId: "thread-1", title: links[id]?.title ?? "Resumed assignment", createdAt: links[id]?.createdAt ?? 2 };
+    } };
+    useTaskStore.getState().ensureTask("thread-1");
+    useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activities: [activity] } } }));
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "init" } }, resumedContext);
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "terminal-task", run_id: "002", tool_use_id: "terminal-history-tool" } }, resumedContext);
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toBe(activity);
+    expect(links[priorId]).toEqual(prior);
+    const workers = collectSubAgentWorkers({ rootThreadId: "thread-1", links: {}, statuses: {}, agents: useTaskStore.getState().tasks["thread-1"].agents, nativeLinks: links });
+    expect(workers.filter((worker) => worker.status === "working" || worker.status === "starting")).toHaveLength(1);
+    expect(workers.find((worker) => worker.id === priorId)?.status).toBe("unknown");
+  });
+
+  it.each(["other-child", "different-old-turn", "current-turn"])("preserves terminal history and honors the prior %s identity boundary", (conflict) => {
+    const id = "claude-native:thread-1:conflict-history-tool";
+    const prior: NativeAgentLink = { childThreadId: id, rootThreadId: "thread-1", rootTurnId: "old-turn", runtime: "claude", title: "Original assignment", status: "unknown", createdAt: 1 };
+    const links: Record<string, NativeAgentLink> = { [id]: prior };
+    const activity = { id: "conflict-history-tool", kind: "agent" as const, title: "Other assignment", turnId: conflict === "current-turn" ? "turn-2" : conflict === "different-old-turn" ? "different-old-turn" : "old-turn", status: "completed", agent: { action: "spawn" as const, provider: "claude" as const, threadIds: [conflict === "other-child" ? "claude-native:thread-1:other-child" : id], result: "Unrelated outcome" } };
+    const resumedContext: ClaudeEventContext = { ...context, nativeAgentLinkFor: (childId) => links[childId], onNativeAgentDiscovered: (_root, childId, details) => {
+      links[childId] = { ...links[childId], ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)), childThreadId: childId, rootThreadId: "thread-1", title: links[childId]?.title ?? "Resumed assignment", createdAt: links[childId]?.createdAt ?? 2 };
+    } };
+    useTaskStore.getState().ensureTask("thread-1");
+    useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activities: [activity] } } }));
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "init" } }, resumedContext);
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "conflict-task", run_id: "002", tool_use_id: "conflict-history-tool" } }, resumedContext);
+    expect(links[id].status).toBe(conflict === "other-child" ? "idle" : "unknown");
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toBe(activity);
+  });
+
+  it.each([false, true])("retains richer active launch evidence during neutral retirement with canonical alias=%s", (canonicalAlias) => {
+    const rawId = "claude-native:thread-1:rich-history-tool";
+    const priorId = canonicalAlias ? "claude-native:thread-1:task:old-turn:rich-task:001" : rawId;
+    const prior: NativeAgentLink = { childThreadId: priorId, rootThreadId: "thread-1", rootTurnId: "old-turn", runtime: "claude", title: "Original assignment", status: "unknown", createdAt: 1 };
+    const links: Record<string, NativeAgentLink> = { [priorId]: prior };
+    const evidence = { action: "spawn" as const, provider: "claude" as const, threadIds: [priorId], task: "Actual assignment", model: "actual-model", modelSource: "execution" as const, progress: "Actual progress", result: "Actual intermediate readout" };
+    const activity = { id: "rich-history-tool", kind: "agent" as const, title: "Original assignment", turnId: "old-turn", status: "inProgress", agent: evidence };
+    const resumedContext: ClaudeEventContext = { ...context, nativeAgentLinkFor: (id) => links[id], onNativeAgentDiscovered: (_root, id, details) => {
+      links[id] = { ...links[id], ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)), childThreadId: id, rootThreadId: "thread-1", title: links[id]?.title ?? "Resumed assignment", createdAt: links[id]?.createdAt ?? 2 };
+    } };
+    useTaskStore.getState().ensureTask("thread-1");
+    useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activities: [activity] } } }));
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "init" } }, resumedContext);
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "rich-task", run_id: "002", tool_use_id: "rich-history-tool" } }, resumedContext);
+    expect(links[priorId].status).toBe("idle");
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ turnId: "old-turn", status: "idle", agent: evidence });
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0].agent).toBe(evidence);
   });
 
   it("does not attribute unversioned task-only completion to a resumed versioned agent", () => {
@@ -393,6 +489,102 @@ describe("Claude event routing", () => {
       expect.objectContaining({ id: "claude-native:thread-1:task:turn-1:reusable-task", status: "completed", result: "Old result" }),
       expect.objectContaining({ id: "claude-native:thread-1:task:turn-2:reusable-task", status: "inProgress", rootTurnId: "turn-2", prompt: "New task", result: undefined, model: undefined }),
     ]);
+  });
+
+  it.each(["retained", "pruned", "unloaded", "unknown-turn"])("keeps a reused launch tool on its original root turn with %s prior evidence", (priorEvidence) => {
+    const links = new Map<string, object>();
+    const resumedContext: ClaudeEventContext = { ...context,
+      nativeAgentLinkFor: (id) => {
+        const details = links.get(id);
+        return details ? { ...details, childThreadId: id, rootThreadId: "thread-1", runtime: "claude", title: "Original assignment", createdAt: 1 } : undefined;
+      },
+      onNativeAgentDiscovered: (_root, id, details) => {
+      links.set(id, { ...links.get(id), ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)) });
+    } };
+    const route = (turnId: string, message: Record<string, unknown>) => routeClaudeEvent({ threadId: "thread-1", turnId, message }, resumedContext);
+    const originalId = "claude-native:thread-1:cross-turn-tool";
+    const resumedId = "claude-native:thread-1:task:turn-2:cross-turn-task:002";
+    route("turn-1", { type: "system", subtype: "init" });
+    route("turn-1", { type: "assistant", message: { content: [{ type: "tool_use", id: "cross-turn-tool", name: "Agent", input: { prompt: "Original assignment" } }] } });
+    route("turn-1", { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "001", tool_use_id: "cross-turn-tool" });
+    route("turn-1", { type: "assistant", parent_tool_use_id: "cross-turn-tool", agent_id: "cross-turn-task", message: { model: "original-model", content: [{ type: "text", text: "Original progress" }] } });
+    route("turn-1", { type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "001", status: "completed", summary: "Original outcome" });
+    route("turn-1", { type: "result", subtype: "success", result: "Parent done" });
+    const originalActivity = useTaskStore.getState().tasks["thread-1"].activities[0];
+    if (priorEvidence !== "retained") useTaskStore.getState().beginAgentRun("thread-1");
+    if (priorEvidence === "unloaded" || priorEvidence === "unknown-turn") useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activities: [] } } }));
+    if (priorEvidence === "unknown-turn") links.set(originalId, { ...links.get(originalId), rootTurnId: undefined });
+    route("turn-2", { type: "system", subtype: "init" });
+    // Forwarded raw-tool replay can arrive before its resumed lifecycle start.
+    route("turn-2", { type: "assistant", parent_tool_use_id: "cross-turn-tool", agent_id: "cross-turn-task", message: { model: "stale-model", content: [{ type: "text", text: "Before start replay" }] } });
+    route("turn-2", { type: "assistant", message: { content: [{ type: "tool_use", id: "cross-turn-tool", name: "Agent", input: { prompt: "Old launch replay" } }] } });
+    route("turn-2", { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", description: "Resumed assignment" });
+    const agents = () => useTaskStore.getState().tasks["thread-1"].agents;
+    expect(agents().filter((agent) => isActiveAgentRecord(agent.status))).toEqual([expect.objectContaining({ id: resumedId, rootTurnId: "turn-2", prompt: "Resumed assignment", model: undefined, progress: undefined, result: undefined })]);
+    expect(links.get(originalId)).toMatchObject({ rootTurnId: priorEvidence === "unknown-turn" ? undefined : "turn-1", status: "completed", model: "original-model", result: "Original outcome" });
+    route("turn-2", { type: "assistant", parent_tool_use_id: "cross-turn-tool", agent_id: "cross-turn-task", message: { model: "stale-model", content: [{ type: "text", text: "Ambiguous old child" }] } });
+    route("turn-2", { type: "system", subtype: "task_notification", task_id: "cross-turn-task", tool_use_id: "cross-turn-tool", status: "failed", summary: "Ambiguous old outcome" });
+    route("turn-2", { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "cross-turn-tool", is_error: true, content: "Old tool result" }] } });
+    expect(agents().filter((agent) => isActiveAgentRecord(agent.status))).toHaveLength(1);
+    if (priorEvidence === "retained" || priorEvidence === "pruned") expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toEqual(originalActivity);
+    else expect(useTaskStore.getState().tasks["thread-1"].activities).toEqual([]);
+    expect(links.get(originalId)).toMatchObject({ rootTurnId: priorEvidence === "unknown-turn" ? undefined : "turn-1", model: "original-model", result: "Original outcome" });
+    route("turn-2", { type: "system", subtype: "task_progress", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", summary: "Resumed progress" });
+    route("turn-2", { type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", status: "completed", summary: "Resumed outcome" });
+    expect(agents().find((agent) => agent.id === resumedId)).toMatchObject({ status: "completed", progress: "Resumed progress", result: "Resumed outcome", model: undefined });
+    expect(links.get(resumedId)).toMatchObject({ rootTurnId: "turn-2", status: "completed", result: "Resumed outcome" });
+    expect(links.get(resumedId)).not.toHaveProperty("model");
+    // The same original tool can be reused again after the cross-turn resume.
+    route("turn-2", { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool" });
+    const thirdId = "claude-native:thread-1:task:turn-2:cross-turn-task:003";
+    expect(agents().filter((agent) => isActiveAgentRecord(agent.status))).toEqual([expect.objectContaining({ id: thirdId, model: undefined, result: undefined })]);
+    route("turn-2", { type: "system", subtype: "task_progress", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", summary: "Third progress" });
+    route("turn-2", { type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", status: "completed", summary: "Third outcome" });
+    expect(links.get(thirdId)).toMatchObject({ status: "completed", result: "Third outcome" });
+    route("turn-2", { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "004", tool_use_id: "cross-turn-tool" });
+    route("turn-2", { type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "005", tool_use_id: "cross-turn-tool" });
+    expect(agents().find((agent) => agent.id.endsWith(":004"))).toMatchObject({ status: "idle", result: undefined });
+    expect(agents().filter((agent) => isActiveAgentRecord(agent.status))).toEqual([expect.objectContaining({ id: "claude-native:thread-1:task:turn-2:cross-turn-task:005", result: undefined })]);
+    route("turn-2", { type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "004", tool_use_id: "cross-turn-tool", status: "failed", summary: "Stale fourth outcome" });
+    route("turn-2", { type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "005", tool_use_id: "cross-turn-tool", status: "completed", summary: "Fifth outcome" });
+    expect(agents().find((agent) => agent.id.endsWith(":004"))).toMatchObject({ status: "idle", result: undefined });
+    expect(agents().find((agent) => agent.id.endsWith(":005"))).toMatchObject({ status: "completed", result: "Fifth outcome" });
+    expect(links.get(originalId)).toMatchObject({ rootTurnId: priorEvidence === "unknown-turn" ? undefined : "turn-1", model: "original-model", result: "Original outcome" });
+  });
+
+  it.each([
+    { rootTurnId: "old-turn", canonicalAlias: false }, { rootTurnId: undefined, canonicalAlias: false },
+    { rootTurnId: "old-turn", canonicalAlias: true }, { rootTurnId: undefined, canonicalAlias: true },
+  ])("preserves durable Claude ownership and legacy history with prior identity %j", ({ rootTurnId, canonicalAlias }) => {
+    const id = "claude-native:thread-1:legacy-tool";
+    const durableId = canonicalAlias ? "claude-native:thread-1:task:old-turn:legacy-task:001" : id;
+    const nativeAgentDiscovered = vi.fn();
+    const legacyActivity = { id: "legacy-tool", kind: "agent" as const, title: "Original assignment", status: "completed", agent: { action: "spawn" as const, provider: "claude" as const, threadIds: [durableId], result: "Original outcome" } };
+    useTaskStore.getState().ensureTask("thread-1");
+    useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activeTurnId: "turn-2", activities: [legacyActivity] } } }));
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "legacy-tool", is_error: true, content: "Ambiguous old result" }] } } }, {
+      ...context,
+      nativeAgentLinkFor: (childThreadId) => childThreadId === durableId ? { childThreadId: durableId, rootThreadId: "thread-1", rootTurnId, runtime: "claude", title: "Original assignment", status: "completed", result: "Original outcome", createdAt: 1 } : undefined,
+      onNativeAgentDiscovered: nativeAgentDiscovered,
+    });
+    expect(nativeAgentDiscovered).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().tasks["thread-1"].activities).toEqual([legacyActivity]);
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([]);
+  });
+
+  it("accepts a current-turn native tool result when durable ownership proves a legacy row's turn", () => {
+    const id = "claude-native:thread-1:current-tool";
+    const nativeAgentDiscovered = vi.fn();
+    useTaskStore.getState().ensureTask("thread-1");
+    useTaskStore.setState((state) => ({ tasks: { ...state.tasks, "thread-1": { ...state.tasks["thread-1"], activeTurnId: "turn-2", activities: [{ id: "current-tool", kind: "agent", title: "Current assignment", status: "inProgress", agent: { action: "spawn", provider: "claude", threadIds: [id] } }] } } }));
+    routeClaudeEvent({ threadId: "thread-1", turnId: "turn-2", message: { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "current-tool", content: "Current result" }] } } }, {
+      ...context,
+      nativeAgentLinkFor: (childThreadId) => childThreadId === id ? { childThreadId: id, rootThreadId: "thread-1", rootTurnId: "turn-2", runtime: "claude", title: "Current assignment", status: "inProgress", createdAt: 1 } : undefined,
+      onNativeAgentDiscovered: nativeAgentDiscovered,
+    });
+    expect(nativeAgentDiscovered).toHaveBeenCalledWith("thread-1", id, expect.objectContaining({ rootTurnId: "turn-2", status: "completed", result: "Current result" }));
+    expect(useTaskStore.getState().tasks["thread-1"].activities[0]).toMatchObject({ turnId: "turn-2", status: "completed", agent: { result: "Current result" } });
+    expect(useTaskStore.getState().tasks["thread-1"].agents).toEqual([expect.objectContaining({ id, rootTurnId: "turn-2", status: "completed", result: "Current result" })]);
   });
 
   it("bounds forwarded native text and keeps task descriptions separate from assignments", () => {

@@ -639,13 +639,16 @@ it("coalesces restored-worker proof during reasoning updates and repairs an olde
   expect(commandWorkerReconcileCalls).toBe(afterNavigation);
 });
 
-it("retains a transient Agent history page before a conflicting command page replaces it", async () => {
+it.each([false, true])("retains a transient Agent page across navigation before deferred matching: %s", async (navigateBeforeReconcile) => {
   const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const otherThread = { ...thread, id: "other-native-root", name: "Other native root" };
   const id = `claude-native:${ROOT.id}:retained-agent-tool`;
+  const otherId = `claude-native:${otherThread.id}:retained-agent-tool`;
   const link = { childThreadId: id, rootThreadId: ROOT.id, rootTurnId: "old-turn", runtime: "claude", title: "Genuine retained worker", createdAt: 1, status: "running" };
-  inbox = [thread];
+  const otherLink = { ...link, childThreadId: otherId, rootThreadId: otherThread.id, title: "Other root shell command" };
+  inbox = [thread, otherThread];
   localTranscriptPage = { thread, messages: [], activities: [{ id: "unrelated", kind: "reasoning", title: "Thinking" }], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
-  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [id]: link }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [id]: link, [otherId]: otherLink }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
   await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
   await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities[0]?.id).toBe("unrelated"));
   const before = commandWorkerReconcileCalls;
@@ -657,14 +660,57 @@ it("retains a transient Agent history page before a conflicting command page rep
     useTaskStore.getState().hydrateTask(ROOT.id, [], [positive], PROJECT.path);
     useTaskStore.getState().hydrateTask(ROOT.id, [], [command], PROJECT.path);
   });
-  await waitFor(() => expect(commandWorkerReconcileCalls).toBeGreaterThan(before));
+  if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+  else await waitFor(() => expect(commandWorkerReconcileCalls).toBeGreaterThan(before));
   expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
   expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([expect.objectContaining(command)]);
   expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await userEvent.click(screen.getByTitle("Start a thread in Native fixture"));
+  expect(useTaskStore.getState().activeThreadId).toBeNull();
+  if (navigateBeforeReconcile) expect(commandWorkerReconcileCalls).toBe(before);
+  // The same launch-tool suffix in another root still has independent command
+  // proof. Retaining the genuine root must not suppress this safe repair.
+  localTranscriptPage = { thread: otherThread, messages: [], activities: [command], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await userEvent.click(await screen.findByRole("button", { name: "Open Other native root" }));
+  await waitFor(() => expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[otherId]).toBeUndefined());
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().activeThreadId).toBe(ROOT.id));
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await new Promise((resolve) => window.setTimeout(resolve, 220));
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[id]).toMatchObject(link);
   const panel = await openPanel();
   expect(within(panel).getByText("Genuine retained worker")).toBeVisible();
   expect(within(panel).getByRole("switch", { name: "Allow sub-agent spawning" })).toBeDisabled();
   expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(0);
+});
+
+it("flushes transient Agent proof before an immediate stale settings action", async () => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [{ id: "unrelated", kind: "reasoning", title: "Thinking" }], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities[0]?.id).toBe("unrelated"));
+  const panel = await openPanel();
+  const toggle = within(panel).getByRole("switch", { name: "Allow sub-agent spawning" });
+  expect(toggle).toBeEnabled();
+  const id = `claude-native:${ROOT.id}:immediate-agent-tool`;
+  const positive: Activity = { id: "immediate-agent-tool", kind: "agent", title: "Actual Agent", turnId: "old-turn", agent: { action: "spawn", provider: "claude", threadIds: [id] } };
+  const command: Activity = { ...positive, kind: "command", agent: undefined, title: "Conflicting command" };
+  await act(async () => {
+    useTaskStore.getState().hydrateTask(ROOT.id, [], [positive], PROJECT.path);
+    useTaskStore.getState().hydrateTask(ROOT.id, [], [command], PROJECT.path);
+    useTaskStore.getState().upsertAgent(ROOT.id, { id, runtime: "claude", rootTurnId: "old-turn", prompt: "Unresolved genuine worker", status: "unknown" });
+    // The DOM still exposes the previously enabled control in this event batch.
+    // Its App guard must read current workers and queued positive proof.
+    toggle.click();
+  });
+  expect(toggle).not.toBeChecked();
+  expect(toggle).toBeDisabled();
+  expect(JSON.parse(localStorage.getItem("kiwi.threadSubagentSettings")!)[ROOT.id].enabled).toBe(false);
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual([expect.objectContaining({ id, status: "unknown" })]);
+  expect(screen.getByRole("button", { name: "Sub-agents off · status unknown" })).toBeVisible();
 });
 
 it("keeps root text and pending tools isolated from partial Claude child streams", async () => {
@@ -783,6 +829,150 @@ it("keeps a resumed Claude worker visible despite late completion from its previ
   await routeClaudeFixture(threadId, { type: "system", subtype: "task_notification", task_id: "resume-task", run_id: "002", status: "completed", summary: "Current result" });
   expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
   expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[`claude-native:${threadId}:resume-new`]).toMatchObject({ status: "completed", result: "Current result" });
+});
+
+it.each(["completed", "failed", "interrupted", "running", "unknown"].flatMap((priorStatus) => [
+  { missingOriginalTurn: false, canonicalOriginal: false },
+  { missingOriginalTurn: true, canonicalOriginal: false },
+  { missingOriginalTurn: false, canonicalOriginal: true },
+  { missingOriginalTurn: true, canonicalOriginal: true },
+].map((evidence) => ({ ...evidence, priorStatus, recordOriginalTurn: false }))).concat([
+  { missingOriginalTurn: true, canonicalOriginal: false, priorStatus: "running", recordOriginalTurn: true },
+  { missingOriginalTurn: true, canonicalOriginal: true, priorStatus: "unknown", recordOriginalTurn: true },
+]))("preserves a durable Claude outcome across root turns with prior evidence: %j", async ({ missingOriginalTurn, canonicalOriginal, priorStatus, recordOriginalTurn }) => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const originalId = canonicalOriginal ? `claude-native:${ROOT.id}:task:old-root-turn:cross-turn-task:001` : `claude-native:${ROOT.id}:cross-turn-tool`;
+  const currentTurn = "new-root-turn";
+  const resumedId = `claude-native:${ROOT.id}:task:${currentTurn}:cross-turn-task:002`;
+  const priorUnsettled = priorStatus === "running" || priorStatus === "unknown";
+  const originalLink = { childThreadId: originalId, rootThreadId: ROOT.id, ...(missingOriginalTurn ? {} : { rootTurnId: "old-root-turn" }), runtime: "claude", provider: "claude", title: "Original assignment", createdAt: 1, ...(priorUnsettled ? {} : { finishedAt: 2, result: "Original outcome" }), status: priorStatus, model: "original-child-model", modelSource: "execution", progress: "Original progress" };
+  const preservedOriginal = { ...originalLink, ...(priorUnsettled ? { status: "idle" } : {}) };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [originalId]: originalLink }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  const routeCurrent = async (message: Record<string, unknown>) => act(async () => {
+    routeClaudeEvent({ threadId: ROOT.id, turnId: currentTurn, message }, claudeEventContext!);
+  });
+  await act(async () => {
+    if (recordOriginalTurn) useTaskStore.getState().upsertAgent(ROOT.id, { id: originalId, runtime: "claude", rootTurnId: "old-root-turn", status: priorStatus, prompt: "Original assignment", model: "original-child-model", modelSource: "execution", progress: "Original progress", createdAt: 1 });
+    useTaskStore.getState().beginAgentRun(ROOT.id);
+    useTaskStore.getState().setActiveTurn(ROOT.id, currentTurn);
+    useTaskStore.getState().setTaskStatus(ROOT.id, "running");
+  });
+  const priorRecords = useTaskStore.getState().tasks[ROOT.id].agents;
+  expect(priorRecords).toHaveLength(recordOriginalTurn ? 1 : 0);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([]);
+  await routeCurrent({ type: "system", subtype: "init" });
+  // An older legacy page can omit the activity turn even though durable
+  // ownership still proves that this raw launch identity is historical.
+  const legacy: Activity = { id: "cross-turn-tool", kind: "agent", title: "Original assignment", status: "completed", agent: { action: "spawn", provider: "claude", threadIds: [originalId] } };
+  await act(async () => { useTaskStore.getState().hydrateTask(ROOT.id, [], [legacy], PROJECT.path); });
+  const legacySnapshot = useTaskStore.getState().tasks[ROOT.id].activities[0];
+  await routeCurrent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "cross-turn-tool", is_error: true, content: "Old legacy tool result replay" }] } });
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0]).toEqual(legacySnapshot);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(originalLink);
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual(priorRecords);
+  if (!canonicalOriginal) {
+    await act(async () => { useTaskStore.getState().hydrateTask(ROOT.id, [], [], PROJECT.path); });
+    expect(useTaskStore.getState().tasks[ROOT.id].activities).toEqual([]);
+  }
+  await routeCurrent({ type: "assistant", parent_tool_use_id: "cross-turn-tool", agent_id: "cross-turn-task", message: { model: "stale-child-model", content: [{ type: "text", text: "Old forwarded replay before start" }] } });
+  await routeCurrent({ type: "assistant", message: { content: [{ type: "tool_use", id: "cross-turn-tool", name: "Agent", input: { prompt: "Old Agent invocation replay" } }] } });
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(originalLink);
+  await routeCurrent({ type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", description: "Current resumed assignment" });
+  expect(useTaskStore.getState().tasks[ROOT.id].agents.filter((agent) => agent.id === resumedId)).toEqual([expect.objectContaining({ id: resumedId, rootTurnId: currentTurn, prompt: "Current resumed assignment" })]);
+  const resumed = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === resumedId)!;
+  expect(resumed.model).toBeUndefined();
+  expect(resumed.progress).toBeUndefined();
+  expect(resumed.result).toBeUndefined();
+  if (recordOriginalTurn) {
+    const predecessor = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === originalId);
+    expect(predecessor).toMatchObject({ rootTurnId: "old-root-turn", status: "idle", model: "original-child-model", modelSource: "execution", createdAt: 1 });
+    expect(predecessor?.result).toBeUndefined();
+  }
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(preservedOriginal);
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "cross-turn-task", tool_use_id: "cross-turn-tool", status: "failed", summary: "Ambiguous old outcome" });
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_progress", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", summary: "Current progress" });
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "002", tool_use_id: "cross-turn-tool", status: "completed", summary: "Current outcome" });
+  const durable = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(durable[originalId]).toEqual(preservedOriginal);
+  expect(durable[resumedId]).toMatchObject({ rootTurnId: currentTurn, status: "completed", progress: "Current progress", result: "Current outcome" });
+  expect(durable[resumedId].model).toBeUndefined();
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+  // Another activation still uses the original historical launch tool. It
+  // must receive a fresh scoped identity rather than reviving that old alias.
+  const nextId = `claude-native:${ROOT.id}:task:${currentTurn}:cross-turn-task:003`;
+  await routeCurrent({ type: "system", subtype: "task_started", task_type: "local_agent", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", description: "Later current assignment" });
+  const next = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === nextId);
+  expect(next).toMatchObject({ rootTurnId: currentTurn, prompt: "Later current assignment" });
+  expect(next?.model).toBeUndefined();
+  expect(next?.progress).toBeUndefined();
+  expect(next?.result).toBeUndefined();
+  expect(screen.getByRole("button", { name: "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_progress", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", summary: "Later progress" });
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "cross-turn-task", run_id: "003", tool_use_id: "cross-turn-tool", status: "failed", summary: "Later outcome" });
+  const finalLinks = JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!);
+  expect(finalLinks[originalId]).toEqual(preservedOriginal);
+  expect(finalLinks[resumedId]).toMatchObject({ status: "completed", progress: "Current progress", result: "Current outcome" });
+  expect(finalLinks[nextId]).toMatchObject({ rootTurnId: currentTurn, status: "failed", progress: "Later progress", result: "Later outcome" });
+  expect(finalLinks[nextId].model).toBeUndefined();
+  expect(screen.getByRole("button", { name: "Sub-agents off" })).toBeVisible();
+});
+
+it.each([
+  { canonicalOriginal: false, priorStatus: "completed" },
+  { canonicalOriginal: true, priorStatus: "failed" },
+  { canonicalOriginal: false, priorStatus: "inProgress" },
+])("preserves actual history readouts beside an unresolved durable mirror: %j", async ({ canonicalOriginal, priorStatus }) => {
+  const thread = { ...ROOT, modelProvider: "claude", model: "claude-haiku-4-5" };
+  const originalId = canonicalOriginal ? `claude-native:${ROOT.id}:task:old-history-turn:history-task:001` : `claude-native:${ROOT.id}:history-tool`;
+  const originalLink = { childThreadId: originalId, rootThreadId: ROOT.id, rootTurnId: "old-history-turn", runtime: "claude", provider: "claude", title: "Original history assignment", createdAt: 1, status: "unknown", model: "original-child-model", modelSource: "execution" };
+  const terminalHistory = priorStatus !== "inProgress";
+  const originalHistory: Activity = { id: "history-tool", kind: "agent", title: "Original history assignment", turnId: "old-history-turn", status: priorStatus, detail: "Actual original readout", agent: { action: "spawn", provider: "claude", threadIds: [originalId], model: "original-child-model", modelSource: "execution", task: "Actual detailed assignment", progress: "Actual detailed progress", ...(terminalHistory ? { result: "Actual original outcome" } : {}) } };
+  inbox = [thread];
+  localTranscriptPage = { thread, messages: [], activities: [originalHistory], generation: 1, headSeq: 1, tailSeq: 2, nextCursor: null, byteLen: 128 };
+  await renderApp({ "kiwi.settings": { provider: "claude", model: "claude-haiku-4-5", theme: "mythra", childAgents: { enabled: true, targets: [TARGET] } }, "kiwi.nativeAgentLinks": { [originalId]: originalLink }, "kiwi.threadSubagentSettings": { [ROOT.id]: { enabled: false, engine: "native", nativeMaxConcurrent: 6 } } });
+  await userEvent.click(await screen.findByRole("button", { name: "Open Native root" }));
+  await waitFor(() => expect(useTaskStore.getState().tasks[ROOT.id]?.activities).toEqual([expect.objectContaining(originalHistory)]));
+  const historySnapshot = useTaskStore.getState().tasks[ROOT.id].activities[0];
+  const retainedHistory = { ...historySnapshot, ...(terminalHistory ? {} : { status: "idle" }) };
+  const retainedLink = { ...originalLink, ...(terminalHistory ? {} : { status: "idle" }) };
+  const currentTurn = "current-history-turn";
+  const resumedId = `claude-native:${ROOT.id}:task:${currentTurn}:history-task:002`;
+  const routeCurrent = async (message: Record<string, unknown>) => act(async () => {
+    routeClaudeEvent({ threadId: ROOT.id, turnId: currentTurn, message }, claudeEventContext!);
+  });
+  await act(async () => {
+    useTaskStore.getState().beginAgentRun(ROOT.id);
+    useTaskStore.getState().setActiveTurn(ROOT.id, currentTurn);
+    useTaskStore.getState().setTaskStatus(ROOT.id, "running");
+  });
+  expect(useTaskStore.getState().tasks[ROOT.id].agents).toEqual([]);
+  await routeCurrent({ type: "system", subtype: "init" });
+  await routeCurrent({ type: "system", subtype: "task_started", task_type: "local_agent", task_id: "history-task", run_id: "002", tool_use_id: "history-tool", description: "New current assignment" });
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0]).toEqual(retainedHistory);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0].agent).toBe(historySnapshot.agent);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(retainedLink);
+  expect(useTaskStore.getState().tasks[ROOT.id].agents.filter((agent) => agent.id === resumedId)).toEqual([expect.objectContaining({ id: resumedId, rootTurnId: currentTurn, prompt: "New current assignment" })]);
+  const resumed = useTaskStore.getState().tasks[ROOT.id].agents.find((agent) => agent.id === resumedId)!;
+  expect(resumed.model).toBeUndefined();
+  expect(resumed.result).toBeUndefined();
+  expect(screen.getByRole("button", { name: terminalHistory ? "Sub-agents off · 1 active · status unknown" : "Sub-agents off · 1 active" })).toBeVisible();
+  await routeCurrent({ type: "system", subtype: "task_notification", task_id: "history-task", run_id: "002", tool_use_id: "history-tool", status: "completed", summary: "New actual outcome" });
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0]).toEqual(retainedHistory);
+  expect(useTaskStore.getState().tasks[ROOT.id].activities[0].agent).toBe(historySnapshot.agent);
+  expect(JSON.parse(localStorage.getItem("kiwi.nativeAgentLinks")!)[originalId]).toEqual(retainedLink);
+  expect(screen.getByRole("button", { name: terminalHistory ? "Sub-agents off · status unknown" : "Sub-agents off" })).toBeVisible();
+  await act(async () => { useTaskStore.getState().setActiveTurn(ROOT.id, undefined); useTaskStore.getState().setTaskStatus(ROOT.id, "completed"); });
+  const panel = await openPanel();
+  const toggle = within(panel).getByRole("switch", { name: "Allow sub-agent spawning" });
+  if (terminalHistory) expect(toggle).toBeDisabled();
+  else expect(toggle).toBeEnabled();
+  if (terminalHistory) expect(within(panel).getByText("Original history assignment")).toBeVisible();
+  expect(calls.filter((call) => call.command === "claude_turn_start")).toHaveLength(0);
 });
 
 it("dispatches the Claude native limit to its own provider without creating a Codex thread", async () => {

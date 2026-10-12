@@ -1238,13 +1238,21 @@ export default function App() {
   }, [activeThreadId, feedback.notes, reviewDiff, taskStatus]);
   const threadTaskStatuses = useTaskStore((state) => state.statuses);
   const threadWorkflowOwners = useTaskStore((state) => state.workflowOwners);
+  // Keep only positive ownership IDs across navigation. The view reconciler's
+  // history arrays and command cache still leave memory with that view.
+  const commandWorkerProofByThreadRef = useRef(new Map<string, ReadonlySet<string>>());
   const commandWorkerReconciler = useMemo(() => createClaudeCommandWorkerReconciler(activeThreadId), [activeThreadId]);
-  const [commandWorkerProtectedAgents, setCommandWorkerProtectedAgents] = useState<ReadonlySet<string>>(() => new Set());
+  const [commandWorkerProofByThread, setCommandWorkerProofByThread] = useState(() => commandWorkerProofByThreadRef.current);
   const retainCommandWorkerProof = useCallback(() => {
-    const protectedIds = commandWorkerReconciler.protectedAgentIds;
-    setCommandWorkerProtectedAgents((current) => current.size === protectedIds.size && [...current].every((id) => protectedIds.has(id))
-      ? current : new Set(protectedIds));
-  }, [commandWorkerReconciler]);
+    if (!activeThreadId) return;
+    const current = commandWorkerProofByThreadRef.current.get(activeThreadId);
+    const observed = commandWorkerReconciler.protectedAgentIds;
+    if ([...observed].every((id) => current?.has(id))) return;
+    const next = new Map(commandWorkerProofByThreadRef.current);
+    next.set(activeThreadId, new Set([...(current ?? []), ...observed]));
+    commandWorkerProofByThreadRef.current = next;
+    setCommandWorkerProofByThread(next);
+  }, [activeThreadId, commandWorkerReconciler]);
   // Live crew for the composer panel: Mythra Code-owned cross-provider children
   // merged with whatever native agents the root task reported.
   const subAgentWorkers = useMemo(
@@ -1253,8 +1261,10 @@ export default function App() {
       links: childAgentLinks,
       statuses: threadTaskStatuses,
       agents: agentRecords,
-      rootActivities: activeThreadId ? useTaskStore.getState().tasks[activeThreadId]?.activities : undefined,
-      protectedNativeAgentIds: commandWorkerProtectedAgents,
+      // The deferred migration owns command matching. Classifying a newer
+      // page during render could hide a real worker before queued Agent proof
+      // has been retained; keep its row until conservative repair completes.
+      protectedNativeAgentIds: activeThreadId ? commandWorkerProofByThread.get(activeThreadId) : undefined,
       runStartedAt: agentRunStartedAt,
       // A provider-native child runs inside this thread's own runtime, so the
       // row names this thread's provider and model rather than leaving the
@@ -1263,7 +1273,7 @@ export default function App() {
       nativeProvider: activeProvider,
       nativeModel: effectiveSettings.model,
     }),
-    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, commandWorkerProtectedAgents, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
+    [activeProvider, activeThreadId, agentRecords, agentRunStartedAt, childAgentLinks, commandWorkerProofByThread, effectiveSettings.model, nativeAgentLinks, threadTaskStatuses],
   );
   const running = activeThreadId ? Boolean(activeWorkflowOwner) || taskStatus === "starting" || taskStatus === "running" : Boolean(selectedFirstPrompt) && startingDraftTurn;
   useEffect(() => {
@@ -1280,6 +1290,7 @@ export default function App() {
         agents: task.agents,
         nativeLinks: nativeAgentLinksRef.current,
         rootActivities: task.activities,
+        protectedNativeAgentIds: commandWorkerProofByThreadRef.current.get(activeThreadId),
       }));
       // Only new ownership proof refreshes the App, never reasoning details.
       retainCommandWorkerProof();
@@ -1312,6 +1323,10 @@ export default function App() {
     return () => {
       unsubscribe();
       if (timer !== undefined) window.clearTimeout(timer);
+      // Navigation can beat the 180 ms timer. Retain nondestructive Agent
+      // proof before dropping the view's queued pages and command index.
+      commandWorkerReconciler.flushObservedActivities();
+      retainCommandWorkerProof();
     };
   }, [activeThreadId, agentRecords, commandWorkerReconciler, nativeAgentLinks, nativeAgentLinksRef, persistNativeAgentLinks, retainCommandWorkerProof]);
   // Root-owned telemetry; shown only for the visible thread's live turn.
@@ -1751,7 +1766,7 @@ export default function App() {
       statuses: latest.statuses,
       agents: task?.agents ?? [],
       rootActivities: task?.activities,
-      protectedNativeAgentIds: commandWorkerReconciler.protectedAgentIds,
+      protectedNativeAgentIds: activeThreadId ? commandWorkerProofByThreadRef.current.get(activeThreadId) : undefined,
       runStartedAt: task?.agentRunStartedAt,
     });
     if (activeThreadIsChild || running || hasQueuedWork || status === "starting" || status === "running"
@@ -3247,6 +3262,10 @@ export default function App() {
       const model = details.model !== undefined ? details.model : newActivation ? "" : existing?.model !== undefined ? existing.model : existingThread?.model || undefined;
       const status = details.status ?? existing?.status;
       const settled = status !== undefined && ["completed", "cancelled", "failed", "idle"].includes(workerStatusFromAgentRecord(status));
+      // A newer Claude activation can retire an old identity to neutral idle
+      // without reporting when it finished or a terminal outcome.
+      const neutralClaudeIdle = (details.runtime ?? existing?.runtime) === "claude" && status === "idle";
+      const finishedAt = neutralClaudeIdle ? existing?.finishedAt : settled ? newActivation ? now : existing?.finishedAt ?? now : undefined;
       const link: NativeAgentLink = {
         childThreadId,
         rootThreadId,
@@ -3257,14 +3276,14 @@ export default function App() {
         ...(model !== undefined ? { model } : {}),
         runtime: details.runtime ?? existing?.runtime ?? "codex",
         ...(details.rootTurnId ?? existing?.rootTurnId ? { rootTurnId: details.rootTurnId ?? existing?.rootTurnId } : {}),
-        task: details.task !== undefined ? boundedNativeText(details.task, "task") : existing?.task ?? boundedNativeText(details.prompt, "task"),
+        task: details.task !== undefined ? boundedNativeText(details.task, "task") : existing?.task ?? (neutralClaudeIdle ? undefined : boundedNativeText(details.prompt, "task")),
         requestedModel: details.requestedModel !== undefined ? details.requestedModel : newActivation ? "" : existing?.requestedModel,
         modelSource: model === "" ? undefined : details.modelSource ?? (newActivation ? undefined : existing?.modelSource ?? (existingThread?.model ? "configured" : undefined)),
         progress: details.progress !== undefined ? boundedNativeText(details.progress, "progress") : existing?.progress,
         result: details.result !== undefined ? boundedNativeText(details.result, "result") : existing?.result,
         activationId: details.activationId ?? existing?.activationId,
         ...(status ? { status } : {}),
-        ...(settled ? { finishedAt: newActivation ? now : existing?.finishedAt ?? now } : {}),
+        ...(finishedAt !== undefined ? { finishedAt } : {}),
       };
       return { ...current, [childThreadId]: link };
     });
@@ -3497,6 +3516,7 @@ export default function App() {
   useClaudeEvents({
     onNativeAgentDiscovered,
     onNativeAgentReidentified: onClaudeNativeAgentReidentified,
+    nativeAgentLinkFor: (childThreadId) => nativeAgentLinksRef.current[childThreadId],
     bindingFor: (threadId) => {
       const logicalPath = threadProjectBindingsRef.current?.[threadId];
       return logicalPath ? executionPathFor(threadId, logicalPath) : undefined;

@@ -160,19 +160,25 @@ one worker and its reported model, progress and result.
 Child partial streams and non-control child telemetry cannot change the root's
 answer, pending tool input or run status. A resumed task can reuse its launch
 tool; versioned lifecycle events still target that exact activation. A confirmed
-newer activation moves its earlier active-looking record to neutral idle
+newer activation moves its proven earlier active-looking record to neutral idle
 history, without inventing a completed, failed or stopped outcome. Delayed
 older frames cannot revive that record or finish the new activation.
+Exact terminal history and ownership/turn conflicts veto that retirement.
+An incomplete conflicting ownership record can remain `status unknown` until
+runtime evidence resolves it; its original history and readout stay intact.
 When older histories load, obsolete synthetic worker links are removed only
 when exact command/turn evidence proves the misclassification. Original command
 history is retained; conflicting or uncertain agent evidence prevents cleanup.
 This repair is coalesced outside rendering and caches command proof, so reasoning
 updates do not repeatedly rebuild the full history index. It still detects newly
 loaded pages and same-size replacements, and cancels deferred work on navigation.
-Within the active view, positive agent evidence is retained across intermediate page replacements, even
-before the corresponding worker record arrives. Cleanup and the composer use
-that same evidence so a genuine worker cannot be removed or hidden just because
-its launch page is no longer loaded.
+During the app session, positive agent evidence is retained for its root thread
+across intermediate page replacements and navigation, even before the
+corresponding worker record arrives. Cleanup and the composer use that same
+evidence so a genuine worker cannot be removed or hidden just because its launch
+page is no longer loaded. Versioned resumed tasks also check durable ownership
+when an earlier launch page is unavailable; they preserve the earlier outcome
+and give the new activation its own identity.
 
 If existing or unexpected agent activity is reported while spawning is off,
 the composer keeps both facts visible as `Sub-agents off · N active`, with the
