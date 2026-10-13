@@ -140,33 +140,56 @@ function stopGroups(groups) {
   return remaining;
 }
 
-// Exclusive claim on the build checkouts and run record: created atomically,
-// reclaimed only when its owner is no longer a running release.mjs process.
+// Exclusive claim on the build checkouts and run record, created atomically.
+// A lock left by a dead run is replaced only while holding a second exclusive
+// recovery claim and after re-checking its owner, so two starts recovering at
+// once can never both win or delete each other's new lock.
 const lockPath = resolve(privateRoot, "release.lock");
-function lockOwner() {
+const recoveryPath = `${lockPath}.recovering`;
+function lockOwner(path = lockPath) {
   try {
-    return Number(readFileSync(lockPath, "utf8").trim()) || 0;
+    return Number(readFileSync(path, "utf8").trim()) || 0;
   } catch {
     return 0;
   }
 }
+function claim(path) {
+  try {
+    writeFileSync(path, `${process.pid}\n`, { flag: "wx" });
+    return true;
+  } catch (error) {
+    if (error.code === "EEXIST") return false;
+    throw error;
+  }
+}
 function acquireLock() {
   mkdirSync(privateRoot, { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx" });
-      process.on("exit", () => {
-        if (lockOwner() === process.pid) rmSync(lockPath, { force: true });
-      });
-      return;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      const owner = lockOwner();
-      if (processAlive(owner)) fail(`A release is already running (pid ${owner}). Check: node scripts/release.mjs status`);
-      rmSync(lockPath, { force: true });
-    }
+  const holdLock = () => process.on("exit", () => {
+    if (lockOwner() === process.pid) rmSync(lockPath, { force: true });
+  });
+  if (claim(lockPath)) return holdLock();
+  // An empty lock may belong to a start that has not written its PID yet.
+  if (!lockOwner()) sleepSync(1000);
+  if (processAlive(lockOwner())) fail(`A release is already running (pid ${lockOwner()}). Check: node scripts/release.mjs status`);
+  if (!claim(recoveryPath)) {
+    // Another start holds (or just released) the recovery claim. Only call the
+    // claim abandoned when neither it nor the lock has a live owner.
+    sleepSync(500);
+    if (processAlive(lockOwner())) fail(`A release is already running (pid ${lockOwner()}). Check: node scripts/release.mjs status`);
+    if (processAlive(lockOwner(recoveryPath))) fail("Another release start is taking over an interrupted run. Check: node scripts/release.mjs status");
+    if (existsSync(recoveryPath)) fail("A release start was interrupted while taking over a previous run. Run node scripts/release.mjs stop, then start again.");
+    fail("Another release start just took over. Check: node scripts/release.mjs status");
   }
-  fail("Another release run claimed the lock at the same moment. Check: node scripts/release.mjs status");
+  // fail() exits the process, so release the recovery claim on exit too.
+  const releaseRecovery = () => {
+    if (lockOwner(recoveryPath) === process.pid) rmSync(recoveryPath, { force: true });
+  };
+  process.on("exit", releaseRecovery);
+  if (processAlive(lockOwner())) fail(`A release is already running (pid ${lockOwner()}). Check: node scripts/release.mjs status`);
+  rmSync(lockPath, { force: true });
+  if (!claim(lockPath)) fail("Another release start claimed the lock. Check: node scripts/release.mjs status");
+  holdLock();
+  releaseRecovery();
 }
 
 const stripAnsi = (text) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
@@ -228,14 +251,27 @@ function runLogged(task, command, args, { timeoutMinutes = 30, ...options } = {}
   return new Promise((resolvePromise) => {
     task.log.write(`\n$ ${command} ${args.join(" ")}\n`);
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], detached: true, ...options });
+    // The step settles exactly once: on close, on a start error, or at the
+    // deadline after bounded cleanup, even if the process never closes.
+    let settled = false;
+    const settle = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      task.child = null;
+      resolvePromise(code);
+    };
     const deadline = setTimeout(() => {
       task.timedOut = timeoutMinutes;
       task.log.write(`\nNo result after ${timeoutMinutes} minutes; stopping this step.\n`);
-      stopGroups([child.pid]);
+      task.stuck = stopGroups([child.pid]);
+      if (task.stuck.length) task.log.write(`Could not confirm process group ${task.stuck.join(", ")} stopped.\n`);
+      settle(1);
     }, timeoutMinutes * 60_000);
     task.child = child;
     if (child.pid) updateRunState({ processGroups: { ...activeRun?.processGroups, [task.name]: child.pid } });
     const onData = (chunk) => {
+      if (settled) return;
       task.log.write(chunk);
       const lines = stripAnsi(chunk.toString()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       if (lines.length) task.lastLine = lines.at(-1);
@@ -243,22 +279,19 @@ function runLogged(task, command, args, { timeoutMinutes = 30, ...options } = {}
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
     child.on("error", (error) => {
-      clearTimeout(deadline);
-      task.log.write(`\n${command} could not start: ${error.message}\n`);
-      resolvePromise(1);
+      if (!settled) task.log.write(`\n${command} could not start: ${error.message}\n`);
+      settle(1);
     });
-    child.on("close", (code) => {
-      clearTimeout(deadline);
-      task.child = null;
-      resolvePromise(code ?? 1);
-    });
+    child.on("close", (code) => settle(code ?? 1));
   });
 }
 
 async function step(task, label, command, args, options) {
   task.stage = label;
   task.timedOut = 0;
+  task.stuck = [];
   const code = await runLogged(task, command, args, options);
+  if (task.timedOut && task.stuck.length) throw new Error(`${label} did not finish within ${task.timedOut} minutes, and its processes (group ${task.stuck.join(", ")}) could not be confirmed stopped. Run node scripts/release.mjs stop before retrying. See ${task.logPath}`);
   if (task.timedOut) throw new Error(`${label} did not finish within ${task.timedOut} minutes and was stopped. See ${task.logPath}`);
   if (code !== 0) throw new Error(`${label} failed (exit ${code}). See ${task.logPath}`);
 }
@@ -464,12 +497,14 @@ async function publish({ version, flags }) {
 
   // One release run at a time: two runs would share the build checkouts.
   acquireLock();
+  // Earlier runs (interrupted, or failed with a step that could not be stopped)
+  // may have left writers in the shared build checkouts; stop them first.
   const previous = readRunState();
-  if (previous && ["preflight", "building", "publishing"].includes(previous.state)) {
-    console.log(`The previous ${previous.version} run was interrupted; stopping anything it left running on this Mac.`);
-    const leftovers = Object.values(previous.processGroups || {}).filter((pgid) => releaseGroup(pgid, config));
+  const leftovers = Object.values(previous?.processGroups || {}).filter((pgid) => groupAlive(pgid) && releaseGroup(pgid, config));
+  if (leftovers.length) {
+    console.log(`Stopping processes left running by the previous ${previous.version} run on this Mac.`);
     const stuck = stopGroups(leftovers);
-    if (stuck.length) fail(`Processes from the interrupted run are still running (process groups ${stuck.join(", ")}). Stop them, then re-run.`);
+    if (stuck.length) fail(`Processes from the previous run are still running (process groups ${stuck.join(", ")}) and could not be stopped. Run node scripts/release.mjs stop, then re-run.`);
   }
   activeRun = { version, pid: process.pid, state: "preflight", startedAt: new Date(startedAt).toISOString(), processGroups: {} };
   updateRunState({});
@@ -659,6 +694,9 @@ function stop() {
   const stuck = stopGroups(Object.values(latest?.processGroups || {}).filter((pgid) => releaseGroup(pgid, config)));
   const windows = stopWindowsBuild(config);
   const problems = [stuck.length ? `Mac process groups ${stuck.join(", ")} are still running` : "", windows ? `Windows cleanup is unconfirmed: ${windows}` : ""].filter(Boolean);
+  if (!problems.length) {
+    for (const path of [lockPath, recoveryPath]) if (!processAlive(lockOwner(path))) rmSync(path, { force: true });
+  }
   if (latest && (owner || ["preflight", "building", "publishing"].includes(latest.state))) {
     activeRun = latest;
     updateRunState({ state: "failed", message: problems.length

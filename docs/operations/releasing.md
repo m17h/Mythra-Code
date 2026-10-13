@@ -120,6 +120,7 @@ other than `origin/main`; `--notes <file>` uses another notes file.
 | Notarization rejected | Read `xcrun notarytool log <id> --keychain-profile <profile>` for the submission ID in `mac.log`. |
 | `is already running` | Another run is active. Watch it with `release:status` or cancel with `release:stop`. |
 | `did not finish within N minutes` | That step hung (often Apple notarization or the network). Its processes were stopped; re-run. |
+| `could not be confirmed stopped` or `interrupted while taking over` | Run `npm run release:stop` (repeat until it confirms nothing is left), then re-run. |
 | `Tag vX.Y.Z already exists at ...` | A tag from an earlier attempt points at other source. Delete it as the message shows, then re-run. |
 
 ## Machine setup (already done on Morgan's machines)
