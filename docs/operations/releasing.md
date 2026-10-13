@@ -5,71 +5,114 @@ is one script, run on the Mac: `scripts/release.mjs`. It builds macOS locally
 and Windows over SSH at the same time, from the same commit, then publishes one
 GitHub release containing both platforms and a combined `latest.json`.
 
-There are no test, CI, QA, audit or review stages. Compilation, signing,
-notarization and upload still have to succeed; when one fails, the script stops
-with the error and the end of the log, and you fix the cause and run it again.
+## Instructions for agents (any model)
 
-## Release in three commands
+Follow these steps exactly. The script already handles signing, notarization,
+the Windows build, leftover processes, retries and publication. Your job is to
+run it, write the release notes, and fix real errors it reports.
 
-```sh
-# 1. Open and merge the version-bump PR, and draft release notes.
-npm run release:prepare -- 1.26.0 --merge
+1. **Confirm the request.** Morgan must have asked for a release and named the
+   version `X.Y.Z`. A merge or "it's ready" is not a release request.
+2. **Prepare.** From the Mac checkout of this repository, with unrestricted
+   sandbox, network and Keychain access:
+   ```sh
+   npm run release:prepare -- X.Y.Z --merge
+   ```
+   This opens and merges the version-bump PR (the release request authorizes
+   that merge, with no separate merge chat or reviewers) and drafts notes at
+   `~/.mythra-release/notes/X.Y.Z.md`.
+3. **Write the notes.** Rewrite the drafted commit subjects in that file as
+   short user-facing bullets under `# Mythra Code X.Y.Z` (see earlier releases
+   on GitHub for the style) and delete the `<!-- DRAFT ... -->` line.
+4. **Publish in the background:**
+   ```sh
+   npm run release -- X.Y.Z --background
+   ```
+   It returns once preflight passes (a few seconds). Then check progress every
+   minute or two with `npm run release:status`. A release normally finishes in
+   5–15 minutes. Status ends as `published` with the URL, or `failed` with a
+   message.
+5. **If it fails,** read the message and the log tail (`release:status`, or
+   `~/.mythra-release/out/X.Y.Z/{mac,windows,release}.log`). Fix the actual
+   cause (for a source error, a normal PR to `main`) and run step 4 again.
+   Finished platform builds are reused, and leftover processes from the
+   previous attempt are stopped automatically. If the same error repeats after
+   three honest fixes, stop and report it to Morgan with the error text.
+6. **Report** the release URL only after status says `published`.
 
-# 2. Edit the drafted notes into user-facing bullets.
-$EDITOR ~/.mythra-release/notes/1.26.0.md
+Do not:
 
-# 3. Build both platforms and publish.
-npm run release -- 1.26.0
-```
+- add tests, CI waits, QA, smoke tests, audits, reviewers or verification
+  stages, or "check" the published downloads;
+- build or sign Windows by hand, log into Windows to babysit the build, or
+  create scheduled tasks, services or diagnostic folders on either machine;
+- write wrapper scripts, supervisors, monitors, heartbeat automations, journals
+  or state files around the script, or start a second release run (the script
+  refuses one while a run is active);
+- change updater keys, edit `latest.json` by hand, publish one platform alone,
+  or replace binaries in a published release (ship a new version instead).
 
-Step 3 normally takes 10–20 minutes with warm caches (longer the first time on
-a machine). It prints a progress line for each platform every minute and ends
-with the release URL. Agents should run it as a background command and read
-the logs rather than wrapping it in extra supervision.
+To cancel a run: `npm run release:stop`. It stops the builds on both machines.
 
-A release request from Morgan authorizes merging its own version-bump PR with
-`--merge`; that PR changes only version numbers. Drop `--merge` to leave the PR
-open for review instead, and merge it before step 3.
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm run release:prepare -- X.Y.Z [--merge]` | Version-bump PR (reuses an open one), optional merge, notes draft |
+| `npm run release -- X.Y.Z [--background]` | Preflight, build both platforms, publish |
+| `npm run release:status [-- X.Y.Z]` | State of the current or named run, last log lines, GitHub state |
+| `npm run release:stop` | Cancel the running release on both machines |
+
+`release` options: `--no-publish` builds both platforms without touching
+GitHub; `--rebuild` ignores finished builds; `--commit <sha>` releases a commit
+other than `origin/main`; `--notes <file>` uses another notes file.
 
 ## What `release` does
 
-1. **Preflight (seconds).** Checks `gh` auth, resolves `origin/main` (or
-   `--commit <sha>`), confirms `package.json` and `tauri.conf.json` at that
-   commit are the requested version, that the version is newer than the
-   current published release and not already published, that the notes file
-   exists and mentions the version, and that the Windows PC answers over SSH.
-2. **Build both platforms in parallel.**
+1. **Preflight (seconds).** It checks:
+   - `gh` auth, and that `package.json` and `tauri.conf.json` at the commit are
+     the requested version;
+   - that the version is newer than the latest release and not already
+     published;
+   - that the notes exist, mention the version, and are no longer the draft;
+   - the Developer ID identity, updater password and notarization credentials
+     in the Mac Keychain;
+   - that the Windows PC answers over SSH and has its updater key.
+
+   It refuses to start while another run is active, and stops anything left
+   behind by an interrupted run.
+2. **Builds both platforms in parallel.**
    - macOS: a persistent worktree is checked out at the commit, then
      `npm ci` and `scripts/build-release.mjs` build, sign, notarize and staple
      the app and DMG and sign the updater archive.
    - Windows: `scripts/release-windows.ps1` is copied to the PC and run over
-     SSH. It checks out the commit in a persistent checkout and runs
-     `Windows/build.ps1`, which uses `src-tauri/tauri.windows.conf.json` and
-     the Windows updater key. The assets are copied back and their SHA-256 is
-     checked against the build record.
+     SSH. It stops leftover processes from earlier runs (Windows keeps them
+     alive after SSH disconnects), checks out the commit in a persistent
+     checkout and runs `Windows/build.ps1`, which uses
+     `src-tauri/tauri.windows.conf.json` and the Windows updater key. The
+     assets are copied back and their SHA-256 is checked against the build
+     record.
+
    If one platform fails, the other still finishes so its output can be reused.
-3. **Publish.** Writes one `latest.json` with `darwin-aarch64` and
-   `windows-x86_64`, creates a draft `vX.Y.Z` targeting the commit, uploads
-   all assets (retrying up to three times), confirms every asset arrived at full
-   size, then publishes the draft as the latest release.
+3. **Publishes.**
+   - Writes one `latest.json` with `darwin-aarch64` and `windows-x86_64`.
+   - Creates a draft `vX.Y.Z` targeting the commit, replacing an unpublished
+     draft left by an earlier attempt at another commit.
+   - Uploads all assets (retrying up to three times) and confirms each one
+     arrived at full size.
+   - Publishes the draft as the latest release.
 
-## When something fails
+## Troubleshooting
 
-Run the same command again. Each platform is skipped when its finished assets
-already match the version and commit, so a Windows-only failure rebuilds only
-Windows, and an upload failure rebuilds nothing. Use `--rebuild` to force fresh
-builds. `--no-publish` builds both platforms without touching GitHub.
-
-| Symptom | Likely cause |
+| Symptom | Cause and fix |
 | --- | --- |
-| `Cannot reach the Windows PC over SSH` | PC asleep, off the LAN, or its IP changed. See the private LAN access guide. |
-| `package.json ... is version X, not Y` | The version PR is not merged yet. |
-| Compile error in both logs | A real source error on `main`. Fix it in a normal PR. |
-| Notarization error | Check `xcrun notarytool history --keychain-profile <profile>` on the Mac. |
-| `A stale draft vX.Y.Z targets ...` | A draft from an older commit exists. Delete it with `gh release delete vX.Y.Z` (drafts are never public). |
-
-Pressing Ctrl-C stops both builds; closing the SSH session ends the Windows
-build. Nothing is published until every asset is uploaded.
+| `Cannot reach the Windows PC over SSH` | PC asleep, off the LAN, or its IP changed. Wake it or see the private LAN access guide. |
+| Keychain, signing identity or notarization error in preflight | Running inside an agent sandbox. Re-run with unrestricted permissions as Morgan's Mac user. |
+| `... is version X, not Y` | The version PR is not merged. Run `release:prepare -- Y --merge`. |
+| `still the drafted commit list` | Rewrite the notes and delete the DRAFT line. |
+| Compile error in both logs | A real source error on `main`. Fix it in a normal PR, then re-run. |
+| Notarization rejected | Read `xcrun notarytool log <id> --keychain-profile <profile>` for the submission ID in `mac.log`. |
+| `is already running` | Another run is active. Watch it with `release:status` or cancel with `release:stop`. |
 
 ## Machine setup (already done on Morgan's machines)
 
@@ -82,6 +125,9 @@ The script reads machine settings from the private
   "windows": { "sshHost": "ssh-alias", "buildDir": "C:/short/build/path", "runnerPath": "C:/path/release-windows.ps1" }
 }
 ```
+
+Run state is `~/.mythra-release/run.json`; logs and built assets are in
+`~/.mythra-release/out/<version>/`.
 
 - **Mac:** Developer ID Application identity in the keychain, a `notarytool`
   keychain profile, the updater key at `~/.tauri/openkiwi-updater.key` with its
@@ -96,11 +142,3 @@ macOS and Windows use different updater public keys (see `tauri.conf.json` and
 `tauri.windows.conf.json`). Never replace either key without a migration plan,
 or installed apps stop accepting updates. The Windows installer is updater-signed
 but not Authenticode-signed.
-
-## Rules that stay
-
-- Never publish a one-platform `latest.json` or replace binaries in a published
-  release; ship a new version instead.
-- Generated assets stay out of Git (`release-assets/`, `RELEASE ASSETS/`, and
-  `~/.mythra-release/out/<version>/`).
-- Report a release as done only after the script prints the published URL.

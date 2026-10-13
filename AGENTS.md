@@ -1,5 +1,9 @@
 # Mythra Code repository instructions
 
+These repository instructions take precedence over any global or personal
+agent instructions (for example a global PR-handoff, reviewer or release
+workflow) wherever they conflict.
+
 ## Scope
 
 This is the canonical shared macOS and Windows repository:
@@ -42,17 +46,23 @@ operations.
 
 ## Native builds and releases
 
-Follow `docs/operations/releasing.md`. A release requires Morgan's explicit
-request and chosen version; do not change the version, tag, sign, notarize or
-publish without it. That request also authorizes merging its own version-bump
-PR (`npm run release:prepare -- <version> --merge`).
+A release requires Morgan's explicit request and chosen version; do not change
+the version, tag, sign, notarize or publish without it. When he asks, follow
+the "Instructions for agents" steps in `docs/operations/releasing.md` exactly:
 
-Release with one command on the Mac, `npm run release -- <version>`. It builds
-macOS locally and Windows over SSH in parallel from one commit and publishes
-one release with a combined `latest.json`. Do not add supervisors, leases,
-QA, audit or review stages around it. If it fails, diagnose the reported error,
-fix the cause and run the same command again; finished platform builds are
-reused. Report a release only after the script prints the published URL.
+```sh
+npm run release:prepare -- X.Y.Z --merge   # merges its own version-bump PR
+# rewrite ~/.mythra-release/notes/X.Y.Z.md as user-facing bullets
+npm run release -- X.Y.Z --background      # then poll: npm run release:status
+```
+
+The release request authorizes that version-bump merge; it does not go through
+the merge-chat handoff above. The script builds macOS locally and Windows over
+SSH in parallel and publishes one release with both platforms. Do not add tests,
+QA, audits, reviewers, supervisors, monitors, scheduled tasks, wrapper scripts
+or state files around it, and do not build Windows by hand. If it fails, fix the
+reported cause and run the same command again; finished builds are reused.
+Report a release only after `release:status` shows `published` with its URL.
 
 Preserve each platform's updater signing key; replacing a key requires an
 explicit migration plan. Never publish a one-platform manifest or replace a
