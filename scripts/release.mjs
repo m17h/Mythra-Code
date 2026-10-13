@@ -55,8 +55,12 @@ function fail(message) {
   process.exit(1);
 }
 
+// Synchronous commands get a generous deadline so a hung network call fails
+// with a clear message instead of stalling the release.
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+  const timeout = options.timeout ?? 10 * 60_000;
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options, timeout });
+  if (result.error?.code === "ETIMEDOUT") throw new Error(`${command} ${args[0] || ""} did not finish within ${Math.round(timeout / 60_000)} minutes.`);
   if (result.error) throw new Error(`${command} could not start: ${result.error.message}`);
   return result;
 }
@@ -89,14 +93,80 @@ function processAlive(pid) {
   return ps.status === 0 && ps.stdout.includes("release.mjs");
 }
 
-function killGroups(groups) {
-  for (const pgid of groups || []) {
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// A group counts as running while any member is not a zombie: exited children
+// stay zombies until this process reaps them, which it cannot do mid-wait.
+function groupAlive(pgid) {
+  const ps = spawnSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8" });
+  return ps.stdout.split("\n").some((line) => {
+    const [group, stat] = line.trim().split(/\s+/);
+    return Number(group) === pgid && stat && !stat.startsWith("Z");
+  });
+}
+
+// A recorded process group belongs to a release only while one of its
+// processes is still release work; a recycled group id is left alone.
+function releaseGroup(pgid, config) {
+  const markers = ["build-release.mjs", "release-windows.ps1", "npm ci", config.mac.buildDir, config.windows.sshHost];
+  const ps = spawnSync("ps", ["-A", "-o", "pgid=,command="], { encoding: "utf8" });
+  return ps.stdout.split("\n").some((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.*)$/);
+    return match && Number(match[1]) === pgid && markers.some((marker) => match[2].includes(marker));
+  });
+}
+
+// Stops process groups and waits for them to exit. Returns the ones that are
+// still running so callers never report an unconfirmed stop as done.
+function stopGroups(groups) {
+  let remaining = [...new Set(groups)].filter((pgid) => pgid && groupAlive(pgid));
+  for (const signal of ["SIGTERM", "SIGKILL"]) {
+    for (const pgid of remaining) {
+      try {
+        process.kill(-pgid, signal);
+      } catch {
+        // Exited meanwhile.
+      }
+    }
+    const deadline = Date.now() + (signal === "SIGTERM" ? 15_000 : 5_000);
+    while (remaining.length && Date.now() < deadline) {
+      sleepSync(250);
+      remaining = remaining.filter(groupAlive);
+    }
+    if (!remaining.length) break;
+  }
+  return remaining;
+}
+
+// Exclusive claim on the build checkouts and run record: created atomically,
+// reclaimed only when its owner is no longer a running release.mjs process.
+const lockPath = resolve(privateRoot, "release.lock");
+function lockOwner() {
+  try {
+    return Number(readFileSync(lockPath, "utf8").trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+function acquireLock() {
+  mkdirSync(privateRoot, { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      process.kill(-pgid, "SIGTERM");
-    } catch {
-      // Already gone.
+      writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx" });
+      process.on("exit", () => {
+        if (lockOwner() === process.pid) rmSync(lockPath, { force: true });
+      });
+      return;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const owner = lockOwner();
+      if (processAlive(owner)) fail(`A release is already running (pid ${owner}). Check: node scripts/release.mjs status`);
+      rmSync(lockPath, { force: true });
     }
   }
+  fail("Another release run claimed the lock at the same moment. Check: node scripts/release.mjs status");
 }
 
 const stripAnsi = (text) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
@@ -154,10 +224,15 @@ function parseArguments(argv) {
 
 // Runs a command asynchronously in its own process group, appending all output
 // to a log file and keeping the most recent non-empty line for progress lines.
-function runLogged(task, command, args, options = {}) {
+function runLogged(task, command, args, { timeoutMinutes = 30, ...options } = {}) {
   return new Promise((resolvePromise) => {
     task.log.write(`\n$ ${command} ${args.join(" ")}\n`);
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], detached: true, ...options });
+    const deadline = setTimeout(() => {
+      task.timedOut = timeoutMinutes;
+      task.log.write(`\nNo result after ${timeoutMinutes} minutes; stopping this step.\n`);
+      stopGroups([child.pid]);
+    }, timeoutMinutes * 60_000);
     task.child = child;
     if (child.pid) updateRunState({ processGroups: { ...activeRun?.processGroups, [task.name]: child.pid } });
     const onData = (chunk) => {
@@ -168,10 +243,12 @@ function runLogged(task, command, args, options = {}) {
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
     child.on("error", (error) => {
+      clearTimeout(deadline);
       task.log.write(`\n${command} could not start: ${error.message}\n`);
       resolvePromise(1);
     });
     child.on("close", (code) => {
+      clearTimeout(deadline);
       task.child = null;
       resolvePromise(code ?? 1);
     });
@@ -180,7 +257,9 @@ function runLogged(task, command, args, options = {}) {
 
 async function step(task, label, command, args, options) {
   task.stage = label;
+  task.timedOut = 0;
   const code = await runLogged(task, command, args, options);
+  if (task.timedOut) throw new Error(`${label} did not finish within ${task.timedOut} minutes and was stopped. See ${task.logPath}`);
   if (code !== 0) throw new Error(`${label} failed (exit ${code}). See ${task.logPath}`);
 }
 
@@ -190,26 +269,51 @@ function windowsRunnerCommand(config, extra) {
     "-File", runnerPath.replaceAll("/", "\\"), "-BuildDir", buildDir.replaceAll("/", "\\"), ...extra].join(" ");
 }
 
+// Windows keeps processes alive after SSH disconnects; the runner's -StopOnly
+// mode stops anything still running from the build directory and exits
+// non-zero unless they are confirmed gone. Returns "" on success, else why not.
 function stopWindowsBuild(config) {
-  // Windows keeps processes alive after SSH disconnects; the runner's -StopOnly
-  // mode stops anything still running from the build directory.
-  return run("ssh", [...SSH_OPTIONS, config.windows.sshHost, windowsRunnerCommand(config, ["-StopOnly"])], { timeout: 60_000 });
+  try {
+    const result = run("ssh", [...SSH_OPTIONS, config.windows.sshHost, windowsRunnerCommand(config, ["-StopOnly"])], { timeout: 90_000 });
+    if (result.status === 0) return "";
+    return `${result.stdout}${result.stderr}`.trim().split(/\r?\n/).at(-1) || `exit ${result.status}`;
+  } catch (error) {
+    return error.message;
+  }
 }
 
+const nonEmpty = (path) => existsSync(path) && statSync(path).size > 0;
+const macArchive = (version) => `MythraCode_${version}_aarch64.app.tar.gz`;
+const windowsInstaller = (version) => `MythraCode_${version}_x64-setup.exe`;
+
+// A platform folder is reused only when every file it publishes is present
+// and its manifest points at its own signed package; anything partial or
+// unreadable is rebuilt instead of failing the same way on every retry.
 function macBuildMatches(dir, version, commit) {
-  const infoPath = resolve(dir, "build-info.txt");
-  const manifestPath = resolve(dir, "latest.json");
-  if (!existsSync(infoPath) || !existsSync(manifestPath)) return false;
-  const info = readFileSync(infoPath, "utf8");
-  return info.includes(`version: ${version}\n`) && info.includes(`commit: ${commit}\n`) && readJson(manifestPath).version === version;
+  try {
+    const files = ["build-info.txt", "latest.json", "release-notes.md", "MythraCode-icon.png", macArchive(version), `MythraCode_${version}_aarch64.dmg`];
+    if (!files.every((name) => nonEmpty(resolve(dir, name)))) return false;
+    const info = readFileSync(resolve(dir, "build-info.txt"), "utf8");
+    const entry = readJson(resolve(dir, "latest.json")).platforms?.[MAC_PLATFORM];
+    return info.includes(`version: ${version}\n`) && info.includes(`commit: ${commit}\n`) && Boolean(entry?.signature) && entry.url?.endsWith(`/v${version}/${macArchive(version)}`);
+  } catch {
+    return false;
+  }
 }
 
 function windowsBuildMatches(dir, version, commit) {
-  const infoPath = resolve(dir, "build-info.json");
-  if (!existsSync(infoPath)) return false;
-  const info = readJson(infoPath);
-  const installer = resolve(dir, `MythraCode_${version}_x64-setup.exe`);
-  return info.version === version && info.commit === commit && !info.dirty && existsSync(installer) && info.sha256 === sha256(installer);
+  try {
+    const installer = resolve(dir, windowsInstaller(version));
+    const files = ["build-info.json", "latest.json", windowsInstaller(version), `${windowsInstaller(version)}.sig`];
+    if (!files.every((name) => nonEmpty(resolve(dir, name)))) return false;
+    const info = readJson(resolve(dir, "build-info.json"));
+    const entry = readJson(resolve(dir, "latest.json")).platforms?.[WINDOWS_PLATFORM];
+    const signature = readFileSync(`${installer}.sig`, "utf8").trim();
+    return info.version === version && info.commit === commit && !info.dirty && info.sha256 === sha256(installer)
+      && entry?.signature === signature && entry.url?.endsWith(`/v${version}/${windowsInstaller(version)}`);
+  } catch {
+    return false;
+  }
 }
 
 async function buildMac(task, { config, version, commit, notesPath, outDir, rebuild }) {
@@ -236,8 +340,8 @@ async function buildMac(task, { config, version, commit, notesPath, outDir, rebu
     PATH: ["/opt/homebrew/bin", resolve(homedir(), ".cargo/bin"), process.env.PATH].join(":"),
     APPLE_NOTARY_KEYCHAIN_PROFILE: config.mac.notaryKeychainProfile,
   };
-  await step(task, "npm ci", "npm", ["ci", "--no-audit", "--no-fund"], { cwd: buildDir, env });
-  await step(task, "build, sign and notarize", process.execPath, ["scripts/build-release.mjs"], { cwd: buildDir, env });
+  await step(task, "npm ci", "npm", ["ci", "--no-audit", "--no-fund"], { cwd: buildDir, env, timeoutMinutes: 20 });
+  await step(task, "build, sign and notarize", process.execPath, ["scripts/build-release.mjs"], { cwd: buildDir, env, timeoutMinutes: 120 });
 
   task.stage = "collecting assets";
   rmSync(outDir, { recursive: true, force: true });
@@ -254,16 +358,23 @@ async function buildWindows(task, { config, version, commit, outDir, rebuild }) 
   }
   const { sshHost, buildDir, runnerPath } = config.windows;
   const remote = (path) => `${sshHost}:/${path.replaceAll("\\", "/")}`;
-  await step(task, "sending build runner", "scp", ["-q", ...SSH_OPTIONS, resolve(root, "scripts/release-windows.ps1"), remote(runnerPath)]);
-  await step(task, "build and sign on Windows", "ssh", [...SSH_OPTIONS, sshHost,
-    windowsRunnerCommand(config, ["-Commit", commit, "-Version", version, "-Repository", REPOSITORY_URL])]);
+  try {
+    await step(task, "sending build runner", "scp", ["-q", ...SSH_OPTIONS, resolve(root, "scripts/release-windows.ps1"), remote(runnerPath)], { timeoutMinutes: 3 });
+    await step(task, "build and sign on Windows", "ssh", [...SSH_OPTIONS, sshHost,
+      windowsRunnerCommand(config, ["-Commit", commit, "-Version", version, "-Repository", REPOSITORY_URL])], { timeoutMinutes: 120 });
+  } catch (error) {
+    // The Windows build outlives a dropped or timed-out SSH session; stop it now
+    // instead of leaving it to consume the PC until the next run.
+    const unconfirmed = stopWindowsBuild(config);
+    throw new Error(`${error.message}${unconfirmed ? `\nWindows build processes could not be confirmed stopped: ${unconfirmed}` : ""}`);
+  }
 
   task.stage = "downloading assets";
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const assetDir = `${buildDir.replaceAll("\\", "/")}/RELEASE ASSETS`;
-  for (const name of [`MythraCode_${version}_x64-setup.exe`, `MythraCode_${version}_x64-setup.exe.sig`, "build-info.json", "latest.json"]) {
-    await step(task, `downloading ${name}`, "scp", ["-q", ...SSH_OPTIONS, remote(`${assetDir}/${name}`), resolve(outDir, name)]);
+  for (const name of [windowsInstaller(version), `${windowsInstaller(version)}.sig`, "build-info.json", "latest.json"]) {
+    await step(task, `downloading ${name}`, "scp", ["-q", ...SSH_OPTIONS, remote(`${assetDir}/${name}`), resolve(outDir, name)], { timeoutMinutes: 15 });
   }
   if (!windowsBuildMatches(outDir, version, commit)) throw new Error(`Windows assets in ${outDir} do not match ${version} at ${commit} (or the installer hash changed in transfer).`);
 }
@@ -278,14 +389,31 @@ function combinedManifest({ version, notes, macDir, windowsDir }) {
   return { version, notes, pub_date: new Date().toISOString(), platforms };
 }
 
+// Returns null only when GitHub says the release does not exist; any other
+// lookup failure throws rather than being mistaken for "no release".
 function releaseState(tag) {
-  const view = run("gh", ["release", "view", tag, "--repo", REPOSITORY, "--json", "isDraft,targetCommitish,assets,url"]);
-  return view.status === 0 ? JSON.parse(view.stdout) : null;
+  const view = run("gh", ["release", "view", tag, "--repo", REPOSITORY, "--json", "isDraft,targetCommitish,assets,url"], { timeout: 2 * 60_000 });
+  if (view.status === 0) return JSON.parse(view.stdout);
+  if (/release not found/i.test(view.stderr)) return null;
+  throw new Error(`Looking up release ${tag} on GitHub failed:\n${view.stderr.trim()}`);
+}
+
+// The commit an existing remote tag points to, or "" when there is no tag.
+function remoteTagCommit(tag) {
+  const lines = checked("git", ["ls-remote", "--tags", "origin", `refs/tags/${tag}`, `refs/tags/${tag}^{}`], "Looking up the release tag", { timeout: 2 * 60_000 }).split("\n").filter(Boolean);
+  const peeled = lines.find((line) => line.endsWith("^{}")) || lines[0] || "";
+  return peeled.split(/\s+/)[0] || "";
 }
 
 function uploadWithRetry(tag, files) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const upload = run("gh", ["release", "upload", tag, ...files, "--clobber", "--repo", REPOSITORY], { stdio: "inherit" });
+    let upload;
+    try {
+      upload = run("gh", ["release", "upload", tag, ...files, "--clobber", "--repo", REPOSITORY], { stdio: "inherit", timeout: 30 * 60_000 });
+    } catch (error) {
+      upload = { status: 1 };
+      console.warn(error.message);
+    }
     if (upload.status === 0) return;
     console.warn(`Upload attempt ${attempt} failed${attempt < 3 ? "; retrying" : ""}.`);
   }
@@ -295,10 +423,12 @@ function uploadWithRetry(tag, files) {
 // Starts `publish` detached from this terminal so an agent's command timeout or
 // a closed shell cannot kill the release halfway. Waits only for preflight.
 async function publishInBackground(version) {
+  if (processAlive(lockOwner())) fail(`A release is already running (pid ${lockOwner()}). Check: node scripts/release.mjs status`);
   const outRoot = resolve(privateRoot, "out", version);
   mkdirSync(outRoot, { recursive: true });
   const logPath = resolve(outRoot, "release.log");
-  const log = openSync(logPath, "w");
+  const log = openSync(logPath, "a");
+  writeFileSync(log, `\n===== ${new Date().toISOString()} release ${version} =====\n`);
   const args = process.argv.slice(2).filter((arg) => arg !== "--background");
   const child = spawn(process.execPath, [resolve(import.meta.dirname, "release.mjs"), ...args], { cwd: root, detached: true, stdio: ["ignore", log, log] });
   closeSync(log);
@@ -308,7 +438,7 @@ async function publishInBackground(version) {
   while (Date.now() < deadline) {
     await new Promise((done) => setTimeout(done, 500));
     if (exitCode !== null) {
-      console.log(tailOf(logPath, 30));
+      console.log(tailOf(logPath, 30).split(/\n===== /).at(-1));
       process.exit(exitCode);
     }
     const state = readRunState();
@@ -333,19 +463,21 @@ async function publish({ version, flags }) {
   const startedAt = Date.now();
 
   // One release run at a time: two runs would share the build checkouts.
+  acquireLock();
   const previous = readRunState();
   if (previous && ["preflight", "building", "publishing"].includes(previous.state)) {
-    if (processAlive(previous.pid)) fail(`Release ${previous.version} is already running (pid ${previous.pid}). Check: node scripts/release.mjs status`);
-    console.log(`The previous ${previous.version} run was interrupted; stopping anything it left running.`);
-    killGroups(Object.values(previous.processGroups || {}));
+    console.log(`The previous ${previous.version} run was interrupted; stopping anything it left running on this Mac.`);
+    const leftovers = Object.values(previous.processGroups || {}).filter((pgid) => releaseGroup(pgid, config));
+    const stuck = stopGroups(leftovers);
+    if (stuck.length) fail(`Processes from the interrupted run are still running (process groups ${stuck.join(", ")}). Stop them, then re-run.`);
   }
-  mkdirSync(privateRoot, { recursive: true });
   activeRun = { version, pid: process.pid, state: "preflight", startedAt: new Date(startedAt).toISOString(), processGroups: {} };
   updateRunState({});
   const cancel = (signal) => {
-    for (const task of tasks) task.child && killGroups([task.child.pid]);
-    stopWindowsBuild(config);
-    fail(`Stopped by ${signal}. Re-run the same command to continue; finished builds are reused.`);
+    const stuck = stopGroups(tasks.map((task) => task.child?.pid).filter(Boolean));
+    const windows = stopWindowsBuild(config);
+    const unconfirmed = [stuck.length ? `Mac process groups ${stuck.join(", ")} still running` : "", windows ? `Windows cleanup unconfirmed: ${windows}` : ""].filter(Boolean);
+    fail(`Stopped by ${signal}.${unconfirmed.length ? ` ${unconfirmed.join("; ")}. Run node scripts/release.mjs stop again.` : " Builds on both machines are stopped."} Re-run the release to continue; finished builds are reused.`);
   };
   let tasks = [];
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => cancel(signal));
@@ -364,8 +496,16 @@ async function publish({ version, flags }) {
   if (existing && existing.targetCommitish !== commit) {
     // Drafts are never public; one left by an earlier attempt at another commit is replaced.
     console.log(`Replacing the unpublished ${tag} draft from an earlier attempt (${existing.targetCommitish.slice(0, 10)}).`);
+    // Drafts never create their tag (GitHub creates it on publish), so deleting
+    // the draft is enough.
     checked("gh", ["release", "delete", tag, "--repo", REPOSITORY, "--yes"], "Deleting the stale draft");
     existing = null;
+  }
+  // GitHub ignores --target when the tag already exists, so a tag pushed some
+  // other way at another commit would label these binaries with the wrong source.
+  const tagCommit = remoteTagCommit(tag);
+  if (tagCommit && tagCommit !== commit) {
+    fail(`Tag ${tag} already exists at ${tagCommit.slice(0, 10)}, not the release commit ${commit.slice(0, 10)}, and no published release uses it. If it is left over from an unpublished attempt, delete it (git push origin :refs/tags/${tag}) and re-run.`);
   }
   const latest = run("gh", ["api", `repos/${REPOSITORY}/releases/latest`, "--jq", ".tag_name"]);
   if (latest.status === 0 && latest.stdout.trim() && compareVersions(version, latest.stdout.trim()) <= 0) {
@@ -434,6 +574,8 @@ async function publish({ version, flags }) {
   });
   if (failures.length) fail(`The ${failures.join(" and ")} build failed; see the log lines above. Fix the cause and re-run the same command. Completed platform builds are reused.`);
 
+  // Notes may have been edited since a reused Mac build; publish the current text.
+  writeFileSync(resolve(macDir, "release-notes.md"), `${notes}\n`);
   const manifest = combinedManifest({ version, notes, macDir, windowsDir });
   const manifestPath = resolve(outRoot, "latest.json");
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -456,10 +598,14 @@ async function publish({ version, flags }) {
   uploadWithRetry(tag, assets);
   const draft = releaseState(tag);
   const uploaded = new Map((draft?.assets || []).map((asset) => [asset.name, asset]));
-  const missing = assets.filter((path) => uploaded.get(path.split("/").at(-1))?.size !== statSync(path).size);
-  if (missing.length) fail(`Draft ${tag} is missing or has incomplete assets: ${missing.map((path) => path.split("/").at(-1)).join(", ")}. Re-run to retry the upload.`);
+  const missing = assets.filter((path) => uploaded.get(path.split("/").at(-1))?.size !== statSync(path).size).map((path) => path.split("/").at(-1));
+  for (const entry of Object.values(manifest.platforms)) {
+    const name = decodeURIComponent(entry.url.split("/").at(-1));
+    if (!uploaded.has(name) && !missing.includes(name)) missing.push(name);
+  }
+  if (missing.length) fail(`Draft ${tag} is missing or has incomplete assets: ${missing.join(", ")}. Re-run to retry the upload.`);
 
-  checked("gh", ["release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest"], "Publishing the release");
+  checked("gh", ["release", "edit", tag, "--repo", REPOSITORY, "--notes-file", notesPath, "--draft=false", "--latest"], "Publishing the release");
   const published = releaseState(tag);
   if (!published || published.isDraft) fail(`GitHub still reports ${tag} as a draft.`);
   updateRunState({ state: "published", url: published.url, message: `Published in ${elapsed(startedAt)}.` });
@@ -492,20 +638,38 @@ function status({ version }) {
   console.log(`  github   ${github ? (github.isDraft ? "draft (not public)" : `published ${github.url}`) : "no release yet"}`);
 }
 
+// Cancels the current run and confirms its processes are gone on both machines.
+// Safe to repeat: it always re-checks both machines, so an unconfirmed stop can
+// simply be run again.
 function stop() {
+  const config = loadConfig();
   const state = readRunState();
-  if (!state || !["preflight", "building", "publishing"].includes(state.state)) return console.log("No release is running.");
-  if (processAlive(state.pid)) {
-    process.kill(state.pid, "SIGTERM");
-    console.log(`Stopping release ${state.version} (pid ${state.pid}); it stops its builds on both machines.`);
-    return;
+  const owner = [lockOwner(), state?.pid].find((pid) => processAlive(pid));
+  if (owner) {
+    console.log(`Stopping release ${state?.version || ""} (pid ${owner})…`);
+    process.kill(owner, "SIGTERM");
+    const deadline = Date.now() + 150_000;
+    while (processAlive(owner) && Date.now() < deadline) sleepSync(500);
+    if (processAlive(owner)) {
+      console.log(`pid ${owner} did not exit; stopping it and its builds directly.`);
+      process.kill(owner, "SIGKILL");
+    }
   }
-  // The owning process is already gone: clean up after it directly.
-  killGroups(Object.values(state.processGroups || {}));
-  const result = stopWindowsBuild(loadConfig());
-  activeRun = state;
-  updateRunState({ state: "failed", message: "Stopped by node scripts/release.mjs stop." });
-  console.log(`Stopped leftovers of release ${state.version}${result.status === 0 ? " on both machines" : "; could not reach Windows to stop its build"}.`);
+  const latest = readRunState() || state;
+  const stuck = stopGroups(Object.values(latest?.processGroups || {}).filter((pgid) => releaseGroup(pgid, config)));
+  const windows = stopWindowsBuild(config);
+  const problems = [stuck.length ? `Mac process groups ${stuck.join(", ")} are still running` : "", windows ? `Windows cleanup is unconfirmed: ${windows}` : ""].filter(Boolean);
+  if (latest && (owner || ["preflight", "building", "publishing"].includes(latest.state))) {
+    activeRun = latest;
+    updateRunState({ state: "failed", message: problems.length
+      ? `Stopped by release:stop, but ${problems.join("; ")}. Run node scripts/release.mjs stop again.`
+      : "Stopped by release:stop; confirmed nothing is running on the Mac or Windows. Re-run the release to continue." });
+  }
+  if (problems.length) {
+    console.error(`✖ ${problems.join("; ")}. Run node scripts/release.mjs stop again.`);
+    process.exit(1);
+  }
+  console.log(owner ? "Stopped. No release processes are running on the Mac or Windows." : "No release was running; confirmed nothing is left on the Mac or Windows.");
 }
 
 function prepare({ version, flags }) {

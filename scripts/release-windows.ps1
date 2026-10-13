@@ -27,31 +27,48 @@ if (-not $StopOnly -and (-not $Commit -or -not $Version -or -not $Repository)) {
 }
 
 # Windows keeps processes running after an SSH session drops, so an interrupted
-# earlier run can still be building here. Stop every process tree that runs
-# from, or names, this dedicated build directory, except this runner and the
-# SSH shell that launched it.
+# earlier run can still be building here. Stop those process trees and confirm
+# they exited before touching the checkout.
 $buildPrefix = [IO.Path]::GetFullPath($BuildDir).TrimEnd('\')
-$processes = @(Get-CimInstance Win32_Process)
-$parents = @{}
-foreach ($process in $processes) { $parents[[int]$process.ProcessId] = [int]$process.ParentProcessId }
-$ancestors = @{}
-$cursor = $PID
-while ($cursor -and -not $ancestors.ContainsKey($cursor)) {
-  $ancestors[$cursor] = $true
-  $cursor = $parents[$cursor]
+function Get-Leftovers {
+  # Fresh snapshot each time: processes running from, or naming, the dedicated
+  # build directory, excluding this runner and the SSH shell that started it.
+  $processes = @(Get-CimInstance Win32_Process)
+  $parents = @{}
+  foreach ($process in $processes) { $parents[[int]$process.ProcessId] = [int]$process.ParentProcessId }
+  $ancestors = @{}
+  $cursor = $PID
+  while ($cursor -and -not $ancestors.ContainsKey($cursor)) {
+    $ancestors[$cursor] = $true
+    $cursor = $parents[$cursor]
+  }
+  @($processes | Where-Object {
+    -not $ancestors.ContainsKey([int]$_.ProcessId) -and (
+      ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($buildPrefix + '\', [StringComparison]::OrdinalIgnoreCase)) -or
+      ($_.CommandLine -and $_.CommandLine.IndexOf($buildPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0))
+  })
 }
-$leftovers = @($processes | Where-Object {
-  -not $ancestors.ContainsKey([int]$_.ProcessId) -and (
-    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($buildPrefix + '\', [StringComparison]::OrdinalIgnoreCase)) -or
-    ($_.CommandLine -and $_.CommandLine.IndexOf($buildPrefix, [StringComparison]::OrdinalIgnoreCase) -ge 0))
-})
-foreach ($process in $leftovers) {
-  Write-Output "Stopping leftover process $($process.ProcessId) ($($process.Name)) from an interrupted run"
-  & cmd.exe /d /c "taskkill /PID $($process.ProcessId) /T /F >nul 2>&1"
+
+$leftovers = @(Get-Leftovers)
+$stoppedCount = $leftovers.Count
+for ($attempt = 1; $leftovers.Count -and $attempt -le 3; $attempt++) {
+  foreach ($process in $leftovers) {
+    Write-Output "Stopping leftover process $($process.ProcessId) ($($process.Name)) from an interrupted run"
+    & cmd.exe /d /c "taskkill /PID $($process.ProcessId) /T /F >nul 2>&1"
+  }
+  $deadline = (Get-Date).AddSeconds(15)
+  do {
+    Start-Sleep -Milliseconds 500
+    $leftovers = @(Get-Leftovers)
+  } while ($leftovers.Count -and (Get-Date) -lt $deadline)
 }
-if ($leftovers.Count) { Start-Sleep -Seconds 2 }
+if ($leftovers.Count) {
+  $names = ($leftovers | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ", "
+  Write-Output "Could not stop $($leftovers.Count) process(es) on ${env:COMPUTERNAME}: $names"
+  exit 3
+}
 if ($StopOnly) {
-  Write-Output "Stopped $($leftovers.Count) leftover process(es) on $env:COMPUTERNAME."
+  Write-Output "Stopped $stoppedCount leftover process(es) on $env:COMPUTERNAME; none remain."
   exit 0
 }
 
