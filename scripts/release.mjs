@@ -1,17 +1,20 @@
 // One-command Mythra Code release, run on the Mac.
 //
 //   node scripts/release.mjs prepare <version> [--merge]
-//   node scripts/release.mjs publish <version> [--commit <sha>] [--notes <file>] [--no-publish] [--rebuild]
+//   node scripts/release.mjs publish <version> [--background] [--commit <sha>] [--notes <file>] [--no-publish] [--rebuild]
+//   node scripts/release.mjs status [<version>]
+//   node scripts/release.mjs stop
 //
-// `prepare` opens (and optionally merges) the version-bump PR. `publish` builds
-// macOS locally and Windows over SSH in parallel from the same commit, then
-// uploads both platforms to one draft with a combined latest.json and publishes
-// it. Re-running `publish` reuses any platform already built for that commit,
-// so a failure costs only the failed step. Machine-specific settings live in
-// the private ~/.mythra-release/release.config.json, never in this repository.
+// `prepare` opens (and optionally merges) the version-bump PR and drafts notes.
+// `publish` builds macOS locally and Windows over SSH in parallel from the same
+// commit, then uploads both platforms to one draft with a combined latest.json
+// and publishes it. Re-running `publish` reuses any platform already built for
+// that commit, so a failure costs only the failed step. `status` and `stop`
+// report on or cancel the current run. Machine-specific settings live in the
+// private ~/.mythra-release/release.config.json, never in this repository.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -20,10 +23,34 @@ const REPOSITORY_URL = `https://github.com/${REPOSITORY}.git`;
 const MAC_PLATFORM = "darwin-aarch64";
 const WINDOWS_PLATFORM = "windows-x86_64";
 const SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=8"];
+const NOTES_DRAFT_MARKER = "<!-- DRAFT: rewrite these commit subjects as user-facing bullets, then delete this line. -->";
 const root = resolve(import.meta.dirname, "..");
 const privateRoot = process.env.MYTHRA_RELEASE_HOME || resolve(homedir(), ".mythra-release");
+const runStatePath = resolve(privateRoot, "run.json");
+
+// The run in progress, if this process owns one; failures are recorded on it.
+let activeRun = null;
+
+function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8").replace(/^﻿/, ""));
+}
+
+function readRunState() {
+  try {
+    return readJson(runStatePath);
+  } catch {
+    return null;
+  }
+}
+
+function updateRunState(patch) {
+  if (!activeRun) return;
+  Object.assign(activeRun, patch, { updatedAt: new Date().toISOString() });
+  writeFileSync(runStatePath, `${JSON.stringify(activeRun, null, 2)}\n`);
+}
 
 function fail(message) {
+  updateRunState({ state: "failed", message });
   console.error(`\n✖ ${message}`);
   process.exit(1);
 }
@@ -43,10 +70,6 @@ function checked(command, args, label, options = {}) {
   return (result.stdout || "").trim();
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(path, "utf8").replace(/^﻿/, ""));
-}
-
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -58,11 +81,37 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// True only while that PID is still a release.mjs process, so a recycled PID
+// is never mistaken for (or stopped as) a release run.
+function processAlive(pid) {
+  if (!pid) return false;
+  const ps = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  return ps.status === 0 && ps.stdout.includes("release.mjs");
+}
+
+function killGroups(groups) {
+  for (const pgid of groups || []) {
+    try {
+      process.kill(-pgid, "SIGTERM");
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 const stripAnsi = (text) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
 
 function elapsed(since, until = Date.now()) {
   const seconds = Math.round((until - since) / 1000);
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+function tailOf(path, lines = 40) {
+  try {
+    return stripAnsi(readFileSync(path, "utf8")).split(/\r?\n/).slice(-lines).join("\n");
+  } catch {
+    return "";
+  }
 }
 
 function loadConfig() {
@@ -76,9 +125,16 @@ function loadConfig() {
   return config;
 }
 
+const USAGE = `Usage:
+  node scripts/release.mjs prepare <x.y.z> [--merge]
+  node scripts/release.mjs publish <x.y.z> [--background] [--commit <sha>] [--notes <file>] [--no-publish] [--rebuild]
+  node scripts/release.mjs status [<x.y.z>]
+  node scripts/release.mjs stop`;
+
 function parseArguments(argv) {
-  const [command, version, ...rest] = argv;
-  const flags = { commit: "", notes: "", publish: true, rebuild: false, merge: false };
+  const [command, ...rest] = argv;
+  const version = rest[0] && !rest[0].startsWith("--") ? rest.shift() : "";
+  const flags = { commit: "", notes: "", publish: true, rebuild: false, merge: false, background: false };
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
     if (flag === "--commit") flags.commit = rest[++i] || "";
@@ -86,21 +142,24 @@ function parseArguments(argv) {
     else if (flag === "--no-publish") flags.publish = false;
     else if (flag === "--rebuild") flags.rebuild = true;
     else if (flag === "--merge") flags.merge = true;
-    else fail(`Unknown option ${flag}`);
+    else if (flag === "--background") flags.background = true;
+    else fail(`Unknown option ${flag}\n${USAGE}`);
   }
-  if (!["prepare", "publish"].includes(command) || !/^\d+\.\d+\.\d+$/.test(version || "")) {
-    fail("Usage:\n  node scripts/release.mjs prepare <x.y.z> [--merge]\n  node scripts/release.mjs publish <x.y.z> [--commit <sha>] [--notes <file>] [--no-publish] [--rebuild]");
+  const needsVersion = command === "prepare" || command === "publish";
+  if (!["prepare", "publish", "status", "stop"].includes(command) || (needsVersion && !version) || (version && !/^\d+\.\d+\.\d+$/.test(version))) {
+    fail(USAGE);
   }
   return { command, version, flags };
 }
 
-// Runs a command asynchronously, appending all output to a log file and keeping
-// the most recent non-empty line for progress messages.
+// Runs a command asynchronously in its own process group, appending all output
+// to a log file and keeping the most recent non-empty line for progress lines.
 function runLogged(task, command, args, options = {}) {
   return new Promise((resolvePromise) => {
     task.log.write(`\n$ ${command} ${args.join(" ")}\n`);
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], detached: true, ...options });
     task.child = child;
+    if (child.pid) updateRunState({ processGroups: { ...activeRun?.processGroups, [task.name]: child.pid } });
     const onData = (chunk) => {
       task.log.write(chunk);
       const lines = stripAnsi(chunk.toString()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -125,12 +184,16 @@ async function step(task, label, command, args, options) {
   if (code !== 0) throw new Error(`${label} failed (exit ${code}). See ${task.logPath}`);
 }
 
-function tailOf(path, lines = 40) {
-  try {
-    return stripAnsi(readFileSync(path, "utf8")).split(/\r?\n/).slice(-lines).join("\n");
-  } catch {
-    return "";
-  }
+function windowsRunnerCommand(config, extra) {
+  const { runnerPath, buildDir } = config.windows;
+  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", runnerPath.replaceAll("/", "\\"), "-BuildDir", buildDir.replaceAll("/", "\\"), ...extra].join(" ");
+}
+
+function stopWindowsBuild(config) {
+  // Windows keeps processes alive after SSH disconnects; the runner's -StopOnly
+  // mode stops anything still running from the build directory.
+  return run("ssh", [...SSH_OPTIONS, config.windows.sshHost, windowsRunnerCommand(config, ["-StopOnly"])], { timeout: 60_000 });
 }
 
 function macBuildMatches(dir, version, commit) {
@@ -158,6 +221,7 @@ async function buildMac(task, { config, version, commit, notesPath, outDir, rebu
   task.stage = "preparing checkout";
   if (!existsSync(resolve(buildDir, ".git"))) {
     mkdirSync(resolve(buildDir, ".."), { recursive: true });
+    checked("git", ["worktree", "prune"], "Pruning stale worktrees");
     checked("git", ["worktree", "add", "--detach", buildDir, commit], "Creating the Mac release worktree");
   } else {
     checked("git", ["-C", buildDir, "checkout", "--quiet", "--force", "--detach", commit], "Checking out the release commit");
@@ -191,15 +255,8 @@ async function buildWindows(task, { config, version, commit, outDir, rebuild }) 
   const { sshHost, buildDir, runnerPath } = config.windows;
   const remote = (path) => `${sshHost}:/${path.replaceAll("\\", "/")}`;
   await step(task, "sending build runner", "scp", ["-q", ...SSH_OPTIONS, resolve(root, "scripts/release-windows.ps1"), remote(runnerPath)]);
-  const runnerArguments = [
-    "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-    "-File", runnerPath.replaceAll("/", "\\"),
-    "-BuildDir", buildDir.replaceAll("/", "\\"),
-    "-Commit", commit,
-    "-Version", version,
-    "-Repository", REPOSITORY_URL,
-  ];
-  await step(task, "build and sign on Windows", "ssh", [...SSH_OPTIONS, sshHost, runnerArguments.join(" ")]);
+  await step(task, "build and sign on Windows", "ssh", [...SSH_OPTIONS, sshHost,
+    windowsRunnerCommand(config, ["-Commit", commit, "-Version", version, "-Repository", REPOSITORY_URL])]);
 
   task.stage = "downloading assets";
   rmSync(outDir, { recursive: true, force: true });
@@ -235,14 +292,66 @@ function uploadWithRetry(tag, files) {
   throw new Error(`Uploading assets to draft ${tag} failed three times. Re-run the same command to retry; built assets are reused.`);
 }
 
+// Starts `publish` detached from this terminal so an agent's command timeout or
+// a closed shell cannot kill the release halfway. Waits only for preflight.
+async function publishInBackground(version) {
+  const outRoot = resolve(privateRoot, "out", version);
+  mkdirSync(outRoot, { recursive: true });
+  const logPath = resolve(outRoot, "release.log");
+  const log = openSync(logPath, "w");
+  const args = process.argv.slice(2).filter((arg) => arg !== "--background");
+  const child = spawn(process.execPath, [resolve(import.meta.dirname, "release.mjs"), ...args], { cwd: root, detached: true, stdio: ["ignore", log, log] });
+  closeSync(log);
+  let exitCode = null;
+  child.on("exit", (code) => { exitCode = code ?? 1; });
+  const deadline = Date.now() + 5 * 60_000;
+  while (Date.now() < deadline) {
+    await new Promise((done) => setTimeout(done, 500));
+    if (exitCode !== null) {
+      console.log(tailOf(logPath, 30));
+      process.exit(exitCode);
+    }
+    const state = readRunState();
+    if (state?.pid === child.pid && state.state === "building") {
+      child.unref();
+      console.log(`Preflight passed. Release ${version} is building in the background (pid ${child.pid}).
+  Progress:  node scripts/release.mjs status
+  Full log:  ${logPath}
+  Cancel:    node scripts/release.mjs stop`);
+      process.exit(0);
+    }
+  }
+  child.unref();
+  console.log(`Release ${version} started in the background (pid ${child.pid}) but preflight is still running. Check: node scripts/release.mjs status`);
+}
+
 async function publish({ version, flags }) {
   if (process.platform !== "darwin") fail("Run releases from the Mac; it builds Windows over SSH.");
+  if (flags.background) return publishInBackground(version);
   const config = loadConfig();
   const tag = `v${version}`;
   const startedAt = Date.now();
 
-  // Preflight: seconds, not minutes. Everything here is a precondition for a
-  // correct release, not a test suite.
+  // One release run at a time: two runs would share the build checkouts.
+  const previous = readRunState();
+  if (previous && ["preflight", "building", "publishing"].includes(previous.state)) {
+    if (processAlive(previous.pid)) fail(`Release ${previous.version} is already running (pid ${previous.pid}). Check: node scripts/release.mjs status`);
+    console.log(`The previous ${previous.version} run was interrupted; stopping anything it left running.`);
+    killGroups(Object.values(previous.processGroups || {}));
+  }
+  mkdirSync(privateRoot, { recursive: true });
+  activeRun = { version, pid: process.pid, state: "preflight", startedAt: new Date(startedAt).toISOString(), processGroups: {} };
+  updateRunState({});
+  const cancel = (signal) => {
+    for (const task of tasks) task.child && killGroups([task.child.pid]);
+    stopWindowsBuild(config);
+    fail(`Stopped by ${signal}. Re-run the same command to continue; finished builds are reused.`);
+  };
+  let tasks = [];
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => cancel(signal));
+
+  // Preflight: seconds, not minutes. Each check is a prerequisite that would
+  // otherwise fail the build or publish later; none of them is a test.
   checked("gh", ["auth", "status"], "GitHub CLI authentication");
   checked("git", ["fetch", "--quiet", "origin"], "Fetching origin");
   const commit = checked("git", ["rev-parse", "--verify", `${flags.commit || "origin/main"}^{commit}`], "Resolving the release commit");
@@ -250,25 +359,43 @@ async function publish({ version, flags }) {
     const found = JSON.parse(checked("git", ["show", `${commit}:${file}`], `Reading ${file}`)).version;
     if (found !== version) fail(`${file} at ${commit.slice(0, 10)} is version ${found}, not ${version}. Merge the version PR first:\n  node scripts/release.mjs prepare ${version} --merge`);
   }
-  const existing = releaseState(tag);
+  let existing = releaseState(tag);
   if (existing && !existing.isDraft) fail(`${tag} is already published: ${existing.url}`);
-  if (existing && existing.targetCommitish !== commit) fail(`A stale draft ${tag} targets ${existing.targetCommitish}. Delete it first: gh release delete ${tag} --repo ${REPOSITORY}`);
+  if (existing && existing.targetCommitish !== commit) {
+    // Drafts are never public; one left by an earlier attempt at another commit is replaced.
+    console.log(`Replacing the unpublished ${tag} draft from an earlier attempt (${existing.targetCommitish.slice(0, 10)}).`);
+    checked("gh", ["release", "delete", tag, "--repo", REPOSITORY, "--yes"], "Deleting the stale draft");
+    existing = null;
+  }
   const latest = run("gh", ["api", `repos/${REPOSITORY}/releases/latest`, "--jq", ".tag_name"]);
   if (latest.status === 0 && latest.stdout.trim() && compareVersions(version, latest.stdout.trim()) <= 0) {
     fail(`${version} is not newer than the published ${latest.stdout.trim()}.`);
   }
   const notesPath = resolve(flags.notes || resolve(privateRoot, "notes", `${version}.md`));
-  if (!existsSync(notesPath)) fail(`Release notes not found at ${notesPath}. Write them (prepare creates a draft) or pass --notes <file>.`);
+  if (!existsSync(notesPath)) fail(`Release notes not found at ${notesPath}. Run prepare to draft them, or pass --notes <file>.`);
   const notes = readFileSync(notesPath, "utf8").trim();
+  if (notes.includes(NOTES_DRAFT_MARKER)) fail(`${notesPath} is still the drafted commit list. Rewrite it as user-facing bullets and delete the DRAFT line.`);
   if (!notes.includes(version)) fail(`${notesPath} never mentions ${version}; it looks like stale notes.`);
-  const hostname = run("ssh", [...SSH_OPTIONS, config.windows.sshHost, "hostname"]);
-  if (hostname.status !== 0) fail(`Cannot reach the Windows PC over SSH (${config.windows.sshHost}). Is it awake and on the LAN?\n${hostname.stderr.trim()}`);
+  if (!/Developer ID Application/.test(run("security", ["find-identity", "-v", "-p", "codesigning"]).stdout)) {
+    fail("No Developer ID Application signing identity is visible. Run the release outside any agent sandbox, as Morgan's logged-in Mac user.");
+  }
+  if (run("security", ["find-generic-password", "-a", process.env.USER || "", "-s", "com.openkiwi.updater-signing"]).status !== 0) {
+    fail("The macOS updater signing password (Keychain item com.openkiwi.updater-signing) is not readable. Run outside any agent sandbox.");
+  }
+  const notary = run("xcrun", ["notarytool", "history", "--keychain-profile", config.mac.notaryKeychainProfile], { timeout: 60_000 });
+  if (notary.status !== 0) fail(`Apple notarization credentials (${config.mac.notaryKeychainProfile}) are not usable:\n${`${notary.stdout}${notary.stderr}`.trim().slice(0, 500)}`);
+  const windowsCheck = run("ssh", [...SSH_OPTIONS, config.windows.sshHost,
+    "'' + $env:COMPUTERNAME + '|' + (Test-Path \"$env:USERPROFILE\\.tauri\\openkiwi-windows-updater.key\") + '|' + (Test-Path \"$env:USERPROFILE\\.tauri\\openkiwi-windows-updater-password.xml\")"], { timeout: 60_000 });
+  if (windowsCheck.status !== 0) fail(`Cannot reach the Windows PC over SSH (${config.windows.sshHost}). Is it awake and on the LAN?\n${(windowsCheck.stderr || "").trim()}`);
+  const [windowsHost, windowsKey, windowsPassword] = windowsCheck.stdout.trim().split("|");
+  if (windowsKey !== "True" || windowsPassword !== "True") fail(`The Windows updater signing key or its password file is missing on ${windowsHost}.`);
 
   const outRoot = resolve(privateRoot, "out", version);
   mkdirSync(outRoot, { recursive: true });
   const macDir = resolve(outRoot, "mac");
   const windowsDir = resolve(outRoot, "windows");
-  console.log(`Mythra Code ${version}\n  commit   ${commit}\n  notes    ${notesPath}\n  windows  ${hostname.stdout.trim()} via ${config.windows.sshHost}\n  output   ${outRoot}\n`);
+  updateRunState({ state: "building", commit });
+  console.log(`Mythra Code ${version}\n  commit   ${commit}\n  notes    ${notesPath}\n  windows  ${windowsHost} via ${config.windows.sshHost}\n  output   ${outRoot}\n`);
 
   // Both native builds run at once. A failure on one side does not stop the
   // other, so its finished assets are reused on the next run.
@@ -276,14 +403,7 @@ async function publish({ version, flags }) {
     const logPath = resolve(outRoot, `${name}.log`);
     return { name, logPath, log: createWriteStream(logPath, { flags: "a" }), stage: "starting", lastLine: "", child: null, reused: false, startedAt: Date.now() };
   };
-  const tasks = [makeTask("mac"), makeTask("windows")];
-  const stopChildren = () => {
-    for (const task of tasks) task.child?.kill("SIGTERM");
-  };
-  process.once("SIGINT", () => {
-    stopChildren();
-    fail("Interrupted. Closing the SSH session stops the Windows build; re-run the same command to continue.");
-  });
+  tasks = [makeTask("mac"), makeTask("windows")];
   const heartbeat = setInterval(() => {
     for (const task of tasks) {
       if (task.done) continue;
@@ -302,17 +422,17 @@ async function publish({ version, flags }) {
   }));
   clearInterval(heartbeat);
 
-  let failed = false;
+  const failures = [];
   results.forEach((result, index) => {
     const task = tasks[index];
     if (result.status === "fulfilled") {
       console.log(`✔ ${task.name}: ${task.reused ? "reused existing build for this commit" : `built in ${elapsed(task.startedAt, task.finishedAt)}`}`);
     } else {
-      failed = true;
+      failures.push(task.name);
       console.error(`✖ ${task.name}: ${result.reason?.message || result.reason}\n--- last lines of ${task.logPath} ---\n${tailOf(task.logPath)}\n---`);
     }
   });
-  if (failed) fail("Fix the failure above and re-run the same command. Completed platform builds are reused.");
+  if (failures.length) fail(`The ${failures.join(" and ")} build failed; see the log lines above. Fix the cause and re-run the same command. Completed platform builds are reused.`);
 
   const manifest = combinedManifest({ version, notes, macDir, windowsDir });
   const manifestPath = resolve(outRoot, "latest.json");
@@ -323,10 +443,12 @@ async function publish({ version, flags }) {
     manifestPath,
   ];
   if (!flags.publish) {
+    updateRunState({ state: "built", message: "Built both platforms; not published (--no-publish)." });
     console.log(`\nBuilt both platforms; not publishing (--no-publish). Assets:\n${assets.map((path) => `  ${path}`).join("\n")}`);
     return;
   }
 
+  updateRunState({ state: "publishing" });
   console.log(`\nUploading ${assets.length} assets to draft ${tag}…`);
   if (!existing) {
     checked("gh", ["release", "create", tag, "--repo", REPOSITORY, "--draft", "--target", commit, "--title", `Mythra Code ${version}`, "--notes-file", notesPath], "Creating the draft release");
@@ -334,36 +456,82 @@ async function publish({ version, flags }) {
   uploadWithRetry(tag, assets);
   const draft = releaseState(tag);
   const uploaded = new Map((draft?.assets || []).map((asset) => [asset.name, asset]));
-  const missing = assets.filter((path) => {
-    const name = path.split("/").at(-1);
-    return uploaded.get(name)?.size !== statSync(path).size;
-  });
+  const missing = assets.filter((path) => uploaded.get(path.split("/").at(-1))?.size !== statSync(path).size);
   if (missing.length) fail(`Draft ${tag} is missing or has incomplete assets: ${missing.map((path) => path.split("/").at(-1)).join(", ")}. Re-run to retry the upload.`);
 
   checked("gh", ["release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest"], "Publishing the release");
   const published = releaseState(tag);
   if (!published || published.isDraft) fail(`GitHub still reports ${tag} as a draft.`);
+  updateRunState({ state: "published", url: published.url, message: `Published in ${elapsed(startedAt)}.` });
   console.log(`\n✔ Published Mythra Code ${version} for macOS and Windows in ${elapsed(startedAt)}\n  ${published.url}`);
+}
+
+function status({ version }) {
+  const state = readRunState();
+  const shown = version || state?.version;
+  if (!shown) return console.log("No release has been run on this Mac yet.");
+  if (state && state.version === shown) {
+    const live = processAlive(state.pid);
+    const active = ["preflight", "building", "publishing"].includes(state.state);
+    const label = active && !live ? "interrupted (re-run publish to continue)" : state.state;
+    console.log(`Release ${shown}: ${label}${active && live ? ` (pid ${state.pid}, started ${state.startedAt})` : ""}`);
+    if (state.commit) console.log(`  commit   ${state.commit}`);
+    if (state.url) console.log(`  url      ${state.url}`);
+    if (state.message) console.log(`  message  ${state.message}`);
+  } else {
+    console.log(`Release ${shown}: no run recorded on this Mac.`);
+  }
+  const outRoot = resolve(privateRoot, "out", shown);
+  for (const name of ["mac", "windows"]) {
+    const last = tailOf(resolve(outRoot, `${name}.log`), 200).split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+    if (last) console.log(`  ${name.padEnd(8)} ${last.slice(0, 140)}`);
+  }
+  const background = tailOf(resolve(outRoot, "release.log"), 6).trim();
+  if (background) console.log(`  --- release.log ---\n${background.replace(/^/gm, "  ")}`);
+  const github = releaseState(`v${shown}`);
+  console.log(`  github   ${github ? (github.isDraft ? "draft (not public)" : `published ${github.url}`) : "no release yet"}`);
+}
+
+function stop() {
+  const state = readRunState();
+  if (!state || !["preflight", "building", "publishing"].includes(state.state)) return console.log("No release is running.");
+  if (processAlive(state.pid)) {
+    process.kill(state.pid, "SIGTERM");
+    console.log(`Stopping release ${state.version} (pid ${state.pid}); it stops its builds on both machines.`);
+    return;
+  }
+  // The owning process is already gone: clean up after it directly.
+  killGroups(Object.values(state.processGroups || {}));
+  const result = stopWindowsBuild(loadConfig());
+  activeRun = state;
+  updateRunState({ state: "failed", message: "Stopped by node scripts/release.mjs stop." });
+  console.log(`Stopped leftovers of release ${state.version}${result.status === 0 ? " on both machines" : "; could not reach Windows to stop its build"}.`);
 }
 
 function prepare({ version, flags }) {
   checked("gh", ["auth", "status"], "GitHub CLI authentication");
-  checked("git", ["fetch", "--quiet", "origin", "--tags"], "Fetching origin");
+  checked("git", ["fetch", "--quiet", "--prune", "origin", "--tags"], "Fetching origin");
   const current = JSON.parse(checked("git", ["show", "origin/main:package.json"], "Reading package.json")).version;
+  if (current !== version && compareVersions(version, current) <= 0) fail(`${version} is not newer than main's ${current}.`);
   const branch = `release/v${version}`;
 
-  // Bump in a throwaway worktree so the developer checkout is never touched.
-  let url = "";
+  // Reuse an open version PR from an earlier attempt; otherwise bump in a
+  // throwaway worktree so the developer checkout is never touched.
+  let url = current === version ? "" : checked("gh", ["pr", "list", "--repo", REPOSITORY, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // \"\""], "Looking for an open version PR");
   if (current === version) {
     console.log(`origin/main is already version ${version}; no version PR needed.`);
+  } else if (url) {
+    console.log(`Using the open version PR ${url}`);
   } else {
     const worktree = mkdtempSync(join(tmpdir(), "mythra-release-prepare-"));
     rmSync(worktree, { recursive: true, force: true });
+    run("git", ["worktree", "prune"]);
+    run("git", ["branch", "-D", branch]);
     try {
       checked("git", ["worktree", "add", "-b", branch, worktree, "origin/main"], "Creating the version worktree");
       checked(process.execPath, ["scripts/bump-version.mjs", version], "Bumping the version", { cwd: worktree });
       checked("git", ["commit", "-qam", `Release ${version}`], "Committing the version bump", { cwd: worktree });
-      checked("git", ["push", "-q", "-u", "origin", branch], "Pushing the version branch", { cwd: worktree });
+      checked("git", ["push", "-q", "--force", "-u", "origin", branch], "Pushing the version branch", { cwd: worktree });
       url = checked("gh", ["pr", "create", "--repo", REPOSITORY, "--base", "main", "--head", branch, "--title", `Release ${version}`,
         "--body", `Bumps Mythra Code from ${current} to ${version} for release.`], "Opening the version PR", { cwd: worktree });
       console.log(`Opened ${url}`);
@@ -377,17 +545,17 @@ function prepare({ version, flags }) {
     run("git", ["branch", "-D", branch]);
     checked("git", ["fetch", "--quiet", "origin"], "Fetching origin");
     console.log(`Merged ${url}`);
+  } else if (url) {
+    console.log(`Merge ${url} before publishing.`);
   }
 
-  // Draft notes from commit subjects since the last release; edit them into
-  // user-facing bullets before publishing.
   const notesPath = resolve(privateRoot, "notes", `${version}.md`);
   if (!existsSync(notesPath)) {
-    const previous = run("git", ["describe", "--tags", "--abbrev=0", "--match", "v*", "origin/main"]).stdout.trim();
-    const log = previous ? run("git", ["log", "--no-merges", "--format=- %s", `${previous}..origin/main`]).stdout.trim() : "";
+    const previousTag = run("git", ["describe", "--tags", "--abbrev=0", "--match", "v*", "origin/main"]).stdout.trim();
+    const log = previousTag ? run("git", ["log", "--no-merges", "--format=- %s", `${previousTag}..origin/main`]).stdout.trim() : "";
     mkdirSync(resolve(privateRoot, "notes"), { recursive: true });
-    writeFileSync(notesPath, `# Mythra Code ${version}\n\n${log || "- "}\n`);
-    console.log(`Drafted release notes at ${notesPath} (edit before publishing).`);
+    writeFileSync(notesPath, `${NOTES_DRAFT_MARKER}\n# Mythra Code ${version}\n\n${log || "- "}\n`);
+    console.log(`Drafted release notes at ${notesPath}. Rewrite them as user-facing bullets and delete the DRAFT line before publishing.`);
   } else {
     console.log(`Release notes already exist at ${notesPath}.`);
   }
@@ -396,6 +564,8 @@ function prepare({ version, flags }) {
 const parsed = parseArguments(process.argv.slice(2));
 try {
   if (parsed.command === "prepare") prepare(parsed);
+  else if (parsed.command === "status") status(parsed);
+  else if (parsed.command === "stop") stop();
   else await publish(parsed);
 } catch (error) {
   fail(error.message);
