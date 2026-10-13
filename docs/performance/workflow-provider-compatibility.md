@@ -1,5 +1,12 @@
 # Claude and Cursor saved workflows
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 The saved workflow runner now dispatches agent steps to the selected provider's
 actual runtime. Claude and Cursor create locally persisted project threads,
 retain their sessions across steps, and reopen through the existing transcript

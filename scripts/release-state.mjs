@@ -3,8 +3,6 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync,
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { assertUpgradeDecision, coversHistoricalUpgrade, historicalCoverageReason } from './release-upgrade-coverage.mjs';
-import { assertReleaseVerification, expectedReceipts } from './verify-ci.mjs';
 
 export const PLATFORMS = ['darwin-aarch64', 'windows-x86_64'];
 export const appliesToPlatform = (file, platform) => platform === 'windows-x86_64'
@@ -52,81 +50,46 @@ export function containedPath(root, name) {
 
 export function assertPlan(plan) {
   const { planHash, ...payload } = plan;
-  if (plan.schemaVersion !== 1 || plan.policyVersion !== 1 || !HASH.test(plan.policyHash)
+  if (plan.schemaVersion !== 1 || ![1, 2].includes(plan.policyVersion) || !HASH.test(plan.policyHash)
     || typeof plan.publisherHost !== 'string' || plan.publisherHost.length > 253
-    || plan.publisherHost.trim() !== plan.publisherHost || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(plan.publisherHost)
-    || plan.repository !== 'm17h/Mythra-Code' || !SHA.test(plan.commit) || !SHA.test(plan.baseline?.commit)
-    || !plan.baseline.tag || !plan.baseline.reason
-    || !/^\d+\.\d+\.\d+$/.test(plan.version) || objectHash(payload) !== planHash) throw new Error('Invalid or modified release plan');
-  const nativeIds = ['native-startup', 'native-close', 'native-storage', 'native-onboarding', 'native-installer'];
-  if (['changedFiles', 'predecessors', 'classifications', 'knownIssues', 'overrides', 'boundaryHints', 'reviewRequired'].some((key) => !Array.isArray(plan[key]))) throw new Error('Invalid release scope inventory');
-  const publicBaseline = plan.baseline.publicEvidence;
-  if (publicBaseline !== undefined) {
-    if (!publicBaseline || typeof publicBaseline !== 'object') throw new Error('Invalid frozen public baseline evidence');
-    const latestMatches = publicBaseline.latestTag === plan.baseline.tag
-      ? publicBaseline.latestCommit === plan.baseline.commit && publicBaseline.latestReleaseId === publicBaseline.releaseId
-      : plan.predecessors.some((p) => p.tag === publicBaseline.latestTag && p.commit === publicBaseline.latestCommit && typeof p.reason === 'string' && p.reason.trim());
-    if (publicBaseline.schemaVersion !== 1 || publicBaseline.repository !== plan.repository
-      || publicBaseline.tag !== plan.baseline.tag || publicBaseline.commit !== plan.baseline.commit
-      || !Number.isSafeInteger(publicBaseline.releaseId) || publicBaseline.releaseId <= 0
-      || !Number.isSafeInteger(publicBaseline.latestReleaseId) || publicBaseline.latestReleaseId <= 0
-      || typeof publicBaseline.latestTag !== 'string' || !publicBaseline.latestTag.trim() || !SHA.test(publicBaseline.latestCommit)
-      || !Number.isFinite(Date.parse(publicBaseline.publishedAt)) || !Number.isFinite(Date.parse(publicBaseline.verifiedAt))
-      || Date.parse(publicBaseline.verifiedAt) < Date.parse(publicBaseline.publishedAt)
-      || Date.parse(publicBaseline.verifiedAt) > Date.now() + 60_000 || !latestMatches) throw new Error('Invalid frozen public baseline evidence');
-  }
-  const sameSet = (a, b) => a.length === b.length && new Set(a).size === a.length && a.every((id) => b.includes(id));
-  const fixed = new Map([['ci', { kind: 'ci', required: true, dependsOn: [] }]]);
-  for (const platform of PLATFORMS) {
-    fixed.set(`build:${platform}`, { kind: 'build', platform, required: true, dependsOn: [] });
-    fixed.set(`audit:${platform}`, { kind: 'audit', platform, required: true, dependsOn: [`build:${platform}`] });
-    for (const id of nativeIds) fixed.set(`${id}:${platform}`, { kind: 'native', platform, dependsOn: [`audit:${platform}`] });
-  }
-  fixed.set('draft', { kind: 'draft', required: true });
-  fixed.set('publish', { kind: 'publish', required: true, dependsOn: ['draft'] });
-  fixed.set('public', { kind: 'public', required: true, dependsOn: ['publish'] });
-  if (!Array.isArray(plan.checks) || plan.checks.some((c) => !c || typeof c !== 'object')
-    || !sameSet(plan.checks.map((c) => c.id), [...fixed.keys()])) throw new Error('Invalid release check inventory');
-  if (plan.upgradeCoverage !== undefined && !Array.isArray(plan.upgradeCoverage)) throw new Error('Invalid upgrade coverage inventory');
-  for (const decision of plan.upgradeCoverage ?? []) assertUpgradeDecision(decision, plan);
-  if (new Set((plan.upgradeCoverage ?? []).map((d) => `${d.predecessor.tag}:${d.platform}:${d.check}`)).size !== (plan.upgradeCoverage ?? []).length) throw new Error('Duplicate upgrade coverage');
-  for (const check of plan.checks) {
-    const contract = fixed.get(check.id);
-    const covered = (plan.upgradeCoverage ?? []).filter((d) => d.reusable && `${d.check}:${d.platform}` === check.id).map((d) => d.proofHash);
-    if (!sameSet(check.historicalCoverage ?? [], covered)) throw new Error('Historical coverage decision differs from selected check');
-    const dependencies = check.id === 'draft' ? ['ci', ...plan.checks.filter((c) => c.required && (c.kind === 'native' || c.kind === 'audit')).map((c) => c.id)] : contract.dependsOn;
-    if (check.kind !== contract.kind || check.platform !== contract.platform || typeof check.required !== 'boolean'
-      || (contract.required && !check.required) || typeof check.reason !== 'string' || !check.reason.trim()
-      || !Array.isArray(check.dependsOn) || !sameSet(check.dependsOn, dependencies)
-      || check.dependsOn.some((id) => !plan.checks.some((c) => c.id === id && c.required))
-      || (check.kind === 'native' && check.required === (check.reason === historicalCoverageReason(plan.upgradeCoverage ?? [], check.id.split(':')[0], check.platform)))) throw new Error(`Invalid check contract: ${check.id}`);
-  }
-  // Additions/classifications can only add native gates. Keep their persisted
-  // decisions consistent with required flags without duplicating the planner's
-  // source-path classifier here. Exact fixed edges above also exclude cycles.
-  const additions = [...plan.knownIssues, ...plan.overrides, ...plan.boundaryHints].map((item) => ({ item, predecessor: null }));
-  for (const scope of [plan, ...plan.predecessors]) {
-    if (!Array.isArray(scope.changedFiles) || (scope.classifications !== undefined && !Array.isArray(scope.classifications))
-      || (scope.boundaryHints !== undefined && !Array.isArray(scope.boundaryHints))) throw new Error('Invalid release scope classification');
-    if (scope !== plan) additions.push(...(scope.boundaryHints ?? []).map((item) => ({ item, predecessor: scope })));
-    for (const c of scope.classifications ?? []) {
-      if (!c || !scope.changedFiles.includes(c.path) || !c.reason || !c.evidence || !Array.isArray(c.boundaries)) throw new Error('Invalid release scope classification');
-      additions.push(...c.boundaries.map((check) => ({ item: { check, reason: c.reason }, path: c.path, predecessor: scope !== plan ? scope : null })));
-    }
-  }
-  for (const { item, path, predecessor } of additions) {
-    if (!item || !nativeIds.includes(item.check) || !item.reason || (item.platform && !PLATFORMS.includes(item.platform))) throw new Error('Invalid native-check addition');
-    for (const platform of item.platform ? [item.platform] : PLATFORMS) {
-      if (path && !appliesToPlatform(path, platform)) continue;
-      if (predecessor && coversHistoricalUpgrade(plan, predecessor, item.check, platform)) continue;
-      if (!plan.checks.find((c) => c.id === `${item.check}:${platform}`).required) throw new Error(`Required native addition omitted: ${item.check}:${platform}`);
-    }
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(plan.publisherHost)
+    || plan.repository !== 'm17h/Mythra-Code' || !SHA.test(plan.commit)
+    || !/^\d+\.\d+\.\d+$/.test(plan.version) || objectHash(payload) !== planHash)
+    throw new Error('Invalid or modified release plan');
+  if (!Array.isArray(plan.checks) || plan.checks.some((c) => !c || typeof c.id !== 'string'
+    || typeof c.kind !== 'string' || typeof c.required !== 'boolean' || !Array.isArray(c.dependsOn))
+    || new Set(plan.checks.map((c) => c.id)).size !== plan.checks.length
+    || plan.checks.some((c) => c.dependsOn.some((id) => !plan.checks.some((p) => p.id === id))))
+    throw new Error('Invalid release stage inventory');
+  const visited = new Set(), visiting = new Set();
+  const visit = (stage) => {
+    if (visiting.has(stage.id)) throw new Error('Cyclic release operation dependencies');
+    if (visited.has(stage.id)) return;
+    visiting.add(stage.id);
+    for (const id of stage.dependsOn) visit(plan.checks.find((parent) => parent.id === id));
+    visiting.delete(stage.id); visited.add(stage.id);
+  };
+  plan.checks.forEach(visit);
+  // Historical plans remain inspectable, without rewriting their frozen graph or
+  // fabricating receipts. Only version 2 plans are executable by this coordinator.
+  if (plan.policyVersion === 1) return plan;
+  const contracts = new Map(PLATFORMS.map((platform) => [`build:${platform}`,
+    { kind: 'build', platform, dependsOn: [] }]));
+  contracts.set('draft', { kind: 'draft', dependsOn: PLATFORMS.map((p) => `build:${p}`) });
+  contracts.set('publish', { kind: 'publish', dependsOn: ['draft'] });
+  contracts.set('public', { kind: 'public', dependsOn: ['publish'] });
+  if (plan.checks.length !== contracts.size) throw new Error('Invalid release stage inventory');
+  for (const stage of plan.checks) {
+    const contract = contracts.get(stage.id);
+    if (!contract || stage.kind !== contract.kind || stage.platform !== contract.platform || !stage.required
+      || typeof stage.reason !== 'string' || !stage.reason.trim()
+      || objectHash([...stage.dependsOn].sort()) !== objectHash([...contract.dependsOn].sort()))
+      throw new Error(`Invalid release stage contract: ${stage.id}`);
   }
   return plan;
 }
 
-// Native harnesses emit this same envelope. A receipt is evidence, not authority:
-// the coordinator independently checks the frozen plan, dependencies and files.
+// Operation records bind completed work to its frozen source and dependencies.
 export function assertReceipt(receipt, plan, stateRoot, { packageSha256 } = {}) {
   assertPlan(plan);
   const check = plan.checks.find((c) => c.id === receipt.checkId && c.required);
@@ -142,51 +105,32 @@ export function assertReceipt(receipt, plan, stateRoot, { packageSha256 } = {}) 
     const path = containedPath(stateRoot, item.path);
     if (!HASH.test(item.sha256) || !statSync(path).isFile() || fileHash(path) !== item.sha256) throw new Error(`Changed or missing evidence: ${item.path}`);
   }
-  if (check.kind === 'native') {
-    if (!HASH.test(receipt.packageSha256) || !packageSha256 || receipt.packageSha256 !== packageSha256) throw new Error('Native receipt does not match approved package');
-    if (receipt.details?.cleanupComplete !== true || receipt.details?.restorationComplete !== true) throw new Error('Native cleanup/restoration is incomplete');
-  }
-  if (check.kind === 'audit' && (!packageSha256 || receipt.details?.packageSha256 !== packageSha256)) throw new Error('Integrity receipt does not match approved package');
-  assertReceiptDetails(receipt, check, plan, stateRoot);
+  if (plan.policyVersion === 2) assertReceiptDetails(receipt, check, plan, stateRoot);
   return receipt;
 }
 
 function assertReceiptDetails(receipt, check, plan, root) {
   const d = receipt.details;
-  if (!d || typeof d !== 'object') throw new Error('Receipt is missing its typed checker result');
-  const coordinator = receipt.checkerVersion === 'release-coordinator-v1';
-  if (check.kind === 'ci') {
-    if (!coordinator || d.repository !== plan.repository || d.commit !== plan.commit || !Number.isSafeInteger(d.runId)
-      || d.input?.checkout !== plan.commit || d.input?.head !== plan.commit || !['push', 'workflow_dispatch'].includes(d.input?.event)
-      || !Array.isArray(d.receiptHashes) || objectHash(d.receiptHashes.map((r) => r.id).sort()) !== objectHash(expectedReceipts().sort())
-      || d.receiptHashes.some((r) => !HASH.test(r.sha256))) throw new Error('Invalid typed hosted CI result');
-    assertReleaseVerification({ headSha: plan.commit, status: 'completed', conclusion: 'success' }, d.jobs ?? [], plan.commit);
-  } else if (check.kind === 'build') {
-    if (!coordinator || d.exitCode !== 0 || !Array.isArray(d.command) || d.command.length !== 3 || d.command[1] !== 'run' || d.command[2] !== 'release:build'
-      || !d.node || !d.host || !HASH.test(d.packageSha256) || !d.packagePath) throw new Error('Invalid typed native build result');
-    if (fileHash(containedPath(root, d.packagePath)) !== d.packageSha256 || !receipt.evidence.some((e) => e.path === d.packagePath && e.sha256 === d.packageSha256)) throw new Error('Build package is missing from its evidence');
-    const expected = check.platform === 'darwin-aarch64' ? `MythraCode_${plan.version}_aarch64.dmg` : `MythraCode_${plan.version}_x64-setup.exe`;
+  if (!d || typeof d !== 'object' || receipt.checkerVersion !== 'release-coordinator-v1')
+    throw new Error('Receipt is missing its release operation result');
+  if (check.kind === 'build') {
+    if (d.exitCode !== 0 || !Array.isArray(d.command) || d.command.length !== 3
+      || d.command[1] !== 'run' || d.command[2] !== 'release:build'
+      || !d.node || !d.host || !HASH.test(d.packageSha256) || !d.packagePath)
+      throw new Error('Invalid native build result');
+    if (fileHash(containedPath(root, d.packagePath)) !== d.packageSha256
+      || !receipt.evidence.some((e) => e.path === d.packagePath && e.sha256 === d.packageSha256))
+      throw new Error('Build package is missing from its record');
+    const expected = check.platform === 'darwin-aarch64'
+      ? `MythraCode_${plan.version}_aarch64.dmg` : `MythraCode_${plan.version}_x64-setup.exe`;
     if (d.packagePath.split('/').at(-1) !== expected) throw new Error('Build package/version mismatch');
-  } else if (check.kind === 'audit') {
-    if (receipt.checkerVersion !== 'native-integrity-v1' || !HASH.test(d.packageSha256)) throw new Error('Invalid typed native integrity result');
-    if (check.platform === 'darwin-aarch64' && (!HASH.test(d.archiveSha256) || !HASH.test(d.executableSha256) || ['codesign', 'notarization', 'gatekeeper', 'bundleEquivalence'].some((key) => d[key] !== 'passed') || !(d.bundleEntries > 0))) throw new Error('Incomplete macOS integrity audit');
-    if (check.platform === 'windows-x86_64' && (!HASH.test(d.executableSha256) || d.payloadPe?.machine !== 0x8664 || d.payloadPe?.subsystem !== 'WindowsGui' || d.payloadVersion !== plan.version || d.authenticodeStatus !== 'NotSigned')) throw new Error('Incomplete Windows integrity audit');
-  } else if (check.kind === 'draft' || check.kind === 'public') {
-    const expected = ['latest.json', 'release-notes.md', 'MythraCode-icon.png', 'build-info.txt', 'build-info.json', `MythraCode_${plan.version}_aarch64.app.tar.gz`, `MythraCode_${plan.version}_aarch64.dmg`, `MythraCode_${plan.version}_x64-setup.exe`, `MythraCode_${plan.version}_x64-setup.exe.sig`];
-    if (!coordinator || d.version !== plan.version || d.commit !== plan.commit || objectHash(Object.keys(d.hashes ?? {}).sort()) !== objectHash(expected.sort())
-      || objectHash([...(d.signaturesVerified ?? [])].sort()) !== objectHash([...PLATFORMS].sort())
-      || expected.some((name) => !HASH.test(d.hashes[name]) || !receipt.evidence.some((e) => e.path.split('/').at(-1) === name && e.sha256 === d.hashes[name]))) throw new Error('Invalid typed combined asset audit');
-  } else if (check.kind === 'publish') {
-    if (!coordinator || d.tag !== `v${plan.version}`) throw new Error('Invalid typed publication result');
-  } else if (check.kind === 'native') {
-    if (receipt.checkerVersion !== 'native-check-v1' || !d.workerContractHash || !HASH.test(d.workerContractHash) || !d.sessionId
-      || !d.executablePath || !HASH.test(d.executableSha256) || !Number.isInteger(d.pid) || !d.windowIdentity
-      || !Array.isArray(d.observations) || !d.observations.length
-      || !receipt.evidence.some((e) => /\.(png|jpe?g)$/.test(e.path)) || !receipt.evidence.some((e) => /(?:accessibility|ax)\.json$/.test(e.path))) throw new Error('Invalid typed native UI worker result');
-    if (d.runtime?.model !== 'gpt-6.1-sol' || d.runtime?.reasoningEffort !== 'high' || d.runtime?.approvalPolicy !== 'never' || d.runtime?.sandbox !== 'danger-full-access'
-      || d.version !== plan.version || !/^[a-f0-9-]{36}$/.test(d.runId)
-      || d.executableSha256 !== readJson(receiptPath(root, `audit:${check.platform}`)).details.executableSha256) throw new Error('Native worker runtime or audited executable identity mismatch');
-  } else throw new Error('Unknown release checker kind');
+  } else if (check.kind === 'draft') {
+    if (d.version !== plan.version || d.commit !== plan.commit || d.tag !== `v${plan.version}`
+      || objectHash([...(d.platforms ?? [])].sort()) !== objectHash([...PLATFORMS].sort()))
+      throw new Error('Invalid combined draft operation result');
+  } else if (check.kind === 'publish' || check.kind === 'public') {
+    if (d.tag !== `v${plan.version}`) throw new Error('Invalid publication result');
+  } else throw new Error('Unknown release operation');
 }
 
 export function processIdentity(pid = process.pid) {

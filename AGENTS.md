@@ -1,77 +1,68 @@
-# Mythra Code unified repository instructions
+# Mythra Code repository instructions
 
 ## Scope
 
-This is the canonical cross-platform Mythra Code repository:
-`https://github.com/m17h/Mythra-Code`.
+This is the canonical shared macOS and Windows repository:
+https://github.com/m17h/Mythra-Code. Keep application behavior shared unless an
+OS boundary requires a platform-specific implementation. Keep application,
+updater, pricing and release URLs in this repository.
 
-Application behavior should remain shared across macOS and Windows unless an
-operating-system boundary genuinely requires a platform-specific implementation.
-Do not create platform forks or point application, updater, pricing, CI, or
-release URLs at another repository.
-
-## Development
+## Development policy
 
 - Work on a topic branch; do not push directly to `main`.
-- Preserve unrelated changes and never commit secrets or generated release assets.
-- Add focused tests for behavioral changes.
-- Follow the merge rules below; hosted CI owns complete pre-merge verification.
-- Exercise native behavior on the operating system it targets.
-- Keep user-facing copy platform-neutral unless the behavior is platform-specific.
+- Preserve unrelated changes, active applications and user data.
+- Never commit credentials, private operator files or generated release assets.
+- Keep user-facing copy platform-neutral unless the behavior is OS-specific.
+- Automated tests and checks are disabled locally and on GitHub until Morgan
+  explicitly reintroduces them. Do not add or run lint, type checks, unit tests,
+  browser tests, native GUI tests, performance gates, CI verification, upgrade
+  evidence planning or independent audit ceremonies.
+- Compilation and release operations still run when authorized. A build,
+  signature, notarization or upload failure needs diagnosis before continuing;
+  disabling tests does not mean reporting failed release work as successful.
 
-## Merging
+## Pull requests and merging
 
-These are the repository's authoritative merge rules. The operational commands
-are in `docs/operations/merging.md`; release-only instructions stay in `build.md`.
+Use `docs/operations/merging.md`. Keep one coherent concern per PR. The
+originating development chat owns the commit, push and PR description. A request
+for a PR alone does not authorize a merge.
 
-- Keep one coherent concern per PR. Continue unrelated work on another topic
-  branch/worktree while checks run; never mix changes just to fill the wait.
-- Locally run focused regressions, relevant lint/type checks, and actual UI or
-  native verification at the affected boundary. Do not repeat the full local
-  `npm run verify` solely because a merge is requested. It remains available for
-  diagnosing integration failures or when explicitly requested.
-- Before merging, require successful **Verify gate** on the final tested PR
-  head/base combination. It must include both native OS suites, both complete
-  unit shards per OS, Chromium, all current production targets and startup/
-  performance checks, and the full pinned macOS WebKit lane. Never treat missing,
-  cancelled, skipped, or stale evidence as a pass. No assets-only fast path.
-- Verify the PR head, base freshness, tested merge input and review findings.
-  If the head changes or `main` advances, refresh and revalidate the combination.
-  Merge only after explicit user authorization, matching the approved head SHA.
-- Diagnose failed tests; do not suppress assertions or add blind automatic
-  retries. A bounded manual rerun of only a failed lane may help investigation
-  when inputs are unchanged, but intermittency is not a proven root cause.
-- Follow `docs/operations/merging.md` when changing CI: preserve complete command
-  and test-file coverage, exercise gate failures, and measure execution/queue/
-  rerun time separately. Keep unit workers and WebKit isolation bounded.
-- Delete obsolete merged topic branches locally and on GitHub after verifying
-  merge evidence (including squash/rebase), switching off the branch, and
-  preserving unmerged work, protected/open-PR branches and active worktrees.
-- Report pre-merge and post-merge CI separately. A release still requires CI on
-  its exact final merged commit; PR checks do not substitute for that evidence.
+When Morgan asks for a PR and merge, hand it to one separate persisted merge
+chat with its own clean worktree. Any available Codex or Claude model can own
+the handoff; there is no compulsory model or multi-agent review ceremony.
+The merge chat resolves in-scope review findings, merges the authorized source,
+cleans obsolete merged topic branches and reports the result. No automated
+checks, CI status gates or pre/post-merge test waits are required.
 
-During migration, if the tested commit predates the split workflow and has no
-Verify gate, require all three legacy checks: `Verify (macos-latest)`,
-`Verify (windows-latest)`, and `WebKit (macOS 15)`. This is a versioned compatibility
-rule, not permission to bypass a failed or missing new gate.
+Before deleting a branch, inspect merge evidence, switch off it, and preserve
+unmerged commits, protected branches, open-PR branches and active worktrees.
+Never archive the originating development chat. Archive only the completed
+merge chat and its no-longer-needed managed worktree using recoverable app
+operations.
 
-## Native builds
+## Native builds and releases
 
-- macOS builds must run on macOS and use the base Tauri configuration.
-- Windows builds must run on Windows and add
-  `src-tauri/tauri.windows.conf.json`, which preserves the Windows updater key.
-- The embedded updater keys are compatibility boundaries. Do not replace either
-  key without an explicit migration plan.
-- Generated macOS artifacts go in `release-assets/`; generated Windows artifacts
-  go in `RELEASE ASSETS/`. Do not commit either directory's generated files.
+Use `docs/operations/releasing.md`, `docs/operations/release-coordinator.md`
+and the private `build.md` runbook when available. A release requires
+Morgan's explicit request and chosen version. Do not change the version,
+build release assets, tag, sign, notarize or publish without that authorization.
 
-## Releases
+Freeze one clean merged source/version in a dedicated release checkout.
+Build macOS on macOS with the base Tauri configuration. Build Windows on
+Windows with `src-tauri/tauri.windows.conf.json`. Preserve each platform's
+embedded updater signing key; replacing a key requires an explicit migration
+plan. Keep signing credentials on their native machine.
 
-One version tag and one GitHub release in `m17h/Mythra-Code` owns the assets for
-both platforms. Build on each native OS, attach both platform artifact sets to
-the same draft release, then run `npm run release:finalize`. Never publish a
-one-platform updater manifest.
+Keep one publisher. Produce the signed macOS package and Apple notarization,
+the Windows installer and updater signature, and a combined `latest.json`
+containing both platforms. Upload both asset sets to one draft release in
+`m17h/Mythra-Code`, then finalize and publish that release. Never publish a
+one-platform manifest or replace a published version with different binaries.
 
-Never change the version, build release assets, tag, sign, notarize, or publish
-unless the user explicitly requests a release. Never weaken signing, hashes,
-provenance, clean-tree, or CI checks to force a release through.
+Generated macOS artifacts belong in `release-assets/`; generated Windows
+artifacts belong in `RELEASE ASSETS/`. Do not commit them. Preserve source,
+active applications, real profiles and retained release records during cleanup.
+Cancellation must stop the owned coordinator and its build/upload/publication
+descendants; prove they exited before replacing their owner or starting another
+publisher. Report completion only after both platforms and publication actually
+finish. Release 1.25.3 was cancelled; these instructions do not resume it.

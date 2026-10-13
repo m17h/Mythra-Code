@@ -54,26 +54,3 @@ pub(super) async fn read_message<R: AsyncBufRead + Unpin>(
         .map_err(|_| "The language server returned an incomplete protocol message.")?;
     serde_json::from_slice(&body).map_err(|_| "The language server returned invalid JSON.".into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::BufReader;
-    #[tokio::test]
-    async fn buffered_surplus_survives_multiple_frames_and_limits_are_enforced() {
-        let bytes = b"Content-Length: 7\r\n\r\n{\"a\":1}Content-Length: 7\r\n\r\n{\"a\":2}";
-        let mut input = BufReader::new(&bytes[..]);
-        assert_eq!(read_message(&mut input, 7).await.unwrap()["a"], 1);
-        assert_eq!(read_message(&mut input, 7).await.unwrap()["a"], 2);
-        for bytes in [
-            &b"Content-Length: 8\r\n\r\n{}"[..],
-            &b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"[..],
-            &b"Content-Length: 7\r\n\r\n{}"[..],
-        ] {
-            assert!(read_message(&mut BufReader::new(bytes), 7).await.is_err());
-        }
-        assert!(read_message(&mut BufReader::new(&vec![b'x'; 4097][..]), 7)
-            .await
-            .is_err());
-    }
-}

@@ -1,5 +1,12 @@
 # Queued prompt editing
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Users can edit queued or failed prompts inline, save or cancel, and retain their
 position, attachments, and unrelated composer draft. A durable hold prevents
 delivery while editing, including after navigation/reopening. New prompts and

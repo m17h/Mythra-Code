@@ -1,5 +1,12 @@
 # Streaming presentation: cadence, evidence, and rollback
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 ## Recovery points
 
 - `codex/checkpoint-before-smooth-text`: `a6a64fe96fa38cf1b3cfbd81b84ad1f1524761ec`, before any fade.

@@ -1,5 +1,12 @@
 # Run-command discovery and Opus follow-up review — 2026-09-13
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 ## User-visible behavior
 
 The Run popover now has **Find run command** and **Discovery model settings**. All five app providers are supported: OpenAI, Claude, Cursor, OpenRouter and LM Studio. New discovery preferences default to OpenAI GPT-5.6 Luna, High reasoning, Fast priority service; existing saved model/effort choices are preserved. Model preferences persist across projects and model and effort selections survive switching providers. LM Studio uses the current server URL from Models and accounts. Reasoning controls follow advertised capabilities; Cursor uses exact catalog model IDs and their own reasoning settings; its print runtime rejected separately parameterized effort in live validation. Fast priority service remains an OpenAI option.

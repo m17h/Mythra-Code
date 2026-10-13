@@ -1,5 +1,12 @@
 # Workspace panel design proposal (Opus 5.5)
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Companion to `workspace-ui-2026-09-22.md`. Interactive sample:
 `workspace-ui-proposal.html` (design preview with sample data; nothing in it
 runs Git, GitHub, or provider operations). Evidence came from `StudioDock.tsx`,

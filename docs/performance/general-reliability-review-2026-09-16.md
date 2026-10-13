@@ -1,5 +1,12 @@
 # General reliability and efficiency review — 2026-09-16
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 This review fixes reproduced failures and redundant work while preserving animation timing, streaming cadence, styling, and background agent recovery. Three Sol reviewers owned persistence, polling/lifecycle, and rendering/interaction; Fable 5.1 on High reviewed and fixed the terminal through a targeted Claude Code tmux session. The primary review covered integration, challenged the fixes, and extended persistence edge coverage before final validation.
 
 ## Reviewed and changed

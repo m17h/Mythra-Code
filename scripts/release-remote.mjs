@@ -20,7 +20,7 @@ export function encodedPowerShell(program, payload = {}) {
 }
 
 // This runner survives an SSH client/coordinator exit. It only invokes native
-// build/check stages; uploading and publication remain with the Mac owner.
+// builds; uploading and publication remain with the designated publisher.
 export function windowsRunnerSource({ root, stateRoot, workerFile, exportPath }) {
   const config = JSON.stringify({ root, stateRoot, workerFile, exportPath });
   return `import { spawn } from 'node:child_process';

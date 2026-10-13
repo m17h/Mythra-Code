@@ -1,28 +1,27 @@
 # Release coordination
 
-Release authorization, version selection and machine-specific operator policy
-belong to the release operator. Repository scripts do not grant that authority.
-Personal agent instructions, local retention rules, credentials and machine
-paths should remain outside the source repository.
+Release authorization and version selection belong to Morgan. Personal machine
+paths, credentials, local retention rules and operator instructions stay outside
+the repository. Follow [releasing.md](releasing.md) and
+[release-coordinator.md](release-coordinator.md) for portable commands.
 
-See [release-coordinator.md](release-coordinator.md) for portable planning,
-stage status, ownership, native handoffs, evidence and recovery commands.
+Automated tests and checks are disabled locally and on GitHub until Morgan
+explicitly reintroduces them. No CI receipt, native GUI result, upgrade-coverage
+plan, performance scorecard or independent audit is a merge or release gate.
 
-The release source is frozen in an isolated checkout. Native package builds
-may overlap each other and pending verification on that exact merged source.
-Such packages remain provisional: draft upload, publication and public acceptance
-require the full CI evidence and applicable platform audits. No signing,
-startup, package-hash, provenance or combined-manifest checks are bypassed.
+Freeze the requested version at one clean merged source in a dedicated checkout.
+Build macOS and Windows on their native machines, retaining their updater keys.
+Sign the updater packages and notarize macOS. Upload both platform asset sets to
+one draft, generate the combined manifest, and finalize publication through one
+publisher. Compilation, signing, notarization and publication must actually
+complete; a queued worker or successful merge is not a published release.
 
-Completed stages are immutable and reusable only while their source, dependency
-and package evidence remains valid. Diagnose failures before a bounded retry;
-an upload failure alone does not require rebuilding an approved package.
+Resume the existing owned worker/state after a transport interruption. Reuse
+completed packages when their source/version and package records still match;
+an upload failure alone does not call for rebuilding. Diagnose the failure
+before a bounded retry. Cancellation must stop owned descendants before a
+replacement publisher starts.
 
-Source worktrees do not isolate application data. Required native checks must
-use supported isolated profiles and verify the intended application/window.
-Missing drivers or incomplete native evidence are blockers, not passing checks.
-
-Post-publication local housekeeping is deliberately not part of the release
-acceptance graph. An operator may independently reclaim owned generated output
-under a private policy after public verification. It must not alter retained
-release evidence or turn a published successful release into a failed one.
+Cleanup preserves source, real profiles, active applications and retained
+release records. A Git worktree does not isolate application data. No automatic
+application launch or native QA tour is part of publication.

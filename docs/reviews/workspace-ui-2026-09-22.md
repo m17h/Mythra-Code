@@ -1,5 +1,12 @@
 # Workspace UI review — September 22, 2026
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Scope: all ten right-hand workspace tabs, their shared navigation, and GitHub
 merge options on `codex/pr-thread-finish`. Three Sol reviewers split Git/Review/
 Checkpoints/Worktrees, Files/Terminal/Context/navigation, and Agents/Usage/Tools.

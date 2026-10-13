@@ -2,9 +2,7 @@
 param(
   [string]$ExpectedCommit = "",
   [switch]$AllowDirty,
-  [switch]$SkipInstall,
-  [switch]$SkipVerify,
-  [switch]$SkipLaunchSmoke
+  [switch]$SkipInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,38 +86,17 @@ if (-not $npm -or -not $npx) {
   throw "Node.js/npm is not installed or is not available on PATH."
 }
 
-$provisionalCandidate = [bool]$env:MYTHRA_RELEASE_CANDIDATE_STATE
 if ($env:MYTHRA_RELEASE_CANDIDATE_STATE) {
   $candidateFlags = @()
   if ($AllowDirty) { $candidateFlags += '--allow-dirty' }
   if ($SkipInstall) { $candidateFlags += '--skip-install' }
-  if ($SkipVerify) { $candidateFlags += '--skip-verify' }
-  if ($SkipLaunchSmoke) { $candidateFlags += '--skip-launch-smoke' }
-  # A frozen plan and matching LIVE coordinator/native process ancestry allow
-  # provisional packaging while hosted CI runs. This grants no upload authority.
+  # Match the frozen source and live coordinator/native worker before packaging.
   Invoke-Checked -Command 'node' -Arguments (@('scripts/release-candidate-contract.mjs', $repoRoot) + $candidateFlags)
 }
 if (-not $SkipInstall) {
   Invoke-Checked -Command $npm -Arguments @("ci")
 }
-if ($provisionalCandidate) {
-  # Candidate ownership was checked before installation. Native package,
-  # updater signing and isolated launch-smoke checks below still all execute.
-} elseif ($env:MYTHRA_RELEASE_CI_RUN) {
-  if ($SkipVerify) { throw 'Do not combine a verification override with hosted evidence.' }
-  $proofPath = Join-Path ([System.IO.Path]::GetTempPath()) ("mythra-release-ci-" + [guid]::NewGuid().ToString('N') + '.json')
-  try {
-    # Re-fetch the run, complete job set and coverage receipts; an arbitrary
-    # cached JSON or green workflow label cannot replace local verification.
-    Invoke-Checked -Command 'node' -Arguments @('scripts/release-evidence.mjs', $head, $proofPath, $env:MYTHRA_RELEASE_CI_RUN)
-  } finally {
-    if (Test-Path -LiteralPath $proofPath) { Remove-Item -LiteralPath $proofPath }
-  }
-} elseif (-not $SkipVerify) {
-  Invoke-Checked -Command $npm -Arguments @("run", "verify")
-}
-
-# Clear mutable staging only after all preflight and verification checks pass. This prevents a failed build from
+# Clear mutable staging only after source and signing inputs are available. This prevents a failed build from
 # leaving stale artifacts that could be mistaken for the current release.
 if (-not (Test-Path -LiteralPath $outputDirectory)) {
   New-Item -ItemType Directory -Path $outputDirectory | Out-Null
@@ -154,58 +131,6 @@ if ((Get-Item -LiteralPath $sourceSignaturePath).Length -le 0) {
   throw "The Windows updater signature is empty."
 }
 
-$peBytes = [System.IO.File]::ReadAllBytes($binaryPath)
-if ($peBytes.Length -lt 256) {
-  throw "Native Windows executable is too small to contain a valid PE header."
-}
-$peHeaderOffset = [BitConverter]::ToInt32($peBytes, 0x3c)
-$subsystemOffset = $peHeaderOffset + 24 + 68
-if ($peHeaderOffset -lt 0 -or $subsystemOffset + 2 -gt $peBytes.Length) {
-  throw "Native Windows executable has an invalid PE header."
-}
-$peSubsystem = [BitConverter]::ToUInt16($peBytes, $subsystemOffset)
-if ($peSubsystem -ne 2) {
-  throw "Native Windows executable uses PE subsystem $peSubsystem instead of Windows GUI (2); it would open a background terminal window."
-}
-
-$versionInfo = (Get-Item -LiteralPath $sourceInstallerPath).VersionInfo
-if ([string]$versionInfo.ProductVersion -ne $version -or [string]$versionInfo.FileVersion -ne $version) {
-  throw "Installer version mismatch: expected $version, product=$($versionInfo.ProductVersion), file=$($versionInfo.FileVersion)."
-}
-
-$installerBytes = [System.IO.File]::ReadAllBytes($sourceInstallerPath)
-if ($installerBytes.Length -lt 256) {
-  throw "The Windows installer is too small to contain a valid PE header."
-}
-$installerPeOffset = [BitConverter]::ToInt32($installerBytes, 0x3c)
-$optionalHeaderOffset = $installerPeOffset + 24
-if ($installerPeOffset -lt 0 -or $optionalHeaderOffset + 2 -gt $installerBytes.Length) {
-  throw "The Windows installer has an invalid PE header."
-}
-$optionalHeaderMagic = [BitConverter]::ToUInt16($installerBytes, $optionalHeaderOffset)
-$dataDirectoryOffset = switch ($optionalHeaderMagic) {
-  0x10b { $optionalHeaderOffset + 96 }
-  0x20b { $optionalHeaderOffset + 112 }
-  default { throw "The Windows installer has unsupported PE optional-header magic 0x$($optionalHeaderMagic.ToString('x'))." }
-}
-$certificateDirectoryOffset = $dataDirectoryOffset + (4 * 8)
-if ($certificateDirectoryOffset + 8 -gt $installerBytes.Length) {
-  throw "The Windows installer has an incomplete PE certificate-table directory."
-}
-$certificateTableAddress = [BitConverter]::ToUInt32($installerBytes, $certificateDirectoryOffset)
-$certificateTableSize = [BitConverter]::ToUInt32($installerBytes, $certificateDirectoryOffset + 4)
-$authenticodeStatus = if ($certificateTableAddress -eq 0 -and $certificateTableSize -eq 0) { "NotSigned" } else { "Signed" }
-if ($authenticodeStatus -ne "NotSigned") {
-  throw "Mythra Code Windows installers are intentionally unsigned, but Authenticode reported status: $authenticodeStatus."
-}
-
-if (-not $SkipLaunchSmoke) {
-  # The five-second native liveness check uses an owned, isolated QA profile.
-  # An older executable without the frozen isolation contract is never launched
-  # against the working user's data as a fallback.
-  Invoke-Checked -Command 'node' -Arguments @('scripts/release-qa-smoke.mjs', $binaryPath, $head)
-}
-
 Copy-Item -LiteralPath $sourceInstallerPath -Destination (Join-Path $outputDirectory $installerName)
 Copy-Item -LiteralPath $sourceSignaturePath -Destination (Join-Path $outputDirectory $signatureName)
 
@@ -225,8 +150,6 @@ $buildInfo = [ordered]@{
   installer = $installerName
   signature = $signatureName
   sha256 = $sha256
-  authenticodeStatus = $authenticodeStatus
-  peSubsystem = "WindowsGui"
   builtAt = [DateTime]::UtcNow.ToString("o")
   dirty = [bool]$dirtyTree
 }

@@ -1,376 +1,135 @@
 # Resumable native releases
 
-`AGENTS.md` and the local `build.md` remain the release policy. These commands
-implement that policy; reading this document never authorizes a release.
+A release requires Morgan's explicit request and chosen version. Use
+[releasing.md](releasing.md) and the private operator runbook. Reading these
+instructions never authorizes a release. Release 1.25.3 was cancelled and must
+not be resumed.
 
-The coordinator freezes a source/validation plan, records each completed stage,
-and selects the next runnable stage. Its state belongs outside the checkout's
-mutable build directories. A clean detached release worktree lets development
-continue on a separate branch. It does not isolate application profiles: native
-validation must separately use supported isolation.
+Automated tests and checks are disabled locally and on GitHub until Morgan
+explicitly reintroduces them. New policy-version 2 plans contain only:
 
-## What runs
+`build:darwin-aarch64` and `build:windows-x86_64` → `draft` → `publish` → `public`.
 
-Every release retains complete exact-source hosted Verify, production-output
-startup during native packaging, signing/notarization, package provenance,
-cryptographic updater checks, the combined draft audit and fresh public audit.
-The plan adds native startup, close, storage, onboarding or installer checks
-only for their affected boundaries or a known reported failure. An ordinary UI
-change does not select a manual native tour.
+`public` records the published GitHub release's tag/source and non-draft status.
+It does not download packages or run a public audit.
 
-The baseline is the last accepted public release. Include any withdrawn version
-that users installed as a supported predecessor. Cumulative source differences
-drive selection; reverted, never-shipped intermediate edits do not automatically
-add tests. Broad native integration files and dependency changes require an
-explicit semantic classification with the reviewed symbols/hunks as evidence.
-Known failures and detected native integration changes cannot be suppressed by
-an unrelated-file classification.
+No CI, native QA, audit, public-audit, performance or upgrade-evidence stage is
+required. Both native builds still compile the product and produce their
+signed release assets; macOS is notarized. The draft contains both platforms
+and one combined updater manifest before publication.
 
-`Windows/build.ps1` retains its Windows startup path trigger and requires a
-semantic classification in every cumulative diff where it changes, including
-each shipped predecessor. Review its changed hunks for installer payload,
-NSIS invocation, updater/signing and install/update/recovery behavior. Include
-`native-installer` if any such boundary changes. Changes confined to hosted CI
-retrieval, asset staging or isolated executable smoke may use `boundaries: []`
-with a concrete reason and reviewed-hunk evidence; the startup check still runs.
-Missing classification blocks planning. A current-baseline classification does
-not classify a predecessor's different cumulative diff.
+## Start
 
-This narrow build-script rule does not suppress fixed NSIS script, Tauri config,
-capability or updater source triggers. Classifications for Windows-only paths
-select Windows checks; shared known issues, overrides and integration hints
-retain their own platform scope. Package building, signing, hashes, provenance
-and combined/public audits remain mandatory regardless of this classification.
+Finish the normal authorized version PR and merge workflow. Freeze the clean
+merged commit/version in a dedicated release checkout so development can
+continue separately. Preserve the actively used application and its profile.
 
-## Start a release
-
-First obtain the user's release authorization and finish the normal version PR
-and merge workflow. Use an app-managed release worktree at the frozen merged
-SHA, or create a separate detached checkout. Never reset the development
-checkout to satisfy a release command.
-
-Write a plan input outside the repository. Example:
+Write a plan input outside the checkout. It may be `{}`, or include the requested
+version:
 
 ```json
-{
-  "baseline": {
-    "tag": "v1.22.0",
-    "reason": "Verified last accepted public release"
-  },
-  "predecessors": [],
-  "knownIssues": [],
-  "classifications": [],
-  "overrides": [],
-  "reviewNotes": "Release scope reviewed against the accepted public baseline"
-}
+{"version":"REQUESTED-VERSION"}
 ```
 
-Resolve the actual public baseline at kickoff; the example version is not a
-standing baseline. A withdrawn predecessor entry has `tag`, `reason`, and optional
-`classifications` for its own cumulative diff. Its native integration hunks are
-classified independently of the current public-baseline diff. A known
-issue/additional check has `check`, `reason` and optional `platform`. Check names
-are `native-startup`, `native-close`, `native-storage`, `native-onboarding` and
-`native-installer`; platforms are `darwin-aarch64` and `windows-x86_64`.
+An explicit input version must equal the frozen package version. No baseline,
+cumulative-diff classification, known-issue test selection or predecessor
+coverage file is required.
 
-For a reviewed provider command change in the shared native integration file,
-a classification can be:
-
-```json
-{
-  "path": "src-tauri/src/lib.rs",
-  "boundaries": [],
-  "reason": "Only formats an existing Git command's result",
-  "evidence": "Reviewed get_git_status function diff; no startup, lifecycle or persistence changes"
-}
-```
-
-From the clean release checkout:
+From the clean frozen checkout:
 
 ```sh
 npm run release:plan -- --input /absolute/plan-input.json --state /absolute/release-state
 npm run release:status -- --state /absolute/release-state
-```
-
-Inspect the generated `plan.json`. It contains the exact source, prior published
-baseline, predecessor diffs, classifications, reasons, required/not-required
-checks and dependency graph. Do not hand-edit a frozen plan. A scope change
-gets a new state directory and invalidates affected evidence.
-
-Run only the actions covered by the user's release request:
-
-```sh
 npm run release:run -- --state /absolute/release-state --build --upload --publish
 ```
 
-These flags record execution scope, not new human permission prompts. An agent
-with existing authorization should supply them and continue routine work. The
-runner performs local stages and launches the Windows worker over the configured
-trusted LAN once exact-source CI evidence is available. Native builds then overlap.
-The owned Mac build worker installs its frozen dependencies before packaging;
-the Windows builder owns its own dependency installation.
-Queued CI waits while eligible local stages proceed. Waiting is bounded to two
-hours per invocation; an owned remote worker can continue and be collected on
-resume. Exit code 0 means complete, 2 means an incomplete dependency, and other
-failures need diagnosis. The CLI never treats a queued request as a live worker.
+These flags describe the already authorized scope; they do not create human
+authorization. The coordinator owns the local Mac builder and the Windows
+worker on the trusted native machine. Each installs its frozen dependencies
+and builds from the same source/version. Workers can build concurrently.
+Only the designated publisher uploads and publishes.
 
-The designated publisher collects exact-source hosted CI in a separate durable
-worker (`ci-worker.json`). Mac and Windows candidates can build while that
-verification is pending. CI cannot overwrite native `active-stage.json`, and
-publication stages still depend on complete successful CI and platform audits.
-An interrupted coordinator preserves worker identities; resume never infers
-that a disconnected parent means a native builder stopped.
+Old policy-version 1 states remain readable with `status` but cannot execute
+under this coordinator. Preserve their records; do not migrate them, revive a
+cancelled release or import their obsolete test receipts into a new plan.
 
-The coordinated Windows builder validates a provisional-candidate contract:
-the frozen clean source/version, live coordinator and native worker identities,
-matching process commands and actual ancestry must agree. This authorizes
-packaging only, not upload or publication. It avoids repeating full local
-verification while the publisher gathers the required hosted evidence. Skip,
-dirty, install and launch-smoke overrides are rejected in candidate mode.
-Production renderer/startup, signing and package checks still execute.
+## Native handoffs
 
-Standalone builds retain their existing behavior: `MYTHRA_RELEASE_CI_RUN`
-freshly validates the exact run, every job and coverage receipt; with neither
-verified hosted evidence nor an owned candidate contract, full local verification
-still runs. Do not use `SkipVerify` as a release optimization.
+The maintained [Windows transport](release-windows-transport.md) prepares the
+dedicated Windows checkout, transfers release state, starts one persisted worker
+and collects its build result. Native credentials remain on their existing host.
+Handoffs do not contain private keys, tokens, leases or active process records.
 
-`RELEASE_OVERLAP_VERSION=1` identifies this frozen coordinator capability.
-Optional `lifecycle.remotePrepared` is awaited after remote checkout preparation
-and before state transfer/worker launch; a failure prevents launch. Operators
-can use it for private setup without publishing their local policies in source.
-Local housekeeping is not a release stage and cannot modify acceptance receipts.
-
-## Work across native machines
-
-The Mac and Windows workers each need a clean checkout at the same source and
-their existing native credentials/toolchain. The normal Mac command automatically
-prepares the dedicated Windows checkout, transfers validated state, starts a
-persisted worker and collects its typed evidence. See
-[Windows transport](release-windows-transport.md). Native signing credentials stay
-on their existing host; handoffs contain no private keys. The manual handoff
-commands below are recovery tools, not routine babysitting steps.
-
-The coordinator can prepare a detached checkout without touching the current
-branch/index:
+The portable recovery commands are:
 
 ```sh
 node scripts/release-coordinator.mjs workspace --state /absolute/release-state --path /absolute/new-release-checkout
-```
-
-Portable handoffs include the immutable plan, successful receipts and their
-hashed evidence. They exclude credentials, process leases and active-stage
-state. For example:
-
-```sh
 node scripts/release-coordinator.mjs export --state /absolute/release-state --to /absolute/new-worker-handoff --platform windows-x86_64
+node scripts/release-coordinator.mjs merge --state /absolute/release-state --from /absolute/returned-worker-handoff
 ```
 
-Transfer that directory to Windows and run the same coordinator from its exact
-clean native checkout. Export the completed Windows state to a new handoff,
-transfer it back, then merge it on the publishing coordinator:
+A Windows worker runs from its native frozen checkout:
 
 ```sh
-node scripts/release-coordinator.mjs merge --state /absolute/release-state --from /absolute/returned-worker-handoff
-npm run release:resume -- --state /absolute/release-state --build --upload --publish
+node scripts/release-coordinator.mjs run --state /absolute/remote-release-state --build --native-only
 ```
 
-Merge rejects another plan, invalid evidence and conflicting files/receipts.
-It preserves existing approved results. Platform candidates remain immutable
-under `candidates/<platform>/`; uploads read those files directly. No operator
-needs to reconstruct which build a narrative message referred to.
+Candidates and their build records remain bound to the frozen source/version
+and package files. A handoff from another plan or conflicting package cannot
+replace an existing result. Windows never uploads or publishes independently.
 
-Native integrity is a fixed adapter exported as `runNativeIntegrity` by
-`scripts/release-native-integrity.mjs`. Selected native UI cases use
-`scripts/release-native-check.mjs`: one persisted Sol/high worker per platform
-shares the selected startup/save/close observations. The launcher explicitly sets
-Full Access and approval policy `never`, verifies effective session metadata,
-uses file-backed logs and a detached supervisor, and enforces a 25-minute deadline.
-A lost coordinator never starts a second worker against the same profile.
-
-Unattended native validation requires the installed Codex CLI to expose supported
-Computer Use (CUA on Mac, the installed Windows/Sky skill on Windows), an available
-interactive desktop and the candidate's supported `MYTHRA_RELEASE_QA_ROOT` profile
-contract. The worker inventories the actual tool before interacting. Missing
-capability produces a terminal blocker, not a synthetic pass. Mac CLI capability
-was exercised with a real read-only `cua.getState()` invocation during development;
-that establishes tool availability, not a successful packaged native test.
-
-The package must implement the isolated profile contract; old candidates cannot
-use this harness by renaming production roots. Real pixels, accessibility state,
-exact executable hashes/PID/run identity, app-generated profile/window/exit events,
-selected behavioral observations and cleanup evidence are required. Final cleanup
-removes the owned isolated WebView store. Installer cases require an isolated OS
-environment when installer-wide process termination could affect the working app;
-profile isolation alone does not make that safe.
-Selected native close checks declare a one-shot saved-result fault in the owned
-QA profile. The native worker must observe the real SaveFailed dialog, explicitly
-choose Keep open, verify recovery, close normally and reopen for a separate
-healthy primary run. The validator binds the nonce, run/request identities,
-event sequence and prompt/recovery captures. This verifies native guard failure
-handling; it does not simulate disk-write failure, renderer death or timeout.
-Cases requiring those behaviors still stop for a missing maintained recipe;
-healthy close or the saved-result fault cannot substitute for their replay.
-
-## Resume and diagnose
-
-If workers may outlive the active chat turn, the release agent creates and
-verifies a supported follow-up heartbeat in that same chat, tied to the actual
-version and state directory. It checks worker ownership before resuming, stays
-quiet while nothing actionable changes, and pauses after public verification
-and the authorized completion notification. CLI commands alone are not proof
-that this follow-up exists.
+## Status, resume and failures
 
 ```sh
 npm run release:status -- --state /absolute/release-state
 npm run release:resume -- --state /absolute/release-state --build --upload --publish
 ```
 
-The plan freezes `publisherHost` (the kickoff host by default). Only that host can
-upload/publish; Windows workers cannot. A host-global canonical repository
-lease excludes another release state or checkout publishing concurrently, even
-for another version. This prevents an older delayed release overtaking a newer
-one. The fresh publication check also enforces increasing public versions.
-This is deliberately a designated-host protocol, not a distributed lock. Moving
-publication to another host requires reviewed recovery and a new frozen plan;
-never steal a foreign host's lease or silently alter candidate evidence.
+Resume inspects the existing worker identities and collects their results before
+starting work. A disconnected shell does not prove a remote builder exited.
+Preserve source, package files and logs; reuse completed packages when their
+recorded source/version and package identity still match. An upload failure
+alone does not require rebuilding.
 
-Before the first draft upload or publication subprocess starts, the publisher
-records a mutation marker in its host-global lease. Registration and orphan
-recovery use the same lock. The marker remains for that owner's lifetime; a
-successful owner releases its lease normally. An owner that dies after mutation
-registration cannot be recovered automatically, even if its PID is gone: its
-finalizer or GitHub upload process may still run and change the remote release.
-`resume` blocks with `Interrupted publisher mutation`; `--retry-reason` does not
-clear this protection. Read-only public audits and owners interrupted before
-mutation registration retain normal orphan recovery.
-
-The release agent resolves this blocker within the authorized release scope.
-Inspect the preserved lease, process tree, logs and remote release state; prove
-the old coordinator, finalizer and every upload/publication descendant have
-exited. A dead coordinator PID alone is insufficient. If ownership is uncertain,
-keep the lease and report the blocker. Once all mutation processes are confirmed
-gone and no other coordinator is resuming, preserve that evidence and archive
-the orphaned host-global `lease.json` under
-`~/.mythra-release/publishers/<repository-hash>/` to a new recovery filename.
-Then resume the original frozen state and reconcile remote draft/public state
-before another mutation. Never erase the marker or replace the lease while an
-old publisher can still run. This manual recovery has no automatic subprocess
-collector; changing the publisher host is not a recovery shortcut.
-
-The worker lease records host, PID and process start identity. An orphaned local
-owner can be recovered subject to the publisher protection above; a live or
-foreign owner cannot be stolen. Native builds
-run in a child worker that owns its completion receipt so a coordinator restart
-does not require restarting packaging. Resume checks active worker identity and
-waits for its receipt. Preserve its logs and candidate files if recovery cannot
-establish completion.
-
-A known failed stage requires a diagnosis, recorded without another approval
-when the action is already authorized:
+Diagnose a failed build, signature, notarization, transfer or publication before
+a bounded retry, recording the actual reason:
 
 ```sh
-npm run release:resume -- --state /absolute/release-state --build --upload --publish --retry-reason 'Network outage resolved; frozen inputs and approved package hashes unchanged'
+npm run release:resume -- --state /absolute/release-state --build --upload --publish --retry-reason 'Upload connectivity restored; frozen package unchanged'
 ```
 
-Do not supply a generic retry reason to chase a green result. A failing assertion
-or unknown native behavior remains a blocker. Missing remote results are
-waiting; a changed hash invalidates the result and dependent receipts. An
-upload/network failure never implies rebuilding the package. If publication
-timed out, the runner inspects remote draft state before deciding whether to
-publish or continue the public audit.
+Do not use a generic retry reason or claim a failed operation succeeded.
+When a publication request times out, inspect the draft/public release state
+before another publication attempt.
 
-Finalization requires `MYTHRA_RELEASE_STATE`. It rejects missing/failed/stale
-required receipts and freshly downloads the complete draft for signature,
-provenance and hash comparison before publication. This moves enforcement out
-of conversation memory while retaining the existing independent CI check.
+## Ownership and cancellation
 
-## Receipts and trust
+One designated publisher owns the release. Preserve live/foreign leases and
+the publisher mutation marker. Before recovering an interrupted publisher,
+establish that its coordinator, finalizer and every upload/publication descendant
+have exited; a dead parent PID alone is insufficient. Keep ownership intact
+while process identity is uncertain.
 
-Receipts bind the plan/source, platform, checker version, timestamps, evidence
-file hashes and dependency receipt hashes. Successful receipts are immutable;
-conflicting results require diagnosis. Stage-specific checker schemas reject
-generic passed JSON. Native receipts also bind the exact
-package and require complete cleanup/restoration. Paths must stay within the
-state directory, including through symlinks. A successful command exit alone
-does not establish a native UI result.
+Cancellation stops only the owned coordinator and its descendant build,
+transfer, upload and publication processes on both machines. Inspect the
+process records and remote release state, preserve the cancelled state and
+logs, and confirm the process trees exited before replacing an owner. No
+automatic restart of a cancelled release is allowed.
 
-These are local operational records, not a cryptographic attestation against a
-malicious local administrator. Run checkers from the trusted frozen repository;
-do not accept arbitrary “passed” JSON from untrusted content. Keep private
-fixtures/screenshots under the protected state directory and share only the
-sanitized outcome.
+If work continues beyond a chat turn, use the product's supported follow-up
+mechanism for that same release/state, with one owner. Verify it exists and
+will collect the actual worker. Stay quiet while nothing actionable changes
+and stop it after completion or cancellation.
 
-## Design sources and measured limits
+## Finish
 
-T3 Code resolves release source once, serializes publishers, builds shared JS
-once and fans out to native jobs. We use the frozen-source dependency graph and
-publisher ownership pattern. Mythra retains separate platform production
-outputs; T3's shared bundle and paid runner sizes are not assumptions here.
-[T3 Code release workflow](https://github.com/pingdotgg/t3code/blob/main/.github/workflows/release.yml).
+The coordinator uploads both native artifact sets to one draft, prepares the
+combined `latest.json`, and publishes through `release:finalize` with
+`MYTHRA_RELEASE_STATE` pointing to its state. Finalization retains release
+metadata, both-platform package/manifest, signature and hash handling needed
+to publish the requested version; it does not require automated test evidence.
 
-Browser Use's desktop workflow makes its previous-release selection explicit
-and scopes non-canceling build concurrency by tag/platform. Zen's build workflow
-separates asset preparation from release creation. These support immutable
-metadata and staged publication; their signing options or partial-platform
-publication policies are not adopted.
-[Browser Use](https://github.com/browser-use/desktop/blob/main/.github/workflows/release.yml),
-[Zen](https://github.com/zen-browser/desktop/blob/dev/.github/workflows/build.yml).
-
-No source proves a guaranteed Mythra release time. Record execution, runner
-queue, validation, transfer/audit and operator wait separately. The successful
-1.22.2 final-source gate took 10m25s and its complete Windows builder about
-12m01s; reducing duplicated verification alone cannot account for hours of
-coordination and profile-harness work.
-
-`coordinator-events.jsonl` records stage starts, waits, completion and blockers.
-Receipts retain checker execution timestamps; CI proof additionally retains run
-queue/start timestamps and each job's start/finish times. These records separate
-actual execution from waiting without reconstructing private agent transcripts.
-A newer failed run on the same SHA is contradictory evidence to investigate
-under `AGENTS.md`; an older green run does not excuse a known source assertion
-failure. The existing complete exact-source evidence policy remains unchanged.
-
-## Reusing accepted upgrade coverage
-
-Keep installed withdrawn versions in `predecessors`. An unchanged historical
-upgrade boundary can stop selecting native checks only after an accepted public
-release actually validated that predecessor, platform and check. Ordinary
-CSS, passive assets and literal intrinsic SVG geometry/paint in the maintained
-`BrandLogos.tsx` icon module may preserve coverage. Executable changes, unknown
-inputs, dependencies, configuration and recipe changes invalidate it. Current
-diff triggers and active known issues always select their checks.
-
-The release agent records this optional evidence during an **already required**
-native check using the historical snapshot recipe in `native-release-qa.md`.
-Do not add a native tour solely to seed coverage. Once that coordinator run is
-fully accepted and public, the agent exports each genuinely observed tuple:
-
-```sh
-node scripts/release-upgrade-coverage.mjs /absolute/accepted-state v1.22.1 darwin-aarch64 native-storage /absolute/coverage/storage-mac.json
-```
-
-The agent stores exports under `<accepted-state>/upgrade-coverage/`, records
-that accepted state location in its release handoff, discovers those retained
-proofs at the next kickoff, and adds their paths to the next release input's
-`upgradeCoverage` array and retains the accepted state directory, including executable, snapshots,
-contracts and receipts. Morgan does not prepare these files. The planner reads
-these paths, verifies public tags/assets and all required accepted native
-results, and compares frozen source inputs. Matching coverage removes only the
-historical trigger; the plan names the accepted release in its reason. Missing
-coverage keeps the check. Invalid submitted evidence fails explicitly. Source
-input mismatch keeps native checks rather than reusing a stale package result.
-
-Planning, publisher resume and finalization recheck retained evidence; chained
-coverage is revalidated with cycle/depth limits. Full CI, new native builds,
-signing, package/crypto audits and public verification remain fresh. Resolved
-issue hashes may document an issue in the prior checked plan; they never clear
-an active issue in the new plan. This fingerprint covers repository inputs,
-not live OS/WebView versions or overlay settings. Agent preflight must record a
-relevant runtime change or unresolved compatibility issue in `knownIssues` or
-`boundaryHints`, which still force the check. External RTSS observations are
-not a source fix or qualified historical proof.
-
-Legacy 1.22.2 evidence lacks this explicit predecessor fixture contract and does
-not qualify automatically. This feature does not supply the missing affected
-disk-write-failure, crash or isolated installer recipes, or solve macOS computer-use exact
-window targeting. Releases needing those checks retain their explicit blocker.
+Report the actual version, release URL and both platform outcomes only after
+publication finishes. A merge, package build, queue record or stopped worker
+is not publication. Cleanup preserves source, active apps, real profiles and
+retained release records; personal retention policies stay outside GitHub.

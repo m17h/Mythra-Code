@@ -55,7 +55,7 @@ if (buildInfo.version !== packageVersion || manifest.version !== packageVersion)
 if (buildInfo.commit !== head || buildInfo.dirty) {
   throw new Error(`Release assets were not built from clean HEAD ${head}. Rebuild after committing the release source.`);
 }
-if (buildInfo.platform !== PLATFORM || buildInfo.architecture !== "x64" || buildInfo.peSubsystem !== "WindowsGui") {
+if (buildInfo.platform !== PLATFORM || buildInfo.architecture !== "x64") {
   throw new Error("Windows release provenance is invalid or incomplete.");
 }
 if (buildInfo.installer !== installerName || buildInfo.signature !== signatureName) {
@@ -67,25 +67,6 @@ if (!updaterSignature || platformEntry?.signature !== updaterSignature || platfo
 if (buildInfo.sha256 !== installerDigest) {
   throw new Error(`Installer SHA-256 mismatch: build-info=${buildInfo.sha256}, actual=${installerDigest}`);
 }
-if (buildInfo.authenticodeStatus !== "NotSigned") {
-  throw new Error(`Mythra Code Windows installers must be intentionally unsigned; found Authenticode status ${buildInfo.authenticodeStatus}.`);
-}
-
-checked("gh", ["auth", "status"], "GitHub authentication check");
-const ciJson = checked("gh", [
-  "run", "list",
-  "--repo", REPOSITORY,
-  "--commit", head,
-  "--workflow", "Verify",
-  "--limit", "10",
-  "--json", "status,conclusion,headSha",
-], "Windows CI check");
-const runs = JSON.parse(ciJson || "[]");
-const successfulRun = runs.find((run) => run.headSha === head && run.status === "completed" && run.conclusion === "success");
-if (!successfulRun) {
-  throw new Error(`No successful Windows Verify workflow exists for ${head}. Push the commit and wait for CI before publishing.`);
-}
-
 const tag = `v${packageVersion}`;
 const assetPaths = expectedFiles.map((name) => resolve(output, name));
 uploadPlatformDraft({
