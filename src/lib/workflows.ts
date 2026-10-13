@@ -138,6 +138,11 @@ export function workflowStepRetries(step: WorkflowStep): { count: number; delayS
 export function normalizeWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
   return {
     ...workflow,
+    run: {
+      ...workflow.run,
+      projectInstructionsEnabled: workflow.run.projectInstructionsEnabled === true,
+      projectClaudeInstructionsEnabled: workflow.run.projectClaudeInstructionsEnabled === true,
+    },
     // Older saved names may contain a prefix the ! launcher cannot match.
     name: workflow.name.trimStart(),
     consecutiveFailures: Math.max(0, Math.floor(workflow.consecutiveFailures ?? 0)),

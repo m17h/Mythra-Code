@@ -32,7 +32,9 @@ import { sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions } from "./thre
 
 const STORAGE_KEY = "kiwi.threadSubagentCapabilities";
 /** Bump whenever startup-only routing policy changes for loaded threads. */
-const RUNTIME_POLICY_REVISION = "managed-v3";
+// Project-file delivery is now app-owned; older loaded threads may still
+// discover native project/global documents until their runtime is refreshed.
+const RUNTIME_POLICY_REVISION = "managed-v4";
 /** Longest signature worth trusting from disk; real ones are far shorter. */
 const MAX_SIGNATURE_LENGTH = 1024;
 

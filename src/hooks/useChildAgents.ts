@@ -81,6 +81,8 @@ export interface ChildAgentContext {
   executionPathFor: (threadId: string | null | undefined, logicalPath: string) => string;
   /** Shared Git directory of a thread's isolated worktree, when it has one. */
   isolationGitDirFor: (threadId: string) => string | undefined;
+  /** Recheck unavailable or mutating worktrees after asynchronous preparation. */
+  executionTargetUnavailable?: (threadId: string) => boolean;
   serviceNameFor: (threadId: string) => string;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
   rememberThread: (thread: Thread) => void;
@@ -579,6 +581,15 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!logicalPath) throw new Error("Mythra Code no longer knows which project folder this thread belongs to.");
     const executionPath = ctx.executionPathFor(rootThreadId, logicalPath);
     const gitDir = ctx.isolationGitDirFor(rootThreadId);
+    const projectId = ctx.projectIdForThread?.(rootThreadId) ?? null;
+    const executionTargetChanged = () => {
+      const live = contextRef.current;
+      return live.projectPathForThread(rootThreadId) !== logicalPath
+        || live.executionPathFor(rootThreadId, logicalPath) !== executionPath
+        || live.isolationGitDirFor(rootThreadId) !== gitDir
+        || live.executionTargetUnavailable?.(rootThreadId) === true
+        || (live.projectIdForThread?.(rootThreadId) ?? null) !== projectId;
+    };
 
     const pending = pendingChildrenRef.current.get(policy.sessionId) ?? new Set<string>();
     pending.add(reservation);
@@ -600,8 +611,9 @@ export function useChildAgents(context: ChildAgentContext): {
         executionPath,
         additionalWorkspaceRoots: gitDir ? [gitDir] : [],
         systemPrompt: targetSystemPrompt ?? policy.systemPrompt,
-        projectId: ctx.projectIdForThread?.(rootThreadId) ?? null,
+        projectId,
         projectInstructionsEnabled: policy.projectInstructionsEnabled,
+        projectClaudeInstructionsEnabled: policy.projectClaudeInstructionsEnabled === true,
         reasoningEffort,
         serviceTier: policy.serviceTier,
         serviceName: ctx.serviceNameFor(rootThreadId),
@@ -614,7 +626,8 @@ export function useChildAgents(context: ChildAgentContext): {
         resolveSkillPrompt: ctx.resolveSkillPrompt,
         resolveSkillPrompts: ctx.resolveSkillPrompts,
         isStartCancelled: () => (stopGenerationRef.current.get(rootThreadId) ?? 0) !== stopGeneration
-          || !childAgentPolicyForSession(contextRef.current.policies, request.sessionId),
+          || !childAgentPolicyForSession(contextRef.current.policies, request.sessionId)
+          || executionTargetChanged(),
         beginCheckpoint: async (childThreadId) => {
           await ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
         },
@@ -636,6 +649,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // (and the live session cache) are gone. The child is still recorded and
     // cut off below, exactly like a Stop, so it can never run unowned.
     const rootForgotten = !childAgentPolicyForSession(contextRef.current.policies, request.sessionId);
+    const targetChangedWhileStarting = executionTargetChanged();
     ctx.bindThreadToProject(childThreadId, logicalPath);
     ctx.rememberThread(result.thread);
     ctx.setThreads((current) => upsertThread(current, result.thread));
@@ -713,7 +727,7 @@ export function useChildAgents(context: ChildAgentContext): {
     // leave invisible work editing the project. Only claim success after the
     // provider confirms the hard cutoff; otherwise the still-live child stays
     // in the roster for the user to see and retry stopping.
-    if (stoppedWhileStarting || rootForgotten) {
+    if (stoppedWhileStarting || rootForgotten || targetChangedWhileStarting) {
       try {
         if (isChildActive(taskStatusOf(childThreadId))) {
           const status = await hardStopChild(target.provider, childThreadId, result.turnId, ctx);
@@ -728,6 +742,7 @@ export function useChildAgents(context: ChildAgentContext): {
       }
       throw new Error(rootForgotten
         ? "This thread was removed while the sub-agent was starting, so the sub-agent was stopped."
+        : targetChangedWhileStarting ? "This thread's execution folder changed while the sub-agent was starting, so the sub-agent was stopped."
         : "The user stopped this run while the sub-agent was starting.");
     }
 

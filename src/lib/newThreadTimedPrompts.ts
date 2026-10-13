@@ -25,6 +25,8 @@ export interface NewThreadSettingsSnapshot {
   ultra: boolean;
   permission: PermissionMode;
   serviceTier: string | null;
+  projectInstructionsEnabled?: boolean;
+  projectClaudeInstructionsEnabled?: boolean;
   subagentsEnabled: boolean;
   subagentEngine?: SubagentEngine;
   nativeSubagentMax?: number;
@@ -60,6 +62,8 @@ export function newThreadSnapshot(settings: AppSettings, isolated: boolean): New
     ultra: settings.ultra,
     permission: settings.permission,
     serviceTier: settings.serviceTier ?? null,
+    projectInstructionsEnabled: settings.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: settings.projectClaudeInstructionsEnabled === true,
     subagentsEnabled: settings.subagentsEnabled && (settings.subagentEngine !== "native" || nativeSubagentOptionsError(settings.provider, settings.nativeSubagentOptions) === null),
     subagentEngine: sanitizeSubagentEngine(settings.subagentEngine),
     nativeSubagentMax: sanitizeNativeSubagentMax(settings.nativeSubagentMax),
@@ -79,6 +83,8 @@ export function applyNewThreadSnapshot(settings: AppSettings, snapshot: NewThrea
     ultra: snapshot.ultra,
     permission: snapshot.permission,
     serviceTier: snapshot.serviceTier,
+    projectInstructionsEnabled: snapshot.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: snapshot.projectClaudeInstructionsEnabled === true,
     subagentsEnabled: snapshot.subagentsEnabled && (snapshot.subagentEngine !== "native" || nativeSubagentOptionsError(snapshot.provider, snapshot.nativeSubagentOptions) === null),
     subagentEngine: sanitizeSubagentEngine(snapshot.subagentEngine),
     nativeSubagentMax: sanitizeNativeSubagentMax(snapshot.nativeSubagentMax),
@@ -101,6 +107,8 @@ function sanitizeSnapshot(value: unknown): NewThreadSettingsSnapshot | null {
     ultra: raw.ultra === true,
     permission: raw.permission as PermissionMode,
     serviceTier: typeof raw.serviceTier === "string" ? raw.serviceTier : null,
+    projectInstructionsEnabled: raw.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: raw.projectClaudeInstructionsEnabled === true,
     subagentsEnabled: raw.subagentsEnabled === true && (raw.subagentEngine === undefined || raw.subagentEngine === "mythra" || raw.subagentEngine === "native") && (raw.subagentEngine !== "native" || nativeSubagentOptionsError(raw.provider as Provider, raw.nativeSubagentOptions) === null),
     subagentEngine: sanitizeSubagentEngine(raw.subagentEngine),
     nativeSubagentMax: sanitizeNativeSubagentMax(raw.nativeSubagentMax),

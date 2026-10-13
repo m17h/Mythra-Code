@@ -66,6 +66,7 @@ import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
+import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
 import type { PendingFirstPrompt } from "../lib/pendingFirstPrompt";
@@ -461,7 +462,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel, persistThreadReasoning,
-      persistThreadWorktrees, restartRuntimeForCapabilities, waitForThreadPreparation, beginRunCheckpoint, discardRunCheckpoint,
+      persistThreadWorktrees, waitForThreadPreparation, beginRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
       setThreads, setActiveThread, setAttachments, setDraftThreadIsolated: setContextDraftThreadIsolated,
       setStartingDraftTurn: setContextStartingDraftTurn, setError, setStatus, setTransientStatus,
@@ -684,6 +685,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // visible UI (thread list, active thread) is then skipped, while the
     // thread itself still starts and stays bound to its own project.
     const sendWorkspacePath = normalizedProjectPath(activeWorkspace.path);
+    const originalThreadBinding = activeThread ? threadProjectBindingsRef.current?.[activeThread.id] : undefined;
+    const sendThreadBinding = originalThreadBinding === undefined ? undefined : normalizedProjectPath(originalThreadBinding);
     const selectedThreadAtSend = useTaskStore.getState().activeThreadId;
     let activatedCreatedThreadId: string | undefined;
     const workspaceChangedMidSend = () => activeWorkspacePathRef.current !== sendWorkspacePath;
@@ -725,12 +728,26 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let provisionalPersisted = false;
     let childBridge: ChildAgentBridgeResult | null = null;
     const sentAttachments = [...attachments];
+    let preparedExecutionPath: string | undefined;
     const assertCanStart = () => {
       if (cursorAttempt && (cursorAttempt.owner.closed || !isCurrentCursorTurnStart(startedThreadId ?? startingThreadId!, cursorAttempt))) {
         throw new CancelledTurnStart("This Cursor start was superseded");
       }
       if (pendingStart?.cancelRequested || (!activeThread && draftCancelled())) {
         throw new CancelledTurnStart("Stopped before starting the model turn");
+      }
+      if (activeThread) {
+        const binding = threadProjectBindingsRef.current?.[activeThread.id];
+        const liveThreadBinding = binding === undefined ? undefined : normalizedProjectPath(binding);
+        const liveIsolation = threadWorktreesRef.current[activeThread.id];
+        if (liveIsolation?.status === "missing" || liveIsolation?.status === "removed") {
+          throw new CancelledTurnStart("The thread's isolated worktree became unavailable before starting the model turn");
+        }
+        if (liveThreadBinding !== sendThreadBinding
+          || preparedExecutionPath !== undefined
+            && normalizedProjectPath(executionPathFor(activeThread.id, activeWorkspace.path)) !== normalizedProjectPath(preparedExecutionPath)) {
+          throw new CancelledTurnStart("The thread's execution folder changed before starting the model turn");
+        }
       }
       // Preparation can await skill scans, bridges, worktrees and checkpoints.
       // A scheduled first prompt has no task identity during the early awaits,
@@ -893,6 +910,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // Learned documents never enter authored skill resolution or saved
       // settings/child baselines. Read the captured target's current documents
       // once for this new turn; steering keeps its running policy frozen.
+      assertCanStart();
       resolvedSystemPrompt = await appendCurrentLearnedPreferences(resolvedSystemPrompt, activeProject?.id ?? null);
       assertCanStart();
       let executionPath = activeWorkspace.path;
@@ -902,6 +920,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       } else if (activeThread) {
         executionPath = executionPathFor(activeThread.id, activeWorkspace.path);
       }
+      preparedExecutionPath = executionPath;
+      assertCanStart();
+      resolvedSystemPrompt = await appendProjectInstructionContext(
+        resolvedSystemPrompt, activeProject ? executionPath : null, effectiveSettings, assertCanStart,
+      );
       assertCanStart();
       if (isPullRequestMutationRunning(executionPath)) {
         throw new Error("Wait for the pull request operation to finish before starting another model turn.");
@@ -931,6 +954,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         systemPrompt: effectiveSettings.systemPrompt,
         providerSystemPrompts: subscriptionSystemPrompts,
         projectInstructionsEnabled: effectiveSettings.projectInstructionsEnabled,
+        projectClaudeInstructionsEnabled: effectiveSettings.projectClaudeInstructionsEnabled === true,
         reasoningEffort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
         serviceTier: effectiveSettings.serviceTier,
         readiness: childAgentReadiness,
@@ -1071,7 +1095,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // switch real; a runtime that restarted since then has nothing loaded
         // and takes the new config from the resume alone.
         const plan = planSubagentCapabilities(threadId, runtimeInstance, capabilities, currentRuntime.loaded);
-        if (plan.restartRuntime) runtimeInstance = await restartRuntimeForCapabilities(threadId, true);
+        if (plan.restartRuntime) runtimeInstance = await contextRef.current.restartRuntimeForCapabilities(threadId, true);
         assertCanStart();
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });

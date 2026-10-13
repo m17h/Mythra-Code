@@ -3,6 +3,7 @@ import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
 import { skillMentionRanges } from "../lib/skillMentions";
+import { mergePromptProfileDrafts } from "../lib/instructionFiles";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   BadgeDollarSign,
@@ -56,6 +57,7 @@ import {
   type ChildAgentReadiness,
 } from "../lib/childAgents";
 import type { LocalSkill } from "../lib/skills";
+import type { InstructionFileDescriptor } from "../lib/instructionFiles";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
 import { HarnessSettings } from "./HarnessSettings";
@@ -408,6 +410,11 @@ export function SettingsModal({
   onGitHubClone,
   onError,
   profiles,
+  globalInstructionFiles = [],
+  globalInstructionDiscoveryBusy = false,
+  globalInstructionDiscoveryError = "",
+  onRefreshGlobalInstructionFiles,
+  onGlobalInstructionFileSaved,
   agents,
   actions,
   schedules,
@@ -520,6 +527,11 @@ export function SettingsModal({
   onGitHubClone: (url: string, parentFolder: string) => Promise<boolean>;
   onError: (error: string | null) => void;
   profiles: PromptProfile[];
+  globalInstructionFiles?: InstructionFileDescriptor[];
+  globalInstructionDiscoveryBusy?: boolean;
+  globalInstructionDiscoveryError?: string;
+  onRefreshGlobalInstructionFiles?: () => Promise<void> | void;
+  onGlobalInstructionFileSaved?: (file: InstructionFileDescriptor) => void;
   agents: CustomAgentProfile[];
   actions: ProjectAction[];
   schedules: ScheduledTask[];
@@ -579,6 +591,7 @@ export function SettingsModal({
   const analyzeCodexPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "openai", text, "")), [local.systemPrompt, onAnalyzeSkillDependencies]);
   const analyzeClaudePrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "claude", "", text)), [local.systemPrompt, onAnalyzeSkillDependencies]);
   const [localProjects, setLocalProjects] = useState(projects);
+  const [localProfiles, setLocalProfiles] = useState(profiles);
   const [expandedPresetId, setExpandedPresetId] = useState<string | null>(null);
   const [renamingPresetId, setRenamingPresetId] = useState<string | null>(null);
   const [creatingPreset, setCreatingPreset] = useState(false);
@@ -677,7 +690,7 @@ export function SettingsModal({
   // Invalid text never reaches the draft, so it blocks Save instead of being
   // silently replaced by the previous limit or read as "disabled".
   const terminalTimeoutInvalid = terminalTimeoutTyped === null;
-  const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || terminalTimeoutTyped !== terminalTimeoutMinutes);
+  const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || JSON.stringify(localProfiles) !== JSON.stringify(profiles) || terminalTimeoutTyped !== terminalTimeoutMinutes);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
@@ -693,7 +706,7 @@ export function SettingsModal({
   // Snapshot of the props the current drafts were seeded from, so external
   // updates while the modal is open can tell "user edited this" apart from
   // "still the value we started with".
-  const draftBaselineRef = useRef({ settings, projects });
+  const draftBaselineRef = useRef({ settings, projects, profiles });
   const wasOpenRef = useRef(false);
   useEffect(() => {
     if (!open) {
@@ -705,11 +718,12 @@ export function SettingsModal({
       // prop change wiped in-progress edits (e.g. cloning a repo from the
       // GitHub pane updates `projects` and used to discard a drafted prompt).
       wasOpenRef.current = true;
-      draftBaselineRef.current = { settings, projects };
+      draftBaselineRef.current = { settings, projects, profiles };
       const seeded = settingsWithOnboardingDraft(settings, initialDraft, lmStudioModels[0]?.id);
       setLocal(seeded);
       setAccountProvider(seeded.provider);
       setLocalProjects(projects);
+      setLocalProfiles(profiles);
       setExpandedPresetId(null);
       setRenamingPresetId(null);
       setCreatingPreset(false);
@@ -748,8 +762,11 @@ export function SettingsModal({
         });
       });
     }
-    draftBaselineRef.current = { settings, projects };
-  }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
+    if (profiles !== baseline.profiles) {
+      setLocalProfiles((current) => mergePromptProfileDrafts(baseline.profiles, current, profiles));
+    }
+    draftBaselineRef.current = { settings, projects, profiles };
+  }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, profiles, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
 
   useEffect(() => {
     if (open && initialSection === "general" && !initialDraft?.appearance && appUpdater.phase === "available") {
@@ -1089,6 +1106,7 @@ export function SettingsModal({
     const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects));
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
     onProjects(nextProjects);
+    onProfiles(mergePromptProfileDrafts(draftBaselineRef.current.profiles, localProfiles, profiles));
     onSave({
       ...local,
       childAgents: normalizedSubagents.childAgents,
@@ -1353,19 +1371,23 @@ export function SettingsModal({
               <div className="set-card">
                 <div className="set-row">
                   <div className="set-copy">
-                    <strong>Project AGENTS.md discovery</strong>
-                    <small>Allow AGENTS.md guidance from the active project for its threads, up to 32&nbsp;KB.</small>
+                    <strong className="instruction-profile-title"><ProviderLogo provider="openai" size={16} />Project AGENTS.md discovery</strong>
+                    <small>Read AGENTS.md from the project root, preferring a non-empty AGENTS.override.md when present.</small>
                   </div>
                   <div className="set-control">
                     <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button>
                   </div>
                 </div>
-                <div className="set-body">
-                  <div className="prompt-file-notice" role="note">
-                    <Info size={16} />
-                    <p><strong>Global instruction files are not inherited.</strong> Your global <code>CLAUDE.md</code> and <code>AGENTS.md</code> do not affect Mythra Code. Add those instructions to the prompt fields below instead. Project-level AGENTS.md files can still be discovered when the setting above is enabled.</p>
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong className="instruction-profile-title"><ProviderLogo provider="claude" size={16} />Project CLAUDE.md discovery</strong>
+                    <small>Read CLAUDE.md from the project root, or .claude/CLAUDE.md if the root file is absent.</small>
+                  </div>
+                  <div className="set-control">
+                    <button type="button" role="switch" aria-label="Project CLAUDE.md discovery" aria-checked={local.projectClaudeInstructionsEnabled} className={`toggle-switch ${local.projectClaudeInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectClaudeInstructionsEnabled: !local.projectClaudeInstructionsEnabled })}><span /></button>
                   </div>
                 </div>
+                <div className="set-body"><p>Enabled files provide guidance to every model used in a project, with a combined 32&nbsp;KB limit. Nested folders and file imports are not scanned. Changes apply to future turns. Global files are optional presets below.</p></div>
               </div>
             </div>
 
@@ -1389,7 +1411,7 @@ export function SettingsModal({
                   </div>
                 </div>
                 <div className="set-row stack">
-                  <div className="set-copy"><strong>Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads.</small></div>
+                  <div className="set-copy"><strong className="instruction-profile-title"><ProviderLogo provider="openai" size={16} />Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads. Editing this app-specific copy does not change AGENTS.md.</small></div>
                   <div className="set-control">
                     <SkillPromptEditor
                       ref={codexPromptRef}
@@ -1405,7 +1427,7 @@ export function SettingsModal({
                   </div>
                 </div>
                 <div className="set-row stack">
-                  <div className="set-copy"><strong>Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads.</small></div>
+                  <div className="set-copy"><strong className="instruction-profile-title"><ProviderLogo provider="claude" size={16} />Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads. Editing this app-specific copy does not change CLAUDE.md.</small></div>
                   <div className="set-control">
                     <SkillPromptEditor
                       ref={claudePromptRef}
@@ -1426,16 +1448,23 @@ export function SettingsModal({
                     <span><Check size={13} /> Global layer first</span>
                     <span><Check size={13} /> Subscription layer second</span>
                     <span><Check size={13} /> AGENTS.md discovery {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
+                    <span><Check size={13} /> CLAUDE.md discovery {local.projectClaudeInstructionsEnabled ? "enabled" : "disabled"}</span>
                   </div>
                 </div>
               </div>
             </div>
           </section>}
 
-          {(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools") && <HarnessSettings
-            section={settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools"}
+          <div hidden={!(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools")}><HarnessSettings
+            section={(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools") ? settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools" : "prompts"}
+            visible={open && settingsSection === "prompts"}
             settings={local}
-            profiles={profiles}
+            profiles={localProfiles}
+            globalInstructionFiles={globalInstructionFiles}
+            globalInstructionDiscoveryBusy={globalInstructionDiscoveryBusy}
+            globalInstructionDiscoveryError={globalInstructionDiscoveryError}
+            onRefreshGlobalInstructionFiles={onRefreshGlobalInstructionFiles}
+            onGlobalInstructionFileSaved={onGlobalInstructionFileSaved}
             agents={agents}
             actions={actions}
             schedules={schedules}
@@ -1446,7 +1475,7 @@ export function SettingsModal({
             modelCatalogs={subAgentModelCatalogs}
             onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
             onSettings={setLocal}
-            onProfiles={onProfiles}
+            onProfiles={setLocalProfiles}
             onAgents={onAgents}
             onActions={onActions}
             onSchedules={onSchedules}
@@ -1457,7 +1486,7 @@ export function SettingsModal({
             onMcpChanged={onMcpChanged}
             scheduleRuns={scheduleRuns}
             onOpenRun={onOpenRun}
-          />}
+          /></div>
 
           {settingsSection === "tools" && <LanguageToolsSettings />}
 

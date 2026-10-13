@@ -6,7 +6,7 @@ export interface AppShortcutContext {
   commandPaletteOpen: boolean;
   threadOpen: boolean;
   running: boolean;
-  /** Defaults on for existing callers; only explicit false disables run stopping. */
+  /** Off unless explicitly enabled, including callers without a saved value. */
   escapeStopsRun?: boolean;
   /** Whether the Workspace dock is currently open and can be toggled. */
   workspaceOpen: boolean;
@@ -81,7 +81,7 @@ export function useAppShortcuts(context: AppShortcutContext): void {
       if (event.key === "Escape" && !isEditableShortcutTarget(event.target)) {
         // When enabled, stopping takes priority over dismissing the Workspace.
         // Disabling this shortcut leaves Escape available to transient surfaces.
-        if (current.running && current.escapeStopsRun !== false) {
+        if (current.running && current.escapeStopsRun === true) {
           event.preventDefault();
           current.stopTurn();
           return;
