@@ -43,6 +43,7 @@ import { resolveThreadTitleModel } from "../lib/threadTitles";
 import { formatGitError, friendlyError } from "../lib/errors";
 import { resolveProviderSystemPrompt } from "../lib/systemPrompt";
 import { useModalFocus } from "../hooks/useModalFocus";
+import { useSettingsSheetResize } from "../hooks/useSettingsSheetResize";
 import { AnthropicLogo, ClaudeLogo, CodexLogo, CursorDarkAppIcon, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo, ProviderLogo } from "./BrandLogos";
 import type { LMStudioModel } from "../lib/lmStudio";
 import { updateProgress, type AppUpdater } from "../lib/appUpdater";
@@ -1060,6 +1061,8 @@ export function SettingsModal({
   // A soft fade at the bottom of the pane says "there is more" without
   // adding chrome; it disappears once the pane is scrolled to its end.
   const contentRef = useRef<HTMLDivElement>(null);
+  const wideSheet = settingsSection === "usage" || settingsSection === "pricing";
+  useSettingsSheetResize(dialogRef, contentRef, wideSheet ? "wide" : "reading", open);
   const terminalTimeoutInputRef = useCallback((input: HTMLInputElement | null) => {
     if (!input) return;
     const onWheel = (event: WheelEvent) => {
@@ -1134,7 +1137,7 @@ export function SettingsModal({
 
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
-      <div ref={dialogRef} className={`settings-modal${settingsSection === "usage" || settingsSection === "pricing" ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className={`settings-modal${wideSheet ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
             <div className="settings-nav-head">
@@ -1365,7 +1368,6 @@ export function SettingsModal({
 
           {settingsSection === "prompts" &&
           <section className="settings-section">
-            <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
             <div className="set-group">
               <h4>Project instructions</h4>
               <div className="set-card">
@@ -1487,6 +1489,10 @@ export function SettingsModal({
             scheduleRuns={scheduleRuns}
             onOpenRun={onOpenRun}
           /></div>
+
+          {settingsSection === "prompts" && <section className="settings-section preference-learning-section">
+            <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
+          </section>}
 
           {settingsSection === "tools" && <LanguageToolsSettings />}
 
@@ -1902,7 +1908,7 @@ export function SettingsModal({
                 {accountProvider === "openai" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "claude" ? "selected" : ""}`} aria-pressed={accountProvider === "claude"} onClick={() => setAccountProvider("claude")}>
-                <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={17} />}</span>
+                <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={18} />}</span>
                 <span><strong>Anthropic</strong><small>Claude Code subscription</small></span>
                 <span className={`provider-status ${claudeStatus?.loggedIn ? "on" : ""}`}>{claudeStatus?.loggedIn ? "Connected" : claudeStatus?.available ? "Not signed in" : "Claude Code needed"}</span>
                 {accountProvider === "claude" && <Check size={16} />}

@@ -237,7 +237,7 @@ export function ThreadInboxCard({
         <ScheduledCountBadge threadPrompts={scheduledPromptCount} label={`${scheduledPromptCount} scheduled prompt${scheduledPromptCount === 1 ? "" : "s"} in this thread`} />
         {pinned && <Pin className="thread-card-pin" size={12} aria-label="Pinned" />}
         <span className={`thread-card-provider ${provider}`} title={`${providerName} thread`} aria-label={`${providerName} thread`}>
-          <ProviderLogo provider={provider} size={13} />
+          <ProviderLogo provider={provider} size={provider === "claude" ? 14 : 13} />
         </span>
       </span>
     </button>

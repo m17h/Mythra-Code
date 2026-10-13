@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Info } from "lucide-react";
 import type { Project, Provider } from "../types";
 import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
@@ -20,6 +20,7 @@ import {
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import type { ChildAgentModelOption } from "./ChildAgentRoster";
 import { PixelWorkingMark } from "./PixelWorkingMark";
+import { InfoPopover } from "./InfoPopover";
 import "./PreferenceLearningSettings.css";
 
 type Props = {
@@ -35,36 +36,12 @@ const PROVIDERS: Provider[] = ["openai", "claude", "cursor", "openrouter", "lmst
 const historyCount = (value: number, label: string) => `${value} ${label}${value === 1 ? "" : "s"}`;
 
 function LearningExperimentalNotice() {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = () => { setOpen(false); setPinned(false); };
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) close(); };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || document.querySelector('[data-approval-modal], [data-skill-remove-modal], [role="alertdialog"][aria-modal="true"]')) return;
-      event.preventDefault(); event.stopPropagation();
-      close();
-    };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", escape, true);
-    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape, true); };
-  }, [open, pinned]);
-  return <div ref={root} className="preference-learning-experimental"
-    onMouseLeave={(event) => { if (!pinned && !event.currentTarget.contains(document.activeElement)) setOpen(false); }}
-    onBlur={(event) => { if (!pinned && !event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
-    <button type="button" className="preference-learning-info" aria-label="About experimental preference learning"
-      aria-expanded={open} aria-controls={open ? id : undefined} aria-describedby={open ? id : undefined}
-      onMouseEnter={() => setOpen(true)} onFocus={() => setOpen(true)}
-      onClick={() => { setPinned(!pinned); setOpen(!pinned); }}>
-      <Info size={14} aria-hidden="true" /><span>Experimental</span>
-    </button>
-    {open && <p id={id} role="tooltip" className="preference-learning-info-message">
+  return <InfoPopover className="preference-learning-experimental" triggerClassName="preference-learning-info"
+    label="About experimental preference learning" trigger={<><Info size={14} aria-hidden="true" /><span>Experimental</span></>}>
+    <p className="preference-learning-info-message">
       <strong>Experimental feature.</strong> Designed to be low-risk: learning adds a separate system prompt for the app or selected project. It does not overwrite your existing prompts or edit project files. Learned instructions can still affect answers; review or disable them at any time. Analyzing chats shares selected text with your chosen provider and uses quota or credits.
-    </p>}
-  </div>;
+    </p>
+  </InfoPopover>;
 }
 
 function settingsError(failure: unknown): string {

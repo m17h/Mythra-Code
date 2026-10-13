@@ -32,9 +32,10 @@
 .preference-learning-history-progress p { margin: 0; }
 .preference-learning-history-progress p + p { margin-top: 6px; }
 .preference-learning-experimental { margin: 0 0 8px; }
+.preference-learning-section { margin-top: var(--s-6); padding-top: var(--s-4); border-top: 1px solid var(--line); }
 .preference-learning-info { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--muted-2); font-size: var(--fs-meta); cursor: pointer; }
 .preference-learning-info:hover,
 .preference-learning-info[aria-expanded="true"] { color: var(--ink-2); background: var(--panel-3); }
 .preference-learning-info:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
-/* In-flow help stays readable inside the Settings scroller at every app scale. */
-.preference-learning-info-message { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-3); color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
+/* The shared floating popover owns the surface and viewport placement. */
+.preference-learning-info-message { margin: 0; }

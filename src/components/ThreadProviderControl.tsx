@@ -77,7 +77,7 @@ export function ThreadProviderControl({
         aria-expanded={open}
         disabled={disabled}
       >
-        <span className={`provider-mark ${provider}`}><ProviderLogo provider={provider} size={13} /></span>
+        <span className={`provider-mark ${provider}`}><ProviderLogo provider={provider} size={provider === "claude" ? 16 : 13} /></span>
         <span className="openrouter-trigger-copy"><small>Provider</small><strong>{label}</strong></span>
         <ChevronDown size={12} />
       </button>
@@ -100,7 +100,7 @@ export function ThreadProviderControl({
                 if (entry.id !== provider) onProvider(entry.id);
               }}
             >
-              <span className={`provider-mark ${entry.id}`}><ProviderLogo provider={entry.id} size={14} /></span>
+              <span className={`provider-mark ${entry.id}`}><ProviderLogo provider={entry.id} size={entry.id === "claude" ? 16 : 14} /></span>
               <span><strong>{entry.label}</strong><small>{entry.id === provider ? (threadStarted ? "Current thread" : "Selected for this thread") : threadStarted ? `Hand off to ${entry.label}` : entry.detail}</small></span>
               {entry.id === provider && <Check size={14} />}
             </button>
