@@ -155,7 +155,7 @@ export function ClaudeModelControl({
           }}
         >
           <span className="openrouter-logo claude-logo">
-            <ClaudeProviderLogo size={15} />
+            <ClaudeProviderLogo size={16} />
           </span>
           <span className="openrouter-trigger-copy">
             <small>Model</small>
@@ -198,7 +198,7 @@ export function ClaudeModelControl({
                   }}
                 >
                   <span className="openrouter-provider-mark claude-logo">
-                    <ClaudeProviderLogo size={13} />
+                    <ClaudeProviderLogo size={16} />
                   </span>
                   <span>
                     <strong>{entry.displayName}</strong>

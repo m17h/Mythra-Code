@@ -432,7 +432,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .thread-card-pr.closed { color: var(--red); border-color: color-mix(in srgb, var(--red) 26%, var(--line)); background: color-mix(in srgb, var(--red) 7%, transparent); }
 .thread-card-pr.draft { color: var(--muted-2); border-style: dashed; }
 .thread-card-provider { display: grid; flex: 0 0 auto; width: 19px; height: 19px; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--ink-2); background: color-mix(in srgb, var(--text) 5%, transparent); }
-.thread-card-provider.claude { border-color: rgba(217,119,87,.38); color: #fff; background: #d97757; }
+.thread-card-provider.claude { width: 20px; height: 20px; border-color: rgba(217,119,87,.38); color: #fff; background: #d97757; }
 .thread-card-provider.openai { color: #fff; background: #1a1d18; }
 .thread-card-provider.openrouter { color: #c8ff00; background: rgba(200,255,0,.08); }
 .thread-card-provider.lmstudio { border-color: transparent; background: transparent; }
@@ -569,6 +569,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .composer-provider-control { --router-accent: var(--green); }
 .provider-mark { width: 22px; height: 22px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--r-xs); color: #fff; background: #1a1d18; }
 .provider-mark.claude { background: #d97757; }
+/* Match Claude's model tile and keep its glyph on whole-pixel insets.
+   Chat-history avatars intentionally retain their existing presentation. */
+.composer-provider-control .provider-mark.claude { width: 24px; height: 24px; }
 .provider-mark.openrouter { color: #c8ff00; background: rgba(200,255,0,.08); }
 .provider-mark.lmstudio { background: transparent; }
 .provider-mark.cursor { color: #26251e; background: #edecec; }
@@ -1235,17 +1238,25 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(2,3,4,.68); backdrop-filter: blur(7px); }
 .settings-backdrop { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 210ms ease, visibility 0s linear 300ms, backdrop-filter 260ms ease; }
 .settings-backdrop.open { opacity: 1; visibility: visible; pointer-events: auto; animation: settings-backdrop-enter 210ms ease both; transition-delay: 0s; }
-.settings-modal { --settings-target-width: 920px; position: relative; width: min(var(--settings-target-width), 100%); height: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease, width 320ms cubic-bezier(.2,.86,.24,1), height 320ms cubic-bezier(.2,.86,.24,1); }
+.settings-modal { --settings-target-width: 920px; position: relative; width: min(var(--settings-target-width), 100%); height: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
 /* The usage dashboard's charts and tables get a wider sheet; other sections keep the reading width.
-   The real box resizes (the backdrop grid keeps it centred) so text never scales. Keep resizing
-   through the exit too, so closing midway doesn't snap. Sizes are percentages of the backdrop's padded
-   grid area rather than vh, so they stay inside the window under the shell's UI-scale zoom. */
+   The real box resizes (the backdrop grid keeps it centred) so text never scales. Sizes are
+   percentages of the backdrop's padded grid area rather than vh, so they stay inside the window
+   under the shell's UI-scale zoom. useSettingsSheetResize animates the switch, not a CSS transition:
+   a width/height transition would re-lay out and repaint the newly mounted pane body every frame. */
 .settings-modal.settings-modal-wide { --settings-target-width: 1200px; height: min(880px, 100%); }
+/* While the sheet resizes, the pane body keeps the box it was laid out in at the destination,
+   isolated on its own layer, and the clipped sheet reveals or covers it. Only the frame, navigation,
+   header and footer follow the moving edges; the footer rides the bottom edge so Cancel and Save stay
+   in place. The hold lasts one resize, so fixed-position descendants are briefly contained. */
+.settings-modal[data-sheet-resizing] .settings-pane { position: relative; }
+.settings-modal[data-sheet-resizing] .settings-content { flex: none; height: var(--settings-content-hold); contain: strict; will-change: transform; }
+.settings-modal[data-sheet-resizing] .modal-footer { position: absolute; right: 0; bottom: 0; left: 0; }
 /* The entrance only fills backwards: its last frame equals the open style, so once it ends it
    releases the sheet instead of holding transform and filter over every later resize. */
 .settings-backdrop.open .settings-modal { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); animation: settings-modal-enter 300ms cubic-bezier(.2,.86,.24,1) backwards; }
 .settings-backdrop.closed { animation: settings-backdrop-exit 240ms ease both; transition: none; }
-.settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); animation: settings-modal-exit 240ms cubic-bezier(.4,0,.8,.2) both; transition: background 260ms ease, width 320ms cubic-bezier(.2,.86,.24,1), height 320ms cubic-bezier(.2,.86,.24,1); }
+.settings-backdrop.closed .settings-modal { transform: translateY(14px) scale(.975); animation: settings-modal-exit 240ms cubic-bezier(.4,0,.8,.2) both; transition: background 260ms ease; }
 @keyframes settings-backdrop-exit { from { opacity: 1; visibility: visible; backdrop-filter: blur(7px); } to { opacity: 0; visibility: hidden; backdrop-filter: blur(0); } }
 @keyframes settings-modal-exit { from { opacity: 1; transform: translateY(0) scale(1); filter: saturate(1); } to { opacity: 0; transform: translateY(14px) scale(.975); filter: saturate(.72); } }
 @media (prefers-reduced-motion: reduce) {
@@ -1974,6 +1985,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .openrouter-trigger { width: 100%; height: 46px; display: grid; grid-template-columns: 26px minmax(0,1fr) 16px; align-items: center; gap: var(--s-2); padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text); background: var(--field); box-shadow: none; cursor: pointer; text-align: left; transition: border-color var(--t-mid) ease, background var(--t-mid) ease; }
 .openrouter-trigger:hover, .openrouter-picker.open .openrouter-trigger { border-color: color-mix(in srgb, var(--router-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--router-accent) 5%, var(--field)); box-shadow: none; }
 .openrouter-logo { width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r-xs); color: #16111d; background: var(--router-accent); box-shadow: none; }
+.claude-control .openrouter-logo { color: #fff; background: #d97757; }
 .openrouter-logo.openrouter-brand-logo { color: #c8ff00; background: rgba(200,255,0,.08); }
 .app-shell[data-color-scheme="light"] .openrouter-logo.openrouter-brand-logo { color: #7624f4; background: rgba(118,36,244,.07); }
 .cursor-control { --router-accent: #edecec; --router-accent-2: #b9b8b3; }
