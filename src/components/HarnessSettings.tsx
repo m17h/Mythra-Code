@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Bot, Check, ChevronDown, MessageSquare, NotebookPen, Play, Plus, Save, Trash2, Workflow, Wrench } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { Bot, Check, ChevronDown, Eye, Info, MessageSquare, NotebookPen, Play, Plus, RotateCcw, Save, Trash2, Workflow, Wrench } from "lucide-react";
 import type { AppSettings, CustomAgentProfile, Project, ProjectAction, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleIntervalUnit, ScheduleThreadMode } from "../types";
 import { rpc } from "../lib/codex";
 import { confirmDialog } from "../lib/confirmDialog";
@@ -8,17 +8,20 @@ import { scheduleRunSnapshot } from "../lib/turnConfig";
 import { scheduleIntervalLabel, scheduleIntervalMinutes } from "../lib/schedules";
 import { providerDisplayName } from "../lib/childAgents";
 import { DEFAULT_OPENAI_MODEL } from "../lib/appConfig";
+import { applyPromptProfile, copyGlobalInstructionProfile, globalInstructionProfiles, instructionFileStatusLabel, promptProfileIsSelected, type InstructionFileDescriptor } from "../lib/instructionFiles";
 import type { LocalSkill } from "../lib/skills";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { workflowFromSchedule } from "../lib/workflows";
 import { WorkflowManager } from "./WorkflowManager";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import { ProviderLogo } from "./BrandLogos";
+import { GlobalInstructionFileEditor, retainedGlobalInstructionEditorFiles, type GlobalInstructionEditorState } from "./GlobalInstructionFileEditor";
 import type { ChildAgentModelOption } from "./ChildAgentRoster";
 
 export interface McpServerView { name: string; status: string; tools: number }
 
 const SCHEDULE_PROVIDERS: Provider[] = ["openai", "openrouter", "lmstudio"];
+const EMPTY_GLOBAL_INSTRUCTION_FILES: InstructionFileDescriptor[] = [];
 const SCHEDULE_CHAT_TARGET = "__mythra_normal_chats__";
 const SCHEDULE_INTERVAL_UNITS: AppSelectOption[] = [
   { value: "minutes", label: "Minutes" },
@@ -64,10 +67,16 @@ function initialScheduleRun(
   return scheduleRunSnapshot({ ...settings, provider, model });
 }
 
-export function HarnessSettings({ section, settings, profiles, agents, actions, schedules, workflows, workflowRuns, projects, skills, modelCatalogs, onDiscoverOpenRouterModels, onSettings, onProfiles, onAgents, onActions, onSchedules, onWorkflows, onRunWorkflow, onStopWorkflow, mcpServers = [], onMcpChanged, scheduleRuns = [], onOpenRun }: {
+export function HarnessSettings({ section, visible = true, settings, profiles, globalInstructionFiles = EMPTY_GLOBAL_INSTRUCTION_FILES, globalInstructionDiscoveryBusy = false, globalInstructionDiscoveryError = "", onRefreshGlobalInstructionFiles, onGlobalInstructionFileSaved, agents, actions, schedules, workflows, workflowRuns, projects, skills, modelCatalogs, onDiscoverOpenRouterModels, onSettings, onProfiles, onAgents, onActions, onSchedules, onWorkflows, onRunWorkflow, onStopWorkflow, mcpServers = [], onMcpChanged, scheduleRuns = [], onOpenRun }: {
   section: "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools";
+  visible?: boolean;
   settings: AppSettings;
   profiles: PromptProfile[];
+  globalInstructionFiles?: InstructionFileDescriptor[];
+  globalInstructionDiscoveryBusy?: boolean;
+  globalInstructionDiscoveryError?: string;
+  onRefreshGlobalInstructionFiles?: () => Promise<void> | void;
+  onGlobalInstructionFileSaved?: (file: InstructionFileDescriptor) => void;
   agents: CustomAgentProfile[];
   actions: ProjectAction[];
   schedules: ScheduledTask[];
@@ -77,8 +86,8 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   skills: LocalSkill[];
   modelCatalogs?: Partial<Record<Provider, ChildAgentModelOption[]>>;
   onDiscoverOpenRouterModels?: (query: string) => void;
-  onSettings: (value: AppSettings) => void;
-  onProfiles: (value: PromptProfile[]) => void;
+  onSettings: (value: AppSettings | ((current: AppSettings) => AppSettings)) => void;
+  onProfiles: (value: PromptProfile[] | ((current: PromptProfile[]) => PromptProfile[])) => void;
   onAgents: (value: CustomAgentProfile[]) => void;
   onActions: (value: ProjectAction[]) => void;
   onSchedules: (value: ScheduledTask[]) => void;
@@ -91,6 +100,43 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   onOpenRun?: (threadId: string) => void;
 }) {
   const [profileName, setProfileName] = useState("");
+  const [previewProfileId, setPreviewProfileId] = useState<string | null>(null);
+  const [savedFileProfileId, setSavedFileProfileId] = useState<string | null>(null);
+  const instructionPreviewId = useId();
+  const [retainedInstructionFiles, setRetainedInstructionFiles] = useState(() => {
+    const files = new Map(retainedGlobalInstructionEditorFiles().map((file) => [`${file.provider}:${file.path}`, file]));
+    for (const file of globalInstructionFiles) files.set(`${file.provider}:${file.path}`, file);
+    return [...files.values()];
+  });
+  const [editorStates, setEditorStates] = useState<Record<string, GlobalInstructionEditorState>>({});
+  useEffect(() => {
+    // Keep owners of earlier paths mounted if override discovery changes the effective source.
+    setRetainedInstructionFiles((current) => {
+      const files = new Map(current.map((file) => [`${file.provider}:${file.path}`, file]));
+      for (const file of globalInstructionFiles) files.set(`${file.provider}:${file.path}`, file);
+      return [...files.values()];
+    });
+  }, [globalInstructionFiles]);
+  const editorFiles = useMemo(() => {
+    const files = new Map(retainedInstructionFiles.map((file) => [`${file.provider}:${file.path}`, file]));
+    for (const file of globalInstructionFiles) files.set(`${file.provider}:${file.path}`, file);
+    return [...files.values()];
+  }, [globalInstructionFiles, retainedInstructionFiles]);
+  const recordEditorState = useCallback((key: string, value: GlobalInstructionEditorState) => {
+    setEditorStates((current) => {
+      const previous = current[key];
+      return previous?.dirty === value.dirty && previous.saving === value.saving && previous.failed === value.failed ? current : { ...current, [key]: value };
+    });
+  }, []);
+  const discoveredProfiles = useMemo(() => globalInstructionProfiles(globalInstructionFiles), [globalInstructionFiles]);
+  const cachedFileSnapshots = Boolean((globalInstructionDiscoveryError || globalInstructionDiscoveryBusy) && globalInstructionFiles.length);
+  useEffect(() => {
+    // Reopening Settings or returning to this pane requires a new preview action.
+    if (!visible || section !== "prompts") {
+      setPreviewProfileId(null);
+      setSavedFileProfileId(null);
+    }
+  }, [section, visible]);
   const [agentName, setAgentName] = useState("");
   const [agentInstructions, setAgentInstructions] = useState("");
   const [actionName, setActionName] = useState("");
@@ -117,8 +163,8 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
       codexPrompt: settings.codexSystemPrompt,
       claudePrompt: settings.claudeSystemPrompt,
     };
-    onProfiles([...profiles, profile]);
-    onSettings({ ...settings, promptProfileId: profile.id });
+    onProfiles((current) => [...current, profile]);
+    onSettings((current) => ({ ...current, promptProfileId: profile.id }));
     setProfileName("");
   };
 
@@ -148,27 +194,83 @@ export function HarnessSettings({ section, settings, profiles, agents, actions, 
   ];
 
   return <>
+    <section className="set-group global-instruction-presets" hidden={section !== "prompts"}>
+      <div className="set-group-head">
+        <h4>Global instruction file presets</h4>
+        {onRefreshGlobalInstructionFiles && <button type="button" className="secondary-button" disabled={globalInstructionDiscoveryBusy} onClick={() => { void onRefreshGlobalInstructionFiles(); }}><RotateCcw size={12} /> {globalInstructionDiscoveryBusy ? "Refreshing…" : "Refresh files"}</button>}
+      </div>
+      <p>Your global Codex AGENTS.md and Claude CLAUDE.md are discovered automatically on this computer. Edit the original file here, or review a preset and choose it for that provider’s app-specific prompt layer. File edits and refresh do not change active prompts or saved copies.</p>
+      <div className="prompt-file-notice" role="note"><Info size={16} /><p><strong>Review before use.</strong> These files may contain personal information or credentials. Discovery reads them locally; selecting a preset includes its instructions in future requests to its provider after you save Settings.</p></div>
+      {globalInstructionDiscoveryError && <div className="instruction-discovery-error" role="alert">{globalInstructionDiscoveryError}{cachedFileSnapshots ? " The cards below are cached snapshots from the last successful discovery. Refresh files to refresh all preset cards before using a file preset." : ""}</div>}
+      {globalInstructionDiscoveryBusy && globalInstructionFiles.length > 0 && <p className="instruction-file-status" role="status">Refreshing files. Showing the last discovery until refresh finishes.</p>}
+      {!globalInstructionFiles.length && <div className="compact-note" role="status"><NotebookPen size={14} /><span><strong>{globalInstructionDiscoveryBusy ? "Discovering global instruction files…" : "No global instruction files available"}</strong><small>{globalInstructionDiscoveryBusy ? "Reading the configured local Codex and Claude folders." : "Refresh to discover your local AGENTS.md and CLAUDE.md."}</small></span></div>}
+      <div className="instruction-file-grid">{editorFiles.map((file) => {
+        const key = `${file.provider}:${file.path}`;
+        const currentSource = globalInstructionFiles.some((current) => current.provider === file.provider && current.path === file.path);
+        const editorState = editorStates[key];
+        const editorPending = Boolean(editorState?.dirty || editorState?.saving || editorState?.failed);
+        const profile = discoveredProfiles.find((item) => item.source?.path === file.path && item.source.provider === (file.provider === "codex" ? "openai" : "claude"));
+        const providerLabel = file.provider === "codex" ? "Codex" : "Claude";
+        const previewOpen = profile?.id === previewProfileId;
+        const selected = Boolean(profile && promptProfileIsSelected(settings, profile));
+        const previewId = `${instructionPreviewId}-${encodeURIComponent(`${file.provider}:${file.path}`)}`;
+        return <div key={key} className={`instruction-file-card ${selected ? "selected" : ""}`} hidden={!currentSource && !editorPending}>
+          <div className="instruction-file-heading"><ProviderLogo provider={file.provider === "codex" ? "openai" : "claude"} size={17} /><strong>{profile?.name ?? `Global ${providerLabel} ${file.path.split(/[\\/]/).pop() || file.name}`}</strong><span className="instruction-source-label">{!currentSource ? "Previous source · draft retained" : cachedFileSnapshots ? "Cached local snapshot" : "Local file"}</span></div>
+          <code className="instruction-source-path">{file.path}</code>
+          <p className="instruction-file-status">{cachedFileSnapshots ? "Last discovery: " : ""}{instructionFileStatusLabel(file)}{profile ? ` · ${file.content?.length ?? 0} characters · ${providerLabel} layer only` : ""}</p>
+          {profile && <>
+            <div className="instruction-file-actions">
+              <button type="button" className="secondary-button" aria-expanded={previewOpen} aria-controls={previewId} onClick={() => setPreviewProfileId(previewOpen ? null : profile.id)}><Eye size={12} /> {previewOpen ? "Hide preview" : cachedFileSnapshots ? "Preview cached copy" : "Preview"}</button>
+              <button type="button" className="secondary-button" disabled={cachedFileSnapshots || editorPending || !currentSource} aria-pressed={selected} onClick={() => onSettings((current) => applyPromptProfile(current, profile))}>{selected && <Check size={12} />} Use for {providerLabel}</button>
+              <button type="button" className="secondary-button" disabled={editorPending} onClick={() => { const copy = copyGlobalInstructionProfile(profile); onProfiles((current) => [...current, copy]); setSavedFileProfileId(profile.id); }}><Save size={12} /> {savedFileProfileId === profile.id ? "Save another copy" : cachedFileSnapshots ? "Save cached copy" : "Save copy"}</button>
+            </div>
+            {savedFileProfileId === profile.id && <p className="instruction-file-status" role="status">Copy added to Prompt profiles below. Save Settings to keep it.</p>}
+            {previewOpen && <div className="instruction-file-preview" id={previewId}><label>{cachedFileSnapshots ? "Cached instructions" : "Instructions"} from {file.path}<textarea aria-label={`${profile.name} preview`} value={file.content ?? ""} readOnly rows={8} spellCheck={false} /></label></div>}
+          </>}
+          <GlobalInstructionFileEditor
+            file={file}
+            visible={visible && section === "prompts" && (currentSource || editorPending)}
+            currentSource={currentSource}
+            onSaved={onGlobalInstructionFileSaved}
+            onStateChange={(value) => recordEditorState(key, value)}
+            onSaveDraftCopy={(content) => {
+              const draftProfile = globalInstructionProfiles([{ ...file, content, status: "ready" }], true)[0];
+              if (!draftProfile) return;
+              const copy = { ...copyGlobalInstructionProfile(draftProfile), name: `Draft of ${draftProfile.name}` };
+              onProfiles((current) => [...current, copy]);
+              setSavedFileProfileId(profile?.id ?? draftProfile.id);
+            }}
+          />
+        </div>;
+      })}</div>
+    </section>
     {section === "prompts" &&
     <section className="set-group">
       <h4>Prompt profiles</h4>
-      <p>Save and switch complete global, Codex, and Claude prompt sets. Mythra Code includes no built-in profiles.</p>
+      <p>Save and switch complete global, Codex, and Claude prompt sets. Copies of instruction file presets keep their source path and apply only to their provider. To edit a copy, use it, edit its prompt layer above, then save a new profile.</p>
       {profiles.length ? (
         <div className="profile-grid">{profiles.map((profile) => {
           const characters = profile.prompt.length + (profile.codexPrompt?.length ?? 0) + (profile.claudePrompt?.length ?? 0);
-          return <div key={profile.id} className={`profile-card ${settings.promptProfileId === profile.id ? "selected" : ""}`}>
-            <button className="profile-apply" onClick={() => onSettings({ ...settings, promptProfileId: profile.id, systemPrompt: profile.prompt, codexSystemPrompt: profile.codexPrompt ?? "", claudeSystemPrompt: profile.claudePrompt ?? "" })}>
-              <span><strong>{profile.name}</strong><small>{characters ? `${characters} characters across all layers` : "Empty prompt set"}</small></span>
-              {settings.promptProfileId === profile.id && <Check size={13} />}
+          const selected = promptProfileIsSelected(settings, profile);
+          const previewId = `${instructionPreviewId}-saved-${encodeURIComponent(profile.id)}`;
+          return <div key={profile.id} className={`profile-card ${selected ? "selected" : ""}`}>
+            <button type="button" className="profile-apply" aria-pressed={selected} onClick={() => onSettings((current) => applyPromptProfile(current, profile))}>
+              <span><strong className="instruction-profile-title">{profile.source && <ProviderLogo provider={profile.source.provider} size={15} />}{profile.name}</strong><small>{profile.source ? `Saved file copy · ${profile.source.provider === "openai" ? "Codex" : "Claude"} layer only` : characters ? `${characters} characters across all layers` : "Empty prompt set"}</small>{profile.source && <small title={profile.source.path}>{profile.source.path}</small>}</span>
+              {selected && <Check size={13} />}
             </button>
             <button className="profile-delete" aria-label={`Delete ${profile.name}`} onClick={async () => {
               if (!await confirmDialog(`Delete the prompt profile “${profile.name}”?`)) return;
-              onProfiles(profiles.filter((item) => item.id !== profile.id));
-              if (settings.promptProfileId === profile.id) onSettings({ ...settings, promptProfileId: "" });
+              onProfiles((current) => current.filter((item) => item.id !== profile.id));
+              onSettings((current) => current.promptProfileId === profile.id ? { ...current, promptProfileId: "" } : current);
             }}><Trash2 size={12} /></button>
+            {profile.source && <div className="saved-instruction-preview">
+              <button type="button" className="secondary-button" aria-expanded={previewProfileId === profile.id} aria-controls={previewId} onClick={() => setPreviewProfileId(previewProfileId === profile.id ? null : profile.id)}><Eye size={12} /> {previewProfileId === profile.id ? "Hide saved preview" : "Preview saved copy"}</button>
+              {previewProfileId === profile.id && <div className="instruction-file-preview" id={previewId}><label>Saved instructions from {profile.source.path}<textarea aria-label={`${profile.name} saved preview`} value={(profile.source.provider === "openai" ? profile.codexPrompt : profile.claudePrompt) ?? ""} readOnly rows={8} spellCheck={false} /></label></div>}
+            </div>}
           </div>;
         })}</div>
       ) : <div className="compact-note"><NotebookPen size={14} /><span><strong>No prompt profiles yet</strong><small>Configure the prompt layers above, then save your first custom profile.</small></span></div>}
-      <div className="inline-create"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Profile name" /><button onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save current prompts</button></div>
+      <div className="inline-create"><input aria-label="New prompt profile name" value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Profile name" /><button type="button" onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save current prompts</button></div>
     </section>}
 
     {section === "agents" && <div className="set-group">

@@ -157,6 +157,7 @@ import { EMPTY_REVIEW_DIFF, parseDiffSections, type ReviewDiff } from "./lib/git
 import { getProjectGitChanges, getProjectGitDiff, getProjectGitFileDiff, getProjectGitHistory } from "./lib/gitInspection";
 import { shellCommand } from "./lib/shellCommand";
 import { resolveProviderSystemPrompt, resolveSystemPrompt } from "./lib/systemPrompt";
+import { flushPendingGlobalInstructionFileEdits, type InstructionFileDescriptor } from "./lib/instructionFiles";
 import { SkillDependencyError } from "./lib/skillDependencies";
 import { blockedSystemPromptTargets, type SkillPromptRepairTarget } from "./lib/skillPromptRepair";
 import { skillMentionRanges } from "./lib/skillMentions";
@@ -470,7 +471,7 @@ const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialPro
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const storedSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -645,6 +646,61 @@ export default function App() {
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
   const [previewUiScale, setPreviewUiScale] = useState<number | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
+  const [globalInstructionFiles, setGlobalInstructionFiles] = useState<InstructionFileDescriptor[]>([]);
+  const [globalInstructionDiscoveryBusy, setGlobalInstructionDiscoveryBusy] = useState(false);
+  const [globalInstructionDiscoveryError, setGlobalInstructionDiscoveryError] = useState<string | null>(null);
+  const globalInstructionDiscoveryGeneration = useRef(0);
+  const globalInstructionDiscoveryPending = useRef<number | null>(null);
+  const refreshGlobalInstructionFiles = useCallback(async () => {
+    const generation = ++globalInstructionDiscoveryGeneration.current;
+    if (!isTauri()) {
+      globalInstructionDiscoveryPending.current = null;
+      setGlobalInstructionDiscoveryBusy(false);
+      setGlobalInstructionDiscoveryError("Local instruction files are available in the desktop app.");
+      return;
+    }
+    globalInstructionDiscoveryPending.current = generation;
+    setGlobalInstructionDiscoveryBusy(true);
+    setGlobalInstructionDiscoveryError(null);
+    try {
+      const files = await invoke<InstructionFileDescriptor[]>("instruction_files_discover_globals");
+      if (generation === globalInstructionDiscoveryGeneration.current) setGlobalInstructionFiles(files);
+    } catch {
+      // Instruction contents can contain private data; never log a raw error.
+      if (generation === globalInstructionDiscoveryGeneration.current) {
+        setGlobalInstructionDiscoveryError("Could not discover global instruction files. Refresh to try again.");
+      }
+    } finally {
+      if (generation === globalInstructionDiscoveryGeneration.current) {
+        globalInstructionDiscoveryPending.current = null;
+        setGlobalInstructionDiscoveryBusy(false);
+      }
+    }
+  }, []);
+  useEffect(() => {
+    // Background discovery never blocks opening a thread or changes active prompts.
+    const timer = window.setTimeout(() => void refreshGlobalInstructionFiles(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      ++globalInstructionDiscoveryGeneration.current;
+      globalInstructionDiscoveryPending.current = null;
+    };
+  }, [refreshGlobalInstructionFiles]);
+  const acceptGlobalInstructionFileSaved = useCallback((file: InstructionFileDescriptor) => {
+    // A single-file receipt cannot certify the other provider's cached file.
+    // Keep all presets visibly stale if saving invalidates a pending full read.
+    if (globalInstructionDiscoveryPending.current !== null) {
+      ++globalInstructionDiscoveryGeneration.current;
+      globalInstructionDiscoveryPending.current = null;
+      setGlobalInstructionDiscoveryBusy(false);
+      setGlobalInstructionDiscoveryError("A file changed while discovery was running. Refresh files to update all preset cards.");
+    }
+    setGlobalInstructionFiles((current) => {
+      const index = current.findIndex((item) => item.provider === file.provider && item.path === file.path);
+      if (index < 0) return [...current.filter((item) => item.provider !== file.provider), file];
+      return current.map((item, position) => position === index ? file : item);
+    });
+  }, []);
   const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
   const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
   const [scheduledTasks, setScheduledTasks] = usePersistedState<ScheduledTask[]>("kiwi.scheduledTasks", []);
@@ -2157,7 +2213,7 @@ export default function App() {
   });
   const scheduleClaudeThreadSave = localTranscriptSaves.schedule;
   const scheduleCursorThreadSave = localTranscriptSaves.schedule;
-  useFlushOnClose(() => flushBeforeClose([localTranscriptSaves.flushAll, flushPendingStateWrites]), setError);
+  useFlushOnClose(() => flushBeforeClose([localTranscriptSaves.flushAll, flushPendingStateWrites, flushPendingGlobalInstructionFileEdits]), setError);
 
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);
@@ -4541,6 +4597,7 @@ export default function App() {
         systemPrompt: threadProviderSettings.systemPrompt,
         providerSystemPrompts: subscriptionSystemPrompts,
         projectInstructionsEnabled: threadProviderSettings.projectInstructionsEnabled,
+        projectClaudeInstructionsEnabled: threadProviderSettings.projectClaudeInstructionsEnabled,
         reasoningEffort: threadProviderSettings.ultra ? "ultra" : threadProviderSettings.reasoningEffort,
         serviceTier: threadProviderSettings.serviceTier,
         readiness: childAgentReadiness,
@@ -5214,6 +5271,10 @@ export default function App() {
     },
     executionPathFor,
     isolationGitDirFor: (threadId) => threadWorktreesRef.current[threadId]?.gitDir,
+    executionTargetUnavailable: (threadId) => {
+      const worktree = threadWorktreesRef.current[threadId];
+      return Boolean(worktree && (worktreeBusy || worktree.status === "missing" || worktree.status === "removed"));
+    },
     serviceNameFor: (threadId) => {
       const boundPath = threadProjectBindingsRef.current?.[threadId];
       return boundPath && chatWorkspacePath && normalizedProjectPath(boundPath) === normalizedProjectPath(chatWorkspacePath)
@@ -5824,6 +5885,7 @@ export default function App() {
     { label: "Base instruction", value: effectiveSettings.systemPrompt ? `${activeProject?.overrides?.systemPrompt ? (activeProject.overrides.systemPromptMode === "append" ? "Mythra Code + project" : "project") : "Mythra Code"} · ${effectiveSettings.systemPrompt.length} chars` : "empty" },
     { label: "Developer instruction", value: `Mythra Code internal · ${mythraCodeDeveloperInstructions(effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine !== "native", effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine !== "native", undefined, undefined, effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native").length} chars` },
     { label: "AGENTS.md discovery", value: settings.projectInstructionsEnabled ? "enabled · up to 32 KB" : "disabled" },
+    { label: "CLAUDE.md discovery", value: settings.projectClaudeInstructionsEnabled ? "enabled · shared 32 KB limit" : "disabled" },
     { label: "Model", value: effectiveSettings.model || "provider default" },
     { label: "Reasoning", value: effectiveSettings.reasoningEffort },
     { label: "Sub-agents", value: effectiveSettings.subagentsEnabled ? effectiveSettings.subagentEngine === "native" ? `native · requested limit ${sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax)}` : `Mythra Code · max ${effectiveSettings.subagentMax}` : "off" },
@@ -5831,7 +5893,7 @@ export default function App() {
     { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
     { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
     { label: "Service tier", value: settings.serviceTier || "standard" },
-  ], [activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.serviceTier, skills, skillsFolder]);
+  ], [activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.projectClaudeInstructionsEnabled, settings.serviceTier, skills, skillsFolder]);
 
   const startReview = async () => {
     if (!activeThread || !activeProject) return;
@@ -7489,10 +7551,22 @@ export default function App() {
     resolveSkillPrompt,
     resolveSkillPrompts,
     bindThreadToProject,
+    executionPathFor,
+    extraRootsForThread: (threadId) => {
+      const gitDir = threadWorktreesRef.current[threadId]?.gitDir;
+      return gitDir ? [gitDir] : [];
+    },
     beginRunCheckpoint,
     discardRunCheckpoint,
     restartRuntimeForCapabilities,
-    threadBusyReason,
+    threadBusyReason: (threadId, ignoreOwnStarting) => {
+      const worktree = threadWorktreesRef.current[threadId];
+      if (worktree?.status === "missing" || worktree?.status === "removed") {
+        return "Restore this thread's isolated worktree before starting its scheduled turn.";
+      }
+      if (worktree && worktreeBusy) return "Wait for the worktree operation to finish before starting its scheduled turn.";
+      return threadBusyReason(threadId, ignoreOwnStarting);
+    },
     onThreadDelegationDisabled: (threadId, options) => {
       persistThreadSubagentSettings((current) => ({ ...current, [threadId]: { ...(current[threadId] ?? DEFAULT_THREAD_SUBAGENT_SETTINGS), enabled: false, autoCompactTokens: options.autoCompactTokens } }));
     },
@@ -8603,6 +8677,11 @@ export default function App() {
         onGitHubClone={cloneGitHubProject}
         onError={setError}
         profiles={promptProfiles}
+        globalInstructionFiles={globalInstructionFiles}
+        globalInstructionDiscoveryBusy={globalInstructionDiscoveryBusy}
+        globalInstructionDiscoveryError={globalInstructionDiscoveryError ?? undefined}
+        onRefreshGlobalInstructionFiles={refreshGlobalInstructionFiles}
+        onGlobalInstructionFileSaved={acceptGlobalInstructionFileSaved}
         onLearnPastConversations={preferenceLearning.requestHistory}
         onCancelPreferenceLearning={preferenceLearning.cancelScope}
         preferenceHistoryProgress={preferenceLearning.historyProgress}

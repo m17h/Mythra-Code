@@ -59,6 +59,7 @@ export interface ChildAgentPolicy {
    * fall back to the root's frozen systemPrompt. */
   providerSystemPrompts?: Partial<Record<Provider, string>>;
   projectInstructionsEnabled: boolean;
+  projectClaudeInstructionsEnabled?: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
   targets: ChildAgentTarget[];
@@ -496,6 +497,7 @@ export interface ChildAgentPolicyInput {
   systemPrompt: string;
   providerSystemPrompts?: Partial<Record<Provider, string>>;
   projectInstructionsEnabled: boolean;
+  projectClaudeInstructionsEnabled?: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
   readiness: ChildAgentReadiness;
@@ -519,7 +521,8 @@ export function childAgentPolicyFor(input: ChildAgentPolicyInput): ChildAgentPol
     permission: input.permission,
     systemPrompt: input.systemPrompt,
     ...(input.providerSystemPrompts ? { providerSystemPrompts: { ...input.providerSystemPrompts } } : {}),
-    projectInstructionsEnabled: input.projectInstructionsEnabled,
+    projectInstructionsEnabled: input.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
     reasoningEffort: input.reasoningEffort,
     serviceTier: input.serviceTier,
     targets: targets.map((target) => ({ ...target })),
@@ -591,6 +594,7 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
         ) as Partial<Record<Provider, string>>,
       } : {}),
       projectInstructionsEnabled: entry.projectInstructionsEnabled === true,
+      projectClaudeInstructionsEnabled: entry.projectClaudeInstructionsEnabled === true,
       reasoningEffort: reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high"
         || reasoningEffort === "xhigh" || reasoningEffort === "max" || reasoningEffort === "ultra"
         ? reasoningEffort

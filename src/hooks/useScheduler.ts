@@ -6,6 +6,7 @@ import type { LMStudioModel } from "../lib/lmStudio";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
+import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "../lib/threadCapabilities";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { parentAutoCompactionUnavailableReason } from "../lib/threadSubagentSettings";
@@ -26,6 +27,10 @@ export interface SchedulerDeps {
   resolveSkillPrompt: (message: string) => Promise<string>;
   resolveSkillPrompts?: (message: string, systemPrompt: string, mentionSource?: string) => Promise<ResolvedSkillPrompts>;
   bindThreadToProject: (threadId: string, projectPath: string) => void;
+  /** Reused conversations can execute in an isolated project worktree. */
+  executionPathFor?: (threadId: string, logicalPath: string) => string;
+  /** Isolated worktrees also need access to their shared Git metadata. */
+  extraRootsForThread?: (threadId: string) => string[];
   /** Automatic pre-turn file snapshot, same lifecycle user turns get. */
   beginRunCheckpoint: (threadId: string, workspacePath: string, prompt: string, provider: Provider, model: string) => Promise<string | undefined>;
   discardRunCheckpoint: (threadId: string, expectedCheckpointId?: string) => void;
@@ -150,11 +155,15 @@ export function useScheduler(deps: SchedulerDeps): void {
     if (run.provider === "openrouter" && !current.openRouterReady) return;
     if (run.provider === "lmstudio" && !current.lmStudioReady) return;
     const reuseThread = scheduled.threadMode === "reuse" && Boolean(scheduled.lastThreadId);
+    let executionPath = reuseThread && scheduled.lastThreadId
+      ? current.executionPathFor?.(scheduled.lastThreadId, project.path) ?? project.path
+      : project.path;
+    let reusingExecutionPath = reuseThread;
     const preparationAnchors = new Map<string, { activeTurnId?: string; pendingTurnStartOrder?: number }>();
     const busyReason = (threadId: string, ownStarting = false): string | null => {
       const state = useTaskStore.getState();
       const task = state.tasks[threadId];
-      const external = current.threadBusyReason?.(threadId, ownStarting);
+      const external = depsRef.current.threadBusyReason?.(threadId, ownStarting);
       if (external) return external;
       if (scheduleThreadIsBusy(threadId, ownStarting) || state.statuses[threadId] === "running" || state.statuses[threadId] === "starting" && !ownStarting
         || state.workflowOwners[threadId] || task?.approvals.length || task?.agents.some((agent) => isActiveAgentRecord(agent.status))
@@ -180,7 +189,10 @@ export function useScheduler(deps: SchedulerDeps): void {
     };
     runningRef.current.set(scheduled.id, preparation);
     const assertCurrent = () => {
-      if (!preparationIsCurrent(preparation, depsRef.current)) {
+      const live = depsRef.current;
+      if (!preparationIsCurrent(preparation, live)
+        || reusingExecutionPath && scheduled.lastThreadId
+          && (live.executionPathFor?.(scheduled.lastThreadId, project.path) ?? project.path) !== executionPath) {
         preparation.revoked = true;
         throw new RevokedSchedulePreparation();
       }
@@ -196,13 +208,14 @@ export function useScheduler(deps: SchedulerDeps): void {
     let turnDispatched = false;
     let turnStarted = false;
     const assertIdle = (threadId: string, ownStarting = false) => {
+      if (ownStarting && !stillOwnsStartingStatus(threadId)) throw new RevokedSchedulePreparation();
       if (scheduleThreadIsBusy(threadId, ownStarting)) throw new BusyScheduleThread();
       const reason = busyReason(threadId, ownStarting);
       if (reason) throw new Error(reason);
     };
     const claimPreparation = (threadId: string) => {
       const state = useTaskStore.getState();
-      state.ensureTask(threadId, project.path);
+      state.ensureTask(threadId, executionPath);
       state.setTaskStatus(threadId, "starting");
       ownsStartingStatus = true;
       const task = useTaskStore.getState().tasks[threadId];
@@ -228,6 +241,20 @@ export function useScheduler(deps: SchedulerDeps): void {
       assertCurrent();
       await current.ensureSkillRoots();
       assertCurrent();
+      // Reserve reused threads before selected-file disk work so Stop still
+      // owns the preparation, without refreshing the runtime to read files.
+      if (reuseThread && scheduled.lastThreadId) {
+        assertIdle(scheduled.lastThreadId);
+        startedThreadId = scheduled.lastThreadId;
+        claimPreparation(scheduled.lastThreadId);
+      }
+      let projectSystemPrompt = await appendProjectInstructionContext(
+        systemPrompt, scheduled.projectId === null ? null : executionPath, run, () => {
+          assertCurrent();
+          if (reuseThread && scheduled.lastThreadId) assertIdle(scheduled.lastThreadId, true);
+        },
+      );
+      assertCurrent();
       const providerPrompt = resolved.prompt;
       // Scheduled roots retain their off policy on every iteration, including
       // old snapshots that predate thread-local delegation authority.
@@ -238,6 +265,17 @@ export function useScheduler(deps: SchedulerDeps): void {
         : undefined;
       const startFreshThread = async () => {
         assertCurrent();
+        const priorExecutionPath = executionPath;
+        reusingExecutionPath = false;
+        executionPath = project.path;
+        // A missing isolated thread falls back to the logical project. Its
+        // root files may differ from the worktree snapshot already read.
+        if (priorExecutionPath !== executionPath) {
+          projectSystemPrompt = await appendProjectInstructionContext(
+            systemPrompt, scheduled.projectId === null ? null : executionPath, run, assertCurrent,
+          );
+          assertCurrent();
+        }
         const instance = await runtimeInstanceId();
         assertCurrent();
         const started = await rpc<{ thread: Thread; model?: unknown }>("thread/start", threadStartParams(runtimeRun, project.path, {
@@ -255,16 +293,17 @@ export function useScheduler(deps: SchedulerDeps): void {
       let started: { thread: Thread; model?: unknown };
       if (reuseThread && scheduled.lastThreadId) {
         const threadId = scheduled.lastThreadId;
-        assertIdle(threadId);
-        startedThreadId = threadId;
-        claimPreparation(threadId);
+        assertIdle(threadId, true);
         const runtime = await runtimeThreadState(threadId);
+        assertCurrent();
         assertIdle(threadId, true);
         const plan = planSubagentCapabilities(threadId, runtime.instance, capabilities, runtime.loaded);
         let instance = runtime.instance;
         if (plan.restartRuntime) {
-          if (!current.restartRuntimeForCapabilities) throw new Error("This scheduled thread needs a safe runtime refresh before delegation can be disabled. The scheduled prompt was not sent.");
-          instance = await current.restartRuntimeForCapabilities(threadId, true);
+          const restart = depsRef.current.restartRuntimeForCapabilities;
+          if (!restart) throw new Error("This scheduled thread needs a safe runtime refresh before delegation can be disabled. The scheduled prompt was not sent.");
+          instance = await restart(threadId, true);
+          assertCurrent();
           assertIdle(threadId, true);
         }
         try {
@@ -273,8 +312,9 @@ export function useScheduler(deps: SchedulerDeps): void {
           started = await rpc<{ thread: Thread; model?: unknown }>("thread/resume", threadResumeParams(
             runtimeRun,
             scheduled.lastThreadId,
-            project.path,
-            { modelContextWindow, refreshRuntimeConfig: true, interactive: false, perTurnSystemPrompt: true },
+            executionPath,
+            { modelContextWindow, refreshRuntimeConfig: true, interactive: false, perTurnSystemPrompt: true,
+              additionalWorkspaceRoots: current.extraRootsForThread?.(threadId) ?? [] },
           ));
           recordSubagentCapabilities(started.thread.id, instance, capabilities);
           startedThreadId = started.thread.id;
@@ -306,17 +346,21 @@ export function useScheduler(deps: SchedulerDeps): void {
       assertIdle(started.thread.id, reuseThread && started.thread.id === scheduled.lastThreadId);
       current.bindThreadToProject(started.thread.id, project.path);
       claimPreparation(started.thread.id);
+      assertCurrent();
+      if (!stillOwnsStartingStatus(started.thread.id)) throw new RevokedSchedulePreparation();
+      assertIdle(started.thread.id, true);
       // Snapshot before the unattended turn edits anything; the Codex event
       // router finalizes it on turn completion like any user turn.
       try {
         assertCurrent();
-        ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, project.path, scheduled.prompt, run.provider, run.model);
+        ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model);
         assertCurrent();
         assertIdle(started.thread.id, true);
         const model = started.model;
-        const params = turnStartParams(runtimeRun, started.thread.id, project.path, [
+        const params = turnStartParams({ ...runtimeRun, systemPrompt: projectSystemPrompt }, started.thread.id, executionPath, [
           { type: "text", text: providerPrompt, text_elements: [] },
-        ], [], false, { systemPrompt, model: typeof model === "string" ? model : undefined });
+        ], reusingExecutionPath ? current.extraRootsForThread?.(started.thread.id) ?? [] : [], false,
+        { systemPrompt: projectSystemPrompt, model: typeof model === "string" ? model : undefined });
         current.onThreadDelegationDisabled?.(started.thread.id, { autoCompactTokens: run.autoCompactTokens });
         assertIdle(started.thread.id, true);
         assertCurrent();

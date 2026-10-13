@@ -13,6 +13,7 @@ import type { ReasoningEffort } from "../components/ModelPowerControl";
 import type { ChildAgentTarget, ScheduleRunSettings, SkillDependencyReport, SkillReference, Thread, Turn } from "../types";
 import type { ResolvedSkillPrompts } from "./skills";
 import { appendCurrentLearnedPreferences } from "./currentLearnedPreferences";
+import { appendProjectInstructionContext } from "./projectInstructionContext";
 import { startChildAgentSession, type ChildAgentBridgeLaunch, type ProjectBridgeContext } from "./agentBridge";
 import { registerChildProjectLaunch, releaseChildAgentSession } from "./childAgentSessions";
 
@@ -36,6 +37,7 @@ export interface ChildRunContext {
   /** Stable saved-project identity of the root; null means ordinary Chats. */
   projectId?: string | null;
   projectInstructionsEnabled: boolean;
+  projectClaudeInstructionsEnabled?: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
   serviceName: string;
@@ -87,7 +89,8 @@ export function childRunSettings(target: ChildAgentTarget, context: ChildRunCont
     lmStudioBaseUrl: context.lmStudioBaseUrl,
     permission: context.policy.permission,
     systemPrompt: context.systemPrompt,
-    projectInstructionsEnabled: context.projectInstructionsEnabled,
+    projectInstructionsEnabled: context.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: context.projectClaudeInstructionsEnabled === true,
     subagentsEnabled: false,
     subagentMax: 1,
     ...(target.autoCompactTokens !== undefined ? { autoCompactTokens: target.autoCompactTokens } : {}),
@@ -142,8 +145,12 @@ export async function startChildAgentTurn(
   assertCanStart();
   const learnedSystemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, context.projectId ?? null);
   assertCanStart();
-  const run = { ...childSettings, systemPrompt: learnedSystemPrompt };
-  const systemPrompt = withMythraCodeCompletionInstructions(learnedSystemPrompt);
+  const projectSystemPrompt = await appendProjectInstructionContext(
+    learnedSystemPrompt, context.projectId ? context.executionPath : null, context, assertCanStart,
+  );
+  assertCanStart();
+  const run = { ...childSettings, systemPrompt: projectSystemPrompt };
+  const systemPrompt = withMythraCodeCompletionInstructions(projectSystemPrompt);
   const providerPrompt = resolved.prompt;
   const provenance = { skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies };
   let languageBridge: ChildAgentBridgeLaunch | undefined;
@@ -281,7 +288,7 @@ export async function startChildAgentTurn(
       buildTurnInput(providerPrompt, []),
       context.additionalWorkspaceRoots,
       true,
-      { systemPrompt: learnedSystemPrompt, model: runtimeModel },
+      { systemPrompt: projectSystemPrompt, model: runtimeModel },
     );
     modelTurnRequested = true;
     turn = await rpc<{ turn: Turn }>("turn/start", params);

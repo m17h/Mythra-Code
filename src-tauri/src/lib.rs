@@ -57,6 +57,7 @@ mod project_git;
 mod release_qa;
 mod run_discovery;
 mod skills;
+mod instruction_files;
 mod startup_guard;
 mod workspace_folder;
 use agents::{
@@ -7791,6 +7792,10 @@ pub fn run() {
                     local_skills_import,
                     local_skills_create,
                     local_skills_read,
+                    instruction_files::instruction_files_discover_globals,
+                    instruction_files::instruction_files_read_global,
+                    instruction_files::instruction_files_read_project,
+                    instruction_files::instruction_files_save_global,
                     local_skills_mention_names,
                     local_skills_analyze_prompts,
                     local_skills_resolve_prompt,

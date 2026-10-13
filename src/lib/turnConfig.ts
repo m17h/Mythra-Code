@@ -148,7 +148,9 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
     ...childAgentMcpConfig(options.childAgentBridge),
     ...lmStudioProviderConfig(run),
     ...(nativeDelegation ? { model_provider: "openai" } : {}),
-    project_doc_max_bytes: run.projectInstructionsEnabled ? 32_768 : 0,
+    // The app supplies selected root files freshly per turn. Native discovery
+    // would duplicate them and could read unrelated parent/global instructions.
+    project_doc_max_bytes: 0,
     project_doc_fallback_filenames: [],
     // Older runtimes use this mode hint. Current V2 ignores it, but replacing
     // the app baseline also avoids retaining its native-disabled custom text.
@@ -359,7 +361,8 @@ export function scheduleRunSnapshot(
       settings.codexSystemPrompt,
       settings.claudeSystemPrompt,
     ),
-    projectInstructionsEnabled: settings.projectInstructionsEnabled,
+    projectInstructionsEnabled: settings.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: settings.projectClaudeInstructionsEnabled === true,
     subagentsEnabled: settings.subagentsEnabled,
     subagentMax: settings.subagentMax,
     subagentEngine: settings.subagentEngine,

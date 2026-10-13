@@ -20,9 +20,9 @@ export function sanitizeAutoArchiveSubagentThreads(value: unknown): boolean {
   return value === true;
 }
 
-/** Preserve the existing Escape shortcut unless the user explicitly disables it. */
+/** Escape cannot stop work unless the saved setting explicitly enables it. */
 export function sanitizeEscapeStopsRun(value: unknown): boolean {
-  return value !== false;
+  return value === true;
 }
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5.6-sol";
@@ -86,6 +86,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeSystemPrompt: "",
   promptProfileId: "",
   projectInstructionsEnabled: false,
+  projectClaudeInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
   autoArchiveSubagentThreads: false,
@@ -97,7 +98,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "mythra",
   effortSlider: "aurora",
   chatFont: "system",
-  escapeStopsRun: true,
+  escapeStopsRun: false,
   notificationsEnabled: true,
   automaticThreadTitles: false,
   threadTitleProvider: "openai",

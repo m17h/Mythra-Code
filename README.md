@@ -47,6 +47,37 @@ Agents can ask structured questions. Claude pauses for an answer; supported Code
 
 To give precise feedback, select text in a completed reply or a file's diff in Review, then add a feedback note. Send one or more notes on their own or alongside a normal prompt.
 
+### Instruction files and prompt presets
+
+In **Settings → Prompts**, independently enable project **AGENTS.md** and
+**CLAUDE.md** discovery. Both are off by default. Enabled files are read fresh
+from the thread's project or isolated working folder for future turns, for any
+provider. AGENTS.override.md takes precedence over AGENTS.md; CLAUDE.md can
+fall back to .claude/CLAUDE.md. The combined limit is 32 KiB. Nested directories,
+ancestor folders and instruction-file imports are not scanned or expanded.
+
+Global Codex and Claude instruction files are discovered locally as available
+presets. Preview them before use: they may contain personal information or
+credentials. **Use for Codex/Claude** replaces only that provider's prompt layer
+after saving Settings, preserving other prompts. **Save copy** keeps a local
+snapshot. Discovery and Refresh never activate files or overwrite active prompts
+and saved copies. Configured CODEX_HOME and CLAUDE_CONFIG_DIR locations are honored.
+
+Each global file is labelled with its provider logo. **Edit original file**
+opens a live file editor in the prompt builder: edits automatically save back
+to that file, with saving/saved/error feedback. These disk edits are separate
+from Settings Save/Cancel; Cancel does not undo them. Detected file changes or
+unsafe write paths stop saving and retain your draft. Avoid editing the same
+file simultaneously in another program: external writes cannot be locked out
+on every platform.
+Normal window close flushes pending edits through the existing save lifecycle.
+Previously selected app prompt layers and saved copies remain snapshots; use
+the updated preset again to apply its new text in Mythra Code.
+
+**Escape-to-stop is off by default.** Enable it in Settings → Interface if
+desired; an explicit saved on/off choice is preserved. Escape still closes
+menus and dialogs while the stop shortcut is disabled.
+
 ### Permissions
 
 | Mode | Use it for |

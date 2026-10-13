@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
+import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { auditEvent, rpc } from "../lib/codex";
 import { startClaudeTurn, killClaudeTurn, saveClaudeTranscript } from "../lib/claude";
 import { startCursorTurn, killCursorTurn, saveCursorTranscript } from "../lib/cursor";
@@ -540,7 +541,12 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 : { prompt: await current.resolveSkillPrompt(prompt), systemPrompt: resolvedSystemPrompt };
               // Every agent step is a new turn in the workflow's stored
               // project, independent of the visible project and run snapshot.
-              const systemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, workflow.projectId);
+              if (active.stopRequested) throw new WorkflowStoppedError();
+              const learnedSystemPrompt = await appendCurrentLearnedPreferences(resolved.systemPrompt, workflow.projectId);
+              if (active.stopRequested) throw new WorkflowStoppedError();
+              const systemPrompt = await appendProjectInstructionContext(learnedSystemPrompt, project.path, workflow.run, () => {
+                if (active.stopRequested) throw new WorkflowStoppedError();
+              });
               const providerPrompt = resolved.prompt;
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";

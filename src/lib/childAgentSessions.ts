@@ -125,6 +125,7 @@ export interface ChildAgentBridgeInput {
   systemPrompt: string;
   providerSystemPrompts?: Partial<Record<Provider, string>>;
   projectInstructionsEnabled: boolean;
+  projectClaudeInstructionsEnabled?: boolean;
   reasoningEffort: ChildAgentPolicy["reasoningEffort"];
   serviceTier: string | null;
   readiness: ChildAgentReadiness;
@@ -231,7 +232,8 @@ export async function ensureChildAgentBridge(
         maxConcurrent: 1,
         permission: input.permission,
         systemPrompt: input.systemPrompt,
-        projectInstructionsEnabled: input.projectInstructionsEnabled,
+        projectInstructionsEnabled: input.projectInstructionsEnabled === true,
+        projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
         capturedAt: Date.now(),
@@ -285,7 +287,8 @@ export async function ensureChildAgentBridge(
     reasoningEffort: input.reasoningEffort,
     systemPrompt: input.systemPrompt,
     providerSystemPrompts: input.providerSystemPrompts,
-    projectInstructionsEnabled: input.projectInstructionsEnabled,
+    projectInstructionsEnabled: input.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
     serviceTier: input.serviceTier,
   } : frozenExisting ? { ...frozenExisting, permission: input.permission } : undefined;
   const policyUpdated = Boolean(stored && existing && JSON.stringify(stored) !== JSON.stringify(existing));
@@ -316,7 +319,8 @@ export async function ensureChildAgentBridge(
         permission: input.permission,
         systemPrompt: input.systemPrompt,
         ...(input.providerSystemPrompts ? { providerSystemPrompts: { ...input.providerSystemPrompts } } : {}),
-        projectInstructionsEnabled: input.projectInstructionsEnabled,
+        projectInstructionsEnabled: input.projectInstructionsEnabled === true,
+        projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
         capturedAt: Date.now(),
@@ -354,7 +358,8 @@ export async function ensureChildAgentBridge(
     permission: input.permission,
     systemPrompt: input.systemPrompt,
     providerSystemPrompts: input.providerSystemPrompts,
-    projectInstructionsEnabled: input.projectInstructionsEnabled,
+    projectInstructionsEnabled: input.projectInstructionsEnabled === true,
+    projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
     reasoningEffort: input.reasoningEffort,
     serviceTier: input.serviceTier,
     readiness: input.readiness,

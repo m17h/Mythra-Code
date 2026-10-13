@@ -305,6 +305,13 @@ export interface PromptProfile {
   /** Optional provider layers were added after the original global-only profiles. */
   codexPrompt?: string;
   claudePrompt?: string;
+  /** A local instruction-file snapshot; never activates itself. */
+  source?: {
+    kind: "global-instruction-file";
+    provider: "openai" | "claude";
+    path: string;
+    contentHash?: string;
+  };
 }
 
 export interface ThreadReasoning {
@@ -394,6 +401,8 @@ export interface ScheduleRunSettings {
   permission: PermissionMode;
   systemPrompt: string;
   projectInstructionsEnabled: boolean;
+  /** Missing legacy snapshots keep CLAUDE.md discovery disabled. */
+  projectClaudeInstructionsEnabled?: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
   /** Older snapshots use Mythra's managed crew. */
@@ -481,7 +490,10 @@ export interface AppSettings {
   /** Additional instructions for Claude Code subscription threads. */
   claudeSystemPrompt: string;
   promptProfileId: string;
+  /** Read project-root AGENTS.md guidance when explicitly enabled. */
   projectInstructionsEnabled: boolean;
+  /** Independently read project-root CLAUDE.md guidance. */
+  projectClaudeInstructionsEnabled: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
   /** Resolved from thread-local authority; absent in legacy settings. */
@@ -504,7 +516,7 @@ export interface AppSettings {
   effortSlider: EffortSliderStyle;
   /** Typeface for chat prose and the composer. Absent before the font selector shipped. */
   chatFont: ChatFont;
-  /** App-wide Escape shortcut for stopping the active run; missing legacy values default on. */
+  /** App-wide Escape shortcut; missing legacy values default off. */
   escapeStopsRun: boolean;
   notificationsEnabled: boolean;
   /** Opt-in OpenAI Luna naming for new threads, regardless of their provider. */
