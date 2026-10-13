@@ -42,27 +42,19 @@ operations.
 
 ## Native builds and releases
 
-Use `docs/operations/releasing.md`, `docs/operations/release-coordinator.md`
-and the private `build.md` runbook when available. A release requires
-Morgan's explicit request and chosen version. Do not change the version,
-build release assets, tag, sign, notarize or publish without that authorization.
+Follow `docs/operations/releasing.md`. A release requires Morgan's explicit
+request and chosen version; do not change the version, tag, sign, notarize or
+publish without it. That request also authorizes merging its own version-bump
+PR (`npm run release:prepare -- <version> --merge`).
 
-Freeze one clean merged source/version in a dedicated release checkout.
-Build macOS on macOS with the base Tauri configuration. Build Windows on
-Windows with `src-tauri/tauri.windows.conf.json`. Preserve each platform's
-embedded updater signing key; replacing a key requires an explicit migration
-plan. Keep signing credentials on their native machine.
+Release with one command on the Mac, `npm run release -- <version>`. It builds
+macOS locally and Windows over SSH in parallel from one commit and publishes
+one release with a combined `latest.json`. Do not add supervisors, leases,
+QA, audit or review stages around it. If it fails, diagnose the reported error,
+fix the cause and run the same command again; finished platform builds are
+reused. Report a release only after the script prints the published URL.
 
-Keep one publisher. Produce the signed macOS package and Apple notarization,
-the Windows installer and updater signature, and a combined `latest.json`
-containing both platforms. Upload both asset sets to one draft release in
-`m17h/Mythra-Code`, then finalize and publish that release. Never publish a
-one-platform manifest or replace a published version with different binaries.
-
-Generated macOS artifacts belong in `release-assets/`; generated Windows
-artifacts belong in `RELEASE ASSETS/`. Do not commit them. Preserve source,
-active applications, real profiles and retained release records during cleanup.
-Cancellation must stop the owned coordinator and its build/upload/publication
-descendants; prove they exited before replacing their owner or starting another
-publisher. Report completion only after both platforms and publication actually
-finish. Release 1.25.3 was cancelled; these instructions do not resume it.
+Preserve each platform's updater signing key; replacing a key requires an
+explicit migration plan. Never publish a one-platform manifest or replace a
+published version's binaries. Generated assets and private machine settings
+stay out of Git.

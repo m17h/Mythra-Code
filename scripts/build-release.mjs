@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const version = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
 if (process.platform !== "darwin") {
-  throw new Error("The macOS release builder must run on macOS. Use npm run release:build on Windows to invoke the Windows builder.");
+  throw new Error("The macOS release builder must run on macOS. Windows uses Windows/build.ps1.");
 }
 
 // A release binary must be traceable to a commit: refuse to build from a

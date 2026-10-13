@@ -14,18 +14,10 @@
     "desktop": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "desktop:build": "node scripts/desktop-build.mjs",
     "version:bump": "node scripts/bump-version.mjs",
-    "release:build": "node scripts/release-dispatch.mjs build",
-    "release:publish": "node scripts/release-dispatch.mjs publish",
+    "release:prepare": "node scripts/release.mjs prepare",
+    "release": "node scripts/release.mjs publish",
     "release:macos:build": "node scripts/build-release.mjs",
-    "release:macos:prepare": "node scripts/prepare-release.mjs",
-    "release:macos:publish": "node scripts/publish-release.mjs",
-    "release:windows:build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File Windows/build.ps1",
-    "release:windows:publish": "node Windows/publish-release.mjs",
-    "release:finalize": "node scripts/finalize-release.mjs",
-    "release:plan": "node scripts/release-coordinator.mjs plan",
-    "release:status": "node scripts/release-coordinator.mjs status",
-    "release:run": "node scripts/release-coordinator.mjs run",
-    "release:resume": "node scripts/release-coordinator.mjs resume"
+    "release:windows:build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File Windows/build.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
