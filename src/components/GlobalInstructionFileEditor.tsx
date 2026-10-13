@@ -50,6 +50,7 @@ export function retainedGlobalInstructionEditorFiles(): InstructionFileDescripto
       || state.phase === "error" || state.phase === "conflict";
     return pending ? [state.base] : [];
   });
+}
 
 function rememberSupersededRevision(controller: EditorController, revision: string | null): void {
   if (!revision) return;
