@@ -1,4 +1,4 @@
-import { configDefaults, defineConfig } from "vitest/config";
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // This file runs under Node, but the project deliberately avoids depending on
@@ -9,33 +9,7 @@ const buildTarget = process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" :
 const debugBuild = process.env.TAURI_ENV_DEBUG === "true" || process.env.TAURI_ENV_DEBUG === "1";
 
 export default defineConfig({
-  plugins: [
-    react(),
-    {
-      name: "mythra-performance-build-metadata",
-      generateBundle() {
-        this.emitFile({
-          type: "asset",
-          fileName: ".vite/performance-build.json",
-          source: JSON.stringify({ schemaVersion: 1, target: buildTarget, minified: !debugBuild }),
-        });
-      },
-    },
-  ],
-  test: {
-    // Generated release-validation backups may contain other projects' tests.
-    // Never discover copied user/plugin data or generated artifacts as suites.
-    include: ["src/**/*.{test,spec}.{ts,tsx,js,jsx,mjs}", "scripts/**/*.{test,spec}.{ts,tsx,js,jsx,mjs}"],
-    environment: "jsdom",
-    setupFiles: ["./src/test/setup.ts"],
-    restoreMocks: true,
-    // Real-browser layout specs need genuine measurement, which jsdom cannot
-    // provide. They run under vitest.browser.config.ts instead.
-    exclude: [...configDefaults.exclude, "src/**/*.browser.test.{ts,tsx}"],
-    // Timer-heavy virtual-scroll tests can starve under Vitest's default
-    // one-worker-per-core fan-out and then contaminate later fake-timer tests.
-    maxWorkers: 2,
-  },
+  plugins: [react()],
   clearScreen: false,
   server: {
     port: 1420,

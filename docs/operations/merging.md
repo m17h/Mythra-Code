@@ -1,104 +1,35 @@
-# Merging Mythra Code
+# Pull requests and merging
 
-`AGENTS.md` owns the rules. This runbook describes their implementation; it does
-not authorize a merge, release, or repository-settings change by itself.
+Automated tests and checks are disabled locally and on GitHub until Morgan
+explicitly reintroduces them. There is no Verify gate, lint/type/unit/browser/
+native/performance requirement, mandatory audit ceremony or CI waiting period.
 
-## Normal development and merge
+1. Work on a topic branch with one coherent concern. Inspect the diff and Git
+   state, preserve unrelated work, and describe the resulting behavior honestly.
+2. The originating development chat commits and pushes the intended changes,
+   creates or updates the PR, and attaches it to that chat. Inspect existing PRs
+   before creating one. A PR request alone does not authorize merging.
+3. If Morgan requested the merge, hand the exact repository, PR URL, head SHA,
+   base SHA, scope and known findings to one separate persisted merge chat.
+   Use a clean topic worktree and actual unrestricted filesystem/network access
+   with shell approval policy `never`. Verify the launcher's effective
+   permissions; a written instruction cannot change runtime permissions.
+   Any available model can perform this work; no model-specific reviewers are
+   required.
+4. The merge chat inspects the current head/base and resolves in-scope review
+   findings. If source changes, update the PR description and include the actual
+   final head in the handoff/report. Merge only within Morgan's authorization.
+   Do not run tests or wait for automated checks before or after merging.
+5. Confirm the PR's merged state and merge commit through GitHub, including
+   squash/rebase evidence. Delete the obsolete topic branch locally and remotely
+   after switching off it and preserving additional unmerged commits, protected
+   branches, open-PR branches and branches in active worktrees. Fetch/prune and
+   synchronize local main only when this will not disturb another chat's work.
+6. Report the PR URL, merge commit, known limitations and cleanup state. Archive
+   the completed manager's disposable managed worktree recoverably, then archive
+   only that merge chat. Keep the originating development chat available.
 
-1. Work on a topic branch with one coherent concern. Run focused regression
-   tests and relevant lint/type checks, and replay actual UI/native behavior at
-   the affected boundary. Preserve unrelated work and user data.
-2. When authorized, commit/push the topic branch and create/update its PR. Start
-   CI early and review while it runs. Unrelated work can use another worktree.
-3. Inspect the PR head and latest base, checks and reviews:
-
-   ```sh
-   gh pr view <number> --json headRefOid,baseRefName,mergeStateStatus,statusCheckRollup
-   gh pr checks <number>
-   ```
-
-   Require `Verify gate`. The workflow checks the PR's synthetic merge checkout
-   and records head/base/checkout SHAs in its receipts and gate summary. A green
-   run for an older head or older base does not approve the current combination.
-   Refresh/rebase and rerun when the base moves; do not merely rerun an obsolete
-   checkout. GitHub branch protection should require an up-to-date gate.
-4. Resolve real review findings. If explicitly authorized to merge, match the
-   reviewed final head:
-
-   ```sh
-   gh pr merge <number> --squash --match-head-commit <approved-head-sha> --delete-branch
-   git fetch --prune origin
-   git switch main
-   git merge --ff-only origin/main
-   ```
-
-5. Confirm merge evidence and preserve additional unmerged commits/worktrees
-   before deleting the local topic branch. Confirm its remote counterpart is
-   gone and `main...origin/main` is synchronized. Report post-merge CI separately.
-   For a release, `build.md` still requires successful CI on the exact merged
-   release commit. Do not run a redundant full local suite just to repeat it.
-
-`npm run verify` remains the complete sequential local diagnostic command.
-The hosted workflow distributes the same commands instead of duplicating it
-locally on every merge. A contract check fails when the two command sets drift.
-
-## Coverage and failure handling
-
-- Native macOS/Windows lanes retain Clippy, Cargo check and every Rust test,
-  sequentially so compilation is reused.
-- Two unit shards on each OS retain `maxWorkers: 2`. The gate verifies that their
-  executed-file union equals the full Vitest inventory, without duplicates.
-- Renderer lanes retain configuration, lint, TypeScript, Chromium and production
-  build/startup/performance. The first pilot preserves Safari13 on macOS and
-  **both Safari13 and Chrome105 on Windows**; these are different outputs.
-- WebKit stays on macOS 15 with serial file isolation and bounded batches. Its
-  results must cover the same browser files as Chromium.
-- The final gate rejects failed/cancelled/skipped/missing lanes, missing shards,
-  missing or invalid reports, differing commit inputs and coverage drift.
-- Rerun only failed lanes when the tested inputs are unchanged, as a bounded
-  diagnostic action. Keep logs and investigate recurring failures. Never turn
-  retries into an automatic substitute for synchronization or containment.
-- Failed-lane reruns retain earlier uploads. The gate lists artifacts through
-  GitHub's REST API and downloads the newest exact lane artifact IDs directly,
-  verifying ZIP digests before reading each exact receipt. The release evidence
-  collector uses the same path. Prior failed evidence is preserved. Missing,
-  expired, ambiguous or foreign uploads fail;
-  there is no fallback to an older successful receipt. All existing receipt,
-  head/base, inventory and lane-result validation remains mandatory.
-- Browser production-startup checks cover emitted modules, visible shell, lazy
-  Settings and reload. They do not establish installed-app/native IPC behavior.
-  Native checks remain targeted to changed behavior, as described in `build.md`.
-
-## Measuring improvements and caching
-
-Compare existing runs with the next representative normal PRs: execution time,
-queue time, failed-lane rerun time, first-pass success and runner minutes. Shard
-balance matters. Do not add ten mandatory test runs to every merge or release.
-
-Compiled Rust dependency caching is initially **off**. Trial it with the Verify
-workflow's `compiled_rust_cache` manual input. After coverage parity and measured
-benefit, the repository variable `MYTHRA_COMPILED_RUST_CACHE=true` enables it for
-normal checks. Never enable it merely because the cache action succeeded.
-
-The immutable Rust-cache action keys dependencies by compiler/manifests/lockfile/
-flags plus OS/architecture and native build inputs. Workspace crates and cargo
-binaries are excluded. Only trusted `main` runs save; PRs restore only. Cargo and
-all tests still run. This execution cache is not a release artifact or validation
-result and is not wired into privileged signing/packaging workflows.
-
-Measure restore/save duration, size, hit rate and compilation saved. Disable the
-trial if restoration erases the gain. Do not loosen assertions or increase
-same-machine concurrency to reach an arbitrary timing target.
-
-## GitHub enforcement rollout
-
-`Verify gate` should become the required status check with an up-to-date base.
-Do **not** require it on `main` before the new workflow is adopted: older topic
-branches otherwise wait forever for a check they cannot emit. Update existing
-branches after adoption. No mandatory human approval count, paid runners, merge
-queue, automatic merging or new routine release tours are introduced here.
-
-Until adoption, legacy workflow commits require both `Verify (...)` OS checks
-and `WebKit (macOS 15)`. Keep `build.md` and release finalization compatible with
-their exact-commit evidence; a missing new gate is not a valid fallback when the
-commit contains the new workflow.
+A merge does not authorize a release. A release needs Morgan's explicit request
+and chosen version; follow [releasing.md](releasing.md). GitHub branch protection
+must not require removed automated checks. Do not recreate legacy gates or
+enable a different check to replace them.

@@ -1,5 +1,12 @@
 # Local Git and pull-request workflow performance notes
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 The expanded local/GitHub workflow has a fresh controlled production-bundle comparison against the previous thread pull-request implementation at `bb9cc78`. Both sides used the same dependencies, Node 26.0.0 and minified Vite profiles on Apple silicon macOS. This is a size review, not evidence of faster rendering, lower memory use, lower CPU use or faster Git/GitHub operations.
 
 The current snapshot is the final production rebuild after the independent PR review fixes. The checked-in limits match these measured bundles exactly, without additional headroom. Full repository verification remains separate from this bundle comparison.

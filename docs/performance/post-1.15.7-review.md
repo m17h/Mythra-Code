@@ -1,5 +1,12 @@
 # Post-1.15.7 review — 2026-09-09
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Reviewed the complete working-tree delta from the published `v1.15.7` release
 (`6b898d7e`), including `b76c088` and the uncommitted changes present at the
 start of the review. The starting delta covered 39 files. Existing edits were

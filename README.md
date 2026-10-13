@@ -152,7 +152,7 @@ The desktop shell is **Tauri 2 / Rust**, with a **React / TypeScript** UI. Codex
 Requirements:
 
 - Apple silicon macOS or Windows x64.
-- Node.js **20.19+** (CI uses Node 22), npm, and stable Rust/Cargo.
+- Node.js **20.19+**, npm, and stable Rust/Cargo.
 - Native Tauri prerequisites: Xcode Command Line Tools on macOS; C++ Build Tools and WebView2 on Windows. See [Tauri's setup guide](https://v2.tauri.app/start/prerequisites/).
 - The runtime/account for whichever provider you want to exercise. GitHub CLI is needed for GitHub integration.
 
@@ -167,33 +167,24 @@ npm run desktop
 
 When changing user-facing behavior, update this README or the relevant linked guide in the same PR. Describe what users can do in the current app, and keep version-specific changes in the release notes.
 
-Before opening or merging a PR:
+Automated tests and checks are disabled locally and on GitHub until Morgan explicitly reintroduces them. There are no lint, type, unit, browser, native GUI, performance or CI gates for contributions, merges or releases. Compilation and release packaging remain available. Follow the [merge procedure](docs/operations/merging.md) for authorized PR handoffs and merges.
 
-```bash
-npx playwright install chromium
-npm run verify
-```
-
-Use `npm.cmd` and `npx.cmd` in PowerShell if script execution policy blocks the default wrappers. Install the Playwright browser initially and when a dependency update requires a new browser version.
-
-`verify` runs release-configuration checks, lint/Clippy, type checks, TypeScript and Rust tests, Chromium interaction tests, the production renderer build/startup check, and performance budgets. GitHub CI verifies macOS and Windows and runs the browser suite and production startup check in WebKit.
+Use `npm.cmd` in PowerShell if script execution policy blocks the default wrapper.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run build` | Compile the production web frontend. |
-| `npm run verify:startup` | Open the already-built frontend, check the shell and Settings, then reload. Run `build` first. |
-| `npm run test:browser` | Run Chromium UI interaction tests. |
 | `npm run desktop:build` | Build a local macOS `.app` or unbundled Windows executable without updater artifacts. |
 
-Local packaging does not have the development command's separate app-data identity; avoid launching it alongside an installed app doing active work. Passing a dev build or browser test does not prove that an installed release renders correctly.
+Local packaging does not have the development command's separate app-data identity; avoid launching it alongside an installed app doing active work. A completed build does not establish installed application behavior.
 
 ### Releases
 
 Use [GitHub Releases](https://github.com/m17h/Mythra-Code/releases) for downloads and version-specific changes. This README describes the current source; features on a newer source branch may not yet be in your installed release.
 
-Publishing is a maintainer operation using private signing credentials. Both native builds must come from the same clean, verified commit and version, with their assets attached to one draft and both entries in `latest.json`. Each platform keeps its own updater signing key. The installed packages must be checked before finalization, including visible UI, reopening, and upgrade/data preservation—not merely a process staying alive.
+Publishing requires an explicit release request and chosen version. Build both platforms from the same clean merged source/version on their native operating systems, retain each platform's updater signing key, sign the updater packages and notarize macOS. Attach both native asset sets to one draft with both entries in `latest.json`.
 
-Maintainers follow their release runbook and use `release:build`, `release:publish`, then `release:finalize` only after the combined artifact audit and native checks pass. The finalizer checks CI and release metadata; it does not perform the installed-app visual checks. Do not publish a one-platform manifest or replace an already published version with different binaries.
+Maintainers follow [Building and publishing a release](docs/operations/releasing.md) and the maintained [release coordinator](docs/operations/release-coordinator.md). The coordinator owns both native builds, draft upload and `release:finalize` publication through one publisher. No test, CI, native QA, upgrade-evidence or independent audit gate is required. Do not publish a one-platform manifest or replace an already published version with different binaries.
 
 ## More documentation
 

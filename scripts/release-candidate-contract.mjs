@@ -4,8 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertPlan, leaseStatus, processIdentity, readJson, realPath } from './release-state.mjs';
 
-// This authorizes only provisional native packaging. CI remains a mandatory
-// parent of the draft receipt, and no candidate contract is publication proof.
+// This authorizes only native packaging by the recorded release worker.
 // OEM best-fit can turn Unicode quotes into unescaped ASCII JSON quotes.
 export const WINDOWS_CANDIDATE_PROCESS_COMMAND =
   '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); '
@@ -25,10 +24,10 @@ export function candidateProcesses() {
 
 export function assertCandidateContract({ root, stateRoot, ownerToken, workerPid, workerStart, flags = [],
   identity = processIdentity, processes = candidateProcesses, candidatePid = process.pid }) {
-  if (flags.length) throw new Error('Provisional candidates reject verification, install, smoke and dirty overrides');
+  if (flags.length) throw new Error('Owned candidates reject install and dirty overrides');
   if (!stateRoot || !ownerToken || !Number.isInteger(workerPid) || !workerStart) throw new Error('Provisional candidate needs an owned release worker contract');
   const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
-  if (!plan.baseline?.publicEvidence || plan.reviewRequired.length) throw new Error('Candidate needs an approved frozen release plan');
+  if (plan.policyVersion !== 2) throw new Error('Candidate requires a new executable release plan');
   const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   if (git(['rev-parse', 'HEAD']) !== plan.commit || git(['status', '--porcelain'])
     || !/^(https:\/\/github\.com\/|git@github\.com:)m17h\/Mythra-Code(?:\.git)?$/.test(git(['remote', 'get-url', 'origin']))
@@ -69,5 +68,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   assertCandidateContract({ root: resolve(root), stateRoot: process.env.MYTHRA_RELEASE_CANDIDATE_STATE,
     ownerToken: process.env.MYTHRA_RELEASE_CANDIDATE_OWNER, workerPid: Number(process.env.MYTHRA_RELEASE_CANDIDATE_WORKER_PID),
     workerStart: process.env.MYTHRA_RELEASE_CANDIDATE_WORKER_START, flags });
-  console.log('Owned provisional candidate accepted; hosted source CI is still required before draft upload.');
+  console.log('Owned native build candidate accepted.');
 }

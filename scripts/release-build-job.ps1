@@ -1,9 +1,3 @@
-[CmdletBinding()]
-param(
-  [switch]$Probe,
-  [string]$ProbeDirectory = ''
-)
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -131,25 +125,6 @@ if (-not [System.IO.Path]::IsPathRooted($node) -or -not (Test-Path -LiteralPath 
   throw 'Native Node executable is unavailable.'
 }
 $repoRoot = Split-Path -Parent $PSScriptRoot
-
-if ($Probe) {
-  # Explicitly bounded no-build probe. It creates only node sleep processes and
-  # PID/output evidence in a fresh, caller-owned disposable directory.
-  if (-not $ProbeDirectory -or -not [System.IO.Path]::IsPathRooted($ProbeDirectory)) { throw 'Probe requires an absolute disposable directory.' }
-  $probeRoot = (Resolve-Path -LiteralPath $ProbeDirectory).Path
-  if (@(Get-ChildItem -LiteralPath $probeRoot -Force).Count -ne 0) { throw 'Probe directory must be empty.' }
-  $env:MYTHRA_BUILD_JOB_PROBE_DIRECTORY = $probeRoot
-  $probeCode = @'
-const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
-const root=process.env.MYTHRA_BUILD_JOB_PROBE_DIRECTORY;
-const code="const fs=require('node:fs'),path=require('node:path');fs.writeFileSync(path.join(process.env.MYTHRA_BUILD_JOB_PROBE_DIRECTORY,'grandchild.json'),JSON.stringify({pid:process.pid,parent:process.ppid}));setInterval(()=>{},1000);";
-const child=cp.spawn(process.execPath,['-e',code],{stdio:'inherit'});
-fs.writeFileSync(path.join(root,'builder.json'),JSON.stringify({pid:process.pid,parent:process.ppid,grandchild:child.pid}));
-process.stdout.write('MYTHRA_JOB_STDOUT\n');process.stderr.write('MYTHRA_JOB_STDERR\n');setInterval(()=>{},1000);
-'@
-  exit [MythraReleaseBuildJob]::Run($node, @('-e', $probeCode), $probeRoot)
-}
-if ($ProbeDirectory) { throw 'ProbeDirectory is allowed only with -Probe.' }
 
 $npmCli = Join-Path (Split-Path -Parent $node) 'node_modules\npm\bin\npm-cli.js'
 if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {

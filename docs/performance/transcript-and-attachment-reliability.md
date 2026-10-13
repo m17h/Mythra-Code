@@ -1,5 +1,12 @@
 # Transcript and attachment reliability review — 2026-09-13
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 ## Findings and disposition
 
 1. **Unopened Claude/Cursor rename could erase history: fixed.** Renames now serialize a metadata-only native update with transcript writes; chunks, paging state, and Cursor session identity survive. Legacy histories migrate safely before the update.

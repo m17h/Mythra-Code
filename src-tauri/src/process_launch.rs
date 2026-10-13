@@ -51,31 +51,3 @@ pub(crate) fn background_std_command(program: impl AsRef<OsStr>) -> StdCommand {
         StdCommand::new(program)
     }
 }
-
-#[cfg(all(test, windows))]
-mod windows_tests {
-    use super::background_std_command;
-
-    #[test]
-    fn child_process_has_no_console_window() {
-        let script = r#"
-Add-Type -Namespace MythraCode -Name NativeMethods -MemberDefinition '
-  [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-  public static extern System.IntPtr GetConsoleWindow();
-';
-if ([MythraCode.NativeMethods]::GetConsoleWindow() -ne [System.IntPtr]::Zero) {
-  exit 37
-}
-"#;
-        let output = background_std_command("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .output()
-            .expect("launch the Windows no-console probe");
-        assert!(
-            output.status.success(),
-            "child received a console window (status {:?}): {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-}

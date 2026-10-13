@@ -1,5 +1,12 @@
 # Onboarding before/after review — 2026-09-23
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Read-only product review of the committed nine-page onboarding at HEAD versus the current five-page working tree. Three GPT-6 Sol reviewers (high) independently reviewed coverage, behavior, and UI; Claude Opus 5.5 (high, local CLI through tmux) provided a separate design review. Root challenged the recommendations against code and fresh WebKit rendering. No application code changed in this review.
 
 ## Verdict

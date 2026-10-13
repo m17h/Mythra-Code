@@ -1,5 +1,12 @@
 # Opus UI overhaul experiment: "Lumen"
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Status: **PR #122 open; review repairs and final verification in progress.**
 This is an unmerged UI experiment on
 `codex/opus-ui-overhaul-experiment` (base `be7fc1b`). Morgan authorized committing,

@@ -137,8 +137,8 @@ An optional `GITHUB_TOKEN` avoids GitHub API quotas and is never printed.
 
 Review changes to licenses, scripts, assets, authored links and dependency notes
 before accepting a refresh. The application's CommonMark dependency preflight
-and installer regressions remain authoritative; the maintenance link audit is
-not a replacement for runtime validation.
+still protects user-requested skill loading; it is product behavior, not a
+repository test gate.
 
 The maintenance script's `skillRequirements` map reproduces the optional
 `requirements` field. Requirements describe the reviewed pinned source, not the
@@ -146,9 +146,6 @@ latest upstream version. Old historical snapshots without this field remain
 valid, and adding or correcting it does not change installation receipts or
 package file hashes.
 
-Run the focused maintenance and history regressions with the repository's
-Node 22 runtime:
-
-```sh
-npm run test:run -- scripts/official-skill-catalog-history.test.mjs
-```
+Automated maintenance/history tests are disabled until Morgan explicitly
+reintroduces them. Do not run the removed regression command or make it a
+catalog-refresh, merge or release requirement.

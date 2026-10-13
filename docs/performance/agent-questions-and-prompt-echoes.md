@@ -1,5 +1,12 @@
 # Prompt reconciliation and native agent questions
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 ## Behavior and regression review
 
 A submitted prompt first has a Mythra ID. Codex can report the same prompt in a

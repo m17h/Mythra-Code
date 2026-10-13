@@ -1,16 +1,14 @@
-import { revalidatePlanCoverage } from './release-upgrade-coverage.mjs';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
-import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, rmSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acquireLease, assertPlan, atomicJson, containedPath, fileHash, leaseStatus, objectHash, PLATFORMS, processIdentity, readJson, realPath, receiptPath, reconcile, saveReceipt, SHA, workerTreeAlive } from './release-state.mjs';
+import { acquireLease, assertPlan, atomicJson, fileHash, leaseStatus, objectHash, PLATFORMS, processIdentity, readJson, realPath, receiptPath, reconcile, saveReceipt, SHA, workerTreeAlive } from './release-state.mjs';
 import { planFromCheckout } from './release-plan.mjs';
-import { REPOSITORY, verifyHostedEvidence } from './release-evidence.mjs';
-import { assetNames, assertDownloadedRemote, assertPlatformManifests, assertPublicationVersion, assertRemoteRelease, assertTagTarget, auditAssets } from './release-audit.mjs';
-import { uploadPlatformDraft } from './release-draft.mjs';
+import { REPOSITORY } from './release-evidence.mjs';
+import { assertPublicationVersion, assertRemoteRelease, assertTagTarget } from './release-audit.mjs';
+import { combinePlatformManifests, uploadPlatformDraft } from './release-draft.mjs';
 import { exportHandoff, mergeHandoff } from './release-handoff.mjs';
-import { runNativeCheck } from './release-native-check.mjs';
 import { runWindowsWorker } from './release-remote.mjs';
 import { candidateProcesses } from './release-candidate-contract.mjs';
 
@@ -35,13 +33,13 @@ export function assertStateLocation(root, stateRoot) {
 const publisherRegistry = () => resolve(homedir(), '.mythra-release', 'publishers');
 function publisherLeaseDirectory(plan, registry) { return resolve(registry, objectHash({ repository: plan.repository })); }
 export function assertPublisherOwner(plan, ownerToken, { registry = publisherRegistry() } = {}) {
-  if (plan.publisherHost !== hostname() || process.platform === 'win32') throw new Error('Only the frozen designated publisher host can upload, finalize or audit publication');
+  if (plan.publisherHost !== hostname() || process.platform === 'win32') throw new Error('Only the frozen designated publisher host can upload or publish');
   const lease = readJson(resolve(publisherLeaseDirectory(plan, registry), 'lease.json'));
   if (!ownerToken || lease.token !== ownerToken || leaseStatus(lease) !== 'running' || lease.planHash !== plan.planHash || lease.commit !== plan.commit || lease.version !== plan.version) throw new Error('Publication has no matching live host-global owner');
   return lease;
 }
 export function acquirePublisherLease(plan, { recover = false, registry = publisherRegistry() } = {}) {
-  if (plan.publisherHost !== hostname() || process.platform === 'win32') throw new Error('Only the frozen designated publisher host can upload, finalize or audit publication');
+  if (plan.publisherHost !== hostname() || process.platform === 'win32') throw new Error('Only the frozen designated publisher host can upload or publish');
   const directory = publisherLeaseDirectory(plan, registry);
   let release;
   try {
@@ -84,11 +82,18 @@ function envelope(plan, check, startedAt, files, stateRoot, details = {}) {
 }
 
 export function assertReadyToPublish(plan, stateRoot) {
-  if (!plan.baseline?.publicEvidence) throw new Error('Release plan has no verified public baseline; recreate it through release:plan');
+  assertActiveRelease(plan, stateRoot);
   const stages = reconcile(plan, stateRoot);
   const pending = stages.filter((s) => !['publish', 'public'].includes(s.id) && !['passed', 'not-required'].includes(s.status));
-  if (pending.length) throw new Error(`Release validation incomplete: ${pending.map((s) => `${s.id} (${s.status})`).join(', ')}`);
+  if (pending.length) throw new Error(`Release operations incomplete: ${pending.map((s) => `${s.id} (${s.status})`).join(', ')}`);
   return readJson(receiptPath(stateRoot, 'draft'));
+}
+
+export function assertActiveRelease(plan, stateRoot) {
+  if (plan.policyVersion !== 2) throw new Error('Legacy frozen release plans are read-only; create a new state directory for a newly authorized release');
+  if (['cancelled.json', 'cancellation.json'].some((name) => existsSync(resolve(stateRoot, name)))) throw new Error('Release is cancelled');
+  const active = resolve(stateRoot, 'active-stage.json');
+  if (existsSync(active) && readJson(active).status === 'cancelled') throw new Error('Release is cancelled');
 }
 
 export function prepareMacBuildDependencies({ root, env, descriptor, execute = spawnSync }) {
@@ -100,14 +105,13 @@ export function prepareMacBuildDependencies({ root, env, descriptor, execute = s
 
 function buildStage({ root, stateRoot, plan, check, allowBuild }) {
   if (!allowBuild) throw new Error('Build requires release authorization at kickoff (--build); status/plan never build');
+  assertActiveRelease(plan, stateRoot);
   const startedAt = new Date().toISOString();
   const stage = resolve(stateRoot, 'candidates', check.platform);
   if (existsSync(stage)) throw new Error('Candidate files already exist without a valid receipt; inspect and recover them, never rebuild automatically');
   const log = resolve(stateRoot, 'logs', `build-${check.platform}-${Date.now()}.log`);
   mkdirSync(resolve(stateRoot, 'logs'), { recursive: true });
   const env = { ...process.env };
-  const proofPath = receiptPath(stateRoot, 'ci');
-  if (existsSync(proofPath)) env.MYTHRA_RELEASE_CI_RUN = String(readJson(proofPath).details.runId);
   if (check.platform === 'windows-x86_64') {
     env.MYTHRA_RELEASE_CANDIDATE_STATE = stateRoot;
     env.MYTHRA_RELEASE_CANDIDATE_OWNER = readJson(resolve(stateRoot, 'lease.json')).token;
@@ -155,144 +159,42 @@ async function durableBuild({ root, stateRoot, plan, check }) {
   return readJson(receiptPath(stateRoot, check.id));
 }
 
-const ciWorkerPath = (stateRoot) => resolve(stateRoot, 'ci-worker.json');
 const pause = (ms) => new Promise((accept) => setTimeout(accept, ms));
-function hostedReceipt({ root, stateRoot, plan, check, startedAt }) {
-  const proof = verifyHostedEvidence({ root, commit: plan.commit });
-  const path = resolve(stateRoot, 'evidence', `ci-${proof.runId}.json`); atomicJson(path, proof);
-  return envelope(plan, check, startedAt, [path], stateRoot, proof);
-}
-
-// CI owns a separate durable record and lease. It can finish after the parent
-// exits, and cannot overwrite the current native stage or publish anything.
-export async function runHostedCIWorker({ root, stateRoot, token, waitMs = 15_000, deadlineMs = 2 * 60 * 60_000, verify = hostedReceipt }) {
-  if (!Number.isFinite(waitMs) || waitMs < 1 || !Number.isFinite(deadlineMs) || deadlineMs < 1) throw new Error('CI worker needs a bounded polling interval and deadline');
-  const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json'))), path = ciWorkerPath(stateRoot);
-  const old = readJson(path);
-  if (plan.publisherHost !== hostname() || old.token !== token || old.planHash !== plan.planHash || old.root !== realPath(root)
-    || old.worker?.pid !== process.pid || leaseStatus(old.worker) !== 'running') throw new Error('CI worker has no matching designated publisher contract');
-  assertCheckout(root, plan);
-  const release = acquireLease(resolve(stateRoot, 'ci-worker-owner'), { recover: true });
-  const check = plan.checks.find((c) => c.id === 'ci'), startedAt = old.startedAt, deadline = Date.now() + deadlineMs;
-  try {
-    while (true) {
-      try {
-        assertCheckout(root, plan);
-        const receipt = await verify({ root, stateRoot, plan, check, startedAt });
-        saveReceipt(stateRoot, plan, receipt);
-        atomicJson(path, { ...old, status: 'passed', completedAt: receipt.completedAt });
-        recordEvent(stateRoot, { kind: 'check-passed', checkId: 'ci', startedAt, completedAt: receipt.completedAt });
-        return receipt;
-      } catch (error) {
-        if (error.status !== 'waiting') throw error;
-        atomicJson(path, { ...old, status: 'waiting', reason: error.message, updatedAt: new Date().toISOString() });
-        if (Date.now() >= deadline) return null;
-        await pause(Math.min(waitMs, deadline - Date.now()));
-      }
-    }
-  } catch (error) {
-    atomicJson(path, { ...old, status: 'blocked', stoppedAt: new Date().toISOString(), reason: error.message });
-    recordEvent(stateRoot, { kind: 'check-blocked', checkId: 'ci', reason: error.message });
-    throw error;
-  } finally { release(); }
-}
-
-async function durableCI({ root, stateRoot, plan, waitMs, deadline, retryReason, signal }) {
-  const path = ciWorkerPath(stateRoot);
-  let previous = existsSync(path) ? readJson(path) : null;
-  if (previous && (previous.planHash !== plan.planHash || previous.root !== realPath(root))) throw new Error('CI worker belongs to another frozen checkout/plan');
-  if (!previous?.worker || !workerTreeAlive(previous.worker)) {
-    if (previous?.status === 'blocked' && !retryReason.trim()) throw new Error(`Previous ci failed: ${previous.reason}. Resume needs --retry-reason; no blind retries.`);
-    if (previous && previous.status !== 'waiting' && !retryReason.trim()) throw new Error('Interrupted CI worker has no completion receipt; inspect its ownership and record a retry reason');
-    if (previous) atomicJson(resolve(stateRoot, 'recovery', `ci-retry-${Date.now()}.json`), { previous, reason: retryReason || 'Resume exact-source CI after its bounded waiting deadline', recordedAt: new Date().toISOString() });
-    const token = readJson(resolve(stateRoot, 'lease.json')).token;
-    // Registration precedes the worker handshake. A lost parent leaves either
-    // a recorded PID or an ambiguous queued record, never an automatic restart.
-    previous = { checkId: 'ci', planHash: plan.planHash, root: realPath(root), token, status: 'queued', startedAt: new Date().toISOString() };
-    atomicJson(path, previous);
-    const child = spawn(process.execPath, [resolve(root, 'scripts/release-coordinator.mjs'), 'ci-worker', '--state', stateRoot, '--owner', token, '--wait-ms', String(waitMs), '--deadline-ms', String(Math.max(1, deadline - Date.now()))],
-      { cwd: root, stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true });
-    child.on('error', (error) => atomicJson(path, { ...previous, status: 'blocked', reason: error.message }));
-    const processStart = Number.isInteger(child.pid) ? processIdentity(child.pid) : null;
-    if (!processStart) { child.kill(); throw new Error('Cannot establish CI worker identity'); }
-    previous = { ...previous, status: 'running', worker: { host: hostname(), pid: child.pid, processStart } };
-    atomicJson(path, previous); child.unref();
-  }
-  while (!signal.aborted) {
-    if (existsSync(receiptPath(stateRoot, 'ci'))) return readJson(receiptPath(stateRoot, 'ci'));
-    const record = readJson(path);
-    if (record.status === 'blocked') throw new Error(`Hosted CI failed: ${record.reason}; native candidates and owned workers are preserved`);
-    if (!record.worker || !workerTreeAlive(record.worker)) {
-      if (record.status === 'waiting') throw Object.assign(new Error(record.reason || 'Hosted CI remains incomplete'), { status: 'waiting' });
-      throw new Error('CI worker exited without a completion receipt; inspect ci-worker.json before retry');
-    }
-    if (Date.now() >= deadline) throw Object.assign(new Error('CI collection deadline reached; owned CI worker is preserved for resume'), { status: 'waiting' });
-    await pause(Math.min(waitMs, Math.max(1, deadline - Date.now())));
-  }
-  return null;
-}
 
 function remoteStage({ root, stateRoot, plan, check, allowUpload }) {
+  if (!allowUpload) throw new Error('Draft upload requires release authorization at kickoff (--upload)');
   const startedAt = new Date().toISOString(), tag = `v${plan.version}`;
-  if (check.id === 'draft' && !allowUpload) throw new Error('Draft upload/audit requires release authorization at kickoff (--upload)');
-  if (check.id === 'draft') {
-    assertPublicationVersion({ latest: JSON.parse(gh(root, ['api', `repos/${REPOSITORY}/releases/latest`])), plan });
-    // One coordinator owns the draft. Platform uploads are serialized and read
-    // immutable candidates, never rebuilding or repopulating mutable staging.
-    for (const p of PLATFORMS) {
-      const directory = resolve(stateRoot, 'candidates', p);
-      uploadPlatformDraft({ root, repository: REPOSITORY, tag, target: plan.commit,
-        manifest: readJson(resolve(directory, 'latest.json')),
-        assetPaths: readdirSync(directory).map((name) => resolve(directory, name)),
-        ...(p === 'darwin-aarch64' ? { notesFile: resolve(directory, 'release-notes.md') } : {}) });
-    }
-    gh(root, ['release', 'edit', tag, '--repo', REPOSITORY, '--notes-file', resolve(stateRoot, 'candidates/darwin-aarch64/release-notes.md')]);
+  assertPublicationVersion({ latest: JSON.parse(gh(root, ['api', `repos/${REPOSITORY}/releases/latest`])), plan });
+  const manifests = {};
+  for (const p of PLATFORMS) {
+    assertActiveRelease(plan, stateRoot);
+    const directory = resolve(stateRoot, 'candidates', p);
+    manifests[p] = readJson(resolve(directory, 'latest.json'));
+    uploadPlatformDraft({ root, repository: REPOSITORY, tag, target: plan.commit,
+      manifest: manifests[p], assetPaths: readdirSync(directory).map((name) => resolve(directory, name)),
+      ...(p === 'darwin-aarch64' ? { notesFile: resolve(directory, 'release-notes.md') } : {}) });
   }
-  const release = JSON.parse(gh(root, ['release', 'view', tag, '--repo', REPOSITORY, '--json', 'tagName,isDraft,isPrerelease,targetCommitish,assets,body']));
-  assertRemoteRelease(release, plan, check.id === 'draft' ? 'draft' : 'public');
-  assertTagTarget({ root, plan, phase: check.id });
-  const directory = resolve(stateRoot, 'downloads', `${check.id}-${Date.now()}`);
-  mkdirSync(directory, { recursive: true });
-  gh(root, ['release', 'download', tag, '--repo', REPOSITORY, '--dir', directory]);
-  const approved = check.id === 'public' ? readJson(receiptPath(stateRoot, 'draft')).details.hashes : undefined;
-  const result = auditAssets({ root, directory, plan, expectedHashes: approved });
-  const after = JSON.parse(gh(root, ['release', 'view', tag, '--repo', REPOSITORY, '--json', 'tagName,isDraft,isPrerelease,targetCommitish,assets,body']));
-  assertDownloadedRemote({ release, after, directory, plan, phase: check.id });
-  assertPlatformManifests({ manifest: readJson(resolve(directory, 'latest.json')), version: plan.version,
-    candidates: Object.fromEntries(PLATFORMS.map((p) => [p, readJson(resolve(stateRoot, 'candidates', p, 'latest.json'))])) });
-  const notes = readFileSync(resolve(directory, 'release-notes.md'), 'utf8').trim();
-  if (release.body.trim() !== notes) throw new Error('GitHub release body differs from approved release notes');
-  if (check.id === 'draft') {
-    for (const p of PLATFORMS) {
-      const build = readJson(receiptPath(stateRoot, `build:${p}`));
-      for (const item of build.evidence) {
-        const name = item.path.split('/').at(-1);
-        if (['latest.json'].includes(name) || !assetNames(plan.version).includes(name)) continue;
-        if (result.hashes[name] !== item.sha256) throw new Error(`Draft differs from approved candidate: ${name}`);
-      }
-    }
-  } else {
-    const latest = JSON.parse(gh(root, ['api', `repos/${REPOSITORY}/releases/latest`]));
-    if (latest.tag_name !== tag) throw new Error('The published release is not latest');
-    const updater = execFileSync('curl', ['--fail', '--location', '--silent', '--show-error', `https://github.com/${REPOSITORY}/releases/latest/download/latest.json`]);
-    if (Buffer.compare(updater, readFileSync(resolve(directory, 'latest.json'))) !== 0) throw new Error('Public updater endpoint differs from the audited manifest');
-  }
-  const report = resolve(directory, '..', `${check.id}-audit-${Date.now()}.json`);
-  atomicJson(report, { ...result, releaseAssets: release.assets.map(({ name, id, size }) => ({ name, id, size })) });
-  return envelope(plan, check, startedAt, [report, ...assetNames(plan.version).map((name) => resolve(directory, name))], stateRoot, result);
+  gh(root, ['release', 'edit', tag, '--repo', REPOSITORY, '--notes-file', resolve(stateRoot, 'candidates/darwin-aarch64/release-notes.md')]);
+  const release = JSON.parse(gh(root, ['release', 'view', tag, '--repo', REPOSITORY,
+    '--json', 'tagName,isDraft,isPrerelease,targetCommitish,assets,body']));
+  assertRemoteRelease(release, plan, 'draft');
+  assertTagTarget({ root, plan, phase: 'draft' });
+  const path = resolve(stateRoot, 'evidence', 'draft.json');
+  atomicJson(path, { commit: plan.commit, version: plan.version, tag,
+    manifest: combinePlatformManifests(manifests['darwin-aarch64'], manifests['windows-x86_64']),
+    assets: release.assets.map(({ name, id, size }) => ({ name, id, size })) });
+  return envelope(plan, check, startedAt, [path], stateRoot,
+    { commit: plan.commit, version: plan.version, tag, platforms: PLATFORMS });
 }
 
 export async function runRelease({ root, stateRoot, allowBuild = false, allowUpload = false, allowPublish = false, nativeOnly = false, resume = false, retryReason = '', handlers = {}, remoteWorker = runWindowsWorker, lifecycle = {}, waitMs = 15_000, deadlineMs = 2 * 60 * 60_000 }) {
   if (!Number.isFinite(waitMs) || waitMs < 1 || !Number.isFinite(deadlineMs) || deadlineMs < 1) throw new Error('Release coordinator needs a bounded polling interval and deadline');
   assertStateLocation(root, stateRoot);
   const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
+  assertActiveRelease(plan, stateRoot);
   if (nativeOnly && (!allowBuild || allowUpload || allowPublish || hostname() === plan.publisherHost || platform !== 'windows-x86_64')) throw new Error('Native-only coordination is restricted to the non-publisher Windows build host, without upload/publication');
-  if (!nativeOnly && hostname() !== plan.publisherHost) throw new Error('Only the designated publisher coordinates source CI; remote Windows uses --native-only');
+  if (!nativeOnly && hostname() !== plan.publisherHost) throw new Error('Only the designated publisher coordinates publication; remote Windows uses --native-only');
   assertCheckout(root, plan);
-  // Remote native workers consume the frozen selection only. The designated
-  // publisher reopens historical evidence before any orchestration/publication.
-  if (hostname() === plan.publisherHost) revalidatePlanCoverage({ root, plan });
-  if (plan.reviewRequired?.length) throw new Error('Resolve semantic classification before running the release');
   const activePath = resolve(stateRoot, 'active-stage.json');
   if (existsSync(activePath)) {
     const previous = readJson(activePath);
@@ -300,17 +202,6 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
     if (previous.status === 'running' && previous.worker && !existsSync(receiptPath(stateRoot, previous.checkId)) && !retryReason.trim()) throw new Error('Interrupted native worker has no completion receipt; inspect logs/outputs and record a retry reason after confirming its process tree is gone');
     if (previous.status === 'blocked' && !retryReason.trim()) throw new Error(`Previous ${previous.checkId} failed: ${previous.reason}. Resume needs --retry-reason explaining the resolved cause; no blind retries.`);
     if (retryReason.trim()) atomicJson(resolve(stateRoot, 'recovery', `retry-${Date.now()}.json`), { checkId: previous.checkId, reason: retryReason, recordedAt: new Date().toISOString() });
-  }
-  if (!plan.baseline?.publicEvidence) throw new Error('Release plan has no verified public baseline; recreate it through release:plan');
-  const integrityAdapter = resolve(root, 'scripts/release-native-integrity.mjs');
-  if (platform && existsSync(integrityAdapter) && !handlers[`audit:${platform}`]) {
-    const { pathToFileURL } = await import('node:url');
-    const { runNativeIntegrity } = await import(pathToFileURL(integrityAdapter).href);
-    if (typeof runNativeIntegrity !== 'function') throw new Error('Native integrity adapter contract is missing');
-    handlers = { ...handlers, [`audit:${platform}`]: runNativeIntegrity };
-  }
-  for (const check of plan.checks.filter((c) => c.kind === 'native' && c.platform === platform && c.required)) {
-    if (!handlers[check.id]) handlers = { ...handlers, [check.id]: runNativeCheck };
   }
   const coordinatorCommand = allowBuild ? candidateProcesses().find((p) => p.pid === process.pid)?.command : undefined;
   if (allowBuild && !coordinatorCommand) throw new Error('Cannot establish the native coordinator launch command');
@@ -323,12 +214,12 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
   const waiting = new Map();
   const deadline = Date.now() + deadlineMs;
   let remoteTask = null, remoteResult = null, remoteError = null, remoteCollected = false, remoteNextAt = 0;
-  let ciTask = null, ciResult = null, ciError = null;
-  const ciAbort = new AbortController();
+  const workerAbort = new AbortController();
   try {
     recordEvent(stateRoot, { kind: 'coordinator-started', resume, planHash: plan.planHash });
     if (allowUpload || allowPublish) {
       while (!publisherLease) {
+        assertActiveRelease(plan, stateRoot);
         try { publisherLease = acquirePublisherLease(plan, { recover: resume }); }
         catch (error) {
           if (error.status !== 'waiting') throw error;
@@ -339,42 +230,14 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
       }
     }
     while (true) {
+      assertActiveRelease(plan, stateRoot);
       const stages = reconcile(plan, stateRoot);
       const invalid = stages.filter((s) => s.status === 'invalid');
       if (invalid.length) throw new Error(`Evidence invalidated; inspect before rerunning: ${JSON.stringify(invalid)}`);
-      // Start exact-source CI in its own owned process before scheduling native
-      // work. Neither pending CI nor its network reads block candidate builds.
-      if (!nativeOnly && !ciTask && stages.find((s) => s.id === 'ci')?.status === 'pending'
-        && (!waiting.has('ci') || (Date.now() < deadline && Date.now() >= waiting.get('ci').retryAt))) {
-        const previousCI = existsSync(ciWorkerPath(stateRoot)) ? readJson(ciWorkerPath(stateRoot)) : null;
-        if (previousCI?.status === 'blocked' && !retryReason.trim()) throw new Error(`Previous ci failed: ${previousCI.reason}. Resume needs --retry-reason; no blind retries.`);
-        if (handlers.ci && previousCI?.status === 'blocked') atomicJson(resolve(stateRoot, 'recovery', `ci-retry-${Date.now()}.json`), { previous: previousCI, reason: retryReason, recordedAt: new Date().toISOString() });
-        const check = plan.checks.find((c) => c.id === 'ci'), startedAt = new Date().toISOString();
-        recordEvent(stateRoot, { kind: 'check-started', checkId: 'ci', startedAt });
-        const attempt = async () => {
-          if (handlers.ci) {
-            atomicJson(ciWorkerPath(stateRoot), { checkId: 'ci', planHash: plan.planHash, root: realPath(root), startedAt, status: 'running' });
-            const receipt = await handlers.ci({ root, stateRoot, plan, check });
-            saveReceipt(stateRoot, plan, receipt);
-            atomicJson(ciWorkerPath(stateRoot), { checkId: 'ci', planHash: plan.planHash, root: realPath(root), startedAt, status: 'passed', completedAt: receipt.completedAt });
-            return receipt;
-          }
-          return durableCI({ root, stateRoot, plan, waitMs, deadline, retryReason, signal: ciAbort.signal });
-        };
-        ciTask = attempt().then((receipt) => { ciResult = receipt; }, (error) => { ciError = error; });
-      }
       if (!remoteTask && Date.now() >= remoteNextAt && Date.now() < deadline && platform === 'darwin-aarch64' && allowBuild && !handlers['build:windows-x86_64']
         && stages.some((s) => s.id.endsWith(':windows-x86_64') && !['passed', 'not-required'].includes(s.status))) {
-        remoteTask = remoteWorker({ root, stateRoot, plan, signal: ciAbort.signal, onPrepared: lifecycle.remotePrepared, onStatus: (status) => atomicJson(resolve(stateRoot, 'remote-status.json'), status) })
+        remoteTask = remoteWorker({ root, stateRoot, plan, signal: workerAbort.signal, onPrepared: lifecycle.remotePrepared, onStatus: (status) => atomicJson(resolve(stateRoot, 'remote-status.json'), status) })
           .then((path) => { remoteResult = path; }, (error) => { remoteError = error; });
-      }
-      if (ciResult) { waiting.delete('ci'); ciResult = null; }
-      if (ciError) {
-        if (handlers.ci) atomicJson(ciWorkerPath(stateRoot), { checkId: 'ci', planHash: plan.planHash, root: realPath(root), status: ciError.status === 'waiting' ? 'waiting' : 'blocked', reason: ciError.message });
-        if (ciError.status !== 'waiting') throw ciError;
-        waiting.set('ci', { checkId: 'ci', reason: ciError.message, retryAt: Date.now() + waitMs });
-        recordEvent(stateRoot, { kind: 'check-waiting', checkId: 'ci', reason: ciError.message });
-        ciError = null; ciTask = null;
       }
       if (remoteError) {
         if (remoteError.status !== 'waiting') throw remoteError;
@@ -388,10 +251,10 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
         continue;
       }
       const ready = stages.filter((s) => s.status === 'pending' && (!waiting.has(s.id) || (Date.now() < deadline && Date.now() >= waiting.get(s.id).retryAt))).map((s) => plan.checks.find((c) => c.id === s.id));
-      const check = ready.find((c) => c.kind !== 'ci' && (!nativeOnly || c.platform === platform) && (handlers[c.id] || (c.kind === 'build' && c.platform === platform && allowBuild)
-        || (c.id === 'draft' && allowUpload) || (c.id === 'publish' && allowPublish) || (c.id === 'public' && plan.publisherHost === hostname() && process.platform !== 'win32')));
+      const check = ready.find((c) => (!nativeOnly || c.platform === platform) && (handlers[c.id] || (c.kind === 'build' && c.platform === platform && allowBuild)
+        || (c.id === 'draft' && allowUpload) || (c.id === 'publish' && allowPublish) || c.id === 'public'));
       if (!check) {
-        const pendingTasks = [ciTask && !ciResult && !ciError && stages.find((s) => s.id === 'ci')?.status !== 'passed' ? ciTask : null, remoteTask && !remoteCollected ? remoteTask : null].filter(Boolean);
+        const pendingTasks = [remoteTask && !remoteCollected ? remoteTask : null].filter(Boolean);
         if (pendingTasks.length && Date.now() < deadline) { await Promise.race([...pendingTasks, pause(Math.min(waitMs, Math.max(1, deadline - Date.now())))]); continue; }
         if (waiting.size && Date.now() < deadline) { await new Promise((accept) => setTimeout(accept, Math.min(waitMs, deadline - Date.now()))); continue; }
         return { complete: stages.every((s) => ['passed', 'not-required'].includes(s.status)), stages, waiting: [...waiting.values()] };
@@ -403,7 +266,7 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
       try {
         if (handlers[check.id]) receipt = await handlers[check.id]({ root, stateRoot, plan, check });
         else if (check.kind === 'build') receipt = await durableBuild({ root, stateRoot, plan, check });
-        else if (check.id === 'draft' || check.id === 'public') {
+        else if (check.id === 'draft') {
           if (!publisherLease) publisherLease = acquirePublisherLease(plan, { recover: resume });
           if (check.id === 'draft') markPublisherMutation(plan, publisherLease.token, { stage: 'draft' });
           receipt = remoteStage({ root, stateRoot, plan, check, allowUpload });
@@ -422,6 +285,15 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
           atomicJson(path, { commit: plan.commit, tag: `v${plan.version}`, publishedAt: new Date().toISOString() });
           receipt = envelope(plan, check, startedAt, [path], stateRoot, { tag: `v${plan.version}` });
         }
+        else if (check.id === 'public') {
+          const release = JSON.parse(gh(root, ['release', 'view', `v${plan.version}`, '--repo', REPOSITORY,
+            '--json', 'tagName,isDraft,isPrerelease,targetCommitish,assets,body']));
+          assertRemoteRelease(release, plan, 'public');
+          const path = resolve(stateRoot, 'evidence', 'public.json');
+          atomicJson(path, { commit: plan.commit, tag: `v${plan.version}`,
+            recordedAt: new Date().toISOString(), release });
+          receipt = envelope(plan, check, startedAt, [path], stateRoot, { tag: `v${plan.version}` });
+        }
         if (!(check.kind === 'build' && !handlers[check.id])) saveReceipt(stateRoot, plan, receipt);
         waiting.delete(check.id);
         recordEvent(stateRoot, { kind: 'check-passed', checkId: check.id, startedAt: receipt.startedAt, completedAt: receipt.completedAt });
@@ -436,7 +308,7 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
         }
         const active = existsSync(activePath) ? readJson(activePath) : {};
         recordEvent(stateRoot, { kind: 'check-blocked', checkId: check.id, reason: error.message });
-        atomicJson(resolve(stateRoot, 'active-stage.json'), { checkId: check.id, status: 'blocked', startedAt, stoppedAt: new Date().toISOString(), reason: error.message,
+        atomicJson(resolve(stateRoot, 'active-stage.json'), { checkId: check.id, status: active.status === 'cancelled' ? 'cancelled' : 'blocked', startedAt, stoppedAt: new Date().toISOString(), reason: error.message,
           ...(active.checkId === check.id && active.worker ? { worker: active.worker } : {}) });
         throw error;
       }
@@ -444,7 +316,7 @@ export async function runRelease({ root, stateRoot, allowBuild = false, allowUpl
   } finally {
     // A detached remote worker keeps ownership and can be collected on resume.
     // It cannot upload or publish, and a lost parent never authorizes a rebuild.
-    ciAbort.abort();
+    workerAbort.abort();
     releaseLease();
     publisherLease?.();
   }
@@ -456,18 +328,17 @@ async function main(args) {
   const stateRoot = option('--state') && resolve(option('--state'));
   if (!stateRoot) throw new Error('Specify --state <absolute release state directory outside builder staging>');
   assertStateLocation(checkoutRoot, stateRoot);
-  if (command === 'build-worker' || command === 'ci-worker') {
-    const registration = command === 'build-worker' ? resolve(stateRoot, 'active-stage.json') : ciWorkerPath(stateRoot);
+  if (command === 'build-worker') {
+    const registration = resolve(stateRoot, 'active-stage.json');
     const deadline = Date.now() + 30_000;
     while (!(existsSync(registration) && readJson(registration).worker?.pid === process.pid)) {
       if (Date.now() >= deadline) throw new Error('Worker registration handshake timed out; inspect preserved ownership');
       await pause(20);
     }
   }
-  if (command === 'ci-worker') {
-    await runHostedCIWorker({ root: checkoutRoot, stateRoot, token: option('--owner'), waitMs: Number(option('--wait-ms') ?? 15_000), deadlineMs: Number(option('--deadline-ms') ?? 2 * 60 * 60_000) });
-  } else if (command === 'build-worker') {
+  if (command === 'build-worker') {
     const plan = assertPlan(readJson(resolve(stateRoot, 'plan.json')));
+    assertActiveRelease(plan, stateRoot);
     const check = plan.checks.find((c) => c.id === option('--check') && c.kind === 'build' && c.platform === platform);
     const lease = readJson(resolve(stateRoot, 'lease.json')), active = readJson(resolve(stateRoot, 'active-stage.json'));
     if (!check || lease.token !== option('--owner') || leaseStatus(lease) !== 'running' || lease.planHash !== plan.planHash

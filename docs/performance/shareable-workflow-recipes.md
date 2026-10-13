@@ -1,5 +1,12 @@
 # Shareable workflow recipes
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Recipes are reusable across projects. New manual recipes do not require a project;
 existing project bindings act as defaults. The run dialog shows a project selector,
 requested inputs, runtime settings, and interpolated shell commands. Settings,

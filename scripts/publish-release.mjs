@@ -56,27 +56,6 @@ if (builtCommit !== target) {
   throw new Error(`The staged assets were built from ${builtCommit ?? "an unknown or dirty commit"}, but HEAD is ${target}.\nRun npm run release:build again so the published binaries match the release commit.`);
 }
 
-// The commit being released must have a green Verify run before it ships.
-if (process.argv.includes("--skip-ci-check")) {
-  console.warn(`WARNING: skipping the CI check. Publishing ${tag} without verified CI for ${target}.`);
-} else {
-  const ci = spawnSync("gh", ["run", "list", "--repo", "m17h/Mythra-Code", "--commit", target, "--workflow", "Verify", "--json", "status,conclusion"], { cwd: root, encoding: "utf8" });
-  if (ci.status !== 0) {
-    throw new Error(`Could not query the Verify workflow for ${target}.\n${(ci.stderr || "").trim()}\nFix gh access, or rerun with --skip-ci-check to override.`);
-  }
-  const runs = JSON.parse(ci.stdout || "[]");
-  if (runs.length === 0) {
-    throw new Error(`No Verify workflow run exists for ${target}. Push the commit and wait for CI to pass, or rerun with --skip-ci-check to override.`);
-  }
-  const latestRun = runs[0];
-  if (latestRun.status !== "completed") {
-    throw new Error(`The Verify workflow for ${target} is still ${latestRun.status}. Wait for it to finish, or rerun with --skip-ci-check to override.`);
-  }
-  if (latestRun.conclusion !== "success") {
-    throw new Error(`The Verify workflow for ${target} finished with conclusion "${latestRun.conclusion}". Fix CI before publishing, or rerun with --skip-ci-check to override.`);
-  }
-}
-
 uploadPlatformDraft({
   root,
   repository: "m17h/Mythra-Code",

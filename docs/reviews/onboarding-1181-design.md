@@ -1,5 +1,12 @@
 # Onboarding redesign proposal for 1.18.1 (Opus 5.5)
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Status: implemented after reconciliation by the root reviewer and three GPT-6
 Sol reviewers. This document preserves the original proposal; the final behavior,
 review corrections, and verification evidence are in [1.18.1-validation.md](1.18.1-validation.md).

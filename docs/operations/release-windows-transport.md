@@ -1,85 +1,52 @@
 # Windows worker transport
 
-`scripts/release-remote.mjs` exports `runWindowsWorker({ root, stateRoot, plan,
-onStatus, onPrepared })`. The publishing coordinator invokes it only within an already
-approved release build. It returns a local directory containing the Windows
-portable handoff; the owning coordinator validates and merges it under its
-existing release lease. The transport never uploads or publishes release assets.
+The publishing coordinator calls `runWindowsWorker({ root, stateRoot, plan,
+onStatus, onPrepared })` from `scripts/release-remote.mjs` within an authorized
+release. The transport returns the Windows portable build handoff. It never
+uploads or publishes release assets.
 
-The SSH adapter reads Morgan's authoritative LAN guide on ZEDS-PC, verifies the
-computer/user identity and checks Node, Git, npm and GitHub CLI availability.
-It uses the existing `zeds-pc-ai` SSH alias and existing Windows credentials.
-It transfers plan/receipt/evidence files and its fixed runner source. Signing
-keys, bot tokens, leases and active-stage records are excluded from the handoff.
+Use the maintained trusted-machine configuration and private LAN access guide.
+The adapter establishes the native host identity and required build tools, then
+prepares a dedicated detached checkout at the frozen `m17h/Mythra-Code` source.
+It transfers plan/build-record/package files and the fixed runner source.
+Credentials, signing keys, tokens, leases and active process state remain on
+their owning machine. Preserve active applications and real profiles.
 
-For each frozen plan it creates a dedicated detached checkout under
-`%USERPROFILE%/Documents/MythraCode-Releases/<planHash>/checkout`. State, incoming
-files and returned evidence are sibling directories outside the builder's
-cleared output. It fetches the exact commit from `m17h/Mythra-Code`, checks the
-origin, commit and clean tree. The native Windows builder installs pinned
-dependencies once; transport preparation does not repeat that work. Existing
-application processes and profiles are preserved.
-
-The persisted Node runner invokes exactly:
+The native worker runs:
 
 ```text
 node scripts/release-coordinator.mjs run --state <remote-state> --build --native-only
 ```
 
-That worker owns native build/check receipts. It exports its passed Windows
-checks on coordinator exit 0 or 2. Exit 2 can mean macOS or publication remains
-pending; Windows completion is determined from all required Windows checks.
-The designated publisher owns CI collection, which may run concurrently with
-both native builds. Platform-only outgoing/returned handoffs exclude CI to avoid
-independently generated conflicting receipts. The full publication graph still
-requires that CI proof. A terminal export missing required Windows receipts is explicitly blocked;
-it is never cached as a complete or automatically refreshable handoff. Inspect
-the existing remote ownership/results, export a new handoff and use the maintained
-manual merge command after diagnosing the missing receipt. Do not rebuild merely
-because collection was incomplete. A blocked stage, invalid evidence
-or another command exit records a failure. No automatic failure retry is
-performed.
+It installs the frozen dependencies, compiles and packages Windows with
+`src-tauri/tauri.windows.conf.json`, retains the Windows updater signing key,
+and exports its Windows build result. No automated test, CI, native GUI,
+performance, upgrade-coverage or independent audit stage runs.
 
-The release agent owns this diagnosis, safe export and merge; Morgan should not
-need to perform the recovery commands. This implementation does not claim an
-automatic collector for a terminal partial handoff.
+A completed Windows handoff identifies the frozen source/version and candidate
+package. Exit 2 may mean the Mac build or publication still remains; do not
+report the full release complete from Windows exit status alone. A partial
+handoff stays incomplete. Diagnose the missing result, preserve the worker's
+packages/logs and collect or export its result rather than rebuilding solely
+because a transfer failed. No blind failure retry is performed.
 
-Local transport state lives in
-`<release-state>/remote/windows-x86_64/worker.json`. Remote ownership lives in
-`<planHash>/worker.json`. Both record queued, running, waiting, failed or complete
-states. A queued ownership record is saved before process launch. Running
-records include the PID and process start identity; polling verifies both and
-checks descendants when the runner has ended. An SSH interruption preserves
-ownership. Resume collects the same worker instead of launching another one.
-A lost terminal record or ambiguous launch needs diagnosis before replacement.
+Local transport ownership lives in
+`<release-state>/remote/windows-x86_64/worker.json`; the native worker has its
+own ownership record. Queued, running, waiting, failed and complete are distinct
+states. Running records include PID and process start identity. Resume inspects
+the same worker and descendants before considering a replacement. An SSH
+interruption or dead parent PID does not establish that its builder exited.
 
-Polling defaults to five seconds with a two-hour collection deadline. Reaching
-the deadline records waiting and releases the local transport lease; the remote
-worker keeps its ownership and can be collected by the next resume. Individual
-SSH and transfer/setup commands also have deadlines. A completed local handoff
-is revalidated and reused on resume without another transfer or builder.
+Polling and collection deadlines are bounded. A local deadline preserves the
+remote worker ownership for the next authorized resume. A returned handoff is
+reused while its source/version and package record match. The optional
+`onPrepared` callback runs after checkout preparation and before state transfer/
+worker launch; private native-machine setup can use it without publishing
+personal operator code or policies in this repository.
 
-An optional `onPrepared` lifecycle callback runs after checkout preparation and
-before incoming-state transfer and launch. It receives the frozen plan, paths,
-capability and transport. Private machine setup may use it without importing
-personal operator code into this module. Callback failure prevents launch.
-Do not register the movable incoming directory as a permanent private state.
-
-The API also accepts `transport`, `pollMs`, `timeoutMs` and `sleep` overrides for
-focused tests. The tests exercise validated receipt roundtrips, resume,
-transport interruptions, descendant preservation, deadlines, failures, evidence
-rejection, encoded arguments and an actual local child runner/export boundary.
-These fixtures do not prove a native Windows release. Live Windows transport,
-GUI capability and package behavior require an authorized release on the actual
-PC. The transport does not close an active app, change its profile or infer GUI
-success from process liveness.
-
-Read-only capability preflight is available without preparing or building:
-
-```sh
-node --input-type=module -e 'import {createSshTransport} from "./scripts/release-remote.mjs"; const {host,user,version}=await createSshTransport().preflight(); console.log({host,user,version})'
-```
-
-The local `build.md` runbook remains operator policy. Its transfer/hash handling
-must be supplied by the release coordinator if that untracked file is required;
-portable receipt handoffs do not automatically include arbitrary local files.
+Cancellation stops the owned remote runner and every build/transfer descendant,
+preserves state/logs, and confirms process-tree exit. Never close unrelated apps,
+alter real profiles or launch a second owner while the existing one is uncertain.
+A cancelled release stays cancelled. See
+[release-coordinator.md](release-coordinator.md) for status/resume/export/merge
+commands and publisher ownership rules.

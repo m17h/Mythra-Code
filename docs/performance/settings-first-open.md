@@ -1,5 +1,12 @@
 # First-open Settings latency
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Measured 2026-09-02 on the development Mac (arm64, Node 26), using the minified
 Safari-target web build, served locally, with five fresh browser contexts per
 engine at 1400×900. No native IPC, provider accounts, or external network.

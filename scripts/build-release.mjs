@@ -121,15 +121,6 @@ if (process.platform === "darwin") {
     if (signArchive.status !== 0) process.exit(signArchive.status ?? 1);
   }
 
-  for (const [command, args] of [
-    ["codesign", ["--verify", "--deep", "--strict", "--verbose=4", appBundle]],
-    ["xcrun", ["stapler", "validate", appBundle]],
-    ["spctl", ["--assess", "--type", "execute", "--verbose=4", appBundle]],
-  ]) {
-    const verify = spawnSync(command, args, { stdio: "inherit" });
-    if (verify.status !== 0) process.exit(verify.status ?? 1);
-  }
-
   const dmgDirectory = resolve(root, "src-tauri/target/release/bundle/dmg");
   rmSync(dmgDirectory, { recursive: true, force: true });
   mkdirSync(dmgDirectory, { recursive: true });

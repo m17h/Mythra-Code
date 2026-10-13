@@ -1,5 +1,12 @@
 # Feedback, project checks, and setup before Run
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 ## User workflow
 
 Select text in a completed assistant reply or one file in Review, then choose

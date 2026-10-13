@@ -1,5 +1,12 @@
 # Toon model artwork
 
+> Historical record. Automated tests, checks and performance measurements are
+> disabled locally and on GitHub until Morgan explicitly reintroduces them.
+> Old test commands, review ceremonies and suggested validation below do not
+> authorize execution or create merge/release gates. Removed test paths may no
+> longer exist. Current policy is in `AGENTS.md` and
+> `docs/operations/releasing.md`.
+
 Current selection: Morgan preferred the original Astra after reviewing the variants below. `public/model-icons/astra.png` was restored byte-for-byte from the branch's HEAD version (the original blue/violet galaxy, 128 × 124). Its existing active-model particle effects remain intact. Sol and Luna retain their new artwork; Terra is unchanged. The Astra prompts and validation notes below document superseded experiments, not the installed design.
 
 Sol and Luna were generated with the built-in image-generation tool, then resized with macOS `sips` to transparent 128 × 128 PNGs for the existing 20–22px controls. Model behavior and animations remain unchanged.
