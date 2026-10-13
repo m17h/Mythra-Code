@@ -213,9 +213,7 @@ Local packaging does not have the development command's separate app-data identi
 
 Use [GitHub Releases](https://github.com/m17h/Mythra-Code/releases) for downloads and version-specific changes. This README describes the current source; features on a newer source branch may not yet be in your installed release.
 
-Publishing requires an explicit release request and chosen version. Build both platforms from the same clean merged source/version on their native operating systems, retain each platform's updater signing key, sign the updater packages and notarize macOS. Attach both native asset sets to one draft with both entries in `latest.json`.
-
-Maintainers follow [Building and publishing a release](docs/operations/releasing.md) and the maintained [release coordinator](docs/operations/release-coordinator.md). The coordinator owns both native builds, draft upload and `release:finalize` publication through one publisher. No test, CI, native QA, upgrade-evidence or independent audit gate is required. Do not publish a one-platform manifest or replace an already published version with different binaries.
+Publishing requires an explicit release request and chosen version. Maintainers run one command on the Mac, `npm run release -- <version>`, which builds macOS locally and Windows over SSH from the same commit, signs both updater packages, notarizes macOS and publishes one release with both platforms in `latest.json`. See [Building and publishing a release](docs/operations/releasing.md).
 
 ## More documentation
 

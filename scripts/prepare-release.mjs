@@ -23,7 +23,7 @@ const dmgCandidates = [
 const dmgSource = dmgCandidates.find(existsSync);
 
 for (const path of [appSource, updaterSource, signatureSource]) {
-  if (!existsSync(path)) throw new Error(`Missing release artifact: ${path}\nRun npm run release:build first.`);
+  if (!existsSync(path)) throw new Error(`Missing release artifact: ${path}\nRun npm run release:macos:build first.`);
 }
 if (!dmgSource) throw new Error(`Missing DMG. Looked for:\n${dmgCandidates.join("\n")}`);
 function requireSuccess(command, args, label) {

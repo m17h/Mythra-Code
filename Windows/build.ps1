@@ -86,13 +86,6 @@ if (-not $npm -or -not $npx) {
   throw "Node.js/npm is not installed or is not available on PATH."
 }
 
-if ($env:MYTHRA_RELEASE_CANDIDATE_STATE) {
-  $candidateFlags = @()
-  if ($AllowDirty) { $candidateFlags += '--allow-dirty' }
-  if ($SkipInstall) { $candidateFlags += '--skip-install' }
-  # Match the frozen source and live coordinator/native worker before packaging.
-  Invoke-Checked -Command 'node' -Arguments (@('scripts/release-candidate-contract.mjs', $repoRoot) + $candidateFlags)
-}
 if (-not $SkipInstall) {
   Invoke-Checked -Command $npm -Arguments @("ci")
 }
