@@ -52,7 +52,9 @@ Do not:
 - change updater keys, edit `latest.json` by hand, publish one platform alone,
   or replace binaries in a published release (ship a new version instead).
 
-To cancel a run: `npm run release:stop`. It stops the builds on both machines.
+To cancel a run: `npm run release:stop`. It stops the builds on both machines
+and only reports success once nothing is left running on either. If it reports
+anything unconfirmed (for example, the PC is unreachable), run it again.
 
 ## Commands
 
@@ -61,7 +63,7 @@ To cancel a run: `npm run release:stop`. It stops the builds on both machines.
 | `npm run release:prepare -- X.Y.Z [--merge]` | Version-bump PR (reuses an open one), optional merge, notes draft |
 | `npm run release -- X.Y.Z [--background]` | Preflight, build both platforms, publish |
 | `npm run release:status [-- X.Y.Z]` | State of the current or named run, last log lines, GitHub state |
-| `npm run release:stop` | Cancel the running release on both machines |
+| `npm run release:stop` | Cancel the running release and confirm nothing is left on either machine (safe to repeat) |
 
 `release` options: `--no-publish` builds both platforms without touching
 GitHub; `--rebuild` ignores finished builds; `--commit <sha>` releases a commit
@@ -94,6 +96,10 @@ other than `origin/main`; `--notes <file>` uses another notes file.
      record.
 
    If one platform fails, the other still finishes so its output can be reused.
+   A platform is reused only if every file it publishes is present and matches
+   the commit, so a half-finished download is rebuilt rather than reused.
+   Each step has a generous deadline (two hours for a build with notarization)
+   so a hung step fails with its name instead of stalling.
 3. **Publishes.**
    - Writes one `latest.json` with `darwin-aarch64` and `windows-x86_64`.
    - Creates a draft `vX.Y.Z` targeting the commit, replacing an unpublished
@@ -113,6 +119,8 @@ other than `origin/main`; `--notes <file>` uses another notes file.
 | Compile error in both logs | A real source error on `main`. Fix it in a normal PR, then re-run. |
 | Notarization rejected | Read `xcrun notarytool log <id> --keychain-profile <profile>` for the submission ID in `mac.log`. |
 | `is already running` | Another run is active. Watch it with `release:status` or cancel with `release:stop`. |
+| `did not finish within N minutes` | That step hung (often Apple notarization or the network). Its processes were stopped; re-run. |
+| `Tag vX.Y.Z already exists at ...` | A tag from an earlier attempt points at other source. Delete it as the message shows, then re-run. |
 
 ## Machine setup (already done on Morgan's machines)
 
