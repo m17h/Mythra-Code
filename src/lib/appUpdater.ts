@@ -61,12 +61,24 @@ export function useAppUpdater(): AppUpdater {
   const [state, setState] = useState<AppUpdateState>(INITIAL_STATE);
   const updateRef = useRef<Update | null>(null);
   const checkingRef = useRef(false);
+  const visibleCheckRef = useRef(false);
   const phaseRef = useRef<AppUpdatePhase>(state.phase);
   phaseRef.current = state.phase;
 
   const performCheck = useCallback(async (silent: boolean) => {
-    if (!isTauri() || checkingRef.current) return;
+    if (!isTauri()
+      || ["downloading", "installing", "restarting"].includes(phaseRef.current)) return;
+    if (checkingRef.current) {
+      // Opening Updates can join a silent background check. Promote its
+      // progress/errors into the page without issuing another network request.
+      if (!silent) {
+        visibleCheckRef.current = true;
+        setState((current) => ({ ...current, phase: "checking", error: null }));
+      }
+      return;
+    }
     checkingRef.current = true;
+    visibleCheckRef.current = !silent;
     if (!silent) setState((current) => ({ ...current, phase: "checking", error: null }));
     try {
       const currentVersion = await getVersion();
@@ -100,7 +112,7 @@ export function useAppUpdater(): AppUpdater {
         error: null,
       });
     } catch (reason) {
-      if (silent) {
+      if (!visibleCheckRef.current) {
         // The startup check failing silently would otherwise leave no trace
         // anywhere: if the endpoint, key, or manifest breaks, the installed
         // base just stops updating. Keep it out of the UI but in diagnostics.
@@ -110,6 +122,7 @@ export function useAppUpdater(): AppUpdater {
       }
     } finally {
       checkingRef.current = false;
+      visibleCheckRef.current = false;
     }
   }, []);
 
@@ -121,6 +134,8 @@ export function useAppUpdater(): AppUpdater {
   }, [performCheck]);
 
   const downloadAndRestart = useCallback(async () => {
+    if (checkingRef.current
+      || ["downloading", "installing", "restarting"].includes(phaseRef.current)) return;
     const update = updateRef.current;
     if (!update) {
       await performCheck(false);
@@ -129,6 +144,7 @@ export function useAppUpdater(): AppUpdater {
 
     let downloadedBytes = 0;
     let totalBytes: number | null = null;
+    phaseRef.current = "downloading";
     setState((current) => ({ ...current, phase: "downloading", downloadedBytes: 0, totalBytes: null, error: null }));
     try {
       await update.downloadAndInstall((event) => {
@@ -139,12 +155,15 @@ export function useAppUpdater(): AppUpdater {
           downloadedBytes += event.data.chunkLength;
           setState((current) => ({ ...current, downloadedBytes, totalBytes }));
         } else {
+          phaseRef.current = "installing";
           setState((current) => ({ ...current, phase: "installing", downloadedBytes, totalBytes }));
         }
       }, { timeout: 10 * 60_000 });
+      phaseRef.current = "restarting";
       setState((current) => ({ ...current, phase: "restarting" }));
       await relaunch();
     } catch (reason) {
+      phaseRef.current = "error";
       setState((current) => ({ ...current, phase: "error", error: friendlyError(reason) }));
     }
   }, [performCheck]);

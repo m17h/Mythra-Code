@@ -64,6 +64,23 @@ pub struct CursorState {
     starts: super::NativeStartRegistry,
     identities: Mutex<HashMap<String, CursorTurnIdentity>>,
     authenticated: AtomicBool,
+    /// Advances only at sign-in, which can change credentials outside this
+    /// process; a check spanning one cannot authorize turns.
+    auth_check_generation: StdMutex<u64>,
+    /// Ordinary checks run one at a time so one cannot cancel another's
+    /// (for example a turn's own check) merely by starting.
+    auth_check_lock: Mutex<()>,
+    auth_probes: StdMutex<CursorAuthProbes>,
+}
+
+/// Callers that waited behind a probe share its result instead of queueing
+/// another full CLI check each. Only a probe that finished after the caller
+/// arrived, under the current sign-in generation, is shared; nothing else is
+/// reused, so a check started after one settles still probes.
+#[derive(Default)]
+struct CursorAuthProbes {
+    completed: u64,
+    last: Option<(u64, Result<CursorRuntimeStatus, String>)>,
 }
 
 #[derive(Clone, Serialize)]
@@ -322,7 +339,7 @@ fn visible_cursor_notification(method: &str, prompt_started: bool) -> bool {
     prompt_started || (method != "session/update" && method != "cursor/create_plan")
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorRuntimeStatus {
     available: bool,
@@ -917,18 +934,23 @@ fn cursor_runtime_path(path: &str, wsl: bool) -> Result<String, String> {
 
 #[cfg(windows)]
 async fn resolve_cursor_in_wsl() -> Option<CursorRuntime> {
-    let output = background_command("wsl.exe")
-        .args([
-            "--exec",
-            "sh",
-            "-lc",
-            "command -v cursor-agent || command -v agent",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
+    let output = timeout(
+        super::RUNTIME_PROBE_TIMEOUT,
+        background_command("wsl.exe")
+            .args([
+                "--exec",
+                "sh",
+                "-lc",
+                "command -v cursor-agent || command -v agent",
+            ])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -937,18 +959,6 @@ async fn resolve_cursor_in_wsl() -> Option<CursorRuntime> {
         .map(str::trim)
         .find(|line| line.starts_with('/'))
         .map(|path| CursorRuntime::Wsl(path.to_string()))
-}
-
-#[cfg(windows)]
-fn push_windows_cursor_candidates_at(candidates: &mut Vec<PathBuf>, local_app_data: &Path) {
-    let install_root = local_app_data.join("cursor-agent");
-    // Cursor's official native Windows installer does not ship the CLI with
-    // the desktop editor. It installs these launchers separately and updates
-    // the user's PATH, which an already-running GUI process may not inherit.
-    // Checking the documented install root makes detection immediate and
-    // reliable after installation without restarting Windows.
-    super::push_candidate(candidates, install_root.join("agent.exe"));
-    super::push_candidate(candidates, install_root.join("cursor-agent.exe"));
 }
 
 #[cfg(windows)]
@@ -1000,17 +1010,15 @@ pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRunt
     } else {
         &["agent", "cursor-agent"]
     };
-    let mut candidates = Vec::new();
     #[cfg(windows)]
     if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
-        push_windows_cursor_candidates_at(&mut candidates, &local_app_data);
         if let Some(runtime) = resolve_windows_cursor_install_at(&local_app_data) {
             return Ok(runtime);
         }
     }
     for name in executable_names {
         if let Some(candidate) = super::find_on_path(name).await {
-            super::push_candidate(&mut candidates, candidate);
+            return Ok(CursorRuntime::Native(candidate));
         }
     }
     if let Ok(home) = crate::release_qa::home_dir(app) {
@@ -1022,11 +1030,11 @@ pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRunt
             ".cursor/bin/agent",
             ".cursor/bin/agent.exe",
         ] {
-            super::push_candidate(&mut candidates, home.join(relative));
+            let candidate = home.join(relative);
+            if candidate.is_file() {
+                return Ok(CursorRuntime::Native(candidate));
+            }
         }
-    }
-    if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
-        return Ok(CursorRuntime::Native(candidate));
     }
     for name in executable_names {
         if let Some(candidate) = super::find_with_login_shell(name).await {
@@ -1046,11 +1054,11 @@ pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRunt
 /// Upper bound for the `agent about` sign-in probe.
 const CURSOR_ABOUT_TIMEOUT: Duration = Duration::from_secs(15);
 
-async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
+async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStatus, String> {
     let runtime = match resolve_cursor_runtime(app).await {
         Ok(runtime) => runtime,
         Err(error) => {
-            return CursorRuntimeStatus {
+            return Ok(CursorRuntimeStatus {
                 available: false,
                 path: None,
                 version: None,
@@ -1058,7 +1066,7 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
                 email: None,
                 subscription_type: None,
                 warning: Some(error),
-            };
+            });
         }
     };
     // Bounded like the Claude probe: a wedged CLI must not pin the account
@@ -1074,33 +1082,104 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> CursorRuntimeStatus {
             .output(),
     )
     .await
-    .ok()
-    .and_then(Result::ok);
-    let plain = output
-        .as_ref()
-        .map(|value| {
-            format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&value.stdout),
-                String::from_utf8_lossy(&value.stderr)
-            )
-        })
-        .unwrap_or_default();
-    let email = field_after_label(&plain, "User Email");
-    let logged_in = email
-        .as_deref()
-        .is_some_and(|value| !value.eq_ignore_ascii_case("not logged in"));
-    CursorRuntimeStatus {
+    .map_err(|_| "Cursor account status took too long to check. Try refreshing.".to_string())?
+    .map_err(|error| format!("Could not check Cursor account status: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Cursor account status could not be checked ({}). Try refreshing.",
+            output.status
+        ));
+    }
+    let plain = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let email = field_after_label(&plain, "User Email")
+        .ok_or_else(|| "Cursor returned an incomplete account status. Try refreshing.".to_string())?;
+    let logged_in = !email.eq_ignore_ascii_case("not logged in");
+    if logged_in && (!email.contains('@') || email.chars().any(char::is_whitespace)) {
+        return Err("Cursor returned an unrecognized account status. Try refreshing.".into());
+    }
+    Ok(CursorRuntimeStatus {
         available: true,
         path: Some(runtime.display_path()),
         version: field_after_label(&plain, "CLI Version")
             .or_else(|| field_after_label(&plain, "Version")),
         logged_in,
-        email: logged_in.then_some(email).flatten(),
+        email: logged_in.then_some(email),
         subscription_type: field_after_label(&plain, "Subscription Tier")
             .filter(|value| !value.eq_ignore_ascii_case("unknown")),
         warning: None,
+    })
+}
+
+fn invalidate_cursor_auth(state: &CursorState) {
+    let mut generation = state
+        .auth_check_generation
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    *generation = generation.wrapping_add(1);
+    state.authenticated.store(false, Ordering::Release);
+}
+
+fn cursor_auth_generation(state: &CursorState) -> u64 {
+    *state.auth_check_generation.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A turn authorizes once, then session setup may take minutes. Refuse the
+/// first prompt if a sign-in began meanwhile or a check found the account
+/// signed out or unverifiable. Ordinary checks that still find it signed in pass.
+fn cursor_auth_admits(state: &CursorState, authorized_generation: u64) -> Result<(), String> {
+    let generation = state.auth_check_generation.lock().unwrap_or_else(PoisonError::into_inner);
+    if *generation != authorized_generation || !state.authenticated.load(Ordering::Acquire) {
+        return Err("Cursor's sign-in changed before this message was sent. Check the connection, then send it again.".into());
     }
+    Ok(())
+}
+
+async fn checked_cursor_runtime_status(
+    app: &AppHandle,
+    state: &CursorState,
+) -> Result<CursorRuntimeStatus, String> {
+    let arrived = state.auth_probes.lock().unwrap_or_else(PoisonError::into_inner).completed;
+    let _serial = state.auth_check_lock.lock().await;
+    {
+        // Validate against the live generation while holding its lock, as
+        // fresh publication does, so a sign-in cannot land in between.
+        let generation = state.auth_check_generation.lock().unwrap_or_else(PoisonError::into_inner);
+        let probes = state.auth_probes.lock().unwrap_or_else(PoisonError::into_inner);
+        if probes.completed != arrived {
+            if let Some((_, result)) = probes.last.as_ref().filter(|(checked, _)| *checked == *generation) {
+                return result.clone();
+            }
+        }
+    }
+    // Captured under the probe lock, through publication; sign-in
+    // invalidates without waiting for it.
+    let checked_generation = cursor_auth_generation(state);
+    let result = read_cursor_runtime_status(app).await;
+    let result = {
+        let generation = state
+            .auth_check_generation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *generation != checked_generation {
+            Err("A Cursor sign-in started during this check. Try refreshing.".to_string())
+        } else {
+            // An unknown account check cannot authorize starting a native turn.
+            // Reject it to the UI without presenting it as a proven sign-out.
+            state.authenticated.store(
+                result.as_ref().is_ok_and(|status| status.logged_in),
+                Ordering::Release,
+            );
+            result
+        }
+    };
+    let mut probes = state.auth_probes.lock().unwrap_or_else(PoisonError::into_inner);
+    probes.completed = probes.completed.wrapping_add(1);
+    probes.last = Some((checked_generation, result.clone()));
+    result
 }
 
 #[tauri::command]
@@ -1108,15 +1187,14 @@ pub async fn cursor_runtime_status(
     app: AppHandle,
     state: State<'_, CursorState>,
 ) -> Result<CursorRuntimeStatus, String> {
-    let status = read_cursor_runtime_status(&app).await;
-    state
-        .authenticated
-        .store(status.logged_in, Ordering::Release);
-    Ok(status)
+    checked_cursor_runtime_status(&app, &state).await
 }
 
 #[tauri::command]
 pub async fn cursor_login(app: AppHandle) -> Result<(), String> {
+    // Sign-in changes credentials outside this process. A check started
+    // before it must not restore the previous account authorization.
+    invalidate_cursor_auth(&app.state::<CursorState>());
     let runtime = resolve_cursor_runtime(&app).await?;
     #[cfg(target_os = "macos")]
     {
@@ -1728,11 +1806,9 @@ pub async fn cursor_turn_start(
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
         return Err("Choose a valid project folder before starting this Cursor thread.".into());
     }
+    let authorized_generation = cursor_auth_generation(&state);
     if !state.authenticated.load(Ordering::Acquire) {
-        let status = read_cursor_runtime_status(&app).await;
-        state
-            .authenticated
-            .store(status.logged_in, Ordering::Release);
+        let status = checked_cursor_runtime_status(&app, &state).await?;
         if !status.logged_in {
             return Err("Sign in to Cursor Agent before sending a message.".into());
         }
@@ -1863,6 +1939,7 @@ pub async fn cursor_turn_start(
     // Admission fails only if the process already ended or was stopped.
     let start_result = start_result.and_then(|started| {
         start.assert_current()?;
+        cursor_auth_admits(&state, authorized_generation)?;
         process.prompt_started.store(true, Ordering::Release);
         if let Some(input) = process.run.admit_primary() {
             Ok((started, input))

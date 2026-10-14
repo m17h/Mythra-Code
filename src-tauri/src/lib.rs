@@ -1221,7 +1221,24 @@ struct ClaudeState {
     turns: Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
     starts: NativeStartRegistry,
     authenticated: AtomicBool,
+    /// Advances only at sign-in, which can change credentials outside this
+    /// process; a check spanning one cannot authorize turns.
+    auth_check_generation: StdMutex<u64>,
+    /// Ordinary checks run one at a time so one cannot cancel another's
+    /// (for example a turn's own check) merely by starting.
+    auth_check_lock: Mutex<()>,
+    auth_probes: StdMutex<ClaudeAuthProbes>,
     prompt_snapshot_support: Mutex<Option<ClaudePromptSnapshotSupport>>,
+}
+
+/// Callers that waited behind a probe share its result instead of queueing
+/// another full CLI check each. Only a probe that finished after the caller
+/// arrived, under the current sign-in generation, is shared; nothing else is
+/// reused, so a check started after one settles still probes.
+#[derive(Default)]
+struct ClaudeAuthProbes {
+    completed: u64,
+    last: Option<(u64, ClaudeRuntimeStatus)>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1286,13 +1303,14 @@ struct ClaudeTurn {
     control_response: Mutex<()>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClaudeRuntimeStatus {
     available: bool,
     path: Option<String>,
     version: Option<String>,
     logged_in: bool,
+    auth_verified: bool,
     auth_method: Option<String>,
     email: Option<String>,
     subscription_type: Option<String>,
@@ -1500,21 +1518,32 @@ type ClaudeEarlyOutput = std::collections::VecDeque<std::io::Result<Option<Strin
 /// write before it reads, and a full stdout pipe would stop it reading stdin.
 /// Everything drained is returned unprocessed so the stdout reader can apply
 /// its normal handling — including the prompt boundary — in original order.
+enum ClaudeStartupInputError {
+    /// Refused before the user's message was written; nothing was dispatched.
+    NotSent(String),
+    Failed(String),
+}
+
+/// Writes control messages, then the user's input. `admit_input` runs at the
+/// last boundary before that input, after every earlier await.
 async fn write_claude_startup_input<R: tokio::io::AsyncBufRead + Unpin>(
     turn: &ClaudeTurn,
-    messages: &[&Value],
+    control: &[&Value],
+    input: &Value,
+    admit_input: impl FnOnce() -> Result<(), String>,
     lines: &mut tokio::io::Lines<R>,
     deadline: Instant,
-) -> Result<ClaudeEarlyOutput, String> {
+) -> Result<ClaudeEarlyOutput, ClaudeStartupInputError> {
     enum Progress {
-        Written(Result<Result<(), String>, tokio::time::error::Elapsed>),
+        Written(Result<Result<(), ClaudeStartupInputError>, tokio::time::error::Elapsed>),
         Read(std::io::Result<Option<String>>),
     }
     let writes = timeout_at(deadline, async {
-        for message in messages {
-            turn.write(message).await?;
+        for message in control {
+            turn.write(message).await.map_err(ClaudeStartupInputError::Failed)?;
         }
-        Ok::<(), String>(())
+        admit_input().map_err(ClaudeStartupInputError::NotSent)?;
+        turn.write(input).await.map_err(ClaudeStartupInputError::Failed)
     });
     tokio::pin!(writes);
     let mut early = ClaudeEarlyOutput::new();
@@ -1532,7 +1561,7 @@ async fn write_claude_startup_input<R: tokio::io::AsyncBufRead + Unpin>(
             Progress::Written(Ok(Ok(()))) => return Ok(early),
             Progress::Written(Ok(Err(error))) => return Err(error),
             Progress::Written(Err(_)) => {
-                return Err("Claude Code did not accept its input in time.".into())
+                return Err(ClaudeStartupInputError::Failed("Claude Code did not accept its input in time.".into()))
             }
             Progress::Read(line) => {
                 if let Ok(Some(text)) = &line {
@@ -2781,12 +2810,17 @@ fn push_windows_npm_claude_candidates(candidates: &mut Vec<PathBuf>) {
 #[cfg(target_os = "macos")]
 async fn find_with_login_shell(program: &str) -> Option<PathBuf> {
     let shell = env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/zsh"));
-    let output = background_command(shell)
+    let mut command = background_command(shell);
+    command
         .args(["-lc", &format!("command -v {}", program)])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output()
+        .kill_on_drop(true);
+    // User shell startup files can block. Discovery must not leave an account
+    // refresh waiting forever (or leave its child running after timeout).
+    let output = timeout(RUNTIME_PROBE_TIMEOUT, command.output())
         .await
+        .ok()?
         .ok()?;
     if !output.status.success() {
         return None;
@@ -2990,6 +3024,47 @@ async fn runtime_version(path: &Path) -> Option<String> {
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+struct ClaudeRuntimeVersionCache {
+    identity: ClaudeExecutableIdentity,
+    version: String,
+    checked_at: Instant,
+}
+
+// Account refreshes need fresh authentication, not another CLI startup merely
+// to rediscover its installed version. Share a short-lived compatibility probe
+// with executable discovery; Updates explicitly requests fresh version data.
+// The identity also invalidates the cache immediately if the binary changes.
+async fn claude_runtime_version(path: &Path, force: bool) -> Option<String> {
+    static CACHE: std::sync::OnceLock<Mutex<Option<ClaudeRuntimeVersionCache>>> =
+        std::sync::OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().await;
+    let identity = claude_executable_identity(path).await;
+    if !force {
+        if let Some(cached) = cache.as_ref() {
+            if identity.metadata.is_some()
+                && cached.identity == identity
+                && cached.checked_at.elapsed() < Duration::from_secs(5 * 60)
+            {
+                return Some(cached.version.clone());
+            }
+        }
+    }
+    *cache = None;
+    let version = runtime_version(path).await?;
+    // Do not associate a result with a binary replaced during the probe.
+    if identity != claude_executable_identity(path).await {
+        return None;
+    }
+    if identity.metadata.is_some() {
+        *cache = Some(ClaudeRuntimeVersionCache {
+            identity,
+            version: version.clone(),
+            checked_at: Instant::now(),
+        });
+    }
+    Some(version)
 }
 
 fn runtime_is_compatible(version: &str) -> bool {
@@ -3698,7 +3773,7 @@ async fn read_developer_runtime_updates(
         match claude_path {
             Ok(path) => {
                 let source = claude_runtime_source(&path);
-                match runtime_version(&path)
+                match claude_runtime_version(&path, true)
                     .await
                     .and_then(|version| normalized_runtime_version(&version))
                 {
@@ -3848,6 +3923,14 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
     #[cfg(windows)]
     push_windows_npm_claude_candidates(&mut candidates);
+    // These already outrank PATH. Validate them before the PATH search, whose
+    // `where.exe` can stall for seconds even when the native install works.
+    #[cfg(windows)]
+    if let Some(candidate) = first_working_windows_claude(&candidates).await {
+        return Ok(candidate);
+    }
+    #[cfg(windows)]
+    let validated = candidates.len();
     if let Some(candidate) = find_on_path(executable_name).await {
         push_candidate(&mut candidates, candidate);
     }
@@ -3866,13 +3949,8 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
     #[cfg(windows)]
-    for candidate in candidates
-        .into_iter()
-        .filter(|candidate| candidate.is_file())
-    {
-        if runtime_version(&candidate).await.is_some() {
-            return Ok(candidate);
-        }
+    if let Some(candidate) = first_working_windows_claude(&candidates[validated..]).await {
+        return Ok(candidate);
     }
     #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
@@ -3883,6 +3961,16 @@ async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     Err("Mythra Code could not find Claude Code. Install Claude Code, sign in with `claude auth login`, then try again. Advanced users can set MYTHRA_CODE_CLAUDE_PATH.".into())
+}
+
+#[cfg(windows)]
+async fn first_working_windows_claude(candidates: &[PathBuf]) -> Option<PathBuf> {
+    for candidate in candidates.iter().filter(|candidate| candidate.is_file()) {
+        if claude_runtime_version(candidate, false).await.is_some() {
+            return Some(candidate.clone());
+        }
+    }
+    None
 }
 
 fn configure_claude_subscription(command: &mut Command, home: Option<&Path>) {
@@ -4070,7 +4158,7 @@ where
 
 async fn claude_prompt_snapshot_supported(state: &ClaudeState, path: &Path) -> bool {
     cached_claude_prompt_snapshot_support(&state.prompt_snapshot_support, path, || {
-        runtime_version(path)
+        claude_runtime_version(path, false)
     })
     .await
 }
@@ -4154,6 +4242,71 @@ fn claude_credential_override_present() -> bool {
 /// A healthy probe answers in well under a second; a stuck keychain prompt or
 /// a wedged CLI would otherwise pin "Checking connection…" forever.
 const CLAUDE_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn invalidate_claude_auth(app: &AppHandle) {
+    let Some(state) = app.try_state::<ClaudeState>() else { return; };
+    let mut generation = state.auth_check_generation.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *generation = generation.wrapping_add(1);
+    state.authenticated.store(false, Ordering::Release);
+}
+
+fn claude_auth_generation(app: &AppHandle) -> u64 {
+    let Some(state) = app.try_state::<ClaudeState>() else { return 0; };
+    let generation = *state.auth_check_generation.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    generation
+}
+
+fn publish_claude_auth_check(app: &AppHandle, checked_generation: u64, authenticated: bool) -> bool {
+    let Some(state) = app.try_state::<ClaudeState>() else { return true; };
+    let generation = state.auth_check_generation.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *generation != checked_generation {
+        return false;
+    }
+    state.authenticated.store(authenticated, Ordering::Release);
+    true
+}
+
+/// A turn authorizes once, then may wait on setup before spawning. Refuse to
+/// dispatch if a sign-in began meanwhile or a check found the account signed
+/// out or unverifiable. Ordinary checks that still find it signed in pass.
+fn claude_auth_admits(state: &ClaudeState, authorized_generation: u64) -> Result<(), String> {
+    let generation = state.auth_check_generation.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *generation != authorized_generation || !state.authenticated.load(Ordering::Acquire) {
+        return Err("Claude Code's sign-in changed before this message was sent. Check the connection, then send it again.".into());
+    }
+    Ok(())
+}
+
+async fn probe_claude_auth(path: &Path, home: Option<&Path>) -> Result<Value, String> {
+    let output = timeout(
+        CLAUDE_AUTH_STATUS_TIMEOUT,
+        subscription_only_command(path, home)
+            .args(["--setting-sources", "", "auth", "status"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "Claude Code took too long to verify your account. Try checking the connection again.".to_string())?
+    .map_err(|_| "Claude Code could not start its account check. Try checking the connection again.".to_string())?;
+    let auth = parse_claude_auth_status(&output.stdout)
+        .filter(|value| value.get("loggedIn").and_then(Value::as_bool).is_some())
+        .ok_or_else(|| "Claude Code returned an unrecognized account status. Try checking the connection again.".to_string())?;
+    // Official auth status exits 1 when signed out. Other failures, including
+    // a nonzero result claiming to be signed in, do not verify account state.
+    let signed_out = output.status.code() == Some(1)
+        && auth.get("loggedIn").and_then(Value::as_bool) == Some(false)
+        && auth.get("authMethod").and_then(Value::as_str) == Some("none");
+    if !output.status.success() && !signed_out {
+        return Err("Claude Code could not verify your account. Try checking the connection again.".into());
+    }
+    Ok(auth)
+}
 
 fn parse_claude_auth_status(stdout: &[u8]) -> Option<Value> {
     serde_json::from_slice(stdout).ok().or_else(|| {
@@ -4365,16 +4518,47 @@ async fn claude_models(app: AppHandle) -> Result<Value, String> {
 }
 
 async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
+    let Some(state) = app.try_state::<ClaudeState>() else {
+        return probe_claude_runtime_status(app, 0).await;
+    };
+    let arrived = state.auth_probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).completed;
+    let _serial = state.auth_check_lock.lock().await;
+    {
+        // Validate against the live generation while holding its lock, as
+        // fresh publication does, so a sign-in cannot land in between.
+        let generation = state.auth_check_generation.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let probes = state.auth_probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if probes.completed != arrived {
+            if let Some((_, status)) = probes.last.as_ref().filter(|(checked, _)| *checked == *generation) {
+                return status.clone();
+            }
+        }
+    }
+    // Captured under the probe lock, through publication; sign-in
+    // invalidates without waiting for it.
+    let auth_generation = claude_auth_generation(app);
+    let status = probe_claude_runtime_status(app, auth_generation).await;
+    let mut probes = state.auth_probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    probes.completed = probes.completed.wrapping_add(1);
+    probes.last = Some((auth_generation, status.clone()));
+    status
+}
+
+async fn probe_claude_runtime_status(app: &AppHandle, auth_generation: u64) -> ClaudeRuntimeStatus {
     let warning = claude_credential_override_present()
     .then(|| "Mythra Code ignores Anthropic credential, proxy, and hosted-provider environment overrides for Claude subscription sessions, so this provider uses only your Claude Code login.".to_string());
     let path = match resolve_claude_binary(app).await {
         Ok(path) => path,
         Err(error) => {
+            // A check that cannot run cannot keep authorizing turns.
+            publish_claude_auth_check(app, auth_generation, false);
             return ClaudeRuntimeStatus {
                 available: false,
                 path: None,
                 version: None,
                 logged_in: false,
+                auth_verified: false,
                 auth_method: None,
                 email: None,
                 subscription_type: None,
@@ -4383,27 +4567,26 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
         }
     };
 
-    let version = runtime_version(&path).await;
-    let warning = claude_runtime_warnings(version.as_deref(), warning);
     let home = crate::release_qa::home_dir(app).ok();
-    let auth = timeout(
-        CLAUDE_AUTH_STATUS_TIMEOUT,
-        subscription_only_command(&path, home.as_deref())
-            .args(["--setting-sources", "", "auth", "status"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .filter(|output| output.status.success())
-    .and_then(|output| parse_claude_auth_status(&output.stdout));
-    ClaudeRuntimeStatus {
+    let (version, auth) = tokio::join!(
+        claude_runtime_version(&path, false),
+        probe_claude_auth(&path, home.as_deref()),
+    );
+    let warning = claude_runtime_warnings(version.as_deref(), warning);
+    let warning = match auth.as_ref().err() {
+        Some(error) => Some(match warning {
+            Some(warning) => format!("{warning} {error}"),
+            None => error.clone(),
+        }),
+        None => warning,
+    };
+    let auth_verified = auth.is_ok();
+    let auth = auth.ok();
+    let mut status = ClaudeRuntimeStatus {
         available: true,
         path: Some(path.to_string_lossy().into_owned()),
         version,
+        auth_verified,
         logged_in: auth
             .as_ref()
             .and_then(|value| value.get("loggedIn"))
@@ -4425,23 +4608,34 @@ async fn read_claude_runtime_status(app: &AppHandle) -> ClaudeRuntimeStatus {
             .and_then(Value::as_str)
             .map(str::to_string),
         warning,
+    };
+    if !publish_claude_auth_check(app, auth_generation, status.auth_verified && status.logged_in) {
+        status.auth_verified = false;
+        status.logged_in = false;
+        status.auth_method = None;
+        status.email = None;
+        status.subscription_type = None;
+        let message = "A Claude Code sign-in started during this check. Check the connection again.";
+        status.warning = Some(match status.warning {
+            Some(warning) => format!("{warning} {message}"),
+            None => message.into(),
+        });
     }
+    status
 }
 
 #[tauri::command]
 async fn claude_runtime_status(
     app: AppHandle,
-    state: State<'_, ClaudeState>,
 ) -> Result<ClaudeRuntimeStatus, String> {
-    let status = read_claude_runtime_status(&app).await;
-    state
-        .authenticated
-        .store(status.logged_in, Ordering::Release);
-    Ok(status)
+    Ok(read_claude_runtime_status(&app).await)
 }
 
 #[tauri::command]
 async fn claude_login(app: AppHandle) -> Result<(), String> {
+    // A login can change credentials outside this process. Do not let a
+    // pending pre-login account check reestablish the old authorization.
+    invalidate_claude_auth(&app);
     let path = resolve_claude_binary(&app).await?;
     #[cfg(target_os = "macos")]
     {
@@ -5316,10 +5510,13 @@ async fn claude_turn_start(
     let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
     let binary = resolve_claude_binary(&app).await?;
     start.assert_current()?;
+    let authorized_generation = claude_auth_generation(&app);
     if !state.authenticated.load(Ordering::Acquire) {
         let auth = read_claude_runtime_status(&app).await;
-        state.authenticated.store(auth.logged_in, Ordering::Release);
         if !auth.logged_in {
+            if !auth.auth_verified {
+                return Err("Claude Code could not verify your account. Check the connection before sending a message.".into());
+            }
             return Err("Sign in to Claude Code before sending a message.".into());
         }
     }
@@ -5481,6 +5678,7 @@ async fn claude_turn_start(
     let user_message =
         claude_user_message(&options.thread_id, &options.prompt, &options.attachments).await?;
 
+    claude_auth_admits(&state, authorized_generation)?;
     start.assert_current()?;
     process_requested = true;
     let mut child = command
@@ -5553,14 +5751,22 @@ async fn claude_turn_start(
     });
     let mut early_output = match write_claude_startup_input(
         &turn,
-        &[&initialize, &user_message],
+        &[&initialize],
+        &user_message,
+        // The pre-spawn check can be stale after the slot claim and the
+        // control write; recheck at the input boundary itself.
+        || claude_auth_admits(&state, authorized_generation),
         &mut lines,
         Instant::now() + CLAUDE_STARTUP_INPUT_TIMEOUT,
     )
     .await
     {
         Ok(early_output) => early_output,
-        Err(error) => {
+        Err(failure) => {
+            let (error, not_sent) = match failure {
+                ClaudeStartupInputError::NotSent(error) => (error, true),
+                ClaudeStartupInputError::Failed(error) => (error, false),
+            };
             if let Err(cutoff) = turn.shutdown().await {
                 start.record_cutoff_error(&cutoff);
                 stderr_task.abort();
@@ -5568,6 +5774,11 @@ async fn claude_turn_start(
             }
             remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
             stderr_task.abort();
+            // The user's message was never written and the unused process is
+            // confirmed stopped, as on the other pre-dispatch refusals.
+            if not_sent {
+                safe_not_dispatched = true;
+            }
             return Err(error);
         }
     };

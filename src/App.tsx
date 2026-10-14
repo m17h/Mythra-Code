@@ -311,10 +311,11 @@ function describeNewThreadPrompt(entry: QueuedTurn): string | undefined {
   return `new ${providerDisplayName(snapshot.provider)} conversation${snapshot.model ? ` (${snapshot.model})` : ""}${snapshot.isolated ? " · isolated worktree" : ""}`;
 }
 const DEFAULT_GIT_COMMIT_MESSAGE = "Update project files";
-const DISCONNECTED_SUBSCRIPTION_STATUS = {
-  available: false, path: null, version: null, loggedIn: false,
-  authMethod: null, email: null, subscriptionType: null, warning: null,
-} as const;
+/** A queued read keeps the state object it joined; cancel it before replacing. */
+function resetModelRefresh<T>(ref: { current: ModelRefreshState<T> }) {
+  ref.current.pending = undefined;
+  ref.current = {};
+}
 
 function subscriptionAccountKey(
   provider: "openai" | "claude",
@@ -328,6 +329,62 @@ function subscriptionAccountKey(
   // one opaque key for the observed signed-in session; a witnessed sign-out
   // clears it, so the next login still receives a new boundary.
   return current.startsWith(`${provider}:session:`) ? current : `${provider}:session:${fallback}`;
+}
+
+interface AccountRefreshState<T> {
+  pending?: { request: number; force: boolean; promise: Promise<T | null> };
+  /** One read waiting for `pending` to finish, shared by every later caller. */
+  queued?: { request: number; force: boolean; promise: Promise<T | null> };
+}
+
+/**
+ * - `own`: start now and supersede older reads (explicit actions, restarts).
+ * - `join`: share the in-flight read if it is at least as strong; a stronger
+ *   need waits for it, then runs once.
+ * - `follow`: the account changed, so share only a read that starts after
+ *   now. Bursts of change notices collapse into one trailing read.
+ * Any read that takes ownership, or a sign-in/out boundary that advances the
+ * request sequence, cancels a queued read before it starts.
+ */
+type AccountReadSharing = "own" | "join" | "follow";
+
+function readAccountStatus<T>(
+  state: AccountRefreshState<T>,
+  requestRef: { current: number },
+  sharing: AccountReadSharing,
+  read: (request: number, force: boolean) => Promise<T | null>,
+  force = false,
+): Promise<T | null> {
+  const start = (strong: boolean) => {
+    const request = ++requestRef.current;
+    const promise = read(request, strong).finally(() => {
+      if (state.pending?.promise === promise) state.pending = undefined;
+    });
+    state.pending = { request, force: strong, promise };
+    return promise;
+  };
+  const owner = requestRef.current;
+  const current = state.pending?.request === owner ? state.pending : undefined;
+  const queued = state.queued?.request === owner ? state.queued : undefined;
+  if (sharing === "own" || (!current && !queued)) return start(force);
+  // One renewal at a time: with one already running, a stronger request
+  // waits for any newer queued read (it may report a different account)
+  // instead of upgrading it into a second token rotation.
+  if (sharing === "join" && force && current?.force) return queued?.promise ?? current.promise;
+  if (queued) {
+    // It has not started yet, so it can still be upgraded in place.
+    queued.force ||= force;
+    return queued.promise;
+  }
+  if (sharing === "join" && (current!.force || !force)) return current!.promise;
+  const entry: NonNullable<AccountRefreshState<T>["queued"]> = { request: owner, force, promise: Promise.resolve(null) };
+  const run = () => {
+    if (state.queued === entry) state.queued = undefined;
+    return requestRef.current === owner ? start(entry.force) : null;
+  };
+  entry.promise = current!.promise.then(run, run);
+  state.queued = entry;
+  return entry.promise;
 }
 /** Enough to name what is missing from a diff without pasting a build tree. */
 const MAX_LISTED_UNTRACKED_PATHS = 50;
@@ -787,6 +844,8 @@ export default function App() {
   const claudeUsageRequestRef = useRef(0);
   const claudeStatusRequestRef = useRef(0);
   const cursorStatusRequestRef = useRef(0);
+  const claudeStatusRefreshRef = useRef<AccountRefreshState<ClaudeRuntimeStatus | null>>({});
+  const cursorStatusRefreshRef = useRef<AccountRefreshState<CursorRuntimeStatus | null>>({});
   const threadProjectBindingsRef = useRef<Record<string, string> | null>(null);
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
   // Observe saves only while metadata reads are in flight. A save followed by
@@ -840,6 +899,17 @@ export default function App() {
   const [openAiAccountKey, setOpenAiAccountKey] = useState("");
   const openAiAccountKeyRef = useRef("");
   const openAiAccountRequestRef = useRef(0);
+  // Advances on every account-change notice; reads started before it never publish.
+  const openAiAuthEpochRef = useRef(0);
+  // Email/session part of the account key, kept apart from its workspace suffix.
+  const openAiAccountIdentityRef = useRef("");
+  // Runtime that answered the last accepted account read.
+  const openAiAccountRuntimeRef = useRef("");
+  // Explicit restarts in progress. Their reservation refuses reads until the
+  // restart call returns, which can be after the replacement's alive event.
+  const explicitRuntimeRestartsRef = useRef(0);
+  const openAiAccountRefreshRef = useRef<AccountRefreshState<{ account: Account | null; requiresOpenaiAuth?: boolean } | null>>({});
+  const openAiAccountResultRef = useRef<{ request: number; result: { account: Account | null; requiresOpenaiAuth?: boolean } } | null>(null);
   const openAiUsageRequestRef = useRef(0);
   const [claudeUsageSnapshot, setClaudeUsageSnapshot] = useState<AccountUsageSnapshot | null>(null);
   const [claudeAccountKey, setClaudeAccountKey] = useState("");
@@ -2289,27 +2359,27 @@ export default function App() {
     }
   }, []);
 
-  const refreshClaudeStatus = useCallback(async (quiet = false) => {
-    const request = ++claudeStatusRequestRef.current;
-    if (!quiet) {
-      claudeModelsRequestRef.current += 1;
-      claudeModelRefreshRef.current.pending = undefined;
-      claudeModelRefreshRef.current.lastSuccess = undefined;
-      setClaudeModelsLoading(false);
-    }
+  const refreshClaudeStatus = useCallback((quiet = false) => readAccountStatus(claudeStatusRefreshRef.current, claudeStatusRequestRef, quiet ? "join" : "own", async (request) => {
     setAccountCheck("claude", "Checking connection…");
     try {
       const result = await getClaudeRuntimeStatus();
-      if (claudeStatusRequestRef.current !== request) return result;
+      if (claudeStatusRequestRef.current !== request) return null;
+      if (result.authVerified === false) {
+        setClaudeStatus((current) => current ? { ...current, authVerified: false, available: result.available,
+          path: result.path, version: result.version, warning: result.warning } : result);
+        setAccountCheck("claude", "Connection check unavailable");
+        return null;
+      }
       setClaudeStatus(result);
       setAccountCheck("claude", result.loggedIn ? "" : "Sign-in required");
       if (result.loggedIn) {
         const accountKey = subscriptionAccountKey("claude", result.email, request, claudeAccountKeyRef.current);
         if (claudeAccountKeyRef.current !== accountKey) {
           claudeModelsRequestRef.current += 1;
-          claudeModelRefreshRef.current.pending = undefined;
+          resetModelRefresh(claudeModelRefreshRef);
           setClaudeModels([]);
           setClaudeModelsLoading(false);
+          setClaudeModelsError("");
           claudeUsageRequestRef.current += 1;
           claudeAccountKeyRef.current = accountKey;
           setClaudeAccountKey(accountKey);
@@ -2318,16 +2388,17 @@ export default function App() {
         // Page-entry checks need account state, not a second usage request.
         if (!quiet) {
           const usageRequest = ++claudeUsageRequestRef.current;
-          const limits = await getClaudeRateLimits().catch(() => undefined);
-          if (claudeUsageRequestRef.current === usageRequest
-            && claudeAccountKeyRef.current === accountKey
-            && limits !== undefined) {
-            setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
-          }
+          // Publish verified sign-in immediately; quota is independent and
+          // must not keep refresh/sign-in callbacks waiting on another CLI.
+          void getClaudeRateLimits().then((limits) => {
+            if (claudeUsageRequestRef.current === usageRequest && claudeAccountKeyRef.current === accountKey) {
+              setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+            }
+          }).catch(() => undefined);
         }
       } else {
         claudeModelsRequestRef.current += 1;
-        claudeModelRefreshRef.current.pending = undefined;
+        resetModelRefresh(claudeModelRefreshRef);
         setClaudeModels([]);
         setClaudeModelsLoading(false);
         setClaudeModelsError("");
@@ -2342,35 +2413,39 @@ export default function App() {
         setAccountCheck("claude", "Connection check unavailable");
         if (!quiet) setError(friendlyError(reason));
       }
-      return DISCONNECTED_SUBSCRIPTION_STATUS;
+      return null;
     }
-  }, [setAccountCheck]);
+  }), [setAccountCheck]);
 
-  const refreshCursorStatus = useCallback(async (quiet = false) => {
+  const refreshCursorStatus = useCallback((quiet = false) => readAccountStatus(cursorStatusRefreshRef.current, cursorStatusRequestRef, quiet ? "join" : "own", async (request) => {
     // Startup, provider switches, sign-in polling, and the Settings refresh
     // button can overlap. Only the newest request may publish, so a slow
     // older check cannot land after a newer one and show a stale sign-in state.
-    const request = ++cursorStatusRequestRef.current;
     setAccountCheck("cursor", "Checking connection…");
     try {
       const result = await getCursorRuntimeStatus();
-      const normalized = result ?? DISCONNECTED_SUBSCRIPTION_STATUS;
-      if (cursorStatusRequestRef.current === request) {
-        setCursorStatus(normalized);
-        setAccountCheck("cursor", normalized.loggedIn ? "" : "Sign-in required");
+      if (!result) throw new Error("Cursor did not return its connection status.");
+      if (cursorStatusRequestRef.current !== request) return null;
+      if (!result.available) {
+        // A missing/unresolvable CLI establishes availability, not logout.
+        setCursorStatus((current) => current ? { ...current, available: false,
+          path: result.path, version: result.version, warning: result.warning } : result);
+        setAccountCheck("cursor", "Connection check unavailable");
+        return null;
       }
-      return normalized;
+      setCursorStatus(result);
+      setAccountCheck("cursor", result.loggedIn ? "" : "Sign-in required");
+      return result;
     } catch (reason) {
       if (cursorStatusRequestRef.current === request) {
         setAccountCheck("cursor", "Connection check unavailable");
         if (!quiet) {
-          setCursorStatus(DISCONNECTED_SUBSCRIPTION_STATUS);
           setError(friendlyError(reason));
         }
       }
-      return DISCONNECTED_SUBSCRIPTION_STATUS;
+      return null;
     }
-  }, [setAccountCheck]);
+  }), [setAccountCheck]);
 
   const cursorModelsRequestRef = useRef(0);
   const refreshCursorModels = useCallback(() => refreshProviderModels(
@@ -2563,8 +2638,21 @@ export default function App() {
     [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome, watchThreadNameSaves],
   );
 
+  // Publication freshness is separate from read/queue ownership: a change
+  // notice retires reads that started before it (success or failure) without
+  // cancelling the trailing read it queues. Catalog and quota are released
+  // only if that read reports a different account key.
+  const retireOpenAiObservation = useCallback(() => {
+    openAiAuthEpochRef.current += 1;
+    openAiAccountResultRef.current = null;
+    setAccountCheck("openai", "Checking connection…");
+  }, [setAccountCheck]);
+
   const clearOpenAiAccount = useCallback(() => {
     openAiAccountRequestRef.current += 1;
+    openAiAuthEpochRef.current += 1;
+    openAiAccountIdentityRef.current = "";
+    openAiAccountResultRef.current = null;
     openAiUsageRequestRef.current += 1;
     openAiAccountKeyRef.current = "";
     runtimeModelsRequestRef.current += 1;
@@ -2590,15 +2678,38 @@ export default function App() {
   // expired session produces, and only the latter should raise the
   // "sign in before sending" prompt.
   const deliberateSignOutRef = useRef(false);
+  const openAiLogoutPendingRef = useRef(false);
+  const openAiSignOutIntentRef = useRef(0);
+  // Assigned once the quiet account re-read below is defined.
+  const recheckOpenAiAccountRef = useRef<(sharing?: AccountReadSharing) => Promise<unknown>>(async () => null);
   const signOutChatGpt = useCallback(async () => {
+    const intent = ++openAiSignOutIntentRef.current;
     deliberateSignOutRef.current = true;
+    openAiLogoutPendingRef.current = true;
+    // Invalidate reads before logout's round trip, including a forced quiet
+    // check that would otherwise restore the account while logout is pending.
+    openAiAccountRequestRef.current += 1;
+    // Until logout settles, no quota may publish or sign out for the old
+    // identity; the last reading stays shown, and a failure re-reads it.
+    openAiAuthEpochRef.current += 1;
+    openAiAccountResultRef.current = null;
+    let failed = false;
     try {
       await rpc("account/logout");
       clearOpenAiAccount();
       setAuthRequiredOpen(false);
       setStatus("Signed out of ChatGPT");
+    } catch (reason) {
+      failed = true;
+      throw reason;
     } finally {
-      window.setTimeout(() => { deliberateSignOutRef.current = false; }, 5_000);
+      openAiLogoutPendingRef.current = false;
+      // A failed logout proves nothing about the session; read it again
+      // rather than leave a cancelled check spinning or guess an outcome.
+      if (failed && openAiSignOutIntentRef.current === intent) void recheckOpenAiAccountRef.current();
+      window.setTimeout(() => {
+        if (openAiSignOutIntentRef.current === intent) deliberateSignOutRef.current = false;
+      }, 5_000);
     }
   }, [clearOpenAiAccount]);
 
@@ -2607,27 +2718,55 @@ export default function App() {
     else requireOpenAiLogin();
   }, [clearOpenAiAccount, requireOpenAiLogin]);
 
-  const refreshAccount = useCallback(async (refreshToken = false, quiet = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
-    const request = ++openAiAccountRequestRef.current;
-    if (!quiet) {
-      runtimeModelsRequestRef.current += 1;
-      runtimeModelRefreshRef.current.pending = undefined;
-      runtimeModelRefreshRef.current.lastSuccess = undefined;
-      setRuntimeModelsLoading(false);
-    }
+  /**
+   * `refreshToken: false` reads the runtime's current account; `true` also
+   * renews the ChatGPT tokens first. Neither proves the server still accepts
+   * them, and renewal rotates stored credentials, so it is reserved for an
+   * explicit Refresh or a suspected auth failure rather than routine checks.
+   */
+  const refreshAccount = useCallback((
+    refreshToken = false,
+    quiet = false,
+    sharing: AccountReadSharing = quiet ? "join" : "own",
+  ): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
+    if (openAiLogoutPendingRef.current) return Promise.resolve(null);
+    return readAccountStatus(openAiAccountRefreshRef.current, openAiAccountRequestRef, sharing, async (request, renew) => {
+    const authEpoch = openAiAuthEpochRef.current;
+    const runtimeAtStart = activeCodexRuntimeInstanceRef.current;
+    const ownsRead = () => openAiAccountRequestRef.current === request && openAiAuthEpochRef.current === authEpoch;
     setAccountCheck("openai", "Checking connection…");
     try {
-      const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean }>("account/read", { refreshToken });
-      if (openAiAccountRequestRef.current !== request) return null;
+      const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean; runtimeInstance?: string;
+        workspaceRouting?: { chatgptAccountId?: string } | null }>("account/read", { refreshToken: renew });
+      if (!ownsRead()) return null;
+      // Judge the process that answered: the bridge re-sends an interrupted
+      // read to the replacement runtime, whose answer is current. A reply
+      // from a retired or superseded process is not.
+      const answeredBy = result.runtimeInstance ?? "";
+      const activeRuntime = activeCodexRuntimeInstanceRef.current;
+      const retired = retiredCodexRuntimeInstancesRef.current;
+      if (answeredBy && (retired.has(answeredBy) || (activeRuntime && activeRuntime !== answeredBy && !retired.has(activeRuntime)))) {
+        setAccountCheck("openai", "Connection check unavailable");
+        return null;
+      }
+      openAiAccountResultRef.current = { request, result };
+      openAiAccountRuntimeRef.current = answeredBy;
       setAccount(result.account);
       setAccountCheck("openai", result.account ? "" : "Sign-in required");
       if (result.account?.type === "chatgpt") {
-        const accountKey = subscriptionAccountKey("openai", result.account.email, request, openAiAccountKeyRef.current);
+        const identity = subscriptionAccountKey("openai", result.account.email, request, openAiAccountIdentityRef.current);
+        openAiAccountIdentityRef.current = identity;
+        // One email can own several workspaces. Prefer the runtime's
+        // workspace id; without it, any account notice or runtime change may
+        // be a switch, so catalog and quota are not carried across one.
+        const workspace = result.workspaceRouting?.chatgptAccountId;
+        const accountKey = workspace ? `${identity}:workspace:${workspace}` : `${identity}:runtime:${answeredBy}:auth:${authEpoch}`;
         if (openAiAccountKeyRef.current !== accountKey) {
           runtimeModelsRequestRef.current += 1;
-          runtimeModelRefreshRef.current.pending = undefined;
+          resetModelRefresh(runtimeModelRefreshRef);
           setRuntimeModels([]);
           setRuntimeModelsLoading(false);
+          setRuntimeModelsError("");
           openAiUsageRequestRef.current += 1;
           openAiAccountKeyRef.current = accountKey;
           setOpenAiAccountKey(accountKey);
@@ -2639,8 +2778,9 @@ export default function App() {
           setStatus("Ready");
         }
       } else {
+        openAiAccountIdentityRef.current = "";
         runtimeModelsRequestRef.current += 1;
-        runtimeModelRefreshRef.current.pending = undefined;
+        resetModelRefresh(runtimeModelRefreshRef);
         setRuntimeModels([]);
         setRuntimeModelsLoading(false);
         setRuntimeModelsError("");
@@ -2651,48 +2791,61 @@ export default function App() {
       }
       return result;
     } catch (reason) {
-      if (openAiAccountRequestRef.current !== request) return null;
+      if (!ownsRead()) return null;
       const message = friendlyError(reason);
       if (!quiet) setError(message);
-      if (isAuthenticationError(reason)) {
+      // A failure cannot say which process produced it. Once the runtime has
+      // changed, it is not evidence of sign-out; the replacement is re-read.
+      const runtimeChanged = runtimeAtStart !== null && (retiredCodexRuntimeInstancesRef.current.has(runtimeAtStart)
+        || activeCodexRuntimeInstanceRef.current !== runtimeAtStart);
+      if (isAuthenticationError(reason) && !runtimeChanged) {
         if (quiet) clearOpenAiAccount();
         else requireOpenAiLogin();
       }
       else setAccountCheck("openai", "Connection check unavailable");
       return null;
     }
+    }, refreshToken);
   // Babel's TS-7-compatible parser treats the `result.account` property as
   // the unrelated component state named `account`.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearOpenAiAccount, requireOpenAiLogin, setAccountCheck]);
 
   const refreshModels = useCallback(() => shareModelRefresh(runtimeModelRefreshRef.current,
-    `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, () => refreshProviderModels(
+    openAiAccountKeyRef.current, () => refreshProviderModels(
     runtimeModelsRequestRef, listRuntimeModels, setRuntimeModelsLoading,
     (models) => { if (models.length) setRuntimeModels(models); },
     (error) => { runtimeModelRefreshRef.current.error = error; setRuntimeModelsError(error); }, "OpenAI returned an empty model catalog.", false,
   )), []);
 
+  /**
+   * A quiet current-state read (no token renewal) that joins any read in
+   * flight: page visits, failed sign-in/out, runtime replacement. Account
+   * state publishes first; a new account key or empty catalog is refilled
+   * afterwards, and the usage poller follows the key on its own.
+   */
+  const recheckOpenAiAccount = useCallback(async (sharing: AccountReadSharing = "join") => {
+    const previousKey = openAiAccountKeyRef.current;
+    const result = await refreshAccount(false, true, sharing);
+    const accepted = openAiAccountResultRef.current;
+    if (accepted?.result === result && accepted.request === openAiAccountRequestRef.current && result?.account?.type === "chatgpt"
+      && (previousKey !== openAiAccountKeyRef.current || !runtimeModels.length)) {
+      void refreshModels();
+    }
+    return result;
+  }, [refreshAccount, refreshModels, runtimeModels.length]);
+  recheckOpenAiAccountRef.current = recheckOpenAiAccount;
+
   const refreshSettingsAccounts = useCallback(async () => {
     // Check every subscription shown on the page, not just the chat provider.
     // Each check owns its inline result; one failure cannot hide another.
-    const refreshOpenAi = async () => {
-      const previousKey = openAiAccountKeyRef.current;
-      const request = openAiAccountRequestRef.current + 1;
-      const result = await refreshAccount(true, true);
-      // A page-entry read can supersede startup's account/data read. Refill a
-      // new or empty catalog without doing a full refresh on every page visit.
-      if (openAiAccountRequestRef.current === request && result?.account?.type === "chatgpt"
-        && (previousKey !== openAiAccountKeyRef.current || !runtimeModels.length)) {
-        await refreshModels();
-      }
-    };
+    // OpenAI never starts a token renewal here; the card's Refresh does that.
     await Promise.allSettled([
       refreshClaudeStatus(true),
       refreshCursorStatus(true),
-      ...(runtimeStatus?.available ? [refreshOpenAi()] : []),
+      ...(runtimeStatus?.available ? [recheckOpenAiAccount()] : []),
     ]);
-  }, [refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshModels, runtimeModels.length, runtimeStatus?.available]);
+  }, [recheckOpenAiAccount, refreshClaudeStatus, refreshCursorStatus, runtimeStatus?.available]);
 
   const openRouterModelsRequestRef = useRef(0);
   const refreshOpenRouterModels = useCallback(() => refreshProviderModels(
@@ -2730,14 +2883,14 @@ export default function App() {
    * or a signed-out install leaves the labelled built-in list in place.
    */
   const refreshClaudeModels = useCallback(() => claudeAccountKeyRef.current ? shareModelRefresh(claudeModelRefreshRef.current,
-    `${claudeAccountKeyRef.current}:${claudeStatusRequestRef.current}`, () => refreshProviderModels(
+    claudeAccountKeyRef.current, () => refreshProviderModels(
     claudeModelsRequestRef, listClaudeModels, setClaudeModelsLoading,
     (models) => { if (models.length) setClaudeModels(models); }, (error) => { claudeModelRefreshRef.current.error = error; setClaudeModelsError(error); }, "Claude Code returned no models.", false,
   )) : Promise.resolve([]), []);
 
   const refreshClaudeCatalog = useCallback(async () => {
     const status = await refreshClaudeStatus();
-    return status.available && status.loggedIn ? refreshClaudeModels() : [];
+    return status?.available && status.loggedIn ? refreshClaudeModels() : [];
   }, [refreshClaudeModels, refreshClaudeStatus]);
 
   const toggleModelFavorite = useCallback((provider: Provider, model: string) => {
@@ -2753,14 +2906,35 @@ export default function App() {
   const refreshUsage = useCallback(async (reportFailure = false) => {
     const request = ++openAiUsageRequestRef.current;
     const accountKey = openAiAccountKeyRef.current;
-    if (!accountKey) return;
+    // New quota publishes only into an identity accepted since the last
+    // account notice or sign-in/out. Until then the last reading stays shown.
+    if (!accountKey || !openAiAccountResultRef.current) return;
+    const authEpoch = openAiAuthEpochRef.current;
+    const runtimeAtStart = activeCodexRuntimeInstanceRef.current;
+    const ownsScope = () => openAiUsageRequestRef.current === request && openAiAccountKeyRef.current === accountKey
+      && openAiAuthEpochRef.current === authEpoch && openAiAccountResultRef.current !== null;
     try {
-      const result = await rpc<unknown>("account/rateLimits/read");
-      if (openAiUsageRequestRef.current === request && openAiAccountKeyRef.current === accountKey) {
+      const result = await rpc<{ runtimeInstance?: string }>("account/rateLimits/read");
+      // Like account reads, judge the process that answered: a read re-sent
+      // to a replacement counts once that runtime's account is accepted.
+      const answeredBy = result?.runtimeInstance ?? "";
+      const identityRuntime = openAiAccountRuntimeRef.current;
+      if (ownsScope() && !(answeredBy && (retiredCodexRuntimeInstancesRef.current.has(answeredBy)
+        || (identityRuntime && answeredBy !== identityRuntime)))) {
         setOpenAiUsageSnapshot({ accountKey, limits: parseCodexRateLimits(result), updatedAt: Date.now() });
       }
     } catch (reason) {
-      if (openAiUsageRequestRef.current === request && isAuthenticationError(reason)) requireOpenAiLogin();
+      if (openAiUsageRequestRef.current === request && isAuthenticationError(reason)) {
+        // Only a rejection from the runtime whose account is still accepted
+        // proves this session failed. Anything older is checked, not trusted.
+        const runtimeNow = activeCodexRuntimeInstanceRef.current;
+        // An unknown runtime at start proves nothing about which one rejected.
+        const sameRuntime = runtimeAtStart !== null && runtimeNow === runtimeAtStart
+          && !retiredCodexRuntimeInstancesRef.current.has(runtimeAtStart)
+          && (!openAiAccountRuntimeRef.current || openAiAccountRuntimeRef.current === runtimeAtStart);
+        if (ownsScope() && sameRuntime) requireOpenAiLogin();
+        else if (openAiAccountKeyRef.current) void recheckOpenAiAccountRef.current();
+      }
       if (reportFailure) throw reason;
       // Deliberately keeps whatever was last read. Usage is polled now, so a
       // single flaky round trip would otherwise blank a bar the user is
@@ -2807,24 +2981,34 @@ export default function App() {
     }
   }, []);
 
-  const refreshAccountData = useCallback(async (refreshToken = false) => {
-    const result = await refreshAccount(refreshToken);
-    if (result?.account?.type === "chatgpt") {
-      await Promise.all([refreshModels(), refreshUsage()]);
-    }
+  // Callers that shared one account read load its catalog and quota once.
+  const openAiAccountDataRequestRef = useRef(0);
+  const refreshAccountData = useCallback(async (refreshToken = false, sharing: AccountReadSharing = "own") => {
+    const result = await refreshAccount(refreshToken, false, sharing);
+    const accepted = openAiAccountResultRef.current;
+    if (result?.account?.type !== "chatgpt" || accepted?.result !== result
+      || accepted.request !== openAiAccountRequestRef.current) return result;
+    if (sharing !== "own" && openAiAccountDataRequestRef.current === accepted.request) return result;
+    openAiAccountDataRequestRef.current = accepted.request;
+    // Back-to-back change notices for one sign-in need not reread the catalog.
+    const catalogFresh = sharing !== "own"
+      && modelCatalogRecentlyRefreshed(runtimeModelRefreshRef.current, openAiAccountKeyRef.current);
+    // Account progress ends with the account read, not catalog/quota work.
+    void Promise.all([catalogFresh ? undefined : refreshModels(), refreshUsage()]).catch(() => undefined);
     return result;
   }, [refreshAccount, refreshModels, refreshUsage]);
 
   // A 401 on the runtime's stderr may belong to an MCP server, OpenRouter,
   // or LM Studio rather than ChatGPT. Re-read the account with a forced
   // token refresh; only a rejection of that read signs the user out. Bursts
-  // of log lines collapse into one verification.
+  // of log lines collapse into one verification, and it joins a renewal
+  // that is already running instead of rotating the tokens again.
   const openAiVerifyAtRef = useRef(0);
   const verifyOpenAiSession = useCallback(() => {
     const now = Date.now();
     if (now - openAiVerifyAtRef.current < 10_000) return;
     openAiVerifyAtRef.current = now;
-    void refreshAccountData(true);
+    void refreshAccountData(true, "join");
   }, [refreshAccountData]);
 
   useEffect(() => {
@@ -3628,13 +3812,30 @@ export default function App() {
     onAuthSuspected: verifyOpenAiSession,
     onRateLimits: (limits) => {
       const accountKey = openAiAccountKeyRef.current;
-      if (accountKey) setOpenAiUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+      // Admitted pushes come from the active runtime; they belong to the
+      // accepted account only if that same runtime reported it, and not
+      // while an account notice awaits its read.
+      const identityRuntime = openAiAccountRuntimeRef.current;
+      const activeRuntime = activeCodexRuntimeInstanceRef.current;
+      if (accountKey && openAiAccountResultRef.current && (!identityRuntime || !activeRuntime || identityRuntime === activeRuntime)) {
+        setOpenAiUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+      }
     },
     onTerminalOutput: terminal.appendProcess,
-    onAccountUpdated: () => void refreshAccountData(),
+    // Sign-in sends two notices and runtime start sends one; each needs a
+    // read that starts after it, but not one per notice or a renewal.
+    onAccountUpdated: () => {
+      if (openAiLogoutPendingRef.current) return;
+      retireOpenAiObservation();
+      // The restart re-reads once its reservation ends; a read now is refused.
+      if (explicitRuntimeRestartsRef.current) return;
+      void refreshAccountData(false, "follow");
+    },
     onLoginFailed: (message) => {
       setError(message);
       setAuthRequiredOpen(true);
+      // A failed attempt leaves whatever session existed; show that, not a guess.
+      void recheckOpenAiAccount();
     },
     onProviderToolCompatibilityError: (threadId) => {
       const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
@@ -3879,7 +4080,7 @@ export default function App() {
       // Reading account state is deliberately non-forcing: Codex manages its
       // own token refresh, and local thread hydration must not wait on an
       // avoidable network refresh before showing the user's history.
-      void refreshAccountData(false);
+      void refreshAccountData(false, "join");
     });
     void refreshClaudeStatus();
     void refreshCursorStatus();
@@ -3897,13 +4098,6 @@ export default function App() {
       .then(setLmStudioTokenStored)
       .catch(() => setLmStudioTokenStored(false));
   }, [checkRuntime, refreshAccountData, refreshClaudeStatus, refreshCursorStatus, refreshLMStudioModels, refreshOpenRouterModels]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      if (isTauri()) void import("./lib/runtimeUpdates").then(({ ensureDeveloperRuntimeUpdates }) => ensureDeveloperRuntimeUpdates()).catch(() => undefined);
-    }, 4_000);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   // Refresh once per launch without blocking startup. Later routine checks
   // retain the existing per-source TTL; manual Refresh forces another check.
@@ -3994,21 +4188,27 @@ export default function App() {
   const suppressRuntimeRecoveryUntilRef = useRef(0);
   const deliberateRestartRuntime = useCallback(async (restart: () => Promise<void> = restartRuntime) => {
     suppressRuntimeRecoveryUntilRef.current = Date.now() + 20_000;
+    explicitRuntimeRestartsRef.current += 1;
     try {
       await restart();
     } finally {
+      explicitRuntimeRestartsRef.current -= 1;
       // A restart may replace the app-server with a newer protocol version.
       // Let the next thread open probe pagination again.
       paginatedHistoryUnavailable = false;
       suppressRuntimeRecoveryUntilRef.current = Date.now() + 3_000;
     }
+    // Only after success: the reservation has ended, so this quiet read is
+    // admitted and binds account state to the replacement. A failed restart
+    // must not respawn a runtime through an account read.
+    void recheckOpenAiAccountRef.current("own");
   }, []);
   // A package-manager update can replace codex while its older app-server is
   // still handling turns. Only the explicit picker refresh may replace it,
   // and only after checking that no Codex-backed task or approval would be
   // orphaned by the restart. Startup/account refreshes keep using refreshModels.
   const refreshOpenAiModelsFromPicker = useCallback(() => shareModelRefresh(runtimeModelRefreshRef.current,
-    `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, () => refreshProviderModels(
+    openAiAccountKeyRef.current, () => refreshProviderModels(
     runtimeModelsRequestRef,
     async () => {
       const request = runtimeModelsRequestRef.current;
@@ -4071,14 +4271,14 @@ export default function App() {
   const refreshAvailableModels = useCallback(async (manual = true) => {
     const reads: Array<{ provider: string; read: () => Promise<unknown[]>; stillCurrent: () => boolean; error: () => string | undefined }> = [];
     const recent = (state: ModelRefreshState<unknown>, key: string) => !manual && modelCatalogRecentlyRefreshed(state, key);
-    const openAiKey = `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`;
-    const claudeKey = `${claudeAccountKeyRef.current}:${claudeStatusRequestRef.current}`;
+    const openAiKey = openAiAccountKeyRef.current;
+    const claudeKey = claudeAccountKeyRef.current;
     if (runtimeStatus?.available && account?.type === "chatgpt" && openAiAccountKeyRef.current
       && !recent(runtimeModelRefreshRef.current, openAiKey)) reads.push({ provider: "OpenAI", read: manual ? refreshOpenAiModelsFromPicker : refreshModels,
-        stillCurrent: () => openAiKey === `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, error: () => runtimeModelRefreshRef.current.error });
+        stillCurrent: () => openAiKey === openAiAccountKeyRef.current, error: () => runtimeModelRefreshRef.current.error });
     if (claudeStatus?.available && claudeStatus.loggedIn && claudeAccountKeyRef.current
       && !recent(claudeModelRefreshRef.current, claudeKey)) reads.push({ provider: "Claude", read: refreshClaudeModels,
-        stillCurrent: () => claudeKey === `${claudeAccountKeyRef.current}:${claudeStatusRequestRef.current}`, error: () => claudeModelRefreshRef.current.error });
+        stillCurrent: () => claudeKey === claudeAccountKeyRef.current, error: () => claudeModelRefreshRef.current.error });
     const results = await Promise.allSettled(reads.map(({ read }) => read()));
     const failures = results.flatMap((result, index) => {
       const read = reads[index]!;
@@ -4152,6 +4352,13 @@ export default function App() {
         activeCodexRuntimeInstanceRef.current = instance;
         knownCodexRuntimeInstancesRef.current.add(instance);
         runtimeDownRef.current = false;
+        // Account state belongs to the process that reported it. Read the
+        // replacement now rather than queue behind a read sent to the old one.
+        // During an explicit restart the read waits for the restart to finish.
+        if (openAiAccountRuntimeRef.current && openAiAccountRuntimeRef.current !== instance
+          && !explicitRuntimeRestartsRef.current) {
+          void recheckOpenAiAccountRef.current("own");
+        }
         return;
       }
       const deadIds = new Set(payload.threadIds ?? []);
@@ -5840,6 +6047,14 @@ export default function App() {
       return;
     }
     setLoginStarting(true);
+    const intent = ++openAiSignOutIntentRef.current;
+    deliberateSignOutRef.current = false;
+    openAiAccountRequestRef.current += 1;
+    // As at logout: a quota rejection while the browser flow is open must not
+    // reopen the sign-in prompt. The completion notice re-establishes identity.
+    openAiAuthEpochRef.current += 1;
+    openAiAccountResultRef.current = null;
+    setAccountCheck("openai", "Waiting for sign-in…");
     setError(null);
     try {
       const result = await rpc<{ authUrl?: string }>("account/login/start", { type: "chatgpt", useHostedLoginSuccessPage: true, appBrand: "codex" });
@@ -5850,6 +6065,8 @@ export default function App() {
     } catch (reason) {
       setError(friendlyError(reason));
       setAuthRequiredOpen(true);
+      // Show the session that still exists, unless a newer attempt owns the card.
+      if (openAiSignOutIntentRef.current === intent) void recheckOpenAiAccount();
     } finally {
       setLoginStarting(false);
     }
@@ -5861,12 +6078,13 @@ export default function App() {
   useEffect(() => () => {
     for (const watch of Object.values(signInWatchesRef.current)) watch?.abort();
   }, []);
-  const watchSignIn = (provider: "claude" | "cursor", check: () => Promise<boolean>, onSignedIn: () => Promise<void>) => {
+  const watchSignIn = (provider: "claude" | "cursor", check: () => Promise<boolean>, onSignedIn: () => Promise<void>, onExpired: () => void) => {
     signInWatchesRef.current[provider]?.abort();
     const controller = new AbortController();
     signInWatchesRef.current[provider] = controller;
     void waitForSignIn(check, { signal: controller.signal }).then((signedIn) => {
-      if (!signedIn || controller.signal.aborted) return;
+      if (controller.signal.aborted) return;
+      if (!signedIn) return onExpired();
       return onSignedIn();
     }).catch((reason) => setError(friendlyError(reason)));
   };
@@ -5878,6 +6096,11 @@ export default function App() {
       return;
     }
     setClaudeLoginStarting(true);
+    // Cancels any older check; until this attempt settles, the card waits.
+    const request = ++claudeStatusRequestRef.current;
+    setAccountCheck("claude", "Waiting for sign-in…");
+    // Unless a newer check or attempt owns the card, re-read the real state.
+    const recheck = () => { if (claudeStatusRequestRef.current === request) void refreshClaudeStatus(true); };
     setError(null);
     setStatus("Opening Claude sign-in");
     try {
@@ -5887,12 +6110,16 @@ export default function App() {
       // quietly (a raw status read, not the full refresh that flashes
       // "Checking connection…") until Claude Code reports the login.
       watchSignIn("claude", async () => (await getClaudeRuntimeStatus()).loggedIn, async () => {
-        const [next] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
-        if (next.loggedIn) setStatus("Ready");
-      });
+        const next = await refreshClaudeStatus();
+        if (next?.loggedIn) {
+          setStatus("Ready");
+          void refreshClaudeModels();
+        }
+      }, recheck);
     } catch (reason) {
       setStatus("Setup required");
       setError(friendlyError(reason));
+      recheck();
     } finally {
       setClaudeLoginStarting(false);
     }
@@ -5905,6 +6132,9 @@ export default function App() {
       return;
     }
     setCursorLoginStarting(true);
+    const request = ++cursorStatusRequestRef.current;
+    setAccountCheck("cursor", "Waiting for sign-in…");
+    const recheck = () => { if (cursorStatusRequestRef.current === request) void refreshCursorStatus(true); };
     setError(null);
     setStatus("Opening Cursor sign-in");
     try {
@@ -5912,14 +6142,15 @@ export default function App() {
       setStatus("Finish sign-in in Terminal");
       watchSignIn("cursor", async () => Boolean((await getCursorRuntimeStatus())?.loggedIn), async () => {
         const next = await refreshCursorStatus();
-        if (next.loggedIn) {
+        if (next?.loggedIn) {
           setStatus("Ready");
           await refreshCursorModels();
         }
-      });
+      }, recheck);
     } catch (reason) {
       setStatus("Setup required");
       setError(friendlyError(reason));
+      recheck();
     } finally {
       setCursorLoginStarting(false);
     }
@@ -9117,8 +9348,10 @@ export default function App() {
             onAddAttachment={() => void addAttachment()}
             onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
             onRefreshUsage={() => {
-              if (effectiveSettings.provider === "claude") void Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
-              else if (effectiveSettings.provider === "cursor") void Promise.all([refreshCursorStatus(), refreshCursorModels()]);
+              if (effectiveSettings.provider === "claude") void refreshClaudeCatalog();
+              else if (effectiveSettings.provider === "cursor") void refreshCursorStatus().then((next) => {
+                if (next?.loggedIn) void refreshCursorModels();
+              });
               else if (effectiveSettings.provider === "openrouter") void Promise.all([
                 hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false)),
                 refreshOpenRouterCredits(),
@@ -9244,15 +9477,17 @@ export default function App() {
         onUiScalePreview={setPreviewUiScale}
         onSignIn={beginChatGptLogin}
         onSignOut={signOutChatGpt}
+        onOpenAiRefresh={() => refreshAccountData(true, "join")}
         onClaudeSignIn={beginClaudeLogin}
         onClaudeRefresh={async () => {
-          const [status] = await Promise.all([refreshClaudeStatus(), refreshClaudeModels()]);
+          const status = await refreshClaudeStatus();
+          if (status?.loggedIn) void refreshClaudeModels();
           return status;
         }}
         onCursorSignIn={beginCursorLogin}
         onCursorRefresh={async () => {
           const next = await refreshCursorStatus();
-          if (next.loggedIn) await refreshCursorModels();
+          if (next?.loggedIn) void refreshCursorModels();
           return next;
         }}
         onRuntimeRequired={() => setRuntimeSetupOpen(true)}
