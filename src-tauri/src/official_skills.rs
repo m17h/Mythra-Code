@@ -626,6 +626,18 @@ fn windows_directory(path: &Path) -> Result<fs::File, String> {
 }
 
 #[cfg(windows)]
+pub(super) fn canonical_runtime_directory(root: &Path) -> Result<(PathBuf, fs::File), String> {
+    // Keep the original directory open without following reparse points or
+    // allowing replacement while its canonical spelling is used by the builder.
+    let directory = windows_directory(root)?;
+    let canonical = root.canonicalize().map_err(|error| error.to_string())?;
+    if windows_identity(&directory)? != windows_path_identity(&canonical)? {
+        return Err("The skill runtime directory changed while opening.".into());
+    }
+    Ok((canonical, directory))
+}
+
+#[cfg(windows)]
 fn windows_lock_parents(root: &Path, target: &Path, create: bool) -> Result<Vec<fs::File>, String> {
     let relative = target
         .parent()

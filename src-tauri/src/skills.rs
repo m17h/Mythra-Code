@@ -1116,6 +1116,11 @@ pub(super) fn build_skill_runtime(
         .map_err(|error| format!("Could not open the skills folder: {error}"))?;
     fs::create_dir_all(runtime_root)
         .map_err(|error| format!("Could not create the skill runtime: {error}"))?;
+    // Keep the Windows staging directory pinned while publisher guards use its
+    // canonical extended-length path; release it before the caller swaps trees.
+    #[cfg(windows)]
+    let (runtime_root, _runtime_root_guard) =
+        crate::official_skills::canonical_runtime_directory(runtime_root)?;
     fs::create_dir_all(runtime_root.join(".claude-plugin"))
         .map_err(|error| format!("Could not create the Claude skill plugin: {error}"))?;
     fs::create_dir_all(runtime_root.join("skills"))
@@ -1244,7 +1249,8 @@ pub(super) fn build_skill_runtime(
             .map_err(|error| format!("Could not create skill `{name}`: {error}"))?;
         let mut count = 1;
         let mut bytes = content.len() as u64;
-        let official = crate::official_skills::copy_official_support(&folder, &source, &package)?;
+        let official = crate::official_skills::copy_official_support(&folder, &source, &package)
+            .map_err(|error| format!("Could not prepare publisher resources for skill `{name}`: {error}"))?;
         if file_name.eq_ignore_ascii_case("SKILL.md") {
             if !official {
                 copy_markdown_tree(reference_root, &source, &package, 0, &mut count, &mut bytes)?;
@@ -1288,7 +1294,8 @@ pub(super) fn build_skill_runtime(
                 &source,
                 &package,
                 &claude_package,
-            )?;
+            )
+            .map_err(|error| format!("Could not prepare the Claude publisher snapshot for skill `{name}`: {error}"))?;
         } else {
             copy_markdown_tree(
                 &package,
