@@ -19,6 +19,8 @@ export interface ClaudeRuntimeStatus {
   path: string | null;
   version: string | null;
   loggedIn: boolean;
+  /** False when a failed probe could not establish either sign-in or sign-out. */
+  authVerified?: boolean;
   authMethod: string | null;
   email: string | null;
   subscriptionType: string | null;

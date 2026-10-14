@@ -102,7 +102,7 @@ import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
 import { settingsWithDefaultProvider, settingsWithOnboardingDraft, type OnboardingSettingsDraft } from "../lib/onboardingSettings";
-import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, ensureDeveloperRuntimeUpdates, updateDeveloperRuntime, type DeveloperRuntimeTarget, type DeveloperRuntimeTargetStatus, type DeveloperRuntimeUpdater } from "../lib/runtimeUpdates";
+import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, updateDeveloperRuntime, type DeveloperRuntimeTarget, type DeveloperRuntimeTargetStatus, type DeveloperRuntimeUpdater } from "../lib/runtimeUpdates";
 
 /**
  * Single source of truth for the settings navigation: the rail, the pane
@@ -281,8 +281,18 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
   return options.map((option) => ({ ...option, icon: <ProviderLogo provider={provider} size={15} /> }));
 }
 
+/** An ordinary account read reports Codex's local sign-in, not service health. */
+const OPENAI_SIGNED_IN_NOTE = "Signed in according to Codex on this device. ChatGPT service status is not checked.";
+
+function accountConnectionLabel(check: string | undefined, connected: boolean, available: boolean, missing: string, signedInLabel = "Connected"): string {
+  if (check === "Checking connection…") return "Checking…";
+  if (check === "Waiting for sign-in…") return "Signing in…";
+  if (check && check !== "Sign-in required") return "Unverified";
+  return connected ? signedInLabel : available ? "Not signed in" : missing;
+}
+
 export function useDeveloperRuntimeUpdater(
-  onClaudeRefresh: (() => Promise<ClaudeRuntimeStatus>) | undefined,
+  onClaudeRefresh: (() => Promise<ClaudeRuntimeStatus | null>) | undefined,
   enabled: boolean,
 ): DeveloperRuntimeUpdater {
   const [status, setStatus] = useState(() => cachedDeveloperRuntimeUpdates());
@@ -291,8 +301,11 @@ export function useDeveloperRuntimeUpdater(
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const requestRef = useRef(0);
+  const operationRef = useRef<"check" | "update" | null>(null);
 
   const checkForUpdates = async () => {
+    if (!enabled || !isTauri() || operationRef.current) return;
+    operationRef.current = "check";
     const request = ++requestRef.current;
     setChecking(true);
     setError(null);
@@ -303,24 +316,14 @@ export function useDeveloperRuntimeUpdater(
     } catch (reason) {
       if (requestRef.current === request) setError(friendlyError(reason));
     } finally {
+      operationRef.current = null;
       if (requestRef.current === request) setChecking(false);
     }
   };
 
-  useEffect(() => {
-    if (!enabled || !isTauri() || status) return;
-    const request = ++requestRef.current;
-    setChecking(true);
-    void ensureDeveloperRuntimeUpdates()
-      .then((next) => { if (requestRef.current === request) setStatus(next); })
-      .catch((reason) => { if (requestRef.current === request) setError(friendlyError(reason)); })
-      .finally(() => { if (requestRef.current === request) setChecking(false); });
-    // The injected updater and initial cache decision are fixed for this
-    // Settings mount; manual checks own subsequent refreshes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
-
   const updateRuntime = async (target: DeveloperRuntimeTarget) => {
+    if (!enabled || !isTauri() || operationRef.current) return;
+    operationRef.current = "update";
     const request = ++requestRef.current;
     setUpdating(target);
     setError(null);
@@ -344,6 +347,7 @@ export function useDeveloperRuntimeUpdater(
     } catch (reason) {
       if (requestRef.current === request) setError(friendlyError(reason));
     } finally {
+      operationRef.current = null;
       setUpdating((current) => current === target ? null : current);
     }
   };
@@ -400,6 +404,7 @@ export function SettingsModal({
   onSignOut = async () => {
     await rpc("account/logout");
   },
+  onOpenAiRefresh = async () => {},
   onClaudeSignIn = async () => {},
   onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
   onCursorSignIn = async () => {},
@@ -523,10 +528,12 @@ export function SettingsModal({
   onSignIn: () => Promise<void>;
   /** Signs the ChatGPT account out; defaults to a bare `account/logout`. */
   onSignOut?: () => Promise<void>;
+  /** Renews the ChatGPT session, unlike the read made on each page visit. */
+  onOpenAiRefresh?: () => Promise<unknown>;
   onClaudeSignIn?: () => Promise<void>;
-  onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus>;
+  onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus | null>;
   onCursorSignIn?: () => Promise<void>;
-  onCursorRefresh?: () => Promise<CursorRuntimeStatus>;
+  onCursorRefresh?: () => Promise<CursorRuntimeStatus | null>;
   onRuntimeRequired: () => void;
   onWorkspaceTools: () => void;
   onOpenRouterChange: (ready: boolean) => void;
@@ -630,7 +637,9 @@ export function SettingsModal({
   const githubRefreshRequestedRef = useRef(false);
   const refreshAccountsRef = useRef(onRefreshAccounts);
   refreshAccountsRef.current = onRefreshAccounts;
-  const accountsEntryRef = useRef({ open: false, section: initialSection as SettingsPane });
+  const settingsEntryRef = useRef({ open: false, section: initialSection as SettingsPane });
+  const updatesRef = useRef({ appUpdater, developerRuntimeUpdater });
+  updatesRef.current = { appUpdater, developerRuntimeUpdater };
 
   const modelCatalogs = useMemo<ModelCatalogs>(() => ({
     runtimeModels,
@@ -786,23 +795,33 @@ export function SettingsModal({
   }, [activeProjectId, initialDraft, initialSection, lmStudioModels, onChatFontPreview, onEffortSliderPreview, onThemePreview, onUiScalePreview, local, open, projects, profiles, settings, terminalTimeoutMinutes, terminalTimeoutTyped]);
 
   useEffect(() => {
-    if (open && initialSection === "general" && !initialDraft?.appearance && appUpdater.phase === "available") {
-      setSettingsSection("updates");
-    }
-  }, [appUpdater.phase, initialDraft, initialSection, open]);
-
-  useEffect(() => {
-    const previous = accountsEntryRef.current;
+    const previous = settingsEntryRef.current;
     // On reopening, the old pane is retained until the draft-seeding effect
     // updates it. Use the requested pane to avoid a spurious or double check.
-    const section = open && !previous.open ? initialSection : settingsSection;
-    accountsEntryRef.current = { open, section };
+    let section = open && !previous.open ? initialSection : settingsSection;
+    if (open && !previous.open && section === "general" && !initialDraft?.appearance
+      && updatesRef.current.appUpdater.phase === "available") {
+      section = "updates";
+      setSettingsSection(section);
+    }
+    settingsEntryRef.current = { open, section };
     if (open && section === "models" && (!previous.open || previous.section !== "models")) {
       const refresh = refreshAccountsRef.current;
       // Refresh failures are represented by the provider's connection state.
       void Promise.resolve().then(() => refresh?.()).catch(() => undefined);
     }
-  }, [initialSection, open, settingsSection]);
+    if (open && section === "updates" && (!previous.open || previous.section !== "updates")) {
+      const { appUpdater: app, developerRuntimeUpdater: runtimes } = updatesRef.current;
+      // Independent checks start together. Never disturb an installation or
+      // replace its updater handle just because the user revisits this pane.
+      if (!["downloading", "installing", "restarting"].includes(app.phase)) {
+        void Promise.resolve().then(() => app.checkForUpdates()).catch(() => undefined);
+      }
+      if (!runtimes.updating) {
+        void Promise.resolve().then(() => runtimes.checkForUpdates()).catch(() => undefined);
+      }
+    }
+  }, [initialDraft?.appearance, initialSection, open, settingsSection]);
 
   useEffect(() => {
     if (!open) {
@@ -904,6 +923,14 @@ export function SettingsModal({
     } finally {
       setBusy(false);
     }
+  };
+
+  // Shows this button's own renewal. Not disabled: repeat clicks join the
+  // renewal in flight, and a click during a routine check still renews.
+  const [openAiRefreshing, setOpenAiRefreshing] = useState(0);
+  const refreshOpenAi = () => {
+    setOpenAiRefreshing((count) => count + 1);
+    void onOpenAiRefresh().catch(() => undefined).finally(() => setOpenAiRefreshing((count) => count - 1));
   };
 
   const storeKey = async () => {
@@ -1978,19 +2005,19 @@ export function SettingsModal({
               <button className={`provider-card ${accountProvider === "openai" ? "selected" : ""}`} aria-pressed={accountProvider === "openai"} onClick={() => setAccountProvider("openai")}>
                 <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
                 <span><strong>OpenAI</strong><small>ChatGPT subscription</small></span>
-                <span className={`provider-status ${account?.type === "chatgpt" ? "on" : ""}`}>{account?.type === "chatgpt" ? "Connected" : runtimeStatus?.available ? "Not signed in" : "Codex CLI needed"}</span>
+                <span className={`provider-status ${account?.type === "chatgpt" && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (account?.type === "chatgpt" ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, account?.type === "chatgpt", Boolean(runtimeStatus?.available), "Codex CLI needed", "Signed in")}</span>
                 {accountProvider === "openai" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "claude" ? "selected" : ""}`} aria-pressed={accountProvider === "claude"} onClick={() => setAccountProvider("claude")}>
                 <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={18} />}</span>
                 <span><strong>Anthropic</strong><small>Claude Code subscription</small></span>
-                <span className={`provider-status ${claudeStatus?.loggedIn ? "on" : ""}`}>{claudeStatus?.loggedIn ? "Connected" : claudeStatus?.available ? "Not signed in" : "Claude Code needed"}</span>
+                <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available), "Claude Code needed")}</span>
                 {accountProvider === "claude" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "cursor" ? "selected" : ""}`} aria-pressed={accountProvider === "cursor"} onClick={() => setAccountProvider("cursor")}>
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <span><strong>Cursor</strong><small>Cursor subscription</small></span>
-                <span className={`provider-status ${cursorStatus?.loggedIn ? "on" : ""}`}>{cursorStatus?.loggedIn ? "Connected" : cursorStatus?.available ? "Not signed in" : "Cursor Agent needed"}</span>
+                <span className={`provider-status ${cursorStatus?.loggedIn && !accountChecks.cursor ? "on" : ""}`} title={accountChecks.cursor} aria-live="polite">{accountChecks.cursor === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.cursor, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available), "Cursor Agent needed")}</span>
                 {accountProvider === "cursor" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "openrouter" ? "selected" : ""}`} aria-pressed={accountProvider === "openrouter"} onClick={() => setAccountProvider("openrouter")}>
@@ -2011,11 +2038,11 @@ export function SettingsModal({
               <div className="credential-panel">
                 <div>
                   <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : "ChatGPT subscription"}</strong>
-                  <small>{accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan connected` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
+                  <small>{accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan · signed in to Codex` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
                 </div>
                 {account?.type === "chatgpt" ? (
                   <div className="credential-actions">
-                    <span className="connected-badge"><Check size={12} /> {accountChecks.openai ? "Unverified" : "Connected"}</span>
+                    <span className={`connected-badge${accountChecks.openai ? " unverified" : ""}`} title={accountChecks.openai ? undefined : OPENAI_SIGNED_IN_NOTE} aria-live="polite">{accountChecks.openai === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.openai ? <Check size={12} /> : null} {accountChecks.openai === "Checking connection…" ? "Checking…" : accountChecks.openai ? "Unverified" : "Signed in"}</span>
                     <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
                   </div>
                 ) : (
@@ -2023,6 +2050,7 @@ export function SettingsModal({
                     {busy ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
                   </button>
                 )}
+                {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh ChatGPT sign-in" aria-label="Refresh ChatGPT sign-in" aria-busy={openAiRefreshing > 0}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
               </div>
             ) : accountProvider === "openrouter" ? (
               <div className="credential-panel stacked">
@@ -2069,7 +2097,7 @@ export function SettingsModal({
                     : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"))}</small>
                 </div>
                 {claudeStatus?.loggedIn ? (
-                  <span className="connected-badge"><Check size={12} /> {accountChecks.claude ? "Unverified" : "Connected"}</span>
+                  <span className={`connected-badge${accountChecks.claude ? " unverified" : ""}`} aria-live="polite">{accountChecks.claude === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.claude ? <Check size={12} /> : null} {accountChecks.claude === "Checking connection…" ? "Checking…" : accountChecks.claude ? "Unverified" : "Connected"}</span>
                 ) : (
                   <button className="secondary-button" onClick={() => void (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"))} disabled={claudeLoginStarting}>
                     {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
@@ -2093,7 +2121,7 @@ export function SettingsModal({
                     : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
                 </div>
                 {cursorStatus?.loggedIn ? (
-                  <span className="connected-badge"><Check size={12} /> {accountChecks.cursor ? "Unverified" : "Connected"}</span>
+                  <span className={`connected-badge${accountChecks.cursor ? " unverified" : ""}`} aria-live="polite">{accountChecks.cursor === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.cursor ? <Check size={12} /> : null} {accountChecks.cursor === "Checking connection…" ? "Checking…" : accountChecks.cursor ? "Unverified" : "Connected"}</span>
                 ) : (
                   <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
                     {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}
