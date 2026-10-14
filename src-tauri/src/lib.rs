@@ -3445,43 +3445,115 @@ fn claude_runtime_source_for_path(
     }
 }
 
-async fn fetch_runtime_text(url: &'static str, maximum_bytes: usize) -> Result<String, String> {
-    let mut response = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("Could not create the runtime update client: {error}"))?
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("Could not reach the runtime release service: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("The runtime release service returned an error: {error}"))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > maximum_bytes as u64)
-    {
-        return Err("The runtime release response was unexpectedly large".into());
+struct RuntimeFetchError {
+    message: String,
+    retryable: bool,
+}
+
+fn runtime_transport_error(error: reqwest::Error, reading_body: bool) -> RuntimeFetchError {
+    // Certificate/protocol failures are not transient connection failures.
+    // Preserve TLS verification and never expose the raw URL/error chain in UI.
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut tls_error = false;
+    while let Some(cause) = source {
+        if cause.is::<rustls::Error>() {
+            tls_error = true;
+            break;
+        }
+        // io::Error::source skips its stored error's own type. Tokio-rustls
+        // wraps certificate errors here, so inspect get_ref before following.
+        source = match cause.downcast_ref::<std::io::Error>().and_then(|io| io.get_ref()) {
+            Some(inner) => Some(inner),
+            None => cause.source(),
+        };
+    }
+    RuntimeFetchError {
+        message: if tls_error {
+            "Couldn’t securely connect to the update service. Check your device’s date and network, then try again."
+        } else {
+            "Couldn’t check for updates. Check your connection and try again."
+        }.into(),
+        // reqwest 0.13.4 classifies chunk/read failures as Decode, not Body.
+        // Application decoding/size/UTF-8 validation happens separately below.
+        retryable: !tls_error && (reading_body || error.is_timeout() || error.is_connect() || error.is_body()),
+    }
+}
+
+async fn fetch_runtime_text_once(
+    client: &reqwest::Client,
+    url: &'static str,
+    maximum_bytes: usize,
+) -> Result<String, RuntimeFetchError> {
+    let mut response = client.get(url).send().await.map_err(|error| runtime_transport_error(error, false))?;
+    let status = response.status();
+    if status.is_client_error() || status.is_server_error() {
+        return Err(RuntimeFetchError {
+            message: format!("The update service is unavailable (HTTP {}). Try again later.", status.as_u16()),
+            // Do not hammer rate limits or retry permanent/authentication errors.
+            retryable: matches!(status.as_u16(), 408 | 500 | 502 | 503 | 504)
+                && !response.headers().contains_key(reqwest::header::RETRY_AFTER),
+        });
+    }
+    if response.content_length().is_some_and(|length| length > maximum_bytes as u64) {
+        return Err(RuntimeFetchError {
+            message: "The update service returned an unexpectedly large response. Try again later.".into(),
+            retryable: false,
+        });
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("Could not read the runtime release response: {error}"))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| runtime_transport_error(error, true))? {
         if body.len().saturating_add(chunk.len()) > maximum_bytes {
-            return Err("The runtime release response was unexpectedly large".into());
+            return Err(RuntimeFetchError {
+                message: "The update service returned an unexpectedly large response. Try again later.".into(),
+                retryable: false,
+            });
         }
         body.extend_from_slice(&chunk);
     }
     String::from_utf8(body)
         .map(|text| text.trim().to_string())
-        .map_err(|_| "The runtime release service returned non-UTF-8 text".to_string())
+        .map_err(|_| RuntimeFetchError {
+            message: "The update service returned an unreadable response. Try again later.".into(),
+            retryable: false,
+        })
+}
+
+async fn fetch_runtime_text(url: &'static str, maximum_bytes: usize) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "Couldn’t prepare the update connection. Try again.".to_string())?;
+    // Installer downloads/execution deliberately do not get an application retry.
+    fetch_runtime_text_once(&client, url, maximum_bytes).await.map_err(|error| error.message)
+}
+
+async fn fetch_runtime_version_text(url: &'static str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(8))
+        .retry(reqwest::retry::never())
+        .build()
+        .map_err(|_| "Couldn’t prepare the update connection. Try again.".to_string())?;
+    // Only these read-only metadata calls recover automatically. Two attempts,
+    // one short delay, and one overall deadline; no background retry loop.
+    timeout(Duration::from_secs(18), async {
+        for attempt in 0..2 {
+            match fetch_runtime_text_once(&client, url, RUNTIME_VERSION_RESPONSE_BYTES).await {
+                Ok(text) => return Ok(text),
+                Err(error) if attempt == 0 && error.retryable => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(error) => return Err(error.message),
+            }
+        }
+        unreachable!("the final attempt returns its result")
+    }).await.map_err(|_| "Couldn’t check for updates in time. Try again.".to_string())?
 }
 
 async fn latest_claude_version() -> Result<String, String> {
     let response =
-        fetch_runtime_text(CLAUDE_LATEST_VERSION_URL, RUNTIME_VERSION_RESPONSE_BYTES).await?;
+        fetch_runtime_version_text(CLAUDE_LATEST_VERSION_URL).await?;
     parse_latest_claude_version(&response)
 }
 
@@ -3497,13 +3569,13 @@ fn parse_latest_claude_version(response: &str) -> Result<String, String> {
 
 async fn latest_codex_version() -> Result<String, String> {
     let response =
-        fetch_runtime_text(CODEX_LATEST_RELEASE_URL, RUNTIME_VERSION_RESPONSE_BYTES).await?;
+        fetch_runtime_version_text(CODEX_LATEST_RELEASE_URL).await?;
     parse_latest_codex_version(&response)
 }
 
 fn parse_latest_codex_version(response: &str) -> Result<String, String> {
     let payload: Value = serde_json::from_str(response)
-        .map_err(|error| format!("Could not parse the Codex release response: {error}"))?;
+        .map_err(|_| "Codex’s update service returned an unreadable response. Try again later.".to_string())?;
     payload
         .get("tag_name")
         .and_then(Value::as_str)
