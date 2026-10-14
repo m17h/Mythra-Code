@@ -211,6 +211,7 @@ function withLiveDeliveryReadiness(captured: TurnRunnerContext, live: TurnRunner
     effectiveSettings: {
       ...captured.effectiveSettings,
       managedSubagentV2: live.effectiveSettings.managedSubagentV2 === true,
+      automaticGitInitialization: live.effectiveSettings.automaticGitInitialization === true,
     },
     // A queued turn is not admitted yet. Current ownership decides whether
     // an existing V2 crew still needs its review tools after the default flips.
@@ -321,6 +322,8 @@ export interface TurnRunnerContext {
   /** `deferred` marks a scheduled first prompt, which must not consume the
    * visible draft's pending handoff; `subagentsEnabled` is its snapshot. */
   onThreadCreated: (threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: NativeSubagentOptions; autoCompactTokens?: number }) => void;
+  /** Runs only for a new project root, after its optimistic prompt is visible. */
+  prepareNewThreadGit?: (threadId: string, workspace: Project, enabled: boolean) => Promise<boolean>;
   onThreadTitlePending?: (threadId: string, prompt: string) => void;
   onThreadTitleCancelled?: (threadId: string) => void;
   onThreadTitleRequested?: (threadId: string, prompt: string) => void;
@@ -542,6 +545,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const effectiveSettings = childThread ? settingsWithoutChildDelegation(configuredSettings) : configuredSettings;
     const nativeDelegation = effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native";
     if (!text || !activeWorkspace) return false;
+    const initializeNewThreadGit = !activeThread && !childThread && !activeWorkspace.isChat && effectiveSettings.automaticGitInitialization === true;
     const compactionReason = parentAutoCompactionUnavailableReason(effectiveSettings.provider, effectiveSettings.autoCompactTokens);
     if (compactionReason) {
       setError(compactionReason);
@@ -926,12 +930,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
-      ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+      if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       // Persist the owned thread/prior history before dispatch, not the new
       // optimistic prompt. A Stop or failed save must not leave undelivered
-      // skill provenance in a durable (possibly paged) transcript. No await
-      // separates the final check, optimistic append and model request.
+      // skill provenance in a durable (possibly paged) transcript.
       await ctx.ensureManagedLocalThreadHydrated?.(thread.id, assertCanStart);
       assertCanStart();
       await strategy.prepareTurn(thread, updatedThread);
@@ -944,6 +947,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
+      if (initializeNewThreadGit) {
+        await ctx.prepareNewThreadGit?.(thread.id, activeWorkspace, true);
+        assertCanStart();
+        ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        assertCanStart();
+      }
       explicitDispatched = true;
       const nativeStart: { startRequestId: string; runStartedAt?: number; turnId?: string } = {
         startRequestId: provider === "cursor" ? cursorAttempt?.owner.startRequestId ?? localStartRequestId : localStartRequestId,
@@ -1258,7 +1267,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
-      ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+      if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(threadId, {
@@ -1268,6 +1277,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
+
+      if (initializeNewThreadGit) {
+        await ctx.prepareNewThreadGit?.(threadId, activeWorkspace, true);
+        assertCanStart();
+        ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        assertCanStart();
+      }
 
       ctx.onCodexRuntimeOwned?.(threadId, runtimeInstance);
       explicitDispatched = true;

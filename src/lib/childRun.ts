@@ -61,6 +61,8 @@ export interface ChildRunContext {
   validateDispatch?: () => Promise<void>;
   /** Claim this initial spawn's backend reservation before any model request. */
   claimDispatch: (childThreadId: string) => Promise<void>;
+  /** Setup after publishing the new child's prompt, before its first snapshot. */
+  prepareNewThreadGit?: (childThreadId: string) => Promise<boolean>;
   /** Published ownership may have been resumed or replaced while claiming. */
   canDiscardUnusedChild?: (childThreadId: string) => boolean;
   /** Same optimistic prompt identity the caller publishes with ownership. */
@@ -333,11 +335,13 @@ export async function startChildAgentTurn(
     try {
       await saveClaudeTranscript({ thread, ...initialTimeline });
       assertCanStart();
-      await beginCheckpoint(threadId);
-      assertCanStart();
       await context.validateDispatch?.();
       assertCanStart();
       bindLanguageBridge(thread);
+      assertCanStart();
+      await context.prepareNewThreadGit?.(threadId);
+      assertCanStart();
+      await beginCheckpoint(threadId);
       assertCanStart();
       await context.claimDispatch(threadId);
       assertCanStart();
@@ -377,13 +381,15 @@ export async function startChildAgentTurn(
     try {
       await saveCursorTranscript({ thread, cursorSessionId: "", ...initialTimeline });
       assertCanStart();
-      await beginCheckpoint(threadId);
-      assertCanStart();
       await context.validateDispatch?.();
       assertCanStart();
       cursorAttempt = beginCursorTurnStart(threadId);
       startRequestId = cursorAttempt.owner.startRequestId;
       bindLanguageBridge(thread);
+      assertCanStart();
+      await context.prepareNewThreadGit?.(threadId);
+      assertCanStart();
+      await beginCheckpoint(threadId);
       assertCanStart();
       await context.claimDispatch(threadId);
       assertCanStart();
@@ -454,8 +460,6 @@ export async function startChildAgentTurn(
   let modelTurnRequested = false;
   try {
     assertCanStart();
-    await beginCheckpoint(thread.id);
-    assertCanStart();
     // Validate locally before claiming an RPC was sent; a parameter failure
     // still leaves an unused thread that this caller alone owns.
     const params = turnStartParams(
@@ -470,6 +474,10 @@ export async function startChildAgentTurn(
     await context.validateDispatch?.();
     assertCanStart();
     bindLanguageBridge(thread);
+    assertCanStart();
+    await context.prepareNewThreadGit?.(thread.id);
+    assertCanStart();
+    await beginCheckpoint(thread.id);
     assertCanStart();
     await context.claimDispatch(thread.id);
     assertCanStart();

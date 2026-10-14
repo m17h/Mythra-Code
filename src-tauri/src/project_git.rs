@@ -6,6 +6,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -51,6 +52,12 @@ pub(super) struct WorkspaceGitInitializeResult {
     pub(super) initialized: bool,
     pub(super) created_commit: bool,
     pub(super) tracked_files: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WorkspaceGitAutoInitializeResult {
+    pub(super) initialized: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1264,6 +1271,156 @@ pub(super) async fn workspace_git_initialize(
     tauri::async_runtime::spawn_blocking(move || initialize_workspace_git_sync(&cwd))
         .await
         .map_err(|error| format!("Git initialization task failed: {error}"))?
+}
+
+fn auto_git_output(
+    selected: &Path,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<std::process::Output, String> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or("Automatic Git initialization timed out")?;
+    let (output, truncated) = crate::git_workspace::bounded_git_initialization_output(
+        selected, args, remaining,
+    )?;
+    if truncated {
+        return Err("Git output exceeded its byte limit; repository state is unknown".into());
+    }
+    Ok(output)
+}
+
+fn auto_git_repository_present(selected: &Path, deadline: Instant) -> Result<bool, String> {
+    // --absolute-git-dir also recognizes bare repositories and linked
+    // worktrees, without requiring a commit or the selected folder to be root.
+    let output = auto_git_output(selected, &["rev-parse", "--absolute-git-dir"], deadline)?;
+    if output.status.success() && !output.stdout.is_empty() {
+        return Ok(true);
+    }
+    let detail = String::from_utf8_lossy(&output.stderr);
+    if output.status.code() != Some(128)
+        || !output.stdout.is_empty()
+        || detail.trim() != "fatal: not a git repository (or any of the parent directories): .git"
+    {
+        return Err(if detail.trim().is_empty() {
+            "Could not determine whether this folder belongs to a Git repository".into()
+        } else {
+            format!("Could not inspect the project's Git repository: {}", detail.trim())
+        });
+    }
+
+    // Git can report absence for a malformed .git directory. Preserve any
+    // marker, including a file or dangling link, rather than repairing it or
+    // creating a nested repository. Filesystem inspection failures are fatal.
+    let marker_exists = |path: &Path| -> Result<bool, String> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("Could not inspect the project's Git metadata: {error}")),
+        }
+    };
+    for ancestor in selected.ancestors() {
+        if marker_exists(&ancestor.join(".git"))?
+            || (marker_exists(&ancestor.join("HEAD"))?
+                && marker_exists(&ancestor.join("objects"))?
+                && marker_exists(&ancestor.join("refs"))?)
+        {
+            return Err("Existing Git metadata could not be read. Automatic initialization was skipped; inspect the repository before initializing it manually.".into());
+        }
+    }
+    Ok(false)
+}
+
+fn auto_initialize_workspace_git_sync(
+    cwd: &str,
+    normal_chats: &Path,
+) -> Result<WorkspaceGitAutoInitializeResult, String> {
+    if cwd.trim().is_empty() {
+        return Err("Automatic Git initialization requires a project folder".into());
+    }
+    let selected = Path::new(cwd)
+        .canonicalize()
+        .map_err(|error| format!("Could not open the project folder: {error}"))?;
+    if !selected.is_dir() || selected.parent().is_none() {
+        return Err("Automatic Git initialization requires a project folder".into());
+    }
+    match normal_chats.canonicalize() {
+        Ok(chat_root) if selected.starts_with(&chat_root) => {
+            return Ok(WorkspaceGitAutoInitializeResult { initialized: false });
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not identify the normal chat workspace: {error}")),
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    if auto_git_repository_present(&selected, deadline)? {
+        return Ok(WorkspaceGitAutoInitializeResult { initialized: false });
+    }
+    // Reserve only the new metadata directory. If another process already
+    // created it, leave its repository untouched. Never remove a partial init
+    // on failure: it may contain metadata another process has since written.
+    match fs::create_dir(selected.join(".git")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(WorkspaceGitAutoInitializeResult { initialized: false });
+        }
+        Err(error) => return Err(format!("Could not create the Git metadata folder: {error}")),
+    }
+    // Recheck parents after reserving the folder in case an external process
+    // initialized an ancestor meanwhile. Only remove our still-empty directory;
+    // remove_dir cannot discard metadata written by another process.
+    if let Some(parent) = selected.parent() {
+        match auto_git_repository_present(parent, deadline) {
+            Ok(false) => {}
+            result => {
+                fs::remove_dir(selected.join(".git")).map_err(|error| {
+                    format!("Git initialization was skipped because a parent repository changed. The reserved metadata folder was preserved: {error}")
+                })?;
+                result?;
+                return Ok(WorkspaceGitAutoInitializeResult { initialized: false });
+            }
+        }
+    }
+    // An empty template avoids copying user hooks. Initialization never adds
+    // files, commits, configures remotes, or contacts the network.
+    let output = auto_git_output(
+        &selected,
+        &["init", "--quiet", "--no-bare", "--template=", "."],
+        deadline,
+    )?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Could not initialize Git: {}", detail.trim()));
+    }
+    let probe = auto_git_output(&selected, &["rev-parse", "--absolute-git-dir"], deadline)?;
+    if !probe.status.success() || probe.stdout.is_empty() {
+        return Err("Git initialization completed, but the repository could not be located".into());
+    }
+    Ok(WorkspaceGitAutoInitializeResult { initialized: true })
+}
+
+#[tauri::command]
+pub(super) async fn workspace_git_auto_initialize(
+    app: AppHandle,
+    cwd: String,
+    enabled: bool,
+) -> Result<WorkspaceGitAutoInitializeResult, String> {
+    if !enabled {
+        return Ok(WorkspaceGitAutoInitializeResult { initialized: false });
+    }
+    let normal_chats = crate::release_qa::app_data_dir(&app)
+        .map_err(|error| format!("Could not resolve the normal chat workspace: {error}"))?
+        .join("normal-chats");
+    // Serialize automatic requests, including parent/subfolder selections.
+    // The blocking worker keeps ownership even if the renderer stops awaiting.
+    static INITIALIZATION_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    let lock = INITIALIZATION_LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))).clone();
+    let guard = tokio::time::timeout(Duration::from_secs(5), lock.lock_owned())
+        .await
+        .map_err(|_| "Automatic Git initialization is busy; try again later".to_string())?;
+    spawn_locked_worktree_worker(guard, move || auto_initialize_workspace_git_sync(&cwd, &normal_chats))
+        .await
+        .map_err(|error| format!("Automatic Git initialization task failed: {error}"))?
 }
 
 #[tauri::command]

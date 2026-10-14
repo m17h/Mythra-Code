@@ -1760,6 +1760,27 @@ fn bounded_git_output_with_readiness(
         prompt_policy,
         readiness,
         None,
+        false,
+    )
+}
+
+/// Automatic initialization must discover the actual containing repository,
+/// independent of inherited repository-discovery overrides. Keep its English
+/// diagnostic stable so only Git's explicit absence result permits mutation.
+pub(super) fn bounded_git_initialization_output(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(Output, bool), String> {
+    bounded_git_output_with_capture(
+        repo,
+        args,
+        timeout,
+        16 * 1024,
+        (true, true),
+        |_| Ok(()),
+        None,
+        true,
     )
 }
 
@@ -1780,6 +1801,7 @@ pub(super) fn bounded_git_nul_path_count(
         (true, true),
         |_| Ok(()),
         Some(count.clone()),
+        false,
     )?;
     if truncated {
         return Err(
@@ -1818,6 +1840,7 @@ fn bounded_git_output_with_capture(
     prompt_policy: (bool, bool),
     readiness: impl FnOnce(&mut std::process::Child) -> Result<(), String>,
     stdout_nul_count: Option<Arc<AtomicUsize>>,
+    isolated_initialization: bool,
 ) -> Result<(Output, bool), String> {
     let (network, suppress_askpass) = prompt_policy;
     let home = env::var_os("HOME").map(PathBuf::from);
@@ -1828,6 +1851,18 @@ fn bounded_git_output_with_capture(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if isolated_initialization {
+        command
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
+            .env("GIT_DISCOVERY_ACROSS_FILESYSTEM", "1")
+            .env_remove("GIT_CEILING_DIRECTORIES")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .env_remove("GIT_CONFIG")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env_remove("GIT_CONFIG_COUNT");
+    }
     if network {
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("GCM_INTERACTIVE", "Never");

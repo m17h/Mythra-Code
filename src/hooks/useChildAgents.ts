@@ -179,6 +179,8 @@ export interface ChildAgentContext {
   explicitThreadExecutionFor?: (threadId: string) => { provider?: Provider; model?: string; reasoningEffort?: string } | undefined;
   /** Live delegation enabled state covers roots still preparing their first policy. */
   subagentsEnabledForThread?: (threadId: string) => boolean;
+  /** Optional setup for an identified new child before its first dispatch. */
+  prepareNewThreadGit?: (threadId: string, projectId: string, projectPath: string) => Promise<boolean>;
 }
 
 export interface ProjectRunOutcome {
@@ -1401,6 +1403,7 @@ export function useChildAgents(context: ChildAgentContext): {
         claimDispatch: async (childThreadId) => {
           await claimChildAgentSpawn(request, childThreadId);
         },
+        prepareNewThreadGit: projectId ? (childThreadId) => ctx.prepareNewThreadGit?.(childThreadId, projectId, logicalPath) ?? Promise.resolve(false) : undefined,
         canDiscardUnusedChild,
         onDiscardUnusedChild: (childThreadId) => contextRef.current.onDiscardUnusedChild?.(childThreadId),
         beginCheckpoint: async (childThreadId) => {

@@ -216,6 +216,7 @@ import {
 } from "./lib/checkpoints";
 import {
   applyWorktreeToSource,
+  automaticallyInitializeWorkspaceGit,
   executionPathForThread,
   initializeWorkspaceGit,
   mergeWorktreeBranch,
@@ -475,7 +476,7 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: readStoredRaw("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const storedSettings = { ...rawStoredSettings, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true };
+const storedSettings = { ...rawStoredSettings, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
 const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
@@ -618,7 +619,7 @@ export default function App() {
     activeFirstPromptIdRef.current = null;
     setActiveFirstPrompt(null);
   }, []);
-  const [settings, persistSettings] = usePersistedState<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const [headerUsageWindows, setHeaderUsageWindows] = usePersistedState<HeaderUsageWindows>("kiwi.headerUsageWindows", {}, {
     init: (load) => sanitizeHeaderUsageWindows(load()),
   });
@@ -3295,6 +3296,7 @@ export default function App() {
     runCheckpointProjectOperation,
     persistCheckpoints,
     beginRunCheckpoint,
+    retryUnsupportedCheckpointPath,
     finalizeRunCheckpoint,
     discardRunCheckpoint,
     projectHasActiveTask,
@@ -3321,6 +3323,32 @@ export default function App() {
     setError,
     setTransientStatus,
   });
+
+  const prepareNewThreadGit = useCallback(async (threadId: string, workspace: Project, enabled: boolean): Promise<boolean> => {
+    if (enabled !== true || settingsRef.current.automaticGitInitialization !== true || workspace.isChat) return false;
+    const projectStillMatches = () => projectsRef.current.some((project) => project.id === workspace.id && normalizedProjectPath(project.path) === normalizedProjectPath(workspace.path));
+    if (!projectStillMatches()) return false;
+    try {
+      const result = await automaticallyInitializeWorkspaceGit(workspace.path);
+      retryUnsupportedCheckpointPath(workspace.path);
+      if (!result.initialized) return false;
+      if (activeProjectIdRef.current === workspace.id && projectStillMatches()) {
+        void readWorkspaceGitInfo(workspace.path).then((info) => {
+          if (activeProjectIdRef.current === workspace.id && projectStillMatches()) setWorkspaceGitInfo(info);
+        }).catch(() => {});
+      }
+      return true;
+    } catch (reason) {
+      // Git setup must never turn an accepted first prompt into a lost draft.
+      // Keep the warning attached to its thread even if the user navigated away.
+      const detail = `Automatic Git initialization could not finish for ${workspace.name}: ${formatGitError(reason)} The thread can continue without Git.`;
+      useTaskStore.getState().upsertActivity(threadId, {
+        id: `automatic-git-${threadId}`, kind: "warning", title: "Automatic Git initialization failed", detail,
+      });
+      showToast(detail, "info");
+      return false;
+    }
+  }, [projectsRef, retryUnsupportedCheckpointPath, settingsRef, showToast]);
 
   // The event context is rebuilt each render so callbacks always see fresh
   // state; useCodexEvents reads it through a ref and subscribes exactly once.
@@ -5241,6 +5269,7 @@ export default function App() {
     },
     isThreadArchiving: (id) => archivingThreadIdsRef.current.has(id),
     onThreadCreated: handleThreadCreated,
+    prepareNewThreadGit,
     persistThreadModel,
     persistThreadReasoning,
     persistThreadWorktrees,
@@ -5463,6 +5492,10 @@ export default function App() {
     projectIdForThread: (threadId) => {
       const path = threadProjectBindingsRef.current?.[threadId] || knownThreadsRef.current?.[threadId]?.cwd;
       return path ? projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(path))?.id ?? null : null;
+    },
+    prepareNewThreadGit: (threadId, projectId, projectPath) => {
+      const project = projectsRef.current.find((entry) => entry.id === projectId && normalizedProjectPath(entry.path) === normalizedProjectPath(projectPath));
+      return project ? prepareNewThreadGit(threadId, project, settingsRef.current.automaticGitInitialization === true) : Promise.resolve(false);
     },
     executionPathFor,
     isolationGitDirFor: (threadId) => threadWorktreesRef.current[threadId]?.gitDir,
@@ -6377,6 +6410,9 @@ export default function App() {
       useTaskStore.getState().setActiveThread(result.thread.id);
       setStudioOpen(false);
       void loadThreads(activeWorkspace);
+      if (activeWorkspace && settings.automaticGitInitialization === true) {
+        await prepareNewThreadGit(result.thread.id, activeWorkspace, true);
+      }
     } catch (reason) {
       setError(friendlyError(reason));
     }
@@ -7745,6 +7781,8 @@ export default function App() {
   const { runWorkflow, stopWorkflow } = useWorkflowEngine({
     workflows,
     projects,
+    automaticGitInitialization: settings.automaticGitInitialization === true,
+    prepareNewThreadGit,
     runtimeAvailable: Boolean(runtimeStatus?.available),
     chatGptConnected: account?.type === "chatgpt",
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
@@ -7907,6 +7945,7 @@ export default function App() {
     projects,
     chatWorkspace,
     settings,
+    prepareNewThreadGit,
     runtimeAvailable: Boolean(runtimeStatus?.available),
     chatGptConnected: account?.type === "chatgpt",
     openRouterReady,
