@@ -129,7 +129,7 @@ const SETTINGS_NAV: ReadonlyArray<{
     group: "Workspace",
     items: [
       { id: "general", label: "Interface", icon: Palette, detail: "Appearance and keyboard shortcuts. Appearance previews instantly; save to keep your changes.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look keyboard shortcut escape esc stop cancel active run" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Name new threads automatically and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository automatic thread title titles naming rename luna" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Set up Git, name new threads automatically, and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository repo git init initialize initialization automatic thread title titles naming rename luna" },
     ],
   },
   {
@@ -613,6 +613,7 @@ export function SettingsModal({
     && (local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true);
   const terminalTimeoutId = useId();
   const escapeStopsRunId = useId();
+  const automaticGitInitializationId = useId();
   const [apiKey, setApiKey] = useState("");
   const [lmStudioToken, setLmStudioToken] = useState("");
   const [lmStudioConnectionMessage, setLmStudioConnectionMessage] = useState("");
@@ -1521,6 +1522,18 @@ export function SettingsModal({
           </div>}
 
           {settingsSection === "projects" && <>
+          <div className="set-group">
+            <h4>Git setup</h4>
+            <div className="set-card"><div className="set-row">
+              <div className="set-copy">
+                <strong>Automatically initialize Git for new project threads</strong>
+                <small id={automaticGitInitializationId}>When enabled, creates a local Git repository in the project folder when you start a new thread if the folder is not already in a repository. Existing repositories are left untouched. Does not create commits or publish to GitHub.</small>
+              </div>
+              <div className="set-control">
+                <button type="button" role="switch" aria-label="Automatically initialize Git for new project threads" aria-describedby={automaticGitInitializationId} aria-checked={local.automaticGitInitialization === true} className={`toggle-switch ${local.automaticGitInitialization === true ? "on" : ""}`} onClick={() => setLocal({ ...local, automaticGitInitialization: local.automaticGitInitialization !== true })}><span /></button>
+              </div>
+            </div></div>
+          </div>
           <div className="set-group">
             <h4>Thread titles</h4>
             <div className="set-card">

@@ -106,7 +106,8 @@ use process_launch::{background_command, background_std_command};
 use project_git::{
     checkpoint_complete, checkpoint_create, checkpoint_delete, checkpoint_diff, checkpoint_restore,
     git_common_dir, git_runtime_path, git_stdout, optional_git_stdout, unix_timestamp_ms,
-    workspace_git_info, workspace_git_initialize, worktree_apply_to_source, worktree_create,
+    workspace_git_auto_initialize, workspace_git_info, workspace_git_initialize,
+    worktree_apply_to_source, worktree_create,
     worktree_merge_branch, worktree_recreate, worktree_remove, worktree_set_applied_baseline,
     worktree_status,
 };
@@ -8123,6 +8124,7 @@ pub fn run() {
                     checkpoint_delete,
                     workspace_git_info,
                     workspace_git_initialize,
+                    workspace_git_auto_initialize,
                     worktree_create,
                     worktree_recreate,
                     worktree_status,

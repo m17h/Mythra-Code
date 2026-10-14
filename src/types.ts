@@ -524,6 +524,8 @@ export interface AppSettings {
   /** App-wide Escape shortcut; missing legacy values default off. */
   escapeStopsRun: boolean;
   notificationsEnabled: boolean;
+  /** Opt-in Git initialization when a new thread starts in a project without Git. */
+  automaticGitInitialization: boolean;
   /** Opt-in OpenAI Luna naming for new threads, regardless of their provider. */
   automaticThreadTitles: boolean;
   threadTitleProvider: Provider;

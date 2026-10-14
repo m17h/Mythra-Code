@@ -636,6 +636,10 @@ export function useCheckpoints(context: CheckpointsContext) {
     persistCheckpoints((current) => current.filter((checkpoint) => checkpoint.threadId !== threadId));
   }, [checkpointHeadsRef, checkpointsRef, persistCheckpointHead, persistCheckpoints, runCheckpointProjectOperation]);
 
+  const retryUnsupportedCheckpointPath = useCallback((workspacePath: string) => {
+    checkpointUnsupportedPathsRef.current.delete(normalizedProjectPath(workspacePath));
+  }, []);
+
   return {
     checkpoints,
     checkpointHeads,
@@ -646,6 +650,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     persistCheckpoints,
     persistCheckpointHead,
     beginRunCheckpoint,
+    retryUnsupportedCheckpointPath,
     finalizeRunCheckpoint,
     discardRunCheckpoint,
     projectHasActiveTask,

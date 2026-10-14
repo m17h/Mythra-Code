@@ -106,6 +106,11 @@ export async function initializeWorkspaceGit(cwd: string): Promise<WorkspaceGitI
   return invoke<WorkspaceGitInitializeResult>("workspace_git_initialize", { cwd });
 }
 
+/** Opt-in repository creation only: no staging, commits, or existing-repository changes. */
+export async function automaticallyInitializeWorkspaceGit(cwd: string): Promise<{ initialized: boolean }> {
+  return invoke<{ initialized: boolean }>("workspace_git_auto_initialize", { cwd, enabled: true });
+}
+
 export async function createThreadWorktree(
   projectPath: string,
   label: string,

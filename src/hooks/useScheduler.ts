@@ -37,6 +37,7 @@ export interface SchedulerDeps {
   onThreadStarted: (project: Project) => void;
   /** Persist fresh-thread defaults before any turn preparation can fail. */
   onThreadCreated?: (threadId: string, project: Project, options?: { autoCompactTokens?: number }) => void;
+  prepareNewThreadGit?: (threadId: string, workspace: Project, enabled: boolean) => Promise<boolean>;
   /** App owns the shared-runtime reservation and complete cross-thread guards. */
   restartRuntimeForCapabilities?: (threadId: string, allowOwnStarting?: boolean) => Promise<string>;
   /** Reflect the admitted off policy and own window, including provider-default clearing. */
@@ -159,6 +160,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       ? current.executionPathFor?.(scheduled.lastThreadId, project.path) ?? project.path
       : project.path;
     let reusingExecutionPath = reuseThread;
+    let createdFreshThread = false;
     const preparationAnchors = new Map<string, { activeTurnId?: string; pendingTurnStartOrder?: number }>();
     const busyReason = (threadId: string, ownStarting = false): string | null => {
       const state = useTaskStore.getState();
@@ -288,6 +290,7 @@ export function useScheduler(deps: SchedulerDeps): void {
           perTurnSystemPrompt: true,
         }));
         startedThreadId = started.thread.id;
+        createdFreshThread = true;
         current.onThreadCreated?.(started.thread.id, project, { autoCompactTokens: run.autoCompactTokens });
         recordSubagentCapabilities(started.thread.id, instance, capabilities);
         assertCurrent();
@@ -352,11 +355,12 @@ export function useScheduler(deps: SchedulerDeps): void {
       assertCurrent();
       if (!stillOwnsStartingStatus(started.thread.id)) throw new RevokedSchedulePreparation();
       assertIdle(started.thread.id, true);
+      const initializeNewThreadGit = createdFreshThread && !project.isChat && current.settings.automaticGitInitialization === true;
       // Snapshot before the unattended turn edits anything; the Codex event
       // router finalizes it on turn completion like any user turn.
       try {
         assertCurrent();
-        ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model);
+        if (!initializeNewThreadGit) ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model);
         assertCurrent();
         assertIdle(started.thread.id, true);
         const model = started.model;
@@ -367,14 +371,20 @@ export function useScheduler(deps: SchedulerDeps): void {
         current.onThreadDelegationDisabled?.(started.thread.id, { autoCompactTokens: run.autoCompactTokens });
         assertIdle(started.thread.id, true);
         assertCurrent();
-        // Preparation and parameter validation can fail without a request.
-        // Append only when dispatch is next, so history never claims delivery.
+        // Show the captured prompt before optional Git setup. Failed/stopped
+        // starts remove it through the existing undelivered-prompt cleanup.
         pendingMessageId = `scheduled-${crypto.randomUUID()}`;
         completedTurnBeforeDispatch = useTaskStore.getState().tasks[started.thread.id]?.lastCompletedTurnId;
         useTaskStore.getState().appendUserMessage(started.thread.id, { id: pendingMessageId, role: "user", text: scheduled.prompt, skillReferences: resolved.skillReferences, skillsFolder: resolved.skillsFolder, skillDependencies: resolved.skillDependencies });
         pendingMessageOrder = useTaskStore.getState().tasks[started.thread.id]?.messages.find((message) => message.id === pendingMessageId)?.timelineOrder;
         const task = useTaskStore.getState().tasks[started.thread.id];
         preparationAnchors.set(started.thread.id, { activeTurnId: task?.activeTurnId, pendingTurnStartOrder: task?.pendingTurnStartOrder });
+        if (initializeNewThreadGit) {
+          await current.prepareNewThreadGit?.(started.thread.id, project, true);
+          assertCurrent();
+          assertIdle(started.thread.id, true);
+          ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model);
+        }
         assertCurrent();
         assertIdle(started.thread.id, true);
         turnDispatched = true;

@@ -201,6 +201,8 @@ export function waitForWorkflowTurn(
 interface WorkflowEngineDeps {
   workflows: WorkflowDefinition[];
   projects: Project[];
+  automaticGitInitialization?: boolean;
+  prepareNewThreadGit?: (threadId: string, workspace: Project, enabled: boolean) => Promise<boolean>;
   runtimeAvailable: boolean;
   chatGptConnected: boolean;
   claudeReady?: boolean;
@@ -448,6 +450,11 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       invocation?.onStarted?.(threadId);
       current.onThreadStarted(project, threadId, source);
       publish({ threadId });
+
+      if (!project.isChat && current.automaticGitInitialization === true) {
+        await current.prepareNewThreadGit?.(threadId, project, true);
+        if (active.stopRequested) throw new WorkflowStoppedError();
+      }
 
       let previousStatus: "none" | "completed" | "failed" | "skipped" = "none";
       for (const [index, step] of workflow.steps.entries()) {

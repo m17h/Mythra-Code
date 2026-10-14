@@ -101,6 +101,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   chatFont: "system",
   escapeStopsRun: false,
   notificationsEnabled: true,
+  automaticGitInitialization: false,
   automaticThreadTitles: false,
   threadTitleProvider: "openai",
   threadTitleModel: "",
