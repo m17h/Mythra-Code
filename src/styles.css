@@ -1805,6 +1805,8 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .update-version-row small { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .update-version-row strong { font-size: var(--fs-body); font-weight: 620; letter-spacing: var(--track-tight); }
 .update-version-available { align-items: flex-end; color: var(--green); }
+.update-version-available.stale { color: var(--muted); }
+.developer-runtime-update-card.unverified .update-status-row svg { color: var(--muted); }
 .update-status-row { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px; color: var(--muted); font-size: var(--fs-micro); }
 .update-status-row svg { flex: 0 0 auto; color: var(--green); }
 .update-card.error .update-status-row, .update-card.error .update-status-row svg { color: var(--red); }

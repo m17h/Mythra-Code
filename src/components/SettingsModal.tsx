@@ -345,7 +345,10 @@ export function useDeveloperRuntimeUpdater(
         }
       }
     } catch (reason) {
-      if (requestRef.current === request) setError(friendlyError(reason));
+      if (requestRef.current === request) {
+        setError(friendlyError(reason));
+        setStatus(cachedDeveloperRuntimeUpdates());
+      }
     } finally {
       operationRef.current = null;
       setUpdating((current) => current === target ? null : current);
@@ -2731,33 +2734,37 @@ function DeveloperRuntimeUpdateCard({
 }) {
   const updating = updater.updating === target;
   const busy = updater.checking || updater.updating !== null;
-  const provablyCurrent = Boolean(status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable);
+  const stale = Boolean(status?.latestVersionStale || status?.installedVersionStale);
+  const provablyCurrent = Boolean(status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable && !status.error && !stale);
   const actionAvailable = Boolean(status?.canUpdate && !provablyCurrent);
-  const state = status?.error ? "error" : status?.updateAvailable || status?.installed === false ? "available" : "current";
+  const state = status?.error || stale ? "unverified" : status?.updateAvailable || status?.installed === false ? "available" : "current";
   const detail = updating ? `Updating ${name}…`
-    : updater.checking && !status ? `Checking ${name}…`
+    : updater.checking ? `Checking for ${name} updates…`
       : status?.error ? status.error
+        : stale ? `Couldn’t refresh ${name} updates. Showing previously checked information.`
         : status?.installed === false ? `${name} is not installed. Install ${status.latestVersion ? `version ${status.latestVersion}` : "the latest version"} here.`
           : status?.updateAvailable ? `${name} ${status.latestVersion} is available.`
-            : status?.currentVersion ? `${name} is up to date.`
+            : provablyCurrent ? `${name} is up to date.`
               : `Check for the latest ${name} release.`;
   const actionLabel = status?.installed === false ? `Install ${name}` : `Update ${name}`;
   return <div className={`update-card developer-runtime-update-card ${state}`}>
     <div className="update-version-row">
       {/* Before the first check there is no version to report, so the card says
           so plainly instead of printing a name trailed by an ellipsis. */}
-      <span><small>{status ? `Installed · ${status.source ?? "Local runtime"}` : "Local runtime"}</small><strong>{status?.currentVersion ? `${name} ${status.currentVersion}` : status?.installed === false ? `${name} · not installed` : name}</strong></span>
-      {status?.latestVersion && <span className="update-version-available"><small>Latest</small><strong>{status.latestVersion}</strong></span>}
+      <span><small>{status?.installedVersionStale ? "Previously detected" : status?.installed ? `Installed · ${status.source ?? "Local runtime"}` : "Local runtime"}</small><strong>{status?.currentVersion ? `${name} ${status.currentVersion}` : status?.installed === false ? `${name} · not installed` : name}</strong></span>
+      {status?.latestVersion && <span className={`update-version-available${status.latestVersionStale ? " stale" : ""}`}><small>{status.latestVersionStale ? "Last known latest" : "Latest"}</small><strong>{status.latestVersion}</strong>{status.latestVersionStale && status.latestVersionCheckedAt && <small>Checked {new Date(status.latestVersionCheckedAt).toLocaleString()}</small>}</span>}
     </div>
     <div className="update-status-row">
-      {(updating || updater.checking && !status) && <LoaderCircle className="spin" size={15} />}
-      {!updating && status && !status.error && !status.updateAvailable && status.installed && <Check size={15} />}
-      {!updating && status?.updateAvailable && <Download size={15} />}
+      {(updating || updater.checking) && <LoaderCircle className="spin" size={15} />}
+      {!updating && !updater.checking && provablyCurrent && <Check size={15} />}
+      {!updating && !updater.checking && (status?.error || stale) && <Info size={15} />}
+      {!updating && !updater.checking && !status?.error && !stale && status?.updateAvailable && <Download size={15} />}
       <span>{detail}</span>
     </div>
-    {status && (!status.canUpdate || actionAvailable) && (
+    {status && (!status.canUpdate || actionAvailable || status.error || stale) && (
       <div className="update-actions">
         {!status.canUpdate && <small>Mythra Code will not overwrite a custom executable path.</small>}
+        {(status.error || stale) && <button className="secondary-button" disabled={busy} onClick={() => void updater.checkForUpdates()}><RotateCcw size={13} /> Try again</button>}
         {actionAvailable && (
         <button className="primary-button" disabled={busy} onClick={() => void updater.updateRuntime(target)}>
           {updating ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />} {updating ? "Updating…" : actionLabel}
@@ -2817,7 +2824,7 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
       <DeveloperRuntimeUpdateCard target="claude" name="Claude Code" status={developerRuntimeUpdater.status?.claude ?? null} updater={developerRuntimeUpdater} />
       <DeveloperRuntimeUpdateCard target="codex" name="Codex" status={developerRuntimeUpdater.status?.codex ?? null} updater={developerRuntimeUpdater} />
     </div>
-    {developerRuntimeUpdater.error && <div className="update-card developer-runtime-result error" role="alert"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div></div>}
+    {developerRuntimeUpdater.error && <div className="update-card developer-runtime-result error" role="alert"><div className="update-status-row"><Info size={13} /><span>{developerRuntimeUpdater.error}</span></div><div className="update-actions"><button className="secondary-button" disabled={developerRuntimeUpdater.checking || developerRuntimeUpdater.updating !== null} onClick={() => void developerRuntimeUpdater.checkForUpdates()}><RotateCcw size={13} /> Check again</button></div></div>}
     {developerRuntimeUpdater.message && <div className="update-card developer-runtime-result" role="status"><div className="update-status-row"><Check size={13} /><span>{developerRuntimeUpdater.message.slice(-2_000)}</span></div></div>}
     </div>
     <div className="update-trust-row"><ShieldCheck size={14} /><span><strong>Official distribution channels</strong><small>Mythra Code packages must match this app’s updater key. Claude Code and Codex installers are fetched over HTTPS from their official publishers and verify the release assets they install.</small></span></div>
