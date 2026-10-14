@@ -362,6 +362,7 @@ export function SettingsModal({
   settings,
   account,
   accountChecks = {},
+  onRefreshAccounts,
   runtimeStatus,
   claudeStatus = null,
   claudeLoginStarting = false,
@@ -477,6 +478,8 @@ export function SettingsModal({
   settings: AppSettings;
   account: Account | null;
   accountChecks?: Partial<Record<Provider, string>>;
+  /** Passive connection check whenever Models & accounts becomes visible. */
+  onRefreshAccounts?: () => Promise<void>;
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus?: ClaudeRuntimeStatus | null;
   claudeLoginStarting?: boolean;
@@ -625,6 +628,9 @@ export function SettingsModal({
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
+  const refreshAccountsRef = useRef(onRefreshAccounts);
+  refreshAccountsRef.current = onRefreshAccounts;
+  const accountsEntryRef = useRef({ open: false, section: initialSection as SettingsPane });
 
   const modelCatalogs = useMemo<ModelCatalogs>(() => ({
     runtimeModels,
@@ -701,7 +707,7 @@ export function SettingsModal({
   // Invalid text never reaches the draft, so it blocks Save instead of being
   // silently replaced by the previous limit or read as "disabled".
   const terminalTimeoutInvalid = terminalTimeoutTyped === null;
-  const dirty = open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || JSON.stringify(localProfiles) !== JSON.stringify(profiles) || terminalTimeoutTyped !== terminalTimeoutMinutes);
+  const dirty = useMemo(() => open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || JSON.stringify(localProfiles) !== JSON.stringify(profiles) || terminalTimeoutTyped !== terminalTimeoutMinutes), [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes]);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
@@ -784,6 +790,19 @@ export function SettingsModal({
       setSettingsSection("updates");
     }
   }, [appUpdater.phase, initialDraft, initialSection, open]);
+
+  useEffect(() => {
+    const previous = accountsEntryRef.current;
+    // On reopening, the old pane is retained until the draft-seeding effect
+    // updates it. Use the requested pane to avoid a spurious or double check.
+    const section = open && !previous.open ? initialSection : settingsSection;
+    accountsEntryRef.current = { open, section };
+    if (open && section === "models" && (!previous.open || previous.section !== "models")) {
+      const refresh = refreshAccountsRef.current;
+      // Refresh failures are represented by the provider's connection state.
+      void Promise.resolve().then(() => refresh?.()).catch(() => undefined);
+    }
+  }, [initialSection, open, settingsSection]);
 
   useEffect(() => {
     if (!open) {
@@ -2069,12 +2088,12 @@ export function SettingsModal({
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <div>
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
-                  <small>{cursorStatus?.loggedIn
+                  <small>{accountChecks.cursor || (cursorStatus?.loggedIn
                     ? `${cursorStatus.subscriptionType || "Cursor"} plan connected · ${cursorStatus.version || "Cursor Agent"}`
-                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first")}</small>
+                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
                 </div>
                 {cursorStatus?.loggedIn ? (
-                  <span className="connected-badge"><Check size={12} /> Connected</span>
+                  <span className="connected-badge"><Check size={12} /> {accountChecks.cursor ? "Unverified" : "Connected"}</span>
                 ) : (
                   <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
                     {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}

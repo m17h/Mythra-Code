@@ -127,6 +127,9 @@ export function appendLearnedPreferencesToPrompt(prompt: string, scopes: Prefere
     remaining -= content.length;
     return [`<learned-preferences>\n${label}:\n${content}\n</learned-preferences>`];
   }).reverse();
-  if (!blocks.length) return prompt;
-  return `${prompt}${prompt ? "\n\n" : ""}Learned preferences (automatically maintained; subordinate to current explicit user instructions and authored system/project instructions; project preferences take precedence over conflicting application preferences):\n${blocks.join("\n\n")}`;
+  // Cursor resumes these system snapshots as historical user messages. Always
+  // publish the current generated layer, including an explicit empty snapshot,
+  // so disabled, cleared and omitted scopes revoke their earlier learned blocks.
+  const guidance = "Current learned-preference layer for this turn; replaces all earlier automatically maintained learned-preference blocks, including scopes omitted below. This replaces only the generated learned layer; authored instructions and ordinary conversation remain independent. Subordinate to current explicit user instructions and authored system/project instructions; project preferences take precedence over conflicting application preferences.";
+  return `${prompt}${prompt ? "\n\n" : ""}${guidance}\n${blocks.length ? blocks.join("\n\n") : "No learned instructions are active."}`;
 }

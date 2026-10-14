@@ -448,6 +448,12 @@ export interface ScheduledTask {
   nextRunAt: number;
   lastRunAt?: number;
   lastThreadId?: string;
+  /** Blocks recurrence until this unacknowledged delivery is known to have settled. */
+  unconfirmedThreadId?: string;
+  /** Completion already known before that dispatch; cannot release its latch. */
+  unconfirmedCompletedTurnId?: string;
+  /** Cold reuse supplied no baseline; restored history cannot prove settlement. */
+  unconfirmedBaselineUnknown?: boolean;
   run?: ScheduleRunSettings;
 }
 

@@ -56,6 +56,12 @@ export interface WorkflowDefinition {
   nextRunAt?: number;
   lastRunAt?: number;
   lastThreadId?: string;
+  /** Blocks new runs until this unacknowledged delivery is known to have settled. */
+  unconfirmedThreadId?: string;
+  /** Completion already known before that dispatch; cannot release its latch. */
+  unconfirmedCompletedTurnId?: string;
+  /** Imported cold-reuse delivery needs explicit inspection and recovery. */
+  unconfirmedBaselineUnknown?: boolean;
   consecutiveFailures?: number;
 }
 
@@ -284,5 +290,8 @@ export function workflowFromSchedule(
     nextRunAt: scheduled.nextRunAt || nextWorkflowRunAt({ type: "interval", intervalMinutes: scheduled.intervalMinutes }, now),
     lastRunAt: scheduled.lastRunAt,
     lastThreadId: scheduled.lastThreadId,
+    unconfirmedThreadId: scheduled.unconfirmedThreadId,
+    unconfirmedCompletedTurnId: scheduled.unconfirmedCompletedTurnId,
+    unconfirmedBaselineUnknown: scheduled.unconfirmedBaselineUnknown,
   };
 }

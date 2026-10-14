@@ -27,6 +27,8 @@ export interface LearnedPreference { instruction: string; evidenceIds: string[];
 export interface PreferenceAnalysis { preferences: LearnedPreference[] }
 export interface PreferenceLearningJob {
   status: "idle" | "queued" | "running" | "error";
+  /** The native atomic commit has begun and can no longer be cancelled. */
+  saving?: boolean;
   /** Associates transient status with one explicitly requested history run. */
   historyRunId?: string;
   message?: string;

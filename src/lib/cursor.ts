@@ -7,6 +7,7 @@ import type { JsonObject } from "./codex";
 import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscriptPage, saveLocalTranscript, type LocalTranscriptPage } from "./localTranscriptPersistence";
 import { acceptCursorTurnStart, beginCursorTurnStart, cursorTurnOwner, cursorTurnStartAttempt, isCurrentCursorTurnStart, rejectCursorTurnStart, retireCursorTurnOwner } from "./cursorTurnOwnership";
 import { useTaskStore } from "./taskStore";
+import { safeErrorText } from "./errors";
 
 export interface CursorRuntimeStatus {
   available: boolean;
@@ -80,19 +81,24 @@ export async function startCursorTurn(options: CursorTurnOptions): Promise<{ tur
     if (!isCurrentCursorTurnStart(options.threadId, attempt) || attempt.owner.closed) throw new Error("Cursor start was superseded before dispatch");
     annotateThreadUsage(options.threadId, { provider: "cursor", model: options.model, projectPath: options.cwd });
     const result = await invoke<{ turnId: string; cursorSessionId: string }>("cursor_turn_start", { options: { ...options, startRequestId: attempt.owner.startRequestId } });
+    if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
+      throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Cursor accepted the start without returning its turn identifier.");
+    }
     const current = acceptCursorTurnStart(options.threadId, attempt, result.turnId);
     // Stop closes output admission, but the latest accepted session remains
     // this conversation's resume identity. A successor owns its own session.
     if (isCurrentCursorTurnStart(options.threadId, attempt) && attempt.owner.stopped) return { ...result, stopped: true };
     return current ? result : { ...result, superseded: true };
   } catch (error) {
-    if (!reservedAttempt) rejectCursorTurnStart(options.threadId, attempt);
+    if (!reservedAttempt && !/^(?:Error:\s*)?MYTHRA_DELIVERY_UNCERTAIN:/.test(safeErrorText(error))) {
+      rejectCursorTurnStart(options.threadId, attempt);
+    }
     throw error;
   }
 }
 
-export async function steerCursorTurn(threadId: string, prompt: string, attachments: CursorTurnOptions["attachments"] = []): Promise<void> {
-  await invoke("cursor_turn_steer", { threadId, prompt, attachments });
+export async function steerCursorTurn(threadId: string, prompt: string, attachments: CursorTurnOptions["attachments"] = [], expectedTurnId?: string): Promise<void> {
+  await invoke("cursor_turn_steer", { threadId, prompt, attachments, expectedTurnId: expectedTurnId ?? null });
 }
 
 export async function interruptCursorTurn(threadId: string): Promise<void> {

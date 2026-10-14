@@ -615,24 +615,9 @@ impl Analyzer {
         // Runtime mirrors cannot carry hidden entries or symlink aliases.
         // Reject the authored path as well as its canonical target so preview
         // and provider delivery agree about which documents are available.
-        let mut cursor = self.folder.clone();
-        let unsupported_path = raw.strip_prefix(&self.folder).is_ok_and(|relative| {
-            relative.components().any(|component| match component {
-                std::path::Component::Normal(part) => {
-                    cursor.push(part);
-                    part.to_string_lossy().starts_with('.')
-                        || std::fs::symlink_metadata(&cursor)
-                            .is_ok_and(|meta| meta.file_type().is_symlink())
-                        || super::is_windows_reparse_point(&cursor).unwrap_or(false)
-                }
-                std::path::Component::ParentDir => {
-                    cursor.pop();
-                    false
-                }
-                _ => false,
-            })
-        });
-        if source.starts_with(&self.folder) && unsupported_path {
+        if source.starts_with(&self.folder)
+            && has_unsupported_runtime_components(&self.folder, raw)
+        {
             self.issue("unsupported-document", "Hidden files and symbolic-link paths cannot be included in provider skill libraries. Use a visible, regular file inside the skills folder.", &chain, stack.last().map(PathBuf::as_path), Some(reference));
             return self.blocked(
                 requested_name,
@@ -1041,6 +1026,28 @@ impl Analyzer {
         }
     }
 }
+/// Check authored components before canonicalization removes aliases and `..`.
+/// Discovery metadata and dependency loading share the provider mirror policy.
+pub(super) fn has_unsupported_runtime_components(folder: &Path, raw: &Path) -> bool {
+    let mut cursor = folder.to_path_buf();
+    raw.strip_prefix(folder).is_ok_and(|relative| {
+        relative.components().any(|component| match component {
+            std::path::Component::Normal(part) => {
+                cursor.push(part);
+                part.to_string_lossy().starts_with('.')
+                    || std::fs::symlink_metadata(&cursor)
+                        .is_ok_and(|meta| meta.file_type().is_symlink())
+                    || super::is_windows_reparse_point(&cursor).unwrap_or(false)
+            }
+            std::path::Component::ParentDir => {
+                cursor.pop();
+                false
+            }
+            _ => false,
+        })
+    })
+}
+
 fn detected_path(folder: &Path, source: &Path) -> bool {
     let Ok(relative) = source.strip_prefix(folder) else {
         return false;
@@ -1136,7 +1143,7 @@ pub(super) fn read_bounded_with_metadata(
         })
 }
 
-fn fs_open_options() -> std::fs::OpenOptions {
+pub(super) fn fs_open_options() -> std::fs::OpenOptions {
     let mut options = std::fs::OpenOptions::new();
     #[cfg(unix)]
     {
@@ -1150,7 +1157,7 @@ fn fs_open_options() -> std::fs::OpenOptions {
     }
     options
 }
-fn opened_identity_matches(
+pub(super) fn opened_identity_matches(
     folder: &Path,
     source: &Path,
     file: &File,
@@ -1339,11 +1346,21 @@ pub(super) fn analyze(
                 },
             );
             if !analyzer.report.roots.iter().any(|root| root.node_id == id) {
-                analyzer.report.roots.push(SkillDependencyRoot {
-                    node_id: id,
-                    channel: "user".into(),
-                    name: config.name,
-                });
+                if analyzer.report.roots.len() >= MAX_ROOTS {
+                    analyzer.issue(
+                        "root-limit",
+                        "Too many authored skill roots, including the preview root.",
+                        &[format!("@{}", config.name)],
+                        None,
+                        None,
+                    );
+                } else {
+                    analyzer.report.roots.push(SkillDependencyRoot {
+                        node_id: id,
+                        channel: "user".into(),
+                        name: config.name,
+                    });
+                }
             }
         }
     }

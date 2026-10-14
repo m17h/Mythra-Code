@@ -84,6 +84,8 @@ export interface ChildMailbox {
   nextSeq: number;
   /** Settled entries evicted by the bound. */
   dropped: number;
+  /** Bounded retry receipts for pulls that returned no guidance. */
+  emptyReadKeys?: string[];
   /**
    * Highest guidance sequence that settled failed or cancelled. Durable even
    * when that entry is later trimmed, so a review token can bind to every
@@ -209,10 +211,14 @@ export function sanitizeChildAgentMailboxes(stored: unknown): MailboxState {
       .filter((message) => message.direction === "toChild" && (message.state === "failed" || message.state === "cancelled"))
       .map((message) => Number(message.id.slice(1))));
     const resolvedThroughSeq = finiteCount(entry.resolvedThroughSeq);
+    const emptyReadKeys = Array.isArray(entry.emptyReadKeys)
+      ? [...new Set(entry.emptyReadKeys.filter((key): key is string => typeof key === "string" && CLIENT_REQUEST_ID.test(key)))].slice(-MAX_MAILBOX_MESSAGES)
+      : [];
     const mailbox: ChildMailbox = {
       rootThreadId: entry.rootThreadId,
       nextSeq: Math.max(highest + 1, Math.min(MAX_SEQUENCE + 1, finiteCount(entry.nextSeq, 1))),
       dropped,
+      ...(emptyReadKeys.length ? { emptyReadKeys } : {}),
       ...(undeliveredSeq ? { undeliveredSeq } : {}),
       ...(resolvedThroughSeq ? { resolvedThroughSeq } : {}),
       messages: held.map((message) => message.kind === "question" && !message.answeredAt && answers.has(message.id)
@@ -315,19 +321,20 @@ function commit(next: MailboxState): void {
   for (const listener of [...listeners]) listener();
 }
 
-function updateMailbox(childThreadId: string, rootThreadId: string, update: (mailbox: ChildMailbox) => ChildMailbox, admission: false | "work" | "answer" = false): ChildMailbox {
+function updateMailbox(childThreadId: string, rootThreadId: string, update: (mailbox: ChildMailbox) => ChildMailbox, admission: false | "work" | "answer" | "read" = false): ChildMailbox {
   const all = current();
   // Aggregate serialized capacity already bounds mailbox records. Preserve
   // their sequence/dropped counters instead of imposing a lifetime child cap
   // or evicting old mailboxes to make room for a new conversation.
   const existing = all[childThreadId] ?? { rootThreadId, nextSeq: 1, dropped: 0, messages: [] };
-  if (admission && existing.nextSeq > MAX_SEQUENCE) throw new Error("This conversation has exhausted its message IDs; this message was not saved.");
+  if (admission && admission !== "read" && existing.nextSeq > MAX_SEQUENCE) throw new Error("This conversation has exhausted its message IDs; this message was not saved.");
   const next = update(existing);
   if (next === existing) return existing;
   const bounded = trimMailbox(next);
   const limit = admission === "answer" ? MAX_STORE_CHARACTERS : MAX_NEW_WORK_CHARACTERS;
   const boundedStore = trimStoreHistory({ ...all, [childThreadId]: bounded }, admission ? limit : MAX_STORE_CHARACTERS);
   if (admission && (bounded.messages.length > MAX_MAILBOX_MESSAGES || storeCharacters(boundedStore) > limit)) {
+    if (admission === "read") throw new Error("The mailbox is full, so this empty pull's replay receipt could not be saved. No guidance was consumed; use a fresh replayKey for a new pull.");
     throw new Error("The conversation mailbox is full. Read updates, answer open questions, explicitly accept finished work, or delete old conversations before sending more; this message was not saved.");
   }
   commit(boundedStore);
@@ -660,11 +667,28 @@ export function guidanceOutcomeForModel(message: ChildMailMessage): Record<strin
  * become delivered. A `readKey` labels the batch so a retry with the same key
  * can replay it (see {@link replayReadForChild}) after a lost response.
  */
-export function takeQueuedForChild(childThreadId: string, readKey?: string): ChildMailMessage[] {
-  const queued = deliverableGuidance(childThreadId).messages;
-  if (!queued.length) return [];
+export function takeQueuedForChild(childThreadId: string, readKey?: string, rootThreadId?: string): ChildMailMessage[] {
   if (readKey !== undefined && !CLIENT_REQUEST_ID.test(readKey)) throw new Error("replayKey must contain 1–80 ASCII letters, digits, underscores, dots, colons, or hyphens.");
+  if (readKey !== undefined && hasChildReadReplay(childThreadId, readKey)) return replayReadForChild(childThreadId, readKey);
+  const queued = deliverableGuidance(childThreadId).messages;
+  if (!queued.length) {
+    const root = getChildMailbox(childThreadId)?.rootThreadId ?? rootThreadId;
+    if (readKey !== undefined && root) {
+      // An empty response is still this pull's outcome. Without its receipt,
+      // a lost-response retry could silently consume guidance arriving later.
+      updateMailbox(childThreadId, root, (box) => ({
+        ...box, emptyReadKeys: [...(box.emptyReadKeys ?? []), readKey].slice(-MAX_MAILBOX_MESSAGES),
+      }), "read");
+    }
+    return [];
+  }
   return transitionChildMessage(childThreadId, queued.map((message) => message.id), ["queued"], "delivered", { via: "read", readKey }) ? queued : [];
+}
+
+/** Distinguishes a retained empty response from a key never used here. */
+export function hasChildReadReplay(childThreadId: string, readKey: string): boolean {
+  return Boolean(getChildMailbox(childThreadId)?.emptyReadKeys?.includes(readKey)
+    || replayReadForChild(childThreadId, readKey).length);
 }
 
 /**

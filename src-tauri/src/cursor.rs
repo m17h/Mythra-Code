@@ -1652,18 +1652,26 @@ fn config_option_id(setup: &Value, effort: &str) -> Option<(String, Value)> {
 
 async fn cursor_prompt_blocks_for(
     prompt: &str,
-    system_prompt: &str,
+    system_prompt: Option<&str>,
     attachments: &[CursorAttachment],
     wsl: bool,
 ) -> Result<Vec<Value>, String> {
-    let mut text = prompt.to_string();
-    if !system_prompt.trim().is_empty() {
-        text = format!(
-            "<openkiwi_instructions>\n{}\n</openkiwi_instructions>\n\n{}",
-            system_prompt.trim(),
-            text
-        );
-    }
+    // New turns carry the current snapshot, including an explicit clear.
+    // Steering adds user input while keeping the running turn's policy frozen.
+    let text = if let Some(system_prompt) = system_prompt {
+        let effective = if system_prompt.trim().is_empty() {
+            "Current effective app system prompt: none. There is no additional app system prompt or system-selected skill for this turn."
+        } else {
+            system_prompt.trim()
+        };
+        format!(
+            "<openkiwi_instructions>\nMythra Code current app system-prompt configuration for this turn. This latest snapshot supersedes earlier app system-prompt snapshots, resolved system-skill envelopes, and unresolved @skill selections from earlier app system prompts. Do not treat removed system-selected skills as current requirements. User-message skills and ordinary conversation instructions remain valid independently. Native permissions, delegation policy, and other non-app-system instructions remain in force.\n\n{}\n</openkiwi_instructions>\n\n{}",
+            effective,
+            prompt
+        )
+    } else {
+        prompt.to_string()
+    };
     let mut blocks = vec![json!({ "type": "text", "text": text })];
     for attachment in attachments {
         let runtime_path = cursor_runtime_path(&attachment.path, wsl)?;
@@ -1691,7 +1699,7 @@ async fn cursor_prompt_blocks(
 ) -> Result<Vec<Value>, String> {
     cursor_prompt_blocks_for(
         &options.prompt,
-        &options.system_prompt,
+        Some(&options.system_prompt),
         &options.attachments,
         wsl,
     )
@@ -1926,6 +1934,7 @@ pub async fn cursor_turn_steer(
     thread_id: String,
     prompt: String,
     attachments: Vec<CursorAttachment>,
+    expected_turn_id: Option<String>,
 ) -> Result<(), String> {
     let turn = state
         .turns
@@ -1934,6 +1943,12 @@ pub async fn cursor_turn_steer(
         .get(&thread_id)
         .cloned()
         .ok_or("Cursor is not currently running in this thread")?;
+    // Retain this exact process after checking the captured renderer owner;
+    // async session/attachment preparation must not select a successor.
+    // Child bridge messages omit the expectation for thread-current input.
+    if expected_turn_id.as_deref().is_some_and(|expected| turn.turn_id.as_deref() != Some(expected)) {
+        return Err("MYTHRA_NOT_DISPATCHED: Cursor expected turn ID does not match the currently running turn.".into());
+    }
     let session_id = turn
         .session_id
         .lock()
@@ -1944,7 +1959,7 @@ pub async fn cursor_turn_steer(
     // end the turn while this steer is being prepared. Once admitted, the
     // steer's outcome is part of the run's single terminal event.
     let input = turn.run.admit_steer()?;
-    let blocks = match cursor_prompt_blocks_for(&prompt, "", &attachments, turn.wsl).await {
+    let blocks = match cursor_prompt_blocks_for(&prompt, None, &attachments, turn.wsl).await {
         Ok(blocks) => blocks,
         Err(error) => {
             // Never sent: withdraw it, finishing the run if it was the last.

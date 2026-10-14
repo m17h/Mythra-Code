@@ -69,6 +69,11 @@ export async function endChildAgentSession(sessionId: string): Promise<void> {
   await invoke("child_agent_session_end", { sessionId });
 }
 
+/** Revoke only a V2 root's tool registration, retaining its child slot lifetime. */
+export function revokeChildAgentRootRegistration(sessionId: string, registrationId?: string): Promise<boolean> {
+  return invoke<boolean>("child_agent_revoke_root_registration", { sessionId, registrationId: registrationId ?? null });
+}
+
 /**
  * A queued renderer request cannot retain authority after bridge rotation.
  * The exact relay id lets the backend also refuse an expired/answered relay.

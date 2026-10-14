@@ -2,7 +2,7 @@ use std::{
     collections::{hash_map::DefaultHasher, BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -254,20 +254,23 @@ pub(super) fn collect_skill_candidates(
 }
 
 pub(super) fn split_skill_markdown(content: &str) -> (Option<String>, &str) {
-    let opening_length = if content.starts_with("---\r\n") {
-        5
-    } else if content.starts_with("---\n") {
-        4
-    } else {
-        return (None, content);
-    };
+    let header = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let prefix_length = content.len() - header.len();
+    let opening_length = prefix_length
+        + if header.starts_with("---\r\n") {
+            5
+        } else if header.starts_with("---\n") {
+            4
+        } else {
+            return (None, content);
+        };
     // Locate delimiter lines in the original bytes. A CRLF anywhere in the
     // body must not change how an LF header is split, and imported files can
     // mix both newline forms. Preserve the body exactly for dependency reads.
     let mut closing = None;
     let mut offset = opening_length;
     for line in content[opening_length..].split_inclusive('\n') {
-        if matches!(line, "---\n" | "---\r\n") {
+        if matches!(line, "---\n" | "---\r\n" | "---") {
             closing = Some((offset, offset + line.len()));
             break;
         }
@@ -329,6 +332,12 @@ pub(super) fn normalize_skill_name(value: &str) -> String {
                 output.push('-');
             }
             pending_dash = false;
+            // A separator can consume the final byte. Match the renderer's
+            // truncate-then-trim rule without producing a 65-byte name that
+            // neither native nor renderer mention parsing can invoke.
+            if output.len() >= 64 {
+                break;
+            }
             output.push(character);
         } else {
             pending_dash = true;
@@ -424,20 +433,26 @@ pub(super) fn count_markdown_references(content: &str, source: &Path, folder: &P
     let canonical_source = source
         .canonicalize()
         .unwrap_or_else(|_| source.to_path_buf());
-    let mut remaining = content;
     let mut references = std::collections::HashSet::new();
-    while let Some(start) = remaining.find("](") {
-        remaining = &remaining[start + 2..];
-        let Some(end) = remaining.find(')') else {
-            break;
+    // The count describes the same authored document links the resolver loads:
+    // Markdown titles/percent escapes are supported, code and images are not.
+    let body = split_skill_markdown(content).1;
+    for target in skill_dependencies::local_document_references(body) {
+        let encoded = target.split(['#', '?']).next().unwrap_or_default();
+        let Ok(path_text) = skill_dependencies::percent_decode(encoded) else {
+            continue;
         };
-        let target = remaining[..end].trim().trim_matches(['<', '>']);
-        remaining = &remaining[end + 1..];
-        let path_text = target.split(['#', '?']).next().unwrap_or_default().trim();
-        if path_text.is_empty() || path_text.contains("://") || path_text.starts_with("mailto:") {
+        if path_text.is_empty()
+            || path_text.contains([':', '\\'])
+            || path_text.chars().any(char::is_control)
+            || Path::new(&path_text).is_absolute()
+        {
             continue;
         }
         let candidate = source_directory.join(path_text);
+        if skill_dependencies::has_unsupported_runtime_components(&canonical_folder, &candidate) {
+            continue;
+        }
         let Ok(candidate) = candidate.canonicalize() else {
             continue;
         };
@@ -445,6 +460,11 @@ pub(super) fn count_markdown_references(content: &str, source: &Path, folder: &P
             && candidate.is_file()
             && is_markdown(&candidate)
             && candidate != canonical_source
+            && !candidate.strip_prefix(&canonical_folder).is_ok_and(|relative| {
+                relative
+                    .components()
+                    .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+            })
         {
             references.insert(candidate);
         }
@@ -489,16 +509,30 @@ fn fingerprint_supported_file<'a>(
                 None,
             ),
             Some((size, modified)) => {
-                budget.bytes += size;
                 match skill_dependencies::read_bounded_with_metadata(folder, path) {
-                    Ok((content, _)) => (
-                        format!("{:x}", Sha256::digest(content.as_bytes())),
-                        Some(content),
-                    ),
-                    Err((code @ ("invalid-utf8" | "read-error" | "file-size-limit"), _)) => (
-                        format!("{code}:{}:{size}:{modified:?}", path.display()),
-                        None,
-                    ),
+                    Ok((content, _)) => {
+                        // The inventory can predate an edit. Charge the bytes
+                        // actually retained, not that earlier metadata length.
+                        let retained = content.len() as u64;
+                        if budget.bytes.saturating_add(retained) > MAX_SKILL_SCAN_SUPPORT_BYTES {
+                            return Err(format!(
+                                "Cannot fingerprint support file {}: the skills scan exceeds its 64 MB support-content budget.",
+                                path.display()
+                            ));
+                        }
+                        budget.bytes += retained;
+                        (
+                            format!("{:x}", Sha256::digest(content.as_bytes())),
+                            Some(content),
+                        )
+                    }
+                    Err((code @ ("invalid-utf8" | "read-error" | "file-size-limit"), _)) => {
+                        budget.bytes += size;
+                        (
+                            format!("{code}:{}:{size}:{modified:?}", path.display()),
+                            None,
+                        )
+                    }
                     Err((_, error)) => {
                         return Err(format!(
                             "Cannot fingerprint support file {}: {error}",
@@ -591,7 +625,20 @@ fn hash_flat_document_content(
                 "invalid-link".hash(hasher);
                 continue;
             };
+            if decoded.is_empty()
+                || decoded.contains([':', '\\'])
+                || decoded.chars().any(char::is_control)
+                || Path::new(&decoded).is_absolute()
+                || decoded.ends_with('/')
+            {
+                "unsupported-link".hash(hasher);
+                continue;
+            }
             let raw = origin.parent().unwrap_or(folder).join(decoded);
+            if skill_dependencies::has_unsupported_runtime_components(folder, &raw) {
+                "unsupported-link".hash(hasher);
+                continue;
+            }
             let Ok(target) = raw.canonicalize() else {
                 "missing-link".hash(hasher);
                 continue;
@@ -638,9 +685,13 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
     let mut candidates = Vec::new();
     let mut candidate_budget = MAX_SKILL_SCAN_ENTRIES;
     collect_skill_candidates(&folder, &folder, 0, &mut candidates, &mut candidate_budget)?;
+    if candidates.len() > MAX_SKILL_MARKDOWN_FILES {
+        return Err(format!(
+            "The skills folder contains more than {MAX_SKILL_MARKDOWN_FILES} skills. Select a smaller skills folder so every skill can be discovered."
+        ));
+    }
     let package_roots = candidates
         .iter()
-        .take(MAX_SKILL_MARKDOWN_FILES)
         .filter(|path| {
             path.file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
@@ -660,7 +711,7 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
     let mut support_cache = SupportFingerprintCache::new();
     let mut support_budget = SupportFingerprintBudget::default();
     let mut skills = Vec::new();
-    for path in candidates.into_iter().take(MAX_SKILL_MARKDOWN_FILES) {
+    for path in candidates {
         let content = match skill_dependencies::read_bounded_with_metadata(&folder, &path) {
             Ok((content, _)) => content,
             Err(("file-size-limit", _)) => continue,
@@ -702,7 +753,7 @@ pub(super) fn scan_local_skills(folder: &Path) -> Result<Vec<LocalSkillFile>, St
             hash_flat_document_content(
                 &folder,
                 &path,
-                &content,
+                split_skill_markdown(&content).1,
                 &inventory,
                 &mut content_hasher,
                 &mut support_cache,
@@ -2076,12 +2127,42 @@ pub(super) fn update_local_skill_source(
     }
     let source = detected_local_skill_source(folder, source)?;
     crate::official_skills::ensure_editable(folder, &source)?;
-    let current = fs::read_to_string(&source)
+    // Keep comparison and writing on the same no-follow handle. A replacement
+    // symlink must never turn a validated source save into an outside-folder
+    // write, and a renamed/replaced source must not overwrite its successor.
+    let mut file = skill_dependencies::fs_open_options()
+        .read(true)
+        .write(true)
+        .open(&source)
+        .map_err(|error| format!("Could not open {} for saving: {error}", source.display()))?;
+    let before = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect {} before saving: {error}", source.display()))?;
+    if !before.is_file()
+        || before.len() > MAX_SKILL_FILE_BYTES
+        || !skill_dependencies::opened_identity_matches(folder, &source, &file, &before)
+    {
+        return Err("This skill changed on disk before saving. Reload it before saving so those changes are not overwritten.".into());
+    }
+    let mut current = Vec::new();
+    (&mut file)
+        .take(MAX_SKILL_FILE_BYTES + 1)
+        .read_to_end(&mut current)
         .map_err(|error| format!("Could not read {} before saving: {error}", source.display()))?;
-    if current != original {
+    let after = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect {} before saving: {error}", source.display()))?;
+    if current.as_slice() != original.as_bytes()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || before.permissions() != after.permissions()
+        || !skill_dependencies::opened_identity_matches(folder, &source, &file, &after)
+    {
         return Err("This skill changed on disk after you opened it. Reload it before saving so those changes are not overwritten.".into());
     }
-    fs::write(&source, content)
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.set_len(0))
+        .and_then(|_| file.write_all(content.as_bytes()))
         .map_err(|error| format!("Could not save {}: {error}", source.display()))
 }
 

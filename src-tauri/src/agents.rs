@@ -2677,6 +2677,34 @@ pub(super) async fn child_agent_session_end(
     Ok(())
 }
 
+/// Stop revokes this V2 parent's request authority, not its child accounting.
+/// The next explicit parent turn rotates the registration through session_start.
+/// With no cached renderer descriptor (after reload), resolve the current root
+/// registration while holding the same registry lock that excludes rotation.
+#[tauri::command]
+pub(super) async fn child_agent_revoke_root_registration(
+    state: State<'_, ChildAgentState>,
+    session_id: String,
+    registration_id: Option<String>,
+) -> Result<bool, String> {
+    if session_id.trim().is_empty() || session_id.len() > 64
+        || registration_id.as_ref().is_some_and(|id| id.trim().is_empty() || id.len() > 200)
+    {
+        return Err("A root registration revocation needs its captured session identity.".into());
+    }
+    let sessions = state.sessions.lock().await;
+    let Some(session) = sessions.get(&session_id) else { return Ok(false); };
+    if registration_id.as_deref().is_some_and(|id| id != session.registration_id)
+        || session.child_thread || session.native_delegation || !session.collaboration_v2
+    {
+        return Ok(false);
+    }
+    // Do not end the shared lifetime, remove the session, or settle pending
+    // spawns: claimed/ambiguous children still own their slots until evidence.
+    session.query_ended.send_replace(true);
+    Ok(true)
+}
+
 /// Check an event's frozen registration before the renderer acts on it.
 /// Session ids survive rotation; this public, non-secret identity does not.
 /// With request_id, also require this exact unanswered, still-waiting relay.
