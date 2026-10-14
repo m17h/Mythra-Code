@@ -99,14 +99,55 @@ export async function interruptCursorTurn(threadId: string): Promise<void> {
   await invoke("cursor_turn_interrupt", { threadId });
 }
 
-export async function killCursorTurn(threadId: string): Promise<void> {
-  const owner = cursorTurnOwner(threadId, useTaskStore.getState().tasks[threadId]?.activeTurnId);
-  await invoke("cursor_turn_kill", { threadId });
-  retireCursorTurnOwner(threadId, owner);
+/**
+ * With an expectation, only that exact turn/start is cut off; the backend
+ * refuses a different current owner. The renderer owner is retired only
+ * after a successful receipt and only if it is still the captured match.
+ */
+export async function killCursorTurn(threadId: string, expected?: { turnId?: string; startRequestId?: string }): Promise<void> {
+  // With an expectation, never invent an owner from the expected (possibly
+  // older) turn: only an existing owner matching every expected field retires.
+  const owner = expected ? cursorTurnOwner(threadId) : cursorTurnOwner(threadId, useTaskStore.getState().tasks[threadId]?.activeTurnId);
+  const ownerMatches = !expected || Boolean(owner
+    && (!expected.turnId || owner.turnId === expected.turnId)
+    && (!expected.startRequestId || owner.startRequestId === expected.startRequestId));
+  await invoke("cursor_turn_kill", {
+    threadId,
+    expectedTurnId: expected?.turnId ?? null,
+    expectedStartRequestId: expected?.startRequestId ?? null,
+  });
+  if (ownerMatches && cursorTurnOwner(threadId) === owner) retireCursorTurnOwner(threadId, owner);
 }
 
 export function isCursorTurnActive(threadId: string): Promise<boolean> {
   return invoke<boolean>("cursor_turn_active", { threadId });
+}
+
+/** Exact native identity of a thread's latest Cursor start/turn, if any. */
+export interface CursorTurnState {
+  turnId: string;
+  startRequestId?: string;
+  cursorSessionId?: string;
+  phase: "starting" | "running" | "stopping" | "completed";
+  requestedEffort?: string;
+  effortStatus?: string;
+}
+
+export async function cursorTurnState(threadId: string): Promise<CursorTurnState | null> {
+  const value = await invoke<unknown>("cursor_turn_state", { threadId });
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Record<string, unknown>;
+  const phase = entry.phase === "starting" || entry.phase === "running" || entry.phase === "stopping" || entry.phase === "completed" ? entry.phase : null;
+  if (typeof entry.turnId !== "string" || !entry.turnId || !phase) return null;
+  const optional = (field: unknown) => typeof field === "string" && field ? field : undefined;
+  return {
+    turnId: entry.turnId,
+    phase,
+    ...(optional(entry.startRequestId) ? { startRequestId: optional(entry.startRequestId) } : {}),
+    ...(optional(entry.cursorSessionId) ? { cursorSessionId: optional(entry.cursorSessionId) } : {}),
+    ...(optional(entry.requestedEffort) ? { requestedEffort: optional(entry.requestedEffort) } : {}),
+    ...(optional(entry.effortStatus) ? { effortStatus: optional(entry.effortStatus) } : {}),
+  };
 }
 
 export async function respondToCursorPermission(threadId: string, requestId: string | number, result: JsonObject): Promise<void> {

@@ -8,6 +8,9 @@ export interface NativeAgentReadout {
   progress?: string;
   result?: string;
   activationId?: string;
+  /** One witnessed lifecycle id enriched into the current spawn operation.
+   * Cleared on an actual new activation; never inferred from matching text. */
+  activationAliasId?: string;
   /** Ephemeral receipt evidence, consumed into durable createdAt by App.
    * Activation replay/turn guards use activationId and actual child turn IDs. */
   activatedAt?: number;
@@ -146,6 +149,7 @@ export function sanitizeNativeAgentLinks(value: unknown): Record<string, NativeA
       ...(typeof link.requestedModel === "string" ? { requestedModel: link.requestedModel.trim() } : {}),
       ...(link.modelSource === "configured" || link.modelSource === "execution" ? { modelSource: link.modelSource } : {}),
       ...(typeof link.activationId === "string" && link.activationId ? { activationId: link.activationId } : {}),
+      ...(typeof link.activationAliasId === "string" && link.activationAliasId.length <= 200 ? { activationAliasId: link.activationAliasId } : {}),
     };
   }
   return result;

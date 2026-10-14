@@ -61,7 +61,20 @@ pub(super) fn cursor_request_timeout(method: &str) -> Option<Duration> {
 #[derive(Default)]
 pub struct CursorState {
     turns: CursorTurns,
+    starts: super::NativeStartRegistry,
+    identities: Mutex<HashMap<String, CursorTurnIdentity>>,
     authenticated: AtomicBool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorTurnIdentity {
+    turn_id: String,
+    start_request_id: Option<String>,
+    cursor_session_id: Option<String>,
+    phase: String,
+    requested_effort: String,
+    effort_status: String,
 }
 
 struct CursorProcess {
@@ -71,6 +84,8 @@ struct CursorProcess {
     pending: PendingMap,
     next_id: AtomicI64,
     alive: AtomicBool,
+    cutoff_uncertain: AtomicBool,
+    cutoff_error: StdMutex<Option<String>>,
     input_timeout: Duration,
     /// The `session/prompt` requests (primary plus steers) of this turn.
     run: CursorPromptRun,
@@ -393,6 +408,8 @@ fn acp_mcp_servers(bridge: Option<&ChildAgentBridge>, wsl: bool) -> Result<Value
 pub struct CursorTurnStarted {
     turn_id: String,
     cursor_session_id: String,
+    requested_effort: String,
+    effort_status: String,
 }
 
 impl CursorProcess {
@@ -416,7 +433,7 @@ impl CursorProcess {
             // so nothing more can be framed on this stream. Retire it: every
             // waiting request settles, and the next turn starts one fresh
             // process because the finished run releases the thread slot.
-            self.retire(&format!("Cursor Agent input failed: {error}"))
+            let _ = self.retire(&format!("Cursor Agent input failed: {error}"))
                 .await;
         }
         result
@@ -432,8 +449,26 @@ impl CursorProcess {
         params: Value,
         input: Option<CursorPromptInputTicket>,
     ) -> Result<Value, String> {
+        self.request_with_receipt(method, params, input, None).await
+    }
+
+    async fn request_with_receipt(
+        &self,
+        method: &str,
+        params: Value,
+        input: Option<CursorPromptInputTicket>,
+        mut receipt: Option<oneshot::Sender<Result<(), String>>>,
+    ) -> Result<Value, String> {
         if let Some(input) = input.as_ref() {
-            input.wait().await?;
+            if let Err(error) = input.wait().await {
+                if let Some(receipt) = receipt.take() { let _ = receipt.send(Err(error.clone())); }
+                return Err(error);
+            }
+        }
+        if !self.alive.load(Ordering::Acquire) {
+            let error = "This Cursor turn is no longer running".to_string();
+            if let Some(receipt) = receipt.take() { let _ = receipt.send(Err(error.clone())); }
+            return Err(error);
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
@@ -444,6 +479,10 @@ impl CursorProcess {
             .await;
         // Steers may write while the primary's ACP response remains pending.
         drop(input);
+        if let Some(receipt) = receipt.take() {
+            let reported = written.as_ref().map(|_| ()).map_err(|error| format!("MYTHRA_DELIVERY_UNCERTAIN: Cursor input may have been written: {error}"));
+            let _ = receipt.send(reported);
+        }
         if let Err(error) = written {
             self.pending.lock().await.remove(&id);
             return Err(error);
@@ -481,49 +520,72 @@ impl CursorProcess {
     /// Stop the process and settle everything waiting on it. The kill comes
     /// first and never waits for the input pipe: a writer blocked on an agent
     /// that stopped reading holds that lock, and the kill is what fails it.
-    async fn shutdown(&self) {
-        self.retire(CURSOR_STOPPED).await;
+    async fn shutdown(&self) -> Result<(), String> {
+        let result = self.retire(CURSOR_STOPPED).await;
         // Close input only if no writer owns it; one that does fails on its own
         // now that the process is gone.
         if let Ok(mut stdin) = self.stdin.try_lock() {
             let _ = timeout(Duration::from_millis(250), stdin.shutdown()).await;
         }
+        result
     }
 
     /// End this transport: refuse further input and steers, fail every request
     /// still waiting with `reason`, and kill the process. Idempotent.
-    async fn retire(&self, reason: &str) {
+    async fn retire(&self, reason: &str) -> Result<(), String> {
         self.stage("retire: start");
+        self.cutoff_uncertain.store(true, Ordering::Release);
         self.alive.store(false, Ordering::Release);
         self.run.close();
         // Settle first: once the process dies the reader reaches EOF and would
         // otherwise report a generic closed connection instead of the cause.
         fail_pending(&self.pending, reason).await;
         self.stage("retire: pending settled");
-        self.terminate().await;
+        let result = self.terminate().await;
         self.stage("retire: done");
+        result
     }
 
     /// Kill the process tree and reap the direct child, unless it was already
     /// reaped. An unreaped child keeps its pid and process group reserved, so
     /// the tree signal cannot reach an unrelated process that reused them.
-    async fn terminate(&self) {
+    async fn terminate(&self) -> Result<(), String> {
+        self.cutoff_uncertain.store(true, Ordering::Release);
         let mut child = self.child.lock().await;
         self.stage("terminate: child locked");
-        if matches!(child.try_wait(), Ok(None)) {
-            if let Some(pid) = self.pid {
-                super::kill_process_tree(pid);
-            }
+        match child.try_wait() {
+            Ok(None) => {
+            let tree_result = self.pid.map(super::kill_process_tree).unwrap_or(Ok(()));
             self.stage("terminate: tree kill returned");
             let _ = child.start_kill();
             let reaped = timeout(CURSOR_KILL_REAP_GRACE, child.wait()).await;
-            self.stage(match reaped {
+            self.stage(match &reaped {
                 Ok(Ok(_)) => "terminate: reaped",
                 Ok(Err(_)) => "terminate: wait failed",
                 Err(_) => "terminate: reap grace elapsed",
             });
-        } else {
+            let reap_result = match reaped {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(format!("Could not confirm Cursor process exit: {error}")),
+                Err(_) => Err("Cursor process did not exit within the cutoff deadline.".to_string()),
+            };
+            let result = tree_result.and(reap_result);
+            *self.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner) = result.as_ref().err().cloned();
+            self.cutoff_uncertain.store(result.is_err(), Ordering::Release);
+            result
+            }
+            Ok(Some(_)) => {
             self.stage("terminate: already exited");
+            if let Some(error) = self.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+                Err(format!("An earlier Cursor cutoff remains unconfirmed ({error}); its reaped process identity cannot safely be signalled again."))
+            } else { self.cutoff_uncertain.store(false, Ordering::Release); Ok(()) }
+            }
+            Err(error) => {
+                self.cutoff_uncertain.store(true, Ordering::Release);
+                let error = format!("Could not inspect the Cursor process before stopping it: {error}");
+                *self.cutoff_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error.clone());
+                Err(error)
+            }
         }
     }
 
@@ -573,13 +635,15 @@ fn spawn_cursor_prompt(
     input: CursorPromptInputTicket,
     session_id: String,
     blocks: Vec<Value>,
+    receipt: Option<oneshot::Sender<Result<(), String>>>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let result = process
-            .request_with_input(
+            .request_with_receipt(
                 "session/prompt",
                 json!({ "sessionId": session_id, "prompt": blocks }),
                 Some(input),
+                receipt,
             )
             .await;
         if let Some(outcomes) = process
@@ -601,8 +665,11 @@ async fn finish_cursor_run(
     // accepting steers (settling the last prompt already closed admission).
     process.alive.store(false, Ordering::Release);
     process.run.close();
+    if let Err(error) = process.shutdown().await {
+        process.emit_turn_message(json!({"type":"openkiwi_cutoff_uncertain","message":error}));
+        return;
+    }
     process.emit_turn_message(cursor_final_message(outcomes));
-    process.shutdown().await;
     // A successor may already own the slot; only this exact run is removed.
     if let Some(thread_id) = process.thread_id.as_deref() {
         let mut turns = turns.lock().await;
@@ -1236,6 +1303,8 @@ fn attach_cursor_process(
         pending: Arc::new(Mutex::new(HashMap::new())),
         next_id: AtomicI64::new(1),
         alive: AtomicBool::new(true),
+        cutoff_uncertain: AtomicBool::new(false),
+        cutoff_error: StdMutex::new(None),
         input_timeout,
         run: CursorPromptRun::default(),
         prompt_started: AtomicBool::new(false),
@@ -1331,11 +1400,10 @@ async fn read_cursor_output(
                 flush_deltas(&mut delta_buffer);
                 if let Some(sender) = process.pending.lock().await.remove(&id) {
                     let result = if let Some(error) = message.get("error") {
-                        Err(error
+                        Err(super::provider_error_text(error
                             .get("message")
                             .and_then(Value::as_str)
-                            .unwrap_or("Cursor Agent request failed")
-                            .to_string())
+                            .unwrap_or("Cursor Agent request failed")))
                     } else {
                         Ok(message.get("result").cloned().unwrap_or(Value::Null))
                     };
@@ -1462,7 +1530,7 @@ async fn read_cursor_output(
     .await
     .is_err()
     {
-        process.terminate().await;
+        let _ = process.terminate().await;
     }
     // A descendant can hold stderr open too; it is diagnostic, not lifecycle.
     if let Some(stderr_task) = stderr_task {
@@ -1544,7 +1612,7 @@ pub async fn cursor_models(app: AppHandle) -> Result<Vec<CursorModel>, String> {
         Ok(models_from_response(response))
     }
     .await;
-    process.shutdown().await;
+    process.shutdown().await?;
     result
 }
 
@@ -1637,6 +1705,11 @@ pub async fn cursor_turn_start(
     agent_state: State<'_, ChildAgentState>,
     options: CursorTurnOptions,
 ) -> Result<CursorTurnStarted, String> {
+    let mut process_requested = false;
+    let mut safe_not_dispatched = false;
+    let result: Result<CursorTurnStarted, String> = async {
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
     if options
         .start_request_id
         .as_ref()
@@ -1661,10 +1734,15 @@ pub async fn cursor_turn_start(
         .lock()
         .await
         .get(&options.thread_id)
-        .is_some_and(|turn| turn.alive.load(Ordering::Acquire))
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire))
     {
         return Err("Cursor is already working in this thread".into());
     }
+    state.identities.lock().await.insert(options.thread_id.clone(), CursorTurnIdentity {
+        turn_id: turn_id.clone(), start_request_id: options.start_request_id.clone(),
+        cursor_session_id: options.resume_session_id.clone(), phase: "starting".into(),
+        requested_effort: options.effort.clone(), effort_status: "providerDefault".into(),
+    });
     if let Some(bridge) = options.child_agent_bridge.as_ref() {
         if !child_agent_bridge_launch_registered(
             &agent_state,
@@ -1677,7 +1755,8 @@ pub async fn cursor_turn_start(
             return Err("The sub-agent bridge configuration is no longer active.".into());
         }
     }
-    let turn_id = uuid::Uuid::new_v4().to_string();
+    start.assert_current()?;
+    process_requested = true;
     let process = spawn_cursor_process(
         &app,
         Path::new(&options.cwd),
@@ -1691,16 +1770,18 @@ pub async fn cursor_turn_start(
     )
     .await?;
     if !super::claim_turn_slot(&state.turns, &options.thread_id, &process, |existing| {
-        existing.alive.load(Ordering::Acquire)
+        existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
     })
     .await
     {
-        process.shutdown().await;
+        let _ = process.shutdown().await;
         return Err("Cursor is already working in this thread".into());
     }
 
     let start_result = async {
+        start.assert_current()?;
         initialize_cursor(&process).await?;
+        start.assert_current()?;
         let mcp_servers = acp_mcp_servers(options.child_agent_bridge.as_ref(), process.wsl)?;
         let runtime_cwd = cursor_runtime_path(&options.cwd, process.wsl)?;
         let setup = if let Some(session_id) = options.resume_session_id.as_deref() {
@@ -1729,6 +1810,10 @@ pub async fn cursor_turn_start(
             })
             .ok_or("Cursor Agent did not return a session ID")?;
         *process.session_id.lock().await = Some(session_id.clone());
+        if let Some(identity) = state.identities.lock().await.get_mut(&options.thread_id) {
+            if identity.turn_id == turn_id { identity.cursor_session_id = Some(session_id.clone()); }
+        }
+        start.assert_current()?;
         if !options.model.trim().is_empty() && !options.model.eq_ignore_ascii_case("auto") {
             if let Some(config_id) = model_config_id(&setup) {
                 process
@@ -1746,20 +1831,30 @@ pub async fn cursor_turn_start(
                     .await?;
             }
         }
-        if let Some((config_id, value)) = config_option_id(&setup, &options.effort) {
-            let _ = process
+        let effort_status = if let Some((config_id, value)) = config_option_id(&setup, &options.effort) {
+            process
                 .request(
                     "session/set_config_option",
                     json!({ "sessionId": session_id, "configId": config_id, "value": value }),
                 )
-                .await;
-        }
+                .await.map_err(|error| format!("Cursor refused the requested reasoning effort before prompt dispatch: {error}"))?;
+            "applied"
+        } else if options.effort.trim().is_empty() || options.effort == "default" {
+            "providerDefault"
+        } else { "unsupported" };
         let blocks = cursor_prompt_blocks(&options, process.wsl).await?;
-        Ok::<_, String>((session_id, blocks))
+        start.assert_current()?;
+        if let Some(identity) = state.identities.lock().await.get_mut(&options.thread_id) {
+            if identity.turn_id == turn_id { identity.effort_status = effort_status.into(); }
+        }
+        process.emit_turn_message(json!({ "type": "openkiwi_session", "cursorSessionId": session_id,
+            "requestedEffort": options.effort, "effortStatus": effort_status }));
+        Ok::<_, String>((session_id, blocks, effort_status.to_string()))
     }
     .await;
     // Admission fails only if the process already ended or was stopped.
     let start_result = start_result.and_then(|started| {
+        start.assert_current()?;
         process.prompt_started.store(true, Ordering::Release);
         if let Some(input) = process.run.admit_primary() {
             Ok((started, input))
@@ -1767,9 +1862,13 @@ pub async fn cursor_turn_start(
             Err("Cursor Agent stopped before the turn started.".to_string())
         }
     });
-    let ((session_id, blocks), input) = match start_result {
+    let ((session_id, blocks, effort_status), input) = match start_result {
         Ok(value) => value,
         Err(error) => {
+            if let Err(cutoff) = process.shutdown().await {
+                start.record_cutoff_error(&cutoff);
+                return Err(format!("{error} The unused Cursor process cutoff is uncertain: {cutoff}"));
+            }
             let mut turns = state.turns.lock().await;
             if turns
                 .get(&options.thread_id)
@@ -1778,24 +1877,47 @@ pub async fn cursor_turn_start(
                 turns.remove(&options.thread_id);
             }
             drop(turns);
-            process.shutdown().await;
+            // No primary prompt task was spawned on this path. Successful
+            // native cleanup proves refusal, even if session/effort setup ran.
+            safe_not_dispatched = true;
             return Err(error);
         }
     };
 
+    let (receipt_sender, receipt_receiver) = oneshot::channel();
     spawn_cursor_prompt(
-        process,
+        process.clone(),
         state.turns.clone(),
         CursorPromptKind::Primary,
         input,
         session_id.clone(),
         blocks,
+        Some(receipt_sender),
     );
+    let receipt = receipt_receiver.await.map_err(|_| "MYTHRA_DELIVERY_UNCERTAIN: Cursor did not return the first prompt's input receipt.".to_string())?;
+    if let Err(error) = receipt {
+        if !error.starts_with("MYTHRA_DELIVERY_UNCERTAIN:") {
+            if let Err(cutoff) = process.shutdown().await {
+                start.record_cutoff_error(&cutoff);
+                return Err(format!("{error} Cursor first-prompt cutoff is uncertain: {cutoff}"));
+            }
+            let mut turns = state.turns.lock().await;
+            if turns.get(&options.thread_id).is_some_and(|current| Arc::ptr_eq(current, &process)) { turns.remove(&options.thread_id); }
+            safe_not_dispatched = true;
+        }
+        return Err(error);
+    }
 
     Ok(CursorTurnStarted {
         turn_id,
         cursor_session_id: session_id,
+        requested_effort: options.effort,
+        effort_status,
     })
+    }.await;
+    if process_requested && !safe_not_dispatched { result } else {
+        result.map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", super::provider_error_text(&error)))
+    }
 }
 
 #[tauri::command]
@@ -1833,6 +1955,7 @@ pub async fn cursor_turn_steer(
             return Err(error);
         }
     };
+    let (receipt_sender, receipt_receiver) = oneshot::channel();
     spawn_cursor_prompt(
         turn,
         state.turns.clone(),
@@ -1840,8 +1963,9 @@ pub async fn cursor_turn_steer(
         input,
         session_id,
         blocks,
+        Some(receipt_sender),
     );
-    Ok(())
+    receipt_receiver.await.map_err(|_| "MYTHRA_DELIVERY_UNCERTAIN: Cursor did not return its input receipt; inspect the child before resending.".to_string())?
 }
 
 #[tauri::command]
@@ -1874,10 +1998,34 @@ pub async fn cursor_turn_interrupt(
 pub async fn cursor_turn_kill(
     state: State<'_, CursorState>,
     thread_id: String,
+    expected_turn_id: Option<String>,
+    expected_start_request_id: Option<String>,
 ) -> Result<(), String> {
-    let turn = state.turns.lock().await.remove(&thread_id);
+    let turns = state.turns.lock().await;
+    let turn = turns.get(&thread_id).cloned();
+    let identity = state.identities.lock().await.get(&thread_id).cloned();
+    if turn.as_ref().is_some_and(|turn| expected_turn_id.as_deref().is_some_and(|expected| turn.turn_id.as_deref() != Some(expected)))
+        || turn.is_some() && expected_start_request_id.as_deref().is_some_and(|expected| identity.as_ref().and_then(|identity| identity.start_request_id.as_deref()) != Some(expected)) {
+        return Err("The Stop request belongs to an older Cursor turn; the current turn was preserved.".into());
+    }
+    let pending = state.starts.cancel(&thread_id, expected_turn_id.as_deref(), expected_start_request_id.as_deref())?;
+    drop(turns);
     if let Some(turn) = turn {
-        turn.shutdown().await;
+        turn.shutdown().await?;
+        let mut turns = state.turns.lock().await;
+        if turns.get(&thread_id).is_some_and(|current| Arc::ptr_eq(current, &turn)) {
+            turns.remove(&thread_id);
+        }
+    }
+    super::await_native_start_settlement(pending.clone()).await?;
+    if let Some(pending) = pending {
+        let late = state.turns.lock().await.get(&thread_id).cloned()
+            .filter(|turn| turn.turn_id.as_deref() == Some(pending.turn_id.as_str()));
+        if let Some(turn) = late {
+            turn.shutdown().await?;
+            let mut turns = state.turns.lock().await;
+            if turns.get(&thread_id).is_some_and(|current| Arc::ptr_eq(current, &turn)) { turns.remove(&thread_id); }
+        }
     }
     Ok(())
 }
@@ -1892,7 +2040,36 @@ pub async fn cursor_turn_active(
         .lock()
         .await
         .get(&thread_id)
-        .is_some_and(|turn| turn.alive.load(Ordering::Acquire)))
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)))
+}
+
+/// The latest native-owned session identity survives renderer replacement and
+/// turn completion. It is captured before sending the primary model prompt.
+#[tauri::command]
+pub async fn cursor_turn_state(state: State<'_, CursorState>, thread_id: String) -> Result<Option<CursorTurnIdentity>, String> {
+    let mut identity = state.identities.lock().await.get(&thread_id).cloned();
+    let turn = state.turns.lock().await.get(&thread_id).cloned();
+    let pending = state.starts.identity(&thread_id);
+    // Authentication/binary preparation can precede the first session record.
+    // Never relabel the previous completed identity as this new pending start.
+    if turn.is_none() {
+        if let Some((turn_id, start_request_id, phase)) = pending.as_ref() {
+            if identity.as_ref().is_none_or(|identity| identity.turn_id != *turn_id) {
+                identity = Some(CursorTurnIdentity { turn_id: turn_id.clone(), start_request_id: start_request_id.clone(),
+                    cursor_session_id: None, phase: (*phase).into(), requested_effort: String::new(), effort_status: "providerDefault".into() });
+            }
+        }
+    }
+    if let Some(identity) = identity.as_mut() {
+        identity.phase = if let Some((_, _, phase)) = pending.filter(|(turn_id, _, _)| *turn_id == identity.turn_id) {
+            phase.into()
+        } else if let Some(turn) = turn {
+            if turn.cutoff_uncertain.load(Ordering::Acquire) { "stopping".into() }
+            else if turn.alive.load(Ordering::Acquire) { "running".into() }
+            else { "completed".into() }
+        } else { "completed".into() };
+    }
+    Ok(identity)
 }
 
 #[tauri::command]
@@ -1932,13 +2109,13 @@ pub fn shutdown_cursor_on_exit(app: &AppHandle) {
     });
     for turn in turns {
         let stopped = tauri::async_runtime::block_on(async {
-            timeout(Duration::from_secs(2), turn.shutdown())
-                .await
-                .is_ok()
+            matches!(timeout(Duration::from_secs(2), turn.shutdown()).await, Ok(Ok(())))
         });
         if !stopped {
-            if let Some(pid) = turn.pid {
-                super::kill_process_tree(pid);
+            if let Ok(mut child) = turn.child.try_lock() {
+                if matches!(child.try_wait(), Ok(None)) {
+                    if let Some(pid) = child.id() { let _ = super::kill_process_tree(pid); }
+                }
             }
         }
     }

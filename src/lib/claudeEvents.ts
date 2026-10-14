@@ -780,6 +780,22 @@ export function routeClaudeEvent(
   store.ensureTask(threadId, ctx.bindingFor(threadId));
   if (isRetiredClaudeTurn(threadId, turnId)) return;
 
+  if (type === "openkiwi_cutoff_uncertain") {
+    const detail = text(message.message) || "Claude Code's process exit could not be confirmed. Inspect the conversation before continuing.";
+    store.upsertActivity(threadId, {
+      id: `claude-cutoff-uncertain-${turnId}`,
+      turnId,
+      kind: "warning",
+      title: "Claude Code cutoff unconfirmed",
+      detail,
+    });
+    // A diagnostic is not terminal evidence: preserve the active task and
+    // its sub-agent reservation until native cutoff is actually confirmed.
+    foregroundError(ctx, threadId, detail);
+    ctx.onTranscriptChanged(threadId);
+    return;
+  }
+
   // Native Claude children share the root CLI process. Their output must not
   // masquerade as the root assistant, or become fake resumable app sessions.
   const parentToolId = text(message.parent_tool_use_id);

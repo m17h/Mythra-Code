@@ -1,7 +1,7 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown, { type Options as MarkdownOptions } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -22,7 +22,7 @@ import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
 import { compactionState, compactionTitle } from "../lib/contextCompaction";
-import { describeSubAgentActivity, isSubAgentWorkerActive, subAgentStatusLabel, workerStatusFromAgentRecord, type SubAgentCounts, type SubAgentWorker } from "../lib/subAgentActivity";
+import { describeSubAgentActivity, isSubAgentWorkerActive, resolveSubAgentActivityWorkers, subAgentStatusLabel, subAgentWorkerLabel, summarizeSubAgentActivities, type SubAgentWorker } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 import "./ChatTimeline.compaction.css";
@@ -825,9 +825,13 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit, 
     </div>
   );
   const steerStatus = message.role === "user" && message.steerStatus && (
-    <div className={`message-steer-status ${message.steerStatus}`} role="status">
-      {message.steerStatus === "accepted" ? <Check size={11} /> : <CornerUpRight size={11} />}
-      {message.steerStatus === "accepted" ? "Steer accepted by active turn" : "Sending steer…"}
+    <div className={`message-steer-status ${message.steerStatus}`} role="status" title={message.steerStatus === "unconfirmed"
+      ? "The runtime did not confirm delivery. This guidance may have reached the active turn."
+      : message.steerStatus === "accepted" ? "Runtime input delivery confirmed." : undefined}>
+      {message.steerStatus === "unconfirmed" ? <AlertTriangle size={11} aria-hidden="true" />
+        : message.steerStatus === "accepted" ? <Check size={11} aria-hidden="true" /> : <CornerUpRight size={11} aria-hidden="true" />}
+      {message.steerStatus === "unconfirmed" ? "Steer delivery unconfirmed"
+        : message.steerStatus === "accepted" ? "Steer delivered to runtime input" : "Sending steer…"}
     </div>
   );
   const avatar = (
@@ -953,45 +957,45 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
   );
 });
 
-function subAgentCountsFromActivities(activities: Activity[]): SubAgentCounts {
-  const counts: SubAgentCounts = { total: 0, active: 0, starting: 0, working: 0, completed: 0, cancelled: 0, failed: 0 };
-  for (const activity of activities) {
-    const count = Math.max(1, activity.agent?.count ?? 1);
-    const status = workerStatusFromAgentRecord(activity.status ?? "");
-    counts.total += count;
-    if (isSubAgentWorkerActive(status)) counts.active += count;
-    if (status !== "idle" && status !== "unknown") counts[status] += count;
-  }
-  return counts;
-}
-
 export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dealIndex }: { activity: Activity; dealIndex?: number }) {
   const metadata = activity.agent;
   const controls = useContext(SubAgentControls);
-  const childId = metadata?.threadIds?.length === 1 ? metadata.threadIds[0] : undefined;
-  const worker = controls?.workers.find((entry) => entry.id === childId);
+  const readouts = controls?.historyWorkers ?? controls?.workers ?? [];
+  const represented = resolveSubAgentActivityWorkers(activity, readouts);
+  const count = represented.reduce((total, entry) => total + entry.count, 0);
+  const single = count === 1 ? represented[0] : undefined;
+  const childId = single?.id;
+  const worker = single?.worker;
+  const historical = single?.historical ?? false;
+  const unconfirmedAssignment = single?.unconfirmedAssignment ?? false;
   const failure = useTaskStore((state) => childId ? state.tasks[childId]?.error : undefined);
   const [action, setAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const active = worker ? isSubAgentWorkerActive(worker.status) : false;
-  const elapsed = worker && worker.createdAt > 0 && (active || worker.finishedAt)
+  const active = !historical && !unconfirmedAssignment && worker ? isSubAgentWorkerActive(worker.status) : false;
+  const elapsed = !historical && !unconfirmedAssignment && worker && worker.createdAt > 0 && (active || worker.finishedAt)
     ? Math.max(0, Math.floor(((worker.finishedAt ?? controls!.now) - worker.createdAt) / 1000)) : null;
-  const runAction = async (kind: "open" | "stop") => {
+  const awaitingReview = !historical && !unconfirmedAssignment && worker?.review === "awaiting" && !active;
+  const runAction = async (kind: "open" | "stop" | "accept") => {
     if (!worker || !controls || action) return;
     if (kind === "open" && worker.canOpen === false || kind === "stop" && (worker.canStop === false || !active)) return;
+    if (kind === "accept" && (!awaitingReview || !controls.onAccept)) return;
     setAction(kind);
     setActionError(null);
-    try { await (kind === "open" ? controls.onOpen(worker) : controls.onStop(worker)); }
+    try { await (kind === "open" ? controls.onOpen(worker) : kind === "stop" ? controls.onStop(worker) : controls.onAccept!(worker)); }
     catch (error) { setActionError(error instanceof Error ? error.message : String(error)); }
     finally { setAction(null); }
   };
   const provider = metadata?.provider;
-  const status = worker?.status ?? workerStatusFromAgentRecord(activity.status ?? "");
-  const statusLabel = subAgentStatusLabel(status);
+  const status = single?.status ?? (["working", "starting", "unknown", "failed", "cancelled", "completed", "idle"] as const)
+    .find((value) => represented.some((entry) => entry.status === value)) ?? "unknown";
+  // Managed children separate "finished this turn" from "accepted".
+  const statusLabel = historical ? "Earlier assignment" : unconfirmedAssignment ? "Assignment unconfirmed" : count > 1
+    ? describeSubAgentActivity(summarizeSubAgentActivities([activity], readouts))
+    : worker ? subAgentWorkerLabel(worker) : subAgentStatusLabel(status);
+  const question = !historical && !unconfirmedAssignment && worker?.mail?.openQuestions ? worker.mail.latestQuestion : undefined;
   const providerLabel = provider ? providerDisplayName(provider) : "Mythra Code";
   const task = decodeHtmlEntities(metadata?.task?.trim() || activity.title || "Delegated task");
   const model = decodeHtmlEntities(metadata?.model?.trim() || "");
-  const count = Math.max(1, metadata?.count ?? 1);
 
   return (
     <article
@@ -1012,11 +1016,15 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
           {model && <code>{model}</code>}
         </div>
         <strong>{task}</strong>
+        {historical && <small>This conversation has a newer assignment. Open it to see its current work.</small>}
+        {unconfirmedAssignment && <small>This saved activity does not identify its assignment. Open the conversation to inspect its current work.</small>}
         {elapsed !== null && <small>{Math.floor(elapsed / 60)}m {elapsed % 60}s{active ? " elapsed" : " total"}</small>}
-        {status === "failed" && failure && <small role="status">{failure}</small>}
-        {worker && (worker.canOpen !== false || active && worker.canStop !== false) && <div className="subagent-relay-actions">
+        {!historical && status === "failed" && failure && <small role="status">{failure}</small>}
+        {question && <small className="subagent-relay-question" role="status">{worker!.mail!.openQuestions} unanswered {worker!.mail!.openQuestions === 1 ? "question" : "questions"} · {question.length > 240 ? `${question.slice(0, 240)}…` : question}</small>}
+        {worker && (worker.canOpen !== false || active && worker.canStop !== false || awaitingReview && controls?.onAccept) && <div className="subagent-relay-actions">
           {worker.canOpen !== false && <button type="button" disabled={Boolean(action)} onClick={() => void runAction("open")}>Open sub-agent</button>}
           {active && worker.canStop !== false && <button type="button" disabled={Boolean(action)} onClick={() => void runAction("stop")}>Stop sub-agent</button>}
+          {awaitingReview && controls?.onAccept && <button type="button" title="Sign off this work, cancel queued guidance and close unanswered questions" disabled={Boolean(action)} onClick={() => void runAction("accept")}>Accept work</button>}
         </div>}
         {actionError && <small role="alert">{actionError}</small>}
       </div>
@@ -1029,9 +1037,10 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
 });
 
 export const SubAgentRelayManifest = memo(function SubAgentRelayManifest({ activities }: { activities: Activity[] }) {
-  const counts = subAgentCountsFromActivities(activities);
+  const controls = useContext(SubAgentControls);
+  const counts = summarizeSubAgentActivities(activities, controls?.historyWorkers ?? controls?.workers ?? []);
   return (
-    <section className={`subagent-relay-manifest ${counts.active > 0 ? "live" : ""}`} aria-label={`Sub-agent wave: ${describeSubAgentActivity(counts)}`}>
+    <section className={`subagent-relay-manifest ${counts.starting + counts.working > 0 ? "live" : ""}`} aria-label={`Sub-agent wave: ${describeSubAgentActivity(counts)}`}>
       <header>
         <UsersRound size={14} aria-hidden="true" />
         <strong>Dispatched {counts.total} sub-agents</strong>
@@ -1982,10 +1991,11 @@ export function ChatTimeline({
   const activeEntryIndex = matchIndices.length
     ? matchIndices[((searchActiveMatch ?? 0) % matchIndices.length + matchIndices.length) % matchIndices.length]
     : -1;
+  const subAgentControls = useContext(SubAgentControls);
   const liveSubAgentSummary = useMemo(() => {
     const spawns = activities.filter((activity) => activity.kind === "agent" && activity.agent?.action === "spawn");
-    return spawns.length ? `Sub-agents: ${describeSubAgentActivity(subAgentCountsFromActivities(spawns))}` : "";
-  }, [activities]);
+    return spawns.length ? `Sub-agents: ${describeSubAgentActivity(summarizeSubAgentActivities(spawns, subAgentControls?.historyWorkers ?? subAgentControls?.workers ?? []))}` : "";
+  }, [activities, subAgentControls?.historyWorkers, subAgentControls?.workers]);
 
   // ---- Activity details: owned here, never by a (virtualized) row ----
   const [selection, setSelection] = useState<ActivitySelection | null>(null);
@@ -2147,7 +2157,6 @@ export function ChatTimeline({
     skills,
     onOpenSkill: onOpenSkill && ((path: string) => { closeActivity("navigate"); onOpenSkill(path); }),
   }), [closeActivity, onOpenSkill, skills]);
-  const subAgentControls = useContext(SubAgentControls);
   const modalSubAgentControls = useMemo(() => subAgentControls && {
     ...subAgentControls,
     // Stay open until the child actually opens: a rejected open (for

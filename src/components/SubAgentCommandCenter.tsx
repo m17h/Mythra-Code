@@ -1,6 +1,6 @@
 import { modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelOption as SubAgentModelOption } from "./subAgentModelOptions";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, Info, LoaderCircle, Lock, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, Check, Info, LoaderCircle, Lock, MessageCircleQuestion, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import type { ReasoningEffort } from "./ModelPowerControl";
@@ -27,7 +27,7 @@ import {
 import {
   describeSubAgentActivity,
   isSubAgentWorkerActive,
-  subAgentStatusLabel,
+  subAgentWorkerLabel,
   summarizeSubAgentWorkers,
   type SubAgentWorker,
 } from "../lib/subAgentActivity";
@@ -107,6 +107,8 @@ export interface SubAgentCommandCenterProps {
   onOpenWorker?: (worker: SubAgentWorker) => Promise<void>;
   /** Stop one live child without stopping its root conversation. */
   onStopWorker?: (worker: SubAgentWorker) => Promise<void>;
+  /** Sign off a finished Mythra Code child on the user's behalf. */
+  onAcceptWorker?: (worker: SubAgentWorker) => Promise<void>;
   /** Stop one live child and ask the root to restart its task on a frozen destination. */
   onReplaceWorker?: (worker: SubAgentWorker, targetId: string) => Promise<void>;
   /**
@@ -402,9 +404,23 @@ function nativeWorkerModel(worker: SubAgentWorker): { text: string; confirmed: s
   };
 }
 
-/** Details belong to one activation, so a rerun never opens on an old result. */
+/** Truthful delivery wording: queued is never shown as delivered. */
+function mailStateLabel(message: NonNullable<SubAgentWorker["mail"]>["recent"][number]): string {
+  if (message.direction === "toParent") {
+    const read = message.state === "unread" ? "unread by parent" : "read by parent";
+    if (message.kind !== "question") return read;
+    return `${read} · ${message.answeredAt ? "answered" : message.closedAt ? "closed by sign-off, not answered" : "awaiting answer"}`;
+  }
+  if (message.state === "queued") return "queued, not delivered";
+  if (message.state === "delivering") return "delivery in progress, unconfirmed";
+  if (message.state === "delivered") return message.via === "read" ? "read by sub-agent" : message.via === "turn" ? "delivered in a follow-up turn" : message.via === "steer" ? "runtime acknowledged guidance" : "delivered";
+  if (message.uncertain) return `${message.state === "cancelled" ? "cancelled · " : ""}delivery unconfirmed; may have reached the sub-agent${message.reason ? ` · ${message.reason}` : ""}`;
+  if (message.state === "failed") return message.reason ? `delivery failed · ${message.reason}` : "delivery failed";
+  return message.reason ? `cancelled · ${message.reason}` : "cancelled";
+}
+
 function workerDetailsKey(worker: SubAgentWorker): string {
-  return `${worker.id}\u0000${worker.activationId ?? ""}`;
+  return `${worker.id}\u0000${worker.createdAt}\u0000${worker.activationId ?? ""}\u0000${worker.manualAttemptId ?? ""}\u0000${worker.resultRevision ?? ""}`;
 }
 
 const REASONING_MODE_OPTIONS: AppSelectOption[] = [
@@ -440,7 +456,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [replaceWorkerId, setReplaceWorkerId] = useState<string | null>(null);
-  const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" | "open" } | null>(null);
+  const [workerAction, setWorkerAction] = useState<{ workerId: string; kind: "stop" | "replace" | "open" | "accept" } | null>(null);
   const [presetName, setPresetName] = useState("");
   const [workerActionError, setWorkerActionError] = useState<string | null>(null);
   const [compactInfoOpen, setCompactInfoOpen] = useState(false);
@@ -457,16 +473,38 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const acceptedFocusRef = useRef<string | null>(null);
+  const workerActionEpochRef = useRef(0);
+  const actionContextRef = useRef(props.contextKey);
+  if (actionContextRef.current !== props.contextKey) acceptedFocusRef.current = null;
+  actionContextRef.current = props.contextKey;
   const closeTimerRef = useRef<number | null>(null);
   const panelId = useId();
 
   const { policy, capturedPolicy, mode, readiness, workers, onChange } = props;
   const counts = useMemo(() => summarizeSubAgentWorkers(workers), [workers]);
+  useEffect(() => {
+    if (replaceWorkerId && !workers.some((worker) => isSubAgentWorkerActive(worker.status)
+      && worker.review !== "accepted" && workerDetailsKey(worker) === replaceWorkerId)) setReplaceWorkerId(null);
+  }, [replaceWorkerId, workers]);
+  useLayoutEffect(() => {
+    const acceptedId = acceptedFocusRef.current;
+    if (!acceptedId) return;
+    if (!open) { acceptedFocusRef.current = null; return; }
+    if (workers.some((worker) => worker.id === acceptedId && worker.review === "awaiting")) return;
+    // Restore focus after React removes the Accept button, including an
+    // automatic archive that completes after the acceptance promise resolves.
+    if (panelRef.current && !panelRef.current.contains(document.activeElement)) {
+      panelRef.current.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    }
+    acceptedFocusRef.current = null;
+  }, [open, workers]);
   /** This thread already owns a captured, thread-specific roster. */
   const captured = mode === "captured";
   /** A sub-agent conversation, which may never delegate again. */
   const isChild = mode === "child";
   const statusUnknown = workers.some((worker) => worker.status === "unknown");
+  const unknownWithoutConversation = workers.some((worker) => worker.status === "unknown" && worker.canOpen === false);
   const crewActive = Boolean(props.parentActive) || counts.active > 0 || statusUnknown;
   /** Whether the destination roster and the parallel limit may be edited. */
   const editable = mode === "open" || (captured && !crewActive);
@@ -727,6 +765,13 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     closeTimerRef.current = window.setTimeout(finishClose, PANEL_EXIT_MS);
   }, [clearCloseTimer, finishClose]);
 
+  // Dismissal returns to the trigger. Navigation uses close() so the newly
+  // opened conversation or settings surface keeps its own focus.
+  const dismiss = useCallback(() => {
+    close();
+    triggerRef.current?.focus();
+  }, [close]);
+
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
 
   useEffect(() => {
@@ -741,6 +786,10 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
     const nextSessionId = capturedPolicy?.sessionId;
     if (previousSessionIdRef.current === nextSessionId) return;
     previousSessionIdRef.current = nextSessionId;
+    workerActionEpochRef.current += 1;
+    setWorkerAction(null);
+    setWorkerActionError(null);
+    acceptedFocusRef.current = null;
     if (open) close();
   }, [capturedPolicy?.sessionId, close, open]);
 
@@ -750,53 +799,100 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   useEffect(() => {
     if (previousContextKeyRef.current === props.contextKey) return;
     previousContextKeyRef.current = props.contextKey;
+    workerActionEpochRef.current += 1;
+    setWorkerAction(null);
+    setWorkerActionError(null);
+    acceptedFocusRef.current = null;
     setWorkerDetailsOpen(null);
     if (open) close();
   }, [close, open, props.contextKey]);
 
   const openWorker = useCallback(async (worker: SubAgentWorker) => {
     if (!props.onOpenWorker || workerAction) return;
+    const contextKey = props.contextKey;
+    const epoch = ++workerActionEpochRef.current;
+    const current = () => actionContextRef.current === contextKey && workerActionEpochRef.current === epoch;
     setWorkerActionError(null);
     setWorkerAction({ workerId: worker.id, kind: "open" });
     try {
       await props.onOpenWorker(worker);
       // The child's conversation is now in front of the user; leaving the
       // command center open over it would cover what they asked to see.
-      close();
+      if (current()) close();
     } catch (reason) {
-      setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+      if (current()) setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setWorkerAction(null);
+      if (current()) setWorkerAction(null);
     }
   }, [close, props, workerAction]);
 
   const stopWorker = useCallback(async (worker: SubAgentWorker) => {
     if (!props.onStopWorker || workerAction) return;
+    const contextKey = props.contextKey;
+    const epoch = ++workerActionEpochRef.current;
+    const current = () => actionContextRef.current === contextKey && workerActionEpochRef.current === epoch;
     setWorkerActionError(null);
     setWorkerAction({ workerId: worker.id, kind: "stop" });
     try {
       await props.onStopWorker(worker);
-      setReplaceWorkerId(null);
+      if (current()) setReplaceWorkerId(null);
     } catch (reason) {
-      setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+      if (current()) setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setWorkerAction(null);
+      if (current()) setWorkerAction(null);
+    }
+  }, [props, workerAction]);
+
+  const acceptWorker = useCallback(async (worker: SubAgentWorker) => {
+    if (!props.onAcceptWorker || workerAction) return;
+    const contextKey = props.contextKey;
+    const epoch = ++workerActionEpochRef.current;
+    const current = () => actionContextRef.current === contextKey && workerActionEpochRef.current === epoch;
+    setWorkerActionError(null);
+    setWorkerAction({ workerId: worker.id, kind: "accept" });
+    acceptedFocusRef.current = worker.id;
+    try {
+      await props.onAcceptWorker(worker);
+      if (!current()) return;
+      // Sign-off can remove this row immediately through automatic archive.
+      // Keep keyboard focus in the open panel when its button disappears.
+      if (panelRef.current && !panelRef.current.contains(document.activeElement)) {
+        panelRef.current.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+      }
+    } catch (reason) {
+      if (current()) {
+        acceptedFocusRef.current = null;
+        setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (current()) setWorkerAction(null);
     }
   }, [props, workerAction]);
 
   const replaceWorker = useCallback(async (worker: SubAgentWorker, targetId: string) => {
     if (!props.onReplaceWorker || workerAction) return;
+    if (!isSubAgentWorkerActive(worker.status) || worker.review === "accepted"
+      || replaceWorkerId !== workerDetailsKey(worker)
+      || !props.workers.some((current) => current.id === worker.id && isSubAgentWorkerActive(current.status)
+        && current.review !== "accepted" && workerDetailsKey(current) === workerDetailsKey(worker))) {
+      setReplaceWorkerId(null);
+      setWorkerActionError("This sub-agent finished or changed its assignment. Open its current activity before replacing it.");
+      return;
+    }
+    const contextKey = props.contextKey;
+    const epoch = ++workerActionEpochRef.current;
+    const current = () => actionContextRef.current === contextKey && workerActionEpochRef.current === epoch;
     setWorkerActionError(null);
     setWorkerAction({ workerId: worker.id, kind: "replace" });
     try {
       await props.onReplaceWorker(worker, targetId);
-      setReplaceWorkerId(null);
+      if (current()) setReplaceWorkerId(null);
     } catch (reason) {
-      setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
+      if (current()) setWorkerActionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setWorkerAction(null);
+      if (current()) setWorkerAction(null);
     }
-  }, [props, workerAction]);
+  }, [props, replaceWorkerId, workerAction]);
 
   useEffect(() => {
     if (!open) return;
@@ -811,8 +907,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
       // dismissing the entire command center around it.
       if (panelRef.current?.querySelector("[data-app-select-open='true']")) return;
       event.stopPropagation();
-      close();
-      triggerRef.current?.focus();
+      dismiss();
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown, true);
@@ -820,7 +915,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown, true);
     };
-  }, [close, open]);
+  }, [close, dismiss, open]);
 
   // Move focus into the panel on open so keyboard users land inside it, and
   // keep Tab from escaping into the composer behind it.
@@ -910,6 +1005,9 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   // OFF is the next-turn admission policy, not proof that an existing or
   // unexpectedly reported worker stopped. Keep both facts visible without
   // presenting the unrelated saved Mythra concurrency limit as a native cap.
+  const confirmedActive = counts.starting + counts.working;
+  const unknownNote = statusUnknown ? ` · ${counts.unknown} status unknown` : "";
+  const attention = (counts.questions ?? 0) + (counts.unreadUpdates ?? 0) + (counts.deliveryIssues ?? 0) + (counts.awaitingReview ?? 0);
   const triggerLabel = !delegationOn
     ? statusUnknown
       ? counts.starting + counts.working > 0
@@ -917,12 +1015,12 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
         : "Sub-agents off · status unknown"
       : counts.active > 0 ? `Sub-agents off · ${counts.active} active` : "Sub-agents off"
     : native
-    ? counts.active > 0
-      ? `Native ${counts.active}/${nativeMax}`
-      : nativeUnavailable ? "Native unavailable" : `Native: ${nativeMax}`
-    : counts.active > 0
-      ? `Sub-agents ${counts.active}/${maxConcurrent}`
-      : `Sub-agents: ${maxConcurrent}${rosterReady ? " ↗" : ""}`;
+    ? confirmedActive > 0
+      ? `Native ${confirmedActive}/${nativeMax}${unknownNote}`
+      : `${nativeUnavailable ? "Native unavailable" : `Native: ${nativeMax}`}${unknownNote}`
+    : confirmedActive > 0
+      ? `Sub-agents ${confirmedActive}/${maxConcurrent}${unknownNote}`
+      : `Sub-agents: ${maxConcurrent}${rosterReady ? " ↗" : ""}${unknownNote}`;
   const nativeLimitEditable = native && !runLocked && Boolean(props.onNativeMaxConcurrentChange);
   const setNativeMax = (next: number) => props.onNativeMaxConcurrentChange?.(clampNativeLimit(next));
 
@@ -931,7 +1029,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
       <button
         ref={triggerRef}
         type="button"
-        className={`toolbar-button agents-button ${delegationOn ? "enabled" : ""} ${counts.active > 0 ? "live" : ""}`}
+        className={`toolbar-button agents-button ${delegationOn ? "enabled" : ""} ${confirmedActive > 0 ? "live" : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
@@ -944,12 +1042,12 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             : captured
               ? "Edit this thread's sub-agents for its next message."
             : "Manage sub-agents for this thread"}
-        onClick={() => (open ? close() : show())}
+        onClick={() => (open ? dismiss() : show())}
       >
         {/* No viewBox on purpose: the rect is measured in real pixels, so the
             glowing corners stay the button's own radius however wide the label
             makes it. The provider-logo traces inside the panel are separate. */}
-        {counts.active > 0 && (
+        {confirmedActive > 0 && (
           <svg className="sa-trigger-trace" aria-hidden="true" focusable="false">
             <rect className="sa-trigger-trace-halo" width="100%" height="100%" rx="9" />
             <rect className="sa-trigger-trace-outline" width="100%" height="100%" rx="9" />
@@ -961,6 +1059,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
             : <UsersRound size={14} aria-hidden="true" />}
           {native && delegationOn && <span className="sr-only">Sub-agents: </span>}
           {triggerLabel}
+          {attention > 0 && <span className="sa-trigger-attention" title={describeSubAgentActivity(counts)}>{attention} to check</span>}
           {(!editable || runLocked) && <Lock size={11} className="sa-trigger-lock" aria-hidden="true" />}
           {props.projectOverride && <em className="project-override-mark">project</em>}
         </span>
@@ -979,6 +1078,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
           className={`subagent-panel ${open ? "" : "closing"}`}
           role="dialog"
           aria-hidden={!open || undefined}
+          inert={!open || undefined}
           aria-label="Sub-agent command center"
           onAnimationEnd={(event) => {
             if (event.target === event.currentTarget && !open) finishClose();
@@ -998,7 +1098,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                     : `Editing ${props.scopeLabel}`}
               </small>
             </span>
-            <button type="button" className="sa-close" onClick={close} aria-label="Close sub-agent command center" data-autofocus>
+            <button type="button" className="sa-close" onClick={dismiss} aria-label="Close sub-agent command center" data-autofocus>
               <X size={13} />
             </button>
           </header>
@@ -1710,12 +1810,15 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                 <span key={describeSubAgentActivity(counts)} className="sa-flash">{describeSubAgentActivity(counts)}</span>
               </span>
             </div>
-            {statusUnknown && <p className="sa-worker-error" role="status">Open the sub-agent conversation to check its status before changing this task’s setup.</p>}
+            {statusUnknown && <p className="sa-worker-error" role="status">{unknownWithoutConversation
+              ? "Status is unconfirmed. Claude Code agents share the parent runtime; inspect the parent’s activity and use its Stop control if a cutoff is needed. Open other sub-agent conversations when available."
+              : "Status is unconfirmed. Open the sub-agent conversation to inspect its current work, or use Stop to request a confirmed cutoff before changing this setup."}</p>}
+            {(counts.questions ?? 0) > 0 && <p className="sa-attention-note">To request a reply, send guidance in this parent conversation. Use Steer when available, or Send to queue or start its next turn.</p>}
             {workers.length > 0 ? (
               <ul className="sa-worker-list">
                 {workers.map((worker, index) => {
                   const active = isSubAgentWorkerActive(worker.status);
-                  const replacing = replaceWorkerId === worker.id;
+                  const replacing = active && worker.review !== "accepted" && replaceWorkerId === workerDetailsKey(worker);
                   const acting = workerAction?.workerId === worker.id;
                   // Native rows say what each agent was asked to do and which
                   // model its provider actually reported, never the parent's.
@@ -1727,7 +1830,9 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                     : worker.detail;
                   const progress = worker.progress?.trim();
                   const result = worker.result?.trim();
-                  const hasDetails = Boolean(worker.task?.trim() || progress || result);
+                  const mail = worker.mail;
+                  const openQuestions = mail?.openQuestions ?? 0;
+                  const hasDetails = Boolean(worker.task?.trim() || progress || result || mail?.recent.length || mail?.dropped || worker.review === "accepted");
                   const detailsOpen = hasDetails && workerDetailsOpen === workerDetailsKey(worker);
                   const detailsId = `${workerDetailsIdBase}-${index}`;
                   const modelDetail = nativeModel && (nativeModel.confirmed || nativeModel.requested)
@@ -1745,14 +1850,46 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                     : NO_TARGETS;
                   const canOpen = worker.canOpen !== false;
                   const canStop = worker.canStop !== false;
+                  const awaitingReview = worker.review === "awaiting" && !active;
+                  const rowState = [
+                    awaitingReview ? "review-awaiting" : "",
+                    worker.review === "accepted" ? "review-accepted" : "",
+                    openQuestions ? "has-question" : "",
+                    mail ? "has-mail" : "",
+                  ].filter(Boolean).join(" ");
                   return (
-                    <li key={worker.id} className={`sa-worker ${worker.status} ${replacing ? "replacing" : ""}`}>
+                    <li key={worker.id} className={`sa-worker ${worker.status} ${rowState} ${replacing ? "replacing" : ""}`}>
                       <span className="sa-worker-orb" aria-hidden="true" />
                       <span className="sa-worker-copy">
                         <strong title={headline.length > 240 ? `${headline.slice(0, 240)}…` : headline}>{headline}</strong>
-                        <small title={identity}>{subAgentStatusLabel(worker.status)} · {identity}</small>
+                        <small title={identity}>{subAgentWorkerLabel(worker)} · {identity}</small>
+                        {openQuestions > 0 && mail?.latestQuestion && (
+                          <small className="sa-worker-question" title={mail.latestQuestion.length > 400 ? `${mail.latestQuestion.slice(0, 400)}…` : mail.latestQuestion}>
+                            Asks: {mail.latestQuestion}
+                          </small>
+                        )}
                       </span>
                       <span className="sa-worker-end">
+                        {openQuestions > 0 && (
+                          <span className="sa-worker-badge question" role="status" title={props.parentActive
+                            ? "The parent can read this through its tools while it works."
+                            : "The parent is not running. Send guidance in this parent conversation to ask it to reply; no turn starts automatically."}>
+                            <MessageCircleQuestion size={10} aria-hidden="true" />
+                            {openQuestions === 1 ? "Question" : `${openQuestions} questions`}
+                          </span>
+                        )}
+                        {(mail?.queuedForChild ?? 0) - (mail?.deliveringForChild ?? 0) > 0 && (
+                          <span className="sa-worker-badge queued" title="Parent guidance not yet delivered to this sub-agent">
+                            {mail!.queuedForChild - mail!.deliveringForChild} queued
+                          </span>
+                        )}
+                        {(mail?.deliveringForChild ?? 0) > 0 && (
+                          <span className="sa-worker-badge queued" title="Guidance delivery in progress; the provider has not confirmed it yet">
+                            {mail!.deliveringForChild} delivering
+                          </span>
+                        )}
+                        {(mail?.unreadUpdates ?? 0) > 0 && <span className="sa-worker-badge" title="Updates the parent has not read yet">{mail!.unreadUpdates} unread update{mail!.unreadUpdates === 1 ? "" : "s"}</span>}
+                        {worker.review !== "accepted" && (mail?.deliveryIssues ?? 0) > 0 && <span className="sa-worker-badge delivery-issue" title="Retained guidance with failed or unconfirmed delivery; read Details before deciding whether to resend">{mail!.deliveryIssues} delivery issue{mail!.deliveryIssues === 1 ? "" : "s"}</span>}
                         {worker.provider && (
                           <span className="sa-worker-mark" aria-hidden="true"><ProviderLogo provider={worker.provider} size={12} /></span>
                         )}
@@ -1783,6 +1920,19 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                             Open
                           </button>
                         )}
+                        {awaitingReview && props.onAcceptWorker && (
+                          <button
+                            type="button"
+                            className="sa-worker-action accept"
+                            aria-label={`Accept ${worker.title}`}
+                            title="Sign off this sub-agent's work, cancel queued guidance and close unanswered questions. It may then be auto-archived."
+                            disabled={Boolean(workerAction)}
+                            onClick={() => void acceptWorker(worker)}
+                          >
+                            {acting && workerAction?.kind === "accept" ? <LoaderCircle className="spin" size={10} /> : <Check size={10} />}
+                            Accept
+                          </button>
+                        )}
                         {active && props.onReplaceWorker && replacementTargets.length > 0 && (
                           <button
                             type="button"
@@ -1792,7 +1942,7 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                             disabled={Boolean(workerAction)}
                             onClick={() => {
                               setWorkerActionError(null);
-                              setReplaceWorkerId(replacing ? null : worker.id);
+                              setReplaceWorkerId(replacing ? null : workerDetailsKey(worker));
                             }}
                           >
                             <ArrowRightLeft size={10} /> Replace
@@ -1849,8 +1999,29 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                             {modelDetail && <div><dt>Model</dt><dd>{modelDetail}</dd></div>}
                             {progress && <div><dt>Latest progress</dt><dd tabIndex={0}>{progress}</dd></div>}
                             {result && <div><dt>Result</dt><dd tabIndex={0}>{result}</dd></div>}
+                            {worker.review === "accepted" && (
+                              <div><dt>Sign-off</dt><dd>{`Accepted by the ${worker.acceptedBy === "user" ? "user" : "parent agent"}${worker.acceptNote ? ` · ${worker.acceptNote}` : ""}`}</dd></div>
+                            )}
                           </dl>
-                          {!progress && !result && <p>The provider has reported no progress or result yet.</p>}
+                          {mail && (mail.recent.length > 0 || mail.dropped > 0) && (
+                            <ol className="sa-mail" aria-label="Messages between the parent and this sub-agent">
+                              {mail.dropped > 0 && <li className="sa-mail-more">{mail.dropped} settled message{mail.dropped === 1 ? " was" : "s were"} trimmed from saved history</li>}
+                              {mail.notShown > 0 && <li className="sa-mail-more">{mail.notShown} earlier settled message{mail.notShown === 1 ? "" : "s"} not shown here</li>}
+                              {mail.recent.map((message) => (
+                                <li key={message.id} className={`sa-mail-entry ${message.direction} ${message.state}`}>
+                                  <span>
+                                    {message.direction === "toParent"
+                                      ? message.kind === "question" ? `Question ${message.id} to parent` : "Update to parent"
+                                      : message.replyTo ? `Parent reply to ${message.replyTo}` : "Parent guidance"}
+                                    <small>{mailStateLabel(message)}</small>
+                                  </span>
+                                  <p tabIndex={0}>{message.text}</p>
+                                  {message.textTruncated && <small className="sa-mail-more">Message text was shortened when saved.</small>}
+                                </li>
+                              ))}
+                            </ol>
+                          )}
+                          {!progress && !result && !mail?.recent.length && worker.kind === "native" && <p>The provider has reported no progress or result yet.</p>}
                         </div>
                       )}
                     </li>

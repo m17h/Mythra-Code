@@ -240,7 +240,7 @@ export interface ChatMessage {
   /** Wall-clock duration copied onto completed turn entries for timeline summaries. */
   turnDurationMs?: number;
   /** Local delivery feedback for guidance inserted into an already-active turn. */
-  steerStatus?: "sending" | "accepted";
+  steerStatus?: "sending" | "accepted" | "unconfirmed";
 }
 
 export interface Activity {
@@ -274,6 +274,9 @@ export interface Activity {
     /** Runtime thread identities represented by this activity. They let the
      * parent turn settle only children that are no longer genuinely active. */
     threadIds?: string[];
+    /** Exact observed native assignment per represented child, independent of
+     * this lifecycle/tool event's own id. Missing legacy evidence is unknown. */
+    activationIds?: Record<string, string>;
   };
   /** Number of concrete operations represented by a grouped runtime activity. */
   itemCount?: number;
@@ -496,6 +499,8 @@ export interface AppSettings {
   projectClaudeInstructionsEnabled: boolean;
   subagentsEnabled: boolean;
   subagentMax: number;
+  /** Opt-in conversations and explicit review for Mythra-managed crews. */
+  managedSubagentV2?: boolean;
   /** Resolved from thread-local authority; absent in legacy settings. */
   subagentEngine?: SubagentEngine;
   nativeSubagentMax?: number;

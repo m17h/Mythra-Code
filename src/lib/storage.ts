@@ -52,6 +52,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.childAgentPolicies",
   "kiwi.threadSubagentSettings",
   "kiwi.childAgentLinks",
+  "kiwi.childAgentMailbox",
   "kiwi.nativeAgentLinks",
   "kiwi.threadSubagentCapabilities",
   "kiwi.onboardingVersion",

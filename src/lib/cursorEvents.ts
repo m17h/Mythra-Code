@@ -30,6 +30,39 @@ function markTurnCompleted(key: string): void {
   }
 }
 
+/** Reattach only a segment the resident timeline still proves is streaming.
+ * Saved rows may have streaming=false even for an active process, so a live
+ * runtime alone cannot tell us that its last saved segment is still open.
+ * In that case new output gets a separate fragment, preserving saved text. */
+export function recoverCursorAssistantSegments(threadId: string, turnId: string): void {
+  const task = useTaskStore.getState().tasks[threadId];
+  if (!task || task.activeTurnId !== turnId || !["starting", "running"].includes(task.status)) return;
+  const key = turnKey(threadId, turnId);
+  const prefix = `cursor-${turnId}-message-`;
+  let count = assistantSegmentCounts.get(key) ?? 0;
+  let latestOrder = -Infinity;
+  let liveId: string | undefined;
+  for (const message of task.messages) {
+    if (message.turnId !== turnId || message.role !== "assistant" || !message.id.startsWith(prefix)) continue;
+    const sequence = /^(\d+)(?:-|$)/.exec(message.id.slice(prefix.length));
+    const parsed = sequence ? Number(sequence[1]) : 0;
+    if (Number.isSafeInteger(parsed) && parsed > 0 && parsed < Number.MAX_SAFE_INTEGER) count = Math.max(count, parsed);
+    const order = message.timelineOrder ?? 0;
+    if (order >= latestOrder) {
+      latestOrder = order;
+      liveId = message.streaming === true
+        && !["completed", "interrupted", "failed"].includes(message.turnStatus ?? "") ? message.id : undefined;
+    }
+  }
+  // A tool boundary closes preceding text. Do not reopen an earlier segment
+  // merely because its persisted streaming flag predates that boundary.
+  if (task.activities.some((activity) => activity.turnId === turnId
+    && ["command", "file", "agent"].includes(activity.kind)
+    && (activity.timelineOrder ?? 0) > latestOrder)) liveId = undefined;
+  assistantSegmentCounts.set(key, count);
+  if (!activeAssistantSegments.has(key) && liveId) activeAssistantSegments.set(key, liveId);
+}
+
 /**
  * Cursor's ACP stream does not provide a message-completed notification and
  * may emit assistant text both before and after tool calls. Keep each stretch
@@ -38,11 +71,14 @@ function markTurnCompleted(key: string): void {
  */
 function assistantMessageId(threadId: string, turnId: string): string {
   const key = turnKey(threadId, turnId);
+  if (!activeAssistantSegments.has(key)) recoverCursorAssistantSegments(threadId, turnId);
   const active = activeAssistantSegments.get(key);
   if (active) return active;
   const next = (assistantSegmentCounts.get(key) ?? 0) + 1;
   assistantSegmentCounts.set(key, next);
-  const id = `cursor-${turnId}-message-${next}`;
+  // Events may arrive before disk hydration. The suffix prevents an empty
+  // renderer's guessed counter from colliding with an unseen saved segment.
+  const id = `cursor-${turnId}-message-${next}-${crypto.randomUUID()}`;
   activeAssistantSegments.set(key, id);
   return id;
 }
@@ -161,6 +197,8 @@ export interface CursorEventContext {
   onTurnCompleted: (threadId: string) => void;
   onApprovalRequested: (threadId: string) => void;
   onTranscriptChanged: (threadId: string) => void;
+  /** Identity receipt emitted before input, admitted only for the exact owner. */
+  onSessionIdentified?: (threadId: string, cursorSessionId: string, turnId: string, startRequestId?: string, requestedEffort?: string, effortStatus?: string) => void;
 }
 
 function foregroundStatus(ctx: CursorEventContext, threadId: string, status: string): void {
@@ -169,6 +207,29 @@ function foregroundStatus(ctx: CursorEventContext, threadId: string, status: str
 
 function foregroundError(ctx: CursorEventContext, threadId: string, message: string): void {
   if (useTaskStore.getState().activeThreadId === threadId) ctx.onError(message);
+}
+
+/** Replay configuration evidence from an exact native query/start receipt.
+ * Requested effort is not evidence that the provider applied it. Return true
+ * only when a warning was added/changed, so callers can schedule persistence. */
+export function recordCursorEffortStatus(
+  threadId: string,
+  turnId: string,
+  startRequestId?: string,
+  requestedEffort?: string,
+  effortStatus?: string,
+): boolean {
+  const requested = requestedEffort?.trim();
+  if (effortStatus !== "unsupported" || !requested
+    || !cursorTurnCanSettle(threadId, turnId, startRequestId)) return false;
+  const id = `cursor-effort-${turnId}`;
+  const title = "Cursor reasoning effort was not applied";
+  const detail = `Cursor could not apply the requested reasoning effort (${requested}). The provider's existing or default setting was used.`;
+  const store = useTaskStore.getState();
+  const existing = store.tasks[threadId]?.activities.find((activity) => activity.id === id);
+  if (existing?.title === title && existing.detail === detail && existing.status === "completed") return false;
+  store.upsertActivity(threadId, { id, turnId, kind: "warning", title, detail, status: "completed" });
+  return true;
 }
 
 export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): void {
@@ -198,6 +259,33 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       foregroundStatus(ctx, threadId, "Working");
     }
   };
+
+  if (message.type === "openkiwi_cutoff_uncertain") {
+    if (turnAlreadyCompleted || !maySettleTurn || activeTurnMismatch) return;
+    const detail = text(message.message).trim() || "Cursor's process exit could not be confirmed.";
+    store.upsertActivity(threadId, {
+      id: `cursor-cutoff-uncertain-${turnId}`,
+      turnId,
+      kind: "warning",
+      title: "Cursor shutdown could not be confirmed",
+      detail: `${detail}\nThe conversation remains owned until the runtime confirms that this process stopped.`,
+      status: "failed",
+    });
+    ctx.onTranscriptChanged(threadId);
+    foregroundError(ctx, threadId, `Cursor shutdown could not be confirmed: ${detail}`);
+    return;
+  }
+
+  if (message.type === "openkiwi_session") {
+    const sessionId = text(message.cursorSessionId).trim();
+    if (sessionId && (mayActivateTurn || cursorTurnCanSettle(threadId, turnId, event.startRequestId))) {
+      const requestedEffort = text(message.requestedEffort).trim();
+      const effortStatus = text(message.effortStatus);
+      ctx.onSessionIdentified?.(threadId, sessionId, turnId, event.startRequestId, requestedEffort, effortStatus);
+      if (recordCursorEffortStatus(threadId, turnId, event.startRequestId, requestedEffort, effortStatus)) ctx.onTranscriptChanged(threadId);
+    }
+    return;
+  }
 
   if (message.type === "permission_request") {
     if (turnAlreadyCompleted || !mayActivateTurn) return;

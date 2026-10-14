@@ -271,6 +271,8 @@ export interface ClaudeTurnOptions {
    * root thread, so a child Claude process never receives delegation tools.
    */
   childAgentBridgeConfig?: string;
+  /** Owner-bound start identity; Stop can then target exactly this start. */
+  startRequestId?: string;
 }
 
 /** First-party identity keys supported by the verified Claude Code resolver. */
@@ -348,8 +350,19 @@ export async function interruptClaudeTurn(threadId: string): Promise<void> {
  * immediately. The cooperative interrupt already escalates to a kill on its
  * own; this is for recovering a slot the UI no longer tracks.
  */
-export async function killClaudeTurn(threadId: string): Promise<void> {
-  await invoke("claude_turn_kill", { threadId });
+export interface NativeKillExpectation {
+  /** Only this turn may be killed; a different current turn is preserved. */
+  turnId?: string;
+  /** Only this pending/running start may be cancelled. */
+  startRequestId?: string;
+}
+
+export async function killClaudeTurn(threadId: string, expected?: NativeKillExpectation): Promise<void> {
+  await invoke("claude_turn_kill", {
+    threadId,
+    expectedTurnId: expected?.turnId ?? null,
+    expectedStartRequestId: expected?.startRequestId ?? null,
+  });
 }
 
 export function isClaudeTurnActive(threadId: string): Promise<boolean> {

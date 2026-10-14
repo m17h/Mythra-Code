@@ -141,6 +141,8 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
   if (nativeOptions?.autoCompactTokens !== undefined) throw new Error("Codex currently shares the parent compaction setting with native workers. Reset child compaction to inherited, or use Mythra Code for independent worker windows.");
   const mythraDelegation = Boolean(options.childAgentBridge?.toolNames.includes("spawn_mythra_agent"));
   const mythraSettings = Boolean(options.childAgentBridge?.toolNames.includes("propose_agent_settings"));
+  const collaborationV2 = !nativeDelegation && mythraDelegation && Boolean(options.childAgentBridge?.toolNames.includes("send_agent_message")
+    && options.childAgentBridge?.toolNames.includes("accept_agent"));
   if (nativeDelegation && mythraDelegation) {
     throw new Error("Native sub-agents cannot share a thread with the Mythra Code spawning bridge. Refresh this thread's sub-agent setup before sending.");
   }
@@ -155,7 +157,7 @@ export function threadRuntimeConfig(run: ScheduleRunSettings, options: Partial<P
     // Older runtimes use this mode hint. Current V2 ignores it, but replacing
     // the app baseline also avoids retaining its native-disabled custom text.
     multi_agent_mode: nativeDelegation ? "explicitRequestOnly" : { custom: MYTHRA_CODE_NATIVE_DELEGATION_POLICY },
-    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options), nativeDelegation),
+    developer_instructions: mythraCodeDeveloperInstructions(mythraDelegation, mythraSettings, runButtonContext(options), checkButtonContext(options), nativeDelegation, collaborationV2),
     model_reasoning_effort: run.ultra ? "ultra" : run.reasoningEffort,
     ...(run.autoCompactTokens !== undefined ? {
       // Own context only. Native Codex workers inherit this runtime policy;
@@ -200,6 +202,8 @@ export function threadStartParams(run: ScheduleRunSettings, cwd: string, options
     runButtonContext(options),
     checkButtonContext(options),
     nativeCodexDelegation(run),
+    Boolean(options.childAgentBridge?.toolNames.includes("send_agent_message")
+      && options.childAgentBridge?.toolNames.includes("accept_agent")),
   );
   const params: JsonObject = {
     cwd,
@@ -241,6 +245,8 @@ export function threadResumeParams(
     runButtonContext(options),
     checkButtonContext(options),
     nativeCodexDelegation(run),
+    Boolean(options.childAgentBridge?.toolNames.includes("send_agent_message")
+      && options.childAgentBridge?.toolNames.includes("accept_agent")),
   );
   const modelProvider = runtimeModelProviderId(run.provider);
   return {

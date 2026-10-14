@@ -79,7 +79,7 @@ export interface TerminalController {
   /** Characters appended so far under `scope`, defaulting to the selected one. */
   appendedLength: (scope?: string) => number;
   /** Runs `command` in the selected execution path, or in `scope` when given. */
-  run: (command: string, additionalWritableRoots?: string[], scope?: string, commandArgv?: string[]) => Promise<void>;
+  run: (command: string, additionalWritableRoots?: string[], scope?: string, commandArgv?: string[], permission?: PermissionMode) => Promise<void>;
   stop: () => Promise<void>;
   /** Whether `scope` has a live process, and which command it is. */
   runningIn: (scope: string) => { running: boolean; command: string };
@@ -294,7 +294,7 @@ export function useTerminal(options: {
     [],
   );
 
-  const run = useCallback(async (command: string, additionalWritableRoots: string[] = [], scope?: string, commandArgv?: string[]) => {
+  const run = useCallback(async (command: string, additionalWritableRoots: string[] = [], scope?: string, commandArgv?: string[], permission?: PermissionMode) => {
     const launchOptions = optionsRef.current;
     const cwd = scope ?? launchOptions.scope;
     if (!cwd) return;
@@ -331,7 +331,7 @@ export function useTerminal(options: {
         ...(sanitizeTerminalTimeoutMinutes(launchOptions.timeoutMinutes) === 0
           ? { disableTimeout: true }
           : { timeoutMs: sanitizeTerminalTimeoutMinutes(launchOptions.timeoutMinutes) * 60_000 }),
-        sandboxPolicy: commandSandbox(launchOptions.permission, cwd, additionalWritableRoots),
+        sandboxPolicy: commandSandbox(permission ?? launchOptions.permission, cwd, additionalWritableRoots),
       });
       appendTo(session, `${result.stdout}${result.stderr}`, sanitizeSnapshot);
       appendTo(session, `\n[exit ${result.exitCode}]\n`, terminalSnapshotText);

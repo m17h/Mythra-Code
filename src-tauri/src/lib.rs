@@ -62,7 +62,9 @@ mod startup_guard;
 mod workspace_folder;
 use agents::{
     child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
-    child_agent_finished, child_agent_respond, child_agent_session_end, child_agent_session_start,
+    child_agent_bridge_mailbox_control_response,
+    child_agent_claim_spawn, child_agent_finished, child_agent_reactivate, child_agent_request_active,
+    child_agent_respond, child_agent_retire_unclaimed_spawns, child_agent_session_end, child_agent_session_start,
     purge_stale_agent_bridges, run_agent_bridge, shutdown_agent_bridges_on_exit, ChildAgentState,
     AGENT_BRIDGE_ARG,
 };
@@ -70,7 +72,7 @@ use close_guard::{close_guard_claim, close_guard_finish, CloseGuardState};
 use cursor::{
     cursor_login, cursor_models, cursor_permission_respond, cursor_runtime_status,
     cursor_turn_active, cursor_turn_interrupt, cursor_turn_kill, cursor_turn_start,
-    cursor_turn_steer, shutdown_cursor_on_exit, CursorState,
+    cursor_turn_steer, cursor_turn_state, shutdown_cursor_on_exit, CursorState,
 };
 use git_inspection::{
     git_project_changes, git_project_diff, git_project_file_diff, git_project_history,
@@ -127,6 +129,17 @@ static OPENROUTER_KEY_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None
 static LMSTUDIO_KEY_READ: KeyringReadSlot = KeyringReadSlot(StdMutex::new(None));
 
 type PendingMap = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
+
+fn provider_error_text(message: &str) -> String {
+    // These disposition tags belong to the native transport, never upstream
+    // provider text. Do not let an upstream refusal impersonate a safe retry.
+    message.replace("MYTHRA_NOT_DISPATCHED:", "Provider reported not-dispatched:")
+        .replace("MYTHRA_DELIVERY_UNCERTAIN:", "Provider reported delivery-uncertain:")
+}
+
+fn native_predispatch_refusal(error: String) -> String {
+    format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error))
+}
 
 // The pipe lock and a blocked write share a bounded deadline even when a
 // deliberately long-lived command has no response deadline.
@@ -194,6 +207,7 @@ async fn receive_server_reply(
     receiver: oneshot::Receiver<Result<Value, String>>,
     method: &str,
     deadline: Option<Instant>,
+    replied: &mut bool,
 ) -> Result<Value, String> {
     let reply = match deadline {
         Some(deadline) => timeout_at(deadline, receiver)
@@ -203,11 +217,16 @@ async fn receive_server_reply(
         // still settle this receiver; the stdin write remains bounded above.
         None => receiver.await,
     };
-    reply.map_err(|_| "Codex App Server stopped before replying".to_string())?
+    let reply = reply.map_err(|_| "Codex App Server stopped before replying".to_string())?;
+    // Native EOF settlement is transport evidence, not a protocol reply.
+    // Upstream errors have their native disposition markers stripped.
+    *replied = !matches!(&reply, Err(error) if error.starts_with("MYTHRA_DELIVERY_UNCERTAIN:"));
+    reply
 }
 
 
 struct AppServer {
+    app: AppHandle,
     stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
     /// Pid and start time of the child, `None` only if the OS reported no pid.
@@ -229,16 +248,56 @@ struct AppServer {
     pending: PendingMap,
     next_id: AtomicI64,
     alive: Arc<AtomicBool>,
+    cutoff: Arc<RuntimeCutoffState>,
     /// Server-initiated requests this exact instance is waiting on, keyed by
     /// protocol id. The stored identity lets question replies verify their
     /// thread/turn/item target if a restarted runtime reuses an id.
     server_requests: Arc<Mutex<HashMap<String, CodexServerRequestIdentity>>>,
-    /// Threads successfully loaded into this exact app-server process. This
-    /// avoids pessimistically restarting a fresh runtime merely because the
-    /// renderer has no durable capability record for an older thread.
-    loaded_threads: RwLock<HashSet<String>>,
+    /// Threads loaded, or possibly loaded after a written startup request,
+    /// into this exact process. Missing acknowledgements never imply cold
+    /// startup configuration can safely be applied to a resident thread.
+    loaded_threads: Arc<RwLock<HashSet<String>>>,
     openrouter_proxy_url: Option<String>,
     openrouter_proxy_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct RuntimeCutoffState {
+    uncertain: AtomicBool,
+    tree_unconfirmed: AtomicBool,
+    error: StdMutex<Option<String>>,
+}
+
+/// The reader and explicit shutdown share one checked OS cutoff. The child
+/// lock reserves the unreaped PID, and a failed tree signal survives reaping
+/// so a later caller cannot silently turn that uncertainty into success.
+async fn cutoff_runtime_child(child: &Arc<Mutex<Child>>, cutoff: &RuntimeCutoffState) -> Result<(), String> {
+    cutoff.uncertain.store(true, Ordering::Release);
+    let mut child = child.lock().await;
+    let result = match child.try_wait() {
+        Ok(Some(_)) => {
+            if cutoff.tree_unconfirmed.load(Ordering::Acquire) {
+                let error = cutoff.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+                    .unwrap_or_else(|| "The earlier process-tree signal was not confirmed.".into());
+                return Err(format!("The Codex runtime tree cutoff remains unconfirmed: {error}. Its reaped process identity cannot safely be signalled again."));
+            } else { Ok(()) }
+        },
+        Ok(None) => {
+            let tree = child.id().map(kill_process_tree).unwrap_or(Ok(()));
+            cutoff.tree_unconfirmed.store(tree.is_err(), Ordering::Release);
+            let _ = child.start_kill();
+            let reaped = match timeout(Duration::from_secs(2), child.wait()).await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(format!("Could not confirm Codex runtime process exit: {error}")),
+                Err(_) => Err("Codex runtime process did not exit within the cutoff deadline.".into()),
+            };
+            tree.and(reaped)
+        },
+        Err(error) => Err(format!("Could not inspect the Codex runtime process before stopping it: {error}")),
+    };
+    *cutoff.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = result.as_ref().err().cloned();
+    cutoff.uncertain.store(result.is_err(), Ordering::Release);
+    result
 }
 
 #[derive(Default)]
@@ -251,6 +310,7 @@ struct RuntimeLifecycleState {
     instance: Option<String>,
     restart_reservation: Option<RuntimeRestartReservationState>,
     active_turns: HashSet<String>,
+    confirmed_active_turns: HashSet<String>,
     // V2 child work can be reported on the parent's collaboration item even
     // when the client is not subscribed to the child's own turn events.
     active_native_agents: HashSet<String>,
@@ -264,6 +324,7 @@ struct RuntimeLifecycleState {
     active_compactions: HashSet<String>,
     starting_compactions: HashSet<String>,
     active_commands: usize,
+    active_command_requests: HashSet<i64>,
     in_flight_activity_requests: usize,
     in_flight_rpcs: usize,
 }
@@ -279,6 +340,7 @@ struct RuntimeActivityGuard {
     instance: String,
     method: String,
     thread_id: Option<String>,
+    command_request_id: Option<i64>,
     finished: bool,
 }
 
@@ -339,6 +401,11 @@ impl RuntimeLifecycle {
         if state.instance.as_deref() != Some(instance) {
             return Err("The Codex runtime is changing. Try this action again in a moment.".into());
         }
+        // Keep unresolved command ownership bounded without guessing that a
+        // deadline means the process ended. Real late replies release slots.
+        if method == "command/exec" && state.active_commands >= 128 {
+            return Err("The runtime already owns 128 running or unresolved commands. Stop or settle existing commands before starting another.".into());
+        }
         state.in_flight_activity_requests += 1;
         if matches!(method, "turn/start" | "review/start") {
             if let Some(thread_id) = thread_id {
@@ -361,6 +428,7 @@ impl RuntimeLifecycle {
             instance: instance.to_owned(),
             method: method.to_owned(),
             thread_id: thread_id.map(str::to_owned),
+            command_request_id: None,
             finished: false,
         }))
     }
@@ -399,6 +467,7 @@ impl RuntimeLifecycle {
         let mut state = self.lock();
         state.instance = Some(instance.to_owned());
         state.active_turns.clear();
+        state.confirmed_active_turns.clear();
         state.active_native_agents.clear();
         state.settled_native_agents.clear();
         state.native_agent_operations.clear();
@@ -410,6 +479,7 @@ impl RuntimeLifecycle {
         state.active_compactions.clear();
         state.starting_compactions.clear();
         state.active_commands = 0;
+        state.active_command_requests.clear();
         state.in_flight_activity_requests = 0;
     }
 
@@ -418,6 +488,7 @@ impl RuntimeLifecycle {
         if state.instance.as_deref() == Some(instance) {
             state.instance = None;
             state.active_turns.clear();
+            state.confirmed_active_turns.clear();
             state.active_native_agents.clear();
             state.settled_native_agents.clear();
             state.native_agent_operations.clear();
@@ -429,6 +500,7 @@ impl RuntimeLifecycle {
             state.active_compactions.clear();
             state.starting_compactions.clear();
             state.active_commands = 0;
+            state.active_command_requests.clear();
             state.in_flight_activity_requests = 0;
         }
     }
@@ -609,16 +681,19 @@ impl RuntimeLifecycle {
         match method {
             "turn/started" => {
                 state.active_turns.insert(thread_id.to_owned());
+                state.confirmed_active_turns.insert(thread_id.to_owned());
                 state.settled_native_agents.remove(thread_id);
             }
             "turn/completed" => {
                 state.active_turns.remove(thread_id);
+                state.confirmed_active_turns.remove(thread_id);
                 state.active_native_agents.remove(thread_id);
                 state.ambiguous_native_activity.remove(thread_id);
                 state.settled_native_agents.insert(thread_id.to_owned());
             }
             "thread/status/changed" if params["status"]["type"].as_str() == Some("active") => {
                 state.active_turns.insert(thread_id.to_owned());
+                state.confirmed_active_turns.insert(thread_id.to_owned());
                 state.settled_native_agents.remove(thread_id);
             }
             "thread/status/changed"
@@ -628,6 +703,7 @@ impl RuntimeLifecycle {
                 ) =>
             {
                 state.active_turns.remove(thread_id);
+                state.confirmed_active_turns.remove(thread_id);
                 state.active_native_agents.remove(thread_id);
                 state.ambiguous_native_activity.remove(thread_id);
                 state.settled_native_agents.insert(thread_id.to_owned());
@@ -732,24 +808,39 @@ impl RuntimeLifecycle {
 }
 
 impl RuntimeActivityGuard {
-    fn finish(mut self, succeeded: bool) {
-        self.finished = true;
-        self.update(succeeded);
+    fn register_command_request(&mut self, request_id: i64) {
+        if self.method != "command/exec" { return; }
+        let mut state = self.lifecycle.lock();
+        if state.instance.as_deref() == Some(&self.instance) {
+            state.active_command_requests.insert(request_id);
+            self.command_request_id = Some(request_id);
+        }
     }
 
-    fn update(&self, succeeded: bool) {
+    fn finish(mut self, succeeded: bool, uncertain: bool) {
+        self.finished = true;
+        self.update(succeeded, uncertain);
+    }
+
+    fn update(&self, succeeded: bool, uncertain: bool) {
         let mut state = self.lifecycle.lock();
         if state.instance.as_deref() != Some(&self.instance) {
             return;
         }
         state.in_flight_activity_requests = state.in_flight_activity_requests.saturating_sub(1);
         if self.method == "command/exec" {
-            state.active_commands = state.active_commands.saturating_sub(1);
+            if !uncertain {
+                // The stdout reader may already have released this exact
+                // request. Never decrement another command's reservation.
+                if self.command_request_id.is_none_or(|id| state.active_command_requests.remove(&id)) {
+                    state.active_commands = state.active_commands.saturating_sub(1);
+                }
+            }
         }
         if matches!(self.method.as_str(), "turn/start" | "review/start") {
             if let Some(thread_id) = &self.thread_id {
                 state.starting_turns.remove(thread_id);
-                if !succeeded {
+                if !succeeded && !uncertain && !state.confirmed_active_turns.contains(thread_id) {
                     state.active_turns.remove(thread_id);
                 }
             }
@@ -757,7 +848,7 @@ impl RuntimeActivityGuard {
         if self.method == "thread/compact/start" {
             if let Some(thread_id) = &self.thread_id {
                 state.starting_compactions.remove(thread_id);
-                if !succeeded {
+                if !succeeded && !uncertain {
                     state.active_compactions.remove(thread_id);
                 }
             }
@@ -775,7 +866,7 @@ impl Drop for RuntimeRpcGuard {
 impl Drop for RuntimeActivityGuard {
     fn drop(&mut self) {
         if !self.finished {
-            self.update(false);
+            self.update(false, self.command_request_id.is_some());
         }
     }
 }
@@ -838,8 +929,8 @@ struct RuntimeState {
     /// status checks and app-server startup cannot repeat `where.exe` and
     /// `codex --version` during one cold launch.
     codex_runtime: Mutex<Option<ResolvedCodexRuntime>>,
-    /// Identity of the live app-server child, published the moment it is
-    /// spawned and cleared on every path that ends it. Unlike `server`, this
+    /// Identity of the app-server child, published when it is spawned and
+    /// cleared only after confirmed cutoff. Unlike `server`, this
     /// is accessible without awaiting the async mutex, so the exit handler
     /// can still tear the process tree down while `ensure_server` holds the
     /// lock during a slow spawn/initialize.
@@ -964,8 +1055,7 @@ fn kill_managed_process_tree(identity: ManagedProcessIdentity) -> bool {
     if !identity_still_managed(identity, observe_process(identity.pid), std::process::id()) {
         return false;
     }
-    kill_process_tree(identity.pid);
-    true
+    kill_process_tree(identity.pid).is_ok()
 }
 
 fn server_identity(slot: &ServerIdentitySlot) -> Option<ManagedProcessIdentity> {
@@ -1005,7 +1095,7 @@ struct ResolvedCodexRuntime {
 /// pgid reaches the whole tree; `taskkill /T` walks the tree on Windows.
 /// Falls back to the pid itself if the group signal fails (for example when
 /// the child never became a group leader).
-fn kill_process_tree(pid: u32) {
+fn kill_process_tree(pid: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
         let killed_group = background_std_command("kill")
@@ -1014,22 +1104,120 @@ fn kill_process_tree(pid: u32) {
             .map(|status| status.success())
             .unwrap_or(false);
         if !killed_group {
-            let _ = background_std_command("kill")
+            let status = background_std_command("kill")
                 .args(["-9", &pid.to_string()])
-                .status();
+                .status().map_err(|error| format!("Could not signal the provider process: {error}"))?;
+            if !status.success() { return Err("Could not confirm the provider process tree was killed.".into()); }
         }
     }
     #[cfg(windows)]
     {
-        let _ = background_std_command("taskkill")
+        let status = background_std_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
+            .status().map_err(|error| format!("Could not signal the provider process tree: {error}"))?;
+        if !status.success() { return Err("Could not confirm the provider process tree was killed.".into()); }
     }
+    Ok(())
+}
+
+/// A native start owns cancellation before its first preparation await. Stop
+/// waits for this exact attempt to settle; a missing running process is not
+/// evidence that an already-dispatched start cannot still launch one.
+#[derive(Default)]
+pub(crate) struct NativeStartRegistry {
+    attempts: Arc<StdMutex<HashMap<String, Arc<NativeStartAttempt>>>>,
+}
+
+pub(crate) struct NativeStartAttempt {
+    turn_id: String,
+    start_request_id: Option<String>,
+    cancelled: AtomicBool,
+    settled: AtomicBool,
+    changed: tokio::sync::Notify,
+    cutoff_error: StdMutex<Option<String>>,
+}
+
+pub(crate) struct NativeStartGuard {
+    registry: Arc<StdMutex<HashMap<String, Arc<NativeStartAttempt>>>>,
+    thread_id: String,
+    attempt: Arc<NativeStartAttempt>,
+}
+
+impl NativeStartRegistry {
+    pub(crate) fn begin(&self, thread_id: &str, turn_id: &str, start_request_id: Option<&str>) -> Result<NativeStartGuard, String> {
+        let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if attempts.contains_key(thread_id) {
+            return Err("A provider start is still settling in this thread. Wait before starting another turn.".into());
+        }
+        let attempt = Arc::new(NativeStartAttempt {
+            turn_id: turn_id.to_owned(), start_request_id: start_request_id.map(str::to_owned),
+            cancelled: AtomicBool::new(false), settled: AtomicBool::new(false), changed: tokio::sync::Notify::new(),
+            cutoff_error: StdMutex::new(None),
+        });
+        attempts.insert(thread_id.to_owned(), attempt.clone());
+        Ok(NativeStartGuard { registry: self.attempts.clone(), thread_id: thread_id.to_owned(), attempt })
+    }
+
+    pub(crate) fn cancel(&self, thread_id: &str, expected_turn_id: Option<&str>, expected_start_request_id: Option<&str>) -> Result<Option<Arc<NativeStartAttempt>>, String> {
+        let attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(attempt) = attempts.get(thread_id).cloned() else { return Ok(None); };
+        if expected_turn_id.is_some_and(|expected| expected != attempt.turn_id)
+            || expected_start_request_id.is_some_and(|expected| attempt.start_request_id.as_deref() != Some(expected)) {
+            return Err("The Stop request belongs to an older provider start; the current start was preserved.".into());
+        }
+        attempt.cancelled.store(true, Ordering::Release);
+        Ok(Some(attempt))
+    }
+
+    pub(crate) fn identity(&self, thread_id: &str) -> Option<(String, Option<String>, &'static str)> {
+        let attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        attempts.get(thread_id).map(|attempt| (attempt.turn_id.clone(), attempt.start_request_id.clone(),
+            if attempt.cancelled.load(Ordering::Acquire) { "stopping" } else { "starting" }))
+    }
+}
+
+impl NativeStartGuard {
+    pub(crate) fn record_cutoff_error(&self, error: &str) {
+        *self.attempt.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.to_owned());
+    }
+    pub(crate) fn assert_current(&self) -> Result<(), String> {
+        if self.attempt.cancelled.load(Ordering::Acquire) {
+            return Err("The provider start was stopped before model dispatch.".into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for NativeStartGuard {
+    fn drop(&mut self) {
+        let mut attempts = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if attempts.get(&self.thread_id).is_some_and(|current| Arc::ptr_eq(current, &self.attempt)) {
+            attempts.remove(&self.thread_id);
+        }
+        self.attempt.settled.store(true, Ordering::Release);
+        self.attempt.changed.notify_waiters();
+    }
+}
+
+pub(crate) async fn await_native_start_settlement(attempt: Option<Arc<NativeStartAttempt>>) -> Result<(), String> {
+    let Some(attempt) = attempt else { return Ok(()); };
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let changed = attempt.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if attempt.settled.load(Ordering::Acquire) { return; }
+            changed.await;
+        }
+    }).await.map_err(|_| "The pending provider start is cancelled but has not settled; its cutoff remains unconfirmed.".to_string())?;
+    let error = attempt.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    error.map_or(Ok(()), |error| Err(format!("The cancelled provider start settled with an unconfirmed cutoff: {error}")))
 }
 
 #[derive(Default)]
 struct ClaudeState {
     turns: Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
+    starts: NativeStartRegistry,
     authenticated: AtomicBool,
     prompt_snapshot_support: Mutex<Option<ClaudePromptSnapshotSupport>>,
 }
@@ -1077,10 +1265,14 @@ const CLAUDE_INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 const CLAUDE_RESULT_EXIT_GRACE: Duration = Duration::from_secs(10);
 
 struct ClaudeTurn {
+    turn_id: String,
+    start_request_id: Option<String>,
     stdin: Mutex<Option<ChildStdin>>,
     child: Arc<Mutex<Child>>,
     pid: Option<u32>,
     alive: Arc<AtomicBool>,
+    cutoff_uncertain: AtomicBool,
+    cutoff_error: StdMutex<Option<String>>,
     /// Ids of `control_request` messages this CLI process has sent and the
     /// renderer has not answered yet. A control response is only accepted
     /// for one of these, so the webview cannot answer a request this turn
@@ -1142,6 +1334,8 @@ struct ClaudeAgentInput {
 #[serde(rename_all = "camelCase")]
 struct ClaudeTurnOptions {
     thread_id: String,
+    #[serde(default)]
+    start_request_id: Option<String>,
     cwd: String,
     prompt: String,
     model: String,
@@ -1191,19 +1385,44 @@ impl ClaudeTurn {
         stdin
             .write_all(format!("{message}\n").as_bytes())
             .await
-            .map_err(|error| format!("Could not write to Claude Code: {error}"))?;
+            .map_err(|error| format!("MYTHRA_DELIVERY_UNCERTAIN: Could not confirm Claude Code input write: {error}"))?;
         stdin
             .flush()
             .await
-            .map_err(|error| format!("Could not flush Claude Code input: {error}"))
+            .map_err(|error| format!("MYTHRA_DELIVERY_UNCERTAIN: Could not confirm Claude Code input flush: {error}"))
     }
 
-    async fn shutdown(&self) {
+    async fn shutdown(&self) -> Result<(), String> {
+        self.cutoff_uncertain.store(true, Ordering::Release);
         self.alive.store(false, Ordering::Release);
-        if let Some(pid) = self.pid {
-            kill_process_tree(pid);
+        let mut child = self.child.lock().await;
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                if let Some(error) = self.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+                    return Err(format!("An earlier provider cutoff remains unconfirmed ({error}); the reaped process identity cannot safely be signalled again."));
+                }
+                self.cutoff_uncertain.store(false, Ordering::Release);
+                return Ok(());
+            }
+            Ok(None) => {},
+            Err(error) => {
+                self.cutoff_uncertain.store(true, Ordering::Release);
+                let error = format!("Could not inspect the Claude process before stopping it: {error}");
+                *self.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+                return Err(error);
+            }
         }
-        let _ = self.child.lock().await.kill().await;
+        let tree_result = self.pid.map(kill_process_tree).unwrap_or(Ok(()));
+        let _ = child.start_kill();
+        let reap_result = match timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(format!("Could not confirm Claude process exit: {error}")),
+            Err(_) => Err("Claude process did not exit within the cutoff deadline.".to_string()),
+        };
+        let result = tree_result.and(reap_result);
+        *self.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = result.as_ref().err().cloned();
+        self.cutoff_uncertain.store(result.is_err(), Ordering::Release);
+        result
     }
 
     async fn close_input(&self) {
@@ -1242,7 +1461,7 @@ async fn reap_claude_process(
     child: &mut Child,
     stdout: &mut (impl AsyncRead + Unpin),
     grace: Duration,
-) -> Option<std::process::ExitStatus> {
+) -> Result<std::process::ExitStatus, String> {
     let mut sink = tokio::io::sink();
     let graceful = async {
         tokio::select! {
@@ -1251,13 +1470,14 @@ async fn reap_claude_process(
         }
     };
     match timeout(grace, graceful).await {
-        Ok(exit) => exit.ok(),
+        Ok(exit) => exit.map_err(|error| format!("Could not confirm Claude process exit: {error}")),
         Err(_) => {
-            if let Some(pid) = child.id() {
-                kill_process_tree(pid);
-            }
-            let _ = child.kill().await;
-            None
+            let tree_result = child.id().map(kill_process_tree).unwrap_or(Ok(()));
+            let _ = child.start_kill();
+            let exit = timeout(Duration::from_secs(2), child.wait()).await
+                .map_err(|_| "Claude process did not exit within the cutoff deadline.".to_string())?
+                .map_err(|error| format!("Could not confirm Claude process exit: {error}"))?;
+            tree_result.map(|_| exit)
         }
     }
 }
@@ -1635,16 +1855,20 @@ impl AppServer {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
-        validate_command_timeout_runtime(method, &params, &self.runtime_version)?;
-        let activity_guard = self.lifecycle.begin_activity(
+        validate_command_timeout_runtime(method, &params, &self.runtime_version)
+            .map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error)))?;
+        let mut activity_guard = self.lifecycle.begin_activity(
             &self.instance,
             method,
             params.get("threadId").and_then(Value::as_str),
-        )?;
+        ).map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error)))?;
+        let mut dispatch_attempted = false;
+        let mut replied = false;
         let result = async {
             let (write_deadline, response_deadline) =
                 app_server_request_deadlines(method, &params, Instant::now())?;
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            if let Some(guard) = activity_guard.as_mut() { guard.register_command_request(id); }
             let (sender, receiver) = oneshot::channel();
             self.pending.lock().await.insert(id, sender);
 
@@ -1653,6 +1877,14 @@ impl AppServer {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             let message = json!({ "method": method, "id": id, "params": params });
+            // Startup configuration becomes uncertain at the write boundary,
+            // rather than cold again when an acknowledgement times out.
+            if matches!(method, "thread/resume" | "thread/fork" | "thread/rollback") {
+                if let Some(thread_id) = tracking_thread_id.as_ref() {
+                    self.loaded_threads.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread_id.clone());
+                }
+            }
+            dispatch_attempted = true;
             if let Err(error) =
                 write_server_message(&self.stdin, format!("{message}\n").as_bytes(), write_deadline).await
             {
@@ -1660,22 +1892,31 @@ impl AppServer {
                 // reuse this stream for another request.
                 self.alive.store(false, Ordering::Release);
                 self.pending.lock().await.remove(&id);
-                return Err(error);
+                return Err(format!("MYTHRA_DELIVERY_UNCERTAIN: {error}"));
             }
 
-            let result = receive_server_reply(receiver, method, response_deadline).await;
+            let mut result = receive_server_reply(receiver, method, response_deadline, &mut replied).await;
+            if !replied {
+                result = result.map_err(|error| if error.starts_with("MYTHRA_DELIVERY_UNCERTAIN:") { error }
+                    else { format!("MYTHRA_DELIVERY_UNCERTAIN: {error}") });
+            }
             if let Ok(value) = &result {
                 self.track_successful_request(method, tracking_thread_id.as_deref(), value);
             } else {
                 self.pending.lock().await.remove(&id);
             }
-            result
+            result.map(|mut value| {
+                if let Some(object) = value.as_object_mut() { object.insert("runtimeInstance".into(), json!(self.instance)); }
+                value
+            })
         }
         .await;
         if let Some(activity_guard) = activity_guard {
-            activity_guard.finish(result.is_ok());
+            activity_guard.finish(result.is_ok(), dispatch_attempted && !replied);
         }
-        result
+        if dispatch_attempted { result } else {
+            result.map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error)))
+        }
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
@@ -1706,19 +1947,28 @@ impl AppServer {
         result
     }
 
-    async fn shutdown(&self) {
+    async fn shutdown(&self) -> Result<(), String> {
         self.alive.store(false, Ordering::Release);
-        // The reader may already have reaped the child, after which the OS
-        // can reuse its pid; only signal the tree while it is still ours.
-        if let Some(identity) = self.identity {
-            kill_managed_process_tree(identity);
+        let mut owned_threads = self.loaded_threads.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        {
+            let lifecycle = self.lifecycle.lock();
+            if lifecycle.instance.as_deref() == Some(&self.instance) {
+                owned_threads.extend(lifecycle.active_turns.iter().cloned());
+                owned_threads.extend(lifecycle.active_native_agents.iter().cloned());
+                owned_threads.extend(lifecycle.starting_turns.iter().cloned());
+            }
         }
-        let _ = self.child.lock().await.kill().await;
+        cutoff_runtime_child(&self.child, &self.cutoff).await?;
         clear_server_identity(&self.identity_slot, self.identity);
         if let Some(task) = &self.openrouter_proxy_task {
             task.abort();
         }
+        // An earlier EOF notification may have reported uncertainty. Publish
+        // the later checked outcome for this same instance before replacement.
+        let _ = self.app.emit("codex-runtime", json!({ "alive": false, "instance": self.instance,
+            "runtimeInstance": self.instance, "threadIds": owned_threads, "cutoffConfirmed": true }));
         self.lifecycle.clear_instance(&self.instance);
+        Ok(())
     }
 
     fn is_alive(&self) -> bool {
@@ -3341,7 +3591,7 @@ async fn run_runtime_update_command_with_timeouts(
         // pid that could already have exited and been reused in that case.
         if timed_out {
             if let Some(pid) = child_pid {
-                kill_process_tree(pid);
+                let _ = kill_process_tree(pid);
             }
         }
         let _ = child.start_kill();
@@ -5057,7 +5307,13 @@ async fn claude_turn_start(
     agent_state: State<'_, ChildAgentState>,
     options: ClaudeTurnOptions,
 ) -> Result<ClaudeTurnStarted, String> {
+    let mut process_requested = false;
+    let mut safe_not_dispatched = false;
+    let result: Result<ClaudeTurnStarted, String> = async {
+    let turn_id = uuid::Uuid::new_v4().to_string();
+    let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
     let binary = resolve_claude_binary(&app).await?;
+    start.assert_current()?;
     if !state.authenticated.load(Ordering::Acquire) {
         let auth = read_claude_runtime_status(&app).await;
         state.authenticated.store(auth.logged_in, Ordering::Release);
@@ -5075,12 +5331,11 @@ async fn claude_turn_start(
         .lock()
         .await
         .get(&options.thread_id)
-        .is_some_and(|turn| turn.alive.load(Ordering::Acquire))
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire))
     {
         return Err("Claude is already working in this thread".into());
     }
 
-    let turn_id = uuid::Uuid::new_v4().to_string();
     let home = crate::release_qa::home_dir(&app).ok();
     let mut command = subscription_only_command(&binary, home.as_deref());
     // Windows executable resolution must not prefer a project-local binary
@@ -5224,9 +5479,11 @@ async fn claude_turn_start(
     let user_message =
         claude_user_message(&options.thread_id, &options.prompt, &options.attachments).await?;
 
+    start.assert_current()?;
+    process_requested = true;
     let mut child = command
         .spawn()
-        .map_err(|error| format!("Could not start Claude Code: {error}"))?;
+        .map_err(|error| { safe_not_dispatched = true; format!("Could not start Claude Code: {error}") })?;
     let pid = child.id();
     let stdin = child
         .stdin
@@ -5242,20 +5499,33 @@ async fn claude_turn_start(
         .ok_or_else(|| "Claude Code did not provide an error stream".to_string())?;
     let alive = Arc::new(AtomicBool::new(true));
     let turn = Arc::new(ClaudeTurn {
+        turn_id: turn_id.clone(),
+        start_request_id: options.start_request_id.clone(),
         stdin: Mutex::new(Some(stdin)),
         child: Arc::new(Mutex::new(child)),
         pid,
         alive: alive.clone(),
+        cutoff_uncertain: AtomicBool::new(false),
+        cutoff_error: StdMutex::new(None),
         control_requests: Mutex::new(HashSet::new()),
         control_response: Mutex::new(()),
     });
     if !claim_turn_slot(&state.turns, &options.thread_id, &turn, |existing| {
-        existing.alive.load(Ordering::Acquire)
+        existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
     })
     .await
     {
-        turn.shutdown().await;
+        let _ = turn.shutdown().await;
         return Err("Claude is already working in this thread".into());
+    }
+    if let Err(error) = start.assert_current() {
+        if let Err(cutoff) = turn.shutdown().await {
+            start.record_cutoff_error(&cutoff);
+            return Err(format!("{error} The unused process cutoff is uncertain: {cutoff}"));
+        }
+        remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
+        safe_not_dispatched = true;
+        return Err(error);
     }
 
     // Both output pipes are drained before any input is written. A CLI that
@@ -5289,8 +5559,12 @@ async fn claude_turn_start(
     {
         Ok(early_output) => early_output,
         Err(error) => {
+            if let Err(cutoff) = turn.shutdown().await {
+                start.record_cutoff_error(&cutoff);
+                stderr_task.abort();
+                return Err(format!("{error} Claude startup cleanup could not confirm cutoff: {cutoff}"));
+            }
             remove_claude_turn_if_current(&state.turns, &options.thread_id, &turn).await;
-            turn.shutdown().await;
             stderr_task.abort();
             return Err(error);
         }
@@ -5306,6 +5580,13 @@ async fn claude_turn_start(
     let stdout_app = app.clone();
     let read_only = options.permission == "read-only";
     let interactive = options.interactive;
+    let stdout_mailbox_config = if options.native_subagents {
+        None
+    } else {
+        options.child_agent_bridge_config.clone()
+    };
+    let stdout_permission = options.permission;
+    let stdout_cwd = options.cwd;
     let stdout_thread = options.thread_id;
     let stdout_turn = turn_id.clone();
     let turns = state.turns.clone();
@@ -5446,7 +5727,19 @@ async fn claude_turn_start(
                 break;
             }
             if message.get("type").and_then(Value::as_str) == Some("control_request") {
-                if let Some(response) = claude_unattended_denial(interactive, &message)
+                let mailbox_response = if let Some(config_path) = stdout_mailbox_config.as_deref() {
+                    child_agent_bridge_mailbox_control_response(
+                        &stdout_app.state::<ChildAgentState>(),
+                        config_path,
+                        &stdout_permission,
+                        &stdout_cwd,
+                        &message,
+                    ).await
+                } else {
+                    None
+                };
+                if let Some(response) = mailbox_response
+                    .or_else(|| claude_unattended_denial(interactive, &message))
                     .or_else(|| claude_read_only_denial(read_only, &message))
                 {
                     if stdout_runtime.write(&response).await.is_err() {
@@ -5478,8 +5771,8 @@ async fn claude_turn_start(
         }
         flush_deltas(&mut delta_buffer, &stdout_app);
         let saw_result = terminal_result.is_some();
-        let exit = if observed_exit.is_some() {
-            observed_exit
+        let exit_result = if let Some(exit) = observed_exit {
+            Ok(exit)
         } else {
             let mut child = stdout_child.lock().await;
             let grace = if saw_result {
@@ -5488,6 +5781,18 @@ async fn claude_turn_start(
                 Duration::from_secs(5)
             };
             reap_claude_process(&mut child, &mut lines.into_inner(), grace).await
+        };
+        let exit = match exit_result {
+            Ok(exit) => Some(exit),
+            Err(error) => {
+                stdout_runtime.alive.store(false, Ordering::Release);
+                stdout_runtime.cutoff_uncertain.store(true, Ordering::Release);
+                *stdout_runtime.cutoff_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
+                stderr_task.abort();
+                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn,
+                    json!({"type":"openkiwi_cutoff_uncertain","message":error})).await;
+                return;
+            }
         };
         let recovered = claude_can_recover_at_exit(saw_terminal_assistant, exit.as_ref());
         if let Some(message) = terminal_result {
@@ -5561,6 +5866,10 @@ async fn claude_turn_start(
     });
 
     Ok(ClaudeTurnStarted { turn_id })
+    }.await;
+    if process_requested && !safe_not_dispatched { result } else {
+        result.map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error)))
+    }
 }
 
 #[tauri::command]
@@ -5602,8 +5911,10 @@ async fn claude_turn_interrupt(
         // The stdin pipe is unusable, so the process is dead or wedged and a
         // cooperative interrupt can never reach it. Free the slot now instead
         // of leaving the thread stuck until Mythra Code restarts.
+        if let Err(cutoff) = turn.shutdown().await {
+            return Err(format!("{error}. Claude cutoff could not be confirmed: {cutoff}"));
+        }
         remove_claude_turn_if_current(&state.turns, &thread_id, &turn).await;
-        turn.shutdown().await;
         return Err(error);
     }
     // Escalate if the CLI ignores the interrupt. A healthy process emits a
@@ -5613,8 +5924,9 @@ async fn claude_turn_interrupt(
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(CLAUDE_INTERRUPT_GRACE).await;
         if turn.alive.load(Ordering::Acquire) {
-            remove_claude_turn_if_current(&turns, &thread_id, &turn).await;
-            turn.shutdown().await;
+            if turn.shutdown().await.is_ok() {
+                remove_claude_turn_if_current(&turns, &thread_id, &turn).await;
+            }
         }
     });
     Ok(())
@@ -5623,10 +5935,29 @@ async fn claude_turn_interrupt(
 /// Force-stop the Claude process for a thread, releasing its slot immediately.
 /// Used by the frontend when a stale process is blocking new turns.
 #[tauri::command]
-async fn claude_turn_kill(state: State<'_, ClaudeState>, thread_id: String) -> Result<(), String> {
-    let turn = state.turns.lock().await.remove(&thread_id);
+async fn claude_turn_kill(state: State<'_, ClaudeState>, thread_id: String, expected_turn_id: Option<String>, expected_start_request_id: Option<String>) -> Result<(), String> {
+    let turns = state.turns.lock().await;
+    let turn = turns.get(&thread_id).cloned();
+    if turn.as_ref().is_some_and(|turn| expected_turn_id.as_deref().is_some_and(|expected| expected != turn.turn_id)
+        || expected_start_request_id.as_deref().is_some_and(|expected| turn.start_request_id.as_deref() != Some(expected))) {
+        return Err("The Stop request belongs to an older Claude turn; the current turn was preserved.".into());
+    }
+    let pending = state.starts.cancel(&thread_id, expected_turn_id.as_deref(), expected_start_request_id.as_deref())?;
+    drop(turns);
     if let Some(turn) = turn {
-        turn.shutdown().await;
+        turn.shutdown().await?;
+        remove_claude_turn_if_current(&state.turns, &thread_id, &turn).await;
+    }
+    await_native_start_settlement(pending.clone()).await?;
+    // An attempt may have registered its process after our first snapshot.
+    // Settlement is not cutoff proof: inspect only that exact late owner.
+    if let Some(pending) = pending {
+        let late = state.turns.lock().await.get(&thread_id).cloned()
+            .filter(|turn| turn.turn_id == pending.turn_id);
+        if let Some(turn) = late {
+            turn.shutdown().await?;
+            remove_claude_turn_if_current(&state.turns, &thread_id, &turn).await;
+        }
     }
     Ok(())
 }
@@ -5641,7 +5972,7 @@ async fn claude_turn_active(
         .lock()
         .await
         .get(&thread_id)
-        .is_some_and(|turn| turn.alive.load(Ordering::Acquire)))
+        .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)))
 }
 
 #[tauri::command]
@@ -6427,7 +6758,7 @@ impl CodexFirstAssistantDeltas {
     }
 }
 
-async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppServer>, String> {
+async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<Arc<AppServer>>) -> Result<Arc<AppServer>, String> {
     release_qa::require_providers()?;
     let app_data = crate::release_qa::app_data_dir(app)
         .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
@@ -6534,9 +6865,13 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     let app_for_reader = app.clone();
     let alive = Arc::new(AtomicBool::new(true));
     let alive_for_reader = alive.clone();
+    let cutoff = Arc::new(RuntimeCutoffState::default());
+    let cutoff_for_reader = cutoff.clone();
     let server_requests: Arc<Mutex<HashMap<String, CodexServerRequestIdentity>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let server_requests_for_reader = server_requests.clone();
+    let loaded_threads = Arc::new(RwLock::new(HashSet::<String>::new()));
+    let loaded_threads_for_reader = loaded_threads.clone();
     let lifecycle_for_reader = state.lifecycle.clone();
     let instance = uuid::Uuid::new_v4().to_string();
     let instance_for_reader = instance.clone();
@@ -6547,11 +6882,12 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
     // the inherited pipe open.
     let stderr_task = stderr.map(|stderr| {
         let app_for_stderr = app.clone();
+        let instance_for_stderr = instance.clone();
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ =
-                    app_for_stderr.emit("codex-event", json!({ "stream": "stderr", "line": line }));
+                    app_for_stderr.emit("codex-event", json!({ "stream": "stderr", "line": line, "runtimeInstance": instance_for_stderr }));
             }
         })
     });
@@ -6582,28 +6918,40 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
                 ProviderRead::Closed => break,
             };
 
-            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
                 flush_deltas(&mut delta_buffer, &app_for_reader);
                 let _ = app_for_reader.emit(
                     "codex-event",
-                    json!({ "stream": "stderr", "line": format!("Invalid app-server message: {line}") }),
+                    json!({ "stream": "stderr", "line": format!("Invalid app-server message: {line}"), "runtimeInstance": instance_for_reader }),
                 );
                 continue;
             };
             lifecycle_for_reader.observe_server_message(&instance_for_reader, &message);
+            if let Some(thread_id) = message["params"]["threadId"].as_str() {
+                loaded_threads_for_reader.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread_id.to_owned());
+            }
+            if let Some(object) = message.as_object_mut() {
+                object.insert("runtimeInstance".into(), json!(instance_for_reader));
+            }
 
             let is_response = message.get("id").is_some()
                 && (message.get("result").is_some() || message.get("error").is_some());
             if is_response {
                 flush_deltas(&mut delta_buffer, &app_for_reader);
                 if let Some(id) = message.get("id").and_then(Value::as_i64) {
+                    {
+                        let mut lifecycle = lifecycle_for_reader.lock();
+                        if lifecycle.instance.as_deref() == Some(&instance_for_reader)
+                            && lifecycle.active_command_requests.remove(&id) {
+                            lifecycle.active_commands = lifecycle.active_commands.saturating_sub(1);
+                        }
+                    }
                     if let Some(sender) = pending_for_reader.lock().await.remove(&id) {
                         let result = if let Some(error) = message.get("error") {
-                            Err(error
+                            Err(provider_error_text(error
                                 .get("message")
                                 .and_then(Value::as_str)
-                                .unwrap_or("Unknown Codex App Server error")
-                                .to_string())
+                                .unwrap_or("Unknown Codex App Server error")))
                         } else {
                             Ok(message.get("result").cloned().unwrap_or(Value::Null))
                         };
@@ -6652,34 +7000,43 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         flush_deltas(&mut delta_buffer, &app_for_reader);
 
         alive_for_reader.store(false, Ordering::Release);
-        let _ = app_for_reader.emit("codex-runtime", json!({ "alive": false }));
+        let mut dead_threads = loaded_threads_for_reader.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        {
+            let lifecycle = lifecycle_for_reader.lock();
+            if lifecycle.instance.as_deref() == Some(&instance_for_reader) {
+                dead_threads.extend(lifecycle.active_turns.iter().cloned());
+                dead_threads.extend(lifecycle.active_native_agents.iter().cloned());
+                dead_threads.extend(lifecycle.starting_turns.iter().cloned());
+            }
+        }
         let mut pending = pending_for_reader.lock().await;
         for (_, sender) in pending.drain() {
-            let _ = sender.send(Err("Codex App Server connection closed".into()));
+            let _ = sender.send(Err("MYTHRA_DELIVERY_UNCERTAIN: Codex App Server connection closed before a protocol acknowledgement.".into()));
         }
         let _ = app_for_reader.emit(
             "codex-event",
-            json!({ "stream": "stderr", "line": "Codex App Server connection closed" }),
+            json!({ "stream": "stderr", "line": "Codex App Server connection closed", "runtimeInstance": instance_for_reader }),
         );
         drop(pending);
 
-        // Reap the child so it does not linger as a zombie after stdout EOF.
-        let mut child = child_for_reader.lock().await;
-        if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
-            // `kill` also awaits the child, so it is reaped either way.
-            let _ = child.kill().await;
-        }
-        drop(child);
+        // EOF is transport evidence. Only a confirmed exit/cutoff authorizes
+        // the renderer to settle this instance's owned work.
+        let cutoff_confirmed = cutoff_runtime_child(&child_for_reader, &cutoff_for_reader).await.is_ok();
+        let _ = app_for_reader.emit("codex-runtime", json!({ "alive": false, "instance": instance_for_reader,
+            "runtimeInstance": instance_for_reader, "threadIds": dead_threads, "cutoffConfirmed": cutoff_confirmed }));
         // The pid is free for reuse from here on, so it must no longer be
         // published as ours.
-        clear_server_identity(&identity_slot_for_reader, identity);
-        lifecycle_for_reader.clear_instance(&instance_for_reader);
+        if cutoff_confirmed {
+            clear_server_identity(&identity_slot_for_reader, identity);
+            lifecycle_for_reader.clear_instance(&instance_for_reader);
+        }
         if let Some(stderr_task) = stderr_task {
             finish_stderr_reader(stderr_task).await;
         }
     });
 
     let server = Arc::new(AppServer {
+        app: app.clone(),
         stdin: Mutex::new(stdin),
         child,
         identity,
@@ -6691,45 +7048,57 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppSe
         pending,
         next_id: AtomicI64::new(1),
         alive,
+        cutoff,
         server_requests,
-        loaded_threads: RwLock::new(HashSet::new()),
+        loaded_threads,
         openrouter_proxy_url,
         openrouter_proxy_task,
     });
 
+    // Keep the retryable native handle even if initialization fails and its
+    // cleanup cannot establish that the process tree stopped.
+    *slot = Some(server.clone());
+
     if let Err(error) = server.request("initialize", initialize_params()).await {
-        server.shutdown().await;
+        server.shutdown().await.map_err(|cutoff| format!("{error}. Runtime startup cleanup remains uncertain: {cutoff}"))?;
+        *slot = None;
         return Err(error);
     }
     if let Err(error) = server.notify("initialized", json!({})).await {
-        server.shutdown().await;
+        server.shutdown().await.map_err(|cutoff| format!("{error}. Runtime startup cleanup remains uncertain: {cutoff}"))?;
+        *slot = None;
         return Err(error);
     }
-    let _ = app.emit("codex-runtime", json!({ "alive": true }));
+    let _ = app.emit("codex-runtime", json!({ "alive": true, "instance": server.instance, "runtimeInstance": server.instance }));
     Ok(server)
 }
 
 async fn ensure_server(app: &AppHandle, state: &RuntimeState) -> Result<Arc<AppServer>, String> {
     let mut guard = state.server.lock().await;
-    // Another task can repopulate the slot while the lock is released for the
-    // stale shutdown, so re-check the guard every time it is re-acquired.
-    while let Some(server) = guard.as_ref() {
+    // Serialize replacement behind successful cutoff. The old handle stays
+    // in this slot if cleanup is uncertain, so another call can retry it.
+    while let Some(server) = guard.as_ref().cloned() {
         if server.is_alive() {
             return Ok(server.clone());
         }
-        let stale = guard.take();
-        drop(guard);
-        if let Some(stale) = stale {
-            stale.shutdown().await;
-        }
-        guard = state.server.lock().await;
+        server.shutdown().await.map_err(|error| format!("The previous Codex runtime cutoff is unconfirmed; replacement was refused: {error}"))?;
+        *guard = None;
     }
 
     // The child's identity was published by spawn_server before initialize,
     // so the exit handler could already reach it during that window.
-    let server = spawn_server(app, state).await?;
+    let server = spawn_server(app, state, &mut *guard).await?;
     *guard = Some(server.clone());
     Ok(server)
+}
+
+async fn shutdown_current_runtime(state: &RuntimeState) -> Result<(), String> {
+    let mut slot = state.server.lock().await;
+    if let Some(server) = slot.as_ref().cloned() {
+        server.shutdown().await?;
+        *slot = None;
+    }
+    Ok(())
 }
 
 /// Validate the high-impact RPCs that the webview is allowed to forward.
@@ -6916,6 +7285,9 @@ async fn codex_rpc(
     method: String,
     mut params: Value,
 ) -> Result<Value, String> {
+    let expected_instance = params.as_object_mut().and_then(|object| object.remove("expectedRuntimeInstance"))
+        .filter(|value| !value.is_null()).map(|value| value.as_str().map(str::to_owned)
+            .ok_or_else(|| "MYTHRA_NOT_DISPATCHED: Invalid expected runtime identity.".to_string())).transpose()?;
     const ALLOWED_METHODS: &[&str] = &[
         "account/read",
         "account/login/start",
@@ -6975,27 +7347,30 @@ async fn codex_rpc(
         "fuzzyFileSearch",
     ];
     if !ALLOWED_METHODS.contains(&method.as_str()) {
-        return Err(format!(
+        return Err(native_predispatch_refusal(format!(
             "Mythra Code's desktop bridge does not allow the RPC method `{method}`"
-        ));
+        )));
     }
-    enforce_codex_delegation_config(&method, &mut params)?;
-    validate_rpc_params(&method, &params)?;
-    validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &params).await?;
+    enforce_codex_delegation_config(&method, &mut params).map_err(native_predispatch_refusal)?;
+    validate_rpc_params(&method, &params).map_err(native_predispatch_refusal)?;
+    validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &params).await.map_err(native_predispatch_refusal)?;
     // Register before `ensure_server` so a read cannot spawn a process in the
     // gap after a reserved restart has taken the old server out of the slot.
-    let _rpc_guard = state.lifecycle.begin_rpc_call(&method)?;
+    let _rpc_guard = state.lifecycle.begin_rpc_call(&method).map_err(native_predispatch_refusal)?;
     let server = ensure_server(&app, &state).await?;
-    validate_native_codex_runtime(&method, &params, &server.runtime_version)?;
+    if expected_instance.as_deref().is_some_and(|expected| expected != server.instance) {
+        return Err("MYTHRA_NOT_DISPATCHED: The Codex runtime changed before this action was dispatched. Read the conversation's runtime state again.".into());
+    }
+    validate_native_codex_runtime(&method, &params, &server.runtime_version).map_err(native_predispatch_refusal)?;
     if requests_native_codex(&method, &params) {
         let cwd = params.get("cwd").and_then(Value::as_str).filter(|cwd| !cwd.is_empty())
-            .ok_or_else(|| "Native Codex startup requires its working directory to verify inherited bridges.".to_string())?;
+            .ok_or_else(|| native_predispatch_refusal("Native Codex startup requires its working directory to verify inherited bridges.".to_string()))?;
         // One read from this existing process, only for native startup. Never
         // bootstrap another client or retry a failed safety inspection.
         let effective = server.request("config/read", json!({ "cwd": cwd, "includeLayers": false })).await
             .map_err(|_| "Could not verify inherited Mythra Code bridges. The native thread was not started; retry after the Codex runtime is available.".to_string())?;
-        let bridge_params = native_codex_effective_bridge_params(&params, &effective["config"])?;
-        validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &bridge_params).await?;
+        let bridge_params = native_codex_effective_bridge_params(&params, &effective["config"]).map_err(native_predispatch_refusal)?;
+        validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &bridge_params).await.map_err(native_predispatch_refusal)?;
     }
     if matches!(
         method.as_str(),
@@ -7006,23 +7381,8 @@ async fn codex_rpc(
     let result = match server.request(&method, params.clone()).await {
         Ok(result) => Ok(result),
         Err(error) if !server.is_alive() => {
-            let dead = {
-                let mut guard = state.server.lock().await;
-                if guard
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &server))
-                {
-                    guard.take()
-                } else {
-                    None
-                }
-            };
-            // The process is gone, but shutdown still has to abort the
-            // OpenRouter proxy task or its listener (and key) outlive the
-            // server it belonged to.
-            if let Some(dead) = dead {
-                dead.shutdown().await;
-            }
+            // ensure_server retains the old native slot until successful
+            // cutoff; transport failure alone never authorizes replacement.
             let recovered = ensure_server(&app, &state).await.map_err(|restart_error| {
                 format!("{error}. Mythra Code also could not restart the runtime: {restart_error}")
             })?;
@@ -7074,7 +7434,7 @@ async fn codex_respond(
     }
     let response = server.respond(id, result).await;
     if let Some(response_guard) = response_guard {
-        response_guard.finish(response.is_ok());
+        response_guard.finish(response.is_ok(), response.is_err());
     }
     response
 }
@@ -7107,9 +7467,7 @@ async fn save_openrouter_key(
 
     let published = publish_saved_key(&OPENROUTER_KEY_READ, saved_key);
 
-    if let Some(server) = state.server.lock().await.take() {
-        server.shutdown().await;
-    }
+    shutdown_current_runtime(&state).await?;
     let restarted = ensure_server(&app, &state).await.map(|_| ());
     clear_saved_key_after_restart(&OPENROUTER_KEY_READ, &published);
     restarted
@@ -7148,9 +7506,7 @@ async fn save_lmstudio_key(
 
     let published = publish_saved_key(&LMSTUDIO_KEY_READ, saved_key);
 
-    if let Some(server) = state.server.lock().await.take() {
-        server.shutdown().await;
-    }
+    shutdown_current_runtime(&state).await?;
     let restarted = ensure_server(&app, &state).await.map(|_| ());
     clear_saved_key_after_restart(&LMSTUDIO_KEY_READ, &published);
     restarted
@@ -7462,9 +7818,7 @@ async fn restart_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Resu
     // Serialize ordinary capability/provider restarts with the tokenized
     // model-refresh restart, and gate new mutation RPCs during replacement.
     let _restart_guard = state.lifecycle.begin_generic_restart()?;
-    if let Some(server) = state.server.lock().await.take() {
-        server.shutdown().await;
-    }
+    shutdown_current_runtime(&state).await?;
     let _ = ensure_server(&app, &state).await?;
     Ok(())
 }
@@ -7490,9 +7844,7 @@ async fn restart_runtime_reserved(
         lifecycle: state.lifecycle.clone(),
         token,
     };
-    if let Some(server) = state.server.lock().await.take() {
-        server.shutdown().await;
-    }
+    shutdown_current_runtime(&state).await?;
     let _ = ensure_server(&app, &state).await?;
     Ok(())
 }
@@ -7513,9 +7865,7 @@ fn shutdown_runtime_on_exit(app: &AppHandle) {
     match server {
         Ok(Some(server)) => {
             let graceful = tauri::async_runtime::block_on(async {
-                timeout(Duration::from_secs(2), server.shutdown())
-                    .await
-                    .is_ok()
+                matches!(timeout(Duration::from_secs(2), server.shutdown()).await, Ok(Ok(())))
             });
             if !graceful {
                 // Last resort: signal the tree by identity without touching
@@ -7551,13 +7901,13 @@ fn shutdown_claude_on_exit(app: &AppHandle) {
     });
     for turn in turns {
         let stopped = tauri::async_runtime::block_on(async {
-            timeout(Duration::from_secs(1), turn.shutdown())
-                .await
-                .is_ok()
+            matches!(timeout(Duration::from_secs(1), turn.shutdown()).await, Ok(Ok(())))
         });
         if !stopped {
-            if let Some(pid) = turn.pid {
-                kill_process_tree(pid);
+            if let Ok(mut child) = turn.child.try_lock() {
+                if matches!(child.try_wait(), Ok(None)) {
+                    if let Some(pid) = child.id() { let _ = kill_process_tree(pid); }
+                }
             }
         }
     }
@@ -7752,6 +8102,7 @@ pub fn run() {
                     cursor_turn_interrupt,
                     cursor_turn_kill,
                     cursor_turn_active,
+                    cursor_turn_state,
                     cursor_permission_respond,
                     state_read,
                     state_read_raw,
@@ -7821,6 +8172,10 @@ pub fn run() {
                     child_agent_session_end,
                     child_agent_respond,
                     child_agent_finished,
+                    child_agent_reactivate,
+                    child_agent_request_active,
+                    child_agent_claim_spawn,
+                    child_agent_retire_unclaimed_spawns,
                     runtime_instance,
                     runtime_thread_state,
                     restart_runtime,

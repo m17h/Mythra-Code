@@ -66,7 +66,7 @@ function queueSessionOperation<T>(sessionId: string, operation: () => Promise<T>
 export function registerChildProjectLaunch(threadId: string, sessionId: string, launch: ChildAgentBridgeLaunch, context: ProjectBridgeContext): void {
   childProjectSessions.set(threadId, sessionId);
   launches.set(sessionId, launch);
-  launchContexts.set(sessionId, JSON.stringify(context));
+  launchContexts.set(sessionId, JSON.stringify({ ...context, collaborationV2: false }));
   terminalScopes.delete(sessionId);
 }
 
@@ -75,6 +75,18 @@ async function childProjectSessionId(threadId: string): Promise<string> {
   // Stable across renderer reloads so re-registration rotates a child's old
   // token instead of leaving a previous permission policy reachable.
   return `language-child-${Array.from(new Uint8Array(digest).slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * The child conversation a child bridge session belongs to. Session ids are
+ * authenticated by the backend token, so this maps a request to exactly one
+ * registered child; links persisted before a reload supply the fallback.
+ */
+export function childThreadForBridgeSession(sessionId: string, links: Record<string, ChildAgentLink>): string | undefined {
+  for (const [threadId, childSession] of childProjectSessions) {
+    if (childSession === sessionId) return threadId;
+  }
+  return Object.values(links).find((link) => link.languageSessionId === sessionId)?.childThreadId;
 }
 
 /** Test seam and reload guard: drop every cached descriptor. */
@@ -118,7 +130,7 @@ export interface ChildAgentBridgeInput {
   links: Record<string, ChildAgentLink>;
   /** Includes provider-native ownership, which is stored separately from bridge links. */
   isChildThread?: boolean;
-  settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax" | "subagentEngine">;
+  settings: Pick<AppSettings, "childAgents" | "subagentsEnabled" | "subagentMax" | "subagentEngine" | "managedSubagentV2">;
   permission: PermissionMode;
   /** Current provider guides tool routing without changing authority. */
   provider?: Provider;
@@ -156,17 +168,30 @@ export async function ensureChildAgentBridge(
   input: ChildAgentBridgeInput,
 ): Promise<ChildAgentBridgeResult | null> {
   const childThread = Boolean(input.isChildThread || (input.threadId && input.links[input.threadId]));
+  // Only a Mythra Code-owned child has a parent mailbox. Provider-native
+  // children keep their language-only bridge exactly as before.
+  const managedChild = Boolean(input.threadId && input.links[input.threadId]);
+  const childConversations = Boolean(input.threadId && input.links[input.threadId]?.signoff === "required");
   const projectContext: ProjectBridgeContext = {
     ...(input.projectPath ? { projectPath: input.projectPath } : {}),
     permission: input.permission,
     ...(input.provider ? { provider: input.provider } : {}),
     ...(childThread ? { childThread: true } : {}),
-    ...(input.settings.subagentEngine === "native" ? { nativeDelegation: true } : {}),
+    ...(managedChild ? { parentMessaging: childConversations } : {}),
+    // Opening a managed child can inherit the project's native engine setting,
+    // but its ownership still grants only its own parent mailbox. Native
+    // children remain language-only and never acquire this managed authority.
+    ...(!managedChild && input.settings.subagentEngine === "native" ? { nativeDelegation: true } : {}),
   };
-  const contextIdentity = JSON.stringify(projectContext);
+  const contextIdentityFor = (policy: ChildAgentPolicy) => JSON.stringify({
+    ...projectContext,
+    collaborationV2: policy.collaborationV2 === true,
+  });
   let invocationCurrent = () => true;
   let lifetime: object | undefined;
-  const cachedLaunch = async (sessionId: string) => {
+  const cachedLaunch = async (policy: ChildAgentPolicy) => {
+    const sessionId = policy.sessionId;
+    const contextIdentity = contextIdentityFor(policy);
     lifetime = sessionLifetimes.get(sessionId) ?? {};
     sessionLifetimes.set(sessionId, lifetime);
     if (launchContexts.has(sessionId) && launchContexts.get(sessionId) !== contextIdentity) {
@@ -190,8 +215,9 @@ export async function ensureChildAgentBridge(
     return queueSessionOperation(policy.sessionId, async () => {
       const current = () => invocationCurrent() && sessionRegistrations.get(policy.sessionId) === registration;
       if (!current()) throw new Error("This project bridge registration was cancelled.");
-      // Keep the existing call shape for non-project sessions.
-      const launch = input.projectPath
+      // Keep the existing call shape for projectless roots. A projectless
+      // managed child still needs its child scope and parent mailbox flags.
+      const launch = input.projectPath || projectContext.childThread
         ? await startChildAgentSession(policy, known, finished, projectContext)
         : await startChildAgentSession(policy, known, ...(finished.length ? [finished] : []));
       if (!current()) {
@@ -201,7 +227,7 @@ export async function ensureChildAgentBridge(
         throw new Error("This project bridge registration was cancelled.");
       }
       launches.set(policy.sessionId, launch);
-      launchContexts.set(policy.sessionId, contextIdentity);
+      launchContexts.set(policy.sessionId, contextIdentityFor(policy));
       if (!projectContext.childThread && projectContext.projectPath?.trim()
         && launch.toolNames.includes("read_project_terminal")) {
         terminalScopes.set(policy.sessionId, projectContext.projectPath);
@@ -210,7 +236,7 @@ export async function ensureChildAgentBridge(
     });
   };
   if (childThread) {
-    if (!input.projectPath || !input.threadId) return null;
+    if (!input.threadId || (!input.projectPath && !managedChild)) return null;
     const threadId = input.threadId;
     const invocation = {};
     pendingChildRegistrations.set(threadId, invocation);
@@ -236,12 +262,15 @@ export async function ensureChildAgentBridge(
         projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
+        // Child authority comes from its durable signoff marker, never from
+        // root conversation tools or the current global preview setting.
+        collaborationV2: false,
         capturedAt: Date.now(),
       };
       // Publish provisional ownership before yielding, including random IDs
       // used by delegated first turns. Release must retire this exact session.
       childProjectSessions.set(threadId, sessionId);
-      const cached = await cachedLaunch(sessionId);
+      const cached = await cachedLaunch(policy);
       if (!invocationCurrent()) throw new Error("This project bridge registration was cancelled.");
       assertLifetime(sessionId);
       return { policy, launch: cached ?? await startSession(policy, []), captured: false };
@@ -276,6 +305,15 @@ export async function ensureChildAgentBridge(
     capturedAt: recapture.approvedAt,
     pendingRecapture: undefined,
   } : stored;
+  // A preview switch must not strand an assignment already awaiting its
+  // parent's review. Keep that crew's conversations until explicit acceptance;
+  // the next real prompt can then adopt the user's current default either way.
+  const unsettledV2Crew = Boolean(input.threadId && Object.values(input.links).some((link) =>
+    link.rootThreadId === input.threadId && link.signoff === "required" && !link.acceptedAt));
+  const collaborationV2 = input.settings.subagentEngine !== "native" && (unsettledV2Crew
+    || (input.promoteStagedEdits || !stored
+      ? input.settings.managedSubagentV2 === true
+      : stored.collaborationV2 === true));
   // The destination roster is frozen, not the execution boundary. Permission
   // mode is a live composer control and every child promises to inherit the
   // parent turn's current mode. Refresh it in both directions so an old Ask
@@ -290,7 +328,8 @@ export async function ensureChildAgentBridge(
     projectInstructionsEnabled: input.projectInstructionsEnabled === true,
     projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
     serviceTier: input.serviceTier,
-  } : frozenExisting ? { ...frozenExisting, permission: input.permission } : undefined;
+    collaborationV2,
+  } : frozenExisting ? { ...frozenExisting, permission: input.permission, collaborationV2 } : undefined;
   const policyUpdated = Boolean(stored && existing && JSON.stringify(stored) !== JSON.stringify(existing));
   // The switch is read fresh every turn, in both directions. Switching
   // sub-agents (or cross-provider delegation) off has to remove the powers a
@@ -323,12 +362,13 @@ export async function ensureChildAgentBridge(
         projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
+        collaborationV2,
         capturedAt: Date.now(),
       }),
       targets: [],
     };
     cacheChildAgentPolicy(policy);
-    const cached = await cachedLaunch(policy.sessionId);
+    const cached = await cachedLaunch(policy);
     cacheChildAgentPolicy(policy);
     if (cached && !cached.toolNames.includes("spawn_mythra_agent")
       && (input.settings.subagentEngine === "native" || cached.toolNames.includes("propose_agent_settings"))) {
@@ -355,6 +395,7 @@ export async function ensureChildAgentBridge(
     childAgents: input.settings.childAgents,
     subagentsEnabled: input.settings.subagentsEnabled,
     subagentMax: input.settings.subagentMax,
+    collaborationV2,
     permission: input.permission,
     systemPrompt: input.systemPrompt,
     providerSystemPrompts: input.providerSystemPrompts,
@@ -377,7 +418,7 @@ export async function ensureChildAgentBridge(
   // remember to invalidate the launch cache.
   if (recapture) launches.delete(policy.sessionId);
 
-  const cached = await cachedLaunch(policy.sessionId);
+  const cached = await cachedLaunch(policy);
   cacheChildAgentPolicy(policy);
   if (cached?.toolNames.includes("spawn_mythra_agent")) {
     return { policy, launch: cached, captured: false, ...(policyUpdated ? { policyUpdated: true } : {}) };
