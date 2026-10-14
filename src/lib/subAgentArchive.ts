@@ -40,16 +40,25 @@ export function nativeArchiveActivity(input: NativeArchiveEvidence & {
  * when its own completion arrives. This function is deliberately independent
  * of provider: native Codex children and Mythra Code-managed Claude/Cursor/OpenAI
  * children share the same durable ownership graph.
+ *
+ * Managed children created with parent conversations additionally wait for
+ * explicit sign-off: a finished turn (the child's or the parent's) is only
+ * "awaiting review". `requiresSignoff` reports exactly those children; native
+ * and legacy children are unaffected.
  */
 export function autoArchiveSubagentCandidates(input: NativeArchiveEvidence & {
   completedThreadId: string;
   links: OwnershipLinks;
   statuses: Record<string, TaskStatus>;
   archivedThreadIds?: Iterable<string>;
+  requiresSignoff?: (childThreadId: string) => boolean;
 }): string[] {
   const archived = new Set(input.archivedThreadIds ?? []);
   const ownership = input.links[input.completedThreadId];
-  if (ownership && active(input.statuses[ownership.rootThreadId])) return [];
+  // A nested native parent can be seeded idle after reload while its own
+  // roster/link still proves (or cannot rule out) active work.
+  if (ownership && (active(input.statuses[ownership.rootThreadId])
+    || nativeArchiveActivity({ ...input, threadId: ownership.rootThreadId }).activeSelf)) return [];
   const candidates = ownership
     ? [input.completedThreadId]
     : Object.entries(input.links)
@@ -59,6 +68,7 @@ export function autoArchiveSubagentCandidates(input: NativeArchiveEvidence & {
   return [...new Set(candidates)].filter((childThreadId) => {
     const nativeActivity = nativeArchiveActivity({ ...input, threadId: childThreadId });
     return !active(input.statuses[childThreadId]) && !archived.has(childThreadId)
-      && !nativeActivity.activeSelf && !nativeActivity.activeDescendants;
+      && !nativeActivity.activeSelf && !nativeActivity.activeDescendants
+      && !input.requiresSignoff?.(childThreadId);
   });
 }

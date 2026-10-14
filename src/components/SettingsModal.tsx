@@ -140,7 +140,7 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
       { id: "pricing", label: "Model pricing", icon: BadgeDollarSign, detail: "Official OpenAI and Anthropic API list prices per 1M tokens. Reference only; subscriptions aren’t billed at these rates.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread, plus optional automatically learned preferences.", keywords: "prompt system instructions agents.md claude.md guidance context profile global memory learning learned preferences history" },
-      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Thread cleanup and reusable sub-agent setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew" },
+      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review" },
     ],
   },
   {
@@ -380,6 +380,7 @@ export function SettingsModal({
   onToggleModelFavorite,
   onDiscoverOpenRouterModels,
   childAgentReadiness,
+  managedSubagentV2LockedReason,
   githubStatus,
   githubBusy = false,
   githubLoginPending = false,
@@ -389,6 +390,7 @@ export function SettingsModal({
   openRouterPricingError,
   onClose,
   onSave,
+  onBeforeSave,
   onThemePreview,
   onEffortSliderPreview,
   onChatFontPreview,
@@ -497,6 +499,8 @@ export function SettingsModal({
   onDiscoverOpenRouterModels?: (query: string) => void;
   /** Which providers a cross-provider child could be started on right now. */
   childAgentReadiness: ChildAgentReadiness;
+  /** Live workflow-change lock; draft edits are retained until saving. */
+  managedSubagentV2LockedReason?: string;
   githubStatus: GitHubAccountStatus | null;
   githubBusy?: boolean;
   githubLoginPending?: boolean;
@@ -506,6 +510,8 @@ export function SettingsModal({
   openRouterPricingError?: string;
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
+  /** Reject a stale workflow draft before persisting any settings sections. */
+  onBeforeSave?: (settings: AppSettings) => boolean;
   onThemePreview: (theme: ThemeName) => void;
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onChatFontPreview: (font: ChatFont) => void;
@@ -602,6 +608,9 @@ export function SettingsModal({
   // the last limit so switching back on restores it.
   const [terminalTimeoutText, setTerminalTimeoutText] = useState<string | null>(null);
   const subagentPanelId = useId();
+  const managedSubagentV2Id = useId();
+  const managedSubagentV2DraftLocked = Boolean(managedSubagentV2LockedReason)
+    && (local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true);
   const terminalTimeoutId = useId();
   const escapeStopsRunId = useId();
   const [apiKey, setApiKey] = useState("");
@@ -1106,6 +1115,7 @@ export function SettingsModal({
 
   const saveSettings = () => {
     if (!projectDefaultsComplete || terminalTimeoutInvalid) return;
+    if (onBeforeSave?.(local) === false) return;
     const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects));
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
     onProjects(nextProjects);
@@ -1702,6 +1712,38 @@ export function SettingsModal({
           {settingsSection === "agents" &&
           <section className="settings-section subagent-settings">
             <div className="set-group">
+              <h4>Sub-agent workflow</h4>
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong className="subagent-preview-heading">Mythra Code sub-agents V2 <span className="subagent-preview-badge">Preview</span></strong>
+                    <small id={`${managedSubagentV2Id}-help`}>Off: sub-agents run an assignment once and return their result. On: parents and sub-agents can ask questions, continue conversations, and steer work, with parent review before automatic archiving.</small>
+                    <small id={`${managedSubagentV2Id}-scope`}>Only affects the Mythra Code sub-agent system. Native Claude Code and Codex sub-agents, their models, limits, and settings are unchanged.</small>
+                    <small>Applies across all projects using Mythra Code-managed sub-agents. Existing V2 crews keep their workflow until their assignments are reviewed and accepted.</small>
+                    {local.managedSubagentV2 === true && <small role="status">V2 preview selected for Mythra Code only. Your native sub-agent setup stays unchanged.</small>}
+                    {managedSubagentV2LockedReason && <p className="subagent-preview-lock" id={`${managedSubagentV2Id}-lock`} role="status"><Info size={13} aria-hidden="true" /><span>{managedSubagentV2LockedReason}</span></p>}
+                    {managedSubagentV2DraftLocked && <>
+                      <small id={`${managedSubagentV2Id}-draft`}>The switch shows your unsaved draft. V2 is still {settings.managedSubagentV2 === true ? "on" : "off"}. Keep the current workflow to save your other settings while this change is waiting.</small>
+                      <button type="button" className="secondary-button subagent-preview-keep-current" aria-describedby={`${managedSubagentV2Id}-draft`} onClick={() => setLocal((draft) => ({ ...draft, managedSubagentV2: settings.managedSubagentV2 === true }))}>Keep current workflow</button>
+                    </>}
+                  </div>
+                  <div className="set-control">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="Mythra Code sub-agents V2"
+                      aria-describedby={`${managedSubagentV2Id}-help ${managedSubagentV2Id}-scope${managedSubagentV2LockedReason ? ` ${managedSubagentV2Id}-lock` : ""}${managedSubagentV2DraftLocked ? ` ${managedSubagentV2Id}-draft` : ""}`}
+                      aria-checked={local.managedSubagentV2 === true}
+                      disabled={Boolean(managedSubagentV2LockedReason)}
+                      className={`toggle-switch subagent-preview-toggle ${local.managedSubagentV2 === true ? "on" : ""}`}
+                      onClick={() => setLocal((draft) => ({ ...draft, managedSubagentV2: draft.managedSubagentV2 !== true }))}
+                    ><span /></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="set-group">
               <h4>Sub-agent defaults</h4>
               <div className="set-card">
                 <div className="set-row">
@@ -1736,7 +1778,7 @@ export function SettingsModal({
               <div className="set-card"><div className="set-row">
                 <div className="set-copy">
                   <strong>Archive sub-agent threads automatically</strong>
-                  <small>Move each settled sub-agent conversation to Archived once its parent finishes. Sub-agents still working stay visible.</small>
+                  <small>Move settled sub-agent threads to Archived once their parent finishes. V2 assignments also need explicit parent or user sign-off; active work and pending guidance stay visible.</small>
                 </div>
                 <div className="set-control">
                   <button

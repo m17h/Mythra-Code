@@ -27,8 +27,9 @@
  */
 
 import { loadStored, storeValue } from "./storage";
-import type { NativeSubagentOptions } from "../types";
+import type { NativeSubagentOptions, Provider } from "../types";
 import { sanitizeNativeSubagentMax, sanitizeNativeSubagentOptions } from "./threadSubagentSettings";
+import { normalizeLmStudioBaseUrl } from "./turnConfig";
 
 const STORAGE_KEY = "kiwi.threadSubagentCapabilities";
 /** Bump whenever startup-only routing policy changes for loaded threads. */
@@ -73,14 +74,27 @@ export interface SubagentCapabilities {
   bridgeInstanceId?: string;
 }
 
-export function subagentCapabilitySignature(capabilities: SubagentCapabilities): string {
+/** Startup-only inputs that a warm app-server thread cannot silently replace. */
+export interface ThreadStartupIdentity {
+  provider?: Provider;
+  lmStudioBaseUrl?: string;
+  modelContextWindow?: number;
+}
+
+export function subagentCapabilitySignature(capabilities: SubagentCapabilities, identity: ThreadStartupIdentity = {}): string {
   // A parallel limit only means something while sub-agents are on, so nudging
   // it with the feature switched off is not a reason to reconfigure anything.
   const route = capabilities.subagentsEnabled ? capabilities.subagentEngine === "native" ? "native" : "on" : "off";
   const max = route === "native" ? sanitizeNativeSubagentMax(capabilities.nativeSubagentMax)
     : capabilities.subagentsEnabled ? Math.max(1, Math.floor(capabilities.subagentMax) || 1) : 1;
   const nativeOptions = route === "native" ? sanitizeNativeSubagentOptions(capabilities.nativeSubagentOptions)?.codex : undefined;
-  return `${RUNTIME_POLICY_REVISION}:${route}:${max}:${capabilities.bridgeInstanceId ?? ""}${route === "native" ? `:${JSON.stringify(nativeOptions ?? {})}` : ""}:compact=${capabilities.autoCompactTokens ?? "default"}`;
+  const startup = JSON.stringify({
+    provider: identity.provider ?? "openai",
+    endpoint: identity.provider === "lmstudio" ? normalizeLmStudioBaseUrl(identity.lmStudioBaseUrl) : null,
+    context: Number.isSafeInteger(identity.modelContextWindow) && identity.modelContextWindow! > 0
+      ? identity.modelContextWindow : null,
+  });
+  return `${RUNTIME_POLICY_REVISION}:${route}:${max}:${capabilities.bridgeInstanceId ?? ""}${route === "native" ? `:${JSON.stringify(nativeOptions ?? {})}` : ""}:compact=${capabilities.autoCompactTokens ?? "default"}:startup=${startup}`;
 }
 
 export interface SubagentCapabilityPlan {

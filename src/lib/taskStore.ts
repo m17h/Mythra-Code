@@ -216,6 +216,11 @@ export interface HistoryReadBoundary {
   activitySnapshots: ReadonlyMap<string, Activity>;
 }
 
+export interface HistoryHydrationOptions {
+  /** Local disk trails renderer observations; provider history is authoritative. */
+  source: "local";
+}
+
 /** Capture before requesting history, while the pending/live identity is still known. */
 export function captureHistoryReadBoundary(task: ThreadTaskState | undefined): HistoryReadBoundary {
   let lastOrder = 0;
@@ -245,11 +250,13 @@ interface TaskStoreState {
   setWorkflowOwner: (threadId: string, owner: WorkflowThreadOwner | null) => void;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
-  hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState, readBoundary?: HistoryReadBoundary) => void;
+  hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState, readBoundary?: HistoryReadBoundary, options?: HistoryHydrationOptions) => void;
   setHistory: (threadId: string, patch: Partial<ThreadHistoryState>) => void;
   prependHistory: (threadId: string, messages: ChatMessage[], activities: Activity[], patch: Partial<ThreadHistoryState>) => void;
   setTranscriptDirty: (threadId: string, dirty: boolean) => void;
   appendUserMessage: (threadId: string, message: ChatMessage) => void;
+  /** Attach a late provider identity without reopening a settled or newer turn. */
+  bindUserMessageTurn: (threadId: string, messageId: string, turnId: string) => void;
   setMessageSteerStatus: (threadId: string, messageId: string, status: ChatMessage["steerStatus"]) => void;
   removeMessage: (threadId: string, messageId: string) => void;
   startAssistantMessage: (threadId: string, message: ChatMessage) => void;
@@ -358,8 +365,17 @@ interface PendingAssistantDelta {
 }
 
 const pendingDeltas = new Map<string, Map<string, PendingAssistantDelta>>();
+// A renderer can receive a suffix before its local transcript is loaded. Such
+// a row has observed bytes, but no durable prefix yet. This is not a marker for
+// ordinary new messages in a resident conversation.
+const localDeltaRowsWithoutHistory = new Map<string, Set<string>>();
+const localTranscriptThreads = new Set<string>();
+// streaming=false in a local snapshot is presentation metadata, not a
+// provider's item-completed receipt. Exact admitted live deltas may reopen
+// these rows; completeMessage retires this permission.
+const locallyHydratedAssistantRows = new Map<string, Set<string>>();
 const pendingReasoningItems = new Map<string, Set<string>>();
-const reasoningStreams = new Map<string, { summary: string; content: string; turnId?: string }>();
+const reasoningStreams = new Map<string, { summary: string; content: string; turnId?: string; localPrefix?: string; withoutHistory?: boolean }>();
 /** Activity statuses after which no further deltas belong to the row. */
 const TERMINAL_ACTIVITY_STATUSES = new Set(["completed", "cancelled", "interrupted", "failed", "error"]);
 
@@ -389,12 +405,16 @@ function withTimelineOrder<T extends { timelineOrder?: number }>(entry: T): T {
 type HydrationEntry = { kind: "message"; entry: ChatMessage } | { kind: "activity"; entry: Activity };
 
 /** Merge the read's chronology with locally observed rows using shared IDs as anchors. */
-function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskState | undefined, boundary: HistoryReadBoundary, preservedTurnIds: ReadonlySet<string> = new Set(), authoritativeTerminalTurnIds: ReadonlySet<string> = new Set()): HydrationEntry[] {
+function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskState | undefined, boundary: HistoryReadBoundary, preservedTurnIds: ReadonlySet<string> = new Set(), authoritativeTerminalTurnIds: ReadonlySet<string> = new Set(), localSource = false): HydrationEntry[] {
   type Node = { value: HydrationEntry; previous?: Node; next?: Node };
   let first: Node | undefined;
   let last: Node | undefined;
   const anchors = new Map<string, Node>();
   const keyFor = (value: HydrationEntry) => `${value.kind}:${value.entry.id}`;
+  const locallyObserved = (value: HydrationEntry) => localSource && Boolean(task?.transcriptDirty
+    || value.kind === "message" && value.entry.streaming
+    || value.kind === "activity" && value.entry.status === "inProgress"
+    || task?.activeTurnId && value.entry.turnId === task.activeTurnId);
   for (const value of incoming.sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0))) {
     const node: Node = { value, previous: last };
     if (last) last.next = node; else first = node;
@@ -410,6 +430,7 @@ function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskSta
   ].filter((value) => !(value.entry.turnStatus === "interrupted" && value.entry.turnId
       && authoritativeTerminalTurnIds.has(value.entry.turnId))
     && (anchors.has(keyFor(value))
+    || locallyObserved(value)
     || (value.entry.timelineOrder ?? -1) > boundary.preserveAfterOrder
     || Boolean(value.entry.turnId && preservedTurnIds.has(value.entry.turnId))))
     .sort((left, right) => (left.entry.timelineOrder ?? 0) - (right.entry.timelineOrder ?? 0));
@@ -424,9 +445,9 @@ function mergeHistoryReadEntries(incoming: HydrationEntry[], task: ThreadTaskSta
     const anchor = anchors.get(keyFor(value));
     if (anchor) {
       const snapshot = value.kind === "message" ? boundary.messageSnapshots.get(value.entry.id) : boundary.activitySnapshots.get(value.entry.id);
-      if (value.entry !== snapshot && (value.entry.timelineOrder ?? -1) > boundary.preserveAfterOrder) {
-        // The store updates rows immutably. A changed reference proves this
-        // payload is newer than the read; keep the durable row's identity.
+      if (locallyObserved(value) || value.entry !== snapshot && (value.entry.timelineOrder ?? -1) > boundary.preserveAfterOrder) {
+        // Local disk may already lag the captured payload. Authoritative
+        // history instead preserves only mutations made during its read.
         anchor.value = { ...value, entry: { ...anchor.value.entry, ...value.entry, id: anchor.value.entry.id } } as HydrationEntry;
       }
       previous = anchor;
@@ -665,6 +686,9 @@ function evictColdTranscripts(
     hydratedCount -= 1;
     hydratedBytes = Math.max(0, hydratedBytes - task.estimatedTranscriptBytes);
     pendingDeltas.delete(task.threadId);
+    localDeltaRowsWithoutHistory.delete(task.threadId);
+    localTranscriptThreads.delete(task.threadId);
+    locallyHydratedAssistantRows.delete(task.threadId);
     clearReasoningBuffers(task.threadId);
   }
   return hydratedCount === hydrated.length ? null : tasks;
@@ -777,13 +801,64 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       statuses: { ...state.statuses, [threadId]: "idle" },
     };
   }),
-  hydrateTask: (threadId, messages, activities, workspacePath, history, readBoundary) => set((state) => {
+  hydrateTask: (threadId, messages, activities, workspacePath, history, readBoundary, options) => set((state) => {
     const existing = state.tasks[threadId];
+    const local = options?.source === "local";
+    if (local) localTranscriptThreads.add(threadId);
+    else localTranscriptThreads.delete(threadId);
+    if (local) {
+      const rows = locallyHydratedAssistantRows.get(threadId) ?? new Set<string>();
+      const residentIds = new Set((existing?.messages ?? []).map((message) => message.id));
+      for (const message of messages) {
+        if (["completed", "interrupted", "failed"].includes(message.turnStatus ?? "")) rows.delete(message.id);
+        else if (message.role === "assistant" && message.streaming === false && !residentIds.has(message.id)) rows.add(message.id);
+      }
+      if (rows.size) locallyHydratedAssistantRows.set(threadId, rows);
+    } else locallyHydratedAssistantRows.delete(threadId);
+    const suffixRows = localDeltaRowsWithoutHistory.get(threadId);
+    if (local && suffixRows?.size) {
+      const existingById = new Map((existing?.messages ?? []).map((message) => [message.id, message]));
+      messages = messages.map((message) => {
+        if (!suffixRows.has(message.id)) return message;
+        const observed = existingById.get(message.id);
+        // The marker proves these bytes were observed without any resident
+        // history. Attach the durable prefix exactly once before later deltas.
+        if (observed) existingById.set(message.id, { ...observed, text: `${message.text}${observed.text}` });
+        return existing?.activeTurnId === message.turnId
+          && !["completed", "interrupted", "failed"].includes(message.turnStatus ?? "")
+          ? { ...message, streaming: true } : message;
+      });
+      if (existing) {
+        // Use a temporary immutable view; the normal chronology merge below
+        // still owns the final task update and byte accounting.
+        state = { ...state, tasks: { ...state.tasks, [threadId]: { ...existing,
+          messages: existing.messages.map((message) => existingById.get(message.id) ?? message) } } };
+      }
+      localDeltaRowsWithoutHistory.delete(threadId);
+    } else if (!local) localDeltaRowsWithoutHistory.delete(threadId);
+    if (local) {
+      const observedActivities = new Map((state.tasks[threadId]?.activities ?? []).map((activity) => [activity.id, activity]));
+      for (const activity of activities) {
+        const stream = reasoningStreams.get(`${threadId}\0${activity.id}`);
+        if (!stream?.withoutHistory) continue;
+        stream.localPrefix = activity.detail ?? "";
+        stream.withoutHistory = false;
+        const observed = observedActivities.get(activity.id);
+        if (observed) observedActivities.set(activity.id, { ...observed,
+          detail: `${stream.localPrefix}${stream.content || stream.summary}`.trim() });
+      }
+      const task = state.tasks[threadId];
+      if (task && [...observedActivities.values()].some((activity, index) => activity !== task.activities[index])) {
+        state = { ...state, tasks: { ...state.tasks, [threadId]: { ...task,
+          activities: task.activities.map((activity) => observedActivities.get(activity.id) ?? activity) } } };
+      }
+    }
+    const currentExisting = state.tasks[threadId];
     const incomingMessagesById = new Map(messages.map((message) => [message.id, message]));
-    const existingMessagesById = new Map((existing?.messages ?? []).map((message) => [message.id, message]));
-    const existingActivitiesById = new Map((existing?.activities ?? []).map((activity) => [activity.id, activity]));
+    const existingMessagesById = new Map((currentExisting?.messages ?? []).map((message) => [message.id, message]));
+    const existingActivitiesById = new Map((currentExisting?.activities ?? []).map((activity) => [activity.id, activity]));
     const representedTurnIds = new Set([...messages, ...activities].flatMap((entry) => entry.turnId ? [entry.turnId] : []));
-    const authoritativeTerminalTurnIds = new Set([...messages, ...activities]
+    const authoritativeTerminalTurnIds = new Set((local && existing?.transcriptDirty ? [] : [...messages, ...activities])
       .filter((entry) => !("role" in entry && entry.role === "user")
         && (entry.turnStatus === "completed" || entry.turnStatus === "failed"))
       .flatMap((entry) => entry.turnId ? [entry.turnId] : []));
@@ -837,10 +912,21 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const hydratedActivities = activities.map((activity) => {
       const previous = existingActivitiesById.get(activity.id);
       const stopped = Boolean(activity.turnId && preservedStoppedTurnIds.has(activity.turnId));
+      // Runtime history does not necessarily retain renderer-observed native
+      // assignment identities. Keep only provenance from this exact row/turn
+      // for children the incoming row still represents; legacy rows stay unknown.
+      const retainedActivationIds = activity.agent && activity.agent.activationIds === undefined
+        && activity.turnId && previous?.turnId === activity.turnId && previous.agent?.activationIds
+        ? Object.fromEntries((activity.agent.threadIds ?? []).flatMap((childId) => {
+          const activationId = previous.agent?.activationIds?.[childId];
+          return activationId?.trim() ? [[childId, activationId]] : [];
+        })) : undefined;
       const restored = {
         ...restoreHistoryActivity(activity, existing),
         ...(stopped && previous?.turnId === activity.turnId ? { ...previous, id: activity.id, timelineOrder: activity.timelineOrder } : {}),
         ...(stopped ? { turnStatus: "interrupted" as const } : {}),
+        ...(retainedActivationIds && Object.keys(retainedActivationIds).length
+          ? { agent: { ...activity.agent!, activationIds: retainedActivationIds } } : {}),
         ...(activity.workType === undefined && previous?.workType ? { workType: previous.workType } : {}),
         turnDurationMs: activity.turnDurationMs ?? durationForTurn(threadId, activity.turnId),
       };
@@ -867,7 +953,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       if (preserved.kind === "message") inFlight.push(withTimelineOrder(entry as ChatMessage));
       else inFlightActivities.push(withTimelineOrder(restoreHistoryActivity(entry as Activity, existing)));
     }
-    const mergeBoundary = readBoundary ?? (preservedStoppedTurnIds.size ? {
+    const mergeBoundary = readBoundary ?? (local ? captureHistoryReadBoundary(existing) : preservedStoppedTurnIds.size ? {
       preserveAfterOrder: Infinity, messageSnapshots: new Map<string, ChatMessage>(), activitySnapshots: new Map<string, Activity>(),
     } : undefined);
     const mergedReadEntries = mergeBoundary ? mergeHistoryReadEntries([
@@ -875,7 +961,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       ...hydratedActivities.map((entry) => ({ kind: "activity" as const, entry })),
       ...preservedEntries.filter((value) => (value.entry.timelineOrder ?? -1) <= mergeBoundary.preserveAfterOrder
         && !(value.entry.turnId && preservedStoppedTurnIds.has(value.entry.turnId))),
-    ], existing, mergeBoundary, preservedStoppedTurnIds, authoritativeTerminalTurnIds) : undefined;
+    ], currentExisting, mergeBoundary, preservedStoppedTurnIds, authoritativeTerminalTurnIds, local) : undefined;
     const nextMessages = mergedReadEntries ? mergedReadEntries.flatMap((value) => value.kind === "message" ? [value.entry] : []) : [...hydratedMessages, ...inFlight];
     const nextActivities = mergedReadEntries ? mergedReadEntries.flatMap((value) => value.kind === "activity" ? [value.entry] : []) : [...hydratedActivities, ...inFlightActivities];
     const nextTasks = {
@@ -886,13 +972,17 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         messages: nextMessages,
         activities: nextActivities,
         estimatedTranscriptBytes: estimateTranscriptBytes(nextMessages, nextActivities),
-        transcriptDirty: false,
+        // Hydration is not a write receipt. Local rows preserved above remain
+        // protected until the save scheduler acknowledges their revision.
+        transcriptDirty: local ? existing?.transcriptDirty ?? false : false,
         history: history ?? existing?.history ?? EMPTY_THREAD_HISTORY,
         unread: false,
         updatedAt: Date.now(),
       },
     };
-    const statuses = { ...state.statuses, [threadId]: state.statuses[threadId] ?? "idle" };
+    const statuses = state.statuses[threadId] === undefined
+      ? { ...state.statuses, [threadId]: "idle" as const }
+      : state.statuses;
     const evictedTasks = evictColdTranscripts({ ...state, tasks: nextTasks, statuses }, state.activeThreadId);
     return { tasks: evictedTasks ?? nextTasks, statuses };
   }),
@@ -952,6 +1042,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     };
   }),
   setTranscriptDirty: (threadId, dirty) => set((state) => {
+    if (!dirty) localDeltaRowsWithoutHistory.delete(threadId);
     const task = state.tasks[threadId];
     if (!task || task.transcriptDirty === dirty) return state;
     return {
@@ -989,6 +1080,28 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       updatedAt: Date.now(),
     } } };
   }),
+  bindUserMessageTurn: (threadId, messageId, turnId) => set((state) => {
+    const task = state.tasks[threadId];
+    if (!task || !turnId.trim()) return state;
+    const index = task.messages.findIndex((message) => message.role === "user"
+      && (message.id === messageId || message.clientMessageId === messageId));
+    if (index < 0) return state;
+    const previous = task.messages[index];
+    // A provider echo or a newer activation may already own this entry.
+    if (previous.turnId && previous.turnId !== turnId) return state;
+    const terminal = terminalStatusForTurn(task, turnId);
+    if (previous.turnId === turnId && (!terminal || previous.turnStatus === terminal)) return state;
+    const next = { ...previous, turnId, ...(terminal ? { turnStatus: terminal } : {}) };
+    const messages = [...task.messages];
+    messages[index] = next;
+    return { tasks: { ...state.tasks, [threadId]: {
+      ...task,
+      messages,
+      estimatedTranscriptBytes: adjustedBytes(task.estimatedTranscriptBytes, estimateMessageBytes(previous), estimateMessageBytes(next)),
+      transcriptDirty: true,
+      updatedAt: Date.now(),
+    } } };
+  }),
   setMessageSteerStatus: (threadId, messageId, status) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
@@ -1005,6 +1118,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     } } };
   }),
   removeMessage: (threadId, messageId) => set((state) => {
+    localDeltaRowsWithoutHistory.get(threadId)?.delete(messageId);
+    locallyHydratedAssistantRows.get(threadId)?.delete(messageId);
     const task = state.tasks[threadId];
     const removed = task?.messages.filter((message) => message.id === messageId) ?? [];
     if (!task || removed.length === 0) return state;
@@ -1062,6 +1177,28 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // reach turn/steer even though final output has already started arriving.
     const currentTask = get().tasks[threadId];
     const deltaTurnId = turnId ?? currentTask?.activeTurnId;
+    if (deltaTurnId && deltaTurnId === currentTask?.activeTurnId
+      && locallyHydratedAssistantRows.get(threadId)?.has(itemId)) {
+      locallyHydratedAssistantRows.get(threadId)?.delete(itemId);
+      set((state) => {
+        const task = state.tasks[threadId];
+        if (!task || task.activeTurnId !== deltaTurnId) return state;
+        const index = task.messages.findIndex((message) => message.id === itemId && message.turnId === deltaTurnId);
+        if (index < 0 || ["completed", "interrupted", "failed"].includes(task.messages[index].turnStatus ?? "")) return state;
+        const messages = [...task.messages];
+        messages[index] = { ...messages[index], streaming: true };
+        return { tasks: { ...state.tasks, [threadId]: { ...task, messages } } };
+      });
+    }
+    if (currentTask?.messages.at(-1)?.id !== itemId
+      && !pendingDeltas.get(threadId)?.has(itemId)
+      && !currentTask?.messages.some((message) => message.id === itemId)
+      && !currentTask?.messages.some((message) => message.role === "user"
+        && (!message.turnId || message.turnId === deltaTurnId))) {
+      const rows = localDeltaRowsWithoutHistory.get(threadId) ?? new Set<string>();
+      rows.add(itemId);
+      localDeltaRowsWithoutHistory.set(threadId, rows);
+    }
     if (currentTask?.activeTurnId && deltaTurnId === currentTask.activeTurnId && currentTask.assistantOutputTurnId !== currentTask.activeTurnId) {
       set((state) => {
         const current = state.tasks[threadId];
@@ -1104,7 +1241,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         };
       });
     }
-    const stream = reasoningStreams.get(key) ?? { summary: "", content: "", turnId: owner };
+    const stream = reasoningStreams.get(key) ?? { summary: "", content: "", turnId: owner,
+      ...(localTranscriptThreads.has(threadId) && existing?.detail ? { localPrefix: existing.detail } : {}),
+      withoutHistory: !existing && !current?.messages.some((message) => message.role === "user"
+        && (!message.turnId || message.turnId === owner)) };
     stream[source] = `${stream[source]}${delta}`;
     reasoningStreams.set(key, stream);
     const items = pendingReasoningItems.get(threadId) ?? new Set<string>();
@@ -1157,7 +1297,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         let activitiesCopied = false;
         for (const itemId of reasoningBatch.get(threadId) ?? []) {
           const stream = reasoningStreams.get(`${threadId}\0${itemId}`);
-          const detail = (stream?.content || stream?.summary || "").trim();
+          const detail = `${stream?.localPrefix ?? ""}${stream?.content || stream?.summary || ""}`.trim();
           if (!detail) continue;
           const index = activities.findIndex((activity) => activity.id === itemId);
           const owner = stream?.turnId ?? activities[index]?.turnId ?? task.activeTurnId;
@@ -1190,6 +1330,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     recordStreamingFlush(new Set([...batch.keys(), ...reasoningBatch.keys()]), flushStartedAt, performance.now());
   },
   completeMessage: (threadId, message) => {
+    localDeltaRowsWithoutHistory.get(threadId)?.delete(message.id);
+    locallyHydratedAssistantRows.get(threadId)?.delete(message.id);
     // Drop any queued deltas for this item so a flush scheduled before the
     // completion event cannot re-append the tail of the finalized text.
     const queuedForThread = pendingDeltas.get(threadId);
@@ -1797,6 +1939,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // Clear queued streaming buffers so a pending flush cannot resurrect the
     // deleted thread as a ghost task.
     pendingDeltas.delete(threadId);
+    localDeltaRowsWithoutHistory.delete(threadId);
+    localTranscriptThreads.delete(threadId);
+    locallyHydratedAssistantRows.delete(threadId);
     clearReasoningBuffers(threadId);
     return set((state) => {
       const tasks = { ...state.tasks };
@@ -1815,6 +1960,9 @@ export function resetTaskStore(): void {
   resetCursorTurnOwnershipForTests();
   resetRuntimePerformanceDiagnostics();
   pendingDeltas.clear();
+  localDeltaRowsWithoutHistory.clear();
+  localTranscriptThreads.clear();
+  locallyHydratedAssistantRows.clear();
   pendingReasoningItems.clear();
   reasoningStreams.clear();
   timelineSequence = 0;

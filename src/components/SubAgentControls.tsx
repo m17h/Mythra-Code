@@ -3,8 +3,11 @@ import { isSubAgentWorkerActive, type SubAgentWorker } from "../lib/subAgentActi
 
 interface Controls {
   workers: SubAgentWorker[];
+  /** Durable readouts for transcript cards; does not widen the live fleet. */
+  historyWorkers?: SubAgentWorker[];
   onOpen: (worker: SubAgentWorker) => Promise<void>;
   onStop: (worker: SubAgentWorker) => Promise<void>;
+  onAccept?: (worker: SubAgentWorker) => Promise<void>;
 }
 export const SubAgentControls = createContext<(Controls & { now: number }) | null>(null);
 
@@ -29,7 +32,7 @@ export function SubAgentControlsProvider({ children, ...controls }: Controls & {
       document.removeEventListener("visibilitychange", refreshVisibility);
     };
   }, [active]);
-  const { workers, onOpen, onStop } = controls;
-  const value = useMemo(() => ({ workers, onOpen, onStop, now }), [workers, onOpen, onStop, now]);
+  const { workers, historyWorkers, onOpen, onStop, onAccept } = controls;
+  const value = useMemo(() => ({ workers, historyWorkers, onOpen, onStop, onAccept, now }), [workers, historyWorkers, onOpen, onStop, onAccept, now]);
   return <SubAgentControls.Provider value={value}>{children}</SubAgentControls.Provider>;
 }

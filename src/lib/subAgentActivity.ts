@@ -1,4 +1,5 @@
-import { childAgentModel, childLifecycleForLink, providerDisplayName, type ChildAgentLink } from "./childAgents";
+import { childAgentModel, childLifecycleForLink, childReviewPhase, providerDisplayName, type ChildAgentLink } from "./childAgents";
+import { summarizeChildMailbox, type ChildMailbox, type ChildMailMessage } from "./childAgentMailbox";
 import { nativeDescendantIds, type NativeAgentLink, type NativeAgentReadout } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
 import type { AgentRecord } from "../components/StudioDock";
@@ -20,10 +21,37 @@ export type SubAgentWorkerStatus = "unknown" | "idle" | "starting" | "working" |
 
 export type SubAgentWorkerKind = "cross-provider" | "native";
 
+/** Review state of a Mythra Code-managed child, independent of its run status. */
+export type SubAgentReview = "awaiting" | "accepted";
+
+/** Parent ↔ child mailbox counters for one worker row. */
+export interface SubAgentMailState {
+  /** Child questions the parent has not answered yet (read or unread). */
+  openQuestions: number;
+  /** Child questions/updates the parent has not read yet. */
+  unread: number;
+  /** Unread updates, separate from unanswered questions. */
+  unreadUpdates: number;
+  /** Retained guidance whose delivery failed or remains unconfirmed. */
+  deliveryIssues: number;
+  /** Parent guidance not yet delivered to the child. */
+  queuedForChild: number;
+  latestQuestion?: string;
+  /** Newest entries, oldest first, for the details view. */
+  recent: Array<Pick<ChildMailMessage, "id" | "direction" | "kind" | "text" | "state" | "reason" | "uncertain" | "via" | "replyTo" | "answeredAt" | "closedAt" | "textTruncated">>;
+  /** Guidance currently awaiting a provider acknowledgement. */
+  deliveringForChild: number;
+  /** Older entries trimmed by the mailbox bound. */
+  dropped: number;
+  /** Retained settled messages omitted from this compact details view. */
+  notShown: number;
+}
+
 export interface SubAgentWorker extends NativeAgentReadout {
   /** Child thread id for cross-provider work; the runtime agent id otherwise. */
   id: string;
   kind: SubAgentWorkerKind;
+  nativeRuntime?: "codex" | "claude";
   status: SubAgentWorkerStatus;
   /** Short human title, usually the delegated prompt. */
   title: string;
@@ -37,17 +65,40 @@ export interface SubAgentWorker extends NativeAgentReadout {
   finishedAt?: number;
   canOpen?: boolean;
   canStop?: boolean;
+  /** Managed children only: awaiting the parent's sign-off, or accepted. */
+  review?: SubAgentReview;
+  /** Exact settled result shown when the user presses Accept. */
+  reviewToken?: string;
+  acceptedBy?: "parent" | "user";
+  resultRevision?: number;
+  manualAttemptId?: string;
+  acceptNote?: string;
+  mail?: SubAgentMailState;
 }
 
 export interface SubAgentCounts {
   total: number;
-  /** Holding a concurrency slot right now: starting or working. */
+  /** Active or unresolved work: unknown children retain the safety boundary. */
   active: number;
   starting: number;
   working: number;
   completed: number;
   cancelled: number;
   failed: number;
+  /** Finished managed children still waiting for the parent's sign-off. */
+  awaitingReview?: number;
+  /** Completed turns specifically awaiting sign-off, excluding failed/stopped work. */
+  completedAwaitingReview?: number;
+  /** Managed assignments explicitly signed off by the parent or user. */
+  accepted?: number;
+  completedAccepted?: number;
+  unknown?: number;
+  /** Unanswered child questions across the crew. */
+  questions?: number;
+  unreadUpdates?: number;
+  deliveryIssues?: number;
+  /** Earlier native assignments whose conversation now has another activation. */
+  historical?: number;
 }
 
 const ACTIVE_STATUSES: SubAgentWorkerStatus[] = ["starting", "working", "unknown"];
@@ -120,6 +171,15 @@ export function subAgentStatusLabel(status: SubAgentWorkerStatus): string {
   return "Idle";
 }
 
+/** Row label that separates "finished this turn" from "accepted". */
+export function subAgentWorkerLabel(worker: Pick<SubAgentWorker, "status" | "review">): string {
+  if (!isSubAgentWorkerActive(worker.status)) {
+    if (worker.review === "accepted") return "Accepted";
+    if (worker.review === "awaiting") return worker.status === "completed" ? "Awaiting review" : `${subAgentStatusLabel(worker.status)} · awaiting review`;
+  }
+  return subAgentStatusLabel(worker.status);
+}
+
 function sortWorkers(workers: SubAgentWorker[]): SubAgentWorker[] {
   return [...workers].sort((left, right) => (
     STATUS_ORDER[left.status] - STATUS_ORDER[right.status]
@@ -147,6 +207,34 @@ export interface SubAgentWorkerInput {
   /** Fallback provider only; a parent's model is never child model evidence. */
   nativeProvider?: Provider;
   nativeModel?: string;
+  /** Parent ↔ child mailboxes keyed by child thread id. */
+  mailboxes?: Readonly<Record<string, ChildMailbox>>;
+  reviewTokens?: Readonly<Record<string, string | undefined>>;
+}
+
+const MAX_RECENT_MAIL = 6;
+
+function mailState(mailbox: ChildMailbox | undefined): SubAgentMailState | undefined {
+  if (!mailbox || !mailbox.messages.length && !mailbox.dropped) return undefined;
+  const summary = summarizeChildMailbox(mailbox);
+  // A compact view must still expose every unresolved question and unread
+  // update, even if newer settled messages pushed it outside the last six.
+  const recentStart = Math.max(0, mailbox.messages.length - MAX_RECENT_MAIL);
+  const visibleMessages = mailbox.messages.filter((message, index) => index >= recentStart
+    || message.state === "unread" || message.state === "queued" || message.state === "delivering" || message.state === "failed" || message.uncertain
+    || message.direction === "toParent" && message.kind === "question" && !message.answeredAt && !message.closedAt);
+  return {
+    openQuestions: summary.unansweredQuestions,
+    unread: summary.unreadQuestions + summary.unreadUpdates,
+    unreadUpdates: summary.unreadUpdates,
+    deliveryIssues: mailbox.messages.filter((message) => message.direction === "toChild" && (message.state === "failed" || message.uncertain)).length,
+    queuedForChild: summary.queuedForChild,
+    deliveringForChild: mailbox.messages.filter((message) => message.direction === "toChild" && message.state === "delivering").length,
+    ...(summary.latestQuestion ? { latestQuestion: summary.latestQuestion.text } : {}),
+    recent: visibleMessages.map(({ id, direction, kind, text, state, reason, uncertain, via, replyTo, answeredAt, closedAt, textTruncated }) => ({ id, direction, kind, text, state, reason, uncertain, via, replyTo, answeredAt, closedAt, textTruncated })),
+    dropped: mailbox.dropped,
+    notShown: mailbox.messages.length - visibleMessages.length,
+  };
 }
 
 /** A filesystem-looking `agent.path`, which is not a provider/model summary. */
@@ -330,8 +418,15 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
     // provider-native agent after the run boundary advances.
     owned.add(link.childThreadId);
     const lifecycle = childLifecycleForLink(link, input.statuses[link.childThreadId] ?? "idle");
+    const phase = childReviewPhase(link, input.statuses[link.childThreadId] ?? "idle");
+    const awaitingSignoff = link.signoff === "required" && !link.acceptedAt;
+    const mail = mailState(input.mailboxes?.[link.childThreadId]);
+    // Work awaiting sign-off or a reply stays in view after the run boundary
+    // advances; it is not settled yet even though its turn ended.
+    const needsAttention = awaitingSignoff || lifecycle === "unknown" || Boolean(mail?.openQuestions || mail?.queuedForChild || mail?.unread
+      || !link.acceptedAt && mail?.deliveryIssues);
     if (input.runStartedAt !== undefined && link.createdAt < input.runStartedAt
-      && lifecycle !== "running" && lifecycle !== "starting") continue;
+      && lifecycle !== "running" && lifecycle !== "starting" && !needsAttention) continue;
     const model = childAgentModel(link);
     workers.push({
       id: link.childThreadId,
@@ -342,8 +437,15 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       provider: link.provider,
       model,
       detail: `${providerDisplayName(link.provider)} · ${model || "provider default"}`,
+      activationId: link.activationId,
+      resultRevision: link.resultRevision,
+      manualAttemptId: link.manualAttemptId,
       createdAt: link.createdAt,
       ...(link.finishedAt ? { finishedAt: link.finishedAt } : {}),
+      ...(awaitingSignoff && phase !== "running" && phase !== "unknown" ? { review: "awaiting" as const } : {}),
+      ...(input.reviewTokens?.[link.childThreadId] ? { reviewToken: input.reviewTokens[link.childThreadId] } : {}),
+      ...(link.acceptedAt && phase === "accepted" ? { review: "accepted" as const, acceptedBy: link.acceptedBy ?? "parent", ...(link.acceptNote ? { acceptNote: link.acceptNote } : {}) } : {}),
+      ...(mail ? { mail } : {}),
     });
   }
 
@@ -385,6 +487,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
     workers.push({
       id: agent.id,
       kind: "native",
+      nativeRuntime: agent.runtime ?? nativeLink?.runtime,
       status,
       title: decodeHtmlEntities(nativeLink?.title || agent.prompt || "Delegated task"),
       ...(provider ? { provider } : {}),
@@ -395,6 +498,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       progress: agent.progress ?? nativeLink?.progress,
       result: agent.result ?? nativeLink?.result,
       activationId: agent.activationId ?? nativeLink?.activationId,
+      activationAliasId: agent.activationAliasId !== undefined ? agent.activationAliasId : nativeLink?.activationAliasId,
       detail,
       // Native records carry no timestamp of their own; the durable link does.
       createdAt: nativeLink?.createdAt ?? agent.createdAt ?? 0,
@@ -411,7 +515,15 @@ export function summarizeSubAgentWorkers(workers: SubAgentWorker[]): SubAgentCou
   const counts: SubAgentCounts = { total: workers.length, active: 0, starting: 0, working: 0, completed: 0, cancelled: 0, failed: 0 };
   for (const worker of workers) {
     if (worker.status !== "idle" && worker.status !== "unknown") counts[worker.status] += 1;
+    if (worker.status === "unknown") counts.unknown = (counts.unknown ?? 0) + 1;
     if (isSubAgentWorkerActive(worker.status)) counts.active += 1;
+    if (worker.review === "awaiting" && !isSubAgentWorkerActive(worker.status)) counts.awaitingReview = (counts.awaitingReview ?? 0) + 1;
+    if (worker.review === "awaiting" && worker.status === "completed") counts.completedAwaitingReview = (counts.completedAwaitingReview ?? 0) + 1;
+    if (worker.review === "accepted") counts.accepted = (counts.accepted ?? 0) + 1;
+    if (worker.review === "accepted" && worker.status === "completed") counts.completedAccepted = (counts.completedAccepted ?? 0) + 1;
+    if (worker.mail?.openQuestions) counts.questions = (counts.questions ?? 0) + worker.mail.openQuestions;
+    if (worker.mail?.unreadUpdates) counts.unreadUpdates = (counts.unreadUpdates ?? 0) + worker.mail.unreadUpdates;
+    if (worker.review !== "accepted" && worker.mail?.deliveryIssues) counts.deliveryIssues = (counts.deliveryIssues ?? 0) + worker.mail.deliveryIssues;
   }
   return counts;
 }
@@ -420,11 +532,92 @@ export function summarizeSubAgentWorkers(workers: SubAgentWorker[]): SubAgentCou
 export function describeSubAgentActivity(counts: SubAgentCounts): string {
   if (!counts.total) return "No sub-agents yet";
   const parts: string[] = [];
+  if (counts.questions) parts.push(`${counts.questions} question${counts.questions === 1 ? "" : "s"}`);
+  if (counts.unreadUpdates) parts.push(`${counts.unreadUpdates} unread update${counts.unreadUpdates === 1 ? "" : "s"}`);
+  if (counts.deliveryIssues) parts.push(`${counts.deliveryIssues} delivery issue${counts.deliveryIssues === 1 ? "" : "s"}`);
   if (counts.working) parts.push(`${counts.working} working`);
   if (counts.starting) parts.push(`${counts.starting} starting`);
+  if (counts.unknown) parts.push(`${counts.unknown} status unknown`);
   if (counts.failed) parts.push(`${counts.failed} failed`);
   if (counts.cancelled) parts.push(`${counts.cancelled} cancelled`);
-  if (counts.completed) parts.push(`${counts.completed} done`);
+  if (counts.awaitingReview) parts.push(`${counts.awaitingReview} to review`);
+  if (counts.accepted) parts.push(`${counts.accepted} accepted`);
+  const done = counts.completed - Math.min(counts.completed, (counts.completedAwaitingReview ?? 0) + (counts.completedAccepted ?? 0));
+  if (done) parts.push(`${done} done`);
+  if (counts.historical) parts.push(`${counts.historical} earlier assignment${counts.historical === 1 ? "" : "s"}`);
   if (!parts.length) return `${counts.total} sub-agent${counts.total === 1 ? "" : "s"}`;
   return parts.join(" · ");
+}
+
+export interface SubAgentActivityWorker {
+  id?: string;
+  worker?: SubAgentWorker;
+  status: SubAgentWorkerStatus;
+  historical: boolean;
+  unconfirmedAssignment: boolean;
+  /** Unidentified members share one weighted entry, avoiding allocation by a
+   * provider-supplied wave count. Named children always have a weight of one. */
+  count: number;
+}
+
+/** Resolve children, not the spawn tool's own completion. Cards and wave
+ * summaries share this identity rule so they cannot disagree about live work. */
+export function resolveSubAgentActivityWorkers(activity: Activity, workers: readonly SubAgentWorker[]): SubAgentActivityWorker[] {
+  const ids = [...new Set(activity.agent?.threadIds ?? [])];
+  const managed = activity.id.startsWith("child-agent-");
+  const fallback = managed ? workerStatusFromAgentRecord(activity.status ?? "") : "unknown";
+  const resolved = ids.map((id): SubAgentActivityWorker => {
+    const worker = workers.find((entry) => entry.id === id);
+    // Codex uses the collaboration operation id as its activation identity.
+    // Claude synthetic ids have different semantics and are not compared here.
+    const codex = worker?.kind === "native" && worker.nativeRuntime === "codex";
+    const observedActivation = activity.agent?.activationIds?.[id];
+    const activityActivation = observedActivation ?? activity.id;
+    const matches = Boolean(worker?.activationId && (worker.activationId === activityActivation || worker.activationAliasId === activityActivation));
+    const historical = Boolean(codex && worker.activationId && observedActivation && !matches);
+    // A legacy lifecycle event id is not an assignment id. Missing evidence
+    // can withhold controls, but cannot prove a newer assignment exists.
+    const unconfirmedAssignment = Boolean(codex && !matches && !historical);
+    return { id, worker, status: historical ? "idle" : unconfirmedAssignment ? "unknown" : worker?.status ?? fallback,
+      historical, unconfirmedAssignment, count: 1 };
+  });
+  const reportedCount = activity.agent?.count;
+  const count = Math.max(1, ids.length, typeof reportedCount === "number" && Number.isSafeInteger(reportedCount) && reportedCount > 0 ? reportedCount : 0);
+  if (resolved.length < count) resolved.push({ status: fallback, historical: false, unconfirmedAssignment: false, count: count - resolved.length });
+  return resolved;
+}
+
+export function summarizeSubAgentActivities(activities: readonly Activity[], workers: readonly SubAgentWorker[]): SubAgentCounts {
+  const counts: SubAgentCounts = { total: 0, active: 0, starting: 0, working: 0, completed: 0, cancelled: 0, failed: 0 };
+  const named = new Map<string, SubAgentActivityWorker>();
+  const unnamed: SubAgentActivityWorker[] = [];
+  for (const activity of activities) {
+    for (const entry of resolveSubAgentActivityWorkers(activity, workers)) {
+      // A provider may publish multiple launch rows for one child identity.
+      // The current assignment outranks an earlier row for that conversation.
+      if (!entry.id) unnamed.push(entry);
+      else {
+        const previous = named.get(entry.id);
+        const rank = (value: SubAgentActivityWorker) => value.historical ? 2 : value.unconfirmedAssignment ? 1 : 0;
+        if (!previous || rank(entry) < rank(previous)) named.set(entry.id, entry);
+      }
+    }
+  }
+  for (const entry of [...named.values(), ...unnamed]) {
+    counts.total += entry.count;
+    if (entry.historical) { counts.historical = (counts.historical ?? 0) + entry.count; continue; }
+    const worker = entry.worker;
+    const status = entry.status;
+    if (isSubAgentWorkerActive(status)) counts.active += entry.count;
+    if (status !== "idle" && status !== "unknown") counts[status] += entry.count;
+    if (status === "unknown") counts.unknown = (counts.unknown ?? 0) + entry.count;
+    if (worker?.review === "awaiting" && !isSubAgentWorkerActive(status)) counts.awaitingReview = (counts.awaitingReview ?? 0) + 1;
+    if (worker?.review === "awaiting" && status === "completed") counts.completedAwaitingReview = (counts.completedAwaitingReview ?? 0) + 1;
+    if (worker?.review === "accepted") counts.accepted = (counts.accepted ?? 0) + 1;
+    if (worker?.review === "accepted" && status === "completed") counts.completedAccepted = (counts.completedAccepted ?? 0) + 1;
+    counts.questions = (counts.questions ?? 0) + (worker?.mail?.openQuestions ?? 0);
+    counts.unreadUpdates = (counts.unreadUpdates ?? 0) + (worker?.mail?.unreadUpdates ?? 0);
+    if (worker?.review !== "accepted") counts.deliveryIssues = (counts.deliveryIssues ?? 0) + (worker?.mail?.deliveryIssues ?? 0);
+  }
+  return counts;
 }

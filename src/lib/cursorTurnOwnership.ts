@@ -21,6 +21,12 @@ export interface CursorStartAttempt {
   owner: Owner;
 }
 
+export interface CursorOwnerRestoreResult {
+  restored: boolean;
+  settled: boolean;
+  stopped: boolean;
+}
+
 const owners = new Map<string, Owner>();
 const knownTurns = new Map<string, KnownTurn>();
 const latestUsageSnapshotTurns = new Map<string, string>();
@@ -48,6 +54,46 @@ export function cursorTurnOwner(threadId: string, activeTurnId?: string): Owner 
     remember(threadId, activeTurnId, owner.token);
   }
   return owner;
+}
+
+/** Admit an exact native owner receipt, never a tagged output envelope.
+ * A query started before a newer local activation cannot replace that owner.
+ * Matching completion/Stop evidence stays closed even if a delayed recovery
+ * query reports an earlier running phase. */
+export function restoreCursorTurnOwner(
+  threadId: string,
+  turnId: string,
+  startRequestId?: string,
+  phase: "starting" | "running" | "stopping" | "completed" = "running",
+): CursorOwnerRestoreResult {
+  const refused = { restored: false, settled: false, stopped: false };
+  if (!threadId.trim() || !turnId.trim()) return refused;
+  let owner = owners.get(threadId);
+  if (owner && (owner.turnId && owner.turnId !== turnId
+    || owner.startRequestId && startRequestId && owner.startRequestId !== startRequestId
+    || !owner.turnId && (!startRequestId || owner.startRequestId !== startRequestId))) return refused;
+  if (owner?.closed && !owner.settled && !owner.stopped && phase !== "completed") return refused;
+  const known = knownTurns.get(key(threadId, turnId));
+  if (!owner && known?.closed && phase !== "completed") return refused;
+  if (!owner) {
+    owner = { token: known?.token ?? {}, turnId, ...(startRequestId ? { startRequestId } : {}) };
+    owners.set(threadId, owner);
+  } else {
+    owner.turnId = turnId;
+    if (startRequestId && !owner.startRequestId) owner.startRequestId = startRequestId;
+  }
+  if (phase === "completed") {
+    owner.closed = true;
+    owner.settled = true;
+  } else if (phase === "stopping") {
+    owner.closed = true;
+    owner.stopped = true;
+  }
+  // Never reopen a known closed identity from a stale running receipt.
+  if (known?.closed) owner.closed = true;
+  if (known?.stopped) owner.stopped = true;
+  remember(threadId, turnId, owner.token, Boolean(owner.closed), Boolean(owner.stopped));
+  return { restored: true, settled: Boolean(owner.settled), stopped: Boolean(owner.stopped) };
 }
 
 export function beginCursorTurnStart(threadId: string, activeTurnId?: string): CursorStartAttempt {

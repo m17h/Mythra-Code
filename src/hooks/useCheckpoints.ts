@@ -55,6 +55,8 @@ export function useCheckpoints(context: CheckpointsContext) {
   const [checkpoints, setCheckpointsPersisted, checkpointsRef] = usePersistedStateRef<CheckpointRecord[]>("kiwi.checkpoints", []);
   const [checkpointHeads, setCheckpointHeadsPersisted, checkpointHeadsRef] = usePersistedStateRef<Record<string, CheckpointHead>>("kiwi.checkpointHeads", {});
   const activeRunCheckpointsRef = useRef(new Map<string, string>());
+  const preparingRunCheckpointsRef = useRef(new Map<string, string>());
+  const checkpointPredecessorTurnsRef = useRef(new Map<string, string | undefined>());
   const checkpointProjectQueuesRef = useRef(new Map<string, Promise<void>>());
   const checkpointUnsupportedPathsRef = useRef(new Set<string>());
   const [checkpointBusyId, setCheckpointBusyId] = useState<string | null>(null);
@@ -136,6 +138,7 @@ export function useCheckpoints(context: CheckpointsContext) {
     const id = crypto.randomUUID();
     const parent = checkpointHeadsRef.current[pathKey];
     const taskState = useTaskStore.getState();
+    checkpointPredecessorTurnsRef.current.set(id, taskState.tasks[threadId]?.lastCompletedTurnId);
     const overlappingRun = Object.entries(taskState.statuses).some(([candidateId, taskStatus]) => {
       if (candidateId === threadId || (taskStatus !== "starting" && taskStatus !== "running" && !taskState.workflowOwners[candidateId])) return false;
       const binding = taskState.tasks[candidateId]?.workspacePath
@@ -159,6 +162,10 @@ export function useCheckpoints(context: CheckpointsContext) {
       parentPosition: parent?.position,
       overlappingRun,
     };
+    // Preparation has its own identity: an older snapshot cannot replace a
+    // newer preparation, and a predecessor's completion cannot finalize a
+    // snapshot whose initial capture has not even finished.
+    preparingRunCheckpointsRef.current.set(threadId, id);
     persistCheckpoints((current) => [
       checkpoint,
       ...current.map((entry) => (
@@ -175,6 +182,16 @@ export function useCheckpoints(context: CheckpointsContext) {
         workspacePath,
         () => createCheckpointSnapshot(id, workspacePath, `${label} · before`),
       );
+      if (preparingRunCheckpointsRef.current.get(threadId) !== id) {
+        checkpointPredecessorTurnsRef.current.delete(id);
+        persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
+        void runCheckpointProjectOperation(
+          workspacePath,
+          () => deleteCheckpointSnapshot(id, workspacePath),
+        ).catch(() => undefined);
+        return undefined;
+      }
+      preparingRunCheckpointsRef.current.delete(threadId);
       persistCheckpoints((current) => current.map((entry) => entry.id === id ? {
         ...entry,
         repoRoot: snapshot.repoRoot,
@@ -186,6 +203,8 @@ export function useCheckpoints(context: CheckpointsContext) {
       activeRunCheckpointsRef.current.set(threadId, id);
       return id;
     } catch (reason) {
+      if (preparingRunCheckpointsRef.current.get(threadId) === id) preparingRunCheckpointsRef.current.delete(threadId);
+      checkpointPredecessorTurnsRef.current.delete(id);
       const message = friendlyError(reason);
       persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
       void deleteCheckpointSnapshot(id, workspacePath).catch(() => undefined);
@@ -217,7 +236,10 @@ export function useCheckpoints(context: CheckpointsContext) {
   ) => {
     const id = activeRunCheckpointsRef.current.get(threadId);
     if (!id) return;
+    // A late completion from the predecessor is not this new run's result.
+    if (turnId && checkpointPredecessorTurnsRef.current.get(id) === turnId) return;
     activeRunCheckpointsRef.current.delete(threadId);
+    checkpointPredecessorTurnsRef.current.delete(id);
     const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
     if (!checkpoint?.workspacePath) return;
     try {
@@ -225,6 +247,9 @@ export function useCheckpoints(context: CheckpointsContext) {
         checkpoint.workspacePath,
         () => completeCheckpointSnapshot(id, checkpoint.workspacePath!, `${checkpoint.label} · completed`),
       );
+      // Deletion can finish while this snapshot operation awaits. Never
+      // recreate a project head pointing to a deleted record/private ref.
+      if (!checkpointsRef.current.some((entry) => entry.id === id)) return;
       persistCheckpoints((current) => current.map((entry) => entry.id === id ? {
         ...entry,
         turnId: turnId ?? entry.turnId,
@@ -250,9 +275,14 @@ export function useCheckpoints(context: CheckpointsContext) {
   }, [checkpointsRef, persistCheckpointHead, persistCheckpoints, runCheckpointProjectOperation]);
 
   const discardRunCheckpoint = useCallback((threadId: string, expectedCheckpointId?: string) => {
+    const preparingId = preparingRunCheckpointsRef.current.get(threadId);
+    if (preparingId && (expectedCheckpointId === undefined || expectedCheckpointId === preparingId)) {
+      preparingRunCheckpointsRef.current.delete(threadId);
+    }
     const id = activeRunCheckpointsRef.current.get(threadId);
     if (!id || (expectedCheckpointId !== undefined && id !== expectedCheckpointId)) return;
     activeRunCheckpointsRef.current.delete(threadId);
+    checkpointPredecessorTurnsRef.current.delete(id);
     const checkpoint = checkpointsRef.current.find((entry) => entry.id === id);
     persistCheckpoints((current) => current.filter((entry) => entry.id !== id));
     if (checkpoint?.workspacePath) {
@@ -583,11 +613,14 @@ export function useCheckpoints(context: CheckpointsContext) {
    * pointing at them, and their backing git snapshots.
    */
   const forgetThreadCheckpoints = useCallback((threadId: string) => {
+    preparingRunCheckpointsRef.current.delete(threadId);
+    activeRunCheckpointsRef.current.delete(threadId);
     const deletedCheckpointIds = new Set(
       checkpointsRef.current
         .filter((checkpoint) => checkpoint.threadId === threadId)
         .map((checkpoint) => checkpoint.id),
     );
+    for (const id of deletedCheckpointIds) checkpointPredecessorTurnsRef.current.delete(id);
     for (const [path, head] of Object.entries(checkpointHeadsRef.current)) {
       if (deletedCheckpointIds.has(head.checkpointId)) persistCheckpointHead(path, null);
     }

@@ -259,10 +259,13 @@ export function useScheduler(deps: SchedulerDeps): void {
       // Scheduled roots retain their off policy on every iteration, including
       // old snapshots that predate thread-local delegation authority.
       const runtimeRun = { ...run, systemPrompt, subagentsEnabled: false, subagentEngine: "mythra" as const, nativeSubagentOptions: undefined };
-      const capabilities = subagentCapabilitySignature({ subagentsEnabled: false, subagentMax: 1, autoCompactTokens: run.autoCompactTokens });
       const modelContextWindow = run.provider === "lmstudio"
         ? current.lmStudioModels?.find((entry) => entry.id === run.model)?.maxContextLength
         : undefined;
+      const capabilities = subagentCapabilitySignature(
+        { subagentsEnabled: false, subagentMax: 1, autoCompactTokens: run.autoCompactTokens },
+        { provider: run.provider, lmStudioBaseUrl: run.lmStudioBaseUrl, modelContextWindow },
+      );
       const startFreshThread = async () => {
         assertCurrent();
         const priorExecutionPath = executionPath;

@@ -62,6 +62,8 @@ export interface ChildAgentPolicy {
   projectClaudeInstructionsEnabled?: boolean;
   reasoningEffort: ReasoningEffort;
   serviceTier: string | null;
+  /** Managed conversations are opt-in and frozen for the current crew. */
+  collaborationV2?: boolean;
   targets: ChildAgentTarget[];
   capturedAt: number;
   /** User-approved roster queued while the current root turn is still using
@@ -77,6 +79,8 @@ export interface ChildAgentPolicy {
 export interface ChildAgentLink {
   /** Language-only bridge captured before the delegated child's first turn. */
   languageSessionId?: string;
+  /** Initial relay can be adopted after renderer loss before its start acknowledgement. */
+  spawnRequestId?: string;
   childThreadId: string;
   rootThreadId: string;
   /** Bridge session that spawned this child; its concurrency slot owner. */
@@ -87,9 +91,84 @@ export interface ChildAgentLink {
   reasoningEffort: ReasoningEffort;
   title: string;
   createdAt: number;
+  /** Execution identity captured at spawn; parent worktree moves never move a child. */
+  executionPath?: string;
+  executionProjectId?: string | null;
+  executionAdditionalWorkspaceRoots?: string[];
   /** Persisted once the child settles so reloads never invent an outcome. */
   terminalStatus?: "completed" | "cancelled" | "failed";
   finishedAt?: number;
+  /**
+   * Children spawned with parent conversations need an explicit sign-off.
+   * Legacy links omit it and keep their original auto-archive behavior.
+   */
+  signoff?: "required";
+  /** Explicit acceptance; a finished turn alone is only awaiting review. */
+  acceptedAt?: number;
+  acceptedBy?: "parent" | "user";
+  acceptNote?: string;
+  /** Who stopped the latest turn. A user stop is never resumed automatically. */
+  stopOrigin?: "user" | "parent";
+  /** Child's own compaction window, frozen at spawn for follow-up turns. */
+  autoCompactTokens?: number;
+  /** Completed follow-up turns started on this same conversation. */
+  followUps?: number;
+  /**
+   * Backend token for the concurrency slot of the latest parent-started
+   * follow-up. Releases carry it so a stale completion cannot free a newer
+   * turn's slot. Initial spawn slots are unversioned.
+   */
+  activationId?: string;
+  /** Last settled provider turn before reserving a follow-up. */
+  activationPreviousTurnId?: string;
+  /** Exact provider turn acknowledged for this activation, once known. */
+  activationTurnId?: string;
+  /** A reserved follow-up has not yet received a conclusive provider outcome. */
+  activationPending?: boolean;
+  /**
+   * Written `false` with a follow-up reservation and `true` synchronously
+   * before its provider request. A reload that finds `false` proves no model
+   * request was sent, so the reservation can be retired instead of wedging
+   * the child as unknown. Older links omit it and stay conservative.
+   */
+  activationDispatched?: boolean;
+  /**
+   * Durable result revision: incremented by every explicit activation (a
+   * parent follow-up at dispatch, a user-typed turn at admission). Review
+   * tokens include it, so a token collected for an earlier result can never
+   * accept a newer attempt, even one that fails before any turn ID exists.
+   */
+  resultRevision?: number;
+  /** Last settled turn when the current revision began; never evidence for it. */
+  revisionBaseTurnId?: string;
+  /** User-typed attempt that opened the current revision, if any. */
+  manualAttemptId?: string;
+  /**
+   * Native (Claude/Cursor) start identity of the latest managed dispatch.
+   * Lets Stop target exactly that start before any turn ID exists.
+   */
+  activationStartRequestId?: string;
+}
+
+/**
+ * Review phase of a managed child, separate from its run status so Stop and
+ * the parent turn boundary keep their existing meaning.
+ */
+export type ChildReviewPhase = "running" | "awaiting_review" | "accepted" | "failed" | "cancelled" | "unknown";
+
+export function childReviewPhase(link: ChildAgentLink, status: TaskStatus): ChildReviewPhase {
+  const lifecycle = childLifecycleForLink(link, status);
+  if (lifecycle === "running" || lifecycle === "starting") return "running";
+  if (lifecycle === "unknown") return "unknown";
+  if (link.acceptedAt) return "accepted";
+  if (lifecycle === "cancelled") return "cancelled";
+  if (lifecycle === "failed") return "failed";
+  return link.signoff === "required" ? "awaiting_review" : "accepted";
+}
+
+/** Whether auto-archive must still wait for the parent's sign-off. */
+export function childAwaitsSignoff(link: ChildAgentLink | undefined): boolean {
+  return Boolean(link?.signoff === "required" && !link.acceptedAt);
 }
 
 /**
@@ -104,13 +183,16 @@ export function childLifecycle(status: TaskStatus): string {
   if (status === "error") return "failed";
   if (status === "starting") return "starting";
   if (status === "running") return "running";
-  // A persisted link with no in-memory task is from an earlier app process;
-  // no provider turn owned by that process can still hold a live slot.
+  // Link-aware callers preserve uncertainty when renderer state is absent.
   return "completed";
 }
 
 /** Preserve a persisted outcome when no task from this app process exists. */
 export function childLifecycleForLink(link: ChildAgentLink, status: TaskStatus): string {
+  // A reserved or ambiguous activation cannot inherit the previous turn's
+  // terminal label, especially after renderer reload. Only the owning hook's
+  // matching runtime evidence can clear this durable pending boundary.
+  if (link.activationPending && !isChildActive(status)) return "unknown";
   if (status !== "idle") return childLifecycle(status);
   // A webview reload loses local status while native processes keep running.
   // Missing state is not proof of either completion or cancellation.
@@ -493,6 +575,7 @@ export interface ChildAgentPolicyInput {
   childAgents: ChildAgentSettings;
   subagentsEnabled: boolean;
   subagentMax: number;
+  collaborationV2?: boolean;
   permission: PermissionMode;
   systemPrompt: string;
   providerSystemPrompts?: Partial<Record<Provider, string>>;
@@ -525,6 +608,7 @@ export function childAgentPolicyFor(input: ChildAgentPolicyInput): ChildAgentPol
     projectClaudeInstructionsEnabled: input.projectClaudeInstructionsEnabled === true,
     reasoningEffort: input.reasoningEffort,
     serviceTier: input.serviceTier,
+    collaborationV2: input.collaborationV2 === true,
     targets: targets.map((target) => ({ ...target })),
     capturedAt: input.now ?? Date.now(),
   };
@@ -535,6 +619,7 @@ export function childAgentSessionOptions(policy: ChildAgentPolicy, knownChildren
   sessionId: string;
   maxConcurrent: number;
   knownChildren: string[];
+  collaborationV2: boolean;
   targets: Array<{
     id: string;
     provider: string;
@@ -551,6 +636,7 @@ export function childAgentSessionOptions(policy: ChildAgentPolicy, knownChildren
     sessionId: policy.sessionId,
     maxConcurrent: policy.maxConcurrent,
     knownChildren: [...knownChildren],
+    collaborationV2: policy.collaborationV2 === true,
     targets: policy.targets.filter((target) => target.enabled).map((target) => ({
       id: target.id,
       provider: target.provider,
@@ -600,6 +686,7 @@ export function sanitizeChildAgentPolicies(stored: unknown): Record<string, Chil
         ? reasoningEffort
         : "medium",
       serviceTier: typeof entry.serviceTier === "string" ? entry.serviceTier : null,
+      collaborationV2: entry.collaborationV2 === true,
       targets,
       capturedAt: Number(entry.capturedAt) || 0,
       ...(pendingCandidate && Array.isArray(pendingCandidate.targets) ? {
@@ -652,16 +739,48 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
       sessionId,
       ...(typeof entry.languageSessionId === "string" && /^language-child-(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(entry.languageSessionId)
         ? { languageSessionId: entry.languageSessionId } : {}),
+      ...(sanitizeText(entry.spawnRequestId, 200) ? { spawnRequestId: sanitizeText(entry.spawnRequestId, 200) } : {}),
       targetId,
       provider,
       model: sanitizeText(entry.model, 128),
       reasoningEffort: isReasoningEffort(entry.reasoningEffort) ? entry.reasoningEffort : "medium",
       title: sanitizeText(entry.title, 200),
       createdAt: Number(entry.createdAt) || 0,
+      ...(typeof entry.executionPath === "string" && entry.executionPath.trim()
+        ? { executionPath: entry.executionPath } : {}),
+      ...(entry.executionProjectId === null || typeof entry.executionProjectId === "string"
+        ? { executionProjectId: entry.executionProjectId as string | null } : {}),
+      ...(Array.isArray(entry.executionAdditionalWorkspaceRoots)
+        && entry.executionAdditionalWorkspaceRoots.every((root) => typeof root === "string" && root.trim())
+        ? { executionAdditionalWorkspaceRoots: entry.executionAdditionalWorkspaceRoots.slice(0, 24) as string[] } : {}),
       ...(typeof entry.finishedAt === "number" && Number.isFinite(entry.finishedAt) && entry.finishedAt > 0 ? { finishedAt: entry.finishedAt } : {}),
       ...(entry.terminalStatus === "completed" || entry.terminalStatus === "cancelled" || entry.terminalStatus === "failed"
         ? { terminalStatus: entry.terminalStatus }
         : {}),
+      ...(entry.signoff === "required" ? { signoff: "required" as const } : {}),
+      ...(typeof entry.acceptedAt === "number" && Number.isFinite(entry.acceptedAt) && entry.acceptedAt > 0 ? {
+        acceptedAt: entry.acceptedAt,
+        acceptedBy: entry.acceptedBy === "user" ? "user" as const : "parent" as const,
+        ...(sanitizeText(entry.acceptNote, 400) ? { acceptNote: sanitizeText(entry.acceptNote, 400) } : {}),
+      } : {}),
+      ...(entry.stopOrigin === "user" || entry.stopOrigin === "parent" ? { stopOrigin: entry.stopOrigin } : {}),
+      ...(typeof entry.autoCompactTokens === "number" && Number.isInteger(entry.autoCompactTokens)
+        && entry.autoCompactTokens >= 100_000 && entry.autoCompactTokens <= 1_000_000 ? { autoCompactTokens: entry.autoCompactTokens } : {}),
+      ...(typeof entry.followUps === "number" && Number.isInteger(entry.followUps) && entry.followUps > 0
+        ? { followUps: Math.min(entry.followUps, 10_000) } : {}),
+      ...(typeof entry.activationId === "string" && /^[0-9a-f-]{36}$/.test(entry.activationId)
+        ? { activationId: entry.activationId } : {}),
+      ...(sanitizeText(entry.activationPreviousTurnId, 200)
+        ? { activationPreviousTurnId: sanitizeText(entry.activationPreviousTurnId, 200) } : {}),
+      ...(sanitizeText(entry.activationTurnId, 200)
+        ? { activationTurnId: sanitizeText(entry.activationTurnId, 200) } : {}),
+      ...(entry.activationPending === true ? { activationPending: true } : {}),
+      ...(typeof entry.activationDispatched === "boolean" ? { activationDispatched: entry.activationDispatched } : {}),
+      ...(typeof entry.resultRevision === "number" && Number.isSafeInteger(entry.resultRevision) && entry.resultRevision > 0
+        ? { resultRevision: entry.resultRevision } : {}),
+      ...(sanitizeText(entry.revisionBaseTurnId, 200) ? { revisionBaseTurnId: sanitizeText(entry.revisionBaseTurnId, 200) } : {}),
+      ...(sanitizeText(entry.manualAttemptId, 200) ? { manualAttemptId: sanitizeText(entry.manualAttemptId, 200) } : {}),
+      ...(sanitizeText(entry.activationStartRequestId, 200) ? { activationStartRequestId: sanitizeText(entry.activationStartRequestId, 200) } : {}),
     };
   }
   return result;

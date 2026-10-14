@@ -55,6 +55,14 @@ export const MYTHRA_CODE_DELEGATION_INSTRUCTIONS = [
   "If the user asks for a sub-agent destination or project crew change that is not already approved, submit propose_agent_settings, tell the user the project change is awaiting their approval in Mythra Code, and continue this turn only with the already-approved crew; never claim or use the proposed change in the current turn.",
 ].join(" ");
 
+/** Added only when this captured bridge exposes the V2 conversation tools. */
+export const MYTHRA_CODE_COLLABORATION_INSTRUCTIONS = [
+  "This Mythra Code crew also exposes send_agent_message and accept_agent for V2 sub-agent conversations.",
+  "V2 children can message you: agent_status and collect_agent return their questions and updates, and collect_agent returns early when one arrives. Unanswered questions remain recoverable through a single-child status or collect call; reading is not answering. Answer with send_agent_message and replyTo, or give more work on the child's own conversation, and report its real delivery state.",
+  "A finished V2 child awaits your review: collect its result first, then sign off with accept_agent using the exact reviewToken from that result. A stale token is refused if newer work intervened. Finishing your own turn is not sign-off.",
+  "Existing V1 assignments keep their one-shot workflow: collect their results, and spawn a new sub-agent for additional work. They do not receive parent messaging or require accept_agent.",
+].join(" ");
+
 export const MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS = [
   "This saved project exposes Mythra Code's user-approved sub-agent settings control.",
   "If the user asks to enable, disable, or change the project's sub-agent crew, models, reasoning, or parallel limit, use propose_agent_settings.",
@@ -76,19 +84,21 @@ export interface CheckButtonPromptContext {
   check: ProjectCheckCommand | null | undefined;
 }
 
-export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false): string {
+export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false): string {
   const sections = [MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS, MYTHRA_CODE_COMPLETION_INSTRUCTIONS];
   if (nativeDelegation) sections.push(MYTHRA_CODE_PROVIDER_DELEGATION_INSTRUCTIONS);
-  else if (delegationEnabled) sections.push(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
-  else if (settingsProposalsEnabled) sections.push(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
+  else if (delegationEnabled) {
+    sections.push(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
+    if (collaborationV2) sections.push(MYTHRA_CODE_COLLABORATION_INSTRUCTIONS);
+  } else if (settingsProposalsEnabled) sections.push(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
   if (checkButton?.toolAvailable) sections.push(checkButtonInstructions(checkButton.check));
   return sections.join("\n\n");
 }
 
-export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false): string {
+export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false): string {
   const prompt = systemPrompt.trim();
-  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation);
+  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation, collaborationV2);
   return prompt
     ? `${prompt}\n\n${internalInstructions}`
     : internalInstructions;

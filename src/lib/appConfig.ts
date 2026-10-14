@@ -89,6 +89,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   projectClaudeInstructionsEnabled: false,
   subagentsEnabled: false,
   subagentMax: 3,
+  managedSubagentV2: false,
   autoArchiveSubagentThreads: false,
   childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
   childAgentPresets: [],

@@ -64,7 +64,20 @@ const TOOL_SPAWN: &str = "spawn_mythra_agent";
 const TOOL_STATUS: &str = "agent_status";
 const TOOL_COLLECT: &str = "collect_agent";
 const TOOL_CANCEL: &str = "cancel_agent";
+/// Parent → child guidance on the child's own conversation: live steering
+/// while it works, or a same-session follow-up turn once it is idle.
+const TOOL_MESSAGE_AGENT: &str = "send_agent_message";
+/// Explicit parent sign-off. Finishing a turn is not acceptance.
+const TOOL_ACCEPT: &str = "accept_agent";
 const TOOL_PROPOSE_SETTINGS: &str = "propose_agent_settings";
+/// Child → parent mailbox. Only owned Mythra Code children receive these two;
+/// they carry no destination argument, so a child can address nobody else.
+const TOOL_MESSAGE_PARENT: &str = "message_parent";
+const TOOL_READ_PARENT: &str = "read_parent_messages";
+/// Mailbox text limits. The renderer enforces a matching character budget.
+const MAX_MESSAGE_BYTES: usize = 16_384;
+const MAX_ACCEPT_NOTE_BYTES: usize = 1_600;
+const MAX_READ_WAIT_SECONDS: f64 = 30.0;
 /// Saves the command behind the project's top-bar Run button. Every project
 /// thread gets it, delegation or not, because the button itself is a project
 /// feature rather than a sub-agent one.
@@ -77,11 +90,13 @@ const MAX_TERMINAL_RESPONSE_BYTES: usize = 128_000;
 const TOOL_LANGUAGE_STATUS: &str = "language_tools_status";
 const TOOL_LANGUAGE_INSTALL: &str = "install_language_tool";
 const TOOL_LANGUAGE_QUERY: &str = "language_tool_query";
-pub(super) const AGENT_BRIDGE_TOOLS: [&str; 7] = [
+pub(super) const AGENT_BRIDGE_TOOLS: [&str; 9] = [
     TOOL_SPAWN,
     TOOL_STATUS,
     TOOL_COLLECT,
     TOOL_CANCEL,
+    TOOL_MESSAGE_AGENT,
+    TOOL_ACCEPT,
     TOOL_PROPOSE_SETTINGS,
     TOOL_SET_RUN,
     TOOL_SET_CHECK,
@@ -101,9 +116,6 @@ const MAX_RUN_LABEL_BYTES: usize = 320;
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 const SPAWN_RELAY_TIMEOUT: Duration = Duration::from_secs(300);
 const COLLECT_RELAY_TIMEOUT: Duration = Duration::from_secs(360);
-/// How long a timed-out spawn's reservation survives waiting for the webview's
-/// late answer before the slot is released as abandoned.
-const LATE_SPAWN_GRACE: Duration = Duration::from_secs(600);
 
 const MAX_PROMPT_BYTES: usize = 32_768;
 const MAX_TITLE_BYTES: usize = 200;
@@ -247,6 +259,10 @@ pub(super) struct SessionRuntime {
     /// has not answered yet, so two concurrent tool calls cannot both pass the
     /// concurrency check.
     pub(super) live: HashSet<String>,
+    /// A same-child follow-up owns a distinct slot generation. Only its own
+    /// completion may release it; initial/legacy completions have no token.
+    /// Entries exist only for live follow-ups, bounded by the live-slot budget.
+    activations: HashMap<String, String>,
     reserved: usize,
     /// Every child ever spawned in this session; cancel/collect are refused
     /// for ids that did not come from it.
@@ -261,9 +277,16 @@ pub(super) fn record_spawned_child(runtime: &mut SessionRuntime, value: &Value) 
         return;
     };
     runtime.known.insert(child_id.to_string());
+    // An initial spawn acknowledgement can arrive after that child's next
+    // turn already reserved a slot. It describes the old turn, not this one.
+    if runtime.activations.contains_key(child_id) {
+        return;
+    }
+    // An ambiguous provider start/cutoff still owns work until a confirmed
+    // terminal report arrives. "unknown" is not proof the slot is free.
     let reported_active = matches!(
         value.get("status").and_then(Value::as_str),
-        Some("starting" | "running") | None
+        Some("starting" | "running" | "unknown") | None
     );
     if runtime.finished.remove(child_id) || !reported_active {
         runtime.live.remove(child_id);
@@ -273,7 +296,19 @@ pub(super) fn record_spawned_child(runtime: &mut SessionRuntime, value: &Value) 
 }
 
 pub(super) fn record_finished_child(runtime: &mut SessionRuntime, child_id: &str) {
-    if !runtime.live.remove(child_id) {
+    if runtime.activations.contains_key(child_id) {
+        return;
+    }
+    runtime.live.remove(child_id);
+    // A claimed initial start is live before its acknowledgment. Remember
+    // every finish so that acknowledgment cannot resurrect a released slot.
+    runtime.finished.insert(child_id.to_string());
+}
+
+fn record_finished_activation(runtime: &mut SessionRuntime, child_id: &str, activation_id: &str) {
+    if runtime.activations.get(child_id).map(String::as_str) == Some(activation_id) {
+        runtime.activations.remove(child_id);
+        runtime.live.remove(child_id);
         runtime.finished.insert(child_id.to_string());
     }
 }
@@ -286,7 +321,9 @@ pub(super) async fn rearm_child_runtime(
     let runtime = previous.unwrap_or_default();
     {
         let mut accounting = runtime.lock().await;
-        accounting.known.extend(known.iter().take(256).cloned());
+        // Ownership outlives the live concurrency budget. Silently truncating
+        // retained children makes later conversations foreign after recovery.
+        accounting.known.extend(known.iter().cloned());
         for child in finished {
             record_finished_child(&mut accounting, child);
         }
@@ -299,6 +336,9 @@ struct ChildAgentSession {
     /// Deliberately not the thread id: for app-server providers the bridge has
     /// to exist before `thread/start` returns the id it will belong to.
     session_id: String,
+    /// Non-secret identity of this exact registration. Renderer relays must
+    /// not acquire the authority of a replacement with the same session id.
+    registration_id: String,
     session_token: String,
     targets: Vec<ChildAgentTarget>,
     max_concurrent: usize,
@@ -308,9 +348,17 @@ struct ChildAgentSession {
     terminal_scope: Option<String>,
     permission: String,
     child_thread: bool,
+    /// An owned Mythra Code child: it may message its parent, nothing more.
+    parent_messaging: bool,
+    /// Root conversation/sign-off capability, frozen at registration. Child
+    /// mailbox authority is captured separately by `parent_messaging`.
+    collaboration_v2: bool,
     native_delegation: bool,
     provider: String,
     directory: PathBuf,
+    /// Reuse an unchanged managed-child registration after a renderer reload:
+    /// its still-loaded provider keeps this exact descriptor and token.
+    launch: ChildAgentBridgeLaunch,
     runtime: Arc<Mutex<SessionRuntime>>,
     ended: watch::Sender<bool>,
     /// Queries belong to one registration's path and permission. Unlike child
@@ -354,20 +402,59 @@ struct BridgeServer {
 type SessionMap = Arc<Mutex<HashMap<String, Arc<ChildAgentSession>>>>;
 type RelayPayload = Result<Value, String>;
 
+#[derive(Clone)]
+struct SpawnRelay {
+    session: Arc<ChildAgentSession>,
+    /// Set only by the pre-dispatch claim under the pending-registry mutex.
+    /// A claim converts the anonymous reservation into this child's live slot.
+    child_id: Option<String>,
+}
+
+/// Non-secret ownership of the exact request, including non-spawn relays.
+struct RelayRequestIdentity {
+    session_id: String,
+    registration_id: String,
+}
+
 /// Every relay transition lives under one mutex so a webview response cannot
 /// fall between separate "pending" and "late spawn" registries.
 enum PendingRelay {
-    Waiting(oneshot::Sender<RelayPayload>),
-    TimedOutSpawn(Arc<ChildAgentSession>),
-    AnsweredAfterTimeout(RelayPayload),
+    Waiting(oneshot::Sender<RelayPayload>, Option<SpawnRelay>, RelayRequestIdentity),
+    TimedOutSpawn(SpawnRelay),
+    AnsweredAfterTimeout(RelayPayload, Option<SpawnRelay>),
 }
 
 type PendingRelays = Arc<Mutex<HashMap<String, PendingRelay>>>;
+
+/// Same-backend reload recovery only. Expired/evicted receipts and a backend
+/// restart leave an absent request unknown; absence never proves retirement.
+const MAX_RETIRED_SPAWN_RECEIPTS: usize = 256;
+const RETIRED_SPAWN_RECEIPT_LIFETIME: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Clone)]
+struct RetiredSpawnReceipt {
+    session_id: String,
+    registration_id: String,
+    /// Bind the first exact renderer candidate; a retry cannot rename it.
+    child_thread_id: Option<String>,
+    recorded_at: tokio::time::Instant,
+}
+
+fn prune_retired_spawn_receipts(receipts: &mut HashMap<String, RetiredSpawnReceipt>) {
+    let now = tokio::time::Instant::now();
+    receipts.retain(|_, receipt| now.duration_since(receipt.recorded_at) < RETIRED_SPAWN_RECEIPT_LIFETIME);
+    while receipts.len() > MAX_RETIRED_SPAWN_RECEIPTS {
+        let Some(oldest) = receipts.iter().min_by_key(|(_, receipt)| receipt.recorded_at)
+            .map(|(request, _)| request.clone()) else { break };
+        receipts.remove(&oldest);
+    }
+}
 
 #[derive(Default)]
 pub(super) struct ChildAgentState {
     sessions: SessionMap,
     pending: PendingRelays,
+    retired_spawn_receipts: Mutex<HashMap<String, RetiredSpawnReceipt>>,
     server: Mutex<Option<BridgeServer>>,
 }
 
@@ -386,6 +473,99 @@ pub(super) async fn child_agent_bridge_config_registered(
         .await
         .values()
         .any(|session| session.directory.join("mcp.json") == path)
+}
+
+/// Permission for two app-metadata tools, never a general MCP allowlist.
+/// This is checked against the exact live bridge supplied to the Claude turn;
+/// unknown, stale, native-child and malformed requests fall through unchanged.
+pub(super) async fn child_agent_bridge_mailbox_control_response(
+    state: &ChildAgentState,
+    config_path: &str,
+    permission: &str,
+    cwd: &str,
+    message: &Value,
+) -> Option<Value> {
+    let request = &message["request"];
+    if message["type"] != "control_request"
+        || request["subtype"] != "can_use_tool"
+        || message.get("parent_tool_use_id").is_some_and(|id| !id.is_null())
+        || request.get("parent_tool_use_id").is_some_and(|id| !id.is_null())
+    {
+        return None;
+    }
+    let tool = match request["tool_name"].as_str()? {
+        "mcp__mythra_agents__message_parent" => TOOL_MESSAGE_PARENT,
+        "mcp__mythra_agents__read_parent_messages" => TOOL_READ_PARENT,
+        _ => return None,
+    };
+    let request_id = message["request_id"].as_str()?;
+    if request_id.is_empty() || request_id.len() > 4096 {
+        return None;
+    }
+    let server_url = {
+        let server = state.server.lock().await;
+        let server = server.as_ref()?;
+        if server.task.is_finished() {
+            return None;
+        }
+        server.url.clone()
+    };
+    let sessions = state.sessions.lock().await;
+    let session = sessions.values().find(|session| {
+        session.directory.join("mcp.json") == Path::new(config_path)
+            && session.child_thread
+            && session.parent_messaging
+            && !session.native_delegation
+            && session.targets.is_empty()
+            && session.provider == "claude"
+            && session.permission == permission
+            && !*session.ended.borrow()
+            && !*session.query_ended.borrow()
+    })?;
+    match (&session.project_path, &session.terminal_scope) {
+        (Some(project_path), Some(scope)) => {
+            if scope != cwd || std::fs::canonicalize(cwd).ok().as_ref() != Some(project_path) {
+                return None;
+            }
+        }
+        // Projectless bridges hold only a mailbox scope, with no execution
+        // folder/language authority. Its exact live config binds this child.
+        (None, None) => {}
+        _ => return None,
+    }
+    let private_config = std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())?;
+    let expected_config = json!({
+        "mcpServers": {
+            AGENT_BRIDGE_SERVER: {
+                "type": "stdio",
+                "command": session.launch.command,
+                "args": session.launch.args,
+            }
+        }
+    });
+    if private_config != expected_config {
+        return None;
+    }
+    let private_session = std::fs::read_to_string(session.directory.join("session.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<BridgeSessionFile>(&raw).ok())?;
+    if private_session.url != server_url
+        || private_session.session_id != session.session_id
+        || !tokens_match(&private_session.session_token, &session.session_token)
+    {
+        return None;
+    }
+    validate_tool_call(&[], &HashSet::new(), tool, &request["input"]).ok()?;
+    Some(json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": { "behavior": "allow", "updatedInput": request["input"] },
+        }
+    }))
 }
 
 /** Detect dual authority using the actual registered bridge, never argv text claims. */
@@ -482,6 +662,7 @@ struct BridgeSessionFile {
 #[serde(rename_all = "camelCase")]
 pub(super) struct ChildAgentBridgeLaunch {
     pub name: String,
+    pub registration_id: String,
     pub command: String,
     pub args: Vec<String>,
     /// A ready-made `{"mcpServers":{…}}` file for CLIs that take a config path
@@ -510,6 +691,13 @@ pub(super) struct ChildAgentSessionOptions {
     permission: String,
     #[serde(default)]
     child_thread: bool,
+    /// Grants a child session its parent mailbox. Rejected for root sessions.
+    #[serde(default)]
+    parent_messaging: bool,
+    /// Preview capability for a managed root session; omission keeps the
+    /// original spawn/status/collect/cancel contract.
+    #[serde(default)]
+    collaboration_v2: bool,
     #[serde(default)]
     native_delegation: bool,
     /// Actual provider supplied by the app, not by model tool arguments.
@@ -577,7 +765,11 @@ pub(super) fn tokens_match(left: &str, right: &str) -> bool {
 /// The MCP tool catalog for one session. The `target` enum is exactly the set
 /// of destinations the user approved when this root thread started, so the
 /// model chooses a provider/model pair by name and can never invent one.
-pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) -> Value {
+pub(super) fn tool_catalog(
+    targets: &[ChildAgentTarget],
+    max_concurrent: usize,
+    collaboration_v2: bool,
+) -> Value {
     let ids: Vec<Value> = targets
         .iter()
         .map(|target| Value::String(target.id.clone()))
@@ -630,7 +822,9 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                  Start a child agent on one of the destinations Mythra Code approved for this thread. \
                  At most {max_concurrent} child agent{child_plural} may run concurrently. \
                  The child runs in the same workspace with the same permission policy, reports into the \
-                 same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result.\n\nDestinations:\n{roster}"
+                 same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result. \
+                 A child can message you while it works; `{TOOL_STATUS}` and `{TOOL_COLLECT}` return its unread messages. \
+                 Continue the same child with `{TOOL_MESSAGE_AGENT}` and sign off finished work with `{TOOL_ACCEPT}`.\n\nDestinations:\n{roster}"
             ),
             "inputSchema": {
                 "type": "object",
@@ -657,11 +851,13 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
         {
             "name": TOOL_STATUS,
             "title": "Read sub-agent status",
-            "description": "List the children spawned from this thread and their current lifecycle status.",
+            "description": "List a bounded page of children spawned from this thread with their lifecycle status and review phase (running, awaiting_review, accepted, failed, cancelled, unknown). Pass the returned nextCursor to discover the next page; do not combine cursor with childId. New child messages are returned and marked read. Unanswered questions remain recoverable: pass childId to re-read bounded unresolved questions after a lost response or forgotten context. Reading is not answering; reply with send_agent_message and replyTo. needsResponse means answer rather than repeatedly polling.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "childId": { "type": "string", "description": "Optional: report on one child instead of all." },
+                    "cursor": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional opaque nextCursor from the previous status page. Omit for the first page. Cannot be combined with childId." },
+                    "guidanceOffset": { "type": "integer", "minimum": 0, "maximum": 1000000, "description": "Optional with childId: use that child's guidanceNextOffset to read the next bounded page of failed or unconfirmed guidance. Omit for the first page. Outcomes can move after explicit resolution." },
                 },
                 "additionalProperties": false,
             },
@@ -669,7 +865,7 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
         {
             "name": TOOL_COLLECT,
             "title": "Collect a sub-agent result",
-            "description": "Wait for a child to finish and return its final message. Returns a still-running status if the wait elapses first.",
+            "description": "Wait for a child to finish its current turn and return its final message and reviewToken. Returns early, while the child keeps working, when it has sent you messages or has an unanswered question: reply with send_agent_message and replyTo, then collect again. Unanswered questions stay recoverable until answered or explicitly closed. Returns a still-running status if the wait elapses first. A finished child is awaiting_review until you use accept_agent with its collected reviewToken or continue it with send_agent_message.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -688,6 +884,37 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 "type": "object",
                 "properties": { "childId": { "type": "string" } },
                 "required": ["childId"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": TOOL_MESSAGE_AGENT,
+            "title": "Message or continue a sub-agent",
+            "description": "Send guidance, an answer, or more work to one of your children on its existing conversation; never starts a new child. While the child is working, Mythra Code delivers the message live when its runtime accepts steering, otherwise it is queued and delivered at the child's next turn boundary. When the child has finished its turn and is awaiting your review, the message re-prompts it on the same conversation as soon as a concurrency slot is free, otherwise it waits in the queue. The result reports the real delivery state (delivered, started, queued, or refused) — never assume a queued message was read. Accepted children are closed, and a child the user stopped is never resumed by this tool; spawn a new child instead. Collect the child again after re-prompting it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "childId": { "type": "string" },
+                    "message": { "type": "string", "description": "The guidance, answer, or follow-up task. The child keeps its own conversation history but never sees yours." },
+                    "replyTo": { "type": "string", "description": "Optional id of the child's message you are answering, e.g. m3." },
+                    "clientRequestId": { "type": "string", "maxLength": 80, "description": "Optional stable identifier for this message. Reuse only when retrying the same uncertain send; use a new identifier for an intentional new instruction, even if its text is identical. Deduplication lasts while the message remains in bounded history." },
+                },
+                "required": ["childId", "message"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": TOOL_ACCEPT,
+            "title": "Accept a sub-agent's work",
+            "description": "Sign off the exact finished child result you reviewed. First use collect_agent to read the result and obtain its reviewToken, then pass that token here. A stale token is refused if newer work intervened. Finishing your own turn is not sign-off. Queued guidance is cancelled. Accepted children cannot be re-prompted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "childId": { "type": "string" },
+                    "reviewToken": { "type": "string", "description": "Exact reviewToken from the collected finished result; protects against accepting newer work you have not reviewed." },
+                    "note": { "type": "string", "description": "Optional one-line reason shown in Mythra Code." },
+                },
+                "required": ["childId", "reviewToken"],
                 "additionalProperties": false,
             },
         },
@@ -795,22 +1022,91 @@ pub(super) fn tool_catalog(targets: &[ChildAgentTarget], max_concurrent: usize) 
                 .collect(),
         );
     }
+    if !collaboration_v2 {
+        let mut tools = catalog.as_array().expect("tool catalog is an array").clone();
+        tools.retain(|tool| !matches!(tool["name"].as_str(), Some(TOOL_MESSAGE_AGENT | TOOL_ACCEPT)));
+        for tool in &mut tools {
+            match tool["name"].as_str() {
+                Some(TOOL_SPAWN) => {
+                    tool["description"] = Value::String(format!(
+                        "Mythra Code is the only permitted sub-agent system for this thread; provider-native task, team, and agent spawning is not allowed. \
+                         Start a child agent on one of the destinations Mythra Code approved for this thread. \
+                         At most {max_concurrent} child agent{child_plural} may run concurrently. \
+                         The child runs in the same workspace with the same permission policy, reports into the \
+                         same conversation, and returns immediately with an id — use `{TOOL_COLLECT}` to wait for its result.\n\nDestinations:\n{roster}"
+                    ));
+                }
+                Some(TOOL_STATUS) => {
+                    tool["description"] = Value::String("List a bounded page of children spawned from this thread with their lifecycle status. Pass the returned nextCursor to discover the next page; do not combine cursor with childId.".into());
+                    tool["inputSchema"]["properties"].as_object_mut()
+                        .expect("status properties are an object").remove("guidanceOffset");
+                }
+                Some(TOOL_COLLECT) => {
+                    tool["description"] = Value::String("Wait for a child to finish and return its final message. Returns a still-running status if the wait elapses first.".into());
+                }
+                _ => {}
+            }
+        }
+        return Value::Array(tools);
+    }
     catalog
 }
 
+/// The only tools an owned child receives beyond language support. Neither
+/// takes a destination: the parent is implied by the authenticated session.
+fn parent_messaging_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": TOOL_MESSAGE_PARENT,
+            "title": "Message your parent agent",
+            "description": "Send a progress update or a question to the parent agent that started you through Mythra Code. The message is stored in the parent's Mythra Code mailbox; the parent reads it with its own tools while it is working, and the user can see it. This does not start a parent turn and is not an instant reply: keep working when you can. If you cannot proceed without an answer, either wait briefly with read_parent_messages or end your turn with a clear statement of what you need — the parent can continue this same conversation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "Self-contained text; the parent does not see your conversation." },
+                    "kind": { "type": "string", "enum": ["question", "update"], "default": "update" },
+                    "clientRequestId": { "type": "string", "maxLength": 80, "description": "Optional stable identifier for this message. Reuse on retries of the same send; use a new identifier for a new update/question. Deduplication lasts while the message remains in bounded history." },
+                },
+                "required": ["message"],
+                "additionalProperties": false,
+            },
+        }),
+        json!({
+            "name": TOOL_READ_PARENT,
+            "title": "Read messages from your parent agent",
+            "description": "Return guidance your parent agent queued for you that has not reached you yet, and mark it read. Messages the runtime already inserted into your conversation are not repeated. Set a replayKey for an explicit retry of the same pull after a lost response: reusing it returns the retained batch rather than consuming new guidance. Use a fresh key for a new pull. Replay is bounded by retained mailbox history and never automatically resends provider input. waitSeconds (0–30) waits for a new message when none is queued; an empty result is not an answer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "waitSeconds": { "type": "number", "minimum": 0, "maximum": MAX_READ_WAIT_SECONDS },
+                    "replayKey": { "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[A-Za-z0-9._:-]{1,80}(?![\\s\\S])", "description": "Optional exact retry identity for this pull. Reuse only to recover its retained response; use a fresh key to pull new guidance. ASCII letters, digits, underscores, dots, colons or hyphens." },
+                },
+                "additionalProperties": false,
+            },
+        }),
+    ]
+}
+
 /// Registration and tools/list derive from the same session scope. Child
-/// threads keep language support without acquiring delegation authority.
+/// threads keep language support without acquiring delegation authority;
+/// owned Mythra Code children additionally get their parent mailbox.
 fn scoped_tool_catalog(
     targets: &[ChildAgentTarget],
     max_concurrent: usize,
     project: bool,
     child: bool,
+    parent_messaging: bool,
+    collaboration_v2: bool,
     permission: &str,
 ) -> Value {
     let mut tools = if child {
-        Vec::new()
+        if parent_messaging {
+            parent_messaging_tools()
+        } else {
+            Vec::new()
+        }
     } else {
-        tool_catalog(targets, max_concurrent)
+        tool_catalog(targets, max_concurrent, collaboration_v2)
             .as_array()
             .expect("tool catalog is an array")
             .clone()
@@ -881,10 +1177,20 @@ fn bridge_tool_catalog(
     max_concurrent: usize,
     project: bool,
     child: bool,
+    parent_messaging: bool,
+    collaboration_v2: bool,
     permission: &str,
     native: bool,
 ) -> Value {
-    let mut catalog = scoped_tool_catalog(targets, max_concurrent, project, child, permission);
+    let mut catalog = scoped_tool_catalog(
+        targets,
+        max_concurrent,
+        project,
+        child,
+        parent_messaging,
+        collaboration_v2,
+        permission,
+    );
     if native {
         // The native runtime is the only delegation authority. Keep the
         // parent's project/language tools, never expose managed crew controls.
@@ -931,8 +1237,14 @@ fn bridge_instructions(catalog: &Value, provider: &str) -> String {
     if has(TOOL_PROPOSE_SETTINGS) {
         instructions.push("Use propose_agent_settings for requested crew changes; a proposal is applied only after user approval.".into());
     }
+    if has(TOOL_MESSAGE_PARENT) {
+        instructions.push("You are a sub-agent started by a parent agent through Mythra Code. Use message_parent to send the parent a progress update or a question; it lands in the parent's mailbox and is not an instant reply. Parent guidance may arrive in your conversation or through read_parent_messages. Your final message in each turn is returned to the parent, which may continue this same conversation with more work. You cannot start sub-agents.".into());
+    }
     if has(TOOL_SPAWN) {
         instructions.push("spawn_mythra_agent is the authoritative delegation route: collect every child result, recover a failed child at most twice, and never use collaboration.spawn_agent or another provider-native task, team, or agent-spawning tool.".into());
+        if has(TOOL_MESSAGE_AGENT) && has(TOOL_ACCEPT) {
+            instructions.push("Children can send you questions and updates: agent_status and collect_agent return them, and collect_agent returns early when one arrives. Unanswered questions remain recoverable with a childId status or collect call; reading does not answer them. Reply with send_agent_message and replyTo, or continue the same child. Collect the finished result and sign it off explicitly with accept_agent using its exact reviewToken; a finished child stays awaiting_review until then.".into());
+        }
     }
     if has(TOOL_SET_RUN) {
         instructions.push("Use set_project_run_command for the project's Run button; use run: true when asked to run, start, or serve the project in the app's Terminal panel.".into());
@@ -1028,6 +1340,45 @@ fn status_ids(project: &Path, arguments: &Value) -> Result<Option<Vec<String>>, 
         ids.retain(|candidate| candidate == id);
     }
     Ok(Some(ids))
+}
+
+/// Mailbox ids are app-generated sequence labels, never thread or session ids.
+fn valid_message_id(id: &str) -> bool {
+    id.len() >= 2
+        && id.len() <= 12
+        && id.starts_with('m')
+        && id[1..].chars().all(|character| character.is_ascii_digit())
+}
+
+fn validate_mailbox_request_id(value: Option<&Value>) -> Result<(), String> {
+    validate_mailbox_retry_key(value, "clientRequestId")
+}
+
+fn validate_mailbox_retry_key(value: Option<&Value>, field: &str) -> Result<(), String> {
+    let Some(value) = value else { return Ok(()); };
+    let key = value.as_str().ok_or_else(|| format!("`{field}` must be a string."))?;
+    if key.is_empty() || key.len() > 80 || !key.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
+    }) {
+        return Err(format!("`{field}` must contain 1–80 ASCII letters, digits, underscores, dots, colons or hyphens."));
+    }
+    Ok(())
+}
+
+fn validate_mailbox_text(value: Option<&Value>, key: &str) -> Result<(), String> {
+    let text = value
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("`{key}` is required and must be a string."))?;
+    if text.trim().is_empty() {
+        return Err(format!("`{key}` cannot be empty."));
+    }
+    if text.len() > MAX_MESSAGE_BYTES {
+        return Err(format!(
+            "`{key}` is too long ({} bytes); the limit is {MAX_MESSAGE_BYTES}. Summarize, or point at files in the workspace.",
+            text.len()
+        ));
+    }
+    Ok(())
 }
 
 /// Reject a malformed or out-of-policy call before any thread is started.
@@ -1190,6 +1541,28 @@ pub(super) fn validate_tool_call(
             Ok(())
         }
         TOOL_STATUS => {
+            if object.keys().any(|key| !["childId", "cursor", "guidanceOffset"].contains(&key.as_str())) {
+                return Err("`agent_status` accepts `childId`, roster `cursor`, or focused `guidanceOffset`.".into());
+            }
+            if let Some(child) = object.get("childId") {
+                if !child.as_str().is_some_and(|child| !child.trim().is_empty() && child.len() <= 200) {
+                    return Err("`childId` must identify one child conversation.".into());
+                }
+            }
+            if let Some(cursor) = object.get("cursor") {
+                if !cursor.as_str().is_some_and(|cursor| !cursor.trim().is_empty()
+                    && cursor.len() <= 512 && !cursor.chars().any(char::is_control)) {
+                    return Err("`cursor` must be a status-page cursor of at most 512 bytes.".into());
+                }
+                if object.contains_key("childId") {
+                    return Err("Read one child with `childId`, or page the roster with `cursor`, but not both.".into());
+                }
+            }
+            if let Some(offset) = object.get("guidanceOffset") {
+                if !object.contains_key("childId") || !offset.as_u64().is_some_and(|value| value <= 1_000_000) {
+                    return Err("`guidanceOffset` requires childId and a whole number from 0 to 1000000.".into());
+                }
+            }
             let child = text("childId");
             if !child.is_empty() && !known_children.contains(child) {
                 return Err(format!("`{child}` was not spawned from this thread."));
@@ -1212,6 +1585,85 @@ pub(super) fn validate_tool_call(
                     if !(1.0..=45.0).contains(&seconds) {
                         return Err("`timeoutSeconds` must be between 1 and 45.".into());
                     }
+                }
+            }
+            Ok(())
+        }
+        TOOL_MESSAGE_AGENT | TOOL_ACCEPT => {
+            let allowed: &[&str] = if tool == TOOL_MESSAGE_AGENT {
+                &["childId", "message", "replyTo", "clientRequestId"]
+            } else {
+                &["childId", "reviewToken", "note"]
+            };
+            if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+                return Err(format!(
+                    "`{tool}` accepts only {}.",
+                    allowed
+                        .iter()
+                        .map(|key| format!("`{key}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            let child = text("childId");
+            if child.is_empty() {
+                return Err("`childId` is required.".into());
+            }
+            if !known_children.contains(child) {
+                return Err(format!("`{child}` was not spawned from this thread."));
+            }
+            if tool == TOOL_MESSAGE_AGENT {
+                validate_mailbox_text(object.get("message"), "message")?;
+                validate_mailbox_request_id(object.get("clientRequestId"))?;
+                if let Some(reply) = object.get("replyTo") {
+                    let reply = reply
+                        .as_str()
+                        .ok_or_else(|| "`replyTo` must be a message id such as m3.".to_string())?;
+                    if !valid_message_id(reply) {
+                        return Err("`replyTo` must be a message id such as m3.".into());
+                    }
+                }
+            } else {
+                let review_token = object.get("reviewToken").and_then(Value::as_str)
+                    .ok_or_else(|| "Collect the finished result first, then pass its `reviewToken`.".to_string())?;
+                if review_token.trim().is_empty() || review_token.len() > 512 || review_token.chars().any(char::is_control) {
+                    return Err("`reviewToken` must be the exact token from the collected result.".into());
+                }
+                if let Some(note) = object.get("note") {
+                    let note = note
+                        .as_str()
+                        .ok_or_else(|| "`note` must be a string.".to_string())?;
+                    if note.len() > MAX_ACCEPT_NOTE_BYTES {
+                        return Err(format!("`note` is limited to {MAX_ACCEPT_NOTE_BYTES} bytes."));
+                    }
+                }
+            }
+            Ok(())
+        }
+        TOOL_MESSAGE_PARENT => {
+            if object.keys().any(|key| key != "message" && key != "kind" && key != "clientRequestId") {
+                return Err("`message_parent` accepts only `message`, `kind` and `clientRequestId`.".into());
+            }
+            validate_mailbox_text(object.get("message"), "message")?;
+            validate_mailbox_request_id(object.get("clientRequestId"))?;
+            if let Some(kind) = object.get("kind") {
+                if !matches!(kind.as_str(), Some("question" | "update")) {
+                    return Err("`kind` must be `question` or `update`.".into());
+                }
+            }
+            Ok(())
+        }
+        TOOL_READ_PARENT => {
+            if object.keys().any(|key| key != "waitSeconds" && key != "replayKey") {
+                return Err("`read_parent_messages` accepts only `waitSeconds` and `replayKey`.".into());
+            }
+            validate_mailbox_retry_key(object.get("replayKey"), "replayKey")?;
+            if let Some(seconds) = object.get("waitSeconds") {
+                let seconds = seconds
+                    .as_f64()
+                    .ok_or_else(|| "`waitSeconds` must be a number.".to_string())?;
+                if !(0.0..=MAX_READ_WAIT_SECONDS).contains(&seconds) {
+                    return Err("`waitSeconds` must be between 0 and 30.".into());
                 }
             }
             Ok(())
@@ -1494,7 +1946,7 @@ fn normalize_terminal_snapshot(scope: &str, limit: usize, result: &Value) -> Res
 }
 
 enum RelayOutcome {
-    Answered(Result<Value, String>),
+    Answered(RelayPayload, Option<SpawnRelay>),
     /// The webview did not answer within the tool's deadline; the request id
     /// identifies the still-pending relay so a spawn can atomically change its
     /// registry entry from a waiter into a reserved late spawn.
@@ -1517,20 +1969,24 @@ async fn await_relay_response(
 
 async fn relay_to_app_inner(
     state: &BridgeHttpState,
-    session: &ChildAgentSession,
+    session: &Arc<ChildAgentSession>,
     tool: &str,
     arguments: Value,
 ) -> RelayOutcome {
-    // Read requests must end on token/context rotation as well as thread end.
-    // Delegation accounting intentionally survives rotation; terminal scope
-    // must not share that lifetime.
-    let mut ended = if tool == TOOL_READ_TERMINAL {
-        session.query_ended.subscribe()
-    } else {
+    let spawn = (tool == TOOL_SPAWN).then(|| SpawnRelay {
+        session: session.clone(),
+        child_id: None,
+    });
+    // Every relay belongs to its exact token/context registration. An
+    // already-dispatched spawn retains its accounting until the renderer
+    // proves whether it started; rotation must not free an uncertain slot.
+    let mut ended = if tool == TOOL_SPAWN {
         session.ended.subscribe()
+    } else {
+        session.query_ended.subscribe()
     };
-    if *ended.borrow() {
-        return RelayOutcome::Answered(Err("This sub-agent session has ended.".into()));
+    if *ended.borrow() || *session.query_ended.borrow() {
+        return RelayOutcome::Answered(Err("This sub-agent session has ended.".into()), spawn);
     }
     let request_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();
@@ -1538,10 +1994,18 @@ async fn relay_to_app_inner(
         .pending
         .lock()
         .await
-        .insert(request_id.clone(), PendingRelay::Waiting(sender));
+        .insert(request_id.clone(), PendingRelay::Waiting(sender, spawn.clone(), RelayRequestIdentity {
+            session_id: session.session_id.clone(),
+            registration_id: session.registration_id.clone(),
+        }));
+    if *session.query_ended.borrow() {
+        state.pending.lock().await.remove(&request_id);
+        return RelayOutcome::Answered(Err("This sub-agent registration has ended.".into()), spawn);
+    }
     let mut request = json!({
         "requestId": request_id,
         "sessionId": session.session_id,
+        "registrationId": session.registration_id,
         "tool": tool,
         "arguments": arguments,
     });
@@ -1553,10 +2017,11 @@ async fn relay_to_app_inner(
         state.pending.lock().await.remove(&request_id);
         return RelayOutcome::Answered(Err(format!(
             "Mythra Code could not dispatch the request: {error}"
-        )));
+        )), spawn);
     }
     let wait = match tool {
-        TOOL_SPAWN => SPAWN_RELAY_TIMEOUT,
+        // A re-prompt waits for the provider to accept the follow-up turn.
+        TOOL_SPAWN | TOOL_MESSAGE_AGENT => SPAWN_RELAY_TIMEOUT,
         TOOL_COLLECT => COLLECT_RELAY_TIMEOUT,
         _ => RELAY_TIMEOUT,
     };
@@ -1565,14 +2030,22 @@ async fn relay_to_app_inner(
         Ok(Ok(result)) => {
             // The responder keeps a registry copy until the receiver confirms
             // it won the deadline race. Remove that backup only now.
-            state.pending.lock().await.remove(&request_id);
-            RelayOutcome::Answered(result)
+            let spawn = match state.pending.lock().await.remove(&request_id) {
+                Some(PendingRelay::Waiting(_, retained, _) | PendingRelay::AnsweredAfterTimeout(_, retained)) => retained,
+                Some(PendingRelay::TimedOutSpawn(retained)) => Some(retained),
+                None => spawn,
+            };
+            RelayOutcome::Answered(result, spawn)
         }
         Ok(Err(_)) => {
-            state.pending.lock().await.remove(&request_id);
+            let spawn = match state.pending.lock().await.remove(&request_id) {
+                Some(PendingRelay::Waiting(_, retained, _) | PendingRelay::AnsweredAfterTimeout(_, retained)) => retained,
+                Some(PendingRelay::TimedOutSpawn(retained)) => Some(retained),
+                None => spawn,
+            };
             RelayOutcome::Answered(Err(
                 "Mythra Code stopped tracking this request before it completed.".into(),
-            ))
+            ), spawn)
         }
         Err(_) => RelayOutcome::TimedOut { request_id },
     }
@@ -1580,25 +2053,43 @@ async fn relay_to_app_inner(
 
 async fn relay_to_app(
     state: &BridgeHttpState,
-    session: &ChildAgentSession,
+    session: &Arc<ChildAgentSession>,
     tool: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    if *session.ended.borrow() || *session.query_ended.borrow() {
+        return Err("This sub-agent registration has ended.".into());
+    }
     match relay_to_app_inner(state, session, tool, arguments).await {
-        RelayOutcome::Answered(result) => result,
+        RelayOutcome::Answered(result, _) => result,
         RelayOutcome::TimedOut { request_id } => {
             state.pending.lock().await.remove(&request_id);
+            if tool == TOOL_MESSAGE_AGENT {
+                return Err("Mythra Code did not confirm delivery in time. The message may still be queued or starting; check agent_status before resending so it is not duplicated.".into());
+            }
             Err("Mythra Code did not answer the sub-agent request in time.".into())
         }
     }
 }
 
-async fn settle_spawn_response(session: Arc<ChildAgentSession>, payload: &RelayPayload) {
-    let mut runtime = session.runtime.lock().await;
-    runtime.reserved = runtime.reserved.saturating_sub(1);
-    if let Ok(value) = payload {
+async fn settle_spawn_response(spawn: SpawnRelay, payload: RelayPayload) -> RelayPayload {
+    let mut runtime = spawn.session.runtime.lock().await;
+    if let Some(child_id) = spawn.child_id.as_deref() {
+        if let Ok(value) = &payload {
+            if value.get("childId").and_then(Value::as_str) != Some(child_id) {
+                return Err("The spawn acknowledgment did not match its claimed child; its ownership remains uncertain.".into());
+            }
+        }
+        // A generic relay failure after dispatch intent is not evidence that
+        // no provider started. Predispatch cleanup explicitly reports finish;
+        // ambiguous failures keep this child's existing live ownership.
+    } else {
+        runtime.reserved = runtime.reserved.saturating_sub(1);
+    }
+    if let Ok(value) = &payload {
         record_spawned_child(&mut runtime, value);
     }
+    payload
 }
 
 async fn dispatch_tool(
@@ -1607,11 +2098,16 @@ async fn dispatch_tool(
     tool: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    if *session.ended.borrow() || *session.query_ended.borrow() {
+        return Err("This sub-agent registration has ended.".into());
+    }
     let catalog = bridge_tool_catalog(
         &session.targets,
         session.max_concurrent,
         session.project_path.is_some(),
         session.child_thread,
+        session.parent_messaging,
+        session.collaboration_v2,
         &session.permission,
         session.native_delegation,
     );
@@ -1626,6 +2122,9 @@ async fn dispatch_tool(
     {
         let runtime = session.runtime.lock().await;
         validate_tool_call(&session.targets, &runtime.known, tool, &arguments)?;
+    }
+    if *session.ended.borrow() || *session.query_ended.borrow() {
+        return Err("This sub-agent registration has ended.".into());
     }
 
     if tool == TOOL_READ_TERMINAL {
@@ -1715,6 +2214,9 @@ async fn dispatch_tool(
     // so two tool calls arriving together cannot both see the last free slot.
     {
         let mut runtime = session.runtime.lock().await;
+        if *session.ended.borrow() || *session.query_ended.borrow() {
+            return Err("This sub-agent registration has ended.".into());
+        }
         if runtime.live.len() + runtime.reserved >= session.max_concurrent {
             return Err(format!(
                 "This thread already has {} sub-agent{} running, which is its configured maximum. Wait for one to finish or cancel it first.",
@@ -1741,72 +2243,52 @@ async fn dispatch_tool(
     }
 
     match relay_to_app_inner(state, session, tool, relayed).await {
-        RelayOutcome::Answered(result) => {
-            let mut runtime = session.runtime.lock().await;
-            runtime.reserved = runtime.reserved.saturating_sub(1);
-            // A refused or failed spawn leaves no child behind, so only a
-            // successful one takes a lasting slot.
-            if let Ok(value) = &result {
-                record_spawned_child(&mut runtime, value);
-            }
-            result
+        RelayOutcome::Answered(result, spawn) => {
+            settle_spawn_response(spawn.expect("spawn relay carries accounting"), result).await
         }
         RelayOutcome::TimedOut { request_id } => {
             // Keep the reservation and the pending relay alive: a cold provider
             // start can outlast the MCP wait yet still succeed, and dropping it
             // here would orphan the child and free a slot it occupies. The
-            // webview's late answer settles both through `child_agent_respond`;
-            // a grace timer releases the slot if that answer never comes.
-            let (answer_after_timeout, parked) = {
+            // webview's late answer settles both through `child_agent_respond`.
+            // Elapsed time alone cannot prove an ambiguous start abandoned.
+            let (answer_after_timeout, parked, abandoned) = {
                 let mut pending = state.pending.lock().await;
                 match pending.remove(&request_id) {
-                    Some(PendingRelay::Waiting(_sender)) => {
+                    Some(PendingRelay::Waiting(_sender, Some(spawn), _)) if !*session.ended.borrow() => {
                         pending.insert(
                             request_id.clone(),
-                            PendingRelay::TimedOutSpawn(session.clone()),
+                            PendingRelay::TimedOutSpawn(spawn),
                         );
-                        (None, true)
+                        (None, true, None)
                     }
-                    Some(PendingRelay::AnsweredAfterTimeout(payload)) => (Some(payload), false),
+                    Some(PendingRelay::Waiting(_sender, spawn, _)) => (None, false, spawn),
+                    Some(PendingRelay::AnsweredAfterTimeout(payload, spawn)) => (spawn.map(|spawn| (spawn, payload)), false, None),
                     Some(entry @ PendingRelay::TimedOutSpawn(_)) => {
                         pending.insert(request_id.clone(), entry);
-                        (None, true)
+                        (None, true, None)
                     }
-                    None => (None, false),
+                    None => (None, false, None),
                 }
             };
-            if let Some(payload) = answer_after_timeout {
-                settle_spawn_response(session.clone(), &payload).await;
-                return payload;
+            if let Some((spawn, payload)) = answer_after_timeout {
+                return settle_spawn_response(spawn, payload).await;
             }
             if !parked {
-                let mut runtime = session.runtime.lock().await;
-                runtime.reserved = runtime.reserved.saturating_sub(1);
-                return Err(
+                let error = Err(
                     "Mythra Code lost the spawn acknowledgement at its timeout boundary. Check `agent_status` before retrying so a slow start is not duplicated."
                         .into(),
                 );
+                // Only an unclaimed Waiting entry can be retired before this
+                // timeout transition. Preserve a claimed child's live slot.
+                return settle_spawn_response(abandoned.unwrap_or_else(|| SpawnRelay {
+                    session: session.clone(), child_id: None,
+                }), error).await;
             }
 
-            let pending = state.pending.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(LATE_SPAWN_GRACE).await;
-                let abandoned = {
-                    let mut pending = pending.lock().await;
-                    match pending.remove(&request_id) {
-                        Some(PendingRelay::TimedOutSpawn(session)) => Some(session),
-                        Some(entry) => {
-                            pending.insert(request_id, entry);
-                            None
-                        }
-                        None => None,
-                    }
-                };
-                if let Some(session) = abandoned {
-                    let mut runtime = session.runtime.lock().await;
-                    runtime.reserved = runtime.reserved.saturating_sub(1);
-                }
-            });
+            // Retain unknown ownership until acknowledged or the entire
+            // session ends. The concurrency budget bounds these entries;
+            // child_agent_session_end retires any still-parked reservations.
             Err(
                 "Mythra Code did not confirm the spawn in time. It may still be starting; check `agent_status` before retrying so a slow start is not duplicated.".into(),
             )
@@ -1835,6 +2317,12 @@ async fn handle_bridge_request(
             json!({ "error": "This sub-agent session is no longer active." }),
         );
     };
+    if *session.ended.borrow() || *session.query_ended.borrow() {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": "This sub-agent registration has ended." }),
+        );
+    }
 
     match request.method.as_str() {
         "describe" => json_response(StatusCode::OK, {
@@ -1843,6 +2331,8 @@ async fn handle_bridge_request(
                 session.max_concurrent,
                 session.project_path.is_some(),
                 session.child_thread,
+                session.parent_messaging,
+                session.collaboration_v2,
                 &session.permission,
                 session.native_delegation,
             );
@@ -1903,6 +2393,60 @@ async fn ensure_bridge_server(
     Ok((url, server_token))
 }
 
+fn reusable_managed_child_launch(
+    existing: &ChildAgentSession,
+    options: &ChildAgentSessionOptions,
+    project_path: &Option<PathBuf>,
+    max_concurrent: usize,
+    url: &str,
+    catalog: &Value,
+) -> Option<ChildAgentBridgeLaunch> {
+    if !options.child_thread
+        || !options.parent_messaging
+        || !existing.child_thread
+        || !existing.parent_messaging
+        || *existing.ended.borrow()
+        || *existing.query_ended.borrow()
+        || existing.permission != options.permission
+        || existing.provider != options.provider
+        || &existing.project_path != project_path
+        || existing.terminal_scope != options.project_path
+        || existing.native_delegation != options.native_delegation
+        || existing.collaboration_v2 != options.collaboration_v2
+        || existing.targets != options.targets
+        || existing.max_concurrent != max_concurrent
+    {
+        return None;
+    }
+    // Missing or altered private material is not a valid attachment. Also
+    // reject a descriptor tied to a bridge server that restarted.
+    let private_session = std::fs::read_to_string(existing.directory.join("session.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<BridgeSessionFile>(&raw).ok())?;
+    let private_config = std::fs::read_to_string(&existing.launch.config_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())?;
+    let expected_config = json!({
+        "mcpServers": {
+            AGENT_BRIDGE_SERVER: {
+                "type": "stdio",
+                "command": existing.launch.command,
+                "args": existing.launch.args,
+            }
+        }
+    });
+    if private_session.url == url
+        && private_session.session_id == existing.session_id
+        && tokens_match(&private_session.session_token, &existing.session_token)
+        && private_session.instructions == bridge_instructions(catalog, &existing.provider)
+        && private_config == expected_config
+    {
+        Some(existing.launch.clone())
+    } else {
+        None
+    }
+}
+
 /// Register a root thread's delegation policy and return the launch spec its
 /// runtime should register as an MCP server. Called once, when the root thread
 /// starts, so the approved destinations cannot drift mid-thread.
@@ -1924,6 +2468,15 @@ pub(super) async fn child_agent_session_start(
     }
     if options.native_delegation && !options.targets.is_empty() {
         return Err("Native delegation cannot also acquire Mythra crew tools.".into());
+    }
+    if options.parent_messaging && !options.child_thread {
+        return Err("Only a Mythra Code child thread can message a parent agent.".into());
+    }
+    if options.parent_messaging && options.native_delegation {
+        return Err("A managed child mailbox cannot also acquire native delegation authority.".into());
+    }
+    if options.collaboration_v2 && (options.child_thread || options.native_delegation) {
+        return Err("Managed sub-agent conversations require a managed root thread.".into());
     }
     if !options.provider.is_empty()
         && !agent_bridge_providers().contains(&options.provider.as_str())
@@ -1948,6 +2501,26 @@ pub(super) async fn child_agent_session_start(
     let max_concurrent = options.max_concurrent.clamp(1, MAX_CONCURRENT_CEILING);
 
     let (url, _) = ensure_bridge_server(&app, &state).await?;
+    let catalog = bridge_tool_catalog(
+        &options.targets,
+        max_concurrent,
+        project_path.is_some(),
+        options.child_thread,
+        options.parent_messaging,
+        options.collaboration_v2,
+        &options.permission,
+        options.native_delegation,
+    );
+    {
+        let sessions = state.sessions.lock().await;
+        if let Some(existing) = sessions.get(&options.session_id) {
+            if let Some(launch) = reusable_managed_child_launch(
+                existing, &options, &project_path, max_concurrent, &url, &catalog,
+            ) {
+                return Ok(launch);
+            }
+        }
+    }
     let session_token = super::random_hex_token()?;
     let directory = bridge_root(&app)?.join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&directory)
@@ -1960,16 +2533,8 @@ pub(super) async fn child_agent_session_start(
     }
 
     let session_path = directory.join("session.json");
-    let catalog = bridge_tool_catalog(
-        &options.targets,
-        max_concurrent,
-        project_path.is_some(),
-        options.child_thread,
-        &options.permission,
-        options.native_delegation,
-    );
     let session_file = serde_json::to_string(&BridgeSessionFile {
-        url,
+        url: url.clone(),
         session_token: session_token.clone(),
         session_id: options.session_id.clone(),
         instructions: bridge_instructions(&catalog, &options.provider),
@@ -1984,6 +2549,7 @@ pub(super) async fn child_agent_session_start(
     let session_argument = session_path.to_string_lossy().to_string();
     let launch = ChildAgentBridgeLaunch {
         name: AGENT_BRIDGE_SERVER.to_string(),
+        registration_id: uuid::Uuid::new_v4().to_string(),
         command: executable.clone(),
         args: vec![AGENT_BRIDGE_ARG.to_string(), session_argument.clone()],
         config_path: directory.join("mcp.json").to_string_lossy().to_string(),
@@ -2012,6 +2578,17 @@ pub(super) async fn child_agent_session_start(
     // of that thread's runtime re-arms delegation; the old material is removed
     // so a stale bridge process cannot keep talking to the app.
     let mut sessions = state.sessions.lock().await;
+    // A concurrent unchanged registration may have won while these files were
+    // being created. Reuse its descriptor instead of revoking its fresh token.
+    if let Some(existing) = sessions.get(&options.session_id) {
+        if let Some(existing_launch) = reusable_managed_child_launch(
+            existing, &options, &project_path, max_concurrent, &url, &catalog,
+        ) {
+            drop(sessions);
+            let _ = std::fs::remove_dir_all(&directory);
+            return Ok(existing_launch);
+        }
+    }
     // Late relay responses still hold the old session. Share its accounting
     // so reservations, live children and late answers survive re-registration.
     let runtime = rearm_child_runtime(
@@ -2022,10 +2599,20 @@ pub(super) async fn child_agent_session_start(
         &options.finished_children,
     )
     .await;
-    let ended = sessions
-        .get(&options.session_id)
-        .map(|session| session.ended.clone())
-        .unwrap_or_else(|| watch::channel(false).0);
+    let ended = if let Some(previous) = sessions.get(&options.session_id) {
+        if previous.child_thread && previous.parent_messaging {
+            // A managed child only reaches replacement when its effective
+            // context or private bridge material changed. Revoke in-flight
+            // mailbox calls as well as its old token; roots retain their
+            // existing delegation-accounting lifetime across rotation.
+            previous.ended.send_replace(true);
+            watch::channel(false).0
+        } else {
+            previous.ended.clone()
+        }
+    } else {
+        watch::channel(false).0
+    };
     let query_ended = rearm_query_cancellation(
         sessions
             .get(&options.session_id)
@@ -2035,6 +2622,7 @@ pub(super) async fn child_agent_session_start(
         options.session_id.clone(),
         Arc::new(ChildAgentSession {
             session_id: options.session_id.clone(),
+            registration_id: launch.registration_id.clone(),
             session_token,
             targets: options.targets,
             max_concurrent,
@@ -2042,9 +2630,12 @@ pub(super) async fn child_agent_session_start(
             terminal_scope: options.project_path,
             permission: options.permission,
             child_thread: options.child_thread,
+            parent_messaging: options.parent_messaging,
+            collaboration_v2: options.collaboration_v2,
             native_delegation: options.native_delegation,
             provider: options.provider,
             directory,
+            launch: launch.clone(),
             runtime,
             ended,
             query_ended,
@@ -2066,29 +2657,270 @@ pub(super) async fn child_agent_session_end(
         session.ended.send_replace(true);
         session.query_ended.send_replace(true);
         let _ = std::fs::remove_dir_all(&session.directory);
+        let mut retired = Vec::new();
+        {
+            let mut pending = state.pending.lock().await;
+            pending.retain(|_, relay| {
+                if let PendingRelay::TimedOutSpawn(spawn) = relay {
+                    if spawn.session.session_id == session_id {
+                        retired.push(spawn.clone());
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+        for spawn in retired {
+            let _ = settle_spawn_response(spawn, Err("This sub-agent session has ended.".into())).await;
+        }
     }
     Ok(())
+}
+
+/// Check an event's frozen registration before the renderer acts on it.
+/// Session ids survive rotation; this public, non-secret identity does not.
+/// With request_id, also require this exact unanswered, still-waiting relay.
+/// Registration-only launch callers keep their existing compatibility.
+#[tauri::command]
+pub(super) async fn child_agent_request_active(
+    state: State<'_, ChildAgentState>,
+    session_id: String,
+    registration_id: String,
+    request_id: Option<String>,
+) -> Result<bool, String> {
+    let sessions = state.sessions.lock().await;
+    let registered = sessions.get(&session_id).is_some_and(|session| {
+        session.registration_id == registration_id
+            && !*session.ended.borrow()
+            && !*session.query_ended.borrow()
+    });
+    if !registered { return Ok(false); }
+    let Some(request_id) = request_id else { return Ok(true); };
+    // Keep session rotation excluded until the request identity is inspected.
+    // Sender closure covers a timeout before its registry transition finishes.
+    let pending = state.pending.lock().await;
+    Ok(matches!(pending.get(&request_id), Some(PendingRelay::Waiting(sender, _, identity))
+        if identity.session_id == session_id && identity.registration_id == registration_id && !sender.is_closed()))
+}
+
+/// Every initial model start must first claim its exact relay. Publication of
+/// renderer ownership precedes this call; the registry makes retirement and
+/// dispatch intent mutually exclusive even across reload/timeout races.
+#[tauri::command]
+pub(super) async fn child_agent_claim_spawn(
+    state: State<'_, ChildAgentState>,
+    session_id: String,
+    registration_id: String,
+    request_id: String,
+    child_thread_id: String,
+) -> Result<(), String> {
+    if child_thread_id.trim().is_empty() || child_thread_id.len() > 200 {
+        return Err("A spawn claim requires its identified child conversation.".into());
+    }
+    let sessions = state.sessions.lock().await;
+    let session = sessions.get(&session_id).filter(|session| {
+        session.registration_id == registration_id
+            && !*session.ended.borrow() && !*session.query_ended.borrow()
+    }).ok_or("This spawn belongs to a retired bridge registration.")?;
+    let mut pending = state.pending.lock().await;
+    let spawn = match pending.get_mut(&request_id) {
+        Some(PendingRelay::Waiting(_, Some(spawn), _) | PendingRelay::TimedOutSpawn(spawn)) => spawn,
+        _ => return Err("This initial spawn was retired or already answered; no provider turn may start.".into()),
+    };
+    if spawn.session.session_id != session_id || spawn.session.registration_id != registration_id {
+        return Err("This initial spawn does not belong to the claimed registration.".into());
+    }
+    let mut runtime = session.runtime.lock().await;
+    if let Some(claimed) = spawn.child_id.as_deref() {
+        if claimed != child_thread_id.as_str() {
+            return Err("This initial spawn was already claimed by a different child.".into());
+        }
+        if !runtime.live.contains(claimed) || runtime.finished.contains(claimed)
+            || runtime.activations.contains_key(claimed) {
+            return Err("This initial claim has already settled or been superseded; no provider turn may start.".into());
+        }
+        return Ok(());
+    }
+    if runtime.finished.contains(&child_thread_id) || runtime.live.contains(&child_thread_id)
+        || runtime.activations.contains_key(&child_thread_id) {
+        return Err("This child already owns or settled different work; the initial start was refused.".into());
+    }
+    if runtime.reserved == 0 {
+        return Err("This initial spawn no longer owns a concurrency reservation.".into());
+    }
+    runtime.reserved -= 1;
+    runtime.known.insert(child_thread_id.clone());
+    runtime.live.insert(child_thread_id.clone());
+    spawn.child_id = Some(child_thread_id);
+    Ok(())
+}
+
+/// Called once when the renderer attaches. Absence of a persisted link is
+/// never proof of abandonment: only a relay with no required dispatch claim
+/// can be retired. A removed request can no longer pass claim_spawn.
+/// The optional candidates associate a durable provisional conversation with
+/// its relay. They do not authorize retirement of a claimed provider start.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UnclaimedChildSpawnCandidate {
+    request_id: String,
+    session_id: String,
+    #[serde(default)]
+    registration_id: Option<String>,
+    child_thread_id: String,
+}
+
+fn retired_spawn_identity(request_id: &str, spawn: &SpawnRelay) -> Value {
+    json!({
+        "requestId": request_id,
+        "sessionId": spawn.session.session_id,
+        "registrationId": spawn.session.registration_id,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn child_agent_retire_unclaimed_spawns(
+    state: State<'_, ChildAgentState>,
+    candidates: Option<Vec<UnclaimedChildSpawnCandidate>>,
+) -> Result<Value, String> {
+    let candidates = candidates.unwrap_or_default();
+    let mut seen = HashSet::new();
+    for candidate in &candidates {
+        if candidate.request_id.trim().is_empty() || candidate.request_id.len() > 200
+            || candidate.session_id.trim().is_empty() || candidate.session_id.len() > 64
+            || candidate.child_thread_id.trim().is_empty() || candidate.child_thread_id.len() > 200
+            || candidate.registration_id.as_ref().is_some_and(|identity| identity.trim().is_empty() || identity.len() > 200)
+            || !seen.insert(candidate.request_id.as_str()) {
+            return Err("Recovery candidates require unique exact request, session and child identities.".into());
+        }
+    }
+    let mut pending = state.pending.lock().await;
+    // Keep the receipt transition under the same pending lock as retirement:
+    // a second reload cannot observe the relay removed but its receipt absent.
+    let mut receipts = state.retired_spawn_receipts.lock().await;
+    prune_retired_spawn_receipts(&mut receipts);
+    let mut preserved = Vec::new();
+    let mut retired_identities = Vec::new();
+    for candidate in &candidates {
+        let spawn = match pending.get(&candidate.request_id) {
+            Some(PendingRelay::Waiting(_, Some(spawn), _) | PendingRelay::TimedOutSpawn(spawn)) => Some(spawn),
+            _ => None,
+        };
+        let reason = match spawn {
+            None => match receipts.get_mut(&candidate.request_id) {
+                Some(receipt) if receipt.session_id == candidate.session_id
+                    && candidate.registration_id.as_deref().is_none_or(|identity| identity == receipt.registration_id)
+                    && receipt.child_thread_id.as_deref().is_none_or(|child| child == candidate.child_thread_id) => {
+                    receipt.child_thread_id.get_or_insert_with(|| candidate.child_thread_id.clone());
+                    retired_identities.push(json!({
+                        "requestId": candidate.request_id,
+                        "sessionId": receipt.session_id,
+                        "registrationId": receipt.registration_id,
+                        "childThreadId": candidate.child_thread_id,
+                        "replayed": true,
+                    }));
+                    None
+                }
+                Some(_) => Some("identity_mismatch"),
+                None => Some("not_pending"),
+            },
+            Some(spawn) if spawn.session.session_id != candidate.session_id
+                || candidate.registration_id.as_deref().is_some_and(|identity| identity != spawn.session.registration_id) => Some("identity_mismatch"),
+            Some(spawn) if spawn.child_id.is_some() => Some("claimed"),
+            Some(_) => None,
+        };
+        if let Some(reason) = reason {
+            preserved.push(json!({
+                "requestId": candidate.request_id,
+                "sessionId": candidate.session_id,
+                "childThreadId": candidate.child_thread_id,
+                "reason": reason,
+            }));
+        }
+    }
+    let identities = pending.iter().filter_map(|(id, relay)| {
+        let spawn = match relay {
+            PendingRelay::Waiting(_, Some(spawn), _) | PendingRelay::TimedOutSpawn(spawn)
+                if spawn.child_id.is_none() => spawn,
+            _ => return None,
+        };
+        let mut identity = retired_spawn_identity(id, spawn);
+        if let Some(candidate) = candidates.iter().find(|candidate| candidate.request_id == *id
+            && candidate.session_id == spawn.session.session_id
+            && candidate.registration_id.as_deref().is_none_or(|registration| registration == spawn.session.registration_id)) {
+            identity["childThreadId"] = json!(candidate.child_thread_id);
+        }
+        Some((id.clone(), identity))
+    }).collect::<Vec<_>>();
+    let mut retired = Vec::new();
+    for (id, identity) in identities {
+        match pending.remove(&id) {
+            Some(PendingRelay::Waiting(sender, Some(spawn), _)) => {
+                receipts.insert(id, RetiredSpawnReceipt {
+                    session_id: spawn.session.session_id.clone(),
+                    registration_id: spawn.session.registration_id.clone(),
+                    child_thread_id: identity.get("childThreadId").and_then(Value::as_str).map(str::to_owned),
+                    recorded_at: tokio::time::Instant::now(),
+                });
+                // The active dispatcher owns this reservation's single
+                // release, whether it receives refusal or loses to timeout.
+                let _ = sender.send(Err("The renderer restarted before this initial spawn was dispatched. Retry the assignment if it is still needed.".into()));
+                retired_identities.push(identity);
+            }
+            Some(PendingRelay::TimedOutSpawn(spawn)) => {
+                receipts.insert(id, RetiredSpawnReceipt {
+                    session_id: spawn.session.session_id.clone(),
+                    registration_id: spawn.session.registration_id.clone(),
+                    child_thread_id: identity.get("childThreadId").and_then(Value::as_str).map(str::to_owned),
+                    recorded_at: tokio::time::Instant::now(),
+                });
+                retired.push(spawn);
+                retired_identities.push(identity);
+            }
+            _ => {},
+        }
+    }
+    // Claim/timeout cannot find removed entries. Do accounting after releasing
+    // the registry mutex, just like late acknowledgments and session cleanup.
+    prune_retired_spawn_receipts(&mut receipts);
+    drop(receipts);
+    drop(pending);
+    for spawn in retired {
+        let _ = settle_spawn_response(spawn, Err("This undispatched initial spawn was retired.".into())).await;
+    }
+    // These are receipts for removed exact relays, never a general claim that
+    // the child has no newer/manual work. The renderer rechecks its captured
+    // provisional ownership and turn before settling or removing that link.
+    Ok(json!({
+        "retired": retired_identities,
+        "preserved": preserved,
+        "receiptRetention": {
+            "maxEntries": MAX_RETIRED_SPAWN_RECEIPTS,
+            "maxAgeSeconds": RETIRED_SPAWN_RECEIPT_LIFETIME.as_secs(),
+            "note": "Retirement receipts can be replayed only within this backend lifetime and bounded retention. An absent, expired or evicted request remains unknown; not_pending is not proof that no provider started.",
+        },
+    }))
 }
 
 async fn route_relay_response(
     pending: &PendingRelays,
     request_id: String,
     payload: RelayPayload,
-) -> Option<(Arc<ChildAgentSession>, RelayPayload)> {
+) -> Option<(SpawnRelay, RelayPayload)> {
     let mut pending = pending.lock().await;
     match pending.remove(&request_id) {
-        Some(PendingRelay::Waiting(sender)) => {
+        Some(PendingRelay::Waiting(sender, spawn, _)) => {
             // Keep a registry copy even when `send` succeeds: the timeout can
             // still win at the exact polling boundary after delivery. The
             // receiver removes this backup only after it observes the answer;
             // otherwise dispatch consumes it as a late response.
             let backup = payload.clone();
             let retained = sender.send(payload).err().unwrap_or(backup);
-            pending.insert(request_id, PendingRelay::AnsweredAfterTimeout(retained));
+            pending.insert(request_id, PendingRelay::AnsweredAfterTimeout(retained, spawn));
             None
         }
-        Some(PendingRelay::TimedOutSpawn(session)) => Some((session, payload)),
-        Some(entry @ PendingRelay::AnsweredAfterTimeout(_)) => {
+        Some(PendingRelay::TimedOutSpawn(spawn)) => Some((spawn, payload)),
+        Some(entry @ PendingRelay::AnsweredAfterTimeout(_, _)) => {
             // Ignore a duplicate response without discarding the first
             // answer that dispatch still needs to consume.
             pending.insert(request_id, entry);
@@ -2113,8 +2945,8 @@ pub(super) async fn child_agent_respond(
         _ => Ok(result.unwrap_or_else(|| json!({}))),
     };
     let late_spawn = route_relay_response(&state.pending, request_id, payload).await;
-    if let Some((session, payload)) = late_spawn {
-        settle_spawn_response(session, &payload).await;
+    if let Some((spawn, payload)) = late_spawn {
+        let _ = settle_spawn_response(spawn, payload).await;
     }
     Ok(())
 }
@@ -2125,13 +2957,69 @@ pub(super) async fn child_agent_finished(
     state: State<'_, ChildAgentState>,
     session_id: String,
     child_thread_id: String,
+    activation_id: Option<String>,
 ) -> Result<(), String> {
     let session = state.sessions.lock().await.get(&session_id).cloned();
     if let Some(session) = session {
         let mut runtime = session.runtime.lock().await;
-        record_finished_child(&mut runtime, &child_thread_id);
+        if let Some(activation_id) = activation_id {
+            record_finished_activation(&mut runtime, &child_thread_id, &activation_id);
+        } else {
+            record_finished_child(&mut runtime, &child_thread_id);
+        }
     }
     Ok(())
+}
+
+/// Re-admit an idle owned child for a same-conversation follow-up turn.
+///
+/// The parent's concurrency budget is authoritative here, exactly as for a
+/// spawn: a follow-up takes a live slot before any provider work starts, and
+/// `child_agent_finished` releases it only with the returned activation id,
+/// when the turn settles or never starts.
+#[tauri::command]
+pub(super) async fn child_agent_reactivate(
+    state: State<'_, ChildAgentState>,
+    session_id: String,
+    child_thread_id: String,
+) -> Result<Value, String> {
+    let session = state
+        .sessions
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| {
+            "This thread's sub-agent session is not active. The message stays queued until the parent's next turn re-registers it.".to_string()
+        })?;
+    if session.targets.is_empty() || session.child_thread || session.native_delegation {
+        return Err("Mythra Code sub-agents are switched off for this thread.".into());
+    }
+    if !session.collaboration_v2 {
+        return Err("Managed sub-agent conversations are switched off for this session. The message stays queued until a capable parent session is registered.".into());
+    }
+    let mut runtime = session.runtime.lock().await;
+    if *session.ended.borrow() || *session.query_ended.borrow() {
+        return Err("This thread's sub-agent session has ended.".into());
+    }
+    if !runtime.known.contains(&child_thread_id) {
+        return Err("That sub-agent was not spawned from this thread.".into());
+    }
+    if runtime.live.contains(&child_thread_id) {
+        return Err("That sub-agent already owns a live concurrency slot. Wait for its current turn's release before continuing it.".into());
+    }
+    if runtime.live.len() + runtime.reserved >= session.max_concurrent {
+        return Err(format!(
+            "This thread already has {} sub-agent{} running, which is its configured maximum.",
+            session.max_concurrent,
+            if session.max_concurrent == 1 { "" } else { "s" }
+        ));
+    }
+    runtime.finished.remove(&child_thread_id);
+    let activation_id = uuid::Uuid::new_v4().to_string();
+    runtime.activations.insert(child_thread_id.clone(), activation_id.clone());
+    runtime.live.insert(child_thread_id);
+    Ok(json!({ "activationId": activation_id }))
 }
 
 pub(super) fn shutdown_agent_bridges_on_exit(app: &AppHandle) {
@@ -2342,6 +3230,20 @@ async fn bridge_handle(
     }
 }
 
+/// Most tool calls one bridge process keeps in flight at once.
+const MAX_CONCURRENT_BRIDGE_CALLS: usize = 8;
+
+/// One JSON-RPC line per response, written atomically with respect to other
+/// concurrently completing calls.
+async fn write_bridge_line(stdout: &Mutex<tokio::io::Stdout>, response: &Value) -> bool {
+    let mut stdout = stdout.lock().await;
+    stdout
+        .write_all(format!("{response}\n").as_bytes())
+        .await
+        .is_ok()
+        && stdout.flush().await.is_ok()
+}
+
 /// Entry point for `openkiwi --openkiwi-agent-bridge <session file>`: a stdio
 /// MCP server that forwards to the running Mythra Code app. Never touches Tauri,
 /// so no window, dock icon, or app state is created.
@@ -2352,7 +3254,7 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
     else {
         return 1;
     };
-    runtime.block_on(async move {
+    let exit_code = runtime.block_on(async move {
         let Ok(raw) = tokio::fs::read_to_string(session_path).await else {
             return 1;
         };
@@ -2365,30 +3267,118 @@ pub(super) fn run_agent_bridge(session_path: &str) -> i32 {
         else {
             return 1;
         };
+        let client = Arc::new(client);
+        let config = Arc::new(config);
+        let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
+        let (output, mut responses) =
+            tokio::sync::mpsc::channel::<Value>(MAX_CONCURRENT_BRIDGE_CALLS);
+        let mut writer = tokio::spawn(async move {
+            while let Some(response) = responses.recv().await {
+                if !write_bridge_line(&stdout, &response).await {
+                    return false;
+                }
+            }
+            true
+        });
+        // Tool calls run concurrently: a parent waiting in collect_agent or a
+        // child waiting in read_parent_messages must not hold every other
+        // (possibly parallel) call from the same runtime behind it. Responses
+        // carry their JSON-RPC id, so completion order does not matter. Refuse
+        // excess calls instead of blocking stdin behind a full semaphore: EOF
+        // and a failed writer must remain observable while all slots wait.
+        let mut tasks = tokio::task::JoinSet::new();
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
-        let mut stdout = tokio::io::stdout();
-        while let Ok(Some(line)) = lines.next_line().await {
+        let mut exit_code = 0;
+        loop {
+            let line = tokio::select! {
+                biased;
+                _ = &mut writer => {
+                    exit_code = 1;
+                    break;
+                }
+                completed = tasks.join_next(), if !tasks.is_empty() => {
+                    match completed {
+                        Some(Ok(true)) => continue,
+                        _ => {
+                            exit_code = 1;
+                            break;
+                        }
+                    }
+                }
+                line = lines.next_line() => {
+                    match line {
+                        Ok(Some(line)) => line,
+                        Ok(None) => break,
+                        Err(_) => {
+                            exit_code = 1;
+                            break;
+                        }
+                    }
+                }
+            };
             if line.trim().is_empty() {
                 continue;
             }
-            let response = match serde_json::from_str::<Value>(&line) {
-                Ok(message) => bridge_handle(&client, &config, message).await,
-                Err(error) => Some(mcp_error(
-                    Value::Null,
-                    -32700,
-                    &format!("Unparseable request: {error}"),
-                )),
+            let message = match serde_json::from_str::<Value>(&line) {
+                Ok(message) => message,
+                Err(error) => {
+                    let response =
+                        mcp_error(Value::Null, -32700, &format!("Unparseable request: {error}"));
+                    if output.try_send(response).is_err() {
+                        exit_code = 1;
+                        break;
+                    }
+                    continue;
+                }
             };
-            let Some(response) = response else { continue };
-            if stdout
-                .write_all(format!("{response}\n").as_bytes())
-                .await
-                .is_err()
-                || stdout.flush().await.is_err()
-            {
+            // Notifications never receive responses or consume a call slot.
+            if message.get("id").is_none() {
+                continue;
+            }
+            if matches!(message.get("method").and_then(Value::as_str), Some("tools/call" | "tools/list")) {
+                if tasks.len() >= MAX_CONCURRENT_BRIDGE_CALLS {
+                    let response = mcp_error(
+                        message.get("id").cloned().unwrap_or(Value::Null),
+                        -32000,
+                        "The Mythra Code bridge already has eight requests in flight. Retry this request after an outstanding call returns.",
+                    );
+                    if output.try_send(response).is_err() {
+                        exit_code = 1;
+                        break;
+                    }
+                    continue;
+                }
+                let (client, config, output) = (client.clone(), config.clone(), output.clone());
+                tasks.spawn(async move {
+                    if let Some(response) = bridge_handle(&client, &config, message).await {
+                        output.send(response).await.is_ok()
+                    } else {
+                        true
+                    }
+                });
+                continue;
+            }
+            let Some(response) = bridge_handle(&client, &config, message).await else {
+                continue;
+            };
+            if output.try_send(response).is_err() {
+                exit_code = 1;
                 break;
             }
         }
-        0
-    })
+        // Closed stdin or stdout ends this transport. Do not keep HTTP calls
+        // or blocked writers alive for their provider/relay timeout deadlines.
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        writer.abort();
+        // A JoinHandle already observed by select must not be polled again.
+        if !writer.is_finished() {
+            let _ = writer.await;
+        }
+        exit_code
+    });
+    // Tokio's stdin may have an uncancellable blocking read in progress when
+    // stdout fails. Runtime drop otherwise waits for that reader indefinitely.
+    runtime.shutdown_timeout(Duration::ZERO);
+    exit_code
 }
