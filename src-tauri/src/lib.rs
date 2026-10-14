@@ -64,7 +64,8 @@ use agents::{
     child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
     child_agent_bridge_mailbox_control_response,
     child_agent_claim_spawn, child_agent_finished, child_agent_reactivate, child_agent_request_active,
-    child_agent_respond, child_agent_retire_unclaimed_spawns, child_agent_session_end, child_agent_session_start,
+    child_agent_respond, child_agent_retire_unclaimed_spawns, child_agent_revoke_root_registration,
+    child_agent_session_end, child_agent_session_start,
     purge_stale_agent_bridges, run_agent_bridge, shutdown_agent_bridges_on_exit, ChildAgentState,
     AGENT_BRIDGE_ARG,
 };
@@ -5879,6 +5880,7 @@ async fn claude_turn_steer(
     thread_id: String,
     prompt: String,
     attachments: Vec<ClaudeAttachment>,
+    expected_turn_id: Option<String>,
 ) -> Result<(), String> {
     let turn = state
         .turns
@@ -5887,6 +5889,13 @@ async fn claude_turn_steer(
         .get(&thread_id)
         .cloned()
         .ok_or_else(|| "Claude is not currently running in this thread".to_string())?;
+    // The renderer's captured owner may have completed before this invoke
+    // acquired the map. Bind input to that owner, never to its successor.
+    // Bridge child messages intentionally omit an expectation to address
+    // whichever turn currently owns the child conversation.
+    if expected_turn_id.as_deref().is_some_and(|expected| expected != turn.turn_id) {
+        return Err("MYTHRA_NOT_DISPATCHED: Claude expected turn ID does not match the currently running turn.".into());
+    }
     turn.write(&claude_user_message(&thread_id, &prompt, &attachments).await?)
         .await
 }
@@ -8172,6 +8181,7 @@ pub fn run() {
                     list_lmstudio_models,
                     child_agent_session_start,
                     child_agent_session_end,
+                    child_agent_revoke_root_registration,
                     child_agent_respond,
                     child_agent_finished,
                     child_agent_reactivate,

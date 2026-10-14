@@ -104,7 +104,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
   const [busy, setBusy] = useState(false);
   const [historyPending, setHistoryPending] = useState(false);
   const lastRequestedHistoryRun = useRef<string | undefined>(undefined);
-  const [draft, setDraft] = useState<{ markdown: string; revision: number } | null>(null);
+  const [draft, setDraft] = useState<{ markdown: string; revision: number; baseMarkdown: string } | null>(null);
   const [recoverable, setRecoverable] = useState<{ markdown: string; revision: number } | null>(null);
   const mounted = useRef(true);
   const writing = useRef(false);
@@ -115,6 +115,13 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
     });
     return () => { mounted.current = false; onBusyChange(false); };
   }, [onBusyChange]);
+  useEffect(() => {
+    // Request accounting and provider settings advance the CAS revision without
+    // editing the document. Keep an authored draft against that newer revision
+    // only while its original saved text remains unchanged.
+    setDraft((current) => current && scope.revision > current.revision && current.baseMarkdown === scope.markdown
+      ? { ...current, revision: scope.revision } : current);
+  }, [scope.markdown, scope.revision]);
 
   const catalog = modelCatalogs[scope.provider] ?? [];
   const luna = resolvePreferenceLearningModel("openai", "", modelCatalogs);
@@ -223,7 +230,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
       </fieldset>
       <div className="set-row stack">
         <div className="set-copy"><strong>Learned instructions</strong><small>Added as a separate system prompt layer. Your global, provider, project, and profile prompts stay as you wrote them. Disabling this scope stops learning and applying its layer.</small></div>
-        <div className="set-control"><textarea aria-label={`Learned instructions for ${scopeName}`} className="prompt-editor preference-learning-editor" rows={7} maxLength={PREFERENCE_LEARNING_LIMITS.documentChars} value={markdown} placeholder="No learned preferences yet" onChange={(event) => setDraft({ markdown: event.target.value, revision: draft?.revision ?? scope.revision })} /></div>
+        <div className="set-control"><textarea aria-label={`Learned instructions for ${scopeName}`} className="prompt-editor preference-learning-editor" rows={7} maxLength={PREFERENCE_LEARNING_LIMITS.documentChars} value={markdown} placeholder="No learned preferences yet" onChange={(event) => setDraft({ markdown: event.target.value, revision: draft?.revision ?? scope.revision, baseMarkdown: draft?.baseMarkdown ?? scope.markdown })} /></div>
         {conflict && <p role="status">Preferences changed while you were editing. Copy your draft if needed, then load the latest preferences before saving.</p>}
         <div className="preference-learning-actions">
           <button type="button" className="secondary-button" disabled={!dirty || conflict} onClick={() => void run(async () => { await editPreferenceLearning(scopeKey, markdown, draft?.revision ?? scope.revision); if (mounted.current) setDraft(null); }, `Learned preferences updated for ${scopeName}.`)}>Save learned instructions</button>
@@ -251,7 +258,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
     <div className="set-body preference-learning-status" aria-live="polite">
       {!hydrated && !error && <p>Loading learned preferences…</p>}
       {busy && <p>Saving…</p>}
-      {processing && !historyWorking && onCancelLearning && <button type="button" className="secondary-button" onClick={() => onCancelLearning(scopeKey)}>Cancel preference learning</button>}
+      {processing && !historyWorking && onCancelLearning && <button type="button" className="secondary-button" disabled={job.saving} onClick={() => onCancelLearning(scopeKey)}>{job.saving ? "Finishing save…" : "Cancel preference learning"}</button>}
       {!onLearnPastConversations && history && historyStatus}
       {processing && !historyWorking && !historyOwnsJob && <p>{job.status === "queued" ? "Preference learning queued…" : "Learning preferences…"}</p>}
       {job.message && job.status !== "error" && !historyWorking && !historyOwnsJob && <p>{job.message}</p>}

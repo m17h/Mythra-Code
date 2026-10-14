@@ -14,6 +14,7 @@ import {
 } from "../lib/agentBridge";
 import {
   childAgentModel,
+  childAgentPolicyForThread,
   childAgentAutoCompactIssue,
   childAgentReasoningEffort,
   childAgentTargetIssue,
@@ -26,7 +27,7 @@ import {
   type ChildAgentLink,
   type ChildAgentPolicy,
 } from "../lib/childAgents";
-import { childAgentPolicyForSession, childThreadForBridgeSession, projectTerminalScopeForSession } from "../lib/childAgentSessions";
+import { childAgentPolicyForSession, childAgentRegistrationForSession, childThreadForBridgeSession, projectTerminalScopeForSession, revokeRootChildAgentRegistration } from "../lib/childAgentSessions";
 import { ChildAgentStartUncertainError, continueChildAgentTurn, definitelyNotDispatched, startChildAgentTurn } from "../lib/childRun";
 import {
   cancelQueuedForChild,
@@ -34,6 +35,7 @@ import {
   closeChildMailboxQuestions,
   deliverableGuidance,
   getChildMailbox,
+  hasChildReadReplay,
   guidanceOutcomeForModel,
   MAX_QUEUED_FOR_CHILD,
   guidanceRevision,
@@ -211,6 +213,10 @@ export interface ChildStopFrontier {
    * (the root and each native parent), frozen when the Stop began.
    */
   processTurns: ReadonlyMap<string, { turnId?: string; runStartedAt?: number }>;
+  /** The root was working when this Stop began; that run may not start new child work. */
+  rootActive?: boolean;
+  /** V2 root authority captured before cutoff; registration may be uncached after reload. */
+  rootBridge?: { sessionId: string; registrationId?: string };
 }
 
 function taskStatusOf(threadId: string): TaskStatus {
@@ -494,7 +500,7 @@ async function steerChild(link: ChildAgentLink, text: string): Promise<void> {
 }
 
 /** Resolve on this child's next status or mailbox change, an extra wake condition, or the deadline. */
-function waitForChildChange(childThreadId: string, timeoutMs: number, wake?: () => boolean): Promise<void> {
+function waitForChildChange(childThreadId: string, timeoutMs: number, wake?: () => boolean, subscribeLifecycle?: (listener: () => void) => () => void): Promise<void> {
   if (timeoutMs <= 0) return Promise.resolve();
   const initialMailbox = getChildMailbox(childThreadId);
   return new Promise((resolve) => {
@@ -505,6 +511,7 @@ function waitForChildChange(childThreadId: string, timeoutMs: number, wake?: () 
       clearTimeout(timer);
       unsubscribeTask();
       unsubscribeMailbox();
+      unsubscribeLifecycle?.();
       resolve();
     };
     const timer = setTimeout(finish, timeoutMs);
@@ -514,6 +521,7 @@ function waitForChildChange(childThreadId: string, timeoutMs: number, wake?: () 
     const unsubscribeMailbox = subscribeChildMailboxes(() => {
       if (getChildMailbox(childThreadId) !== initialMailbox || wake?.()) finish();
     });
+    const unsubscribeLifecycle = subscribeLifecycle?.(finish);
   });
 }
 
@@ -929,6 +937,11 @@ export function useChildAgents(context: ChildAgentContext): {
   const followUpsInFlightRef = useRef(new Set<string>());
   /** Children currently blocked in read_parent_messages. */
   const childReadersRef = useRef(new Map<string, number>());
+  /** Wake outstanding collection/read waits when ownership or Stop changes. */
+  const childWaitersRef = useRef(new Set<() => void>());
+  const notifyChildWaiters = useCallback(() => {
+    for (const listener of [...childWaitersRef.current]) listener();
+  }, []);
   /** Per-child stop generation; any stop invalidates an in-flight follow-up. */
   const childStopGenerationRef = useRef(new Map<string, number>());
   const childRunGenerationRef = useRef(new Map<string, number>());
@@ -958,6 +971,46 @@ export function useChildAgents(context: ChildAgentContext): {
    * may still be running, so its slot token stays reserved until a cutoff.
    */
   const supersededUncertainRef = useRef(new Map<string, string>());
+  /** Initial spawns between child identification and their start outcome. */
+  const initialStartsRef = useRef(new Map<string, ChildAgentLink>());
+  const initialStartPending = useCallback((link: ChildAgentLink): boolean => {
+    const initial = initialStartsRef.current.get(link.childThreadId);
+    return Boolean(initial && link.signoff === "required" && initial.createdAt === link.createdAt
+      && initial.sessionId === link.sessionId && initial.rootThreadId === link.rootThreadId
+      && initial.activationId === link.activationId && initial.resultRevision === link.resultRevision
+      && initial.manualAttemptId === link.manualAttemptId && initial.stopOrigin === link.stopOrigin);
+  }, []);
+  /**
+   * Roots whose working run a Stop targeted. Tool calls that run emits while
+   * its cutoff settles cannot start new child work. A newer app-owned run
+   * clears the mark only after revocation or replacement authority exists.
+   * Late status events do not.
+   */
+  const stoppedRootRunsRef = useRef(new Map<string, {
+    runStartedAt?: number;
+    sessionId?: string;
+    registrationId?: string;
+    revocation: "pending" | "revoked" | "failed";
+  }>());
+  const rootRunStopped = useCallback((rootThreadId: string, requestRegistrationId?: string): boolean => {
+    const stopped = stoppedRootRunsRef.current.get(rootThreadId);
+    if (!stopped) return false;
+    const currentRun = useTaskStore.getState().tasks[rootThreadId]?.agentRunStartedAt;
+    const newerAdmission = currentRun !== undefined && currentRun !== stopped.runStartedAt;
+    // Admission alone cannot release the old bridge while its queued Stop
+    // still waits: the new attempt might fail before rotating registration.
+    // After a failed revoke, require an authenticated request through the
+    // replacement launch. Queued revocation invalidates the old cache before
+    // its native call, including when no descriptor was cached at capture.
+    const replacement = stopped.revocation === "failed" && requestRegistrationId !== undefined
+      && requestRegistrationId !== stopped.registrationId
+      && stopped.sessionId !== undefined && requestRegistrationId === childAgentRegistrationForSession(stopped.sessionId);
+    if (newerAdmission && (stopped.revocation === "revoked" || replacement)) {
+      stoppedRootRunsRef.current.delete(rootThreadId);
+      return false;
+    }
+    return true;
+  }, []);
 
   const getManagedSubagentV2LockedReason = useCallback((): string | undefined => {
     const ctx = contextRef.current;
@@ -1020,9 +1073,10 @@ export function useChildAgents(context: ChildAgentContext): {
       }
       const updated = update(latest);
       pendingLinksRef.current.set(childThreadId, updated);
+      if (updated !== latest) notifyChildWaiters();
       return updated === latest ? current : { ...current, [childThreadId]: updated };
     });
-  }, []);
+  }, [notifyChildWaiters]);
 
   const linksIncludingPending = useCallback((links: Record<string, ChildAgentLink>): Record<string, ChildAgentLink> => {
     if (!pendingLinksRef.current.size) return links;
@@ -1122,6 +1176,7 @@ export function useChildAgents(context: ChildAgentContext): {
         || live.languageSessionId !== link.languageSessionId || live.activationId !== link.activationId
         || live.activationTurnId !== link.activationTurnId || live.activationPreviousTurnId !== link.activationPreviousTurnId
         || live.activationPending !== link.activationPending || live.acceptedAt !== link.acceptedAt || live.stopOrigin !== link.stopOrigin
+        || link.signoff === "required" && (live.resultRevision !== link.resultRevision || live.manualAttemptId !== link.manualAttemptId)
         || taskStatusOf(id) !== status || currentTask?.activeTurnId !== task?.activeTurnId
         || currentTask?.lastCompletedTurnId !== task?.lastCompletedTurnId
         || (childStopGenerationRef.current.get(id) ?? 0) !== childGeneration
@@ -1164,7 +1219,8 @@ export function useChildAgents(context: ChildAgentContext): {
   }, [linksIncludingPending, releaseSlot, updateLink]);
 
   const recoverCurrentChild = useCallback(async (observed: ChildAgentLink): Promise<"running" | "unknown" | null> => {
-    if (followUpsInFlightRef.current.has(observed.childThreadId)) return null;
+    // A start this renderer is still preparing is not unconfirmed work yet.
+    if (followUpsInFlightRef.current.has(observed.childThreadId) || initialStartPending(observed)) return null;
     const link = retireUndispatchedActivation(observed);
     const assertCurrent = childObservationGuard(link);
     const recovering = recoveringChildrenRef.current;
@@ -1176,7 +1232,7 @@ export function useChildAgents(context: ChildAgentContext): {
       if (remaining > 0) recovering.set(link.childThreadId, remaining);
       else recovering.delete(link.childThreadId);
     }
-  }, [childObservationGuard, retireUndispatchedActivation]);
+  }, [childObservationGuard, initialStartPending, retireUndispatchedActivation]);
 
   const managedCutoffGuard = useCallback((link: ChildAgentLink): (() => void) => {
     const runGeneration = childRunGenerationRef.current.get(link.childThreadId) ?? 0;
@@ -1224,7 +1280,8 @@ export function useChildAgents(context: ChildAgentContext): {
       // acceptance/refusal; Stop invalidates their preparation via generation.
       cancelQueuedForChild(id, reason);
     }
-  }, [linksIncludingPending]);
+    notifyChildWaiters();
+  }, [linksIncludingPending, notifyChildWaiters]);
 
   const persistNativeSettlement = useCallback((expected: NativeAgentLink | undefined, status: TaskStatus) => {
     if (!expected) return;
@@ -1281,6 +1338,9 @@ export function useChildAgents(context: ChildAgentContext): {
     // Depth one. A thread that is itself a child never receives a bridge, so
     // this only fires if a stale bridge process outlived its root thread.
     if (currentLinks[rootThreadId]) throw new Error("A sub-agent cannot start further sub-agents.");
+    // A spawn emitted by a run the user stopped can reach the app while that
+    // run's cutoff settles. It belongs to the stopped run, not new work.
+    if (policy.collaborationV2 === true && rootRunStopped(rootThreadId, request.registrationId)) throw new Error("The user stopped this run, so no sub-agent was started.");
 
     const targetId = String(request.arguments.target ?? "");
     const target = policy.targets.find((entry) => entry.id === targetId);
@@ -1389,6 +1449,7 @@ export function useChildAgents(context: ChildAgentContext): {
         resolveSkillPrompts: ctx.resolveSkillPrompts,
         isStartCancelled: () => !lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration
           || (stopGenerationRef.current.get(rootThreadId) ?? 0) !== stopGeneration
+          || policy.collaborationV2 === true && rootRunStopped(rootThreadId, request.registrationId)
           || provisionalChild !== undefined && ((childStopGenerationRef.current.get(provisionalChild) ?? 0) !== childStartGeneration
             || linksIncludingPending(contextRef.current.links)[provisionalChild]?.stopOrigin !== undefined
             || contextRef.current.threadUnavailable?.(provisionalChild) === true
@@ -1428,6 +1489,7 @@ export function useChildAgents(context: ChildAgentContext): {
             ...(startRequestId ? { activationStartRequestId: startRequestId } : {}),
           };
           publishedLink = provisional;
+          if (policy.collaborationV2 === true) initialStartsRef.current.set(childThreadId, provisional);
           managedLocalTranscriptProofs.set(childThreadId, { createdAt: provisional.createdAt, fresh: true });
           pendingLinksRef.current.set(childThreadId, provisional);
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: provisional }));
@@ -1503,6 +1565,7 @@ export function useChildAgents(context: ChildAgentContext): {
       }
     } finally {
       pending.delete(reservation);
+      if (provisionalChild && initialStartsRef.current.get(provisionalChild) === publishedLink) initialStartsRef.current.delete(provisionalChild);
     }
     if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) {
       settleStart();
@@ -1654,7 +1717,7 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(!startUncertain ? { note: "The child runs in this thread's workspace under the same permission policy. Use collect_agent to read its result." } : {}),
       ...(cutoffNote ? { note: cutoffNote } : {}),
     };
-  }, [linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, releaseSlot, reservedChildCount, settleManagedCutoff, updateLink]);
+  }, [linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, releaseSlot, reservedChildCount, rootRunStopped, settleManagedCutoff, updateLink]);
 
   /** Follow-up guidance for this child is queued or starting, not yet delivered. */
   const followUpPending = useCallback((childThreadId: string): boolean => (
@@ -1685,7 +1748,8 @@ export function useChildAgents(context: ChildAgentContext): {
   const describeChild = useCallback((link: ChildAgentLink, focused = false, guidanceOffset = 0): Record<string, unknown> => {
     const childId = link.childThreadId;
     const taskStatus = taskStatusOf(childId);
-    const uncertain = pendingActivationsRef.current.get(childId)?.uncertain || link.activationPending && !followUpsInFlightRef.current.has(childId);
+    const uncertain = pendingActivationsRef.current.get(childId)?.uncertain
+      || link.activationPending && !followUpsInFlightRef.current.has(childId) && !initialStartPending(link);
     const status = uncertain ? "unknown" : childLifecycleForLink(link, taskStatus);
     const phase = uncertain ? "unknown" : childReviewPhase(link, taskStatus);
     const error = useTaskStore.getState().tasks[childId]?.error;
@@ -1730,7 +1794,7 @@ export function useChildAgents(context: ChildAgentContext): {
           : "Inspect the error, then spawn a replacement with a corrected self-contained prompt or another approved destination. Collect it before finishing.",
       } : {}),
     };
-  }, [followUpPending]);
+  }, [followUpPending, initialStartPending]);
 
   const reportStatus = useCallback((request: ChildAgentRequest): Record<string, unknown> => {
     const ctx = contextRef.current;
@@ -1823,8 +1887,26 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!link || link.sessionId !== request.sessionId) {
       throw new Error(`\`${childId}\` was not started from this thread.`);
     }
+    const rendererGeneration = lifecycleRef.current.generation;
+    const childGeneration = childStopGenerationRef.current.get(childId) ?? 0;
+    const rootGeneration = stopGenerationRef.current.get(link.rootThreadId) ?? 0;
+    const assertCollectionCurrent = () => {
+      if (link.signoff !== "required") return;
+      const current = linksIncludingPending(contextRef.current.links)[childId];
+      if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration
+        || !current || current.createdAt !== link.createdAt || current.sessionId !== link.sessionId
+        || current.rootThreadId !== link.rootThreadId
+        || current.manualAttemptId !== undefined && current.manualAttemptId !== link.manualAttemptId
+        || current.acceptedAt !== link.acceptedAt
+        || (childStopGenerationRef.current.get(childId) ?? 0) !== childGeneration
+        || (stopGenerationRef.current.get(link.rootThreadId) ?? 0) !== rootGeneration
+        || contextRef.current.threadUnavailable?.(childId) || contextRef.current.threadUnavailable?.(link.rootThreadId)) {
+        throw new Error("This collection was superseded by Stop or a changed conversation. Collect the current child again.");
+      }
+    };
     const recovery = await recoverCurrentChild(link);
     if (!await isChildAgentRequestActive(request)) throw new Error("This collection belongs to a retired bridge registration.");
+    assertCollectionCurrent();
     if (recovery) {
       const unread = takeUnreadForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
       const messages = [...unread.messages, ...unresolvedChildQuestions(childId, MAX_MESSAGES_PER_CHILD_RESPONSE - unread.messages.length, unread.messages)];
@@ -1855,6 +1937,7 @@ export function useChildAgents(context: ChildAgentContext): {
     let settledUnreadRemaining = 0;
     try {
       for (;;) {
+        assertCollectionCurrent();
         // A child's question ends the wait at once: the parent must be able
         // to answer while the child is still working, or both would stall.
         const unread = takeUnreadForParent(childId, MAX_MESSAGES_PER_CHILD_RESPONSE);
@@ -1914,11 +1997,18 @@ export function useChildAgents(context: ChildAgentContext): {
             agent: { action: "wait", threadIds: [childId] },
           });
         }
-        await waitForChildChange(childId, remaining, () => siblingsNeedingResponse(link, knownSiblingQuestions).length > 0);
+        await waitForChildChange(childId, remaining, () => siblingsNeedingResponse(link, knownSiblingQuestions).length > 0,
+          link.signoff === "required" ? (listener) => {
+            const wakeIfSuperseded = () => {
+              try { assertCollectionCurrent(); } catch { listener(); }
+            };
+            childWaitersRef.current.add(wakeIfSuperseded);
+            return () => { childWaitersRef.current.delete(wakeIfSuperseded); };
+          } : undefined);
         if (!await isChildAgentRequestActive(request)) throw new Error("This collection belongs to a retired bridge registration.");
       }
     } finally {
-      if (waiting) useTaskStore.getState().upsertActivity(link.rootThreadId, {
+      if (waiting && (link.signoff !== "required" || lifecycleRef.current.mounted && lifecycleRef.current.generation === rendererGeneration)) useTaskStore.getState().upsertActivity(link.rootThreadId, {
         id: waitId, kind: "agent", title: `Checked sub-agent: ${link.title}`, status: "completed",
         agent: { action: "wait", threadIds: [childId] },
       });
@@ -2720,6 +2810,9 @@ export function useChildAgents(context: ChildAgentContext): {
     if (contextRef.current.threadUnavailable?.(current.rootThreadId) || !livePolicy?.targets.length) {
       throw new Error("The parent thread is unavailable or its sub-agent policy was switched off.");
     }
+    if (rootRunStopped(current.rootThreadId, request.registrationId)) {
+      throw new Error("The user stopped this parent run, so this message was not saved. The parent's next user-initiated turn can message this sub-agent.");
+    }
     const { message, duplicate } = queueMessageToChild(childId, current.rootThreadId, text, replyTo, clientRequestId);
     if (duplicate) return describeDelivery(childId, message.id, true);
     recordParentActivity(current.rootThreadId, `child-guidance-${childId}-${message.id}`, `Message to sub-agent: ${current.title}`, message.text, childId, "sendInput");
@@ -2727,7 +2820,13 @@ export function useChildAgents(context: ChildAgentContext): {
     if (running) {
       if ((childReadersRef.current.get(childId) ?? 0) > 0) {
         // The child is blocked in read_parent_messages and pulls it now.
-        await waitForMailbox(() => getChildMailbox(childId)?.messages.find((entry) => entry.id === message.id)?.state !== "queued", 2_000);
+        const pulled = await waitForMailbox(() => getChildMailbox(childId)?.messages.find((entry) => entry.id === message.id)?.state !== "queued", 2_000);
+        // A read superseded before consuming it must not strand live guidance.
+        if (!pulled) {
+          if (!await isChildAgentRequestActive(request)) throw new Error("This message belongs to a retired bridge registration.");
+          if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) throw new Error("The renderer detached while this message was waiting for its child.");
+          await steerPendingGuidance(childId);
+        }
       } else if (!followUpsInFlightRef.current.has(childId)) {
         await steerPendingGuidance(childId);
       }
@@ -2735,7 +2834,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     await startFollowUp(childId);
     return describeDelivery(childId, message.id, false);
-  }, [assertParentCollaboration, describeDelivery, linksIncludingPending, recordParentActivity, recoverCurrentChild, startFollowUp, steerPendingGuidance]);
+  }, [assertParentCollaboration, describeDelivery, linksIncludingPending, recordParentActivity, recoverCurrentChild, rootRunStopped, startFollowUp, steerPendingGuidance]);
 
   /** Explicit sign-off by the parent model or by the user. */
   const acceptChild = useCallback(async (rootThreadId: string, childId: string, by: "parent" | "user", note?: string, expectedReviewToken?: string, request?: ChildAgentRequest): Promise<Record<string, unknown>> => {
@@ -2909,22 +3008,51 @@ export function useChildAgents(context: ChildAgentContext): {
     const requested = Number(request.arguments.waitSeconds ?? 0);
     const seconds = Number.isFinite(requested) ? Math.max(0, Math.min(MAX_READ_WAIT_SECONDS, requested)) : 0;
     const readers = childReadersRef.current;
-    readers.set(owner.childId, (readers.get(owner.childId) ?? 0) + 1);
     const replayKey = typeof request.arguments.replayKey === "string" ? request.arguments.replayKey : undefined;
     // A retried read with the same key returns the batch an earlier response
     // may have lost. It is a response replay, never a re-delivery or resend.
     const replay = replayKey ? replayReadForChild(owner.childId, replayKey) : [];
-    if (replay.length) {
-      readers.set(owner.childId, (readers.get(owner.childId) ?? 1) - 1);
-      if (!readers.get(owner.childId)) readers.delete(owner.childId);
+    if (replayKey !== undefined && hasChildReadReplay(owner.childId, replayKey)) {
       return { messages: replay.map(mailMessageForModel), replayed: true,
-        note: "These messages were already delivered to you by an earlier read with this replayKey; they are repeated because that response may have been lost." };
+        note: replay.length ? "These messages were already delivered to you by an earlier read with this replayKey; they are repeated because that response may have been lost."
+          : "This pull previously returned no guidance. Use a fresh replayKey to read new messages." };
     }
+    const readStillCurrent = () => {
+      const current = childOwnerForSession(request.sessionId);
+      const currentTask = useTaskStore.getState().tasks[owner.childId];
+      if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration
+        || !current || current.childId !== owner.childId || current.parentSessionId !== owner.parentSessionId
+        || current.rootThreadId !== owner.rootThreadId || current.link?.createdAt !== owner.link?.createdAt
+        || current.link?.activationId !== owner.link?.activationId || current.link?.acceptedAt !== owner.link?.acceptedAt
+        || current.link?.resultRevision !== owner.link?.resultRevision || current.link?.manualAttemptId !== owner.link?.manualAttemptId
+        || (childRunGenerationRef.current.get(owner.childId) ?? 0) !== runGeneration
+        || (childStopGenerationRef.current.get(owner.childId) ?? 0) !== childGeneration
+        || (stopGenerationRef.current.get(owner.rootThreadId) ?? 0) !== rootGeneration
+        || initialTask?.activeTurnId && currentTask?.activeTurnId !== initialTask.activeTurnId
+        || currentTask?.lastCompletedTurnId !== initialTask?.lastCompletedTurnId) return false;
+      try { assertChildMailboxOpen(current); return true; } catch { return false; }
+    };
+    const abort = new AbortController();
+    const cancelSupersededRead = () => { if (!readStillCurrent()) abort.abort(); };
+    childWaitersRef.current.add(cancelSupersededRead);
+    const unsubscribeTask = useTaskStore.subscribe((state, previous) => {
+      const currentTask = state.tasks[owner.childId];
+      const previousTask = previous.tasks[owner.childId];
+      // Streaming rows and unrelated threads do not change this read's
+      // turn identity. Local Stop/ownership changes notify separately.
+      if (state.statuses[owner.childId] !== previous.statuses[owner.childId]
+        || currentTask?.activeTurnId !== previousTask?.activeTurnId
+        || currentTask?.lastCompletedTurnId !== previousTask?.lastCompletedTurnId) cancelSupersededRead();
+    });
+    readers.set(owner.childId, (readers.get(owner.childId) ?? 0) + 1);
     try {
       if (!deliverableGuidance(owner.childId).messages.length && seconds > 0) {
-        await waitForMailbox(() => deliverableGuidance(owner.childId).messages.length > 0, seconds * 1000);
+        await waitForMailbox(() => !readStillCurrent() || deliverableGuidance(owner.childId).messages.length > 0
+          || replayKey !== undefined && hasChildReadReplay(owner.childId, replayKey), seconds * 1000, abort.signal);
       }
     } finally {
+      childWaitersRef.current.delete(cancelSupersededRead);
+      unsubscribeTask();
       const remaining = (readers.get(owner.childId) ?? 1) - 1;
       if (remaining > 0) readers.set(owner.childId, remaining);
       else readers.delete(owner.childId);
@@ -2942,6 +3070,7 @@ export function useChildAgents(context: ChildAgentContext): {
     if ((childRunGenerationRef.current.get(owner.childId) ?? 0) !== runGeneration
       || current.link?.createdAt !== owner.link?.createdAt || current.link?.activationId !== owner.link?.activationId
       || current.link?.acceptedAt !== owner.link?.acceptedAt
+      || current.link?.resultRevision !== owner.link?.resultRevision || current.link?.manualAttemptId !== owner.link?.manualAttemptId
       || initialTask?.activeTurnId && currentTask?.activeTurnId !== initialTask.activeTurnId
       || currentTask?.lastCompletedTurnId !== initialTask?.lastCompletedTurnId) {
       throw new Error("This mailbox read belongs to an older child turn. The newer turn's guidance was left queued.");
@@ -2950,12 +3079,13 @@ export function useChildAgents(context: ChildAgentContext): {
     // Another pull with the same key may have consumed its batch during our
     // wait/admission await. Replay it before any new atomic consumption.
     const completedReplay = replayKey ? replayReadForChild(owner.childId, replayKey) : [];
-    if (completedReplay.length) return {
+    if (replayKey !== undefined && hasChildReadReplay(owner.childId, replayKey)) return {
       messages: completedReplay.map(mailMessageForModel),
       replayed: true,
-      note: "This retained batch was already delivered by an earlier read with the same replayKey; no new guidance was consumed.",
+      note: completedReplay.length ? "This retained batch was already delivered by an earlier read with the same replayKey; no new guidance was consumed."
+        : "This pull previously returned no guidance. Use a fresh replayKey to read new messages.",
     };
-    const taken = takeQueuedForChild(owner.childId, replayKey);
+    const taken = takeQueuedForChild(owner.childId, replayKey, owner.rootThreadId);
     const blocked = !taken.length ? deliverableGuidance(owner.childId).blockedBy : undefined;
     return {
       messages: taken.map(mailMessageForModel),
@@ -3292,8 +3422,13 @@ export function useChildAgents(context: ChildAgentContext): {
       lifecycleRef.current.mounted = false;
       lifecycleRef.current.generation += 1;
       scheduledPumpsRef.current.clear();
+      notifyChildWaiters();
     };
-  }, []);
+  }, [notifyChildWaiters]);
+
+  // App-owned availability and persisted ownership may change without a task
+  // status event. Existing waits reevaluate their captured identity on render.
+  useEffect(() => { notifyChildWaiters(); });
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -3387,6 +3522,15 @@ export function useChildAgents(context: ChildAgentContext): {
   // terminal state, and mirror the outcome onto the parent's agent list.
   useEffect(() => {
     const unsubscribe = useTaskStore.subscribe((state, previous) => {
+      // beginAgentRun is app-owned admission. Status changes alone may be
+      // stale startup events from the stopped run, even after it settled.
+      for (const [rootThreadId, stoppedRun] of stoppedRootRunsRef.current) {
+        const currentRun = state.tasks[rootThreadId]?.agentRunStartedAt;
+        if (stoppedRun.revocation === "revoked" && currentRun !== undefined && currentRun !== stoppedRun.runStartedAt
+          && currentRun !== previous.tasks[rootThreadId]?.agentRunStartedAt) {
+          stoppedRootRunsRef.current.delete(rootThreadId);
+        }
+      }
       if (state.statuses === previous.statuses) return;
       // Include links written this tick: a follow-up's activation token must
       // reach its completion release even before React renders it.
@@ -3555,6 +3699,8 @@ export function useChildAgents(context: ChildAgentContext): {
   /** Snapshot exactly the work one Stop targets, before any cutoff is requested. */
   const captureChildStopFrontier = useCallback((rootThreadId: string): ChildStopFrontier => {
     const ctx = contextRef.current;
+    const storedPolicy = childAgentPolicyForThread(ctx.policies, rootThreadId);
+    const rootPolicy = storedPolicy && childAgentPolicyForSession(ctx.policies, storedPolicy.sessionId);
     const managed = new Map<string, { createdAt: number; resultRevision: number; activationId?: string }>();
     for (const link of Object.values(linksIncludingPending(ctx.links))) {
       if (link.rootThreadId !== rootThreadId && link.childThreadId !== rootThreadId) continue;
@@ -3580,10 +3726,16 @@ export function useChildAgents(context: ChildAgentContext): {
       managed,
       native: new Map(nativeChildren.map((agent) => [agent.id, agent.activationId])),
       processTurns,
+      rootActive: rootPolicy?.collaborationV2 === true
+        && (isChildActive(taskStatusOf(rootThreadId)) || Boolean(useTaskStore.getState().workflowOwners[rootThreadId])),
+      ...(rootPolicy?.collaborationV2 === true ? { rootBridge: {
+        sessionId: rootPolicy.sessionId, registrationId: childAgentRegistrationForSession(rootPolicy.sessionId),
+      } } : {}),
     };
   }, [linksIncludingPending]);
   /** Invalidation/cancellation runs once per Stop operation, not once per wave. */
   const appliedFrontiersRef = useRef(new WeakSet<ChildStopFrontier>());
+  const rootRevocationsRef = useRef(new WeakMap<ChildStopFrontier, Promise<string | undefined>>());
 
   const cancelChildAgentsFor = useCallback(async (rootThreadId: string, frontier?: ChildStopFrontier): Promise<void> => {
     const stop = frontier && frontier.rootThreadId === rootThreadId ? frontier : captureChildStopFrontier(rootThreadId);
@@ -3591,6 +3743,12 @@ export function useChildAgents(context: ChildAgentContext): {
       const task = useTaskStore.getState().tasks[rootThreadId];
       return Boolean(task?.activeTurnId && task.activeTurnId !== stop.rootTurnId)
         || task?.agentRunStartedAt !== undefined && task.agentRunStartedAt !== stop.rootRunStartedAt;
+    };
+    // A turn/start acknowledgement can supply a turn ID after Stop captured
+    // the original starting run. Only app-owned admission stamps new work.
+    const rootAdmissionAdvanced = () => {
+      const startedAt = useTaskStore.getState().tasks[rootThreadId]?.agentRunStartedAt;
+      return startedAt !== undefined && startedAt !== stop.rootRunStartedAt;
     };
     // Captured work, or a child the stopped root was still starting. A later
     // explicit activation (new revision/follow-up token) or a newer root
@@ -3606,20 +3764,41 @@ export function useChildAgents(context: ChildAgentContext): {
       ? stop.native.get(agent.id) === agent.activationId : !rootAdvanced();
     if (!appliedFrontiersRef.current.has(stop)) {
       appliedFrontiersRef.current.add(stop);
+      if (stop.rootActive && !rootAdmissionAdvanced()) {
+        const stoppedRun = {
+          runStartedAt: stop.rootRunStartedAt, sessionId: stop.rootBridge?.sessionId, registrationId: stop.rootBridge?.registrationId,
+          revocation: "pending" as "pending" | "revoked" | "failed",
+        };
+        stoppedRootRunsRef.current.set(rootThreadId, stoppedRun);
+        if (stop.rootBridge) {
+          rootRevocationsRef.current.set(stop, revokeRootChildAgentRegistration(
+            stop.rootBridge.sessionId, stop.rootBridge.registrationId, () => !rootAdmissionAdvanced(),
+          ).then(() => {
+            stoppedRun.revocation = "revoked";
+            if (stoppedRootRunsRef.current.get(rootThreadId) === stoppedRun) rootRunStopped(rootThreadId);
+            return undefined;
+          }, (reason) => {
+            stoppedRun.revocation = "failed";
+            return `Could not revoke the stopped parent's sub-agent registration: ${friendlyError(reason)}`;
+          }));
+        }
+      }
       invalidateChildAgentGuidance(rootThreadId, "The user stopped this run.");
       // Settle queued guidance before any cutoff so Stop cannot trigger a
       // boundary follow-up.
       cancelQueuedForRoot(rootThreadId, "The user stopped this run.");
     }
+    const rootRevocation = rootRevocationsRef.current.get(stop) ?? Promise.resolve(undefined);
     // Mark every live managed child of this Stop as user-stopped. A child
     // that had already settled (awaiting review or accepted) was not
     // stopped: its queued guidance is cancelled above and nothing can restart
     // it without a new, user-initiated parent turn. Marking it user-stopped
-    // would close it to that next turn for good.
+    // would close it to that next turn for good. This includes a settled
+    // child whose own conversation is archived or deleted.
     for (const link of Object.values(linksIncludingPending(contextRef.current.links))) {
       if (link.rootThreadId !== rootThreadId && link.childThreadId !== rootThreadId) continue;
       if (!managedInStop(link)) continue;
-      if (link.childThreadId !== rootThreadId && !childNeedsCutoff(link) && !link.activationPending
+      if ((link.childThreadId !== rootThreadId || link.signoff === "required") && !childNeedsCutoff(link) && !link.activationPending
         && !followUpsInFlightRef.current.has(link.childThreadId) && !pendingActivationsRef.current.has(link.childThreadId)) continue;
       updateLink(link.childThreadId, (current) => ({ ...current, stopOrigin: "user" }));
     }
@@ -3639,7 +3818,11 @@ export function useChildAgents(context: ChildAgentContext): {
       const native = nativeChildren.filter((agent) => (
         !ownedIds.has(agent.id) && isActiveAgentRecord(agent.status) && nativeInStop(agent)
       ));
-      if (!running.length && !native.length) return;
+      if (!running.length && !native.length) {
+        const failure = await rootRevocation;
+        if (failure) throw new Error(failure);
+        return;
+      }
       if (wave === 3 || [...running.map((link) => link.childThreadId), ...native.map((agent) => agent.id)].some((id) => attempted.has(id))) {
         throw new Error("Could not confirm every sub-agent stopped: the runtime created or reactivated work while Stop was settling. Remaining workers are still visible.");
       }
@@ -3661,6 +3844,7 @@ export function useChildAgents(context: ChildAgentContext): {
       }
       // Dispatch every provider cutoff before awaiting any one runtime.
       const results = await Promise.allSettled([
+        rootRevocation.then((failure) => { if (failure) throw new Error(failure); }),
         ...running.map(async (link) => {
           try {
             const assertCurrent = childObservationGuard(link);
@@ -3722,7 +3906,7 @@ export function useChildAgents(context: ChildAgentContext): {
       const failures = results.flatMap((result) => result.status === "rejected" ? [friendlyError(result.reason)] : []);
       if (failures.length) throw new Error(failures.join("\n"));
     }
-  }, [captureChildStopFrontier, childNeedsCutoff, childObservationGuard, invalidateChildAgentGuidance, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, settleManagedCutoff, updateLink]);
+  }, [captureChildStopFrontier, childNeedsCutoff, childObservationGuard, invalidateChildAgentGuidance, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, rootRunStopped, settleManagedCutoff, updateLink]);
 
   return {
     acceptChildAgent, cancelChildAgentsFor, captureChildStopFrontier, getManagedSubagentV2LockedReason,

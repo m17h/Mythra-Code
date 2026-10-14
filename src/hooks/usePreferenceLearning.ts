@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Provider, Thread } from "../types";
 import type { RunDiscoveryCatalogs } from "../lib/runDiscovery";
 import type { PreferenceLearningScopeState, PreferenceSourceMessage } from "../lib/preferenceLearningTypes";
-import { boundPreferenceSourceMessages, buildPreferenceAnalysisPayload, parsePreferenceAnalysis, resolvePreferenceLearningModel } from "../lib/preferenceLearning";
+import { boundPreferenceSourceMessages, buildPreferenceAnalysisPayload, mergeLearnedPreferences, parsePreferenceAnalysis, resolvePreferenceLearningModel } from "../lib/preferenceLearning";
+import { PREFERENCE_LEARNING_LIMITS } from "../lib/preferenceLearningTypes";
 import { commitPreferenceAnalysis, getPreferenceLearningHydrated, getPreferenceLearningJob, getPreferenceLearningScope, loadPreferenceLearning, reservePreferenceLearningAnalysis, setPreferenceLearningJob, subscribePreferenceLearning } from "../lib/preferenceLearningStore";
 import { PREFERENCE_HISTORY_LIMITS, preferenceCheckpointEntries, preferenceHistoryThreadEligible, preferenceSourceFingerprint, preferenceSourceId, readPreferenceHistoryPage } from "../lib/preferenceLearningHistory";
 import { useTaskStore as taskStore } from "../lib/taskStore";
@@ -26,8 +27,23 @@ export interface PreferenceLearningOptions {
 }
 interface Source extends PreferenceSourceMessage { turnId?: string; threadId: string; messageId?: string; transcriptFingerprint?: string }
 interface Receipt { id: string; text: string; capturedAt: number; transcriptFingerprint: string; scopeKeys: string[] }
-interface Job { scopeKey: string; requestId: string; sources: Source[]; history: boolean; historyRunId?: string; cancelled: boolean; revision?: number; readyAt: number }
+interface Job { scopeKey: string; requestId: string; sources: Source[]; history: boolean; historyRunId?: string; cancelled: boolean; revision?: number; readyAt: number; saving?: boolean }
 interface HistoryRun { scopeKey: string; id: string; cancelled: boolean; settingsInvalidated?: boolean; progress: PreferenceHistoryProgress }
+
+function matchesOwnWrite(current: PreferenceLearningScopeState, expected: PreferenceLearningScopeState | undefined): boolean {
+  if (!expected) return false;
+  // Only the intended next CAS is ours. A conflict refresh may publish another
+  // instance's clear/edit while our bridge call is still pending.
+  return current.revision === expected.revision && current.enabled === expected.enabled
+    && current.provider === expected.provider && current.model === expected.model
+    && current.enabledAt === expected.enabledAt && current.markdown === expected.markdown
+    && (current.clearedAt ?? null) === (expected.clearedAt ?? null)
+    && (current.historyRequestedAt ?? null) === (expected.historyRequestedAt ?? null)
+    && JSON.stringify(current.rejectedInstructions ?? []) === JSON.stringify(expected.rejectedInstructions ?? [])
+    && JSON.stringify(current.analysisRequestsAt ?? []) === JSON.stringify(expected.analysisRequestsAt ?? [])
+    && Object.keys(current.checkpoints).length === Object.keys(expected.checkpoints).length
+    && Object.entries(expected.checkpoints).every(([key, token]) => current.checkpoints[key] === token);
+}
 
 /** Future authored submissions only; mounted/hydrated task histories are never scanned. */
 export function usePreferenceLearning(options: PreferenceLearningOptions) {
@@ -38,7 +54,7 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
   const active = useRef<Job | null>(null);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const scopes = useRef(new Map<string, PreferenceLearningScopeState>());
-  const ownWrites = useRef(new Set<string>());
+  const ownWrites = useRef(new Map<string, PreferenceLearningScopeState>());
   const historyRun = useRef<HistoryRun | null>(null);
   const discoveredThreads = useRef(new Map<string, Thread>());
   const collectCompleted = useRef<((threadId: string) => void) | null>(null);
@@ -70,9 +86,10 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
   const cancelScope = useCallback((scopeKey: string, settingsInvalidated = false) => {
     // Once dispatched, the native CAS is atomic and cannot be unsent. Keep its
     // truthful saving/result state; settings mutations still invalidate it.
-    const finishingSave = historyRun.current?.scopeKey === scopeKey && historyRun.current.progress.status === "saving";
+    const finishingSave = Boolean(active.current?.scopeKey === scopeKey && active.current.saving)
+      || historyRun.current?.scopeKey === scopeKey && historyRun.current.progress.status === "saving";
     if (!settingsInvalidated && finishingSave) return;
-    if (finishingSave && historyRun.current) historyRun.current.settingsInvalidated = true;
+    if (finishingSave && historyRun.current?.scopeKey === scopeKey) historyRun.current.settingsInvalidated = true;
     const historyRunId = historyRun.current?.scopeKey === scopeKey ? historyRun.current.id
       : active.current?.scopeKey === scopeKey ? active.current.historyRunId : undefined;
     // A cancelled/cleared consent window cannot revive an earlier submission,
@@ -118,7 +135,11 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
   const pump = useCallback(async () => {
     if (active.current) return;
     while (alive.current && queue.current.length) {
-      const nextIndex = queue.current.findIndex((job) => job.readyAt <= Date.now());
+      // Reading an explicitly requested history pass holds a scope's revision
+      // stable. A new automatic job may arrive during those bounded page reads;
+      // reserving its request now would invalidate the history pass itself.
+      const nextIndex = queue.current.findIndex((job) => job.readyAt <= Date.now()
+        && (job.history || historyRun.current?.scopeKey !== job.scopeKey || historyRun.current.progress.status !== "reading"));
       if (nextIndex < 0) return;
       const job = queue.current.splice(nextIndex, 1)[0];
       active.current = job;
@@ -138,8 +159,10 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
           finishHistory(job, "error", "Select an available learning model before analyzing history."); continue;
         }
         updateHistory(job.historyRunId, { provider: state.provider, model });
-        ownWrites.current.add(job.scopeKey);
-        const reserved = await reservePreferenceLearningAnalysis(job.scopeKey, state.revision);
+        const requestTime = Date.now();
+        ownWrites.current.set(job.scopeKey, { ...state, revision: state.revision + 1,
+          analysisRequestsAt: [...(state.analysisRequestsAt ?? []).filter((timestamp) => timestamp > requestTime - 86_400_000), requestTime] });
+        const reserved = await reservePreferenceLearningAnalysis(job.scopeKey, state.revision, requestTime);
         ownWrites.current.delete(job.scopeKey);
         if (!reserved) {
           if (currentJob(job)) {
@@ -172,7 +195,15 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         }
         if (!currentJob(job, state.revision)) { finishHistory(job, "cancelled", "History analysis cancelled because its sources or settings changed."); continue; }
         updateHistory(job.historyRunId, { status: "saving", message: "Saving learned preferences…" });
-        ownWrites.current.add(job.scopeKey);
+        job.saving = true;
+        setPreferenceLearningJob(job.scopeKey, { ...getPreferenceLearningJob(job.scopeKey), saving: true, message: "Saving learned preferences…" });
+        const additions = Object.entries(checkpoints);
+        const addedKeys = new Set(additions.map(([key]) => key));
+        const retained = Object.entries(state.checkpoints).filter(([key]) => !addedKeys.has(key))
+          .slice(-(PREFERENCE_LEARNING_LIMITS.checkpointThreads - additions.length));
+        ownWrites.current.set(job.scopeKey, { ...state, revision: state.revision + 1,
+          markdown: mergeLearnedPreferences(state.markdown, preferences, state.rejectedInstructions),
+          checkpoints: Object.fromEntries([...(additions.length === PREFERENCE_LEARNING_LIMITS.checkpointThreads ? [] : retained), ...additions]) });
         const committed = await commitPreferenceAnalysis(job.scopeKey, state.revision, preferences, checkpoints);
         ownWrites.current.delete(job.scopeKey);
         scopes.current.set(job.scopeKey, committed.state);
@@ -242,7 +273,8 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
   }, [validScope]);
 
   const requestHistory = useCallback(async (scopeKey: string) => {
-    if (!validScope(scopeKey) || !getPreferenceLearningScope(scopeKey).enabled || !opts.current.getHistoryThreads || historyRun.current) return;
+    if (!validScope(scopeKey) || !getPreferenceLearningScope(scopeKey).enabled || !opts.current.getHistoryThreads || historyRun.current
+      || active.current?.scopeKey === scopeKey || queue.current.some((job) => job.scopeKey === scopeKey)) return;
     const start = getPreferenceLearningScope(scopeKey);
     const runId = crypto.randomUUID();
     const progress: PreferenceHistoryProgress = { scopeKey, runId, status: "reading", threads: 0, pages: 0, messages: 0, skipped: 0, limited: false,
@@ -272,22 +304,29 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         discoveredThreads.current.delete(candidate);
       }
       progress.limited = threads.length > PREFERENCE_HISTORY_LIMITS.threads;
-      const sources: Source[] = [];
-      for (const thread of threads.slice(0, PREFERENCE_HISTORY_LIMITS.threads).reverse()) {
+      let sources: Source[] = [];
+      // Read newest threads/pages first. Once newer evidence has consumed the
+      // budget, older evidence cannot displace it; retain only the final bounded
+      // selection instead of every full transcript across all 24 page reads.
+      for (const thread of threads.slice(0, PREFERENCE_HISTORY_LIMITS.threads)) {
         let cursor: string | null = null;
-        const threadSources: Source[] = [];
         for (let pageIndex = 0; pageIndex < PREFERENCE_HISTORY_LIMITS.pagesPerThread; pageIndex += 1) {
           if (!check() || !belongs(scopeKey, thread.id)) return;
           const page = await readPreferenceHistoryPage(thread, cursor, (metadata) => opts.current.isEligibleThread(metadata)
             && (scopeKey === "app" || scopeKey === `project:${opts.current.getProjectId(metadata) ?? ""}`));
           if (!check() || !belongs(scopeKey, thread.id)) return;
           progress.pages += 1; progress.skipped += page.skipped;
-          threadSources.unshift(...page.messages.map((message) => ({ ...message, threadId: thread.id, id: preferenceSourceId(thread.id, message.id) })));
+          const incoming: Source[] = page.messages.map((message) => ({ ...message, threadId: thread.id, id: preferenceSourceId(thread.id, message.id) }));
+          const candidates = [...incoming.filter((source) => source.role === "assistant"
+            || !checkpointFingerprints(source).some((token) => preferenceCheckpointEntries(start.checkpoints[source.threadId]).includes(token))), ...sources];
+          const selected = boundPreferenceSourceMessages(candidates);
+          const sourceById = new Map(candidates.map((source) => [source.id, source]));
+          sources = selected.map((message) => sourceById.get(message.id)!);
+          progress.limited ||= selected.length < candidates.length;
           cursor = page.nextCursor;
           if (!cursor) break;
         }
         progress.threads += 1; progress.limited ||= Boolean(cursor);
-        sources.push(...threadSources);
         updateHistory(runId, { ...progress });
       }
       if (!check()) return;
@@ -306,9 +345,11 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
       if (check()) {
         // Genuine failed reads count toward the daily attempt bound. Missing or
         // empty history returns above without reserving an attempt.
-        ownWrites.current.add(scopeKey);
+        const requestTime = Date.now();
+        ownWrites.current.set(scopeKey, { ...start, revision: start.revision + 1,
+          analysisRequestsAt: [...(start.analysisRequestsAt ?? []).filter((timestamp) => timestamp > requestTime - 86_400_000), requestTime] });
         try {
-          const reserved = await reservePreferenceLearningAnalysis(scopeKey, start.revision);
+          const reserved = await reservePreferenceLearningAnalysis(scopeKey, start.revision, requestTime);
           if (reserved) scopes.current.set(scopeKey, reserved);
         } catch { /* Preserve the original read error if accounting fails. */ }
         finally { ownWrites.current.delete(scopeKey); }
@@ -322,8 +363,11 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
         updateHistory(runId, { status: "cancelled", message: "History analysis cancelled because its sources or settings changed." });
         if (alive.current) setPreferenceLearningJob(scopeKey, { status: "idle", historyRunId: runId });
       }
+      // An automatic debounce timer can expire while this scope is reading.
+      // Empty/failed history passes enqueue no analysis to restart the pump.
+      if (!handedOff && alive.current) void pump();
     }
-  }, [validScope, belongs, enqueue, updateHistory, checkpointFingerprints]);
+  }, [validScope, belongs, enqueue, updateHistory, checkpointFingerprints, pump]);
 
   useEffect(() => {
     alive.current = true;
@@ -382,7 +426,7 @@ export function usePreferenceLearning(options: PreferenceLearningOptions) {
           cancelScope(key, true);
           continue;
         }
-        if (!ownWrites.current.has(key) && (current !== previous || !validScope(key)
+        if (!matchesOwnWrite(current, ownWrites.current.get(key)) && (current !== previous || !validScope(key)
           || active.current?.scopeKey === key && getPreferenceLearningJob(key).status === "idle")) {
           scopes.current.set(key, current);
           if (current.revision !== previous.revision || !current.enabled || !validScope(key)) cancelScope(key, true);

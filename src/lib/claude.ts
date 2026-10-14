@@ -337,8 +337,9 @@ export async function steerClaudeTurn(
   threadId: string,
   prompt: string,
   attachments: ClaudeAttachment[],
+  expectedTurnId?: string,
 ): Promise<void> {
-  await invoke("claude_turn_steer", { threadId, prompt, attachments });
+  await invoke("claude_turn_steer", { threadId, prompt, attachments, expectedTurnId: expectedTurnId ?? null });
 }
 
 export async function interruptClaudeTurn(threadId: string): Promise<void> {

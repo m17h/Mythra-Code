@@ -108,6 +108,7 @@ function isUnavailableSteerError(reason: unknown): boolean {
     /(?:Claude|Cursor).*(?:not currently running|no longer running)/i,
     /Could not (?:write to|flush) (?:Claude Code|Cursor Agent)/i,
     /Cursor session is still starting/i,
+    /Claude turn is finishing|Cursor already finished this turn/i,
     /no active turn|active turn is still starting|expected turn(?: id)?.*(?:does not match|mismatch)/i,
   ].some((pattern) => pattern.test(raw));
 }
@@ -638,6 +639,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let resolvedSystemPrompt = effectiveSettings.systemPrompt;
     let userSkillMetadata: Pick<ChatMessage, "skillReferences" | "skillsFolder" | "skillDependencies"> = {};
     if (mode === "steer" && running && activeThread) {
+      const steerOwner = useTaskStore.getState().tasks[activeThread.id];
+      const expectedSteerTurnId = steerOwner?.activeTurnId;
+      const expectedSteerRunStartedAt = steerOwner?.agentRunStartedAt;
       try {
         if (ctx.resolveSkillPrompts) {
           // Steering changes only user input. Never re-resolve or resend the
@@ -656,6 +660,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       const sentAttachments = [...attachments];
       if (ctx.deliveryGuard && !ctx.deliveryGuard()) return false;
+      const currentSteerOwner = useTaskStore.getState().tasks[activeThread.id];
+      if (contextRef.current.isThreadArchiving?.(activeThread.id)
+        || !expectedSteerTurnId
+        || currentSteerOwner?.status !== "running"
+        || currentSteerOwner.activeTurnId !== expectedSteerTurnId
+        || currentSteerOwner.agentRunStartedAt !== expectedSteerRunStartedAt) {
+        onUnavailableSteer?.();
+        return false;
+      }
       setError(null);
       const steerMessageId = `local-${crypto.randomUUID()}`;
       useTaskStore.getState().appendUserMessage(activeThread.id, {
@@ -672,6 +685,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             activeThread.id,
             providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
+            expectedSteerTurnId,
           );
           scheduleClaudeThreadSave(activeThread.id);
         } else if (isCursorThread(activeThread)) {
@@ -679,10 +693,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
             activeThread.id,
             providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
+            expectedSteerTurnId,
           );
           scheduleCursorThreadSave(activeThread.id);
         } else {
-          const expectedTurnId = useTaskStore.getState().tasks[activeThread.id]?.activeTurnId;
+          const expectedTurnId = expectedSteerTurnId;
           if (!expectedTurnId) throw new Error("The active turn is still starting");
           await rpc("turn/steer", {
             threadId: activeThread.id,
@@ -807,6 +822,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let startedThreadId: string | undefined;
     let sentMessageId: string | undefined;
     let providerAccepted = false;
+    let activeTurnBeforeDispatch: string | undefined;
+    let completedTurnBeforeDispatch: string | undefined;
     let provisionalWorktree: CreatedWorktree | undefined;
     let provisionalPersisted = false;
     let childBridge: ChildAgentBridgeResult | null = null;
@@ -814,6 +831,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let preparedExecutionPath: string | undefined;
     let ownedCheckpointId: string | undefined;
     const assertCanStart = () => {
+      const ownedThreadId = startedThreadId ?? startingThreadId;
+      if (ownedThreadId && contextRef.current.isThreadArchiving?.(ownedThreadId)) {
+        throw new CancelledTurnStart("The thread is being archived before the model turn could start");
+      }
       if (!explicitAttemptCurrent()) throw new CancelledTurnStart("A newer explicit child turn superseded this preparation");
       if (startingThreadId && guardedRunStartedAt !== undefined
         && useTaskStore.getState().tasks[startingThreadId]?.agentRunStartedAt !== guardedRunStartedAt) {
@@ -953,6 +974,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
         assertCanStart();
       }
+      const taskBeforeDispatch = useTaskStore.getState().tasks[thread.id];
+      activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
+      completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
       explicitDispatched = true;
       const nativeStart: { startRequestId: string; runStartedAt?: number; turnId?: string } = {
         startRequestId: provider === "cursor" ? cursorAttempt?.owner.startRequestId ?? localStartRequestId : localStartRequestId,
@@ -960,8 +984,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       };
       localStartRequestsRef.current.set(thread.id, nativeStart);
       const result = await strategy.startTurn(thread);
+      if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
+        throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The provider accepted the start without returning its turn identifier.");
+      }
       if (localStartRequestsRef.current.get(thread.id) === nativeStart) nativeStart.turnId = result.turnId;
       providerAccepted = true;
+      if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       recordAuthoredPrompt(thread.id, sentMessageId);
       // Provider events can race ahead of the start RPC response. If a very
       // short turn already delivered its result, reinstalling it here would
@@ -992,7 +1020,6 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
         clearProviderStopIntent(thread.id, result.turnId);
       }
-      if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       return true;
     };
 
@@ -1106,6 +1133,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
             const result = await startClaudeTurn({ threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
+              throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Claude accepted the start without returning its turn identifier.");
+            }
             return { turnId: result.turnId };
           },
           afterStart: (threadId) => scheduleClaudeThreadSave(threadId),
@@ -1155,6 +1185,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
                 ? { name: childBridge.launch.name, command: childBridge.launch.command, args: childBridge.launch.args }
                 : undefined,
             });
+            if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
+              throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Cursor accepted the start without returning its turn identifier.");
+            }
             if (!result.superseded && (!cursorAttempt || isCurrentCursorTurnStart(thread.id, cursorAttempt))) cursorSessionIdsRef.current[thread.id] = result.cursorSessionId;
             return { turnId: result.turnId, superseded: result.superseded, stopped: result.stopped };
           },
@@ -1286,8 +1319,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
 
       ctx.onCodexRuntimeOwned?.(threadId, runtimeInstance);
-      explicitDispatched = true;
-      const result = await rpc<{ turn: Turn }>("turn/start", { ...turnStartParams(runtimeSettings, threadId, executionPath, input, additionalWorkspaceRoots, true, {
+      const params = { ...turnStartParams(runtimeSettings, threadId, executionPath, input, additionalWorkspaceRoots, true, {
         systemPrompt: resolvedSystemPrompt,
         model: typeof runtimeTurnModel === "string" ? runtimeTurnModel : undefined,
         developerInstructions: mythraCodeDeveloperInstructions(
@@ -1298,8 +1330,17 @@ export function useTurnRunner(context: TurnRunnerContext): {
           nativeDelegation,
           collaborationV2,
         ),
-      }), expectedRuntimeInstance: runtimeInstance });
+      }), expectedRuntimeInstance: runtimeInstance };
+      const taskBeforeDispatch = useTaskStore.getState().tasks[threadId];
+      activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
+      completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
+      explicitDispatched = true;
+      const result = await rpc<{ turn: Turn }>("turn/start", params);
+      if (typeof result?.turn?.id !== "string" || !result.turn.id.trim()) {
+        throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The runtime accepted the start without returning its turn identifier.");
+      }
       providerAccepted = true;
+      if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       recordAuthoredPrompt(threadId, sentMessageId);
       const resultTurnId = result.turn?.id;
       const completedBeforeStartReturned = Boolean(
@@ -1314,15 +1355,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setAttachments((current) => withoutSentAttachments(current, sentAttachments));
       if (pendingTurnStartsRef.current.finish(threadId, pendingStart) && !completedBeforeStartReturned) {
         // The user pressed stop while the turn was still starting.
-        if (resultTurnId) await rpc("turn/interrupt", { threadId, turnId: resultTurnId });
-        if (resultTurnId) {
-          if (sealStoppedTurn(threadId, resultTurnId)) setTransientStatus("Stopped");
-        } else {
-          useTaskStore.getState().setTaskStatus(threadId, "interrupted");
-          setTransientStatus("Stopped");
-        }
+        await rpc("turn/interrupt", { threadId, turnId: resultTurnId });
+        if (sealStoppedTurn(threadId, resultTurnId)) setTransientStatus("Stopped");
       }
-      if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       return true;
     } catch (reason) {
       const cancelled = reason instanceof CancelledTurnStart;
@@ -1338,8 +1373,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         && (!failedThreadId || guardedRunStartedAt === undefined
           || useTaskStore.getState().tasks[failedThreadId]?.agentRunStartedAt === guardedRunStartedAt)
         && (!cursorAttempt || !failedThreadId || isCurrentCursorTurnStart(failedThreadId, cursorAttempt));
-      if (explicitDispatched && deliveryIsUncertain(reason) && failedThreadId) {
-        if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
+      const failedTask = failedThreadId ? useTaskStore.getState().tasks[failedThreadId] : undefined;
+      const runtimeObserved = ownsAttempt && Boolean(
+        failedTask?.activeTurnId && failedTask.activeTurnId !== activeTurnBeforeDispatch
+        || failedTask?.lastCompletedTurnId && failedTask.lastCompletedTurnId !== completedTurnBeforeDispatch,
+      );
+      if (!providerAccepted && explicitDispatched && (deliveryIsUncertain(reason) || runtimeObserved) && failedThreadId) {
+        if (!activeThread) contextRef.current.onThreadTitleCancelled?.(failedThreadId);
+        const stopRequested = pendingStart ? pendingTurnStartsRef.current.finish(failedThreadId, pendingStart) : false;
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
         if (ownsAttempt) {
           useTaskStore.getState().upsertActivity(failedThreadId, {
@@ -1350,7 +1391,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
           if (effectiveSettings.provider === "claude") scheduleClaudeThreadSave(failedThreadId);
           else if (effectiveSettings.provider === "cursor") scheduleCursorThreadSave(failedThreadId);
         }
-        setError("The provider start could not be confirmed. The prompt and checkpoint were retained; inspect or stop this work before retrying it.");
+        if (ownsAttempt) setError(stopRequested
+          ? "The provider start and Stop cutoff could not be confirmed. The prompt and checkpoint were retained; inspect or stop this work before retrying it."
+          : "The provider start could not be confirmed. The prompt and checkpoint were retained; inspect or stop this work before retrying it.");
         return true;
       }
       // A failed interruption or post-start callback is not a failed send.
@@ -1359,7 +1402,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (providerAccepted && failedThreadId) {
         if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        setError(friendlyError(reason));
+        if (ownsAttempt) setError(friendlyError(reason));
         return true;
       }
       if (!activeThread && failedThreadId) contextRef.current.onThreadTitleCancelled?.(failedThreadId);
@@ -1398,6 +1441,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           rejectCursorTurnStart(failedThreadId, cursorAttempt);
           if (!ownsFailure) return false;
         }
+        if (!ownsFailure) return false;
       }
       setStatus("Ready");
       if (cancelled) setTransientStatus("Stopped");
@@ -2109,8 +2153,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
       } else if (pendingCancelled) {
         setStatus("Stopping");
-      } else if (isClaudeThread(activeThread) || isCursorThread(activeThread)) {
-        throw new Error("This local provider start has no confirmed turn or owned startup identity. Its cutoff could not be confirmed; reopen its current conversation before retrying Stop.");
+      } else {
+        const message = "This provider start has no confirmed turn or owned startup identity. Its cutoff could not be confirmed; reopen its current conversation before retrying Stop.";
+        setError(message);
+        throw new Error(message);
       }
       return;
     }

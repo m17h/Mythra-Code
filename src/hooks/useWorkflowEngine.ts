@@ -8,7 +8,7 @@ import { beginCursorTurnStart, cursorTurnCanSettle, rejectCursorTurnStart } from
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { markProviderStopIntent, clearProviderStopIntent } from "../lib/providerStopIntent";
-import { friendlyError } from "../lib/errors";
+import { friendlyError, safeErrorText } from "../lib/errors";
 import { useTaskStore, type TaskStatus } from "../lib/taskStore";
 import { shellCommandWithWindowsQuotes } from "../lib/shellCommand";
 import { commandSandbox, threadStartParams, turnStartParams } from "../lib/turnConfig";
@@ -50,6 +50,12 @@ class WorkflowTurnTimeoutError extends Error {
   }
 }
 
+class WorkflowDeliveryUncertainError extends Error {
+  constructor() {
+    super("Workflow prompt delivery could not be confirmed. Automatic runs are paused. The prompt and checkpoint were retained; inspect or stop this conversation before retrying the workflow.");
+  }
+}
+
 function workflowErrorCode(reason: unknown): string | undefined {
   return reason && typeof reason === "object" && "code" in reason
     ? String(reason.code)
@@ -79,6 +85,8 @@ interface ActiveWorkflowRun {
   waitController?: AbortController;
   interrupt?: { turnId: string; promise: Promise<void> };
   stopError?: string;
+  deliveryUncertain?: boolean;
+  completedTurnBeforeDispatch?: string;
   publish: (patch: Partial<WorkflowRunRecord>) => void;
 }
 
@@ -275,7 +283,7 @@ async function interruptActiveTurn(active: ActiveWorkflowRun): Promise<void> {
     if (active.provider === "claude" || active.provider === "cursor") {
       markProviderStopIntent(threadId, turnId);
       try {
-        await (active.provider === "claude" ? killClaudeTurn(threadId) : killCursorTurn(threadId));
+        await (active.provider === "claude" ? killClaudeTurn(threadId, { turnId }) : killCursorTurn(threadId, { turnId }));
         const task = useTaskStore.getState().tasks[threadId];
         if (task?.lastCompletedTurnId !== turnId) useTaskStore.getState().completeTurn(threadId, turnId, "interrupted");
       } finally {
@@ -337,6 +345,17 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     const current = depsRef.current;
     const storedWorkflow = current.workflows.find((item) => item.id === workflowId);
     if (!storedWorkflow || runningRef.current.has(workflowId)) return undefined;
+    if (storedWorkflow.unconfirmedThreadId) {
+      const task = useTaskStore.getState().tasks[storedWorkflow.unconfirmedThreadId];
+      if (storedWorkflow.unconfirmedBaselineUnknown || !task || task.activeTurnId || !task.lastCompletedTurnId
+        || task.lastCompletedTurnId === storedWorkflow.unconfirmedCompletedTurnId
+        || !TERMINAL_STATUSES.has(task.status)) {
+        if (source === "manual") current.onError(storedWorkflow.unconfirmedBaselineUnknown
+          ? "The previous delivery has no known history baseline. Inspect its conversation; after confirming its work has stopped, recreate the recipe to resume runs."
+          : "The previous workflow delivery is still unconfirmed. Inspect or stop its conversation before starting another run.");
+        return undefined;
+      }
+    }
     const preflight = workflowPreflight(current, source === "manual" && targetProjectId
       ? { ...storedWorkflow, projectId: targetProjectId } : storedWorkflow);
     if (!preflight.ready) {
@@ -558,9 +577,11 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               if (active.stopRequested) throw new WorkflowStoppedError();
               variables.previousExitCode = "";
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
+              active.completedTurnBeforeDispatch = useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId;
               const promptThreadId = threadId;
+              const promptMessageId = `workflow-${runId}-${step.id}-${attempt}`;
               const appendPrompt = () => useTaskStore.getState().appendUserMessage(promptThreadId, {
-                id: `workflow-${runId}-${step.id}-${attempt}`,
+                id: promptMessageId,
                 role: "user",
                 text: prompt,
                 skillReferences: resolved.skillReferences,
@@ -576,6 +597,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               // finalization before the next step can start a new snapshot.
               let result: { turn: Pick<Turn, "id"> };
               let nativeTurnAcknowledged = false;
+              let turnDispatched = false;
               try {
                 await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
                 if (active.stopRequested) throw new WorkflowStoppedError();
@@ -599,14 +621,23 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                       skillsPluginPath: current.getSkillsPluginPath?.() };
                     if (active.stopRequested) throw new WorkflowStoppedError();
                     appendPrompt();
+                    turnDispatched = true;
                     const started = await startClaudeTurn(claudeOptions);
+                    if (typeof started?.turnId !== "string" || !started.turnId.trim()) {
+                      throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Claude accepted the start without returning its turn identifier.");
+                    }
+                    nativeTurnAcknowledged = true;
                     claudeSessionStarted = true;
                     result = { turn: { id: started.turnId } };
                   } else {
                     const cursorOptions = { ...options, startRequestId: cursorAttempt?.owner.startRequestId, resumeSessionId: cursorSessionId };
                     if (active.stopRequested) throw new WorkflowStoppedError();
                     appendPrompt();
+                    turnDispatched = true;
                     const started = await startCursorTurn(cursorOptions);
+                    if (typeof started?.turnId !== "string" || !started.turnId.trim()) {
+                      throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Cursor accepted the start without returning its turn identifier.");
+                    }
                     nativeTurnAcknowledged = true;
                     if (started.superseded || started.stopped) {
                       // Accepted-but-stopped is not failed-to-start: the
@@ -639,20 +670,41 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   // Validate parameters before append; no await separates the
                   // last cancellation check, optimistic history and dispatch.
                   appendPrompt();
+                  turnDispatched = true;
                   result = await rpc<{ turn: Turn }>("turn/start", params);
+                  nativeTurnAcknowledged = true;
+                }
+                if (typeof result?.turn?.id !== "string" || !result.turn.id.trim()) {
+                  active.deliveryUncertain = true;
+                  throw new WorkflowDeliveryUncertainError();
                 }
               } catch (reason) {
+                const task = useTaskStore.getState().tasks[threadId];
+                const runtimeObserved = Boolean(task?.activeTurnId
+                  || task?.lastCompletedTurnId && task.lastCompletedTurnId !== active.completedTurnBeforeDispatch);
+                if (turnDispatched && (active.deliveryUncertain || !nativeTurnAcknowledged && (runtimeObserved
+                  || /^(?:Error:\s*)?MYTHRA_DELIVERY_UNCERTAIN:/.test(safeErrorText(reason))
+                  || safeErrorText(reason) === "Codex App Server timed out while handling turn/start"))) {
+                  // An unacknowledged request can still own a provider turn.
+                  // Replaying the step or advancing the recipe could run two
+                  // prompts against the same files and duplicate provider use.
+                  active.deliveryUncertain = true;
+                  // This recipe exclusively owns its new thread. If native
+                  // events already supplied the ID, a concurrent Stop can
+                  // still interrupt that exact turn despite the lost reply.
+                  if (active.stopRequested) active.turnId = useTaskStore.getState().tasks[threadId]?.activeTurnId;
+                  throw new WorkflowDeliveryUncertainError();
+                }
                 if (cursorAttempt && !nativeTurnAcknowledged) rejectCursorTurnStart(threadId, cursorAttempt);
                 // No turn ever started, so no completion event will finalize
                 // the snapshot; drop it instead of leaving it running forever.
-                if (!nativeTurnAcknowledged) current.discardRunCheckpoint(threadId);
+                if (!nativeTurnAcknowledged) {
+                  current.discardRunCheckpoint(threadId);
+                  useTaskStore.getState().removeMessage(threadId, promptMessageId);
+                }
                 throw reason;
               }
               active.turnId = result.turn?.id;
-              if (!active.turnId) {
-                current.discardRunCheckpoint(threadId);
-                throw new Error("The runtime did not return a turn identifier.");
-              }
               if (useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId !== active.turnId) {
                 useTaskStore.getState().setActiveTurn(threadId, active.turnId);
                 if (localProvider) useTaskStore.getState().setTaskStatus(threadId, "running");
@@ -702,9 +754,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             // the workflow thread in "starting" with no runtime event coming
             // to repair it. Reset it here whenever this attempt is terminal —
             // a retried attempt re-marks "starting" itself.
-            const stopped = active.stopRequested || isWorkflowStoppedError(reason);
-            const willRetry = !stopped && attempt <= retry.count && !turnTimedOut;
-            if (!willRetry && useTaskStore.getState().tasks[threadId]?.status === "starting") {
+            const stopped = !active.deliveryUncertain && (active.stopRequested || isWorkflowStoppedError(reason));
+            const willRetry = !stopped && !active.deliveryUncertain && attempt <= retry.count && !turnTimedOut;
+            if (!willRetry && !active.deliveryUncertain && useTaskStore.getState().tasks[threadId]?.status === "starting") {
               useTaskStore.getState().setTaskStatus(
                 threadId,
                 stopped ? "interrupted" : "error",
@@ -714,7 +766,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             if (stopped) {
               throw new WorkflowStoppedError();
             }
-            if (attempt <= retry.count && !turnTimedOut) {
+            if (willRetry) {
               steps = replaceStep(steps, step.id, {
                 status: "running",
                 error: `${friendlyError(reason)} Retrying…`,
@@ -740,7 +792,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
           variables.previousStepStatus = "failed";
           variables.previousStepOutput = stepOutput || friendlyError(stepError);
           publish({ variables: { ...variables } });
-          if (!step.continueOnError) throw stepError;
+          if (active.deliveryUncertain || !step.continueOnError) throw stepError;
           useTaskStore.getState().upsertActivity(threadId, {
             id: `workflow-warning-${runId}-${step.id}`,
             kind: "warning",
@@ -772,6 +824,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
         ...item,
         lastRunAt: finishedAt,
         lastThreadId: threadId,
+        unconfirmedThreadId: undefined,
+        unconfirmedCompletedTurnId: undefined,
+        unconfirmedBaselineUnknown: undefined,
         nextRunAt: source === "interval"
           ? nextWorkflowRunAt(item.trigger, finishedAt)
           : item.nextRunAt,
@@ -785,12 +840,12 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       }, threadId).catch(() => {});
       return threadId;
     } catch (reason) {
-      const stopped = !active.stopError && (active.stopRequested || isWorkflowStoppedError(reason));
+      const stopped = !active.stopError && !active.deliveryUncertain && (active.stopRequested || isWorkflowStoppedError(reason));
       const message = active.stopError ?? (stopped ? "Workflow was stopped." : friendlyError(reason));
       const finishedAt = Date.now();
       // A command-only recipe has no provider completion event to set a
       // terminal task status. Keep held follow-ups queued after Stop/failure.
-      if (threadId && !useTaskStore.getState().tasks[threadId]?.activeTurnId) {
+      if (threadId && !active.deliveryUncertain && !useTaskStore.getState().tasks[threadId]?.activeTurnId) {
         useTaskStore.getState().setTaskStatus(threadId, stopped ? "interrupted" : "error", stopped ? undefined : message);
       }
       if (localProvider) await persistLocalThread().catch((error) => current.onError(`Workflow transcript save failed: ${friendlyError(error)}`));
@@ -809,6 +864,16 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
         steps,
       });
       current.updateWorkflow(workflow.id, (item) => {
+        if (active.deliveryUncertain && threadId) {
+          return {
+            ...item,
+            unconfirmedThreadId: threadId,
+            unconfirmedCompletedTurnId: active.completedTurnBeforeDispatch,
+            // Preserve a recipe edited while this run was preparing. The
+            // ownership latch still prevents it from replaying unknown work.
+            ...(item === storedWorkflow ? { enabled: false, lastRunAt: finishedAt, lastThreadId: threadId, updatedAt: finishedAt } : {}),
+          };
+        }
         const consecutiveFailures = stopped
           ? item.consecutiveFailures ?? 0
           : (item.consecutiveFailures ?? 0) + 1;

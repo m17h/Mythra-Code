@@ -1,5 +1,6 @@
 import {
   endChildAgentSession,
+  revokeChildAgentRootRegistration,
   startChildAgentSession,
   type ChildAgentBridgeLaunch,
   type ProjectBridgeContext,
@@ -105,6 +106,35 @@ export function resetChildAgentLaunches(): void {
  * that the currently-running parent still needs to collect its children. */
 export function invalidateChildAgentLaunch(sessionId: string): void {
   launches.delete(sessionId);
+}
+
+/** Capture Stop's registration when this renderer has its launch descriptor. */
+export function childAgentRegistrationForSession(sessionId: string): string | undefined {
+  return launches.get(sessionId)?.registrationId;
+}
+
+/**
+ * Serialize Stop with native starts/ends. Invalidate immediately and again
+ * after an older pending start settles, so no revoked descriptor is cached.
+ * Reject a Stop that was already stale at entry. Once admitted, its native
+ * revocation must run: a newer run can fail before registering a replacement.
+ * Later starts queue behind it; a captured registration protects replacements
+ * that were already registered before this Stop reached the queue.
+ */
+export function revokeRootChildAgentRegistration(sessionId: string, registrationId: string | undefined, stillCurrent: () => boolean): Promise<boolean> {
+  const invalidateCaptured = () => {
+    const cached = launches.get(sessionId);
+    if (registrationId === undefined || cached?.registrationId === registrationId) {
+      launches.delete(sessionId);
+      terminalScopes.delete(sessionId);
+    }
+  };
+  if (!stillCurrent()) return Promise.resolve(false);
+  invalidateCaptured();
+  return queueSessionOperation(sessionId, async () => {
+    invalidateCaptured();
+    return revokeChildAgentRootRegistration(sessionId, registrationId);
+  });
 }
 
 export function cacheChildAgentPolicy(policy: ChildAgentPolicy): void {

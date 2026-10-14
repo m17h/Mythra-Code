@@ -24,5 +24,6 @@ export function resolveThreadTitleModel(provider: Provider, model: string, catal
 export function cleanThreadTitle(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const title = value.replace(/\s+/g, " ").trim();
-  return title.length >= 3 && [...title].length <= 80 && !/[\u0000-\u001f]/.test(title) ? title : null;
+  const length = [...title].length;
+  return length >= 3 && length <= 80 && !/[\u0000-\u001f\u007f-\u009f]/.test(title) ? title : null;
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Check, ChevronDown, NotebookPen, Settings } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
 import type { ProjectPromptMode, ProjectPromptProfile, Provider, SkillDependencyReport } from "../types";
-import { MAX_PROJECT_PROMPT_PROFILES, MAX_PROJECT_PROMPT_PROFILE_NAME, MAX_PROJECT_PROFILE_PROMPT, sanitizeProjectPromptProfiles, type ProjectPromptProfileState } from "../lib/projectPromptProfiles";
+import { MAX_PROJECT_PROMPT_PROFILES, MAX_PROJECT_PROMPT_PROFILE_NAME, MAX_PROJECT_PROFILE_PROMPT, mergeProjectPromptProfileDrafts, sanitizeProjectPromptProfiles, type ProjectPromptProfileState } from "../lib/projectPromptProfiles";
 import { resolveSystemPrompt } from "../lib/systemPrompt";
 import type { SkillMentionSkill } from "../lib/skillMentions";
 import { SkillPromptEditor } from "./SkillPromptEditor";
@@ -47,6 +47,11 @@ export function ProjectPromptControl({
   const [draftProfiles, setDraftProfiles] = useState(savedProfiles);
   const [profileId, setProfileId] = useState(selectedProfileId ?? "");
   const [profileName, setProfileName] = useState("");
+  const [externalChangeNotice, setExternalChangeNotice] = useState(false);
+  const draftStateRef = useRef({ custom, draft, mode, draftProfiles, profileId, profileName });
+  draftStateRef.current = { custom, draft, mode, draftProfiles, profileId, profileName };
+  const draftBaselineRef = useRef<{ prompt?: string; mode: ProjectPromptMode; profiles: ProjectPromptProfile[]; selectedId: string; selectedName: string } | null>(null);
+  const deletedProfileIdsRef = useRef(new Set<string>());
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [availableHeight, setAvailableHeight] = useState<number>();
@@ -78,14 +83,46 @@ export function ProjectPromptControl({
   }, [openRequest]);
 
   useEffect(() => {
-    if (!open) return;
-    setCustom(hasProjectPrompt);
-    setDraft(projectPrompt ?? "");
-    setMode(promptMode);
-    setDraftProfiles(savedProfiles);
-    const selected = savedProfiles.find((profile) => profile.id === selectedProfileId && profile.prompt === projectPrompt && profile.mode === promptMode);
-    setProfileId(selected?.id ?? "");
-    setProfileName(selected?.name ?? "");
+    if (!open) {
+      draftBaselineRef.current = null;
+      deletedProfileIdsRef.current.clear();
+      return;
+    }
+    const selected = savedProfiles.find((profile) => profile.id === selectedProfileId && profile.prompt.trim() === projectPrompt?.trim() && profile.mode === promptMode);
+    const incoming = { prompt: projectPrompt, mode: promptMode, profiles: savedProfiles, selectedId: selected?.id ?? "", selectedName: selected?.name ?? "" };
+    const baseline = draftBaselineRef.current;
+    if (!baseline) {
+      setCustom(hasProjectPrompt);
+      setDraft(projectPrompt ?? "");
+      setMode(promptMode);
+      setDraftProfiles(savedProfiles);
+      setProfileId(incoming.selectedId);
+      setProfileName(incoming.selectedName);
+      setExternalChangeNotice(false);
+    } else {
+      const current = draftStateRef.current;
+      const activeEdited = current.custom !== Boolean(baseline.prompt?.trim()) || current.draft !== (baseline.prompt ?? "") || current.mode !== baseline.mode
+        || current.profileId !== baseline.selectedId || current.profileName !== baseline.selectedName;
+      if (activeEdited && (projectPrompt !== baseline.prompt || promptMode !== baseline.mode || incoming.selectedId !== baseline.selectedId)) setExternalChangeNotice(true);
+      // Source, text and layer mode form one authored instruction snapshot.
+      // Adopting an incoming source toggle alone could hide edited text; an
+      // incoming mode alone could change its meaning from replace to append.
+      if (!activeEdited) {
+        setCustom(hasProjectPrompt);
+        setDraft(projectPrompt ?? "");
+        setMode(promptMode);
+        setProfileId(incoming.selectedId);
+        setProfileName(incoming.selectedName);
+      } else if (current.profileId === baseline.selectedId && current.profileId === incoming.selectedId
+        && current.profileName === baseline.selectedName) {
+        // An incoming rename must not turn an untouched name field into a
+        // stale rename draft merely because the instruction text was edited.
+        setProfileName(incoming.selectedName);
+      }
+      setDraftProfiles((value) => mergeProjectPromptProfileDrafts(baseline.profiles, value, savedProfiles)
+        .filter((profile) => !deletedProfileIdsRef.current.has(profile.id)));
+    }
+    draftBaselineRef.current = incoming;
   }, [hasProjectPrompt, open, projectPrompt, promptMode, savedProfiles, selectedProfileId]);
 
   useEffect(() => {
@@ -112,12 +149,13 @@ export function ProjectPromptControl({
   }, [open]);
 
   const inheritedSummary = appPrompt.trim() ? `Uses the ${appPrompt.trim().length}-character app-wide prompt` : "The app-wide prompt is currently empty";
-  const saveDisabled = custom && !draft.trim();
+  const profilesOverLimit = draftProfiles.length > MAX_PROJECT_PROMPT_PROFILES;
+  const saveDisabled = (custom && !draft.trim()) || profilesOverLimit;
   const selectedProfile = draftProfiles.find((profile) => profile.id === profileId);
   const name = profileName.trim();
   const nameTaken = draftProfiles.some((profile) => profile.name.toLowerCase() === name.toLowerCase());
   const canSaveProfile = custom && !saveDisabled && draft.length <= MAX_PROJECT_PROFILE_PROMPT && Boolean(name) && name.length <= MAX_PROJECT_PROMPT_PROFILE_NAME;
-  const profileModified = selectedProfile && (selectedProfile.prompt !== draft.trim() || selectedProfile.mode !== mode);
+  const profileModified = selectedProfile && (selectedProfile.prompt.trim() !== draft.trim() || selectedProfile.mode !== mode);
   const hasAppPrompt = Boolean(appPrompt.trim());
   const promptState = hasProjectPrompt ? (promptMode === "append" && hasAppPrompt ? "Layered" : "Custom") : "Inherited";
 
@@ -147,6 +185,8 @@ export function ProjectPromptControl({
             </div>
           </div>
 
+          {externalChangeNotice && <small role="status">Project instructions changed while you were editing. Your draft is retained. Cancel and reopen to load the update, or save to apply your draft.</small>}
+
           <div className="project-prompt-modes" role="radiogroup" aria-label="Project instruction source">
             <button className={!custom ? "selected" : ""} role="radio" aria-checked={!custom} onClick={() => { setCustom(false); setProfileId(""); }}>
               <span>
@@ -168,8 +208,9 @@ export function ProjectPromptControl({
             <details className="project-prompt-profiles" open={draftProfiles.length ? true : undefined}>
               <summary>Saved project profiles{draftProfiles.length ? ` (${draftProfiles.length})` : ""}</summary>
               <small>Save named instructions for {projectName}. Changes apply when you save below.</small>
+              {profilesOverLimit && <small role="alert">Incoming updates and your drafts exceed the {MAX_PROJECT_PROMPT_PROFILES}-profile limit. Delete a profile before saving so no profiles are discarded.</small>}
               <div className="inline-create">
-                <select aria-label="Saved project profile" value={profileId} onChange={(event) => {
+                <select aria-label="Saved project profile" value={selectedProfile?.id ?? ""} onChange={(event) => {
                   const profile = draftProfiles.find((entry) => entry.id === event.target.value);
                   setProfileId(profile?.id ?? "");
                   setProfileName(profile?.name ?? "");
@@ -183,6 +224,7 @@ export function ProjectPromptControl({
                   {draftProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
                 </select>
                 <button type="button" disabled={!selectedProfile} onClick={() => {
+                  deletedProfileIdsRef.current.add(profileId);
                   setDraftProfiles((current) => current.filter((profile) => profile.id !== profileId));
                   setProfileId("");
                   setProfileName("");
@@ -272,7 +314,7 @@ export function ProjectPromptControl({
               onClick={() => {
                 const prompt = custom ? draft.trim() : undefined;
                 const nextMode = custom ? mode : "replace";
-                if (profiles !== undefined) onSave(prompt, nextMode, { profiles: draftProfiles, selectedProfileId: custom ? profileId || undefined : undefined });
+                if (profiles !== undefined) onSave(prompt, nextMode, { profiles: draftProfiles, selectedProfileId: custom ? selectedProfile?.id : undefined });
                 else onSave(prompt, nextMode);
                 setOpen(false);
                 triggerRef.current?.focus();

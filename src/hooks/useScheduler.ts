@@ -7,6 +7,7 @@ import type { ResolvedSkillPrompts } from "../lib/skills";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
+import { safeErrorText } from "../lib/errors";
 import { planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "../lib/threadCapabilities";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { parentAutoCompactionUnavailableReason } from "../lib/threadSubagentSettings";
@@ -105,6 +106,15 @@ export function useScheduler(deps: SchedulerDeps): void {
   const runScheduledTask = useCallback(async (scheduled: ScheduledTask) => {
     const current = depsRef.current;
     if (runningRef.current.has(scheduled.id)) return;
+    if (scheduled.unconfirmedThreadId) {
+      if (scheduled.unconfirmedBaselineUnknown) return;
+      const task = useTaskStore.getState().tasks[scheduled.unconfirmedThreadId];
+      // A missing/restored-idle task is not evidence that a dispatched turn
+      // settled. The durable latch also survives renderer reloads and edits.
+      if (!task || task.activeTurnId || !task.lastCompletedTurnId
+        || task.lastCompletedTurnId === scheduled.unconfirmedCompletedTurnId
+        || !["completed", "interrupted", "error"].includes(task.status)) return;
+    }
     const updateOwnedSchedule = (patch: (item: ScheduledTask) => ScheduledTask) => {
       depsRef.current.updateSchedule(scheduled.id, (item) => item === scheduled && item.enabled ? patch(item) : item);
     };
@@ -388,7 +398,10 @@ export function useScheduler(deps: SchedulerDeps): void {
         assertCurrent();
         assertIdle(started.thread.id, true);
         turnDispatched = true;
-        await rpc("turn/start", params);
+        const result = await rpc<{ turn?: { id?: string } }>("turn/start", params);
+        if (typeof result?.turn?.id !== "string" || !result.turn.id.trim()) {
+          throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The runtime accepted the start without returning its turn identifier.");
+        }
       } catch (reason) {
         // The client identity is reconciled locally from the native prompt
         // echo, not transmitted as a request ID. Use it only when no competing
@@ -409,6 +422,7 @@ export function useScheduler(deps: SchedulerDeps): void {
             || (task?.lastCompletedTurnId && task.lastCompletedTurnId !== completedTurnBeforeDispatch));
           const message = reason instanceof Error ? reason.message : reason;
           unconfirmedAcknowledgement = turnDispatched && (observedRuntimeAfterDispatch
+            || /^(?:Error:\s*)?MYTHRA_DELIVERY_UNCERTAIN:/.test(safeErrorText(reason))
             || message === "Codex App Server timed out while handling turn/start");
           if (pendingMessageId && !unconfirmedAcknowledgement) {
             const ownsPendingStart = stillOwnsStartingStatus(started.thread.id);
@@ -435,6 +449,9 @@ export function useScheduler(deps: SchedulerDeps): void {
           ...item,
           lastRunAt: Date.now(),
           lastThreadId: started.thread.id,
+          unconfirmedThreadId: undefined,
+          unconfirmedCompletedTurnId: undefined,
+          unconfirmedBaselineUnknown: undefined,
           nextRunAt: Date.now() + item.intervalMinutes * 60_000,
         }));
       }
@@ -463,18 +480,32 @@ export function useScheduler(deps: SchedulerDeps): void {
         updateOwnedSchedule((item) => ({ ...item, nextRunAt: Date.now() + 60_000 }));
         return;
       }
+      const baselineUnknown = unconfirmedAcknowledgement && reusingExecutionPath && !completedTurnBeforeDispatch;
       const error = unconfirmedAcknowledgement
-        ? `Scheduled prompt delivery could not be confirmed. Check the conversation before retrying. ${String(reason).slice(0, 120)}`
+        ? baselineUnknown
+          ? "Scheduled prompt delivery could not be confirmed. Automatic runs are paused because earlier history was unavailable. Inspect this conversation; after confirming its work has stopped, recreate the schedule to resume automatic runs."
+          : `Scheduled prompt delivery could not be confirmed. Automatic runs are paused; check or stop the conversation before retrying. ${String(reason).slice(0, 120)}`
         : reason instanceof SkillDependencyError ? reason.message : String(reason).slice(0, 200);
       // A thread whose turn never started would otherwise stay "starting"
       // forever, blocking checkpoints, worktree operations, and deletion for
       // the whole project.
-      if (startedThreadId && !turnStarted && stillOwnsStartingStatus(startedThreadId)) {
+      if (startedThreadId && !turnStarted && !unconfirmedAcknowledgement && stillOwnsStartingStatus(startedThreadId)) {
         useTaskStore.getState().setTaskStatus(startedThreadId, "error", error);
       }
-      if (preparationIsCurrent(preparation, depsRef.current)) {
+      if (unconfirmedAcknowledgement && startedThreadId) {
+        const unconfirmedThreadId = startedThreadId;
+        depsRef.current.updateSchedule(scheduled.id, (item) => ({
+          ...item,
+          unconfirmedThreadId,
+          unconfirmedCompletedTurnId: completedTurnBeforeDispatch,
+          unconfirmedBaselineUnknown: baselineUnknown || undefined,
+          // Keep concurrent edits/enabling decisions; only pause the exact
+          // schedule that admitted this failed acknowledgement.
+          ...(item === scheduled ? { enabled: false, lastThreadId: unconfirmedThreadId } : {}),
+        }));
+      } else if (preparationIsCurrent(preparation, depsRef.current)) {
         updateOwnedSchedule((item) => ({ ...item,
-          nextRunAt: Date.now() + (unconfirmedAcknowledgement ? item.intervalMinutes * 60_000 : 5 * 60_000),
+          nextRunAt: Date.now() + 5 * 60_000,
         }));
       }
       depsRef.current.recordRun({

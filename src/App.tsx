@@ -690,20 +690,13 @@ export default function App() {
     };
   }, [refreshGlobalInstructionFiles]);
   const acceptGlobalInstructionFileSaved = useCallback((file: InstructionFileDescriptor) => {
-    // A single-file receipt cannot certify the other provider's cached file.
-    // Keep all presets visibly stale if saving invalidates a pending full read.
-    if (globalInstructionDiscoveryPending.current !== null) {
-      ++globalInstructionDiscoveryGeneration.current;
-      globalInstructionDiscoveryPending.current = null;
-      setGlobalInstructionDiscoveryBusy(false);
-      setGlobalInstructionDiscoveryError("A file changed while discovery was running. Refresh files to update all preset cards.");
-    }
-    setGlobalInstructionFiles((current) => {
-      const index = current.findIndex((item) => item.provider === file.provider && item.path === file.path);
-      if (index < 0) return [...current.filter((item) => item.provider !== file.provider), file];
-      return current.map((item, position) => position === index ? file : item);
-    });
-  }, []);
+    // A receipt certifies this file, not which file the provider now discovers.
+    // Reloading a retired file must not replace an active override preset, and
+    // emptying an override can change the effective source back to the base file.
+    setGlobalInstructionFiles((current) => current.map((item) =>
+      item.provider === file.provider && item.path === file.path ? file : item));
+    void refreshGlobalInstructionFiles();
+  }, [refreshGlobalInstructionFiles]);
   const [customAgents, setCustomAgents] = usePersistedState<CustomAgentProfile[]>("kiwi.customAgents", []);
   const [projectActions, setProjectActions] = usePersistedState<ProjectAction[]>("kiwi.projectActions", []);
   const [scheduledTasks, setScheduledTasks] = usePersistedState<ScheduledTask[]>("kiwi.scheduledTasks", []);
@@ -796,6 +789,27 @@ export default function App() {
   const cursorStatusRequestRef = useRef(0);
   const threadProjectBindingsRef = useRef<Record<string, string> | null>(null);
   const knownThreadsRef = useRef<ThreadSidebarIndex | null>(null);
+  // Observe saves only while metadata reads are in flight. A save followed by
+  // a rename back must still invalidate a captured name, without retaining a
+  // permanent revision record for every thread the app has ever seen.
+  const threadNameReadObserversRef = useRef(new Set<{ threadId: string | undefined; changedIds: Set<string> }>());
+  const markThreadNameSaved = useCallback((threadId: string) => {
+    for (const observer of threadNameReadObserversRef.current) {
+      if (!observer.threadId || observer.threadId === threadId) observer.changedIds.add(threadId);
+    }
+  }, []);
+  const watchThreadNameSaves = useCallback((threadId?: string) => {
+    const observer = { threadId, changedIds: new Set<string>() };
+    threadNameReadObserversRef.current.add(observer);
+    return {
+      changedIds: observer.changedIds,
+      preserveName: (thread: Thread): Thread => {
+        const current = knownThreadsRef.current?.[thread.id];
+        return current && observer.changedIds.has(thread.id) ? { ...thread, name: current.name } : thread;
+      },
+      finish: () => { threadNameReadObserversRef.current.delete(observer); },
+    };
+  }, []);
   const historyRequestRef = useRef(new Map<string, number>());
   const historyRequestSequenceRef = useRef(0);
   const providerRepairThreadsRef = useRef(new Set<string>());
@@ -2275,12 +2289,14 @@ export default function App() {
     }
   }, []);
 
-  const refreshClaudeStatus = useCallback(async () => {
+  const refreshClaudeStatus = useCallback(async (quiet = false) => {
     const request = ++claudeStatusRequestRef.current;
-    claudeModelsRequestRef.current += 1;
-    claudeModelRefreshRef.current.pending = undefined;
-    claudeModelRefreshRef.current.lastSuccess = undefined;
-    setClaudeModelsLoading(false);
+    if (!quiet) {
+      claudeModelsRequestRef.current += 1;
+      claudeModelRefreshRef.current.pending = undefined;
+      claudeModelRefreshRef.current.lastSuccess = undefined;
+      setClaudeModelsLoading(false);
+    }
     setAccountCheck("claude", "Checking connection…");
     try {
       const result = await getClaudeRuntimeStatus();
@@ -2293,17 +2309,21 @@ export default function App() {
           claudeModelsRequestRef.current += 1;
           claudeModelRefreshRef.current.pending = undefined;
           setClaudeModels([]);
+          setClaudeModelsLoading(false);
           claudeUsageRequestRef.current += 1;
           claudeAccountKeyRef.current = accountKey;
           setClaudeAccountKey(accountKey);
           setClaudeUsageSnapshot(null);
         }
-        const usageRequest = ++claudeUsageRequestRef.current;
-        const limits = await getClaudeRateLimits().catch(() => undefined);
-        if (claudeUsageRequestRef.current === usageRequest
-          && claudeAccountKeyRef.current === accountKey
-          && limits !== undefined) {
-          setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+        // Page-entry checks need account state, not a second usage request.
+        if (!quiet) {
+          const usageRequest = ++claudeUsageRequestRef.current;
+          const limits = await getClaudeRateLimits().catch(() => undefined);
+          if (claudeUsageRequestRef.current === usageRequest
+            && claudeAccountKeyRef.current === accountKey
+            && limits !== undefined) {
+            setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
+          }
         }
       } else {
         claudeModelsRequestRef.current += 1;
@@ -2320,30 +2340,37 @@ export default function App() {
     } catch (reason) {
       if (claudeStatusRequestRef.current === request) {
         setAccountCheck("claude", "Connection check unavailable");
-        setError(friendlyError(reason));
+        if (!quiet) setError(friendlyError(reason));
       }
       return DISCONNECTED_SUBSCRIPTION_STATUS;
     }
   }, [setAccountCheck]);
 
-  const refreshCursorStatus = useCallback(async () => {
+  const refreshCursorStatus = useCallback(async (quiet = false) => {
     // Startup, provider switches, sign-in polling, and the Settings refresh
     // button can overlap. Only the newest request may publish, so a slow
     // older check cannot land after a newer one and show a stale sign-in state.
     const request = ++cursorStatusRequestRef.current;
+    setAccountCheck("cursor", "Checking connection…");
     try {
       const result = await getCursorRuntimeStatus();
       const normalized = result ?? DISCONNECTED_SUBSCRIPTION_STATUS;
-      if (cursorStatusRequestRef.current === request) setCursorStatus(normalized);
+      if (cursorStatusRequestRef.current === request) {
+        setCursorStatus(normalized);
+        setAccountCheck("cursor", normalized.loggedIn ? "" : "Sign-in required");
+      }
       return normalized;
     } catch (reason) {
       if (cursorStatusRequestRef.current === request) {
-        setCursorStatus(DISCONNECTED_SUBSCRIPTION_STATUS);
-        setError(friendlyError(reason));
+        setAccountCheck("cursor", "Connection check unavailable");
+        if (!quiet) {
+          setCursorStatus(DISCONNECTED_SUBSCRIPTION_STATUS);
+          setError(friendlyError(reason));
+        }
       }
       return DISCONNECTED_SUBSCRIPTION_STATUS;
     }
-  }, []);
+  }, [setAccountCheck]);
 
   const cursorModelsRequestRef = useRef(0);
   const refreshCursorModels = useCallback(() => refreshProviderModels(
@@ -2366,145 +2393,174 @@ export default function App() {
         setThreads([]);
         return;
       }
-      // SQLite is authoritative for Claude/Cursor transcript existence. Start
-      // its metadata-only discovery beside app-server paging so clearing or
-      // pruning the webview sidebar cache cannot orphan a durable transcript.
-      // Known sidebar/archive identities let the native compatibility scan
-      // avoid parsing old whole-transcript JSON merely to recover metadata we
-      // already have. Chunked transcripts are always returned from metadata.
-      const knownLocalThreadIds = [
-        ...Object.values(knownThreadsRef.current ?? {})
-          .filter(isLocalSubscriptionThread)
-          .map((thread) => thread.id),
-        ...archivedThreadsRef.current.map((record) => record.id),
-      ];
-      const localThreadsPromise = listLocalTranscriptThreads([...new Set(knownLocalThreadIds)])
-        .then((localThreads) => {
-          const archivedIds = new Set(archivedThreadsRef.current.map((record) => record.id));
-          return localThreads.filter((thread) => !archivedIds.has(thread.id));
-        })
-        .catch(() => []);
-      if (!runtimeStatus?.available) {
-        const localThreads = await localThreadsPromise;
-        if (loadThreadsRequestRef.current !== requestId) return;
-        const remembered = reconcileSidebarIndex(knownThreadsRef.current ?? {}, localThreads);
-        knownThreadsRef.current = remembered;
-        storeValue("kiwi.knownThreads", remembered);
-        setThreads(reconcileWorkspaceThreads(localThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
-          runtimeHome: runtimeStatus?.dataHome,
-          runtimeIndexComplete: false,
-        }));
-        return;
-      }
-      // Paint the remembered sidebar snapshot for this workspace immediately.
-      // Without it, the frames between the project click and the first
-      // thread/list page render an empty inbox — a visible flicker of the
-      // rows and of every header control derived from the visible list.
-      setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
-        runtimeHome: runtimeStatus.dataHome,
-        runtimeIndexComplete: false,
-      }));
+      const nameRead = watchThreadNameSaves();
       try {
-        const allThreads: Thread[] = [];
-        let cursor: string | null = null;
-        for (let page = 0; page < 20; page += 1) {
-          const result: { data: Thread[]; nextCursor?: string | null } = await rpc("thread/list", { cwd: project.path, limit: 100, cursor });
-          if (loadThreadsRequestRef.current !== requestId) return;
-          allThreads.push(...(result.data ?? []));
-          if (page === 0) {
-            // Do not hold the first useful sidebar paint behind every older
-            // page. Ownership reconciliation and durable indexing still run
-            // once over the complete result below, but the newest 100 threads
-            // become interactive after a single round trip.
-            setThreads(reconcileWorkspaceThreads(
-              allThreads,
-              knownThreadsRef.current ?? {},
-              project.path,
-              threadProjectBindingsRef.current ?? {},
-              { runtimeHome: runtimeStatus.dataHome, runtimeIndexComplete: false },
-            ));
-          }
-          cursor = result.nextCursor ?? null;
-          if (!cursor) break;
-        }
-        // Newer Codex app-servers expose native collaboration ownership on
-        // thread/list. Capture it before workspace filtering because a child
-        // may execute in a managed worktree while belonging to its root's
-        // logical project.
-        const discoveredNativeLinks: Record<string, NativeAgentLink> = {};
-        // Ownership claims are checked against the graph Mythra Code already has,
-        // plus the ones accepted from this same page. A runtime that reports a
-        // root's own parent — or a cycle through one — must not be able to move
-        // an established root conversation into the Sub-agents inbox.
-        const ownershipGraph: OwnershipLinks = { ...childThreadLinksRef.current };
-        const listedRootIds = new Set<string>();
-        for (const thread of allThreads) {
-          if (nativeAgentLinkFromThread(thread)) continue;
-          listedRootIds.add(thread.id);
-          // thread/list is authoritative for provider-native ownership. Remove
-          // only a stale native claim; an Mythra Code bridge link remains proof
-          // that a cross-provider child belongs in the child inbox.
-          if (!childAgentLinksRef.current[thread.id]) delete ownershipGraph[thread.id];
-        }
-        for (const thread of allThreads) {
-          const link = nativeAgentLinkFromThread(thread);
-          if (!link) continue;
-          if (childAgentLinksRef.current[link.rootThreadId] || !canOwnNativeThread(ownershipGraph, link.rootThreadId, link.childThreadId)) continue;
-          const knownChild = knownThreadsRef.current?.[link.childThreadId];
-          if (knownChild && !isSubAgentThread(knownChild, childThreadLinksRef.current)) continue;
-          ownershipGraph[link.childThreadId] = link;
-          discoveredNativeLinks[link.childThreadId] = link;
-          const rootPath = threadProjectBindingsRef.current?.[link.rootThreadId]
-            ?? knownThreadsRef.current?.[link.rootThreadId]?.cwd
-            ?? project.path;
-          bindThreadToProject(link.childThreadId, rootPath);
-        }
-        if (listedRootIds.size || Object.keys(discoveredNativeLinks).length) {
-          persistNativeAgentLinks((current) => {
-            const next = { ...current };
-            for (const threadId of listedRootIds) delete next[threadId];
-            for (const [id, discovered] of Object.entries(discoveredNativeLinks)) {
-              const existing = current[id];
-              next[id] = existing?.rootThreadId === discovered.rootThreadId
-                ? { ...existing, ...discovered, title: existing.title || discovered.title, createdAt: existing.createdAt, ...(existing.modelSource === "execution" || (existing.model === "" && existing.activationId) ? { model: existing.model, modelSource: existing.modelSource } : {}) }
-                : discovered;
-            }
-            return sanitizeNativeAgentLinks(next);
-          });
-        }
-        const localThreads = await localThreadsPromise;
-        if (loadThreadsRequestRef.current !== requestId) return;
-        const projectPath = normalizedProjectPath(project.path);
-        const runtimeThreads = [...allThreads, ...localThreads].filter((thread) => {
-          const boundPath = threadProjectBindingsRef.current?.[thread.id];
-          return normalizedProjectPath(boundPath || thread.cwd) === projectPath;
-        });
-        const remembered = reconcileSidebarIndex(
-          knownThreadsRef.current ?? {},
-          runtimeThreads,
+        // A page sweep can capture a name before a manual or automatic rename
+        // saves, then finish afterwards. Preserve only names changed during
+        // this request; names already cached at its start remain replaceable by
+        // authoritative provider metadata. The temporary save observer also
+        // covers renaming back to the initial name while pages are in flight.
+        const namesAtStart = new Map<string, Thread["name"]>(
+          Object.values(knownThreadsRef.current ?? {}).map((thread) => [thread.id, thread.name]),
         );
-        knownThreadsRef.current = remembered;
-        storeValue("kiwi.knownThreads", remembered);
-        if (loadThreadsRequestRef.current !== requestId) return;
-        setThreads(reconcileWorkspaceThreads(runtimeThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
-          runtimeHome: runtimeStatus.dataHome,
-          runtimeIndexComplete: cursor === null,
-        }));
-      } catch (reason) {
-        if (loadThreadsRequestRef.current !== requestId) return;
-        const localThreads = await localThreadsPromise;
-        if (loadThreadsRequestRef.current !== requestId) return;
-        const remembered = reconcileSidebarIndex(knownThreadsRef.current ?? {}, localThreads);
-        knownThreadsRef.current = remembered;
-        storeValue("kiwi.knownThreads", remembered);
-        setThreads(reconcileWorkspaceThreads(localThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
+        const preserveNewerNames = (entries: Thread[]) => {
+          // Consult current tombstones when each page is applied. A row can
+          // be archived or deleted after its provider snapshot was captured;
+          // restoring an archive removes its tombstone before its next load.
+          const archivedIds = new Set(archivedThreadsRef.current.map((record) => record.id));
+          return entries.filter((thread) => !deletedThreadIdsRef.current.has(thread.id) && !archivedIds.has(thread.id))
+            .map((thread) => {
+              const current = knownThreadsRef.current?.[thread.id];
+              return current && (nameRead.changedIds.has(thread.id) || current.name !== namesAtStart.get(thread.id))
+                && (namesAtStart.has(thread.id) || current.name?.trim())
+                ? { ...thread, name: current.name }
+                : thread;
+            });
+        };
+        // SQLite is authoritative for Claude/Cursor transcript existence. Start
+        // its metadata-only discovery beside app-server paging so clearing or
+        // pruning the webview sidebar cache cannot orphan a durable transcript.
+        // Known sidebar/archive identities let the native compatibility scan
+        // avoid parsing old whole-transcript JSON merely to recover metadata we
+        // already have. Chunked transcripts are always returned from metadata.
+        const knownLocalThreadIds = [
+          ...Object.values(knownThreadsRef.current ?? {})
+            .filter(isLocalSubscriptionThread)
+            .map((thread) => thread.id),
+          ...archivedThreadsRef.current.map((record) => record.id),
+        ];
+        const localThreadsPromise = listLocalTranscriptThreads([...new Set(knownLocalThreadIds)])
+          .then((localThreads) => {
+            const archivedIds = new Set(archivedThreadsRef.current.map((record) => record.id));
+            return localThreads.filter((thread) => !archivedIds.has(thread.id));
+          })
+          .catch(() => []);
+        if (!runtimeStatus?.available) {
+          const discoveredLocalThreads = await localThreadsPromise;
+          if (loadThreadsRequestRef.current !== requestId) return;
+          const localThreads = preserveNewerNames(discoveredLocalThreads);
+          const remembered = reconcileSidebarIndex(knownThreadsRef.current ?? {}, localThreads);
+          knownThreadsRef.current = remembered;
+          storeValue("kiwi.knownThreads", remembered);
+          setThreads(reconcileWorkspaceThreads(localThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
+            runtimeHome: runtimeStatus?.dataHome,
+            runtimeIndexComplete: false,
+          }));
+          return;
+        }
+        // Paint the remembered sidebar snapshot for this workspace immediately.
+        // Without it, the frames between the project click and the first
+        // thread/list page render an empty inbox — a visible flicker of the
+        // rows and of every header control derived from the visible list.
+        setThreads(reconcileWorkspaceThreads([], knownThreadsRef.current ?? {}, project.path, threadProjectBindingsRef.current ?? {}, {
           runtimeHome: runtimeStatus.dataHome,
           runtimeIndexComplete: false,
         }));
-        setError(friendlyError(reason));
+        try {
+          const allThreads: Thread[] = [];
+          let cursor: string | null = null;
+          for (let page = 0; page < 20; page += 1) {
+            const result: { data: Thread[]; nextCursor?: string | null } = await rpc("thread/list", { cwd: project.path, limit: 100, cursor });
+            if (loadThreadsRequestRef.current !== requestId) return;
+            allThreads.push(...(result.data ?? []));
+            if (page === 0) {
+              // Do not hold the first useful sidebar paint behind every older
+              // page. Ownership reconciliation and durable indexing still run
+              // once over the complete result below, but the newest 100 threads
+              // become interactive after a single round trip.
+              setThreads(reconcileWorkspaceThreads(
+                preserveNewerNames(allThreads),
+                knownThreadsRef.current ?? {},
+                project.path,
+                threadProjectBindingsRef.current ?? {},
+                { runtimeHome: runtimeStatus.dataHome, runtimeIndexComplete: false },
+              ));
+            }
+            cursor = result.nextCursor ?? null;
+            if (!cursor) break;
+          }
+          // Newer Codex app-servers expose native collaboration ownership on
+          // thread/list. Capture it before workspace filtering because a child
+          // may execute in a managed worktree while belonging to its root's
+          // logical project.
+          const discoveredNativeLinks: Record<string, NativeAgentLink> = {};
+          // Ownership claims are checked against the graph Mythra Code already has,
+          // plus the ones accepted from this same page. A runtime that reports a
+          // root's own parent — or a cycle through one — must not be able to move
+          // an established root conversation into the Sub-agents inbox.
+          const ownershipGraph: OwnershipLinks = { ...childThreadLinksRef.current };
+          const listedRootIds = new Set<string>();
+          for (const thread of allThreads) {
+            if (nativeAgentLinkFromThread(thread)) continue;
+            listedRootIds.add(thread.id);
+            // thread/list is authoritative for provider-native ownership. Remove
+            // only a stale native claim; an Mythra Code bridge link remains proof
+            // that a cross-provider child belongs in the child inbox.
+            if (!childAgentLinksRef.current[thread.id]) delete ownershipGraph[thread.id];
+          }
+          for (const thread of allThreads) {
+            const link = nativeAgentLinkFromThread(thread);
+            if (!link) continue;
+            if (childAgentLinksRef.current[link.rootThreadId] || !canOwnNativeThread(ownershipGraph, link.rootThreadId, link.childThreadId)) continue;
+            const knownChild = knownThreadsRef.current?.[link.childThreadId];
+            if (knownChild && !isSubAgentThread(knownChild, childThreadLinksRef.current)) continue;
+            ownershipGraph[link.childThreadId] = link;
+            discoveredNativeLinks[link.childThreadId] = link;
+            const rootPath = threadProjectBindingsRef.current?.[link.rootThreadId]
+              ?? knownThreadsRef.current?.[link.rootThreadId]?.cwd
+              ?? project.path;
+            bindThreadToProject(link.childThreadId, rootPath);
+          }
+          if (listedRootIds.size || Object.keys(discoveredNativeLinks).length) {
+            persistNativeAgentLinks((current) => {
+              const next = { ...current };
+              for (const threadId of listedRootIds) delete next[threadId];
+              for (const [id, discovered] of Object.entries(discoveredNativeLinks)) {
+                const existing = current[id];
+                next[id] = existing?.rootThreadId === discovered.rootThreadId
+                  ? { ...existing, ...discovered, title: existing.title || discovered.title, createdAt: existing.createdAt, ...(existing.modelSource === "execution" || (existing.model === "" && existing.activationId) ? { model: existing.model, modelSource: existing.modelSource } : {}) }
+                  : discovered;
+              }
+              return sanitizeNativeAgentLinks(next);
+            });
+          }
+          const localThreads = await localThreadsPromise;
+          if (loadThreadsRequestRef.current !== requestId) return;
+          const projectPath = normalizedProjectPath(project.path);
+          const runtimeThreads = preserveNewerNames([...allThreads, ...localThreads]).filter((thread) => {
+            const boundPath = threadProjectBindingsRef.current?.[thread.id];
+            return normalizedProjectPath(boundPath || thread.cwd) === projectPath;
+          });
+          const remembered = reconcileSidebarIndex(
+            knownThreadsRef.current ?? {},
+            runtimeThreads,
+          );
+          knownThreadsRef.current = remembered;
+          storeValue("kiwi.knownThreads", remembered);
+          if (loadThreadsRequestRef.current !== requestId) return;
+          setThreads(reconcileWorkspaceThreads(runtimeThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
+            runtimeHome: runtimeStatus.dataHome,
+            runtimeIndexComplete: cursor === null,
+          }));
+        } catch (reason) {
+          if (loadThreadsRequestRef.current !== requestId) return;
+          const discoveredLocalThreads = await localThreadsPromise;
+          if (loadThreadsRequestRef.current !== requestId) return;
+          const localThreads = preserveNewerNames(discoveredLocalThreads);
+          const remembered = reconcileSidebarIndex(knownThreadsRef.current ?? {}, localThreads);
+          knownThreadsRef.current = remembered;
+          storeValue("kiwi.knownThreads", remembered);
+          setThreads(reconcileWorkspaceThreads(localThreads, remembered, project.path, threadProjectBindingsRef.current ?? {}, {
+            runtimeHome: runtimeStatus.dataHome,
+            runtimeIndexComplete: false,
+          }));
+          setError(friendlyError(reason));
+        }
+      } finally {
+        nameRead.finish();
       }
     },
-    [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome],
+    [bindThreadToProject, persistNativeAgentLinks, runtimeStatus?.available, runtimeStatus?.dataHome, watchThreadNameSaves],
   );
 
   const clearOpenAiAccount = useCallback(() => {
@@ -2551,12 +2607,14 @@ export default function App() {
     else requireOpenAiLogin();
   }, [clearOpenAiAccount, requireOpenAiLogin]);
 
-  const refreshAccount = useCallback(async (refreshToken = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
+  const refreshAccount = useCallback(async (refreshToken = false, quiet = false): Promise<{ account: Account | null; requiresOpenaiAuth?: boolean } | null> => {
     const request = ++openAiAccountRequestRef.current;
-    runtimeModelsRequestRef.current += 1;
-    runtimeModelRefreshRef.current.pending = undefined;
-    runtimeModelRefreshRef.current.lastSuccess = undefined;
-    setRuntimeModelsLoading(false);
+    if (!quiet) {
+      runtimeModelsRequestRef.current += 1;
+      runtimeModelRefreshRef.current.pending = undefined;
+      runtimeModelRefreshRef.current.lastSuccess = undefined;
+      setRuntimeModelsLoading(false);
+    }
     setAccountCheck("openai", "Checking connection…");
     try {
       const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean }>("account/read", { refreshToken });
@@ -2569,14 +2627,17 @@ export default function App() {
           runtimeModelsRequestRef.current += 1;
           runtimeModelRefreshRef.current.pending = undefined;
           setRuntimeModels([]);
+          setRuntimeModelsLoading(false);
           openAiUsageRequestRef.current += 1;
           openAiAccountKeyRef.current = accountKey;
           setOpenAiAccountKey(accountKey);
           setOpenAiUsageSnapshot(null);
         }
-        setAuthRequiredOpen(false);
-        setError(null);
-        setStatus("Ready");
+        if (!quiet) {
+          setAuthRequiredOpen(false);
+          setError(null);
+          setStatus("Ready");
+        }
       } else {
         runtimeModelsRequestRef.current += 1;
         runtimeModelRefreshRef.current.pending = undefined;
@@ -2592,21 +2653,18 @@ export default function App() {
     } catch (reason) {
       if (openAiAccountRequestRef.current !== request) return null;
       const message = friendlyError(reason);
-      setError(message);
-      if (isAuthenticationError(reason)) requireOpenAiLogin();
+      if (!quiet) setError(message);
+      if (isAuthenticationError(reason)) {
+        if (quiet) clearOpenAiAccount();
+        else requireOpenAiLogin();
+      }
       else setAccountCheck("openai", "Connection check unavailable");
       return null;
     }
   // Babel's TS-7-compatible parser treats the `result.account` property as
   // the unrelated component state named `account`.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requireOpenAiLogin, setAccountCheck]);
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    if (effectiveSettings.provider === "claude") void refreshClaudeStatus();
-    else if (runtimeStatus?.available) void refreshAccount(true);
-  }, [settingsOpen, effectiveSettings.provider, runtimeStatus?.available, refreshAccount, refreshClaudeStatus]);
+  }, [clearOpenAiAccount, requireOpenAiLogin, setAccountCheck]);
 
   const refreshModels = useCallback(() => shareModelRefresh(runtimeModelRefreshRef.current,
     `${openAiAccountKeyRef.current}:${openAiAccountRequestRef.current}`, () => refreshProviderModels(
@@ -2614,6 +2672,27 @@ export default function App() {
     (models) => { if (models.length) setRuntimeModels(models); },
     (error) => { runtimeModelRefreshRef.current.error = error; setRuntimeModelsError(error); }, "OpenAI returned an empty model catalog.", false,
   )), []);
+
+  const refreshSettingsAccounts = useCallback(async () => {
+    // Check every subscription shown on the page, not just the chat provider.
+    // Each check owns its inline result; one failure cannot hide another.
+    const refreshOpenAi = async () => {
+      const previousKey = openAiAccountKeyRef.current;
+      const request = openAiAccountRequestRef.current + 1;
+      const result = await refreshAccount(true, true);
+      // A page-entry read can supersede startup's account/data read. Refill a
+      // new or empty catalog without doing a full refresh on every page visit.
+      if (openAiAccountRequestRef.current === request && result?.account?.type === "chatgpt"
+        && (previousKey !== openAiAccountKeyRef.current || !runtimeModels.length)) {
+        await refreshModels();
+      }
+    };
+    await Promise.allSettled([
+      refreshClaudeStatus(true),
+      refreshCursorStatus(true),
+      ...(runtimeStatus?.available ? [refreshOpenAi()] : []),
+    ]);
+  }, [refreshAccount, refreshClaudeStatus, refreshCursorStatus, refreshModels, runtimeModels.length, runtimeStatus?.available]);
 
   const openRouterModelsRequestRef = useRef(0);
   const refreshOpenRouterModels = useCallback(() => refreshProviderModels(
@@ -4424,6 +4503,14 @@ export default function App() {
   };
 
   const selectThreadRequestRef = useRef(0);
+  const pendingThreadSelectionRef = useRef<{ threadId: string; requestId: number } | null>(null);
+  const invalidatePendingThreadSelection = useCallback((threadId: string) => {
+    const pending = pendingThreadSelectionRef.current;
+    if (!pending || pending.threadId !== threadId || pending.requestId !== selectThreadRequestRef.current) return;
+    ++selectThreadRequestRef.current;
+    pendingThreadSelectionRef.current = null;
+    setStatus("Ready");
+  }, []);
   const threadPreparationRef = useRef(new Map<string, Promise<void>>());
   const waitForThreadPreparation = useCallback(async (threadId: string) => {
     // Preparation errors are already surfaced by selectThread. A turn should
@@ -4443,6 +4530,13 @@ export default function App() {
     const requestId = ++historyRequestSequenceRef.current;
     historyRequestRef.current.set(threadId, requestId);
     store.setHistory(threadId, { loading: true });
+    const ownsHistoryRead = () => {
+      const current = useTaskStore.getState();
+      return historyRequestRef.current.get(threadId) === requestId
+        && current.activeThreadId === threadId
+        && current.tasks[threadId]?.history.nextCursor === task.history.nextCursor;
+    };
+    const nameRead = watchThreadNameSaves(threadId);
     try {
       const localProvider = activeThread?.id === threadId
         ? isClaudeThread(activeThread) ? "claude" : isCursorThread(activeThread) ? "cursor" : null
@@ -4455,6 +4549,7 @@ export default function App() {
         try {
           page = await readPage(task.history.nextCursor);
         } catch (reason) {
+          if (!ownsHistoryRead()) return;
           if (!/local transcript cursor is stale/i.test(String(reason))) throw reason;
           // A live tail save advances the cursor generation without changing
           // sealed older pages. Walk forward from the fresh newest cursor
@@ -4466,7 +4561,9 @@ export default function App() {
           ]);
           let recoveryCursor: string | undefined;
           for (let recoveryPage = 0; recoveryPage < 100; recoveryPage += 1) {
+            if (!ownsHistoryRead()) return;
             const candidate = await readPage(recoveryCursor);
+            if (!ownsHistoryRead()) return;
             if (!candidate) throw new Error("Local transcript page is missing");
             const hasUnseenEntry = candidate.messages.some((message) => !existingIds.has(message.id))
               || candidate.activities.some((activity) => !existingIds.has(activity.id));
@@ -4516,7 +4613,7 @@ export default function App() {
         paginated: true,
       });
     } catch (reason) {
-      if (historyRequestRef.current.get(threadId) !== requestId) return;
+      if (!ownsHistoryRead()) return;
       store.setHistory(threadId, { loading: false });
       const unsupportedPagination = isPaginatedHistoryUnsupported(reason);
       if (unsupportedPagination || reason instanceof MalformedThreadHistoryPageError) {
@@ -4541,25 +4638,33 @@ export default function App() {
             loading: false,
             paginated: false,
           });
-          if (activeThread?.id === threadId) setActiveThread(sidebarThread(fallback.thread));
+          if (activeThread?.id === threadId) setActiveThread(sidebarThread(nameRead.preserveName(fallback.thread)));
           return;
         } catch (fallbackReason) {
-          setError(friendlyError(fallbackReason));
+          if (ownsHistoryRead()) setError(friendlyError(fallbackReason));
           return;
         }
       }
       if (activeThread?.id === threadId) setError(friendlyError(reason));
     } finally {
+      nameRead.finish();
       if (historyRequestRef.current.get(threadId) === requestId) {
         historyRequestRef.current.delete(threadId);
         const currentStore = useTaskStore.getState();
         if (currentStore.tasks[threadId]?.history.loading) currentStore.setHistory(threadId, { loading: false });
       }
     }
-  }, [activeThread, projectDefaultProvider, threads]);
+  }, [activeThread, projectDefaultProvider, threads, watchThreadNameSaves]);
 
   const selectThread = async (thread: Thread) => {
     if (!activeWorkspace) return;
+    const threadAvailable = () => !archivingThreadIdsRef.current.has(thread.id)
+      && !deletedThreadIdsRef.current.has(thread.id)
+      && !archivedThreadsRef.current.some((record) => record.id === thread.id);
+    if (!threadAvailable()) {
+      setError("That thread is being removed or is archived and cannot be opened here.");
+      return;
+    }
     const projectPath = normalizedProjectPath(activeWorkspace.path);
     const threadPath = normalizedProjectPath(threadProjectBindingsRef.current?.[thread.id] || thread.cwd);
     if (threadPath !== projectPath) {
@@ -4570,6 +4675,8 @@ export default function App() {
     // Clicking two threads quickly must open the one clicked last, not the
     // one whose resume RPC happened to finish last.
     const requestId = ++selectThreadRequestRef.current;
+    pendingThreadSelectionRef.current = { threadId: thread.id, requestId };
+    const ownsSelection = () => selectThreadRequestRef.current === requestId && threadAvailable();
     const selectedProvider = providerFromThread(thread, projectDefaultProvider);
     const existingTask = useTaskStore.getState().tasks[thread.id];
     beginThreadOpen(
@@ -4596,13 +4703,14 @@ export default function App() {
     if (pendingHandoff) composerRef.current?.setDraft("");
     setPendingHandoff(null);
     let durableHistoryLoaded = false;
+    const nameRead = watchThreadNameSaves(thread.id);
     const selectionWork = (async () => {
       const recoverCursorIdentity = async (threadId: string) => {
         const receipt = await invoke<{
           turnId: string; startRequestId?: string; cursorSessionId?: string;
           phase: "starting" | "running" | "stopping" | "completed";
         } | null>("cursor_turn_state", { threadId });
-        if (selectThreadRequestRef.current !== requestId || !receipt) return;
+        if (!ownsSelection() || !receipt) return;
         const owner = restoreCursorTurnOwner(threadId, receipt.turnId, receipt.startRequestId, receipt.phase);
         if (!owner.restored) return;
         if (receipt.cursorSessionId?.trim()) cursorSessionIdsRef.current[threadId] = receipt.cursorSessionId;
@@ -4630,9 +4738,9 @@ export default function App() {
       if (localProvider && existingTask && (existingTask.messages.length > 0 || existingTask.activities.length > 0)) {
         const ownedChild = childAgentLinksRef.current[thread.id];
         if (ownedChild) {
-          await ensureManagedChildTranscriptHydrated(ownedChild, () => selectThreadRequestRef.current === requestId
+          await ensureManagedChildTranscriptHydrated(ownedChild, () => ownsSelection()
             && childAgentLinksRef.current[thread.id]?.createdAt === ownedChild.createdAt);
-          if (selectThreadRequestRef.current !== requestId) return;
+          if (!ownsSelection()) return;
         }
         if (localProvider === "cursor" && !cursorSessionIdsRef.current[thread.id]) {
           const child = childAgentLinksRef.current[thread.id];
@@ -4641,7 +4749,7 @@ export default function App() {
         }
         if (localProvider === "cursor") {
           await recoverCursorIdentity(thread.id);
-          if (selectThreadRequestRef.current !== requestId) return;
+          if (!ownsSelection()) return;
         }
         useTaskStore.getState().ensureTask(thread.id, executionPath);
         if (!threadModels[thread.id]) {
@@ -4649,8 +4757,9 @@ export default function App() {
           persistThreadModel(thread.id, modelForProvider(localProvider, projectModel));
         }
         bindThreadToProject(thread.id, activeWorkspace.path);
-        rememberThread(thread);
-        setActiveThread(thread);
+        const currentThread = nameRead.preserveName(thread);
+        rememberThread(currentThread);
+        setActiveThread(currentThread);
         useTaskStore.getState().setActiveThread(thread.id);
         markThreadHistoryHydrated(thread.id, {
           projectedBytes: existingTask.estimatedTranscriptBytes,
@@ -4667,8 +4776,8 @@ export default function App() {
       }
       if (isClaudeThread(thread)) {
         const transcript = await loadClaudeTranscriptPage(thread.id);
-        if (selectThreadRequestRef.current !== requestId) return;
-        const resolvedThread = transcript?.thread ?? thread;
+        if (!ownsSelection()) return;
+        const resolvedThread = nameRead.preserveName(transcript?.thread ?? thread);
         if (!threadModels[resolvedThread.id]) {
           const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
           persistThreadModel(resolvedThread.id, modelForProvider("claude", projectModel));
@@ -4700,8 +4809,8 @@ export default function App() {
       }
       if (isCursorThread(thread)) {
         const transcript = await loadCursorTranscriptPage(thread.id);
-        if (selectThreadRequestRef.current !== requestId) return;
-        const resolvedThread = transcript?.thread ?? thread;
+        if (!ownsSelection()) return;
+        const resolvedThread = nameRead.preserveName(transcript?.thread ?? thread);
         if (transcript?.cursorSessionId) cursorSessionIdsRef.current[resolvedThread.id] = transcript.cursorSessionId;
         if (!threadModels[resolvedThread.id]) {
           const projectModel = activeProject?.overrides?.defaults?.model ?? settings.model;
@@ -4717,9 +4826,11 @@ export default function App() {
           paginated: true,
         };
         hydrateLocalProviderTask(resolvedThread.id, transcript, executionPath, history);
-        await recoverCursorIdentity(resolvedThread.id);
-        if (selectThreadRequestRef.current !== requestId) return;
+        // Keep both active identities aligned before identity recovery yields,
+        // so archive/delete also clears this newly displayed conversation.
         useTaskStore.getState().setActiveThread(resolvedThread.id);
+        await recoverCursorIdentity(resolvedThread.id);
+        if (!ownsSelection()) return;
         const hydrated = useTaskStore.getState().tasks[resolvedThread.id];
         markThreadHistoryHydrated(resolvedThread.id, {
           projectedBytes: transcript?.byteLen ?? 0,
@@ -4757,7 +4868,7 @@ export default function App() {
       // Make repeat navigation paint from the in-memory task immediately. A
       // cold task follows with a metadata-only read, which is deliberately
       // independent of slower live-runtime configuration.
-      const initialThread = sidebarThread(thread);
+      const initialThread = sidebarThread(nameRead.preserveName(thread));
       useTaskStore.getState().ensureTask(thread.id, executionPath);
       setActiveThread(initialThread);
       useTaskStore.getState().setActiveThread(thread.id);
@@ -4796,7 +4907,7 @@ export default function App() {
         if (abandonedBridge?.captured) void releaseChildAgentSession(abandonedBridge.policy.sessionId);
         throw reason;
       }
-      if (selectThreadRequestRef.current !== requestId) {
+      if (!ownsSelection()) {
         const abandonedBridge = await childBridgePromise.catch(() => null);
         // A newer selection won while the bridge was starting. A freshly
         // captured session has no persisted policy pointing at it, so nothing
@@ -4804,6 +4915,7 @@ export default function App() {
         if (abandonedBridge?.captured) void releaseChildAgentSession(abandonedBridge.policy.sessionId);
         return;
       }
+      loaded = { ...loaded, thread: nameRead.preserveName(loaded.thread) };
       if (!threadModels[loaded.thread.id]) persistThreadModel(loaded.thread.id, threadProviderSettings.model);
       bindThreadToProject(loaded.thread.id, activeWorkspace.path);
       rememberThread(loaded.thread);
@@ -4826,7 +4938,7 @@ export default function App() {
       // Viewing is complete. Now make the live runtime ready for the next
       // prompt without holding the transcript behind MCP/process startup.
       const childBridge = await childBridgePromise;
-      if (selectThreadRequestRef.current !== requestId) {
+      if (!ownsSelection()) {
         if (childBridge?.captured) void releaseChildAgentSession(childBridge.policy.sessionId);
         return;
       }
@@ -4850,6 +4962,7 @@ export default function App() {
       const resumedRuntimeState = isolation?.status === "missing" || isolation?.status === "removed"
         ? null
         : await runtimeThreadState(thread.id).catch(() => null);
+      if (!ownsSelection()) return;
       let resumedRuntimeInstance = resumedRuntimeState?.instance ?? null;
       const resumedRuntimeLoaded = resumedRuntimeState?.loaded ?? false;
       const resumedModelContextWindow = provider === "openrouter"
@@ -4889,15 +5002,16 @@ export default function App() {
           }
         }
       }
-      if (selectThreadRequestRef.current !== requestId) return;
+      if (!ownsSelection()) return;
       const resumeParams = threadResumeParams(resumedSettings, thread.id, executionPath, { perTurnSystemPrompt: true, projectRunCommand: activeProject?.overrides?.run ?? null, projectCheckCommand: activeProject?.overrides?.check ?? null, customAgents, modelContextWindow: resumedModelContextWindow, additionalWorkspaceRoots: isolation?.gitDir ? [isolation.gitDir] : [], childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true });
       if (isolation?.status !== "missing" && isolation?.status !== "removed" && !capabilityRefreshDeferred) {
         const resumed = await rpc<{ thread: Thread; runtimeInstance: string }>("thread/resume", { ...resumeParams, excludeTurns: true });
+        if (!ownsSelection()) return;
         resumedRuntimeInstance = resumed.runtimeInstance;
         codexRuntimeOwnersRef.current.set(resumed.thread.id, resumed.runtimeInstance);
-        if (selectThreadRequestRef.current !== requestId) return;
-        rememberThread(resumed.thread);
-        setActiveThread(sidebarThread(resumed.thread));
+        const currentThread = nameRead.preserveName(resumed.thread);
+        rememberThread(currentThread);
+        setActiveThread(sidebarThread(currentThread));
         if (resumedRuntimeInstance) {
           recordSubagentCapabilities(resumed.thread.id, resumedRuntimeInstance, capabilitySignature);
         }
@@ -4909,7 +5023,7 @@ export default function App() {
     try {
       await selectionWork;
     } catch (reason) {
-      if (selectThreadRequestRef.current !== requestId) return;
+      if (!ownsSelection()) return;
       failThreadOpen(thread.id, "selection");
       if (!durableHistoryLoaded && isMissingRuntimeThread(reason)) {
         // A remembered row can outlive its rollout after the active Codex
@@ -4925,6 +5039,8 @@ export default function App() {
       }
       setStatus("Ready");
     } finally {
+      nameRead.finish();
+      if (pendingThreadSelectionRef.current?.requestId === requestId) pendingThreadSelectionRef.current = null;
       if (threadPreparationRef.current.get(thread.id) === selectionWork) {
         threadPreparationRef.current.delete(thread.id);
       }
@@ -5113,12 +5229,17 @@ export default function App() {
     getThread: (id) => knownThreadsRef.current?.[id],
     applyTitle: async (id, name) => {
       const thread = knownThreadsRef.current?.[id];
-      if (!thread || thread.name?.trim()) return;
+      if (!thread || thread.name?.trim() || archivingThreadIdsRef.current.has(id)
+        || deletedThreadIdsRef.current.has(id) || archivedThreadsRef.current.some((record) => record.id === id)) return;
       if (isLocalSubscriptionThread(thread)) await renameLocalTranscript(isClaudeThread(thread) ? "claude" : "cursor", id, name);
       else await rpc("thread/name/set", { threadId: id, name });
-      // Archiving or deletion may have removed it while the name was saved.
+      // A successful dispatched write owns the durable name. Metadata arriving
+      // during that save is not another writer; manual renames wait for this
+      // application to settle. Committed archive/deletion still wins.
       const current = knownThreadsRef.current?.[id];
-      if (!current) return;
+      if (!current || deletedThreadIdsRef.current.has(id)
+        || archivedThreadsRef.current.some((record) => record.id === id)) return;
+      markThreadNameSaved(id);
       rememberThread({ ...current, name });
       setThreads((entries) => entries.map((entry) => entry.id === id ? { ...entry, name } : entry));
       setActiveThread((entry) => entry?.id === id ? { ...entry, name } : entry);
@@ -5842,6 +5963,7 @@ export default function App() {
     }
   }, [respondToSettingsProposal]);
 
+  const threadRenameWritesRef = useRef(new Map<string, { token: symbol; name: string; promise: Promise<void> }>());
   const startThreadRename = (thread: Thread) => {
     setRenamingThreadId(thread.id);
     setThreadNameDraft(thread.name || thread.preview || "Untitled thread");
@@ -5849,21 +5971,46 @@ export default function App() {
 
   const renameThread = async (thread: Thread) => {
     const name = threadNameDraft.trim();
+    const previous = threadRenameWritesRef.current.get(thread.id);
     setRenamingThreadId(null);
-    if (!name || name === thread.name) return;
-    await automaticTitles.cancel(thread.id);
-    try {
-      const updated = { ...thread, name };
-      if (!isLocalSubscriptionThread(thread)) await rpc("thread/name/set", { threadId: thread.id, name });
-      rememberThread(updated);
-      setThreads((current) => current.map((entry) => (entry.id === thread.id ? updated : entry)));
-      setActiveThread((current) => (current?.id === thread.id ? { ...current, name } : current));
-      if (isLocalSubscriptionThread(thread)) {
-        await renameLocalTranscript(isClaudeThread(thread) ? "claude" : "cursor", thread.id, name);
+    if (!name || name === thread.name && !previous) return;
+    // Enter can also blur the editor; both events share this pending save.
+    if (previous?.name === name) { await previous.promise; return; }
+    // Cancel title ownership immediately, including while an earlier rename is
+    // saving. Serialize name writes so the latest authored name wins on disk.
+    const titleCancellation = automaticTitles.cancel(thread.id);
+    const token = Symbol(thread.id);
+    const promise = (previous?.promise ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      try {
+        await titleCancellation;
+        const target = knownThreadsRef.current?.[thread.id];
+        if (!target || archivingThreadIdsRef.current.has(thread.id) || deletedThreadIdsRef.current.has(thread.id)
+          || archivedThreadsRef.current.some((record) => record.id === thread.id)) return;
+        if (isLocalSubscriptionThread(target)) {
+          await renameLocalTranscript(isClaudeThread(target) ? "claude" : "cursor", thread.id, name);
+        } else {
+          await rpc("thread/name/set", { threadId: thread.id, name });
+        }
+        // Successful writes settle in submission order. Keep the last saved
+        // name visible even if a newer queued rename subsequently fails. An
+        // archive/delete waits for dispatched writes before committing its
+        // tombstone, so its pending ownership must not hide a completed save.
+        const current = knownThreadsRef.current?.[thread.id];
+        if (!current || deletedThreadIdsRef.current.has(thread.id)
+          || archivedThreadsRef.current.some((record) => record.id === thread.id)) return;
+        markThreadNameSaved(thread.id);
+        rememberThread({ ...current, name });
+        setThreads((entries) => entries.map((entry) => (entry.id === thread.id ? { ...entry, name } : entry)));
+        setActiveThread((entry) => (entry?.id === thread.id ? { ...entry, name } : entry));
+      } catch (reason) {
+        if (threadRenameWritesRef.current.get(thread.id)?.token === token && knownThreadsRef.current?.[thread.id]
+          && !archivingThreadIdsRef.current.has(thread.id) && !deletedThreadIdsRef.current.has(thread.id)) setError(friendlyError(reason));
       }
-    } catch (reason) {
-      setError(friendlyError(reason));
-    }
+    }).finally(() => {
+      if (threadRenameWritesRef.current.get(thread.id)?.token === token) threadRenameWritesRef.current.delete(thread.id);
+    });
+    threadRenameWritesRef.current.set(thread.id, { token, name, promise });
+    await promise;
   };
 
   /**
@@ -5916,7 +6063,7 @@ export default function App() {
   };
 
   const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean, automatic = false): Promise<boolean> => {
-    const label = thread.name || thread.preview || "Untitled thread";
+    let label = thread.name || thread.preview || "Untitled thread";
     const archiveActivityBlock = () => {
       if (automatic && managedChildArchivePending(thread.id)) return "This sub-agent still needs sign-off or has pending work.";
       const state = useTaskStore.getState();
@@ -5957,15 +6104,21 @@ export default function App() {
     // Another archive may have completed confirmation while this dialog was open.
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
     archivingThreadIdsRef.current.add(thread.id);
+    invalidatePendingThreadSelection(thread.id);
     try {
       await archiveAfterTitleCancellation(
         async () => {
           await automaticTitles.cancel(thread.id);
+          // Already dispatched manual saves publish before the archive label
+          // is captured. Queued saves observe archiving ownership and stop.
+          await threadRenameWritesRef.current.get(thread.id)?.promise;
           // Auto-archive may run before the coalesced local save. Persist the
           // latest result while the sidebar identity still exists.
           if (isLocalSubscriptionThread(thread) && useTaskStore.getState().tasks[thread.id]?.transcriptDirty) {
             await localTranscriptSaves.flush(thread.id);
           }
+          const current = knownThreadsRef.current?.[thread.id];
+          label = current?.name || current?.preview || thread.name || thread.preview || "Untitled thread";
         },
         archiveActivityBlock,
         async () => {
@@ -6132,8 +6285,12 @@ export default function App() {
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
     if (archivingThreadIdsRef.current.has(threadId)) return false;
     archivingThreadIdsRef.current.add(threadId);
+    invalidatePendingThreadSelection(threadId);
     try {
       await automaticTitles.cancel(threadId);
+      // A rename already dispatched to storage must settle before deletion,
+      // otherwise it can write a name into a transcript that was just removed.
+      await threadRenameWritesRef.current.get(threadId)?.promise;
       if (nativeDeletionBusy()) {
         setError("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
         return false;
@@ -9017,6 +9174,7 @@ export default function App() {
         settings={settings}
         account={account}
         accountChecks={accountChecks}
+        onRefreshAccounts={refreshSettingsAccounts}
         runtimeStatus={runtimeStatus}
         claudeStatus={claudeStatus}
         claudeLoginStarting={claudeLoginStarting}
