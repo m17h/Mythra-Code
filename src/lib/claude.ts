@@ -320,8 +320,8 @@ export async function getClaudeRuntimeStatus(): Promise<ClaudeRuntimeStatus> {
   return invoke<ClaudeRuntimeStatus>("claude_runtime_status");
 }
 
-export async function getClaudeRateLimits(): Promise<ProviderRateLimits | null> {
-  return parseClaudeUsageLimits(await invoke<ClaudeUsagePayload>("claude_usage"));
+export async function getClaudeRateLimits(accountKey: string, runtimePath?: string | null): Promise<ProviderRateLimits | null> {
+  return parseClaudeUsageLimits(await invoke<ClaudeUsagePayload>("claude_usage", { accountKey, runtimePath }));
 }
 
 export async function startClaudeLogin(): Promise<void> {
