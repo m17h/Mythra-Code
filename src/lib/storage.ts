@@ -64,7 +64,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 29;
+export const STORAGE_SCHEMA_VERSION = 30;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 type NativeStateRevision = { operation: () => Promise<unknown> };
 // A settled promise is not a persistence receipt. Keep the latest immutable
@@ -328,6 +328,8 @@ export function migrateStorage(readRaw: (key: string) => string | null = readSto
   // Version 29 adds optional user-created prompt profiles to project overrides.
   // Existing active prompts remain authoritative and need no eager rewrite.
   // Learned preferences live in their separately versioned native registry.
+  // Version 30 adds optional daily wall-clock times to scheduled tasks. Missing
+  // scheduleMode retains the original interval behavior without rewriting tasks.
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

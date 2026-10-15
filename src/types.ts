@@ -442,6 +442,11 @@ export interface ScheduledTask {
   intervalValue?: number;
   intervalUnit?: ScheduleIntervalUnit;
   intervalMinutes: number;
+  /** Omitted for legacy interval schedules. Daily times use the device's local time. */
+  scheduleMode?: "interval" | "daily";
+  dailyTimes?: string[];
+  /** Tracks the device zone so travelling does not retain yesterday's UTC alarm. */
+  dailyTimeZone?: string;
   /** Legacy schedules created a fresh thread for every trigger. */
   threadMode?: ScheduleThreadMode;
   enabled: boolean;

@@ -36,6 +36,11 @@
 .scheduled-task-form .scheduled-task-wide { grid-column: 1 / -1; }
 .scheduled-task-form .schedule-field > small { font-size: var(--fs-micro); font-weight: 400; color: var(--muted-2); }
 .scheduled-task-form .schedule-create-grid input { min-height: 40px; }
+.scheduled-daily-times { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.scheduled-daily-time { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.scheduled-daily-time input { width: 145px; color-scheme: dark; }
+.app-shell[data-color-scheme="light"] .scheduled-daily-time input { color-scheme: light; }
+.scheduled-daily-add { align-self: flex-start; }
 .scheduled-task-form .schedule-prompt-control textarea { min-height: 110px; resize: vertical; font-size: var(--fs-ui); line-height: 1.6; }
 .scheduled-task-enabled { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) 0; border-top: 1px solid var(--line); }
 .scheduled-task-enabled > div { display: flex; flex-direction: column; gap: 4px; }

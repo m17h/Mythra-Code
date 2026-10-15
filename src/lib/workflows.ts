@@ -266,6 +266,9 @@ export function workflowFromSchedule(
   run: ScheduleRunSettings,
   now = Date.now(),
 ): WorkflowDefinition {
+  if (scheduled.scheduleMode === "daily") {
+    throw new Error("Daily times are supported in scheduled tasks, not workflow triggers.");
+  }
   return {
     id: crypto.randomUUID(),
     name: scheduled.name.trimStart(),
