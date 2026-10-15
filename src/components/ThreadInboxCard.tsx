@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
+  CornerDownRight,
   Folder,
   GitBranch,
   GitMerge,
@@ -9,6 +10,7 @@ import {
   Pin,
 } from "lucide-react";
 import { useTaskStore } from "../lib/taskStore";
+import { workerStatusFromAgentRecord } from "../lib/subAgentActivity";
 import type { PullRequest } from "../lib/pullRequests";
 import type { Provider } from "../types";
 import { ThreadTitle } from "./ThreadTitle";
@@ -166,6 +168,13 @@ interface ThreadInboxCardProps {
   /** The pull request saved against this thread, when there is one. */
   pullRequest?: ThreadCardPullRequest | null;
   scheduledPromptCount?: number;
+  /** Sub-agents only: who started this child, spoken after the title. */
+  parentLabel?: string;
+  /** Sub-agents only: the direct parent, when it is not the group's parent. */
+  parentVia?: string;
+  /** Main cards only: this parent's descendants, independent of inbox filters. */
+  subAgentIds?: readonly string[];
+  nativeAgents?: Readonly<Record<string, { status?: string }>>;
   /** Whether the inbox surface is open and uncovered. Geometry/document
    * visibility additionally suspend the working-duration clock. */
   active?: boolean;
@@ -197,10 +206,29 @@ export function ThreadInboxCard({
   branch,
   pullRequest = null,
   scheduledPromptCount = 0,
+  parentLabel,
+  parentVia,
+  subAgentIds,
+  nativeAgents,
   active = true,
   onOpen,
 }: ThreadInboxCardProps) {
   const statusId = useId();
+  const workingSubAgents = useTaskStore((state) => {
+    let count = 0;
+    for (const id of subAgentIds ?? []) {
+      const status = state.statuses[id];
+      if (status === "starting" || status === "running") count++;
+      else if (!status || status === "idle") {
+        const nativeStatus = workerStatusFromAgentRecord(nativeAgents?.[id]?.status ?? "");
+        if (nativeStatus === "starting" || nativeStatus === "working") count++;
+      }
+    }
+    return count;
+  });
+  const subAgentLabel = subAgentIds?.length
+    ? `${workingSubAgents} sub-agent${workingSubAgents === 1 ? "" : "s"} working`
+    : null;
   const storedLifecycle = useTaskStore((state) => threadCardLifecycle(
     state.statuses[threadId] ?? "idle",
     Boolean(state.tasks[threadId]?.unread),
@@ -210,25 +238,35 @@ export function ThreadInboxCard({
   // A labelled button hides its own contents from a screen reader, so the pill
   // below would otherwise be seen by sighted people only. It is named here too.
   const accessibleTitle = titlePending ? "Generating title" : title;
+  const openLabel = `Open ${accessibleTitle}${parentLabel ? ` · ${parentLabel}` : ""}${subAgentLabel ? ` · ${subAgentLabel}` : ""}`;
   const baseLabel = pullRequest
-    ? `Open ${accessibleTitle} · Pull request #${pullRequest.number} in ${pullRequest.repository}, ${threadCardPullRequestState(pullRequest).label}`
-    : `Open ${accessibleTitle}`;
+    ? `${openLabel} · Pull request #${pullRequest.number} in ${pullRequest.repository}, ${threadCardPullRequestState(pullRequest).label}`
+    : openLabel;
   const label = scheduledPromptCount > 0
     ? `${baseLabel} · ${scheduledPromptCount} scheduled prompt${scheduledPromptCount === 1 ? "" : "s"} in this thread`
     : baseLabel;
   return (
     <button className={`thread-card ${lifecycle} provider-${provider}`} onClick={onOpen} aria-label={label} aria-describedby={lifecycle ? statusId : undefined}>
       <span className="thread-card-context">
-        <span className="thread-card-workspace" title={directory}>
+        {subAgentLabel ? <span className="thread-card-workspace thread-card-subagents" title={subAgentLabel}>
+          <Folder size={14} aria-hidden="true" />
+          <span>{subAgentLabel}</span>
+        </span> : <span className="thread-card-workspace" title={directory}>
           {isolated ? <GitBranch size={14} /> : <Folder size={14} />}
           <span>{isolated ? branch || "Isolated" : workspaceName}</span>
-        </span>
+        </span>}
         {pendingStatus ? <span id={statusId} className="thread-card-status working" role="status">
           <PixelWorkingMark className="thread-card-working-mark" live={pendingStatus === "starting"} />
           <span>{pendingStatus === "stopping" ? "Stopping" : "Starting"}</span>
         </span> : <ThreadInboxStatus threadId={threadId} id={statusId} active={active} />}
       </span>
       <ThreadTitle className="thread-card-title" title={title} pending={titlePending} />
+      {parentVia && (
+        <span className="thread-card-via" title={`Started by ${parentVia}`}>
+          <CornerDownRight size={11} aria-hidden="true" />
+          <span>via {parentVia}</span>
+        </span>
+      )}
       <span className="thread-card-meta">
         <span className="thread-card-directory" title={directory}>{compactDirectory(directory)}</span>
         {/* After the directory, not before the title: the pull request is
