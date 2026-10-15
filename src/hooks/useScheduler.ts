@@ -8,6 +8,7 @@ import { SkillDependencyError } from "../lib/skillDependencies";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { safeErrorText } from "../lib/errors";
+import { localScheduleTimeZone, nextScheduledRunAt } from "../lib/schedules";
 import { planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "../lib/threadCapabilities";
 import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { parentAutoCompactionUnavailableReason } from "../lib/threadSubagentSettings";
@@ -147,7 +148,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       const error = `${run.provider === "cursor" ? "Cursor" : "Claude"} scheduled tasks are not enabled yet. Use an OpenAI, OpenRouter, or LM Studio schedule.`;
       updateOwnedSchedule((item) => ({
         ...item,
-        nextRunAt: Date.now() + item.intervalMinutes * 60_000,
+        nextRunAt: nextScheduledRunAt(item),
       }));
       current.recordRun({
         id: crypto.randomUUID(),
@@ -452,7 +453,7 @@ export function useScheduler(deps: SchedulerDeps): void {
           unconfirmedThreadId: undefined,
           unconfirmedCompletedTurnId: undefined,
           unconfirmedBaselineUnknown: undefined,
-          nextRunAt: Date.now() + item.intervalMinutes * 60_000,
+          nextRunAt: nextScheduledRunAt(item),
         }));
       }
       void auditEvent("schedule.started", { scheduleId: scheduled.id, projectId: project.id }, started.thread.id).catch(() => {});
@@ -528,7 +529,16 @@ export function useScheduler(deps: SchedulerDeps): void {
     const preparations = runningRef.current;
     const check = () => {
       const now = Date.now();
+      const timeZone = localScheduleTimeZone();
       for (const scheduled of depsRef.current.schedules) {
+        if (scheduled.scheduleMode === "daily" && scheduled.dailyTimeZone !== timeZone) {
+          depsRef.current.updateSchedule(scheduled.id, (item) => item === scheduled ? {
+            ...item, dailyTimeZone: timeZone,
+            // A missing zone is legacy metadata, not evidence of travel.
+            nextRunAt: item.dailyTimeZone ? nextScheduledRunAt(item, now) : item.nextRunAt,
+          } : item);
+          continue;
+        }
         if (scheduled.enabled && scheduled.nextRunAt <= now) void runScheduledTask(scheduled);
       }
     };
