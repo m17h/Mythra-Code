@@ -39,6 +39,8 @@ import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
 import { MythraMark } from "./components/MythraMark";
 import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
+import { SpellingMenu } from "./components/SpellingMenu";
+import { useSpellingMenu } from "./lib/spelling";
 import { MaxReasoningWarningContext } from "./hooks/useMaxReasoningWarning";
 import { ModelPowerControl, openAiModelOptions, type ReasoningEffort, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
@@ -679,6 +681,7 @@ export default function App() {
   }, []);
   const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
   const confirmationOpen = useConfirmStore((state) => state.queue.length > 0);
+  const spellingMenuOpen = useSpellingMenu((state) => state.menu !== null);
   const [headerUsageWindows, setHeaderUsageWindows] = usePersistedState<HeaderUsageWindows>("kiwi.headerUsageWindows", {}, {
     init: (load) => sanitizeHeaderUsageWindows(load()),
   });
@@ -8128,7 +8131,7 @@ export default function App() {
   useAppShortcuts({
     escapeStopsRun: settings.escapeStopsRun,
     running: Boolean((running || childrenRunning) && activeThread),
-    modalOpen: confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
     workspaceOpen: studioOpen && Boolean(activeProject),
@@ -9636,6 +9639,7 @@ export default function App() {
       />
       </Suspense></ErrorBoundary>}
       <ConfirmDialogModal />
+      <SpellingMenu scope={JSON.stringify([attachmentKey, settingsOpen, confirmationOpen, Boolean(pendingApproval)])} />
       </FeedbackProvider>
       </MaxReasoningWarningContext.Provider>
     </div>

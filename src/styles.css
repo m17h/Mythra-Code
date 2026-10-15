@@ -3493,6 +3493,27 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .confirm-dialog-detailed { max-height: calc(100dvh / var(--ui-scale, 1) - 60px); overflow-y: auto; }
 .confirm-dialog-detailed .confirm-dialog-actions { flex-wrap: wrap; }
 .confirm-dialog-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-5); }
+.spelling-menu { position: fixed; inset: auto; margin: 0; padding: 0; border: 0; overflow: visible; background: transparent; color: var(--text); z-index: 10000; }
+/* Outrank the theme's `.app-shell[data-theme][data-color-scheme] [tabindex]:focus-visible`
+   ring: the outer popover is never animated, so a ring on it would snap on and off
+   around the fade. Keyboard focus is shown on the highlighted row inside the panel. */
+.app-shell[data-theme][data-color-scheme] .spelling-menu.spelling-menu:is(:focus, :focus-visible),
+.app-shell[data-theme][data-color-scheme] .spelling-menu.spelling-menu button:is(:focus, :focus-visible) { outline: none; }
+.spelling-menu-panel { width: max-content; min-width: 170px; max-width: min(280px, calc(100vw / var(--ui-scale, 1) - 16px)); padding: 5px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--elev-3); font-family: var(--font-sans); transform-origin: top left; animation: spelling-menu-enter 220ms var(--ease) both; }
+.spelling-menu[data-placement="above"] .spelling-menu-panel { --spelling-menu-shift: 6px; transform-origin: bottom left; }
+/* Ease-in like the Settings exit: the menu stays visible long enough to read
+   as a fade, then accelerates out. An ease-out exit drops most of its opacity
+   in the first two or three frames and reads as an instant cut. */
+.spelling-menu[data-state="closing"] .spelling-menu-panel { pointer-events: none; animation: spelling-menu-exit 200ms cubic-bezier(.4,0,.8,.2) both; }
+@keyframes spelling-menu-enter { from { opacity: 0; transform: translateY(var(--spelling-menu-shift, -6px)) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes spelling-menu-exit { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(calc(var(--spelling-menu-shift, -6px) * .6)) scale(.97); } }
+@media (prefers-reduced-motion: reduce) { .spelling-menu-panel, .spelling-menu[data-state="closing"] .spelling-menu-panel { animation: none; } }
+.spelling-menu-heading { display: flex; align-items: center; gap: 6px; padding: 5px 7px 2px; color: var(--muted); font-size: 11px; }
+.spelling-menu-word { padding: 0 7px 6px; margin-bottom: 3px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.spelling-menu button { display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text); text-align: start; font: inherit; font-size: var(--fs-ui); cursor: pointer; overflow-wrap: anywhere; }
+.spelling-menu button[data-highlighted] { background: var(--green-soft); color: var(--green); }
+.spelling-menu button[data-highlighted]:focus-visible { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 55%, transparent); }
+.spelling-menu-empty { display: block; padding: 7px; font-size: var(--fs-ui); color: var(--muted); }
 .confirm-dialog-actions .primary-button.confirm-danger { border-color: color-mix(in srgb, var(--red) 44%, var(--line-strong)); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--red) 64%, var(--line-strong)); background: color-mix(in srgb, var(--red) 13%, transparent); }
 @media (prefers-reduced-motion: reduce) { .confirm-dialog { animation: none; } }
