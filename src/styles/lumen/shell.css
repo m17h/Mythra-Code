@@ -278,6 +278,7 @@
 .app-shell[data-theme][data-color-scheme] .thread-card-workspace { color: var(--muted-2); font-size: 10.5px; font-weight: 560; }
 .app-shell[data-theme][data-color-scheme] .thread-card-directory { color: var(--muted-2); font-size: 10px; opacity: 1; }
 .app-shell[data-theme][data-color-scheme] .thread-card-provider { width: 20px; height: 20px; border-radius: 7px; }
+.app-shell[data-theme][data-color-scheme] .thread-card-provider.subagent-group-provider { width: 16px; height: 16px; border-radius: 5px; }
 /* Status stays as the legacy coloured text (useful information), without
    filled pills. */
 .app-shell[data-theme][data-color-scheme] .thread-card-status { font-size: 10.5px; font-weight: 620; background: transparent; }
@@ -398,6 +399,9 @@
   .app-shell[data-theme][data-color-scheme] .thread-list > .thread-row-wrap:nth-child(10) > .thread-card { animation-delay: 360ms; }
   .app-shell[data-theme][data-color-scheme] .thread-list > .thread-row-wrap:nth-child(11) > .thread-card { animation-delay: 400ms; }
   .app-shell[data-theme][data-color-scheme] .thread-list > .thread-row-wrap:nth-child(n+12) > .thread-card { animation-delay: 440ms; }
+  /* Grouped Sub-agents rows rise with their parent heading, unstaggered. */
+  .app-shell[data-theme][data-color-scheme] .thread-list > .subagent-group > .subagent-group-heading,
+  .app-shell[data-theme][data-color-scheme] .thread-list > .subagent-group .subagent-group-rows > .thread-row-wrap > .thread-card { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
   .app-shell[data-theme][data-color-scheme] .thread-card {
     transition: color var(--lm-d-2) ease, border-color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-spring);
   }

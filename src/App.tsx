@@ -50,6 +50,8 @@ import { LMStudioModelControl } from "./components/LMStudioModelControl";
 import { ThreadProviderControl } from "./components/ThreadProviderControl";
 import { ThreadTitle } from "./components/ThreadTitle";
 import { ThreadInboxCard } from "./components/ThreadInboxCard";
+import { SubAgentParentGroup } from "./components/SubAgentParentGroup";
+import { createSubAgentParentResolver, groupSubAgentThreads, subAgentCardParent, subAgentGroupTitle, UNAVAILABLE_PARENT_TITLE, type SubAgentParentSources } from "./lib/subAgentParents";
 import { ScheduledCountBadge } from "./components/ScheduledCountBadge";
 import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
@@ -1555,12 +1557,34 @@ export default function App() {
       childThreadRootIds,
     );
   }, [activeWorkspace, childThreadLinks, childThreadRootIds, threadKindView, threads]);
+  // Display-only parent names for the Sub-agents inbox, read from the
+  // existing ownership graph and thread caches. Never fed to a model.
+  const subAgentParentContext = useMemo((): Omit<SubAgentParentSources, "threads" | "remembered" | "archived" | "bindings"> => ({
+    links: childThreadLinks,
+    rootIds: childThreadRootIds,
+    workspacePath: activeWorkspace?.path ?? "",
+    threadTitle: (thread) => thread.name || thread.preview || "Untitled thread",
+    threadProvider: (thread) => providerFromThread(thread, projectDefaultProvider),
+  }), [activeWorkspace?.path, childThreadLinks, childThreadRootIds, projectDefaultProvider]);
+  const subAgentParents = useMemo(() => createSubAgentParentResolver({
+    ...subAgentParentContext,
+    threads,
+    remembered: sidebarKnownThreads ?? {},
+    archived: archivedThreads,
+    bindings: sidebarThreadBindings ?? {},
+  }), [archivedThreads, sidebarKnownThreads, sidebarThreadBindings, subAgentParentContext, threads]);
   const displayedThreads = useMemo(() => {
     if (!activeWorkspace) return [];
     const threadProjectBindings = threadProjectBindingsRef.current ?? {};
     const query = threadSearch.trim().toLowerCase();
+    // In Sub-agents, a parent's title also finds its children.
+    const matchesParent = (thread: Thread) => {
+      if (threadKindView !== "subagents") return false;
+      const { direct, top } = subAgentParents.info(thread.id, thread);
+      return Boolean(direct?.title?.toLowerCase().includes(query) || top?.title?.toLowerCase().includes(query));
+    };
     const merged = workspaceKindThreads
-      .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query));
+      .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query) || matchesParent(thread));
     const mergedIds = new Set(merged.map((thread) => thread.id));
     for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
       if (!filterThreadsByKind([found], childThreadLinks, threadKindView, childThreadRootIds).length) continue;
@@ -1571,7 +1595,40 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, childThreadLinks, childThreadRootIds, pinnedThreadIds, searchResults, threadKindView, threadSearch, workspaceKindThreads]);
+  }, [activeWorkspace, childThreadLinks, childThreadRootIds, pinnedThreadIds, searchResults, subAgentParents, threadKindView, threadSearch, workspaceKindThreads]);
+  const subAgentGroups = useMemo(() => (threadKindView === "subagents"
+    ? groupSubAgentThreads(displayedThreads, (thread) => subAgentParents.info(thread.id, thread), new Set(pinnedThreadIds))
+    : []), [displayedThreads, pinnedThreadIds, subAgentParents, threadKindView]);
+  const subAgentsByParent = useMemo(() => {
+    const result: Record<string, string[]> = {};
+    const known = new Map(threads.map((thread) => [thread.id, thread]));
+    const ids = new Set(Object.keys(childThreadLinks));
+    for (const thread of threads) {
+      if (isSubAgentThread(thread, childThreadLinks, childThreadRootIds)) ids.add(thread.id);
+    }
+    for (const id of ids) {
+      const root = subAgentParents.info(id, known.get(id)).top?.id;
+      if (root && root !== id) (result[root] ??= []).push(id);
+    }
+    return result;
+  }, [childThreadLinks, childThreadRootIds, subAgentParents, threads]);
+  // The direct parent of the open sub-agent, named in the header chip.
+  const activeParentChip = useMemo(() => {
+    if (!activeThread || !isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds)) return null;
+    const { direct, provenance } = subAgentParents.info(activeThread.id, activeThread);
+    if (!direct) return null;
+    const title = direct.title ?? UNAVAILABLE_PARENT_TITLE;
+    const state = direct.state === "archived" ? ", archived" : direct.state === "elsewhere" ? ", in a different chat or project" : "";
+    const reported = provenance === "reported" ? ", as reported by the provider" : "";
+    return {
+      id: direct.id,
+      title,
+      label: direct.state === "unavailable" ? "Parent conversation unavailable" : `Open parent conversation ${title}${state}${reported}`,
+      tooltip: direct.state === "unavailable"
+        ? "This sub-agent's parent conversation is no longer available"
+        : `Open this sub-agent's parent conversation: ${title}${state}${reported}`,
+    };
+  }, [activeThread, childThreadLinks, childThreadRootIds, subAgentParents]);
 
   // Jump-to surfaces are for the user's own conversations. Delegated children
   // are browsable through the sidebar's Sub-agents view, not mixed into search.
@@ -5259,6 +5316,47 @@ export default function App() {
     }
   };
 
+  /** Shared by the header Parent chip and the Sub-agents group headings. Reads
+   * the caches at click time and says where the parent is; it never restores
+   * an archive or switches project on the user's behalf. */
+  const openParentConversation = (parentId: string) => {
+    const parent = createSubAgentParentResolver({
+      ...subAgentParentContext,
+      threads,
+      remembered: knownThreadsRef.current ?? {},
+      archived: archivedThreadsRef.current,
+      bindings: threadProjectBindingsRef.current ?? {},
+    }).parent(parentId);
+    const named = parent.title ? `The parent conversation “${parent.title}”` : "The parent conversation";
+    const parentPath = parent.path ? normalizedProjectPath(parent.path) : "";
+    const projectName = parentPath ? projectsRef.current.find((project) => normalizedProjectPath(project.path) === parentPath)?.name : undefined;
+    const where = parentPath && chatWorkspacePath && parentPath === normalizedProjectPath(chatWorkspacePath)
+      ? "Chats"
+      : projectName ? `the project “${projectName}”` : "a different chat or project";
+    if (parent.state === "available") {
+      const thread = threads.find((entry) => entry.id === parentId) ?? knownThreadsRef.current?.[parentId];
+      if (thread) {
+        setThreadSearch("");
+        setThreadKindView(isSubAgentThread(thread, childThreadLinksRef.current, childThreadRootIdsRef.current) ? "subagents" : "main");
+        void selectThread(thread);
+      }
+    } else if (parent.state === "archived") {
+      if (activeWorkspace && parentPath === normalizedProjectPath(activeWorkspace.path)) {
+        // A native child's direct parent may itself be an archived sub-agent.
+        // Match the archive list's durable-link classification exactly.
+        setThreadKindView(childThreadLinksRef.current[parentId] ? "subagents" : "main");
+        setArchivedOpen(true);
+        setError(`${named} is archived. Restore it from Archived to open it.`);
+      } else {
+        setError(`${named} is archived in ${where}. Restore it there to open it.`);
+      }
+    } else if (parent.state === "elsewhere") {
+      setError(`${named} is in ${where}, not this ${activeWorkspace?.isChat ? "workspace" : "project"}. Open it from there.`);
+    } else {
+      setError("The parent conversation is no longer available. It may have been deleted, or it is no longer in Mythra Code’s remembered thread list.");
+    }
+  };
+
   const exportTranscript = async () => {
     if (!activeThread) return;
     const openedTask = useTaskStore.getState().tasks[activeThread.id];
@@ -8407,6 +8505,63 @@ export default function App() {
     </button>;
   });
 
+  // Main renders rows flat; Sub-agents renders the same rows under parents.
+  const renderThreadRow = (thread: Thread, cardParent?: { label: string; via?: string }) => (
+    <div key={thread.id} className={`thread-row-wrap ${activeThread?.id === thread.id ? "active" : ""}`}>
+      {renamingThreadId === thread.id ? (
+        <div className="thread-rename-row">
+          <MessageSquare size={14} />
+          <input
+            autoFocus
+            value={threadNameDraft}
+            onChange={(event) => setThreadNameDraft(event.target.value)}
+            onBlur={() => void renameThread(thread)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void renameThread(thread);
+              if (event.key === "Escape") {
+                setThreadNameDraft(thread.name || "");
+                setRenamingThreadId(null);
+              }
+            }}
+            aria-label="Thread name"
+          />
+        </div>
+      ) : (
+        <ThreadInboxCard
+          active={sidebarOpen && !settingsOpen && !onboardingOpen}
+          threadId={thread.id}
+          title={thread.name || thread.preview || "Untitled thread"}
+          titlePending={automaticTitles.pendingIds.has(thread.id)}
+          workspaceName={activeWorkspace?.name ?? basename(thread.cwd)}
+          directory={threadFolderFor(thread)}
+          provider={providerFromThread(thread, projectDefaultProvider)}
+          providerName={providerLabel(providerFromThread(thread, projectDefaultProvider))}
+          pinned={pinnedThreadIds.includes(thread.id)}
+          isolated={Boolean(threadWorktrees[thread.id] && threadWorktrees[thread.id].status !== "removed")}
+          branch={threadWorktrees[thread.id]?.branch}
+          pullRequest={threadPullRequest.links[thread.id]?.snapshot}
+          scheduledPromptCount={scheduledPromptCounts.threads[thread.id] ?? 0}
+          parentLabel={cardParent?.label}
+          parentVia={cardParent?.via}
+          subAgentIds={threadKindView === "main" ? subAgentsByParent[thread.id] : undefined}
+          nativeAgents={nativeAgentLinks}
+          onOpen={() => void selectThread(thread)}
+        />
+      )}
+      <RowMenu
+        label={`Options for ${automaticTitles.pendingIds.has(thread.id) ? "Generating title" : thread.name || thread.preview || "thread"}`}
+        scale={(settings.uiScale || 100) / 100}
+        items={[
+          { label: pinnedThreadIds.includes(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadIds.includes(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
+          { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
+          ...(activeProject ? [{ label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) }] : []),
+          { label: "Archive", icon: <Archive size={13} />, onSelect: () => void archiveThread(thread) },
+          { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(thread.id, thread.name || thread.preview || "Untitled thread") },
+        ]}
+      />
+    </div>
+  );
+
   const maxReasoningWarning = useMemo(() => ({
     enabled: settings.warnOnMaxReasoning !== false,
     scope: JSON.stringify([attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]),
@@ -8561,57 +8716,22 @@ export default function App() {
                 />
               </div>
             ))}
-            {displayedThreads.map((thread) => (
-              <div key={thread.id} className={`thread-row-wrap ${activeThread?.id === thread.id ? "active" : ""}`}>
-                {renamingThreadId === thread.id ? (
-                  <div className="thread-rename-row">
-                    <MessageSquare size={14} />
-                    <input
-                      autoFocus
-                      value={threadNameDraft}
-                      onChange={(event) => setThreadNameDraft(event.target.value)}
-                      onBlur={() => void renameThread(thread)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void renameThread(thread);
-                        if (event.key === "Escape") {
-                          setThreadNameDraft(thread.name || "");
-                          setRenamingThreadId(null);
-                        }
-                      }}
-                      aria-label="Thread name"
-                    />
-                  </div>
-                ) : (
-                  <ThreadInboxCard
-                    active={sidebarOpen && !settingsOpen && !onboardingOpen}
-                    threadId={thread.id}
-                    title={thread.name || thread.preview || "Untitled thread"}
-                    titlePending={automaticTitles.pendingIds.has(thread.id)}
-                    workspaceName={activeWorkspace?.name ?? basename(thread.cwd)}
-                    directory={threadFolderFor(thread)}
-                    provider={providerFromThread(thread, projectDefaultProvider)}
-                    providerName={providerLabel(providerFromThread(thread, projectDefaultProvider))}
-                    pinned={pinnedThreadIds.includes(thread.id)}
-                    isolated={Boolean(threadWorktrees[thread.id] && threadWorktrees[thread.id].status !== "removed")}
-                    branch={threadWorktrees[thread.id]?.branch}
-                    pullRequest={threadPullRequest.links[thread.id]?.snapshot}
-                    scheduledPromptCount={scheduledPromptCounts.threads[thread.id] ?? 0}
-                    onOpen={() => void selectThread(thread)}
-                  />
-                )}
-                <RowMenu
-                  label={`Options for ${automaticTitles.pendingIds.has(thread.id) ? "Generating title" : thread.name || thread.preview || "thread"}`}
-                  scale={(settings.uiScale || 100) / 100}
-                  items={[
-                    { label: pinnedThreadIds.includes(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadIds.includes(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
-                    { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
-                    ...(activeProject ? [{ label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) }] : []),
-                    { label: "Archive", icon: <Archive size={13} />, onSelect: () => void archiveThread(thread) },
-                    { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(thread.id, thread.name || thread.preview || "Untitled thread") },
-                  ]}
-                />
-              </div>
-            ))}
+            {threadKindView === "subagents" ? subAgentGroups.map((group) => (
+              <SubAgentParentGroup
+                key={group.key || "parent-unknown"}
+                title={subAgentGroupTitle(group.parent)}
+                provider={group.parent?.provider}
+                providerName={group.parent?.provider ? providerLabel(group.parent.provider) : undefined}
+                state={group.parent?.state ?? null}
+                reported={group.reported}
+                shortId={group.shortId}
+                count={group.threads.length}
+                threadIds={group.threads.map((thread) => thread.id)}
+                onOpenParent={group.parent && group.parent.state !== "unavailable" ? () => openParentConversation(group.key) : undefined}
+              >
+                {group.threads.map((thread) => renderThreadRow(thread, subAgentCardParent(subAgentParents.info(thread.id, thread))))}
+              </SubAgentParentGroup>
+            )) : displayedThreads.map((thread) => renderThreadRow(thread))}
             {displayedSavedDraftKeys.length > 0 && <>
               <span className="section-label">Saved drafts</span>
               {displayedSavedDraftKeys.map((key) => (
@@ -8646,24 +8766,31 @@ export default function App() {
                 </button>
               </div>
               {archivedOpen &&
-                workspaceArchived.map((record) => (
-                  <div key={record.id} className="thread-row-wrap archived">
-                    <span className="thread-row archived-label" role="group" title={`Archived ${new Date(record.archivedAt).toLocaleString()}`}
-                      aria-label={`${record.label}${scheduledPromptCounts.threads[record.id] ? `, ${scheduledPromptCounts.threads[record.id]} scheduled prompt${scheduledPromptCounts.threads[record.id] === 1 ? "" : "s"} in this thread` : ""}`}>
-                      <Archive size={13} />
-                      <span className="archived-thread-title">{record.label}</span>
-                      <ScheduledCountBadge threadPrompts={scheduledPromptCounts.threads[record.id] ?? 0} label={`${scheduledPromptCounts.threads[record.id] ?? 0} scheduled prompts in this thread`} />
-                    </span>
-                    <RowMenu
-                      label={`Options for archived ${record.label}`}
-                      scale={(settings.uiScale || 100) / 100}
-                      items={[
-                        { label: "Restore", icon: <ArchiveRestore size={13} />, onSelect: () => void unarchiveThread(record) },
-                        { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(record.id, record.label) },
-                      ]}
-                    />
-                  </div>
-                ))}
+                workspaceArchived.map((record) => {
+                  // Archived sub-agents keep their durable link, so the parent
+                  // can still be named; nothing here changes how they are classified.
+                  const archivedParent = threadKindView === "subagents" ? subAgentParents.info(record.id).direct : null;
+                  const archivedParentTitle = archivedParent ? archivedParent.title ?? UNAVAILABLE_PARENT_TITLE : "";
+                  return (
+                    <div key={record.id} className="thread-row-wrap archived">
+                      <span className="thread-row archived-label" role="group" title={`Archived ${new Date(record.archivedAt).toLocaleString()}${archivedParent ? ` · Sub-agent of ${archivedParentTitle}` : ""}`}
+                        aria-label={`${record.label}${archivedParent ? `, sub-agent of ${archivedParent.title ?? "an unavailable parent"}` : ""}${scheduledPromptCounts.threads[record.id] ? `, ${scheduledPromptCounts.threads[record.id]} scheduled prompt${scheduledPromptCounts.threads[record.id] === 1 ? "" : "s"} in this thread` : ""}`}>
+                        <Archive size={13} />
+                        <span className="archived-thread-title">{record.label}</span>
+                        {archivedParent && <span className="archived-thread-parent" aria-hidden="true">{archivedParentTitle}</span>}
+                        <ScheduledCountBadge threadPrompts={scheduledPromptCounts.threads[record.id] ?? 0} label={`${scheduledPromptCounts.threads[record.id] ?? 0} scheduled prompts in this thread`} />
+                      </span>
+                      <RowMenu
+                        label={`Options for archived ${record.label}`}
+                        scale={(settings.uiScale || 100) / 100}
+                        items={[
+                          { label: "Restore", icon: <ArchiveRestore size={13} />, onSelect: () => void unarchiveThread(record) },
+                          { label: "Delete forever", icon: <Trash2 size={13} />, danger: true, onSelect: () => void deleteThreadForever(record.id, record.label) },
+                        ]}
+                      />
+                    </div>
+                  );
+                })}
             </div>
           )}
         </div>
@@ -8716,21 +8843,10 @@ export default function App() {
                 <GitFork size={12} /> <span>From {providerLabel(activeThreadHandoff.sourceProvider)}</span>
               </button>
             )}
-            {activeThreadId && childThreadLinks[activeThreadId] && (
-              <button type="button" className="handoff-chip" onClick={() => {
-                const parentId = childThreadLinks[activeThreadId].rootThreadId;
-                const parent = knownThreadsRef.current?.[parentId] ?? threads.find((thread) => thread.id === parentId);
-                if (archivedThreadsRef.current.some((record) => record.id === parentId)) {
-                  setThreadKindView("main");
-                  setArchivedOpen(true);
-                  setError("The parent conversation is archived. Restore it from Archived to open it.");
-                } else if (parent) {
-                  void selectThread(parent);
-                } else {
-                  setError("The parent conversation is no longer available in this workspace.");
-                }
-              }} title="Open this sub-agent's parent conversation" aria-label="Open parent conversation">
-                <GitFork size={12} aria-hidden="true" /> <span>Parent</span>
+            {activeParentChip && (
+              <button type="button" className="handoff-chip parent-chip" onClick={() => openParentConversation(activeParentChip.id)}
+                title={activeParentChip.tooltip} aria-label={activeParentChip.label}>
+                <GitFork size={12} aria-hidden="true" /> <span>Parent: {activeParentChip.title}</span>
               </button>
             )}
             {activeProject && (
