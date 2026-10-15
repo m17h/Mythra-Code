@@ -3,12 +3,12 @@ import type { CodexRuntimeStatus } from "./codex";
 import type { CursorRuntimeStatus } from "./cursor";
 import type { Account, Provider } from "../types";
 
-export type OnboardingProviderStatus = { ready: boolean; detail: string };
+export type OnboardingProviderStatus = { ready: boolean; detail: string; verified?: boolean };
 
 export function onboardingProviderReadiness(input: {
   runtimeStatus: Pick<CodexRuntimeStatus, "available" | "compatible"> | null;
   claudeStatus: Pick<ClaudeRuntimeStatus, "available" | "loggedIn"> | null;
-  cursorStatus: Pick<CursorRuntimeStatus, "available" | "loggedIn"> | null;
+  cursorStatus: Pick<CursorRuntimeStatus, "available" | "loggedIn" | "authVerified"> | null;
   account: Pick<Account, "type"> | null;
   openRouterReady: boolean;
   lmStudioReady: boolean;
@@ -49,7 +49,7 @@ export function onboardingProviderReadiness(input: {
       : !input.cursorStatus.available
         ? { ready: false, detail: "Install Cursor Agent" }
         : input.cursorStatus.loggedIn
-          ? { ready: true, detail: "Cursor ready" }
+          ? { ready: true, verified: input.cursorStatus.authVerified !== false, detail: input.cursorStatus.authVerified === false ? "Cursor credentials saved · connection unverified" : "Cursor ready" }
           : { ready: false, detail: "Sign in to Cursor" },
   };
 }

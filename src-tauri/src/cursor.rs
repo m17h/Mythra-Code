@@ -346,6 +346,7 @@ pub struct CursorRuntimeStatus {
     path: Option<String>,
     version: Option<String>,
     logged_in: bool,
+    auth_verified: bool,
     email: Option<String>,
     subscription_type: Option<String>,
     warning: Option<String>,
@@ -1048,7 +1049,7 @@ const CURSOR_STATUS_MAX_BYTES: u64 = 65_536;
 const CURSOR_STATUS_UNRECOGNIZED: &str =
     "Cursor Agent did not return a supported sign-in status. Update Cursor Agent, then refresh.";
 
-fn parse_cursor_sign_in_status(bytes: &[u8]) -> Result<(bool, Option<String>), String> {
+fn parse_cursor_sign_in_status(bytes: &[u8]) -> Result<(bool, Option<String>, bool), String> {
     let status: Value = serde_json::from_slice(bytes)
         .map_err(|_| CURSOR_STATUS_UNRECOGNIZED.to_string())?;
     // These fields describe the CLI's local sign-in state, independently of
@@ -1084,7 +1085,21 @@ fn parse_cursor_sign_in_status(bytes: &[u8]) -> Result<(bool, Option<String>), S
     } else {
         None
     };
-    Ok((logged_in, email))
+    // Cursor reports cached credentials as authenticated even when getMe fails.
+    // An email is optional (Enterprise accounts may omit it), but a successful
+    // account response must contain some account evidence before we say Connected.
+    let auth_verified = !logged_in
+        || status.get("userInfo").is_some_and(|info| {
+            ["email", "userId", "firstName", "lastName", "teamId", "createdAt"]
+                .iter()
+                .any(|field| {
+                    info.get(*field).is_some_and(|value| {
+                        !value.is_null()
+                            && value.as_str().is_none_or(|text| !text.trim().is_empty())
+                    })
+                })
+        });
+    Ok((logged_in, email, auth_verified))
 }
 
 async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStatus, String> {
@@ -1096,6 +1111,7 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStat
                 path: None,
                 version: None,
                 logged_in: false,
+                auth_verified: false,
                 email: None,
                 subscription_type: None,
                 warning: Some(error),
@@ -1141,7 +1157,7 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStat
     })
     .await
     .map_err(|_| "Cursor account status took too long to check. Try refreshing.".to_string())??;
-    let (logged_in, email) = parse_cursor_sign_in_status(&bytes)?;
+    let (logged_in, email, auth_verified) = parse_cursor_sign_in_status(&bytes)?;
     Ok(CursorRuntimeStatus {
         available: true,
         path: Some(runtime.display_path()),
@@ -1149,9 +1165,13 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStat
         // second account-details probe delaying or invalidating sign-in.
         version: None,
         logged_in,
+        auth_verified,
         email,
         subscription_type: None,
-        warning: None,
+        warning: (!auth_verified).then(|| {
+            "Cursor credentials are saved, but the connection could not be verified. Try refreshing, or sign in again."
+                .to_string()
+        }),
     })
 }
 
@@ -1210,6 +1230,9 @@ async fn checked_cursor_runtime_status(
         } else {
             // An unknown account check cannot authorize starting a native turn.
             // Reject it to the UI without presenting it as a proven sign-out.
+            // Optional account details can be unavailable for an otherwise
+            // usable login. Permit a passive ACP attempt from saved credentials;
+            // ACP itself rejects unusable authentication without opening login.
             state.authenticated.store(
                 result.as_ref().is_ok_and(|status| status.logged_in),
                 Ordering::Release,
@@ -1658,6 +1681,10 @@ async fn read_cursor_output(
 }
 
 async fn initialize_cursor(process: &CursorProcess) -> Result<Value, String> {
+    // ACP starts with the CLI's existing authentication state. Never call
+    // authenticate(cursor_login) here: it can open a browser when credentials
+    // expire, including during background model refresh or unattended turns.
+    // Only the explicit cursor_login command may start interactive sign-in.
     process
         .request(
             "initialize",
@@ -1671,9 +1698,6 @@ async fn initialize_cursor(process: &CursorProcess) -> Result<Value, String> {
                 "clientInfo": { "name": "Mythra Code", "version": env!("CARGO_PKG_VERSION") }
             }),
         )
-        .await?;
-    process
-        .request("authenticate", json!({ "methodId": "cursor_login" }))
         .await
 }
 

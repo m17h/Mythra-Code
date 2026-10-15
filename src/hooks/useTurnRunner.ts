@@ -619,7 +619,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
     if (effectiveSettings.provider === "cursor" && (!cursorStatus?.available || !cursorStatus.loggedIn)) {
       if (!deferredDelivery) openSettings("models");
-      setError(cursorStatus?.available ? "Sign in to Cursor Agent before using your Cursor subscription." : "Install Cursor Agent, then sign in before using the Cursor provider.");
+      setError(cursorStatus?.available ? "Refresh Cursor's connection or sign in from Models & accounts before using your Cursor subscription." : "Install Cursor Agent, then sign in before using the Cursor provider.");
       return false;
     }
     if (effectiveSettings.provider === "openrouter" && !effectiveSettings.model.trim()) {

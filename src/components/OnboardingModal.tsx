@@ -90,7 +90,8 @@ function providerStage(provider: Provider, inputs: RuntimeInputs, status: Onboar
   return "connect";
 }
 
-function providerNextStep(provider: ProviderInfo, stage: ProviderStage): string {
+function providerNextStep(provider: ProviderInfo, stage: ProviderStage, status: OnboardingProviderStatus): string {
+  if (stage === "ready" && status.verified === false) return "Saved credentials can be tried without opening sign-in. Refresh in Models & accounts to check the connection.";
   if (stage === "ready") return "Connected. Pick a model under the composer and star the ones you use most.";
   if (stage === "checking") return `Checking this computer for ${provider.runtime}…`;
   if (stage === "install") {
@@ -228,9 +229,9 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
     panel = <div key={selected.id} className="ob-panel-body">
       <div className="ob-panel-head">
         <strong>{selected.name}</strong>
-        <span className={`ob-status ${stage}`}><i aria-hidden="true" />{status.detail}</span>
+        <span className={`ob-status ${status.verified === false ? "unverified" : stage}`}><i aria-hidden="true" />{status.detail}</span>
       </div>
-      <p>{providerNextStep(selected, stage)}</p>
+      <p>{providerNextStep(selected, stage, readiness[selected.id])}</p>
       <div className="ob-panel-actions">
         {stage === "install" || stage === "update"
           ? <button type="button" className="primary-button" onClick={() => void openUrl(installGuide)}>{stage === "update" ? "Update guide" : `Install ${selected.runtime}`} <ExternalLink size={13} /></button>
@@ -265,7 +266,7 @@ function ConnectPage({ headingRef, readiness, inputs, onSettings, preferredProvi
           {/* Readiness is a corner dot, not a second text line; the kind and
               status stay in the tile's accessible description and the
               selected provider's panel. */}
-          <i className={`ob-tile-status ${readiness[id].ready ? "on" : ""}`} aria-hidden="true" />
+          <i className={`ob-tile-status ${readiness[id].ready && readiness[id].verified !== false ? "on" : ""}`} aria-hidden="true" />
           <span className="ob-tile-logo" aria-hidden="true"><Logo size={18} /></span>
           <span className="ob-tile-name" aria-hidden="true">{name}</span>
         </>,
@@ -544,7 +545,9 @@ function ReadyPage({ headingRef, readiness, skillsFolder, projectPending, projec
   onStartChat: () => void;
 }) {
   const headingId = useId();
-  const readyNames = PROVIDERS.filter((provider) => readiness[provider.id].ready).map((provider) => provider.name);
+  const readyProviders = PROVIDERS.filter((provider) => readiness[provider.id].ready);
+  const hasUnverified = readyProviders.some((provider) => readiness[provider.id].verified === false);
+  const readyNames = readyProviders.map((provider) => readiness[provider.id].verified === false ? `${provider.name} (unverified)` : provider.name);
   const anyReady = readyNames.length > 0;
   return <section className="ob-page ob-ready" aria-labelledby={headingId}>
     <span className={`ob-ready-mark ${anyReady ? "" : "pending"}`} aria-hidden="true">{anyReady ? <Check size={24} strokeWidth={2.5} /> : <KeyRound size={22} />}</span>
@@ -553,7 +556,7 @@ function ReadyPage({ headingRef, readiness, skillsFolder, projectPending, projec
     </PageHeading>
     <div className="ob-status-line">
       {anyReady
-        ? <span><i className="ob-dot on" aria-hidden="true" />Connected: {readyNames.join(", ")}</span>
+        ? <span><i className={`ob-dot${hasUnverified ? "" : " on"}`} aria-hidden="true" />{hasUnverified ? "Accounts" : "Connected"}: {readyNames.join(", ")}</span>
         : <>
           <span><i className="ob-dot" aria-hidden="true" />No provider is connected yet.</span>
           <button type="button" className="primary-button" onClick={(event) => onSettings("models", event.currentTarget)}><KeyRound size={14} aria-hidden="true" />Set up in Models & accounts</button>

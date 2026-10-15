@@ -14,9 +14,16 @@ export interface CursorRuntimeStatus {
   path: string | null;
   version: string | null;
   loggedIn: boolean;
+  /** Saved credentials are not proof of a successful account check. */
+  authVerified?: boolean;
   email: string | null;
   subscriptionType: string | null;
   warning: string | null;
+}
+
+/** Cached credentials may be tried passively even when account details are unavailable. */
+export function cursorCanAttemptRequest(status: Pick<CursorRuntimeStatus, "available" | "loggedIn"> | null): boolean {
+  return Boolean(status?.available && status.loggedIn);
 }
 
 export interface CursorModel {
