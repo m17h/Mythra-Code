@@ -1,7 +1,7 @@
 {
   "name": "mythra-code",
   "private": true,
-  "version": "1.27.4",
+  "version": "1.27.5",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
