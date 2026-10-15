@@ -1434,6 +1434,10 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .set-group > .manager-list:has(+ .stacked-create),
 .set-group > .manager-list:has(+ .schedule-create) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .set-group > .inline-create { margin-top: 0; }
+/* Existing MCP connections and the add-server form are separate sections,
+   not the joined list/add-row treatment used by other managers. */
+.set-group.mcp-server-settings > .manager-list { border-radius: var(--r-md); }
+.set-group.mcp-server-settings > .manager-list + .inline-create { margin-top: var(--s-2); border-radius: var(--r-md); }
 /* An empty list is not an empty box: nothing saved yet means nothing drawn. */
 .set-group > .manager-list:empty { display: none; }
 /* A region of card that is pure content — a chooser grid, a table, a list —

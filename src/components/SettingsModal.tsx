@@ -576,7 +576,7 @@ export function SettingsModal({
   onProfiles: (value: PromptProfile[]) => void;
   onAgents: (value: CustomAgentProfile[]) => void;
   onActions: (value: ProjectAction[]) => void;
-  onSchedules: (value: ScheduledTask[]) => void;
+  onSchedules: (value: ScheduledTask[] | ((current: ScheduledTask[]) => ScheduledTask[])) => void;
   onWorkflows: (value: WorkflowDefinition[]) => void;
   onRunWorkflow: (workflowId: string, variables?: Record<string, string>, projectId?: string) => Promise<void> | void;
   onStopWorkflow: (workflowId: string) => Promise<boolean> | boolean;
@@ -1530,7 +1530,7 @@ export function SettingsModal({
 
           <div hidden={!(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools")}><HarnessSettings
             section={(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools") ? settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools" : "prompts"}
-            visible={open && settingsSection === "prompts"}
+            visible={open}
             settings={local}
             profiles={localProfiles}
             globalInstructionFiles={globalInstructionFiles}
