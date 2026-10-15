@@ -2120,7 +2120,7 @@ export function SettingsModal({
                 <div>
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
                   <small>{accountChecks.cursor || (cursorStatus?.loggedIn
-                    ? `${cursorStatus.subscriptionType || "Cursor"} plan connected · ${cursorStatus.version || "Cursor Agent"}`
+                    ? "Signed in to Cursor Agent on this device"
                     : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
                 </div>
                 {cursorStatus?.loggedIn ? (
