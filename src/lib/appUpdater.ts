@@ -4,7 +4,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { recordError } from "./errorLog";
-import { friendlyError } from "./errors";
+import { friendlyError, safeErrorText } from "./errors";
 
 export type AppUpdatePhase =
   | "idle"
@@ -52,9 +52,40 @@ let automaticCheckStarted = false;
 // relaunch; re-check silently a few times a day.
 const AUTOMATIC_RECHECK_INTERVAL_MS = 6 * 60 * 60_000;
 
+// Name resolution and connection count toward the plugin's per-request
+// timeout. A cold Windows resolver has been observed taking up to 11.6
+// seconds for one name, and the manifest URL redirects across hosts. One
+// bounded retry gives a slow or interrupted first attempt a second chance,
+// possibly with lookups the first attempt warmed (not guaranteed). Only this
+// read-only manifest check retries; downloads and installs never do.
+const CHECK_ATTEMPT_TIMEOUT_MS = 15_000;
+const CHECK_RETRY_DELAY_MS = 1_500;
+// The plugin reports every DNS, connect, TLS and timeout failure before a
+// response as reqwest's opaque top-level text, without its cause.
+const CHECK_TRANSPORT_FAILURE = /error sending request for url/i;
+// Any non-success HTTP status (including rate limits) or a missing manifest.
+const CHECK_MANIFEST_FAILURE = /could not fetch a valid release json/i;
+
 export function updateProgress(downloadedBytes: number, totalBytes: number | null): number | null {
   if (!totalBytes || totalBytes <= 0) return null;
   return Math.min(100, Math.max(0, Math.round((downloadedBytes / totalBytes) * 100)));
+}
+
+export function appUpdateCheckError(reason: unknown): string {
+  const raw = safeErrorText(reason);
+  if (CHECK_TRANSPORT_FAILURE.test(raw)) return "Couldn’t reach GitHub Releases to check for updates. Check your connection and try again.";
+  if (CHECK_MANIFEST_FAILURE.test(raw)) return "GitHub Releases didn’t return valid update information. Try again later.";
+  return friendlyError(reason);
+}
+
+async function checkWithRetry(): Promise<Update | null> {
+  try {
+    return await check({ timeout: CHECK_ATTEMPT_TIMEOUT_MS });
+  } catch (reason) {
+    if (!CHECK_TRANSPORT_FAILURE.test(safeErrorText(reason))) throw reason;
+    await new Promise((resolve) => window.setTimeout(resolve, CHECK_RETRY_DELAY_MS));
+    return check({ timeout: CHECK_ATTEMPT_TIMEOUT_MS });
+  }
 }
 
 export function useAppUpdater(): AppUpdater {
@@ -82,11 +113,12 @@ export function useAppUpdater(): AppUpdater {
     if (!silent) setState((current) => ({ ...current, phase: "checking", error: null }));
     try {
       const currentVersion = await getVersion();
+      const update = await checkWithRetry();
+      // Keep the previous handle until a fresh result replaces it, so a failed
+      // background recheck cannot leave an "available" card without its update.
       const previous = updateRef.current;
-      updateRef.current = null;
-      if (previous) await previous.close().catch(() => undefined);
-
-      const update = await check({ timeout: 15_000 });
+      updateRef.current = update;
+      if (previous) void previous.close().catch(() => undefined);
       if (!update) {
         setState((current) => ({
           ...current,
@@ -100,7 +132,6 @@ export function useAppUpdater(): AppUpdater {
         return;
       }
 
-      updateRef.current = update;
       setState({
         phase: "available",
         currentVersion,
@@ -112,13 +143,16 @@ export function useAppUpdater(): AppUpdater {
         error: null,
       });
     } catch (reason) {
+      // Keep the underlying text in diagnostics; the card shows a friendly one.
+      const raw = safeErrorText(reason);
       if (!visibleCheckRef.current) {
         // The startup check failing silently would otherwise leave no trace
         // anywhere: if the endpoint, key, or manifest breaks, the installed
         // base just stops updating. Keep it out of the UI but in diagnostics.
-        recordError(`Automatic update check failed: ${friendlyError(reason)}`);
+        recordError(`Automatic update check failed: ${raw}`);
       } else {
-        setState((current) => ({ ...current, phase: "error", error: friendlyError(reason) }));
+        recordError(`Update check failed: ${raw}`);
+        setState((current) => ({ ...current, phase: "error", error: appUpdateCheckError(reason) }));
       }
     } finally {
       checkingRef.current = false;

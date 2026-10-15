@@ -1,6 +1,7 @@
 //! Fetches the providers' official pricing pages for the usage page's rate
-//! refresh. The OpenAI, Claude and Cursor Markdown pages are not served with
-//! CORS headers, so the webview cannot read them directly.
+//! refresh. Claude and Cursor use this bridge; OpenAI's public Markdown page
+//! now permits CORS and is normally read directly by the webview. Keep its
+//! fixed native route for callers using the bridge.
 //!
 //! The command reads only three fixed HTTPS documents and never a caller URL.
 //! It sends no credentials or cookies and returns bounded UTF-8 text. Parsing

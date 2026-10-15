@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { recordError } from "./errorLog";
+import { safeErrorText } from "./errors";
 
 export type DeveloperRuntimeTarget = "codex" | "claude";
 
@@ -41,6 +43,16 @@ export interface DeveloperRuntimeUpdater {
 let cachedStatus: DeveloperRuntimeUpdateStatus | null = null;
 let pendingCheck: Promise<DeveloperRuntimeUpdateStatus> | null = null;
 
+// Card errors are replaced by the next check; keep metadata failures in
+// diagnostics so a transient or persistent pattern can be read back later.
+function recordMetadataFailures(next: DeveloperRuntimeUpdateStatus): DeveloperRuntimeUpdateStatus {
+  for (const [target, name] of [["claude", "Claude Code"], ["codex", "Codex"]] as const) {
+    const value = next[target];
+    if (!value.latestVersion && value.error) recordError(`${name} update check failed: ${value.error}`);
+  }
+  return next;
+}
+
 function rememberStatus(next: DeveloperRuntimeUpdateStatus): DeveloperRuntimeUpdateStatus {
   const previous = cachedStatus;
   const merge = (target: DeveloperRuntimeTarget): DeveloperRuntimeTargetStatus => {
@@ -73,9 +85,11 @@ export function ensureDeveloperRuntimeUpdates(): Promise<DeveloperRuntimeUpdateS
 export async function checkDeveloperRuntimeUpdates(): Promise<DeveloperRuntimeUpdateStatus> {
   if (pendingCheck) return pendingCheck;
   pendingCheck = invoke<DeveloperRuntimeUpdateStatus>("developer_runtime_updates")
+    .then(recordMetadataFailures)
     .then(rememberStatus)
-    .catch(() => {
+    .catch((reason) => {
       const message = "Couldn’t check runtime updates. Try again.";
+      recordError(`Runtime update check failed: ${safeErrorText(reason)}`);
       if (!cachedStatus) throw new Error(message);
       const markUnknown = (value: DeveloperRuntimeTargetStatus): DeveloperRuntimeTargetStatus => ({
         ...value, latestVersionStale: Boolean(value.latestVersion), installedVersionStale: true,

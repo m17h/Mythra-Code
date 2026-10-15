@@ -3530,19 +3530,25 @@ async fn fetch_runtime_text(url: &'static str, maximum_bytes: usize) -> Result<S
 
 async fn fetch_runtime_version_text(url: &'static str) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(8))
+        // Name resolution counts toward the connect timeout, and a cold Windows
+        // resolver has been observed taking up to 11.6 seconds for one name.
+        // An OS lookup that already started keeps running after a timed-out
+        // attempt and may warm the system cache for the retry; not guaranteed.
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(18))
         .retry(reqwest::retry::never())
         .build()
         .map_err(|_| "Couldn’t prepare the update connection. Try again.".to_string())?;
     // Only these read-only metadata calls recover automatically. Two attempts,
-    // one short delay, and one overall deadline; no background retry loop.
-    timeout(Duration::from_secs(18), async {
+    // one short delay, and one overall deadline; no background retry loop. The
+    // deadline cancels the request in flight, so after a full first attempt
+    // the retry only gets the remaining time.
+    timeout(Duration::from_secs(28), async {
         for attempt in 0..2 {
             match fetch_runtime_text_once(&client, url, RUNTIME_VERSION_RESPONSE_BYTES).await {
                 Ok(text) => return Ok(text),
                 Err(error) if attempt == 0 && error.retryable => {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 Err(error) => return Err(error.message),
             }
