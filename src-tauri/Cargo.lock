@@ -2327,6 +2327,8 @@ dependencies = [
  "keyring",
  "libc",
  "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "objc2-web-kit",
  "pulldown-cmark",
  "reqwest",
@@ -2348,6 +2350,7 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "webview2-com",
+ "windows",
  "windows-core 0.61.2",
  "windows-sys 0.61.2",
 ]

@@ -177,6 +177,7 @@ function QueuedTurnEditor({ entry, index, onFinish, label = "queued message" }: 
         aria-label={`Edit ${label} ${index + 1}`}
         value={text}
         rows={3}
+        spellCheck
         onChange={(event) => {
           setText(event.target.value);
           // A separate draft leaves the main composer untouched and survives
@@ -764,6 +765,9 @@ export const Composer = forwardRef<ComposerHandle, {
         <textarea
           ref={textareaRef}
           className={hasSkillMentions ? "has-skill-mentions" : undefined}
+          // Explicit so drafts keep spelling marks even inside a container
+          // that opts out.
+          spellCheck
           // The @ menu is an inline listbox the textarea drives, so the active
           // option has to be announced from here — it never takes focus itself.
           aria-autocomplete="list"

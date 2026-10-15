@@ -57,6 +57,7 @@ mod project_git;
 mod release_qa;
 mod run_discovery;
 mod skills;
+mod spelling;
 mod instruction_files;
 mod startup_guard;
 mod workspace_folder;
@@ -8389,6 +8390,11 @@ pub fn run() {
         std::process::exit(run_agent_bridge(&session));
     }
 
+    // WebKit reads its spell-checking state once, when the first webview is
+    // created, so this has to run before any window exists.
+    #[cfg(target_os = "macos")]
+    spelling::register_webkit_spelling_defaults();
+
     // Tauri's automatic window construction and returned setup errors panic
     // inside the event loop. Keep the original merged configuration intact
     // for explicit construction, disabling only automatic creation in this
@@ -8486,6 +8492,7 @@ pub fn run() {
         .invoke_handler({
             let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> =
                 Box::new(tauri::generate_handler![
+                    spelling::spelling_suggestions,
                     file_preview::preview_project_file,
                     release_qa::release_qa_renderer_probe,
                     close_guard_claim,
