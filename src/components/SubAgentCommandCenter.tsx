@@ -1354,6 +1354,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                             portal
                             ariaLabel="Default child reasoning"
                             value={savedCodexEffort}
+                            reasoningWarning
+                            reasoningScope={JSON.stringify([nativeProvider, savedNativeModel])}
                             options={reasoningChoices}
                             onDisabledSelect={() => onUnavailable?.(codexSupportedEfforts
                               ? `${codexModelLabel} does not offer that reasoning level.`
@@ -1712,6 +1714,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               <AppSelectMenu
                                 ariaLabel={`Reasoning level for ${target.id}`}
                                 value={target.reasoningEffort}
+                                reasoningWarning
+                                reasoningScope={JSON.stringify(target)}
                                 options={REASONING_OPTIONS}
                                 onChange={(reasoningEffort) => updateTarget(target.id, { reasoningEffort: reasoningEffort as ChildAgentTarget["reasoningEffort"] })}
                               />
@@ -1723,6 +1727,8 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
                               <AppSelectMenu
                                 ariaLabel={`Maximum reasoning for ${target.id}`}
                                 value={target.reasoningMaxEffort}
+                                reasoningWarning
+                                reasoningScope={JSON.stringify(target)}
                                 options={REASONING_OPTIONS}
                                 onChange={(reasoningMaxEffort) => updateTarget(target.id, { reasoningMaxEffort: reasoningMaxEffort as ChildAgentTarget["reasoningMaxEffort"] })}
                               />

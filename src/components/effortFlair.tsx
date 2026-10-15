@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useMaxReasoningWarning } from "../hooks/useMaxReasoningWarning";
 
 /**
  * One color identity per reasoning-effort step, cool → inferno. Shared by
@@ -69,6 +70,7 @@ export function EffortSlider({
   ariaLabel,
   valueText,
   disabled,
+  effortValues,
   onIndex,
 }: {
   variant: "codex" | "router";
@@ -77,6 +79,8 @@ export function EffortSlider({
   ariaLabel: string;
   valueText: string;
   disabled?: boolean;
+  /** Real effort ids; previews omit this so their decorative rail never warns. */
+  effortValues?: readonly string[];
   onIndex: (index: number) => void;
 }) {
   const [visual, setVisual] = useState(index);
@@ -87,6 +91,17 @@ export function EffortSlider({
   const dragRef = useRef<{ pointerId: number; startX: number; moved: boolean } | null>(null);
   const interactedRef = useRef(false);
   const pendingInteractionIndexRef = useRef<number | null>(null);
+  const maxIndex = effortValues?.indexOf("max") ?? -1;
+  const requestIndex = useMaxReasoningWarning({
+    value: String(index),
+    maxValue: maxIndex >= 0 ? String(maxIndex) : undefined,
+    scope: JSON.stringify([ariaLabel, effortValues]),
+    canApply: (next) => !disabled && Number(next) >= 0 && Number(next) < count,
+    onChange: (next) => {
+      pendingInteractionIndexRef.current = Number(next);
+      onIndex(Number(next));
+    },
+  });
 
   const setVisualNow = (value: number) => {
     visualRef.current = value;
@@ -137,10 +152,12 @@ export function EffortSlider({
   };
 
   const commit = (target: number) => {
+    if (disabled) return;
     interactedRef.current = true;
     if (target !== index) {
-      pendingInteractionIndexRef.current = target;
-      onIndex(target);
+      // Until confirmation succeeds the committed level and accessible input
+      // remain unchanged, including when a drag ended at the Max position.
+      if (!requestIndex(String(target))) tweenTo(index);
     }
     else tweenTo(target);
   };

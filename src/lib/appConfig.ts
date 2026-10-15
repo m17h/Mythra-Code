@@ -100,6 +100,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   effortSlider: "aurora",
   chatFont: "system",
   escapeStopsRun: false,
+  warnOnMaxReasoning: true,
   notificationsEnabled: true,
   automaticGitInitialization: false,
   automaticThreadTitles: false,

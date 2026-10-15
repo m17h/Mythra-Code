@@ -37,8 +37,9 @@ import { RowMenu } from "./components/RowMenu";
 import { Odometer } from "./components/Odometer";
 import { AnimatedMythraLogo } from "./components/AnimatedMythraLogo";
 import { MythraMark } from "./components/MythraMark";
-import { confirmDialog } from "./lib/confirmDialog";
+import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
+import { MaxReasoningWarningContext } from "./hooks/useMaxReasoningWarning";
 import { ModelPowerControl, openAiModelOptions, type ReasoningEffort, type RuntimeModel } from "./components/ModelPowerControl";
 import { OpenRouterModelControl, type OpenRouterModel } from "./components/OpenRouterModelControl";
 import { ClaudeModelControl } from "./components/ClaudeModelControl";
@@ -533,7 +534,7 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: readStoredRaw("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const storedSettings = { ...rawStoredSettings, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true };
+const storedSettings = { ...rawStoredSettings, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
 const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
@@ -677,6 +678,7 @@ export default function App() {
     setActiveFirstPrompt(null);
   }, []);
   const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  const confirmationOpen = useConfirmStore((state) => state.queue.length > 0);
   const [headerUsageWindows, setHeaderUsageWindows] = usePersistedState<HeaderUsageWindows>("kiwi.headerUsageWindows", {}, {
     init: (load) => sanitizeHeaderUsageWindows(load()),
   });
@@ -8126,7 +8128,7 @@ export default function App() {
   useAppShortcuts({
     escapeStopsRun: settings.escapeStopsRun,
     running: Boolean((running || childrenRunning) && activeThread),
-    modalOpen: onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
     workspaceOpen: studioOpen && Boolean(activeProject),
@@ -8402,9 +8404,15 @@ export default function App() {
     </button>;
   });
 
+  const maxReasoningWarning = useMemo(() => ({
+    enabled: settings.warnOnMaxReasoning !== false,
+    scope: JSON.stringify([attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]),
+  }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
+
   return (
     <div className="app-shell" data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       <RendererLaunchCommitMarker />
+      <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
       <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
       {successToast && (
         <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
@@ -9629,6 +9637,7 @@ export default function App() {
       </Suspense></ErrorBoundary>}
       <ConfirmDialogModal />
       </FeedbackProvider>
+      </MaxReasoningWarningContext.Provider>
     </div>
   );
 }

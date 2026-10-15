@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { ModelFavoriteStar } from "./ModelFavoriteStar";
 import { favoriteCount, sortByFavorites } from "../lib/modelFavorites";
+import { useMaxReasoningWarning } from "../hooks/useMaxReasoningWarning";
 
 /** Options rendered before the menu offers to reveal the rest of a long list. */
 const BROWSE_LIMIT = 80;
@@ -55,6 +56,8 @@ export function AppSelectMenu({
   onSearch,
   onChange,
   onDisabledSelect,
+  reasoningWarning = false,
+  reasoningScope,
 }: {
   value: string;
   options: AppSelectOption[];
@@ -79,7 +82,18 @@ export function AppSelectMenu({
   onChange: (value: string) => void;
   /** Keep unavailable rows focusable so activation can explain how to enable them. */
   onDisabledSelect?: (value: string) => void;
+  /** Enable only for actual reasoning levels/ceilings, never arbitrary model ids. */
+  reasoningWarning?: boolean;
+  /** Invalidate an open warning if the configured model/crew entry changes. */
+  reasoningScope?: string;
 }) {
+  const requestChange = useMaxReasoningWarning({
+    value,
+    maxValue: reasoningWarning ? "max" : undefined,
+    scope: JSON.stringify([ariaLabel, reasoningScope]),
+    onChange,
+    canApply: (next) => options.some((option) => option.value === next && !option.disabled),
+  });
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
@@ -367,7 +381,8 @@ export function AppSelectMenu({
                 }}
                 onClick={() => {
                   if (option.disabled) { onDisabledSelect?.(option.value); return; }
-                  onChange(option.value);
+                  if (reasoningWarning) requestChange(option.value);
+                  else onChange(option.value);
                   close();
                   triggerRef.current?.focus();
                 }}

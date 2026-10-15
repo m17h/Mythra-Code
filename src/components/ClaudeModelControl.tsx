@@ -233,6 +233,7 @@ export function ClaudeModelControl({
           variant="router"
           index={effortIndex}
           count={EFFORTS.length}
+          effortValues={EFFORTS.map((entry) => entry.value)}
           ariaLabel="Claude reasoning effort"
           valueText={EFFORTS[effortIndex].label}
           onIndex={(next) => onEffort(EFFORTS[next].value)}

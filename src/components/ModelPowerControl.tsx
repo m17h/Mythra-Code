@@ -283,6 +283,7 @@ export function ModelPowerControl({
           variant="codex"
           index={effortIndex}
           count={EFFORTS.length}
+          effortValues={EFFORTS.map((entry) => entry.value)}
           ariaLabel="Reasoning effort"
           valueText={EFFORTS[effortIndex].label}
           disabled={disabled}
