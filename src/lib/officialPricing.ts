@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { fetchPricingDocument } from "./pricingDocuments";
 import { loadStored, storeValue } from "./storage";
 import {
   cursorPricingKey, notifyPricingChanged, parseModelPricingCatalog, requestUsageRepricing, OFFICIAL_PRICING_KEY, type ModelPricingCatalogEntry,
@@ -626,7 +626,6 @@ function shrankSuspiciously(source: OfficialPricingSource, result: OfficialPrici
 }
 
 export type PricingDocumentFetcher = (source: OfficialPricingSource) => Promise<string>;
-const fetchPricingDocument: PricingDocumentFetcher = (source) => invoke<string>("fetch_pricing_document", { source });
 
 function describeFetchError(error: unknown): string {
   const text = error instanceof Error ? error.message : typeof error === "string" ? error : "";
