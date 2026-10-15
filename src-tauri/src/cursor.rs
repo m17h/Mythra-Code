@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout},
     sync::{oneshot, Mutex, Notify},
     time::{timeout, timeout_at, Duration, Instant},
@@ -699,15 +699,6 @@ async fn finish_cursor_run(
     }
 }
 
-fn field_after_label(output: &str, label: &str) -> Option<String> {
-    output.lines().find_map(|line| {
-        let trimmed = line.trim();
-        let value = trimmed.strip_prefix(label)?.trim();
-        let value = value.strip_prefix(':').unwrap_or(value).trim();
-        (!value.is_empty()).then(|| value.to_string())
-    })
-}
-
 #[derive(Clone, Debug)]
 pub(super) enum CursorRuntime {
     Native(PathBuf),
@@ -1051,8 +1042,50 @@ pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRunt
     Err("Mythra Code could not find Cursor Agent. Install it from cursor.com/docs/cli, then sign in with `cursor-agent login`.".into())
 }
 
-/// Upper bound for the `agent about` sign-in probe.
-const CURSOR_ABOUT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bounds for the `agent status --format json` sign-in probe.
+const CURSOR_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+const CURSOR_STATUS_MAX_BYTES: u64 = 65_536;
+const CURSOR_STATUS_UNRECOGNIZED: &str =
+    "Cursor Agent did not return a supported sign-in status. Update Cursor Agent, then refresh.";
+
+fn parse_cursor_sign_in_status(bytes: &[u8]) -> Result<(bool, Option<String>), String> {
+    let status: Value = serde_json::from_slice(bytes)
+        .map_err(|_| CURSOR_STATUS_UNRECOGNIZED.to_string())?;
+    // These fields describe the CLI's local sign-in state, independently of
+    // whether its optional account-details request succeeded. In particular,
+    // missing email is not evidence of sign-out or of service availability.
+    let (logged_in, has_access_token, has_refresh_token) = match (
+        status.get("status").and_then(Value::as_str),
+        status.get("isAuthenticated").and_then(Value::as_bool),
+    ) {
+        (Some("authenticated"), Some(true)) => (true, true, true),
+        (Some("unauthenticated"), Some(false)) => (false, false, false),
+        (Some("partially-authenticated"), Some(false)) => (false, true, false),
+        _ => return Err(CURSOR_STATUS_UNRECOGNIZED.into()),
+    };
+    for (field, expected) in [
+        ("hasAccessToken", has_access_token),
+        ("hasRefreshToken", has_refresh_token),
+    ] {
+        if let Some(value) = status.get(field) {
+            if value.as_bool() != Some(expected) {
+                return Err(CURSOR_STATUS_UNRECOGNIZED.into());
+            }
+        }
+    }
+    let email = if logged_in {
+        status
+            .get("userInfo")
+            .and_then(|info| info.get("email"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|email| email.contains('@') && !email.chars().any(char::is_whitespace))
+            .map(str::to_string)
+    } else {
+        None
+    };
+    Ok((logged_in, email))
+}
 
 async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStatus, String> {
     let runtime = match resolve_cursor_runtime(app).await {
@@ -1071,45 +1104,53 @@ async fn read_cursor_runtime_status(app: &AppHandle) -> Result<CursorRuntimeStat
     };
     // Bounded like the Claude probe: a wedged CLI must not pin the account
     // panel on "checking" forever.
-    let output = timeout(
-        CURSOR_ABOUT_TIMEOUT,
-        runtime
-            .background(None)
-            .arg("about")
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
+    let mut child = runtime
+        .background(None)
+        .args(["status", "--format", "json"])
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("Could not check Cursor account status: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Could not read Cursor account status.".to_string())?;
+    let bytes = timeout(CURSOR_STATUS_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        stdout
+            .take(CURSOR_STATUS_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| "Could not read Cursor account status.".to_string())?;
+        if bytes.len() as u64 > CURSOR_STATUS_MAX_BYTES {
+            return Err("Cursor account status was unexpectedly large.".to_string());
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|error| format!("Could not check Cursor account status: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "Cursor account status could not be checked ({status}). Try refreshing, or update Cursor Agent if the problem continues."
+            ));
+        }
+        Ok(bytes)
+    })
     .await
-    .map_err(|_| "Cursor account status took too long to check. Try refreshing.".to_string())?
-    .map_err(|error| format!("Could not check Cursor account status: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Cursor account status could not be checked ({}). Try refreshing.",
-            output.status
-        ));
-    }
-    let plain = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let email = field_after_label(&plain, "User Email")
-        .ok_or_else(|| "Cursor returned an incomplete account status. Try refreshing.".to_string())?;
-    let logged_in = !email.eq_ignore_ascii_case("not logged in");
-    if logged_in && (!email.contains('@') || email.chars().any(char::is_whitespace)) {
-        return Err("Cursor returned an unrecognized account status. Try refreshing.".into());
-    }
+    .map_err(|_| "Cursor account status took too long to check. Try refreshing.".to_string())??;
+    let (logged_in, email) = parse_cursor_sign_in_status(&bytes)?;
     Ok(CursorRuntimeStatus {
         available: true,
         path: Some(runtime.display_path()),
-        version: field_after_label(&plain, "CLI Version")
-            .or_else(|| field_after_label(&plain, "Version")),
+        // Status does not expose version or plan. Their UI fallbacks avoid a
+        // second account-details probe delaying or invalidating sign-in.
+        version: None,
         logged_in,
-        email: logged_in.then_some(email),
-        subscription_type: field_after_label(&plain, "Subscription Tier")
-            .filter(|value| !value.eq_ignore_ascii_case("unknown")),
+        email,
+        subscription_type: None,
         warning: None,
     })
 }
