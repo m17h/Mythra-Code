@@ -3487,6 +3487,11 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .confirm-dialog-icon.danger { color: var(--red); background: color-mix(in srgb, var(--red) 11%, transparent); }
 .confirm-dialog h2 { margin: 0 0 var(--s-2); font-size: 15px; font-weight: 650; letter-spacing: var(--track-tight); line-height: 1.4; overflow-wrap: anywhere; }
 .confirm-dialog p { margin: 0; color: var(--muted); font-size: var(--fs-ui); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.confirm-dialog-links { display: grid; gap: var(--s-2); margin-top: var(--s-3); font-size: var(--fs-ui); }
+.confirm-dialog-links a { color: var(--accent); text-underline-offset: 3px; overflow-wrap: anywhere; }
+.confirm-dialog p.confirm-dialog-footnote { margin-top: var(--s-3); font-size: 11px; color: var(--muted-2); }
+.confirm-dialog-detailed { max-height: calc(100dvh / var(--ui-scale, 1) - 60px); overflow-y: auto; }
+.confirm-dialog-detailed .confirm-dialog-actions { flex-wrap: wrap; }
 .confirm-dialog-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-5); }
 .confirm-dialog-actions .primary-button.confirm-danger { border-color: color-mix(in srgb, var(--red) 44%, var(--line-strong)); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 .confirm-dialog-actions .primary-button.confirm-danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--red) 64%, var(--line-strong)); background: color-mix(in srgb, var(--red) 13%, transparent); }

@@ -5,12 +5,18 @@ export interface ConfirmRequest {
   message: string;
   confirmLabel: string;
   cancelLabel: string;
+  links?: Array<{ label: string; url: string }>;
+  footer?: string;
   resolve: (confirmed: boolean) => void;
 }
 
 export interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
+  links?: Array<{ label: string; url: string }>;
+  footer?: string;
+  inApp?: boolean;
+  signal?: AbortSignal;
 }
 
 let nextConfirmId = 0;
@@ -37,16 +43,26 @@ export function settleConfirm(id: number, confirmed: boolean): void {
  * confirm still works and is kept.
  */
 export function confirmDialog(message: string, options: ConfirmOptions = {}): Promise<boolean> {
-  if (!("__TAURI_INTERNALS__" in window)) return Promise.resolve(window.confirm(message));
+  if (options.signal?.aborted) return Promise.resolve(false);
+  if (!options.inApp && !("__TAURI_INTERNALS__" in window)) return Promise.resolve(window.confirm(message));
   return new Promise((resolve) => {
+    const id = ++nextConfirmId;
+    const abort = () => settleConfirm(id, false);
     useConfirmStore.setState((state) => ({
       queue: [...state.queue, {
-        id: ++nextConfirmId,
+        id,
         message,
         confirmLabel: options.confirmLabel?.trim() || "Confirm",
         cancelLabel: options.cancelLabel?.trim() || "Cancel",
-        resolve,
+        links: options.links,
+        footer: options.footer,
+        resolve: (confirmed) => {
+          options.signal?.removeEventListener("abort", abort);
+          resolve(confirmed);
+        },
       }],
     }));
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
   });
 }

@@ -529,6 +529,8 @@ export interface AppSettings {
   chatFont: ChatFont;
   /** App-wide Escape shortcut; missing legacy values default off. */
   escapeStopsRun: boolean;
+  /** Confirm deliberate Max reasoning selections. Missing legacy values default on. */
+  warnOnMaxReasoning: boolean;
   notificationsEnabled: boolean;
   /** Opt-in Git initialization when a new thread starts in a project without Git. */
   automaticGitInitialization: boolean;

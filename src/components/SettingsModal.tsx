@@ -626,6 +626,7 @@ export function SettingsModal({
     && (local.managedSubagentV2 === true) !== (settings.managedSubagentV2 === true);
   const terminalTimeoutId = useId();
   const escapeStopsRunId = useId();
+  const maxReasoningWarningId = useId();
   const automaticGitInitializationId = useId();
   const [apiKey, setApiKey] = useState("");
   const [lmStudioToken, setLmStudioToken] = useState("");
@@ -1274,6 +1275,16 @@ export function SettingsModal({
                   <small id={escapeStopsRunId}>Applies across the app. Escape still dismisses menus and dialogs when this is off. Editable fields keep their own Escape behavior.</small>
                 </div>
                 <button type="button" role="switch" aria-label="Escape stops the active run" aria-describedby={escapeStopsRunId} aria-checked={local.escapeStopsRun} className={`toggle-switch ${local.escapeStopsRun ? "on" : ""}`} onClick={() => setLocal({ ...local, escapeStopsRun: !local.escapeStopsRun })}><span /></button>
+              </div></div>
+            </div>
+            <div className="set-group">
+              <h4>Reasoning warnings</h4>
+              <div className="set-card"><div className="set-row">
+                <div className="set-copy">
+                  <strong>Warn before using Max reasoning</strong>
+                  <small id={maxReasoningWarningId}>Ask before selecting Max in model and sub-agent controls. Extra reasoning can use much more of your allowance or API budget without a meaningful improvement. Applies app-wide.</small>
+                </div>
+                <button type="button" role="switch" aria-label="Warn before using Max reasoning" aria-describedby={maxReasoningWarningId} aria-checked={local.warnOnMaxReasoning !== false} className={`toggle-switch ${local.warnOnMaxReasoning !== false ? "on" : ""}`} onClick={() => setLocal((current) => ({ ...current, warnOnMaxReasoning: current.warnOnMaxReasoning === false }))}><span /></button>
               </div></div>
             </div>
             <div className="set-group">
@@ -2135,6 +2146,10 @@ export function SettingsModal({
               </div>
             )}
 
+            <p className="settings-footnote" role="note" aria-label="Antigravity and Gemini account support">
+              <Info size={14} aria-hidden="true" />
+              <span><strong>Our stance on Antigravity and Gemini.</strong> We strongly advise against Gemini for coding: we do not consider its coding reliability good enough to recommend. We do not plan to add direct Antigravity or Gemini account integration—the complexity and account risks are not worth it. Google warns that third-party Antigravity access can lead to account suspension or termination. We’re not willing to risk our Google accounts—or yours—on that integration. If you want to use Gemini, we recommend its official website in your browser. Models offered through existing providers such as OpenRouter remain available.</span>
+            </p>
             </div>
             <div className="set-group">
               <h4>Defaults for new threads</h4>

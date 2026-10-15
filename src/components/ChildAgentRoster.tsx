@@ -211,6 +211,8 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                         <AppSelectMenu
                           ariaLabel={`Reasoning level for ${target.id}`}
                           value={target.reasoningEffort}
+                          reasoningWarning
+                          reasoningScope={JSON.stringify(target)}
                           options={REASONING_OPTIONS}
                           onChange={(reasoningEffort) => updateTarget(target.id, { reasoningEffort: reasoningEffort as ChildAgentTarget["reasoningEffort"] })}
                         />
@@ -222,6 +224,8 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                         <AppSelectMenu
                           ariaLabel={`Maximum reasoning for ${target.id}`}
                           value={target.reasoningMaxEffort}
+                          reasoningWarning
+                          reasoningScope={JSON.stringify(target)}
                           options={REASONING_OPTIONS}
                           onChange={(reasoningMaxEffort) => updateTarget(target.id, { reasoningMaxEffort: reasoningMaxEffort as ChildAgentTarget["reasoningMaxEffort"] })}
                         />
