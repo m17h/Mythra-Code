@@ -31,7 +31,13 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const windows = usage.windows ?? [];
   const selected = selectedUsageWindow(windows, selectedLabel);
   const [now, setNow] = useState(Date.now);
-  const freshness = usageFreshnessText(usage.updatedAt, now);
+  const readingAge = usageFreshnessText(usage.updatedAt, now);
+  const freshness = provider === "claude"
+    ? readingAge.replace(/^(?:Last updated|Updated)/, "Read from Claude Code")
+    : readingAge;
+  const displayedReadStatus = provider === "claude" && readStatus === "Updated"
+    ? freshness ? "" : "Read from Claude Code"
+    : readStatus;
   // Both the countdown and the reading age are minute-resolution, so the clock
   // only runs when one of them is actually on screen.
   const ticking = open && (Boolean(usage.updatedAt) || windows.some(hasUsageCountdown));
@@ -144,8 +150,9 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
             </span>
           </label>)}
         </fieldset> : <p className="usage-popover-empty">{usage.summary}</p>}
-        {readStatus && <p className="usage-popover-note" role="status">{readStatus}</p>}
+        {displayedReadStatus && <p className="usage-popover-note" role="status">{displayedReadStatus}</p>}
         {freshness && <p className="usage-popover-note">{freshness}</p>}
+        {provider === "claude" && freshness && <p className="usage-popover-note">Claude Code may return a cached reading.</p>}
         <p className="usage-popover-note">Provider-reported limits, shared across devices.</p>
         <button type="button" className="usage-popover-details" onClick={() => { close(); if (header.needsConnection) onConnect(); else onDetails(); }}>
           {header.needsConnection ? "Models & accounts" : "More usage details"}

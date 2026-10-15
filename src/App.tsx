@@ -2390,7 +2390,7 @@ export default function App() {
           const usageRequest = ++claudeUsageRequestRef.current;
           // Publish verified sign-in immediately; quota is independent and
           // must not keep refresh/sign-in callbacks waiting on another CLI.
-          void getClaudeRateLimits().then((limits) => {
+          void getClaudeRateLimits(accountKey, result.path).then((limits) => {
             if (claudeUsageRequestRef.current === usageRequest && claudeAccountKeyRef.current === accountKey) {
               setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
             }
@@ -2953,11 +2953,11 @@ export default function App() {
     const request = ++claudeUsageRequestRef.current;
     const accountKey = claudeAccountKeyRef.current;
     if (!accountKey) return;
-    const limits = await getClaudeRateLimits();
+    const limits = await getClaudeRateLimits(accountKey, claudeStatus?.path);
     if (claudeUsageRequestRef.current === request && claudeAccountKeyRef.current === accountKey) {
       setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
     }
-  }, []);
+  }, [claudeStatus?.path]);
 
   const openRouterCreditsRequestRef = useRef(0);
   const refreshOpenRouterCredits = useCallback(async (): Promise<UsageRefreshOutcome> => {

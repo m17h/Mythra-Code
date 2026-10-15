@@ -201,6 +201,25 @@ export function usageReadFailureStatus(kind: UsageReadFailureKind, hasLastReadin
   return `Usage refresh unavailable${suffix}`;
 }
 
+/** Keep only a fixed native usage failure code, never raw provider text. */
+export function usageReadFailureCode(reason: unknown): string | undefined {
+  const code = String(reason).match(/\bCLAUDE_USAGE_[A-Z_]+\b/)?.[0];
+  switch (code) {
+    case "CLAUDE_USAGE_AUTH_REQUIRED":
+    case "CLAUDE_USAGE_UNAVAILABLE":
+    case "CLAUDE_USAGE_START_FAILED":
+    case "CLAUDE_USAGE_READ_FAILED":
+    case "CLAUDE_USAGE_SCOPE_CHANGED":
+    case "CLAUDE_USAGE_TIMEOUT":
+    case "CLAUDE_USAGE_UNSUPPORTED":
+    case "CLAUDE_USAGE_EMPTY":
+    case "CLAUDE_USAGE_PARSE_FAILED":
+      return code;
+    default:
+      return undefined;
+  }
+}
+
 /** Keep only a harmless semantic version in diagnostics, never raw CLI output. */
 export function sanitizedUsageProviderVersion(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;

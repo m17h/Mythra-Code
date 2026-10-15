@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { auditEvent } from "../lib/codex";
-import { sanitizedUsageProviderVersion, usageReadFailureKind, usageReadFailureStatus } from "../lib/providerUsage";
+import { sanitizedUsageProviderVersion, usageReadFailureCode, usageReadFailureKind, usageReadFailureStatus } from "../lib/providerUsage";
 
 /**
  * How often a visible window re-reads the active provider's quota.
@@ -98,29 +98,36 @@ export function useUsageRefresh({
     inFlightRef.current[identity] = true;
     current.onStatus?.("Refreshing usage…");
     const complete = (failed: boolean, reason?: unknown) => {
-      const failureKind = failed ? usageReadFailureKind(reason) : null;
+      const failureCode = failed ? usageReadFailureCode(reason) : undefined;
+      const superseded = failureCode === "CLAUDE_USAGE_SCOPE_CHANGED";
+      const failureKind = failed && !superseded ? usageReadFailureKind(reason) : null;
       const active = latestRef.current;
       if (active.enabled && active.key === identity) {
-        active.onStatus?.(failureKind ? usageReadFailureStatus(failureKind, active.hasLastReading) : "Updated");
-        lastReadRef.current = Date.now();
+        active.onStatus?.(superseded ? "" : failureKind ? usageReadFailureStatus(failureKind, active.hasLastReading) : "Updated");
+        if (!superseded) lastReadRef.current = Date.now();
       }
-      if (failureKind) {
-        const failures = (failureCountRef.current[identity] ?? 0) + 1;
-        failureCountRef.current[identity] = failures;
-        retryAtRef.current[identity] = Date.now() + Math.min(
-          current.pollMs * 2 ** Math.max(0, failures - 1),
-          MAX_FAILURE_BACKOFF_MS,
-        );
-      } else {
-        delete failureCountRef.current[identity];
-        delete retryAtRef.current[identity];
+      // An invalidated scope says nothing about provider health or freshness.
+      // Settle it normally, leaving any explicitly queued refresh to run below.
+      if (!superseded) {
+        if (failureKind) {
+          const failures = (failureCountRef.current[identity] ?? 0) + 1;
+          failureCountRef.current[identity] = failures;
+          retryAtRef.current[identity] = Date.now() + Math.min(
+            current.pollMs * 2 ** Math.max(0, failures - 1),
+            MAX_FAILURE_BACKOFF_MS,
+          );
+        } else {
+          delete failureCountRef.current[identity];
+          delete retryAtRef.current[identity];
+        }
+        const providerVersion = sanitizedUsageProviderVersion(current.providerVersion);
+        void auditEvent("usage.read", {
+          provider: identity.split(":")[0],
+          outcome: failureKind ?? "success",
+          ...(failureCode ? { code: failureCode } : {}),
+          ...(providerVersion ? { providerVersion } : {}),
+        }).catch(() => {});
       }
-      const providerVersion = sanitizedUsageProviderVersion(current.providerVersion);
-      void auditEvent("usage.read", {
-        provider: identity.split(":")[0],
-        outcome: failureKind ?? "success",
-        ...(providerVersion ? { providerVersion } : {}),
-      }).catch(() => {});
       delete inFlightRef.current[identity];
       if (pendingForceRef.current.delete(identity)) {
         const latest = latestRef.current;

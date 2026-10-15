@@ -1228,6 +1228,9 @@ struct ClaudeState {
     /// (for example a turn's own check) merely by starting.
     auth_check_lock: Mutex<()>,
     auth_probes: StdMutex<ClaudeAuthProbes>,
+    /// Serialize `/usage` reads and share overlapping same-scope outcomes.
+    usage_lock: Mutex<()>,
+    usage_probes: StdMutex<ClaudeUsageProbes>,
     prompt_snapshot_support: Mutex<Option<ClaudePromptSnapshotSupport>>,
 }
 
@@ -1239,6 +1242,24 @@ struct ClaudeState {
 struct ClaudeAuthProbes {
     completed: u64,
     last: Option<(u64, ClaudeRuntimeStatus)>,
+}
+
+/// Startup, Settings and the usage poller can all ask for quota at once.
+/// Callers share a read only within the same accepted account/runtime scope.
+/// One current scope and one result keep this independent of account history.
+#[derive(Default)]
+struct ClaudeUsageProbes {
+    completed: u64,
+    scope_epoch: u64,
+    scope: Option<ClaudeUsageScope>,
+    last: Option<(u64, Result<ClaudeUsageLimits, String>)>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ClaudeUsageScope {
+    auth_generation: u64,
+    account_key: String,
+    runtime_path: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1317,7 +1338,7 @@ struct ClaudeRuntimeStatus {
     warning: Option<String>,
 }
 
-#[derive(Serialize, PartialEq, Debug)]
+#[derive(Clone, Serialize, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ClaudeUsageWindow {
     label: String,
@@ -1327,7 +1348,7 @@ struct ClaudeUsageWindow {
     reset_label: Option<String>,
 }
 
-#[derive(Serialize, PartialEq, Debug)]
+#[derive(Clone, Serialize, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ClaudeUsageLimits {
     windows: Vec<ClaudeUsageWindow>,
@@ -4454,39 +4475,168 @@ fn claude_usage_failure_code(stderr: &[u8]) -> &'static str {
     }
 }
 
+/// Best-effort warming for the first-party quota endpoint on Windows.
+#[cfg(windows)]
+const CLAUDE_API_HOST: &str = "api.anthropic.com";
+#[cfg(windows)]
+const CLAUDE_USAGE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(15);
+/// This deadline covers the CLI alone, after any Windows DNS warmup wait.
+const CLAUDE_USAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAUDE_USAGE_STDOUT_BYTES: usize = 256 * 1024;
+const CLAUDE_USAGE_STDERR_BYTES: usize = 16 * 1024;
+
+/// Windows measurements found uncached DNS taking about 11 seconds while
+/// cached lookups were fast. Warming may help the CLI avoid its own request
+/// timeout; this is not proof of every usage failure's cause or freshness.
+/// Proxy variables conservatively skip warming; bypass rules and the CLI's
+/// transport can differ, so warming never determines whether the CLI may run.
+#[cfg(windows)]
+async fn warm_claude_api_host() {
+    if ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .any(|key| env::var_os(key).is_some_and(|value| !value.is_empty()))
+    {
+        return;
+    }
+    static LOOKUP: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let gate = LOOKUP.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)));
+    let Ok(permit) = gate.clone().try_acquire_owned() else { return; };
+    let lookup = tokio::task::spawn_blocking(move || {
+        // A timed-out OS lookup cannot be cancelled. Keep its permit inside
+        // the blocking job so later reads cannot accumulate more DNS jobs.
+        let _permit = permit;
+        std::net::ToSocketAddrs::to_socket_addrs(&(CLAUDE_API_HOST, 443))
+            .map(|mut addresses| addresses.next())
+    });
+    let _ = timeout(CLAUDE_USAGE_RESOLVE_TIMEOUT, lookup).await;
+}
+
+/// Keeps at most `limit` bytes and drains the rest, so a noisy child cannot
+/// grow memory or stall on a full pipe before its deadline.
+async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    let mut exceeded = false;
+    let Some(mut reader) = reader else {
+        return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Missing usage pipe"));
+    };
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let retained = limit.saturating_sub(bytes.len()).min(read);
+        bytes.extend_from_slice(&buffer[..retained]);
+        exceeded |= retained < read;
+    }
+    Ok((bytes, exceeded))
+}
+
 #[tauri::command]
-async fn claude_usage(app: AppHandle) -> Result<ClaudeUsageLimits, String> {
-    let path = resolve_claude_binary(&app).await?;
-    let home = crate::release_qa::home_dir(&app).ok();
-    let output = timeout(
-        Duration::from_secs(10),
-        subscription_only_command(&path, home.as_deref())
-            .args([
-                "--setting-sources",
-                "",
-                "-p",
-                "/usage",
-                "--output-format",
-                "json",
-                "--no-session-persistence",
-                "--max-turns",
-                "1",
-                "--model",
-                "haiku",
-            ])
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "CLAUDE_USAGE_TIMEOUT".to_string())?
-    .map_err(|_| "CLAUDE_USAGE_START_FAILED".to_string())?;
-    if !output.status.success() {
+async fn claude_usage(app: AppHandle, account_key: String, runtime_path: Option<String>) -> Result<ClaudeUsageLimits, String> {
+    if account_key.is_empty() || account_key.len() > 1024 || runtime_path.as_ref().is_some_and(|path| path.len() > 32768) {
+        return Err("CLAUDE_USAGE_SCOPE_CHANGED".into());
+    }
+    let Some(state) = app.try_state::<ClaudeState>() else {
+        return Err("CLAUDE_USAGE_SCOPE_CHANGED".into());
+    };
+    // Capture request ownership before waiting. A queued old-account caller
+    // must not adopt a later login merely because it acquired the lock later.
+    let (scope, scope_epoch, arrived) = {
+        let generation = state.auth_check_generation.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scope = ClaudeUsageScope { auth_generation: *generation, account_key, runtime_path };
+        let mut probes = state.usage_probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if probes.scope.as_ref() != Some(&scope) {
+            probes.scope_epoch = probes.scope_epoch.wrapping_add(1);
+            probes.scope = Some(scope.clone());
+            probes.last = None;
+        }
+        (scope, probes.scope_epoch, probes.completed)
+    };
+    let _serial = state.usage_lock.lock().await;
+    {
+        let generation = state.auth_check_generation.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let probes = state.usage_probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *generation != scope.auth_generation || probes.scope_epoch != scope_epoch {
+            return Err("CLAUDE_USAGE_SCOPE_CHANGED".into());
+        }
+        if probes.completed != arrived {
+            if let Some((_, usage)) = probes.last.as_ref().filter(|(checked, _)| *checked == scope_epoch) {
+                return usage.clone();
+            }
+        }
+    }
+    let usage = probe_claude_usage(&app).await;
+    let generation = state.auth_check_generation.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut probes = state.usage_probes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *generation != scope.auth_generation || probes.scope_epoch != scope_epoch {
+        return Err("CLAUDE_USAGE_SCOPE_CHANGED".into());
+    }
+    probes.completed = probes.completed.wrapping_add(1);
+    probes.last = Some((scope_epoch, usage.clone()));
+    usage
+}
+
+async fn probe_claude_usage(app: &AppHandle) -> Result<ClaudeUsageLimits, String> {
+    let path = resolve_claude_binary(app).await?;
+    let home = crate::release_qa::home_dir(app).ok();
+    #[cfg(windows)]
+    warm_claude_api_host().await;
+    let mut child = subscription_only_command(&path, home.as_deref())
+        // A quota read needs no tools. claude.ai connectors and local MCP
+        // servers would add host lookups, a retried connector fetch, and
+        // helper processes to every read.
+        .env("ENABLE_CLAUDEAI_MCP_SERVERS", "false")
+        .args([
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "-p",
+            "/usage",
+            "--output-format",
+            "json",
+            "--no-session-persistence",
+            "--max-turns",
+            "1",
+            "--model",
+            "haiku",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| "CLAUDE_USAGE_START_FAILED".to_string())?;
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let outcome = timeout(CLAUDE_USAGE_TIMEOUT, async {
+        tokio::join!(
+            read_capped(stdout, CLAUDE_USAGE_STDOUT_BYTES),
+            read_capped(stderr, CLAUDE_USAGE_STDERR_BYTES),
+            child.wait(),
+        )
+    })
+    .await;
+    let Ok((stdout, stderr, status)) = outcome else {
+        // Attempt termination and a bounded reap before the handle drops.
+        let _ = child.start_kill();
+        let _ = timeout(Duration::from_secs(2), child.wait()).await;
+        return Err("CLAUDE_USAGE_TIMEOUT".into());
+    };
+    let (stdout, stdout_exceeded) = stdout.map_err(|_| "CLAUDE_USAGE_READ_FAILED".to_string())?;
+    let (stderr, _) = stderr.map_err(|_| "CLAUDE_USAGE_READ_FAILED".to_string())?;
+    let status = status.map_err(|_| "CLAUDE_USAGE_START_FAILED".to_string())?;
+    if !status.success() {
         // Keep provider output out of renderer errors and audit logs, but
         // preserve the one distinction that changes the user's next action.
-        return Err(claude_usage_failure_code(&output.stderr).into());
+        return Err(claude_usage_failure_code(&stderr).into());
     }
-    let envelope = parse_claude_auth_status(&output.stdout)
+    if stdout_exceeded {
+        return Err("CLAUDE_USAGE_UNSUPPORTED".into());
+    }
+    let envelope = parse_claude_auth_status(&stdout)
         .ok_or_else(|| "CLAUDE_USAGE_UNSUPPORTED".to_string())?;
     let result = envelope
         .get("result")
