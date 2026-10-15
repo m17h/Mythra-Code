@@ -602,6 +602,7 @@ export function SettingsModal({
   preferenceHistoryProgress?: PreferenceHistoryProgress | null;
   onPreferenceLearningChanged?: (message: string) => void;
 }) {
+  const cursorAccountCheck = accountChecks.cursor || (cursorStatus?.loggedIn && cursorStatus.authVerified === false ? "Connection unverified" : "");
   const managedDeveloperRuntimeUpdater = useDeveloperRuntimeUpdater(onClaudeRefresh, !injectedDeveloperRuntimeUpdater);
   const developerRuntimeUpdater = injectedDeveloperRuntimeUpdater ?? managedDeveloperRuntimeUpdater;
   const [local, setLocal] = useState(settings);
@@ -2031,7 +2032,7 @@ export function SettingsModal({
               <button className={`provider-card ${accountProvider === "cursor" ? "selected" : ""}`} aria-pressed={accountProvider === "cursor"} onClick={() => setAccountProvider("cursor")}>
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <span><strong>Cursor</strong><small>Cursor subscription</small></span>
-                <span className={`provider-status ${cursorStatus?.loggedIn && !accountChecks.cursor ? "on" : ""}`} title={accountChecks.cursor} aria-live="polite">{accountChecks.cursor === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.cursor, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available), "Cursor Agent needed")}</span>
+                <span className={`provider-status ${cursorStatus?.loggedIn && !cursorAccountCheck ? "on" : ""}`} title={cursorAccountCheck} aria-live="polite">{cursorAccountCheck === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(cursorAccountCheck, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available), "Cursor Agent needed")}</span>
                 {accountProvider === "cursor" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "openrouter" ? "selected" : ""}`} aria-pressed={accountProvider === "openrouter"} onClick={() => setAccountProvider("openrouter")}>
@@ -2130,13 +2131,14 @@ export function SettingsModal({
                 <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
                 <div>
                   <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
-                  <small>{accountChecks.cursor || (cursorStatus?.loggedIn
+                  <small>{cursorAccountCheck || (cursorStatus?.loggedIn
                     ? "Signed in to Cursor Agent on this device"
                     : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
                 </div>
-                {cursorStatus?.loggedIn ? (
-                  <span className={`connected-badge${accountChecks.cursor ? " unverified" : ""}`} aria-live="polite">{accountChecks.cursor === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.cursor ? <Check size={12} /> : null} {accountChecks.cursor === "Checking connection…" ? "Checking…" : accountChecks.cursor ? "Unverified" : "Connected"}</span>
-                ) : (
+                {cursorStatus?.loggedIn && (
+                  <span className={`connected-badge${cursorAccountCheck ? " unverified" : ""}`} aria-live="polite">{cursorAccountCheck === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !cursorAccountCheck ? <Check size={12} /> : null} {cursorAccountCheck === "Checking connection…" ? "Checking…" : cursorAccountCheck === "Waiting for sign-in…" ? "Signing in…" : cursorAccountCheck ? "Unverified" : "Connected"}</span>
+                )}
+                {(!cursorStatus?.loggedIn || cursorStatus.authVerified === false) && (
                   <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
                     {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}
                     {cursorLoginStarting ? "Signing in…" : cursorStatus?.available ? "Sign in" : "Install Cursor Agent"}

@@ -499,6 +499,9 @@ export function providerAccountUsage(
     };
   }
   if (provider === "cursor" && options.cursorStatus) {
+    if (options.cursorStatus.authVerified === false) {
+      return { label, summary: "Cursor connection unverified · refresh in Models & accounts" };
+    }
     const plan = options.cursorStatus.subscriptionType || "Cursor";
     return { label, summary: `${plan} connected · live usage and limits are managed by Cursor` };
   }

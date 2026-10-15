@@ -22,7 +22,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
-import { deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
+import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
 import { flushPendingStateWrites, loadStored, readStoredRaw, storeValue } from "./lib/storage";
@@ -92,7 +92,7 @@ import { hasEligibleQueuedTurns } from "./lib/timedPrompts";
 import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
 import { useClaudeContinuation } from "./hooks/useClaudeContinuation";
 import { ClaudeContinuationNotice } from "./components/ClaudeContinuationNotice";
-import { formatGitError, formatSkillFileError, friendlyError, isAuthenticationError } from "./lib/errors";
+import { formatGitError, formatSkillFileError, friendlyError, isAuthenticationError, safeErrorText } from "./lib/errors";
 import { recordError } from "./lib/errorLog";
 import { subscribeBackgroundUsage } from "./lib/backgroundUsage";
 import { beginThreadOpen, failThreadOpen, markRendererLaunchComposerMounted, markRendererLaunchPaintOpportunity, markRendererLaunchShellCommitted, markThreadHistoryHydrated, markThreadPaintOpportunity, markThreadRenderMetrics, markThreadRuntimeReady, markThreadShellCommitted, markThreadTimelineCommitted, projectedJsonBytes, threadOpenAwaitingRenderMetrics, threadOpenAwaitingTimeline } from "./lib/performanceDiagnostics";
@@ -1181,7 +1181,7 @@ export default function App() {
     openRouterReady,
     lmStudioReady,
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
-    cursorReady: Boolean(cursorStatus?.available && cursorStatus.loggedIn),
+    cursorReady: cursorCanAttemptRequest(cursorStatus),
   }), [account?.type, claudeStatus, cursorStatus, lmStudioReady, openRouterReady, runtimeStatus?.available]);
   const nativeReasoningEfforts = useMemo<Partial<Record<string, ReasoningEffort[]>>>(() => Object.fromEntries(runtimeModels.map((model) => [model.model || model.id, model.supportedReasoningEfforts.flatMap((option) => ["low", "medium", "high", "xhigh", "max", "ultra"].includes(option.reasoningEffort) ? [option.reasoningEffort as ReasoningEffort] : [])])), [runtimeModels]);
   const nativeUnavailableReason = nativeSubagentUnavailableReason(activeProvider, {
@@ -2479,10 +2479,47 @@ export default function App() {
     }
   }), [setAccountCheck]);
 
+  const cursorModelsRequestRef = useRef(0);
+  const refreshCursorModels = useCallback((accountRequest = cursorStatusRequestRef.current) => {
+    return refreshProviderModels(
+      cursorModelsRequestRef, async () => {
+        const modelRequest = cursorModelsRequestRef.current;
+        try {
+          const models = await listCursorModels();
+          if (cursorStatusRequestRef.current === accountRequest && cursorModelsRequestRef.current === modelRequest) {
+            // A successful passive ACP request verifies usability even if Cursor's
+            // optional account-details endpoint could not verify saved credentials.
+            setCursorStatus((current) => current?.available && current.loggedIn
+              ? { ...current, authVerified: true, warning: null } : current);
+            setAccountCheck("cursor", "");
+          }
+          return models;
+        } catch (reason) {
+          if (cursorStatusRequestRef.current === accountRequest && cursorModelsRequestRef.current === modelRequest
+            && (isAuthenticationError(reason) || /auth required|not authenticated|not logged in|not signed in|sign[ -]?in required/i.test(safeErrorText(reason)))) {
+            setCursorStatus((current) => current ? { ...current, authVerified: false } : current);
+            setAccountCheck("cursor", "Connection unverified");
+          }
+          throw reason;
+        }
+      }, setCursorModelsLoading,
+      (models) => {
+        if (cursorStatusRequestRef.current !== accountRequest) return;
+        // Cursor publishes rates by display name, so pricing needs the live names.
+        updateCursorModelNames(models);
+        setCursorModels(models);
+        setPricingCatalogRevision(pricingRevision());
+      }, setCursorModelsError, "Cursor returned no models.",
+    );
+  }, [setAccountCheck]);
+
   const refreshCursorStatus = useCallback((quiet = false) => readAccountStatus(cursorStatusRefreshRef.current, cursorStatusRequestRef, quiet ? "join" : "own", async (request) => {
     // Startup, provider switches, sign-in polling, and the Settings refresh
     // button can overlap. Only the newest request may publish, so a slow
     // older check cannot land after a newer one and show a stale sign-in state.
+    // Catalog requests belong to the account generation that launched them.
+    cursorModelsRequestRef.current += 1;
+    setCursorModelsLoading(false);
     setAccountCheck("cursor", "Checking connection…");
     try {
       const result = await getCursorRuntimeStatus();
@@ -2491,34 +2528,42 @@ export default function App() {
       if (!result.available) {
         // A missing/unresolvable CLI establishes availability, not logout.
         setCursorStatus((current) => current ? { ...current, available: false,
-          path: result.path, version: result.version, warning: result.warning } : result);
+          authVerified: false, path: result.path, version: result.version, warning: result.warning } : result);
+        cursorModelsRequestRef.current += 1;
+        setCursorModels([]);
+        setCursorModelsLoading(false);
+        setCursorModelsError("");
         setAccountCheck("cursor", "Connection check unavailable");
         return null;
       }
       setCursorStatus(result);
-      setAccountCheck("cursor", result.loggedIn ? "" : "Sign-in required");
+      setAccountCheck("cursor", result.authVerified === false ? "Connection unverified" : result.loggedIn ? "" : "Sign-in required");
+      if (!cursorCanAttemptRequest(result)) {
+        cursorModelsRequestRef.current += 1;
+        setCursorModels([]);
+        setCursorModelsLoading(false);
+        setCursorModelsError("");
+      } else {
+        // Own scheduling here so quiet checks also replace an invalidated
+        // catalog request, without an authVerified-dependent effect retry loop.
+        void refreshCursorModels(request);
+      }
       return result;
     } catch (reason) {
       if (cursorStatusRequestRef.current === request) {
         setAccountCheck("cursor", "Connection check unavailable");
+        setCursorStatus((current) => current ? { ...current, authVerified: false } : current);
+        cursorModelsRequestRef.current += 1;
+        setCursorModels([]);
+        setCursorModelsLoading(false);
+        setCursorModelsError("");
         if (!quiet) {
           setError(friendlyError(reason));
         }
       }
       return null;
     }
-  }), [setAccountCheck]);
-
-  const cursorModelsRequestRef = useRef(0);
-  const refreshCursorModels = useCallback(() => refreshProviderModels(
-    cursorModelsRequestRef, listCursorModels, setCursorModelsLoading,
-    (models) => {
-      // Cursor publishes rates by display name, so pricing needs the live names.
-      updateCursorModelNames(models);
-      setCursorModels(models);
-      setPricingCatalogRevision(pricingRevision());
-    }, setCursorModelsError, "Cursor returned no models.",
-  ), []);
+  }), [refreshCursorModels, setAccountCheck]);
 
   const loadThreadsRequestRef = useRef(0);
   const loadThreads = useCallback(
@@ -4183,12 +4228,6 @@ export default function App() {
   useEffect(() => {
     void refreshLMStudioModels(settings.lmStudioBaseUrl);
   }, [refreshLMStudioModels, settings.lmStudioBaseUrl]);
-
-  // Cursor sign-in (at startup or later) refreshes only the Cursor model
-  // list, never the whole startup sequence above.
-  useEffect(() => {
-    if (cursorStatus?.loggedIn) void refreshCursorModels();
-  }, [cursorStatus?.loggedIn, refreshCursorModels]);
 
   // The Claude catalog needs a signed-in CLI to answer, so it is read after
   // sign-in rather than as part of the startup sequence.
@@ -6178,6 +6217,7 @@ export default function App() {
   // One live watch per provider: launching sign-in again replaces the
   // previous watch, and unmounting stops them all.
   const signInWatchesRef = useRef<Partial<Record<"claude" | "cursor", AbortController>>>({});
+  const cursorLoginAttemptRef = useRef(0);
   useEffect(() => () => {
     for (const watch of Object.values(signInWatchesRef.current)) watch?.abort();
   }, []);
@@ -6234,28 +6274,43 @@ export default function App() {
       setError("Install the official Cursor Agent CLI first, then return here to sign in.");
       return;
     }
+    signInWatchesRef.current.cursor?.abort();
+    const attempt = ++cursorLoginAttemptRef.current;
     setCursorLoginStarting(true);
     const request = ++cursorStatusRequestRef.current;
+    cursorModelsRequestRef.current += 1;
+    setCursorModels([]);
+    setCursorModelsLoading(false);
+    setCursorStatus((current) => current ? { ...current, authVerified: false } : current);
     setAccountCheck("cursor", "Waiting for sign-in…");
     const recheck = () => { if (cursorStatusRequestRef.current === request) void refreshCursorStatus(true); };
     setError(null);
     setStatus("Opening Cursor sign-in");
     try {
       await startCursorLogin();
+      if (cursorLoginAttemptRef.current !== attempt) return;
       setStatus("Finish sign-in in Terminal");
-      watchSignIn("cursor", async () => Boolean((await getCursorRuntimeStatus())?.loggedIn), async () => {
+      watchSignIn("cursor", async () => {
+        const next = await getCursorRuntimeStatus();
+        if (!cursorCanAttemptRequest(next)) return false;
+        if (next.authVerified !== false) return true;
+        // Saved expired tokens already report loggedIn. Keep watching until
+        // account verification or a passive ACP request actually succeeds.
+        await listCursorModels();
+        return true;
+      }, async () => {
         const next = await refreshCursorStatus();
-        if (next?.loggedIn) {
+        if (cursorLoginAttemptRef.current === attempt && cursorCanAttemptRequest(next)) {
           setStatus("Ready");
-          await refreshCursorModels();
         }
       }, recheck);
     } catch (reason) {
+      if (cursorLoginAttemptRef.current !== attempt) return;
       setStatus("Setup required");
       setError(friendlyError(reason));
       recheck();
     } finally {
-      setCursorLoginStarting(false);
+      if (cursorLoginAttemptRef.current === attempt) setCursorLoginStarting(false);
     }
   };
 
@@ -8277,7 +8332,7 @@ export default function App() {
     runtimeAvailable: Boolean(runtimeStatus?.available),
     chatGptConnected: account?.type === "chatgpt",
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
-    cursorReady: Boolean(cursorStatus?.available && cursorStatus.loggedIn),
+    cursorReady: cursorCanAttemptRequest(cursorStatus),
     openRouterReady,
     lmStudioReady,
     lmStudioModels,
@@ -9236,7 +9291,7 @@ export default function App() {
                       />
                     )}
                     {effectiveSettings.provider === "claude" && <ClaudeModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CLAUDE_MODEL} effort={effectiveSettings.reasoningEffort} models={claudeModels} loading={claudeModelsLoading} error={claudeModelsError} signedIn={childAgentReadiness.claudeReady} favorites={favoriteModels(modelFavorites, "claude")} onToggleFavorite={(model) => toggleModelFavorite("claude", model)} onRefresh={() => void refreshClaudeCatalog()} onSignInRequired={() => showToast(providerSignInIssue("claude", childAgentReadiness)!, "info")} onUnavailableModel={(model) => { void confirmDialog(`${model.displayName} needs a Claude Code update\n\n${model.requiredVersion ? `Claude Code ${model.requiredVersion} or newer is required. ` : ""}Open Updates to install the latest version without leaving Mythra Code.`, { confirmLabel: "Go to Updates", cancelLabel: "Not now" }).then((confirmed) => { if (confirmed) openSettings("updates"); }); }} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
-                    {effectiveSettings.provider === "cursor" && <CursorModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} error={cursorModelsError} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorModels()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
+                    {effectiveSettings.provider === "cursor" && <CursorModelControl providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_CURSOR_MODEL} models={cursorModels} effort={effectiveSettings.reasoningEffort} loading={cursorModelsLoading} error={cursorModelsError} favorites={favoriteModels(modelFavorites, "cursor")} onToggleFavorite={(model) => toggleModelFavorite("cursor", model)} onRefresh={() => void refreshCursorStatus()} onModel={(model) => persistComposerModel(model)} onEffort={persistComposerReasoning} />}
                     {running && activeThreadId && deferredReasoningNoticeThreads.has(activeThreadId) && (
                       <p className="composer-reasoning-notice" role="status" aria-live="polite">
                         Reasoning change will apply to the next prompt.
@@ -9477,9 +9532,7 @@ export default function App() {
             onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
             onRefreshUsage={() => {
               if (effectiveSettings.provider === "claude") void refreshClaudeCatalog();
-              else if (effectiveSettings.provider === "cursor") void refreshCursorStatus().then((next) => {
-                if (next?.loggedIn) void refreshCursorModels();
-              });
+              else if (effectiveSettings.provider === "cursor") void refreshCursorStatus();
               else if (effectiveSettings.provider === "openrouter") void Promise.all([
                 hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false)),
                 refreshOpenRouterCredits(),
@@ -9613,11 +9666,7 @@ export default function App() {
           return status;
         }}
         onCursorSignIn={beginCursorLogin}
-        onCursorRefresh={async () => {
-          const next = await refreshCursorStatus();
-          if (next?.loggedIn) void refreshCursorModels();
-          return next;
-        }}
+        onCursorRefresh={refreshCursorStatus}
         onRuntimeRequired={() => setRuntimeSetupOpen(true)}
         onWorkspaceTools={() => {
           closeSettings();
