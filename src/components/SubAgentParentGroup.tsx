@@ -5,6 +5,7 @@ import type { SubAgentParentState } from "../lib/subAgentParents";
 import { ProviderLogo } from "./BrandLogos";
 import { PixelWorkingMark } from "./PixelWorkingMark";
 import { useTaskStore } from "../lib/taskStore";
+import { workerStatusFromAgentRecord } from "../lib/subAgentActivity";
 
 interface SubAgentParentGroupProps {
   title: string;
@@ -17,6 +18,7 @@ interface SubAgentParentGroupProps {
   shortId?: string;
   count: number;
   threadIds: string[];
+  nativeAgents?: Readonly<Record<string, { status?: string }>>;
   /** Omitted when there is nothing to open. */
   onOpenParent?: () => void;
   children: ReactNode;
@@ -43,6 +45,7 @@ export function SubAgentParentGroup({
   shortId,
   count,
   threadIds,
+  nativeAgents,
   onOpenParent,
   children,
 }: SubAgentParentGroupProps) {
@@ -55,9 +58,13 @@ export function SubAgentParentGroup({
     let approvals = 0;
     let failed = 0;
     for (const id of threadIds) {
-      if (store.statuses[id] === "starting" || store.statuses[id] === "running") working++;
+      const status = store.statuses[id];
+      const nativeStatus = !status || status === "idle"
+        ? workerStatusFromAgentRecord(nativeAgents?.[id]?.status ?? "")
+        : null;
+      if (status === "starting" || status === "running" || nativeStatus === "starting" || nativeStatus === "working") working++;
       if (store.tasks[id]?.approvals.length) approvals++;
-      if (store.statuses[id] === "error") failed++;
+      if (status === "error" || nativeStatus === "failed") failed++;
     }
     return `${working}:${approvals}:${failed}`;
   });

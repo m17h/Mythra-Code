@@ -8727,6 +8727,7 @@ export default function App() {
                 shortId={group.shortId}
                 count={group.threads.length}
                 threadIds={group.threads.map((thread) => thread.id)}
+                nativeAgents={nativeAgentLinks}
                 onOpenParent={group.parent && group.parent.state !== "unavailable" ? () => openParentConversation(group.key) : undefined}
               >
                 {group.threads.map((thread) => renderThreadRow(thread, subAgentCardParent(subAgentParents.info(thread.id, thread))))}
