@@ -34,6 +34,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Long paths always get the same compact middle, even on a wide line. Keep
+ * the exact source in a visually hidden text node; the ellipsis is paint-only
+ * generated content, so it does not replace the original clipboard text. */
+.rich-markdown .inline-path-middle-abbreviated {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.rich-markdown .inline-path-middle-abbreviated > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.rich-markdown .inline-path-middle-abbreviated::after {
+  content: attr(data-label);
+}
 .rich-markdown .inline-path-destination {
   flex: 0 0 auto;
   max-width: 100%;

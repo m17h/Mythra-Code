@@ -637,7 +637,7 @@ function MarkdownCode({ children, className }: { children?: ReactNode; className
 function InlinePath({ text, parts, linked }: { text: string; parts: InlinePathParts; linked: boolean }) {
   const [copied, copy] = useCopyFeedback();
   return <span className={`inline-path${linked ? " inline-path-linked" : ""}`} title={text}>
-    <code><span className="inline-path-directory"><span className="inline-path-prefix">{parts.prefix}</span><span className="inline-path-middle">{parts.middle}</span></span><span className="inline-path-destination">{parts.destination}</span></code>
+    <code aria-label={text}><span className="inline-path-directory"><span className="inline-path-prefix">{parts.prefix}</span><span className={`inline-path-middle${parts.middleLabel ? " inline-path-middle-abbreviated" : ""}`} data-label={parts.middleLabel}><span>{parts.middle}</span></span></span><span className="inline-path-destination">{parts.destination}</span></code>
     {!linked && <button type="button" className="inline-path-copy" aria-label={copied ? "Path copied" : "Copy full path"} title={copied ? "Copied" : "Copy full path"} onClick={() => copy(text)}>
       {copied ? <Check size={11} /> : <Clipboard size={11} />}
     </button>}
