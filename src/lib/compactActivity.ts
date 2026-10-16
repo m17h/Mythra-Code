@@ -8,7 +8,7 @@ export type CompactWorkEntry =
   | { kind: "files"; value: Activity[] }
   | { kind: "spawns"; value: Activity[] };
 
-export type CompactWorkState = "running" | "completed" | "interrupted" | "failed" | "unknown";
+export type CompactWorkState = "running" | "completed" | "interrupted" | "failed" | "partial" | "unknown";
 export type CompactPresentationEntry = CompactWorkEntry | {
   kind: "work";
   /** Original entries, in order, for the full live/historical details surface. */
@@ -70,6 +70,28 @@ function meaningful(message: ChatMessage): boolean {
   return Boolean(message.text.trim() || message.attachments?.length || message.questions?.length);
 }
 
+/** Presentation evidence, not a change to the provider's failed outcome or
+ * a claim that the user's whole request succeeded. Only recorded successful
+ * operations count: thinking, progress text, warnings and agent dispatch do not. */
+export function failedRunPresentationState(entries: readonly CompactWorkEntry[]): "failed" | "partial" {
+  const failedTurns = new Set(entries.flatMap(values)
+    .filter((value) => value.turnStatus === "failed" && value.turnId)
+    .map((value) => value.turnId));
+  for (const entry of entries) {
+    if (entry.kind === "message") continue;
+    for (const activity of values(entry) as Activity[]) {
+      // A separately completed provider turn is not evidence about this failure.
+      if (failedTurns.size ? !activity.turnId || !failedTurns.has(activity.turnId)
+        : Boolean(activity.turnId) || activity.turnStatus === "completed") continue;
+      const finishedWork = activity.kind === "command" || activity.kind === "file"
+        || (activity.kind === "agent" && activity.agent?.action === "spawn" && Boolean(activity.agent.result?.trim()));
+      if (finishedWork
+        && ["completed", "succeeded", "success"].includes(activity.status ?? "")) return "partial";
+    }
+  }
+  return "failed";
+}
+
 function stateFor(segment: CompactWorkEntry[], active: boolean): CompactWorkState {
   if (active) return "running";
   for (let index = segment.length - 1; index >= 0; index -= 1) {
@@ -83,7 +105,8 @@ function stateFor(segment: CompactWorkEntry[], active: boolean): CompactWorkStat
   return legacyAnswer && segment.every((entry) => values(entry).every((value) => !value.turnId)) ? "completed" : "unknown";
 }
 
-function hasTerminalTurnEvidence(segment: CompactWorkEntry[], id?: string): boolean {
+/** Non-user output seals a turn only after all of its output has settled. */
+export function hasTerminalTurnEvidence(segment: CompactWorkEntry[], id?: string): boolean {
   let terminal = false;
   for (const entry of segment) {
     // Runtime user echoes can default to completed without sealing the turn.
@@ -130,8 +153,9 @@ function isolateImportantActivities(entries: readonly CompactWorkEntry[]): Compa
 /**
  * Presentation only: never modifies or discards transcript data. All routine
  * assistant text, including a native final channel, waits for turn completion.
- * Questions/errors remain actionable while work can continue. Interrupted
- * output stays in one history disclosure, including its unfinished answer.
+ * Questions and warning activities remain actionable while work can continue.
+ * Interrupted or failed output stays in one history disclosure, including
+ * unfinished answers.
  */
 export function compactActivityPresentation(
   entries: readonly CompactWorkEntry[], options: CompactActivityOptions,
@@ -151,22 +175,24 @@ export function compactActivityPresentation(
   return segments.flatMap((segment, index) => {
     const activeIndex = activeSegment >= 0 ? activeSegment : options.activeTurnId ? -1 : segments.length - 1;
     const active = options.running && index === activeIndex
-      && (Boolean(options.activeTurnId) || !hasTerminalTurnEvidence(segment));
+      && !hasTerminalTurnEvidence(segment, options.activeTurnId);
     // An idle notification can precede the terminal turn event. Retain its
     // current output in details without claiming the provider is still busy.
     // Old unknown history and explicitly stopped/failed output stay readable.
     const unconfirmed = !active && Boolean(options.activeTurnId) && index === activeSegment
       && !hasTerminalTurnEvidence(segment, options.activeTurnId);
     const state = unconfirmed ? "unknown" : stateFor(segment, active);
-    if (state === "interrupted") {
-      // Stopping does not turn progress or a partial final-channel response
-      // into an answer. Keep the same single history opener across steering,
-      // and retain every operation/status for the existing details window.
+    if (state === "interrupted" || state === "failed") {
+      const outcome = state === "failed" ? failedRunPresentationState(segment) : state;
+      // A failed or stopped run does not turn progress or a partial final
+      // response into an answer. Keep one history opener across steering,
+      // retaining successful steps and the failure for the details window.
       // A completed final belonging to a separate recovered provider turn is
-      // still an answer; interruption must never swallow unrelated results.
+      // still an answer; a terminal failure must not swallow unrelated results.
       const output: CompactPresentationEntry[] = [];
       const stoppedTurnIds = new Set(segment.flatMap(values)
-        .filter((value) => value.turnStatus === "interrupted" && value.turnId).map((value) => value.turnId));
+        .filter((value) => (value.turnStatus === "interrupted" || value.turnStatus === "failed") && value.turnId)
+        .map((value) => value.turnId));
       const lastCompletedAssistant = new Map<string, CompactWorkEntry>();
       for (const entry of segment) {
         if (entry.kind === "message" && entry.value.role === "assistant" && entry.value.turnId
@@ -184,15 +210,15 @@ export function compactActivityPresentation(
           output.push(entry);
         } else {
           if (!stoppedWork) {
-            stoppedWork = { kind: "work", value: [], state, turnId: turnId(segment[0]) };
+            stoppedWork = { kind: "work", value: [], state: outcome, turnId: turnId(segment[0]) };
             output.push(stoppedWork);
           }
           stoppedWork.value.push(entry);
         }
       }
-      // A stop before the first provider output still settles the existing
+      // A failure before the first provider output still settles the existing
       // live opener. Its details contain the retained opening user prompt.
-      if (!stoppedWork) output.push({ kind: "work", value: [], state, turnId: turnId(segment[0]), anchorId: values(segment[0])[0]?.id });
+      if (!stoppedWork) output.push({ kind: "work", value: [], state: outcome, turnId: turnId(segment[0]), anchorId: values(segment[0])[0]?.id });
       return output;
     }
     const assistants = segment.filter((entry) => entry.kind === "message" && entry.value.role === "assistant"
@@ -214,8 +240,7 @@ export function compactActivityPresentation(
       const visible = entry.kind === "message"
         ? entry.value.role === "user" || Boolean(entry.value.questions?.length)
           || (meaningful(entry.value) && ((!active && !unconfirmed && entry.value.phase === "final") || entry === fallback
-            || (!unconfirmed && (state === "failed" || state === "unknown"))
-            || entry.value.turnStatus === "failed" || entry.value.turnStatus === "interrupted"))
+            || (!unconfirmed && state === "unknown")))
         : values(entry).some((value) => importantActivity(value as Activity));
       if (active || unconfirmed) {
         // A steer/question/warning must not create a second live status line.
