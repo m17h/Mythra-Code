@@ -278,7 +278,7 @@ export async function startChildAgentTurn(
   // Claude/Cursor starts carry an owner-bound identity, so a Stop before any
   // turn ID can cut off exactly this start and never a newer one. Cursor's
   // identity is the renderer owner reservation its adapter requires.
-  let startRequestId = target.provider === "claude" ? crypto.randomUUID() : undefined;
+  let startRequestId: string | undefined = target.provider === "claude" ? crypto.randomUUID() : undefined;
   let cursorAttempt: CursorStartAttempt | undefined;
   const bindLanguageBridge = (thread: Thread) => {
     if (languageBridge) registerChildProjectLaunch(thread.id, languageSessionId, languageBridge, languageContext);

@@ -546,7 +546,7 @@ function deliveryUncertain(reason: unknown): boolean {
 }
 
 /** Permanent reasons a parent may not continue this child. */
-function followUpRefusal(link: ChildAgentLink, status: TaskStatus): string | null {
+function followUpRefusal(link: ChildAgentLink): string | null {
   if (link.signoff !== "required") {
     return "This sub-agent uses V1 delegation. Collect its result or spawn a new sub-agent for more work.";
   }
@@ -2212,7 +2212,7 @@ export function useChildAgents(context: ChildAgentContext): {
       return;
     }
     const initialStatus = taskStatusOf(childThreadId);
-    const permanent = followUpRefusal(link, initialStatus)
+    const permanent = followUpRefusal(link)
       ?? (ctx.threadUnavailable?.(childThreadId) ? "This sub-agent's conversation was archived or removed." : null);
     if (permanent) {
       cancelQueuedForChild(childThreadId, permanent);
@@ -2318,7 +2318,7 @@ export function useChildAgents(context: ChildAgentContext): {
         || current.autoCompactTokens !== link.autoCompactTokens || (activationId && current.activationId !== activationId)) {
         throw new FollowUpRefused("This sub-agent's ownership or frozen execution settings changed.", "cancel");
       }
-      const refusal = followUpRefusal(current, taskStatusOf(childThreadId));
+      const refusal = followUpRefusal(current);
       if (refusal) throw new FollowUpRefused(refusal, "cancel");
       if (live.threadUnavailable?.(childThreadId)) throw new FollowUpRefused("This sub-agent's conversation was archived or removed.", "cancel");
       if (live.threadBusy?.(childThreadId) || live.threadBusy?.(rootThreadId)) {
@@ -2668,7 +2668,7 @@ export function useChildAgents(context: ChildAgentContext): {
    * to the queue for the child's next boundary or its own pull.
    */
   const steerQueued = useCallback(async (link: ChildAgentLink, messages: ChildMailMessage[]): Promise<void> => {
-    const refusal = followUpRefusal(link, taskStatusOf(link.childThreadId));
+    const refusal = followUpRefusal(link);
     if (refusal) {
       cancelQueuedForChild(link.childThreadId, refusal);
       return;
@@ -2800,7 +2800,7 @@ export function useChildAgents(context: ChildAgentContext): {
       throw new Error("This sub-agent's ownership changed while the message was preparing.");
     }
     assertParentCollaboration(current, request.sessionId);
-    const refusal = followUpRefusal(current, taskStatusOf(childId));
+    const refusal = followUpRefusal(current);
     if (refusal) throw new Error(refusal);
     if (contextRef.current.threadUnavailable?.(childId)) throw new Error("This sub-agent's conversation was archived or removed.");
     if (contextRef.current.threadBusy?.(childId) || contextRef.current.threadBusy?.(current.rootThreadId)) {

@@ -6021,9 +6021,10 @@ export default function App() {
     const scope = executionPathFor(rootThreadId, project.path);
     const gitDir = threadWorktreesRef.current[rootThreadId]?.gitDir;
     await validateDispatch?.();
+    const binding = threadProjectBindingsRef.current?.[rootThreadId];
     if (deletedThreadIdsRef.current.has(rootThreadId) || archivingThreadIdsRef.current.has(rootThreadId)
       || archivedThreadsRef.current.some((record) => record.id === rootThreadId)
-      || normalizedProjectPath(threadProjectBindingsRef.current?.[rootThreadId]) !== normalizedProjectPath(project.path)
+      || !binding || normalizedProjectPath(binding) !== normalizedProjectPath(project.path)
       || executionPathFor(rootThreadId, project.path) !== scope
       || threadWorktreesRef.current[rootThreadId]?.gitDir !== gitDir) {
       return { started: false, reason: "This conversation's execution folder or ownership changed before its command could start." };
