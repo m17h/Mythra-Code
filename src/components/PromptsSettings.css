@@ -1,0 +1,95 @@
+/* Settings → Prompts. Built on the shared .set-group / .set-card primitives;
+   these rules only add the layer tabs, file rows and the layer summary. */
+
+.prompts-settings { display: flex; flex-direction: column; }
+.prompts-settings > .set-group + .set-group,
+.prompts-settings > .prompts-files + .set-group { margin-top: var(--s-5); }
+
+.prompts-head { flex-wrap: wrap; }
+.prompts-profile-controls { display: flex; align-items: center; gap: var(--s-2); margin-left: auto; min-width: 0; }
+.prompts-profile-controls > .app-select { min-width: 168px; max-width: 240px; }
+.prompts-profile-controls > .secondary-button { min-height: var(--ctl-sm, 28px); padding: 0 var(--s-3); font-size: var(--fs-meta); }
+.prompts-save-profile { margin-top: 2px; }
+
+.prompts-card { overflow: visible; }
+.prompts-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: var(--s-3) var(--s-4) 0; padding: 2px; width: fit-content; max-width: calc(100% - 2 * var(--s-4)); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--field); }
+.set-card > .prompts-tabs + * { border-top: 0; }
+.prompts-tabs > button { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-ui); font-weight: 600; cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease, box-shadow var(--t-fast) ease; }
+.prompts-tabs > button:hover { color: var(--text); }
+.prompts-tabs > button.selected { color: var(--text); background: var(--panel-3); box-shadow: var(--elev-1); }
+.prompts-tabs > button:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.prompts-tabs.compact { margin: 0 0 var(--s-2); }
+.prompts-tabs.compact > button { min-height: 24px; padding: 0 10px; font-size: var(--fs-meta); }
+.prompts-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+.prompts-panel { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3) var(--s-4) var(--s-4); }
+.prompts-caption, .prompts-hint { margin: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+.prompts-hint { color: var(--muted-2); }
+.prompts-panel .prompt-editor { width: 100%; }
+
+/* Global instruction file for the selected provider tab. */
+.prompts-files { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-3); }
+.prompts-files-head { display: flex; align-items: center; gap: var(--s-2); padding: 0 2px; color: var(--muted-2); font-size: var(--fs-meta); }
+.prompt-file-row { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--panel-2) 46%, transparent); }
+.prompt-file-row.selected { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
+.prompt-file-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) var(--s-3); }
+.prompt-file-name { display: flex; flex-direction: column; min-width: 0; flex: 1 1 180px; }
+.prompt-file-name strong { font-size: var(--fs-ui); }
+.prompt-file-name small { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-file-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.prompt-file-actions > .secondary-button,
+.prompt-file-row .global-instruction-editor .secondary-button,
+.prompts-stack .secondary-button,
+.prompts-profile-list .secondary-button { min-height: 26px; padding: 0 10px; font-size: var(--fs-meta); }
+.prompt-file-note { margin: 0; padding: 0 2px; color: var(--muted); font-size: var(--fs-meta); }
+
+.prompts-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 1px solid transparent; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; }
+.prompts-icon-button:hover:not(:disabled) { color: var(--text); background: var(--panel-3); }
+.prompts-icon-button:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.prompts-icon-button:disabled { opacity: .55; cursor: default; }
+
+/* Project instruction files: two compact switches and an info popover. */
+.prompts-file-toggles { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.prompts-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 11px 0 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: transparent; font-size: var(--fs-meta); font-weight: 600; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.prompts-chip:hover { color: var(--text); }
+.prompts-chip.on { color: var(--text); border-color: color-mix(in srgb, var(--green) 45%, var(--line)); background: var(--green-soft); }
+.prompts-chip:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.prompts-check { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--bg, #000); }
+.prompts-chip.on .prompts-check { border-color: var(--green); background: var(--green); }
+.prompts-info { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted-2); background: transparent; cursor: pointer; }
+.prompts-info:hover, .prompts-info[aria-expanded="true"] { color: var(--text); background: var(--panel-3); }
+.prompts-info:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.prompts-info-text { margin: 0; }
+
+/* What the agent receives. */
+.prompts-stack > .prompts-layer { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: var(--s-1) var(--s-3); padding: var(--s-2) var(--s-4); }
+.prompts-layer-name { color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
+.prompts-layer-value { min-width: 0; color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; text-align: right; }
+.prompts-layer-actions { justify-content: flex-start; gap: var(--s-2); }
+.prompts-link { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: var(--green); background: none; font-size: var(--fs-meta); font-weight: 600; cursor: pointer; }
+.prompts-link:hover { text-decoration: underline; }
+.prompts-link:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 3px; }
+.prompts-full-preview { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3) var(--s-4) var(--s-4); }
+.prompts-full-preview textarea,
+.prompts-profile-list textarea { width: 100%; resize: vertical; padding: 10px 11px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--field); font: var(--fs-meta)/1.55 var(--font-mono); }
+.prompts-full-preview small { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; }
+
+.prompts-profile-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.prompts-profile-list > li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-4); }
+.prompts-profile-list > li + li { border-top: 1px solid var(--line); }
+.prompts-profile-name { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 200px; min-width: 0; font-size: var(--fs-ui); }
+.prompts-profile-name small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
+.prompts-profile-name svg:not(:first-child) { color: var(--green); }
+
+@media (max-width: 720px) {
+  .prompts-profile-controls { margin-left: 0; width: 100%; }
+  .prompts-profile-controls > .app-select { flex: 1; max-width: none; }
+  .prompts-layer-value { text-align: left; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prompts-tabs > button, .prompts-chip { transition: none; }
+}
+
+/* `hidden` must win over the display rules above. */
+.prompts-files[hidden], .prompt-file-row[hidden] { display: none; }

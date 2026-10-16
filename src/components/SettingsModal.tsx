@@ -34,6 +34,7 @@ import {
   UsersRound,
   Wrench,
   X,
+  Brain,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
@@ -66,7 +67,7 @@ import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
 import { LanguageToolsSettings } from "./LanguageToolsSettings";
 import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { SkillLibrary } from "./SkillLibrary";
-import { SkillPromptEditor } from "./SkillPromptEditor";
+import { PromptsSettings, type PromptLayer } from "./PromptsSettings";
 import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
@@ -139,7 +140,8 @@ const SETTINGS_NAV: ReadonlyArray<{
       { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
       { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
       { id: "pricing", label: "Model pricing", icon: BadgeDollarSign, detail: "Official OpenAI and Anthropic API list prices per 1M tokens. Reference only; subscriptions aren’t billed at these rates.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
-      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "Instructions sent with every thread, plus optional automatically learned preferences.", keywords: "prompt system instructions agents.md claude.md guidance context profile global memory learning learned preferences history" },
+      { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "What every agent is told before your message.", keywords: "prompt system instructions agents.md claude.md guidance context profile profiles preset global codex claude layer" },
+      { id: "memory", label: "Memory", icon: Brain, detail: "Optionally learn how you like to work from your conversations.", keywords: "memory learning learned preferences history personalize personalization remember experimental" },
       { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review" },
     ],
   },
@@ -637,6 +639,9 @@ export function SettingsModal({
   const globalPromptRef = useRef<HTMLTextAreaElement>(null);
   const codexPromptRef = useRef<HTMLTextAreaElement>(null);
   const claudePromptRef = useRef<HTMLTextAreaElement>(null);
+  const promptRefs = useMemo(() => ({ global: globalPromptRef, codex: codexPromptRef, claude: claudePromptRef }), []);
+  const promptAnalyzers = useMemo(() => ({ global: analyzeGlobalPrompt, codex: analyzeCodexPrompt, claude: analyzeClaudePrompt }), [analyzeClaudePrompt, analyzeCodexPrompt, analyzeGlobalPrompt]);
+  const [promptLayer, setPromptLayer] = useState<PromptLayer>("global");
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
@@ -880,6 +885,11 @@ export function SettingsModal({
   // the exact authored prompt into view and selects the failed @reference.
   useEffect(() => {
     if (!open || settingsSection !== "prompts" || !promptFocusRequest) return;
+    // Show the layer's tab first; this runs again once it is visible.
+    if (promptLayer !== promptFocusRequest.target) {
+      setPromptLayer(promptFocusRequest.target);
+      return;
+    }
     const field = { global: globalPromptRef, codex: codexPromptRef, claude: claudePromptRef }[promptFocusRequest.target].current;
     if (!field) return;
     field.focus();
@@ -887,7 +897,7 @@ export function SettingsModal({
     const mention = skillMentionRanges(field.value, [{ name: promptFocusRequest.name }])[0];
     if (mention) field.setSelectionRange(mention.start, mention.end);
     onPromptFocusHandled?.(promptFocusRequest.nonce);
-  }, [onPromptFocusHandled, open, promptFocusRequest, settingsSection]);
+  }, [onPromptFocusHandled, open, promptFocusRequest, promptLayer, settingsSection]);
 
   const requestCloseRef = useRef(requestClose);
   requestCloseRef.current = requestClose;
@@ -1438,107 +1448,32 @@ export function SettingsModal({
             </div>
           </section>}
 
-          {settingsSection === "prompts" &&
-          <section className="settings-section">
-            <div className="set-group">
-              <h4>Project instructions</h4>
-              <div className="set-card">
-                <div className="set-row">
-                  <div className="set-copy">
-                    <strong className="instruction-profile-title"><ProviderLogo provider="openai" size={16} />Project AGENTS.md discovery</strong>
-                    <small>Read AGENTS.md from the project root, preferring a non-empty AGENTS.override.md when present.</small>
-                  </div>
-                  <div className="set-control">
-                    <button type="button" role="switch" aria-label="Project AGENTS.md discovery" aria-checked={local.projectInstructionsEnabled} className={`toggle-switch ${local.projectInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectInstructionsEnabled: !local.projectInstructionsEnabled })}><span /></button>
-                  </div>
-                </div>
-                <div className="set-row">
-                  <div className="set-copy">
-                    <strong className="instruction-profile-title"><ProviderLogo provider="claude" size={16} />Project CLAUDE.md discovery</strong>
-                    <small>Read CLAUDE.md from the project root, or .claude/CLAUDE.md if the root file is absent.</small>
-                  </div>
-                  <div className="set-control">
-                    <button type="button" role="switch" aria-label="Project CLAUDE.md discovery" aria-checked={local.projectClaudeInstructionsEnabled} className={`toggle-switch ${local.projectClaudeInstructionsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, projectClaudeInstructionsEnabled: !local.projectClaudeInstructionsEnabled })}><span /></button>
-                  </div>
-                </div>
-                <div className="set-body"><p>Enabled files provide guidance to every model used in a project, with a combined 32&nbsp;KB limit. Nested folders and file imports are not scanned. Changes apply to future turns. Global files are optional presets below.</p></div>
-              </div>
-            </div>
+          <div hidden={settingsSection !== "prompts"}><section className="settings-section">
+            <PromptsSettings
+              active={settingsSection === "prompts"}
+              visible={open}
+              layer={promptLayer}
+              onLayer={setPromptLayer}
+              settings={local}
+              onSettings={setLocal}
+              profiles={localProfiles}
+              onProfiles={setLocalProfiles}
+              skills={skills}
+              promptRefs={promptRefs}
+              analyze={onAnalyzeSkillDependencies ? promptAnalyzers : undefined}
+              globalInstructionFiles={globalInstructionFiles}
+              globalInstructionDiscoveryBusy={globalInstructionDiscoveryBusy}
+              globalInstructionDiscoveryError={globalInstructionDiscoveryError}
+              onRefreshGlobalInstructionFiles={onRefreshGlobalInstructionFiles}
+              onGlobalInstructionFileSaved={onGlobalInstructionFileSaved}
+              onOpenMemory={() => setSettingsSection("memory")}
+            />
+          </section></div>
 
-            <div className="set-group">
-              <div className="set-group-head"><h4>Prompt layers</h4><span className="set-group-note">sent in this order, every thread</span></div>
-              <div className="set-card">
-                <div className="set-row stack">
-                  <div className="set-copy"><strong>Global Mythra Code prompt</strong><small>Used by every provider.</small></div>
-                  <div className="set-control">
-                    <SkillPromptEditor
-                      ref={globalPromptRef}
-                      skills={skills}
-                      aria-label="Global Mythra Code prompt"
-                      onAnalyze={open && onAnalyzeSkillDependencies ? analyzeGlobalPrompt : undefined}
-                      className="prompt-editor"
-                      value={local.systemPrompt}
-                      onChange={(event) => setLocal({ ...local, systemPrompt: event.target.value })}
-                      placeholder="Empty — add your own instructions here"
-                      rows={5}
-                    />
-                  </div>
-                </div>
-                <div className="set-row stack">
-                  <div className="set-copy"><strong className="instruction-profile-title"><ProviderLogo provider="openai" size={16} />Codex subscription prompt</strong><small>Appended after the global prompt for ChatGPT subscription threads. Editing this app-specific copy does not change AGENTS.md.</small></div>
-                  <div className="set-control">
-                    <SkillPromptEditor
-                      ref={codexPromptRef}
-                      skills={skills}
-                      aria-label="Codex subscription prompt"
-                      onAnalyze={open && onAnalyzeSkillDependencies ? analyzeCodexPrompt : undefined}
-                      className="prompt-editor"
-                      value={local.codexSystemPrompt}
-                      onChange={(event) => setLocal({ ...local, codexSystemPrompt: event.target.value })}
-                      placeholder="Optional Codex-specific instructions"
-                      rows={4}
-                    />
-                  </div>
-                </div>
-                <div className="set-row stack">
-                  <div className="set-copy"><strong className="instruction-profile-title"><ProviderLogo provider="claude" size={16} />Claude Code subscription prompt</strong><small>Appended after the global prompt for Claude subscription threads. Editing this app-specific copy does not change CLAUDE.md.</small></div>
-                  <div className="set-control">
-                    <SkillPromptEditor
-                      ref={claudePromptRef}
-                      skills={skills}
-                      aria-label="Claude Code subscription prompt"
-                      onAnalyze={open && onAnalyzeSkillDependencies ? analyzeClaudePrompt : undefined}
-                      className="prompt-editor"
-                      value={local.claudeSystemPrompt}
-                      onChange={(event) => setLocal({ ...local, claudeSystemPrompt: event.target.value })}
-                      placeholder="Optional Claude-specific instructions"
-                      rows={4}
-                    />
-                  </div>
-                </div>
-                <div className="set-body">
-                  <p>Type @ to reference enabled skills from your selected Skills folder.</p>
-                  <div className="prompt-audit-row">
-                    <span><Check size={13} /> Global layer first</span>
-                    <span><Check size={13} /> Subscription layer second</span>
-                    <span><Check size={13} /> AGENTS.md discovery {local.projectInstructionsEnabled ? "enabled" : "disabled"}</span>
-                    <span><Check size={13} /> CLAUDE.md discovery {local.projectClaudeInstructionsEnabled ? "enabled" : "disabled"}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>}
-
-          <div hidden={!(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools")}><HarnessSettings
-            section={(["prompts", "agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools") ? settingsSection as "prompts" | "agents" | "workflows" | "scheduled-tasks" | "tools" : "prompts"}
+          <div hidden={!(["agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "agents" | "workflows" | "scheduled-tasks" | "tools")}><HarnessSettings
+            section={(["agents", "workflows", "scheduled-tasks", "tools"] as const).includes(settingsSection as "agents" | "workflows" | "scheduled-tasks" | "tools") ? settingsSection as "agents" | "workflows" | "scheduled-tasks" | "tools" : "tools"}
             visible={open}
             settings={local}
-            profiles={localProfiles}
-            globalInstructionFiles={globalInstructionFiles}
-            globalInstructionDiscoveryBusy={globalInstructionDiscoveryBusy}
-            globalInstructionDiscoveryError={globalInstructionDiscoveryError}
-            onRefreshGlobalInstructionFiles={onRefreshGlobalInstructionFiles}
-            onGlobalInstructionFileSaved={onGlobalInstructionFileSaved}
             agents={agents}
             actions={actions}
             schedules={schedules}
@@ -1548,8 +1483,6 @@ export function SettingsModal({
             skills={skills}
             modelCatalogs={subAgentModelCatalogs}
             onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
-            onSettings={setLocal}
-            onProfiles={setLocalProfiles}
             onAgents={onAgents}
             onActions={onActions}
             onSchedules={onSchedules}
@@ -1562,7 +1495,7 @@ export function SettingsModal({
             onOpenRun={onOpenRun}
           /></div>
 
-          {settingsSection === "prompts" && <section className="settings-section preference-learning-section">
+          {settingsSection === "memory" && <section className="settings-section">
             <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
           </section>}
 
