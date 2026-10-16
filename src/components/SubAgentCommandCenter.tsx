@@ -1,5 +1,5 @@
 import { modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelOption as SubAgentModelOption } from "./subAgentModelOptions";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, Check, Info, LoaderCircle, Lock, MessageCircleQuestion, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
@@ -449,7 +449,8 @@ function newTargetFor(provider: Provider, existing: ChildAgentTarget[]): ChildAg
   };
 }
 
-export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
+// Memoized: its props are stable, so app-shell renders skip this panel.
+export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
   const { onUnavailable } = props;
   const [open, setOpen] = useState(false);
   const [panelPresent, setPanelPresent] = useState(false);
@@ -2053,4 +2054,4 @@ export function SubAgentCommandCenter(props: SubAgentCommandCenterProps) {
       )}
     </div>
   );
-}
+});

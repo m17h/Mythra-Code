@@ -151,10 +151,28 @@ function longTaskSummary(startedAt: number, endedAt: number): Record<string, num
 export function projectedJsonBytes(value: unknown): number | null {
   try {
     const json = JSON.stringify(value);
-    return json === undefined ? null : new TextEncoder().encode(json).byteLength;
+    return json === undefined ? null : utf8ByteLength(json);
   } catch {
     return null;
   }
+}
+
+/** UTF-8 size without encoding a second, byte-array copy of the text. Lone
+ * surrogates count as the three-byte replacement character, as TextEncoder
+ * would encode them. */
+function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length
+      && (text.charCodeAt(index + 1) & 0xfc00) === 0xdc00) {
+      bytes += 4;
+      index++;
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 /**
