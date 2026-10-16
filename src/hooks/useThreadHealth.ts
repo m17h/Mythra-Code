@@ -23,7 +23,10 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
   if (!current || current.activeTurnId !== task.activeTurnId
     || current.updatedAt !== task.updatedAt
     || (current.status !== "starting" && current.status !== "running")) return;
-  store.completeTurn(threadId, task.activeTurnId, status);
+  // Completion clears activeTurnId. Retain the probed owner so the recovery
+  // warning remains part of that turn's history, even after it is sealed.
+  const turnId = current.activeTurnId;
+  if (!store.completeTurn(threadId, turnId, status)) return;
   const localExit = status === "error";
   const detail = localExit
     ? "The local provider process ended without a final response. Mythra Code closed the unfinished turn so it can be retried instead of leaving a false running state."
@@ -31,6 +34,7 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
   if (localExit) store.setTaskStatus(threadId, "error", detail);
   store.upsertActivity(threadId, {
     id: `thread-health-${Date.now()}`,
+    turnId,
     kind: "warning",
     title: "Thread status recovered",
     detail,

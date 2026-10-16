@@ -1660,6 +1660,10 @@ impl ClaudeTurnBoundary {
 /// this provider-authored stop reason as recovery evidence after process exit.
 fn claude_assistant_ends_turn(message: &Value) -> bool {
     message.get("type").and_then(Value::as_str) == Some("assistant")
+        // Provider-authored error messages can also carry `end_turn`. They
+        // never prove a successful answer when the result envelope is missing.
+        && message.get("error").is_none_or(Value::is_null)
+        && message.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true)
         // A nested agent's final message ends that agent's turn, not the root
         // turn Mythra Code is waiting on.
         && message

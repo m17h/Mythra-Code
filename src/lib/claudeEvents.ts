@@ -1091,10 +1091,20 @@ export function routeClaudeEvent(
     const emptySuccessError = emptySuccess
       ? "Claude Code finished without returning a response. Your prompt was saved, but no assistant message or tool activity was produced. You can retry it."
       : "";
+    const failedResultError = failed ? claudeResultError(message) : "";
     // Add the diagnostic before sealing the turn so it receives the same
     // terminal metadata as the prompt and survives transcript persistence and
     // reload as part of the failed turn.
-    if (emptySuccess) {
+    if (failed) {
+      store.upsertActivity(threadId, {
+        id: `claude-result-error-${turnId}`,
+        kind: "warning",
+        title: "Claude Code could not complete the run",
+        detail: failedResultError,
+        status: "failed",
+        turnId,
+      });
+    } else if (emptySuccess) {
       store.upsertActivity(threadId, {
         id: `claude-empty-result-${turnId}`,
         kind: "warning",
@@ -1114,7 +1124,7 @@ export function routeClaudeEvent(
     } else if (failed || emptySuccess) {
       const error =
         failed
-          ? claudeResultError(message)
+          ? failedResultError
           : emptySuccessError;
       store.setTaskStatus(threadId, "error", error);
       foregroundError(ctx, threadId, error);
@@ -1171,6 +1181,7 @@ export function routeClaudeEvent(
         title: "Claude Code stopped unexpectedly",
         detail,
         status: "failed",
+        turnId,
       });
       foregroundError(ctx, threadId, detail);
       foregroundStatus(ctx, threadId, "Task failed");

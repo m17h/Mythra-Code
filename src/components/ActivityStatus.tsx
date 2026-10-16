@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { Check, ChevronRight, CircleDashed, ListChecks, ShieldAlert, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Check, ChevronRight, CircleDashed, CircleDot, ListChecks, ShieldAlert, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { latestCompactActivity, type CompactWorkEntry, type CompactWorkState } from "../lib/compactActivity";
 import { PixelWorkingMark } from "./PixelWorkingMark";
 import "./ActivityStatus.css";
@@ -92,6 +92,7 @@ function usePlayfulLabel(label: string, enabled: boolean, seed: string): string 
 const SETTLED_ICONS: Record<Exclude<CompactWorkState, "running">, LucideIcon> = {
   completed: Check,
   failed: TriangleAlert,
+  partial: CircleDot,
   interrupted: X,
   unknown: ListChecks,
 };
@@ -99,6 +100,7 @@ const SETTLED_ICONS: Record<Exclude<CompactWorkState, "running">, LucideIcon> = 
 export const SETTLED_ACTIVITY_LABELS: Record<Exclude<CompactWorkState, "running">, string> = {
   completed: "Work completed",
   failed: "Run failed",
+  partial: "Partially completed",
   interrupted: "Work Stopped",
   unknown: "Activity",
 };

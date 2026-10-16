@@ -13,7 +13,7 @@ import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference }
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentControls } from "./SubAgentControls";
-import { activityTurnSegments, compactActivityPresentation, type CompactWorkState } from "../lib/compactActivity";
+import { activityTurnSegments, compactActivityPresentation, failedRunPresentationState, hasTerminalTurnEvidence, type CompactWorkState } from "../lib/compactActivity";
 import { ActivityStatus, describeLiveActivity, type LiveActivityDescriptor } from "./ActivityStatus";
 import { ActivityDetailsModal, workEntrySearchText, type ActivityDetailsRun } from "./ActivityDetailsModal";
 import { useFeedbackMessageSource } from "./FeedbackProvider";
@@ -394,8 +394,10 @@ function presentTimeline(
     if (entry.state === "running" && running) liveWork = work;
     else output.push(work);
   }
-  if (running) {
-    const run = liveWork?.runKey ? runs.byKey.get(liveWork.runKey) : liveRunFor(runs, activeTurnId);
+  const run = liveWork?.runKey ? runs.byKey.get(liveWork.runKey) : liveRunFor(runs, activeTurnId);
+  // Sealed output can arrive before the task's running flag settles. Its
+  // terminal history row must not acquire a second, synthetic live opener.
+  if (running && (liveWork || !activeTurnId || !run || !hasTerminalTurnEvidence(run.entries, activeTurnId))) {
     const live: WorkTimelineEntry = liveWork ?? { kind: "work", value: [], state: "running", runKey: run?.key ?? LIVE_RUN_KEY, turnId: activeTurnId };
     live.live = describeLiveActivity(run?.entries ?? [], { awaiting, activeTurnId });
     output.push(live);
@@ -526,7 +528,8 @@ function runOutcome(entries: WorkItemEntry[]): CompactWorkState {
     const status = workItemTurnStatus(entry);
     // Newer unfinished output must not inherit an older terminal outcome.
     if (status === "inProgress") return "unknown";
-    if (status === "completed" || status === "failed" || status === "interrupted") return status;
+    if (status === "failed") return failedRunPresentationState(entries);
+    if (status === "completed" || status === "interrupted") return status;
   }
   return "unknown";
 }

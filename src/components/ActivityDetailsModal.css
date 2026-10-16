@@ -46,6 +46,7 @@
 .activity-details-state { flex: 0 0 auto; color: var(--ink-2); font-weight: 560; }
 .activity-details-state.state-running { color: color-mix(in srgb, var(--green) 70%, var(--ink-2)); }
 .activity-details-state.state-failed { color: var(--red); }
+.activity-details-state.state-partial { color: var(--orange); }
 .activity-details-state.state-interrupted { color: var(--orange); }
 .activity-details-state.unconfirmed { color: var(--muted); }
 .activity-details-meta { min-width: 0; overflow: hidden; color: var(--muted-2); font-variant-numeric: tabular-nums; white-space: nowrap; text-overflow: ellipsis; }
