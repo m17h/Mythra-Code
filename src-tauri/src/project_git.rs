@@ -529,139 +529,6 @@ pub(super) fn optional_git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Whether a copy of the repository's own index can seed a checkpoint index.
-///
-/// A one-tree `read-tree --reset <tree>` yields exactly that tree's entries but
-/// keeps an old entry (including its stat data and flags) whose content
-/// matches. The stat data is what lets `add -A` skip unchanged files. Flags
-/// must not carry over: an assume-unchanged or skip-worktree entry would hide
-/// a real edit from `add -A`. Unmerged entries, split and sparse indexes, and
-/// fsmonitor state also take the original path. Any unexpected layout is
-/// treated as unsafe.
-fn index_can_seed_checkpoint(bytes: &[u8], hash_len: usize) -> bool {
-    fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-        Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-    }
-    fn read_u16(bytes: &[u8], at: usize) -> Option<u16> {
-        Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
-    }
-    let check = || -> Option<bool> {
-        if bytes.get(0..4)? != b"DIRC" {
-            return Some(false);
-        }
-        let version = read_u32(bytes, 4)?;
-        if !(2..=4).contains(&version) {
-            return Some(false);
-        }
-        let entries = read_u32(bytes, 8)? as usize;
-        let body_end = bytes.len().checked_sub(hash_len)?;
-        let mut at = 12usize;
-        for _ in 0..entries {
-            let flags_at = at + 40 + hash_len;
-            let flags = read_u16(bytes, flags_at)?;
-            let extended = flags & 0x4000 != 0;
-            // Assume-unchanged, or any stage other than 0 (unmerged).
-            if flags & 0x8000 != 0 || flags & 0x3000 != 0 || (extended && version < 3) {
-                return Some(false);
-            }
-            let mut path_at = flags_at + 2;
-            if extended {
-                let extended_flags = read_u16(bytes, path_at)?;
-                // Skip-worktree or intent-to-add.
-                if extended_flags & 0x6000 != 0 {
-                    return Some(false);
-                }
-                path_at += 2;
-            }
-            if version == 4 {
-                // Prefix-compressed path: a varint, then a NUL-terminated suffix.
-                while *bytes.get(path_at)? & 0x80 != 0 {
-                    path_at += 1;
-                }
-                path_at += 1;
-                let nul = bytes.get(path_at..body_end)?.iter().position(|byte| *byte == 0)?;
-                at = path_at + nul + 1;
-            } else {
-                let nul = bytes.get(path_at..body_end)?.iter().position(|byte| *byte == 0)?;
-                let fixed = path_at - at;
-                at += (fixed + nul + 8) & !7;
-            }
-            if at > body_end {
-                return None;
-            }
-        }
-        while at < body_end {
-            let signature = bytes.get(at..at + 4)?;
-            if matches!(signature, b"link" | b"sdir" | b"FSMN") {
-                return Some(false);
-            }
-            let size = read_u32(bytes, at + 4)? as usize;
-            at = at.checked_add(8)?.checked_add(size)?;
-        }
-        Some(at == body_end)
-    };
-    check().unwrap_or(false)
-}
-
-/// Copy the repository's index next to the temporary one, keeping its
-/// modification time so Git's racy-entry checks behave exactly as they do on
-/// the original, then reset its entries to HEAD.
-fn seed_checkpoint_index(repo: &Path, temp_index: &Path) -> bool {
-    let Ok(paths) = git_stdout(
-        repo,
-        &[
-            "rev-parse",
-            "--show-object-format",
-            "--git-path",
-            "index",
-            "--git-path",
-            "info/sparse-checkout",
-        ],
-        None,
-    ) else {
-        return false;
-    };
-    let mut lines = paths.lines();
-    let (Some(format), Some(index), Some(sparse)) = (lines.next(), lines.next(), lines.next())
-    else {
-        return false;
-    };
-    let hash_len = match format.trim() {
-        "sha1" => 20,
-        "sha256" => 32,
-        _ => return false,
-    };
-    let resolve = |path: &str| {
-        let path = PathBuf::from(path.trim());
-        if path.is_absolute() { path } else { repo.join(path) }
-    };
-    if resolve(sparse).exists() {
-        return false;
-    }
-    let index = resolve(index);
-    let Ok(metadata) = fs::metadata(&index) else {
-        return false;
-    };
-    let Ok(modified) = metadata.modified() else {
-        return false;
-    };
-    let Ok(bytes) = fs::read(&index) else {
-        return false;
-    };
-    if !index_can_seed_checkpoint(&bytes, hash_len) || fs::write(temp_index, &bytes).is_err() {
-        return false;
-    }
-    let preserved = fs::OpenOptions::new()
-        .write(true)
-        .open(temp_index)
-        .and_then(|file| file.set_modified(modified))
-        .is_ok();
-    // `--reset` is the one-tree merge without refusing entries that differ
-    // from HEAD (staged changes); the parse above already excluded the
-    // unmerged entries it would otherwise discard.
-    preserved && git_stdout(repo, &["read-tree", "--reset", "HEAD"], Some(temp_index)).is_ok()
-}
-
 /// The tree of the exact worktree source state (tracked and untracked,
 /// excluding Git-ignored paths), built in a temporary index.
 pub(super) fn current_worktree_tree(repo: &Path) -> Result<String, String> {
@@ -669,14 +536,11 @@ pub(super) fn current_worktree_tree(repo: &Path) -> Result<String, String> {
     let lock = temp_index.with_extension("index.lock");
     let result = (|| {
         if optional_git_stdout(repo, &["rev-parse", "--verify", "HEAD"]).is_some() {
-            // Seeding from the real index lets `add -A` reuse its stat data
-            // instead of reading and hashing every tracked file. The result
-            // is the same HEAD-based tree; any doubt takes the original path.
-            if !seed_checkpoint_index(repo, &temp_index) {
-                let _ = fs::remove_file(&temp_index);
-                let _ = fs::remove_file(&lock);
-                git_stdout(repo, &["read-tree", "HEAD"], Some(&temp_index))?;
-            }
+            // A fresh index has no stat data, so `add -A` reads and hashes
+            // every file. Restore and apply rely on this tree to notice edits
+            // made after a safety checkpoint; reusing the real index's stat
+            // cache missed same-size rewrites whose mtime was preserved.
+            git_stdout(repo, &["read-tree", "HEAD"], Some(&temp_index))?;
         } else {
             git_stdout(repo, &["read-tree", "--empty"], Some(&temp_index))?;
         }
