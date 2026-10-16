@@ -4705,6 +4705,7 @@ export default function App() {
       let runtimePending = true;
       let localPending = true;
       let runtimeFailed = false;
+      let runtimeIncomplete = false;
       let localFailed = false;
       let localIncomplete = false;
       let runtimeMatches: Thread[] = [];
@@ -4722,7 +4723,7 @@ export default function App() {
         }
         const status = runtimePending || localPending ? "searching"
           : runtimeFailed && localFailed ? "unavailable"
-          : runtimeFailed || localFailed || localIncomplete ? "partial" : "complete";
+          : runtimeFailed || runtimeIncomplete || localFailed || localIncomplete ? "partial" : "complete";
         setSearchResults({ query, workspacePath, threads: found, status });
       };
       void (async () => {
@@ -4731,8 +4732,29 @@ export default function App() {
             if (workspaceHasRuntimeThreads) throw new Error("Codex runtime unavailable");
             return;
           }
-          const result = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query));
-          runtimeMatches = threadsForWorkspace(result.data ?? [], workspacePath, threadProjectBindingsRef.current ?? {});
+          // The runtime searches globally. Continue past pages that match
+          // other projects, but bound work and keep truncated results partial.
+          const started = performance.now();
+          const seenCursors = new Set<string>();
+          const found = new Map<string, Thread>();
+          let cursor: string | undefined;
+          for (let page = 0; page < 10; page++) {
+            if (controller.signal.aborted) return;
+            const result = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query, 50, cursor));
+            if (controller.signal.aborted) return;
+            if (!Array.isArray(result?.data) || (result.nextCursor != null && typeof result.nextCursor !== "string")) {
+              throw new Error("Runtime conversation search returned an invalid page.");
+            }
+            for (const thread of threadsForWorkspace(result.data, workspacePath, sidebarThreadBindings ?? {})) {
+              found.set(thread.id, thread);
+            }
+            runtimeMatches = [...found.values()].slice(0, 50);
+            cursor = result.nextCursor || undefined;
+            runtimeIncomplete = Boolean(cursor) || found.size > 50;
+            publish();
+            if (!cursor || found.size >= 50 || performance.now() - started >= 1_500 || seenCursors.has(cursor)) break;
+            seenCursors.add(cursor);
+          }
         } catch {
           runtimeFailed = true;
         } finally {
@@ -4757,7 +4779,7 @@ export default function App() {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch, workspaceHasRuntimeThreads]);
+  }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch, workspaceHasRuntimeThreads, sidebarThreadBindings]);
 
   const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
     if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;

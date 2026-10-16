@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { onCodexEvent, type CodexEvent } from "../lib/codex";
 import { routeCodexEvent, type CodexEventContext } from "../lib/codexEvents";
+import { countProviderEvents } from "../lib/performanceOverlay";
 
 /**
  * Subscribes to Codex events exactly once for the component's lifetime.
@@ -41,6 +42,10 @@ export function useCodexEvents(context: CodexEventContext & {
       }
     };
     onCodexEvent((event) => {
+      if (disposed) return;
+      // Count at the app's single ingestion boundary, not once per observer
+      // (runtime ownership also subscribes to the same incoming events).
+      countProviderEvents();
       const current = contextRef.current;
       const admission = current.admitRuntimeEvent?.(event) ?? true;
       if (admission === false) return;

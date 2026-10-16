@@ -58,6 +58,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.onboardingVersion",
   "kiwi.modelFavorites",
   "kiwi.turnContextReceipts",
+  "kiwi.turnContextReceiptsEnabled",
   "kiwi.trayStatus",
   "kiwi.performanceOverlay",
 ] as const;

@@ -12,8 +12,8 @@ export interface ThreadSearchResponse {
   backwardsCursor?: string | null;
 }
 
-export function threadSearchParams(searchTerm: string, limit = 50) {
-  return { searchTerm, limit };
+export function threadSearchParams(searchTerm: string, limit = 50, cursor?: string) {
+  return { searchTerm, limit, ...(cursor ? { cursor } : {}) };
 }
 
 function normalizedPath(path: string): string {

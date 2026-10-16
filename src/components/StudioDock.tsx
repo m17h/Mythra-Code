@@ -43,7 +43,7 @@ import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
 import type { TerminalPanelProps } from "./TerminalPanel";
 import { scheduleIdlePreload } from "../lib/settingsPreload";
-import { useTurnContextReceipt } from "../lib/turnContextReceipts";
+import { useTurnContextReceipt, useTurnContextRecordingEnabled } from "../lib/turnContextReceipts";
 import "./LastTurnInstructions.css";
 import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
@@ -821,11 +821,15 @@ export function StudioDock(props: {
 /** The instruction context of the latest turn whose start was confirmed. */
 function LastTurnInstructions({ threadId }: { threadId: string | null }) {
   const receipt = useTurnContextReceipt(threadId);
+  const recordingEnabled = useTurnContextRecordingEnabled();
   if (!threadId) return null;
-  if (!receipt) return <p className="last-turn-empty">Instructions appear after a turn sent from this device is confirmed by its provider.</p>;
+  if (!receipt) return <p className="last-turn-empty">{recordingEnabled
+    ? "Instructions appear after a turn sent from this device is confirmed by its provider."
+    : "Instruction recording is off. Enable Record last-turn instructions in Settings → Usage to keep local records of future confirmed turns."}</p>;
   const total = receipt.totalInstructionChars;
   return <section className="last-turn-instructions" aria-label="Instructions for the last confirmed turn">
     <h3 className="panel-label">Last confirmed turn&rsquo;s instructions</h3>
+    {!recordingEnabled && <p className="last-turn-empty">Recording is off. This is an older saved record; you can delete it with the other instruction records in Settings → Usage.</p>}
     <div className="audit-table">
       <div><span>Start confirmed</span><code>{new Date(receipt.at).toLocaleString()}</code></div>
       <div><span>Model</span><code>{[receipt.provider, receipt.model, receipt.effort].filter(Boolean).join(" · ")}</code></div>

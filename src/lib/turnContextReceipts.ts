@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Provider } from "../types";
-import { loadStored, storeValue } from "./storage";
+import { loadStored, removeStoredValue, storeValue } from "./storage";
 
 /**
  * Instruction context for the latest provider-confirmed turn: exact assembled
@@ -23,6 +23,7 @@ export interface TurnContextReceipt {
 }
 
 const KEY = "kiwi.turnContextReceipts";
+const ENABLED_KEY = "kiwi.turnContextReceiptsEnabled";
 const MAX_THREADS = 24;
 const MAX_INSTRUCTION_CHARS = 32_000;
 
@@ -56,13 +57,56 @@ function sanitize(value: unknown): Record<string, TurnContextReceipt> {
 }
 
 let receipts = sanitize(loadStored<unknown>(KEY, {}));
+let recordingEnabled = loadStored<boolean>(ENABLED_KEY, false) === true;
 const listeners = new Set<() => void>();
 interface PendingReceipt { revoked: boolean }
 const pendingReceipts = new Map<string, Set<PendingReceipt>>();
 
+export function turnContextRecordingEnabled(): boolean {
+  return recordingEnabled;
+}
+
+function revokePendingReceipts(): void {
+  for (const attempts of pendingReceipts.values()) {
+    for (const pending of attempts) pending.revoked = true;
+  }
+  pendingReceipts.clear();
+}
+
+/** Per-device privacy choice, applied immediately like other diagnostic controls. */
+export function setTurnContextRecordingEnabled(enabled: boolean): void {
+  if (recordingEnabled === enabled && enabled) return;
+  // Enable only after the choice reaches the storage layer. Disabling must
+  // take effect in memory even if storage is temporarily unavailable.
+  if (enabled) storeValue(ENABLED_KEY, true);
+  recordingEnabled = enabled;
+  // Re-enabling must not capture a start prepared before recording was paused.
+  if (!enabled) revokePendingReceipts();
+  try { if (!enabled) storeValue(ENABLED_KEY, false); }
+  finally { for (const listener of listeners) listener(); }
+}
+
+/** Delete only the app's instruction records, not conversations or their sources. */
+export function clearTurnContextReceipts(): void {
+  setTurnContextRecordingEnabled(false);
+  removeStoredValue(KEY);
+  revokePendingReceipts();
+  receipts = {};
+  for (const listener of listeners) listener();
+}
+
+export function useTurnContextRecordingEnabled(): boolean {
+  return useSyncExternalStore(subscribe, turnContextRecordingEnabled, () => false);
+}
+
+export function useTurnContextReceiptCount(): number {
+  return useSyncExternalStore(subscribe, () => Object.keys(receipts).length, () => 0);
+}
+
 /** Hold only in-flight attempts, so archive/delete can revoke late responses
  * without retaining a tombstone for every thread ever forgotten. */
 export function beginTurnContextReceipt(threadId: string): { confirm: (receipt: TurnContextReceipt) => void; finish: () => void } {
+  if (!recordingEnabled) return { confirm: () => undefined, finish: () => undefined };
   const pending: PendingReceipt = { revoked: false };
   const attempts = pendingReceipts.get(threadId) ?? new Set<PendingReceipt>();
   attempts.add(pending);
@@ -74,7 +118,7 @@ export function beginTurnContextReceipt(threadId: string): { confirm: (receipt: 
   };
   return {
     confirm(receipt) {
-      if (!pending.revoked) recordTurnContext(threadId, receipt);
+      if (!pending.revoked && recordingEnabled) recordTurnContext(threadId, receipt);
       finish();
     },
     finish,

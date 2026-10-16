@@ -252,7 +252,10 @@ export function PromptsSettings({
         </div>
       </div>
       {savingProfile && <div className="inline-create prompts-save-profile">
-        <input aria-label="New prompt profile name" autoFocus value={profileName} onChange={(event) => setProfileName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProfile(); if (event.key === "Escape") setSavingProfile(false); }} placeholder="Profile name" />
+        <input aria-label="New prompt profile name" autoFocus value={profileName} onChange={(event) => setProfileName(event.target.value)} onKeyDown={(event) => {
+          if (event.key === "Enter") { event.preventDefault(); saveProfile(); }
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setSavingProfile(false); }
+        }} placeholder="Profile name" />
         <button type="button" onClick={saveProfile} disabled={!profileName.trim()}><Save size={12} /> Save all three layers</button>
       </div>}
       <div className="set-card prompts-card">
