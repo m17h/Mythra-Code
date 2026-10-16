@@ -29,7 +29,7 @@ import { flushPendingStateWrites, loadStored, readStoredRaw, storeValue } from "
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
-import { threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
+import { searchLocalTranscripts, threadSearchParams, threadsForWorkspace, type ThreadSearchResponse } from "./lib/threadSearch";
 import { compactSidebarIndex, countActiveThreadsByWorkspace, filterThreadsByKind, filterThreadsForWorkspace, forgetSidebarThread, isSubAgentThread, partitionBulkArchiveThreads, reconcileSidebarIndex, reconcileWorkspaceThreads, rememberSidebarThread, repairRootThreadMetadata, sidebarThread, threadBelongsToWorkspace, upsertThread, type ThreadSidebarIndex } from "./lib/threadList";
 import { timelineFromTurns } from "./lib/threadTimeline";
 import { INITIAL_THREAD_TURN_LIMIT, OLDER_THREAD_TURN_LIMIT, isExcludeTurnsUnsupported, isPaginatedHistoryUnsupported, normalizeThreadTurnsPage, turnsFromDescendingPage, type ThreadHistoryState } from "./lib/threadHistory";
@@ -4628,26 +4628,43 @@ export default function App() {
     };
   }, [permissionOpen]);
 
-  // Sidebar search also queries the runtime's full-text thread search, so
-  // matches are not limited to the loaded name/preview strings.
+  // Sidebar search also searches conversation content, so matches are not
+  // limited to the loaded name/preview strings: the Codex runtime's thread
+  // search for Codex threads, and the local transcript store for Claude and
+  // Cursor threads (which the runtime does not know about).
+  const searchableThreadsRef = useRef(threads);
+  searchableThreadsRef.current = threads;
   useEffect(() => {
     const requestId = ++threadSearchRequestRef.current;
     const query = threadSearch.trim();
-    if (!query || !activeWorkspace || !runtimeStatus?.available) {
+    if (!query || !activeWorkspace) {
       setSearchResults(null);
       return;
     }
     const workspacePath = activeWorkspace.path;
+    const runtimeAvailable = Boolean(runtimeStatus?.available);
     const timer = window.setTimeout(() => {
       void (async () => {
-        try {
-          const result = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query));
-          if (threadSearchRequestRef.current !== requestId) return;
-          setSearchResults(threadsForWorkspace(result.data ?? [], workspacePath, threadProjectBindingsRef.current ?? {}));
-        } catch {
-          if (threadSearchRequestRef.current !== requestId) return;
+        const [runtime, local] = await Promise.allSettled([
+          runtimeAvailable ? rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query)) : Promise.reject(new Error("Codex runtime unavailable")),
+          searchLocalTranscripts(query),
+        ]);
+        if (threadSearchRequestRef.current !== requestId) return;
+        if (runtime.status === "rejected" && local.status === "rejected") {
           setSearchResults(null);
+          return;
         }
+        const found = runtime.status === "fulfilled"
+          ? threadsForWorkspace(runtime.value.data ?? [], workspacePath, threadProjectBindingsRef.current ?? {})
+          : [];
+        if (local.status === "fulfilled" && local.value.length) {
+          const localIds = new Set(local.value.map((hit) => hit.threadId));
+          const foundIds = new Set(found.map((thread) => thread.id));
+          for (const thread of searchableThreadsRef.current) {
+            if (localIds.has(thread.id) && !foundIds.has(thread.id)) found.push(thread);
+          }
+        }
+        setSearchResults(found);
       })();
     }, 300);
     return () => window.clearTimeout(timer);

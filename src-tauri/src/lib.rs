@@ -8770,6 +8770,7 @@ pub fn run() {
                     run_discovery_cancel,
                     run_discovery::generate_thread_title,
                     run_discovery::analyze_user_preferences,
+                    persistence::local_transcript_search,
                     preference_learning::preference_learning_list,
                     preference_learning::preference_learning_save,
                     preference_learning::preference_learning_forget,

@@ -41,6 +41,8 @@ Subscriptions and API charges remain with the selected provider. Sub-agents and 
 - **Projects** are folders you choose. Each thread stays associated with its project, with its own messages, drafts, attachments, and running state.
 - **Shared project** threads work in the same folder. For parallel work, choose an **Isolated worktree** before the first message to give a thread its own folder and branch. This requires a Git repository root with at least one commit.
 
+The sidebar search matches thread titles and conversation content for every provider: Codex threads through the Codex runtime's search, and Claude and Cursor threads through their locally stored transcripts.
+
 Threads can keep working in the background while you view another conversation. While a turn is running, **Send** queues a follow-up; queued prompts can be edited or removed before delivery. **Steer** sends a correction into the current turn, and **Stop** interrupts it.
 
 Agents can ask structured questions. Claude pauses for an answer; supported Codex questions can stay open while work continues. Answering can steer an active turn or start a follow-up when the turn has finished. Exact support depends on the provider runtime.
