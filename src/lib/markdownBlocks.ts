@@ -13,11 +13,17 @@
 const MIN_SPLIT_LENGTH = 1_500;
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const LIST_MARKER = /^(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/;
-const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]+\]:/;
 const HTML_BLOCK = /^ {0,3}</;
 
 export function splitMarkdownBlocks(text: string): string[] {
   if (text.length < MIN_SPLIT_LENGTH) return [text];
+  // Reference definitions are document-wide even inside lists or blockquotes,
+  // and their labels may span lines or contain escaped brackets. Every one
+  // still ends its label with the literal `]:` delimiter. Scan the whole source
+  // before fence tracking so a container prefix or fence-looking label line
+  // cannot hide it. False positives (including code containing `]:`) deliberately
+  // keep one parse rather than risk disconnecting a reference from its link.
+  if (text.includes("]:")) return [text];
   const lines = text.split("\n");
   const blocks: string[] = [];
   let start = 0;
@@ -36,7 +42,7 @@ export function splitMarkdownBlocks(text: string): string[] {
       afterBlank = true;
       continue;
     }
-    if (REFERENCE_DEFINITION.test(line) || HTML_BLOCK.test(line) || line.includes("[^")) return [text];
+    if (HTML_BLOCK.test(line) || line.includes("[^")) return [text];
     if (afterBlank && index > start && /^\S/.test(line) && !LIST_MARKER.test(line)) {
       // Trailing blank lines stay out of the finished block: at the end of
       // a document they could change how its last list is parsed.
