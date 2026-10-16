@@ -1,7 +1,8 @@
-/** Warm only the Settings module/CSS, never mount its UI or run its effects.
- * Keep import/evaluation off launch and wait for idle without forcing a busy
- * renderer to meet a timeout. Older WebKit gets a deferred task fallback. */
-export function scheduleSettingsPreload(preload: () => void): () => void {
+/** Warm a lazy module/CSS (Settings, the timeline, the terminal), never mount
+ * its UI or run its effects. Keep import/evaluation off launch and wait for
+ * idle without forcing a busy renderer to meet a timeout. Older WebKit gets a
+ * deferred task fallback. */
+export function scheduleIdlePreload(preload: () => void, delayMs = 2_000): () => void {
   let cancelled = false;
   let timer: number | null = null;
   let idle: number | null = null;
@@ -26,7 +27,7 @@ export function scheduleSettingsPreload(preload: () => void): () => void {
     document.removeEventListener("visibilitychange", resume);
     queue();
   };
-  timer = window.setTimeout(queue, 2_000);
+  timer = window.setTimeout(queue, delayMs);
   return () => {
     cancelled = true;
     if (timer !== null) window.clearTimeout(timer);
@@ -34,3 +35,5 @@ export function scheduleSettingsPreload(preload: () => void): () => void {
     document.removeEventListener("visibilitychange", resume);
   };
 }
+
+export const scheduleSettingsPreload = scheduleIdlePreload;

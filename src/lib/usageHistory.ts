@@ -5,7 +5,7 @@ import {
   type ModelPricing, type PricingCorrection, type PricingCorrectionCheckpoint, type UsageProvider,
 } from "./usageLedger";
 import { historicalPricing } from "./pricingEvidence";
-import { loadStored, storeValue } from "./storage";
+import { loadStored, storedRevision, storeValue } from "./storage";
 import type { UsageEvidence } from "../types";
 import { cacheUnknownTokens, normalizedServiceTier } from "./usageEvidence";
 
@@ -492,6 +492,7 @@ function serialize(state: UsageHistoryState): PersistedHistory {
 
 let cachedState: UsageHistoryState | null = null;
 let cachedRaw: string | null | undefined;
+let cachedRevision: number | undefined;
 let dirty = false;
 let recentTurnSet: Set<string> | null = null;
 let rateIndex: Map<string, number> | null = null;
@@ -503,7 +504,10 @@ function readRaw(): string | null {
 
 function state(): UsageHistoryState | null {
   if (cachedState && dirty) return cachedState;
+  const revision = storedRevision(USAGE_HISTORY_KEY);
+  if (cachedRaw !== undefined && revision === cachedRevision) return cachedState;
   const raw = readRaw();
+  cachedRevision = revision;
   if (cachedRaw !== undefined && raw === cachedRaw) return cachedState;
   cachedRaw = raw;
   cachedState = parseHistory(loadStored<unknown>(USAGE_HISTORY_KEY, null));
@@ -833,6 +837,7 @@ export function flushUsageHistory(now = Date.now()): void {
 export function resetUsageHistoryCache(): void {
   cachedState = null;
   cachedRaw = undefined;
+  cachedRevision = undefined;
   dirty = false;
   recentTurnSet = null;
   rateIndex = null;

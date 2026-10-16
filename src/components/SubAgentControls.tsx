@@ -9,7 +9,10 @@ interface Controls {
   onStop: (worker: SubAgentWorker) => Promise<void>;
   onAccept?: (worker: SubAgentWorker) => Promise<void>;
 }
-export const SubAgentControls = createContext<(Controls & { now: number }) | null>(null);
+export const SubAgentControls = createContext<Controls | null>(null);
+/** The ticking clock lives in its own context so only elapsed-time readouts
+ * re-render each second, not every consumer of the controls (the timeline). */
+export const SubAgentClock = createContext(0);
 
 /** One clock for visible sub-agent cards, stopped when no child is active. */
 export function SubAgentControlsProvider({ children, ...controls }: Controls & { children: ReactNode }) {
@@ -33,6 +36,6 @@ export function SubAgentControlsProvider({ children, ...controls }: Controls & {
     };
   }, [active]);
   const { workers, historyWorkers, onOpen, onStop, onAccept } = controls;
-  const value = useMemo(() => ({ workers, historyWorkers, onOpen, onStop, onAccept, now }), [workers, historyWorkers, onOpen, onStop, onAccept, now]);
-  return <SubAgentControls.Provider value={value}>{children}</SubAgentControls.Provider>;
+  const value = useMemo(() => ({ workers, historyWorkers, onOpen, onStop, onAccept }), [workers, historyWorkers, onOpen, onStop, onAccept]);
+  return <SubAgentControls.Provider value={value}><SubAgentClock.Provider value={now}>{children}</SubAgentClock.Provider></SubAgentControls.Provider>;
 }

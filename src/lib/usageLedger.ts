@@ -1,6 +1,6 @@
 import type { TokenUsageView } from "../components/StudioDock";
 import type { Provider } from "../types";
-import { loadStored, readStoredRaw, storeValue } from "./storage";
+import { loadStored, readStoredRaw, storedRevision, storeValue } from "./storage";
 import type { UsageHistoryDelta } from "./usageHistory";
 import { cacheUnknownTokens, mergedUsageEvidence, normalizedServiceTier } from "./usageEvidence";
 
@@ -237,10 +237,11 @@ function cleanUsage(usage: TokenUsageView, stored = false): TokenUsageView {
 
 let cachedLedger: ThreadUsageRecord[] | null = null;
 let cachedRaw: string | null | undefined;
+let cachedRevision: number | undefined;
 let ledgerDirty = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedTotals: UsageTotals | null = null;
-const catalogCache = new Map<string, { raw: string | null; catalog: ModelPricingCatalog | null }>();
+const catalogCache = new Map<string, { raw: string | null; revision?: number; catalog: ModelPricingCatalog | null }>();
 
 /** Cursor rates only ever come from Cursor's own page, never the catalog. */
 export function pricingSource(provider: string, official: boolean): ModelPricing["source"] | null {
@@ -338,11 +339,16 @@ export function parseModelPricingCatalog(value: unknown, official = false): Mode
  * after this module first read storage (native hydration, another window, the
  * official refresh) is picked up instead of latching the first answer forever. */
 function storedCatalog(key: typeof MODEL_PRICING_CATALOG_KEY | typeof OFFICIAL_PRICING_KEY): ModelPricingCatalog | null {
-  const raw = readStoredRaw(key);
+  const revision = storedRevision(key);
   const cached = catalogCache.get(key);
-  if (cached && raw === cached.raw) return cached.catalog;
+  if (cached && cached.revision === revision) return cached.catalog;
+  const raw = readStoredRaw(key);
+  if (cached && raw === cached.raw) {
+    cached.revision = revision;
+    return cached.catalog;
+  }
   const catalog = parseModelPricingCatalog(loadStored<unknown>(key, null), key === OFFICIAL_PRICING_KEY);
-  catalogCache.set(key, { raw, catalog });
+  catalogCache.set(key, { raw, revision, catalog });
   return catalog;
 }
 
@@ -408,7 +414,7 @@ export async function refreshModelPricingCatalog(
       // Storage is unavailable; keep the freshly fetched catalog authoritative
       // for this session rather than re-reading nothing over it.
     }
-    catalogCache.set(MODEL_PRICING_CATALOG_KEY, { raw, catalog: parsed });
+    catalogCache.set(MODEL_PRICING_CATALOG_KEY, { raw, revision: storedRevision(MODEL_PRICING_CATALOG_KEY), catalog: parsed });
     if (changed) requestUsageRepricing();
     return parsed;
   } catch (error) {
@@ -506,8 +512,11 @@ export function evidenceSources(provider: UsageProvider, model: string, has: (ke
 
 function ledger(): ThreadUsageRecord[] {
   if (cachedLedger && ledgerDirty) return cachedLedger;
+  const revision = storedRevision(USAGE_LEDGER_KEY);
+  if (cachedLedger && revision === cachedRevision) return cachedLedger;
   let raw: string | null = null;
   try { raw = localStorage.getItem(USAGE_LEDGER_KEY); } catch { /* Usage must not prevent starting a provider when storage is unavailable. */ }
+  cachedRevision = revision;
   if (cachedLedger && raw === cachedRaw) return cachedLedger;
   cachedRaw = raw;
   const stored = loadStored<ThreadUsageRecord[]>(USAGE_LEDGER_KEY, []);
@@ -848,6 +857,7 @@ export function resetUsageLedgerCache(): void {
   persistTimer = null;
   cachedLedger = null;
   cachedRaw = undefined;
+  cachedRevision = undefined;
   cachedTotals = null;
   ledgerDirty = false;
   catalogCache.clear();

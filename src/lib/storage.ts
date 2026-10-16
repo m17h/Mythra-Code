@@ -83,6 +83,27 @@ const uncachedValues = new Map<string, { cached: string | null; value: string | 
 // the rest of this document, including migration writes and explicit updates.
 const unreadableCacheKeys = new Set<string>();
 
+// Write revisions let parsed-value caches skip re-reading a large stored
+// string on every render. Every write through this module bumps its key; any
+// change this module cannot attribute to one key (another document's storage
+// event, a reset, an unreadable cache) bumps the shared epoch instead.
+let revisionSequence = 0;
+let revisionEpoch = 0;
+const keyRevisions = new Map<string, number>();
+function bumpRevision(key: string): void {
+  keyRevisions.set(key, ++revisionSequence);
+}
+function bumpRevisionEpoch(): void {
+  revisionEpoch = ++revisionSequence;
+}
+if (typeof window !== "undefined") window.addEventListener("storage", bumpRevisionEpoch);
+
+/** Changes whenever `readStoredRaw(key)` may have changed. Equal revisions
+ * mean the stored value is unchanged, so callers can reuse what they parsed. */
+export function storedRevision(key: string): number {
+  return Math.max(keyRevisions.get(key) ?? 0, revisionEpoch);
+}
+
 function readCache(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
 }
@@ -92,6 +113,7 @@ function readCacheChecked(key: string): { ok: true; value: string | null } | { o
 }
 
 function cacheValue(key: string, value: string | null): boolean {
+  bumpRevision(key);
   if (unreadableCacheKeys.has(key)) {
     uncachedValues.set(key, { cached: null, value });
     return false;
@@ -108,7 +130,7 @@ function cacheValue(key: string, value: string | null): boolean {
 }
 
 export function resetStorageMemoryForTests(): void {
-  uncachedValues.clear(); unreadableCacheKeys.clear();
+  uncachedValues.clear(); unreadableCacheKeys.clear(); bumpRevisionEpoch();
   unacknowledgedNativeState.clear(); latestNativeState.clear(); nativeWriteQueues.clear(); nativeFlush = undefined;
 }
 
@@ -339,7 +361,7 @@ export function readStoredRaw(key: string): string | null {
   if (unreadableCacheKeys.has(key)) return uncachedValues.get(key)?.value ?? null;
   const cached = readCache(key);
   const uncached = uncachedValues.get(key);
-  if (uncached && uncached.cached !== cached) uncachedValues.delete(key);
+  if (uncached && uncached.cached !== cached) { uncachedValues.delete(key); bumpRevision(key); }
   return uncached && uncached.cached === cached ? uncached.value : cached;
 }
 
@@ -408,13 +430,13 @@ export async function hydrateNativeStorage(
           return;
         }
         const cacheUnavailable = !markerRead.ok && !cachedRead.ok;
-        if (cacheUnavailable) unreadableCacheKeys.add(key);
+        if (cacheUnavailable) { unreadableCacheKeys.add(key); bumpRevisionEpoch(); }
         const pendingToken = markerRead.ok ? markerRead.value : null;
         if (STARTUP_DATA_KEYS.has(key) && cachedRead.ok) startupSnapshot.set(key, cachedRead.value);
         const acceptNative = (raw: string) => {
           if (latestNativeState.get(key) !== initialRevisions.get(key)) return;
           if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, raw);
-          if (cacheUnavailable) uncachedValues.set(key, { cached: null, value: raw });
+          if (cacheUnavailable) { uncachedValues.set(key, { cached: null, value: raw }); bumpRevision(key); }
           else cacheValue(key, raw);
         };
         if (pendingToken !== null) {

@@ -1,4 +1,4 @@
-import { readStoredRaw, storeValue } from "./storage";
+import { readStoredRaw, storedRevision, storeValue } from "./storage";
 
 export interface CostEntry {
   threadId: string;
@@ -48,12 +48,17 @@ export function compactCostEntries(entries: CostEntry[], now = Date.now()): Cost
 // long-lived install) on the render path. The parse result is cached against
 // the exact raw string it came from, so a write from anywhere else — another
 // module, a test's localStorage.clear() — is still picked up, while a repeat
-// read only costs the string comparison.
+// read only costs the string comparison. While the key's write revision is
+// unchanged the stored string is not even read.
 let cachedRaw: string | null | undefined;
+let cachedRevision: number | undefined;
 let cachedEntries: CostEntry[] | null = null;
 
 function ledger(): CostEntry[] {
+  const revision = storedRevision(LEDGER_KEY);
+  if (cachedEntries && revision === cachedRevision) return cachedEntries;
   const raw = readStoredRaw(LEDGER_KEY);
+  cachedRevision = revision;
   if (cachedEntries && raw === cachedRaw) return cachedEntries;
   cachedRaw = raw;
   cachedEntries = parseEntries(raw);
@@ -73,6 +78,7 @@ function parseEntries(raw: string | null): CostEntry[] {
 /** Clears the module cache after tests or explicit storage resets. */
 export function resetCostLedgerCache(): void {
   cachedRaw = undefined;
+  cachedRevision = undefined;
   cachedEntries = null;
 }
 

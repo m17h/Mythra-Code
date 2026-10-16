@@ -15,7 +15,9 @@ export interface RowMenuItem {
  * `scale` compensates for the app-level `zoom` (UI size setting), which skews
  * getBoundingClientRect coordinates relative to fixed-position layout.
  */
-export function RowMenu({ label, items, scale = 1 }: { label: string; items: RowMenuItem[]; scale?: number }) {
+/** `items` may be a function so long lists (the thread inbox) build their
+ * menus only when one is opened, not on every render. */
+export function RowMenu({ label, items, scale = 1 }: { label: string; items: RowMenuItem[] | (() => RowMenuItem[]); scale?: number }) {
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const open = position !== null;
@@ -63,7 +65,7 @@ export function RowMenu({ label, items, scale = 1 }: { label: string; items: Row
       </button>
       {open && (
         <div className="row-menu-list" role="menu" aria-label={label} style={{ top: position.top, left: position.left }}>
-          {items.map((item) => (
+          {(typeof items === "function" ? items() : items).map((item) => (
             <button
               key={item.label}
               role="menuitem"

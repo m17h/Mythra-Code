@@ -12,7 +12,7 @@ import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
 import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, pullGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceRevertPreview, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -150,7 +150,7 @@ import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
 import { useSidebarSplitResize } from "./hooks/useSidebarSplitResize";
 import { useWorkflowEngine } from "./hooks/useWorkflowEngine";
 import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION } from "./lib/onboarding";
-import { scheduleSettingsPreload } from "./lib/settingsPreload";
+import { scheduleIdlePreload, scheduleSettingsPreload } from "./lib/settingsPreload";
 import { analyzeSkillPrompts as analyzeSelectedSkillPrompts, createLocalSkill, deleteLocalSkill, importLocalSkills, installOfficialSkill, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, resolveSkillPrompts as resolveSelectedSkillPrompts, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
 import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
@@ -236,8 +236,17 @@ import {
 
 const WorkflowRunDialog = lazy(() => import("./components/WorkflowRunDialog").then((module) => ({ default: module.WorkflowRunDialog })));
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((module) => ({ default: module.CommandPalette })));
-const loadChatTimeline = () => import("./components/ChatTimeline").then((module) => ({ default: module.ChatTimeline }));
+let loadedChatTimeline: typeof import("./components/ChatTimeline").ChatTimeline | null = null;
+// Set during the first commit of a resolved timeline. After that the mounted
+// view is never swapped, so a late idle preload cannot remount it.
+let chatTimelineCommitted = false;
+const loadChatTimeline = () => import("./components/ChatTimeline").then((module) => {
+  loadedChatTimeline = module.ChatTimeline;
+  return { default: module.ChatTimeline };
+});
 const ChatTimeline = lazy(loadChatTimeline);
+// Either the lazy wrapper or the component it resolved to; both take the same props.
+type ChatTimelineView = ComponentType<ComponentProps<typeof ChatTimeline>>;
 // An explicit, credential-free native QA replay. Vite removes this branch and
 // its fixture import from ordinary production builds; the fixture also verifies
 // the native isolated-profile identity before exposing any simulated activity.
@@ -638,11 +647,12 @@ function RendererLaunchCommitMarker() {
   return null;
 }
 
-function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: typeof ChatTimeline; threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
+function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: ChatTimelineView; threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
   const activeTurnId = useTaskStore((state) => state.tasks[threadId]?.activeTurnId);
+  useLayoutEffect(() => { chatTimelineCommitted = true; }, []);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
   return <Timeline key={threadId} messages={messages} activities={activities} running={running} activeTurnId={activeTurnId} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
@@ -780,7 +790,16 @@ export default function App() {
   const [settingsLoadAttempt, setSettingsLoadAttempt] = useState(0);
   // Replace React.lazy only after an explicit recovery attempt. Resetting a
   // boundary alone would replay its cached import rejection indefinitely.
-  const [timelineView, setTimelineView] = useState(() => ({ View: ChatTimeline, attempt: 0 }));
+  const [timelineView, setTimelineView] = useState<{ View: ChatTimelineView; attempt: number }>(() => ({ View: ChatTimeline, attempt: 0 }));
+  useEffect(() => scheduleIdlePreload(() => {
+    // A fulfilled import still suspends React.lazy on its first read, so hand
+    // the resolved component to a timeline that has not committed yet.
+    loadChatTimeline().then(() => {
+      const View = loadedChatTimeline;
+      if (!View || chatTimelineCommitted) return;
+      setTimelineView((current) => current.View === ChatTimeline ? { ...current, View } : current);
+    }, () => undefined);
+  }), []);
   const [studioView, setStudioView] = useState(() => ({ View: StudioDock, attempt: 0 }));
   const StudioDockView = studioView.View;
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("general");
@@ -8561,6 +8580,20 @@ export default function App() {
   });
 
   // Main renders rows flat; Sub-agents renders the same rows under parents.
+  // Inbox cards are memoized; give each thread object one stable open handler
+  // so an App render does not re-render hundreds of unchanged cards.
+  const selectThreadRef = useRef(selectThread);
+  selectThreadRef.current = selectThread;
+  const threadOpenHandlers = useRef(new WeakMap<Thread, () => void>());
+  const openHandlerFor = (thread: Thread) => {
+    let handler = threadOpenHandlers.current.get(thread);
+    if (!handler) {
+      handler = () => void selectThreadRef.current(thread);
+      threadOpenHandlers.current.set(thread, handler);
+    }
+    return handler;
+  };
+  const pinnedThreadSet = useMemo(() => new Set(pinnedThreadIds), [pinnedThreadIds]);
   const renderThreadRow = (thread: Thread, cardParent?: { label: string; via?: string }) => (
     <div key={thread.id} className={`thread-row-wrap ${activeThread?.id === thread.id ? "active" : ""}`}>
       {renamingThreadId === thread.id ? (
@@ -8591,7 +8624,7 @@ export default function App() {
           directory={threadFolderFor(thread)}
           provider={providerFromThread(thread, projectDefaultProvider)}
           providerName={providerLabel(providerFromThread(thread, projectDefaultProvider))}
-          pinned={pinnedThreadIds.includes(thread.id)}
+          pinned={pinnedThreadSet.has(thread.id)}
           isolated={Boolean(threadWorktrees[thread.id] && threadWorktrees[thread.id].status !== "removed")}
           branch={threadWorktrees[thread.id]?.branch}
           pullRequest={threadPullRequest.links[thread.id]?.snapshot}
@@ -8600,14 +8633,14 @@ export default function App() {
           parentVia={cardParent?.via}
           subAgentIds={threadKindView === "main" ? subAgentsByParent[thread.id] : undefined}
           nativeAgents={nativeAgentLinks}
-          onOpen={() => void selectThread(thread)}
+          onOpen={openHandlerFor(thread)}
         />
       )}
       <RowMenu
         label={`Options for ${automaticTitles.pendingIds.has(thread.id) ? "Generating title" : thread.name || thread.preview || "thread"}`}
         scale={(settings.uiScale || 100) / 100}
-        items={[
-          { label: pinnedThreadIds.includes(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadIds.includes(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
+        items={() => [
+          { label: pinnedThreadSet.has(thread.id) ? "Unpin" : "Pin", icon: pinnedThreadSet.has(thread.id) ? <PinOff size={13} /> : <Pin size={13} />, onSelect: () => toggleThreadPin(thread.id) },
           { label: "Rename", icon: <Pencil size={13} />, onSelect: () => startThreadRename(thread) },
           ...(activeProject ? [{ label: "Open folder", icon: <FolderOpen size={13} />, onSelect: () => void openThreadFolder(thread) }] : []),
           { label: "Archive", icon: <Archive size={13} />, onSelect: () => void archiveThread(thread) },
