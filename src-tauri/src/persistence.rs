@@ -15,6 +15,30 @@ use super::unix_timestamp_ms;
 /// Locked with a std::sync::Mutex and only used inside spawn_blocking.
 pub(super) struct StateDb {
     pub(super) connection: Arc<Mutex<Connection>>,
+    /// Read-only connection for pure reads, so they are not queued behind a
+    /// large transcript write on `connection`. WAL lets it read the last
+    /// committed state concurrently. `None` falls back to `connection`.
+    pub(super) reader: Option<Arc<Mutex<Connection>>>,
+}
+
+/// A second, read-only handle to the already opened and migrated database.
+pub(super) fn open_state_db_reader(path: &Path) -> Option<Connection> {
+    let connection = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    connection.execute_batch("PRAGMA busy_timeout=5000;").ok()?;
+    Some(connection)
+}
+
+/// The read-only connection when available. Use only for statements that
+/// never write (legacy-migrating transcript reads must use the writer).
+pub(super) fn shared_state_db_reader(app: &AppHandle) -> Result<Arc<Mutex<Connection>>, String> {
+    let db = app
+        .try_state::<StateDb>()
+        .ok_or_else(|| "Mythra Code state database is not initialized".to_string())?;
+    Ok(db.reader.clone().unwrap_or_else(|| db.connection.clone()))
 }
 
 pub(super) fn state_db_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -218,23 +242,20 @@ pub(super) fn open_state_db(path: &Path) -> Result<Connection, StateDbError> {
         .map_err(|error| {
             classify_state_db_error("Could not initialize Mythra Code state database", error)
         })?;
-    connection
-        .execute_batch(&format!("PRAGMA user_version = {STATE_DB_SCHEMA_VERSION};"))
-        .map_err(|error| {
-            classify_state_db_error("Could not stamp Mythra Code state database version", error)
-        })?;
-    // Keep the audit log bounded: prune to the newest rows at startup so a
-    // long-lived profile cannot grow the database without limit.
-    connection
-        .execute(
-            "DELETE FROM audit_events WHERE id NOT IN (
-               SELECT id FROM audit_events ORDER BY id DESC LIMIT ?1
-             )",
-            params![MAX_AUDIT_EVENT_ROWS],
-        )
-        .map_err(|error| {
-            classify_state_db_error("Could not prune Mythra Code audit history", error)
-        })?;
+    // Stamp only when the version changes; a launch otherwise writes nothing.
+    if user_version != STATE_DB_SCHEMA_VERSION {
+        connection
+            .execute_batch(&format!("PRAGMA user_version = {STATE_DB_SCHEMA_VERSION};"))
+            .map_err(|error| {
+                classify_state_db_error("Could not stamp Mythra Code state database version", error)
+            })?;
+    }
+    // Keep the audit log bounded at startup so a long-lived profile cannot
+    // grow the database without limit. The rowid threshold (the same bound
+    // each append applies) avoids materializing a NOT IN set on launch.
+    prune_audit_events(&connection).map_err(|error| {
+        classify_state_db_error("Could not prune Mythra Code audit history", error)
+    })?;
     Ok(connection)
 }
 
@@ -436,7 +457,7 @@ pub(super) async fn local_transcript_list(
         return Err("Local transcript discovery received an invalid sidebar index".to_string());
     }
     let known_thread_ids = known_thread_ids.into_iter().collect();
-    let connection = shared_state_db(&app)?;
+    let connection = shared_state_db_reader(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
         read_local_transcript_threads(&connection, &known_thread_ids)
@@ -638,11 +659,11 @@ fn migrate_legacy_local_transcript(
         .map_err(|error| format!("Could not replace local transcript chunks: {error}"))?;
     for (seq, chunk) in chunks.iter().enumerate() {
         transaction
-            .execute(
+            .prepare_cached(
                 "INSERT INTO local_transcript_chunks(provider, thread_id, seq, entries_json, byte_len)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![provider, thread_id, seq as i64, chunk, chunk.len() as i64],
             )
+            .and_then(|mut statement| statement.execute(params![provider, thread_id, seq as i64, chunk, chunk.len() as i64]))
             .map_err(|error| format!("Could not save local transcript chunk: {error}"))?;
     }
     let now = unix_timestamp_ms();
@@ -1045,11 +1066,11 @@ fn write_local_transcript_snapshot(
             .map_err(|error| format!("Could not replace local transcript suffix: {error}"))?;
         for (seq, chunk) in chunks.iter().enumerate().skip(common_prefix) {
             transaction
-                .execute(
+                .prepare_cached(
                     "INSERT INTO local_transcript_chunks(provider, thread_id, seq, entries_json, byte_len)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![provider, thread_id, seq as i64, chunk, chunk.len() as i64],
                 )
+                .and_then(|mut statement| statement.execute(params![provider, thread_id, seq as i64, chunk, chunk.len() as i64]))
                 .map_err(|error| format!("Could not save local transcript suffix: {error}"))?;
         }
         affected_chunks
@@ -1411,17 +1432,19 @@ fn write_local_transcript_tail(
         .map_err(|error| format!("Could not replace local transcript tail: {error}"))?;
     for (offset, chunk) in tail_chunks.iter().enumerate() {
         transaction
-            .execute(
+            .prepare_cached(
                 "INSERT INTO local_transcript_chunks(provider, thread_id, seq, entries_json, byte_len)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
+            )
+            .and_then(|mut statement| {
+                statement.execute(params![
                     provider,
                     thread_id,
                     tail_seq + offset as i64,
                     chunk,
                     chunk.len() as i64
-                ],
-            )
+                ])
+            })
             .map_err(|error| format!("Could not save local transcript tail: {error}"))?;
     }
     let next_head_seq = tail_seq + tail_chunks.len() as i64 - 1;
@@ -1490,7 +1513,7 @@ pub(super) async fn local_transcript_tail_write(
 
 #[tauri::command]
 pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Value>, String> {
-    let connection = shared_state_db(&app)?;
+    let connection = shared_state_db_reader(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
         match connection.query_row(
@@ -1525,7 +1548,7 @@ fn read_state_raw(connection: &Connection, key: &str) -> Result<Option<String>, 
 
 #[tauri::command]
 pub(super) async fn state_read_raw(app: AppHandle, key: String) -> Result<Option<String>, String> {
-    let connection = shared_state_db(&app)?;
+    let connection = shared_state_db_reader(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let connection = lock_state_db(&connection)?;
         read_state_raw(&connection, &key)

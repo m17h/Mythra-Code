@@ -48,7 +48,15 @@ pub(super) fn github_command(path: &Path) -> tokio::process::Command {
     command
 }
 
+static GITHUB_BINARY_CACHE: super::BinaryCache<PathBuf> = super::BinaryCache::new();
+
 pub(super) async fn resolve_github_binary(app: &AppHandle) -> Result<PathBuf, String> {
+    GITHUB_BINARY_CACHE
+        .get_or_resolve(|path| path.is_file(), || discover_github_binary(app))
+        .await
+}
+
+async fn discover_github_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let executable_name = if cfg!(windows) { "gh.exe" } else { "gh" };
     let legacy_override = concat!("OPEN", "KIWI_GH_PATH");
     if let Some(override_path) =

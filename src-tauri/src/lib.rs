@@ -105,7 +105,9 @@ use persistence::{
 };
 #[cfg(windows)]
 use process_launch::interactive_command;
-use process_launch::{background_command, background_std_command};
+use process_launch::background_command;
+#[cfg(windows)]
+use process_launch::background_std_command;
 use project_git::{
     checkpoint_complete, checkpoint_create, checkpoint_delete, checkpoint_diff, checkpoint_restore,
     git_common_dir, git_runtime_path, git_stdout, optional_git_stdout, unix_timestamp_ms,
@@ -1102,16 +1104,21 @@ struct ResolvedCodexRuntime {
 fn kill_process_tree(pid: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
-        let killed_group = background_std_command("kill")
-            .args(["-9", "--", &format!("-{pid}")])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
+        // Signal directly rather than spawning `kill`: this runs on async
+        // workers and stop paths, where a process launch would block them.
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return Err("Could not signal the provider process: invalid process id.".into());
+        };
+        if pid <= 0 {
+            return Err("Could not signal the provider process: invalid process id.".into());
+        }
+        // SAFETY: kill(2) only sends a signal; a negative pid names the group.
+        let killed_group = unsafe { libc::kill(-pid, libc::SIGKILL) } == 0;
         if !killed_group {
-            let status = background_std_command("kill")
-                .args(["-9", &pid.to_string()])
-                .status().map_err(|error| format!("Could not signal the provider process: {error}"))?;
-            if !status.success() { return Err("Could not confirm the provider process tree was killed.".into()); }
+            // SAFETY: as above, for the single process.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
+                return Err("Could not confirm the provider process tree was killed.".into());
+            }
         }
     }
     #[cfg(windows)]
@@ -1730,19 +1737,26 @@ impl TailBuffer {
         self.push_text(line);
     }
 
+    // Trimming shifts the whole buffer, so let it grow to twice the limit and
+    // trim then, instead of on every line once full. `contents` returns the
+    // same bounded tail either way.
     fn push_text(&mut self, text: &str) {
         self.text.push_str(text);
-        if self.text.len() > self.limit {
-            let excess = self.text.len() - self.limit;
-            let cut = (excess..self.text.len())
-                .find(|index| self.text.is_char_boundary(*index))
-                .unwrap_or(self.text.len());
+        if self.text.len() > self.limit.saturating_mul(2) {
+            let cut = self.tail_start();
             self.text.drain(..cut);
         }
     }
 
+    fn tail_start(&self) -> usize {
+        let excess = self.text.len().saturating_sub(self.limit);
+        (excess..self.text.len())
+            .find(|index| self.text.is_char_boundary(*index))
+            .unwrap_or(self.text.len())
+    }
+
     fn contents(&self) -> &str {
-        &self.text
+        &self.text[self.tail_start()..]
     }
 }
 
@@ -3983,6 +3997,8 @@ async fn developer_runtime_update(
                     .await?
                 }
             };
+            // The official installer may now outrank the cached location.
+            CLAUDE_BINARY_CACHE.clear().await;
             (message, false)
         }
         "codex" => {
@@ -4005,7 +4021,55 @@ async fn developer_runtime_update(
     })
 }
 
+/// How long a discovered CLI location is reused. A turn start, a usage poll
+/// and a status check otherwise each repeat PATH, `where.exe` and login-shell
+/// probes. Short enough that a newly preferred install is picked up quickly;
+/// a location that disappears is re-discovered at once. Misses are never
+/// cached, so installing a missing CLI and refreshing works immediately.
+const BINARY_CACHE_TTL: Duration = Duration::from_secs(60);
+
+pub(crate) struct BinaryCache<T>(tokio::sync::Mutex<Option<(Instant, T)>>);
+
+impl<T: Clone> BinaryCache<T> {
+    pub(crate) const fn new() -> Self {
+        Self(tokio::sync::Mutex::const_new(None))
+    }
+
+    /// Single-flight: concurrent callers wait for one discovery and reuse it.
+    pub(crate) async fn get_or_resolve<Fut>(
+        &self,
+        still_valid: impl Fn(&T) -> bool,
+        resolve: impl FnOnce() -> Fut,
+    ) -> Result<T, String>
+    where
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let mut cached = self.0.lock().await;
+        if let Some((resolved_at, value)) = cached.as_ref() {
+            if resolved_at.elapsed() < BINARY_CACHE_TTL && still_valid(value) {
+                return Ok(value.clone());
+            }
+        }
+        *cached = None;
+        let value = resolve().await?;
+        *cached = Some((Instant::now(), value.clone()));
+        Ok(value)
+    }
+
+    pub(crate) async fn clear(&self) {
+        *self.0.lock().await = None;
+    }
+}
+
+static CLAUDE_BINARY_CACHE: BinaryCache<PathBuf> = BinaryCache::new();
+
 async fn resolve_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
+    CLAUDE_BINARY_CACHE
+        .get_or_resolve(|path| path.is_file(), || discover_claude_binary(app))
+        .await
+}
+
+async fn discover_claude_binary(app: &AppHandle) -> Result<PathBuf, String> {
     let executable_name = if cfg!(windows) {
         "claude.exe"
     } else {
@@ -6509,14 +6573,22 @@ async fn audit_append(
         let connection = lock_state_db(&connection)?;
         let json = serde_json::to_string(&payload).map_err(|error| format!("Could not encode audit event: {error}"))?;
         let json = truncate_audit_payload(json);
-        connection
+        // One commit (one WAL sync) for the append and its prune.
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("Could not append audit event: {error}"))?;
+        transaction
             .execute(
                 "INSERT INTO audit_events(created_at, kind, thread_id, payload) VALUES (?1, ?2, ?3, ?4)",
                 params![unix_timestamp_ms(), kind, thread_id, json],
             )
             .map_err(|error| format!("Could not append audit event: {error}"))?;
-        persistence::prune_audit_events(&connection)
-            .map_err(|error| format!("Could not prune audit history: {error}"))?;
+        // A failed prune still keeps the appended event, as before.
+        let pruned = persistence::prune_audit_events(&transaction);
+        transaction
+            .commit()
+            .map_err(|error| format!("Could not append audit event: {error}"))?;
+        pruned.map_err(|error| format!("Could not prune audit history: {error}"))?;
         Ok(())
     })
     .await
@@ -7342,11 +7414,46 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<A
         let app_for_stderr = app.clone();
         let instance_for_stderr = instance.clone();
         tauri::async_runtime::spawn(async move {
+            // Chatty runtimes (RUST_LOG, MCP servers) can write hundreds of
+            // stderr lines a second. Coalesce them like stdout deltas: a burst
+            // goes out as one ordered "codex-events" array within 25 ms. The
+            // 1 s retirement drain outlasts that, so no buffered line is lost.
             let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let _ =
-                    app_for_stderr.emit("codex-event", json!({ "stream": "stderr", "line": line, "runtimeInstance": instance_for_stderr }));
+            let mut pending: Vec<Value> = Vec::new();
+            let mut flush_at: Option<Instant> = None;
+            let flush = |pending: &mut Vec<Value>| match pending.len() {
+                0 => {}
+                1 => {
+                    let _ = app_for_stderr.emit("codex-event", pending.pop());
+                }
+                _ => {
+                    let _ = app_for_stderr.emit("codex-events", std::mem::take(pending));
+                }
+            };
+            loop {
+                let read = match flush_at {
+                    Some(at) => match timeout_at(at, lines.next_line()).await {
+                        Ok(read) => read,
+                        Err(_) => {
+                            flush(&mut pending);
+                            flush_at = None;
+                            continue;
+                        }
+                    },
+                    None => lines.next_line().await,
+                };
+                let Ok(Some(line)) = read else {
+                    break;
+                };
+                pending.push(json!({ "stream": "stderr", "line": line, "runtimeInstance": instance_for_stderr }));
+                let now = Instant::now();
+                let due = *flush_at.get_or_insert(now + PROVIDER_DELTA_FLUSH_INTERVAL);
+                if pending.len() >= 128 || now >= due {
+                    flush(&mut pending);
+                    flush_at = None;
+                }
             }
+            flush(&mut pending);
         })
     });
 
@@ -7354,7 +7461,9 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<A
         // A descendant can inherit stdout and hold it open after the direct
         // app-server exits. Watching the child ends the transport anyway, so
         // pending requests fail and the next request starts a replacement.
-        let mut output = ProviderOutput::new(BufReader::new(stdout), child_for_reader.clone());
+        // App-server lines are JSON messages that often exceed the default
+        // 8 KB buffer (diffs, command output); read them in fewer syscalls.
+        let mut output = ProviderOutput::new(BufReader::with_capacity(64 * 1024, stdout), child_for_reader.clone());
         // The first assistant chunk is emitted immediately so the UI can lock
         // steering; subsequent deltas are coalesced into "codex-events" until
         // the deadline, batch size, or a non-delta message requires a flush.
@@ -7386,7 +7495,12 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<A
             };
             lifecycle_for_reader.observe_server_message(&instance_for_reader, &message);
             if let Some(thread_id) = message["params"]["threadId"].as_str() {
-                loaded_threads_for_reader.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread_id.to_owned());
+                // Nearly every line names an already-known thread: check under
+                // the shared read lock before taking the write lock.
+                let known = loaded_threads_for_reader.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(thread_id);
+                if !known {
+                    loaded_threads_for_reader.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread_id.to_owned());
+                }
             }
             if let Some(object) = message.as_object_mut() {
                 object.insert("runtimeInstance".into(), json!(instance_for_reader));
@@ -7837,7 +7951,11 @@ async fn codex_rpc(
     ) {
         inject_openrouter_proxy_config(&mut params, server.openrouter_proxy_url.as_deref());
     }
-    let result = match server.request(&method, params.clone()).await {
+    // Only a retryable read can be re-sent, so only it keeps a copy (turn and
+    // config payloads can be large).
+    let retryable = RETRYABLE_METHODS.contains(&method.as_str());
+    let retry_params = retryable.then(|| params.clone());
+    let result = match server.request(&method, params).await {
         Ok(result) => Ok(result),
         Err(error) if !server.is_alive() => {
             // ensure_server retains the old native slot until successful
@@ -7845,7 +7963,7 @@ async fn codex_rpc(
             let recovered = ensure_server(&app, &state).await.map_err(|restart_error| {
                 format!("{error}. Mythra Code also could not restart the runtime: {restart_error}")
             })?;
-            if RETRYABLE_METHODS.contains(&method.as_str()) {
+            if let Some(params) = retry_params {
                 validate_native_codex_runtime(&method, &params, &recovered.runtime_version)?;
                 recovered.request(&method, params).await
             } else {
@@ -8452,6 +8570,8 @@ pub fn run() {
             };
             app.manage(StateDb {
                 connection: Arc::new(std::sync::Mutex::new(connection)),
+                reader: persistence::open_state_db_reader(&db_path)
+                    .map(|reader| Arc::new(std::sync::Mutex::new(reader))),
             });
             // Bridge session material is only meaningful while its backend is
             // listening, so anything on disk at startup is debris from a
