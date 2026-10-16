@@ -4682,6 +4682,11 @@ export default function App() {
     .map((thread) => ({ provider: thread.modelProvider.toLowerCase() as "claude" | "cursor", threadId: thread.id }))
     .sort((left, right) => left.provider.localeCompare(right.provider) || left.threadId.localeCompare(right.threadId))),
   [activeWorkspace?.path, sidebarThreadBindings, threads]);
+  // Without the Codex runtime there is nothing for it to search unless this
+  // workspace lists runtime threads, so its absence alone is not a partial result.
+  const workspaceHasRuntimeThreads = useMemo(() => filterThreadsForWorkspace(
+    threads, activeWorkspace?.path ?? "", sidebarThreadBindings ?? {},
+  ).some((thread) => !isLocalSubscriptionThread(thread)), [activeWorkspace?.path, sidebarThreadBindings, threads]);
   useEffect(() => {
     const requestId = ++threadSearchRequestRef.current;
     const query = threadSearch.trim();
@@ -4722,7 +4727,10 @@ export default function App() {
       };
       void (async () => {
         try {
-          if (!runtimeAvailable) throw new Error("Codex runtime unavailable");
+          if (!runtimeAvailable) {
+            if (workspaceHasRuntimeThreads) throw new Error("Codex runtime unavailable");
+            return;
+          }
           const result = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query));
           runtimeMatches = threadsForWorkspace(result.data ?? [], workspacePath, threadProjectBindingsRef.current ?? {});
         } catch {
@@ -4749,7 +4757,7 @@ export default function App() {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch]);
+  }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch, workspaceHasRuntimeThreads]);
 
   const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
     if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;
