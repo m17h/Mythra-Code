@@ -61,6 +61,7 @@ import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
 import { TransitionInput } from "./components/TransitionInput";
+import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
@@ -259,6 +260,7 @@ const ChecksControl = lazy(() => import("./components/ChecksControl").then((modu
 const loadStudioDock = () => import("./components/StudioDock").then((module) => ({ default: module.StudioDock }));
 const StudioDock = lazy(loadStudioDock);
 const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((module) => ({ default: module.OnboardingModal })));
+const PerformanceOverlay = lazy(() => import("./components/PerformanceOverlay"));
 let settingsModalPromise: ReturnType<typeof importSettingsModal> | null = null;
 type SettingsModalComponent = typeof import("./components/SettingsModal").SettingsModal;
 let loadedSettingsModal: SettingsModalComponent | null = null;
@@ -688,6 +690,7 @@ export default function App() {
   useEffect(() => subscribeBackgroundUsage(() => recordError("Background helper usage could not be recorded.")), []);
   const appUpdater = useAppUpdater();
   const updateNoticePreview = useUpdateNoticePreview();
+  const performanceOverlay = usePerformanceOverlayEnabled();
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
@@ -9638,6 +9641,8 @@ export default function App() {
           />
         </Suspense>
       </ErrorBoundary>
+
+      {performanceOverlay && <ErrorBoundary label="performance overlay"><Suspense fallback={null}><PerformanceOverlay /></Suspense></ErrorBoundary>}
 
       {settingsMounted && (
         <ErrorBoundary

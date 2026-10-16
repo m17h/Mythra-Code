@@ -71,6 +71,7 @@ import { LanguageToolsSettings } from "./LanguageToolsSettings";
 import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { SkillLibrary } from "./SkillLibrary";
 import { PromptsSettings, type PromptLayer } from "./PromptsSettings";
+import { setPerformanceOverlayEnabled, usePerformanceOverlayEnabled } from "../lib/performanceOverlay";
 import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
@@ -704,6 +705,7 @@ export function SettingsModal({
   const promptRefs = useMemo(() => ({ global: globalPromptRef, codex: codexPromptRef, claude: claudePromptRef }), []);
   const promptAnalyzers = useMemo(() => ({ global: analyzeGlobalPrompt, codex: analyzeCodexPrompt, claude: analyzeClaudePrompt }), [analyzeClaudePrompt, analyzeCodexPrompt, analyzeGlobalPrompt]);
   const [promptLayer, setPromptLayer] = useState<PromptLayer>("global");
+  const performanceOverlay = usePerformanceOverlayEnabled();
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
@@ -1833,6 +1835,15 @@ export function SettingsModal({
                 </div>
                 <div className="set-control">
                   <button className="secondary-button" onClick={() => void exportDiagnosticBundle()}>Export JSON</button>
+                </div>
+              </div>
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Performance overlay</strong>
+                  <small>Shows frame rate, slow frames, long tasks, provider events per second and memory in a corner of the window. Saves automatically.</small>
+                </div>
+                <div className="set-control">
+                  <button type="button" role="switch" aria-label="Performance overlay" aria-checked={performanceOverlay} className={`toggle-switch ${performanceOverlay ? "on" : ""}`} onClick={() => setPerformanceOverlayEnabled(!performanceOverlay)}><span /></button>
                 </div>
               </div>
               <RecentPerformancePanel active={open && settingsSection === "system"} />

@@ -8,6 +8,7 @@ import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscr
 import { acceptCursorTurnStart, beginCursorTurnStart, cursorTurnOwner, cursorTurnStartAttempt, isCurrentCursorTurnStart, rejectCursorTurnStart, retireCursorTurnOwner } from "./cursorTurnOwnership";
 import { useTaskStore } from "./taskStore";
 import { safeErrorText } from "./errors";
+import { countProviderEvents } from "./performanceOverlay";
 
 export interface CursorRuntimeStatus {
   available: boolean;
@@ -171,9 +172,10 @@ export async function onCursorEvent(handler: (event: CursorEvent) => void): Prom
   // The backend emits single messages on "cursor-event" and coalesced bursts
   // of session/update notifications on "cursor-events" as an ordered array.
   // Keep both subscriptions so either backend version works.
-  const single = await listen<CursorEvent>("cursor-event", ({ payload }) => handler(payload));
+  const single = await listen<CursorEvent>("cursor-event", ({ payload }) => { countProviderEvents(); handler(payload); });
   try {
     const batched = await listen<CursorEvent[]>("cursor-events", ({ payload }) => {
+      countProviderEvents(payload.length);
       for (const event of payload) handler(event);
     });
     return () => {
