@@ -1,5 +1,5 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
-import { Children, createContext, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
+import { Children, createContext, Fragment, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -9,6 +9,7 @@ import remarkGfm from "remark-gfm";
 import type { Element } from "hast";
 import type { LocalSkill } from "../lib/skills";
 import { remarkSkillMentions } from "../lib/skillMentionMarkdown";
+import { splitMarkdownBlocks } from "../lib/markdownBlocks";
 import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference } from "../types";
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
@@ -675,10 +676,21 @@ const DEFAULT_MARKDOWN_PLUGINS = [remarkGfm];
 // Model-authored soft newlines are intentional line breaks (for example, poetry).
 const ASSISTANT_MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
 
+const MarkdownBlock = memo(function MarkdownBlock({ text, plugins }: { text: string; plugins: NonNullable<MarkdownOptions["remarkPlugins"]> }) {
+  return <Markdown remarkPlugins={plugins} components={MARKDOWN_COMPONENTS}>{text}</Markdown>;
+});
+
 const MessageMarkdown = memo(function MessageMarkdown({ text, rootRef, assistant = false }: { text: string; rootRef?: Ref<HTMLDivElement>; assistant?: boolean }) {
+  // A streaming reply grows at its end. Rendering it as independent top-level
+  // blocks keeps finished blocks memoized, so each frame re-parses only the
+  // block still arriving instead of the whole reply. The "\n" between blocks
+  // is the text node a single parse places there, keeping the DOM identical.
+  const blocks = useMemo(() => assistant ? splitMarkdownBlocks(text) : null, [assistant, text]);
   return (
     <div className="message-text rich-markdown" ref={rootRef}>
-      <Markdown remarkPlugins={assistant ? ASSISTANT_MARKDOWN_PLUGINS : DEFAULT_MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>{text}</Markdown>
+      {blocks
+        ? blocks.map((block, index) => <Fragment key={index}>{index > 0 && "\n"}<MarkdownBlock text={block} plugins={ASSISTANT_MARKDOWN_PLUGINS} /></Fragment>)
+        : <Markdown remarkPlugins={DEFAULT_MARKDOWN_PLUGINS} components={MARKDOWN_COMPONENTS}>{text}</Markdown>}
     </div>
   );
 });
