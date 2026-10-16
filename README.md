@@ -169,7 +169,7 @@ Mythra Code workflows are app-managed recipes, not an import of every Claude Cod
 
 ## Make it yours
 
-**Settings → Interface** controls themes, chat fonts, UI size, effort-slider styles, and provider marks. **Settings → Projects** provides project-specific defaults and optional **Automatic thread titles**.
+**Settings → Interface** controls themes, chat fonts, UI size, effort-slider styles, and provider marks. **Settings → Projects** provides project-specific defaults and optional **Automatic thread titles**. Its **Project profiles** list shows what each project changes from the app defaults (provider and model, look, project instructions, Run and Check commands, sub-agent settings). From there you can copy those settings to another project or export them as a `.mythra-project.json` file. When you import a file, you review each part first; Run and Check commands from a file start unticked.
 
 Automatic titles use a separate request to your chosen provider/model; the default OpenAI selection follows an available Luna model. A soft animated placeholder covers the title while it is generated, and manually chosen names take precedence. This feature shares part of the first prompt with the title provider even when the main conversation uses a different provider.
 

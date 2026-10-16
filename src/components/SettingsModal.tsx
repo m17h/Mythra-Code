@@ -99,6 +99,7 @@ import type {
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
+import { ProjectProfiles } from "./ProjectProfiles";
 import "./SettingsModal.css";
 import { CLAUDE_FALLBACK_MODELS } from "./ClaudeModelControl";
 import { openAiModelOptions, type RuntimeModel } from "./ModelPowerControl";
@@ -170,7 +171,7 @@ const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<Settings
     group: "App",
     items: [
       { id: "general", label: "Interface", icon: Palette, detail: "Appearance and keyboard shortcuts. Appearance previews instantly; save to keep your changes.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look keyboard shortcut escape esc stop cancel active run" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Set up Git, name new threads automatically, and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository repo git init initialize initialization automatic thread title titles naming rename luna" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Set up Git, name new threads automatically, and give each project its own provider, model, and look.", keywords: "profile export import copy project folder workspace default override per-project repository repo git init initialize initialization automatic thread title titles naming rename luna" },
       { id: "system", label: "Runtime", icon: Cpu, detail: "Onboarding, notifications, service tier, terminal memory and timeout, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory timeout time limit stop kill command local server dev server long-running minutes diagnostics logs errors performance onboarding getting started" },
       { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
     ],
@@ -189,6 +190,7 @@ const SETTINGS_ROWS: ReadonlyArray<{ pane: SettingsPane; label: string; keywords
   { pane: "general", label: "Provider marks", keywords: "logo icon openai claude cursor" },
   { pane: "projects", label: "Automatically initialize Git for new project threads", keywords: "git init repository" },
   { pane: "projects", label: "Automatic thread titles", keywords: "name rename title luna" },
+  { pane: "projects", label: "Project profiles", keywords: "export import copy share project settings profile differs defaults" },
   { pane: "models", label: "Accounts & connections", keywords: "sign in login account" },
   { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter" },
   { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token" },
@@ -1700,6 +1702,17 @@ export function SettingsModal({
             onThemePreview={onThemePreview}
             onEffortSliderPreview={onEffortSliderPreview}
             onChatFontPreview={onChatFontPreview}
+          />
+          <ProjectProfiles
+            projects={localProjects}
+            activeProjectId={activeProjectId}
+            onProjects={setLocalProjects}
+            onAppliedToActive={(project) => {
+              const defaults = project.overrides?.defaults;
+              onThemePreview(defaults?.theme ?? local.theme);
+              onEffortSliderPreview(defaults?.effortSlider ?? local.effortSlider);
+              onChatFontPreview(defaults?.chatFont ?? local.chatFont);
+            }}
           /></>}
 
           {settingsSection === "github" &&
