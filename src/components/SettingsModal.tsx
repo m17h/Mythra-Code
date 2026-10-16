@@ -178,9 +178,18 @@ const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<Settings
   },
 ];
 
-/** Individual settings that search can jump to. `label` is the row's visible
- * title (or group heading) so the pane can find, scroll to and highlight it. */
-const SETTINGS_ROWS: ReadonlyArray<{ pane: SettingsPane; label: string; keywords?: string }> = [
+type SettingsRow = {
+  pane: SettingsPane;
+  label: string;
+  keywords?: string;
+  /** Stable target for controls outside the shared setting-row markup. */
+  target?: "openrouter-key" | "lmstudio-server";
+  accountProvider?: Provider;
+};
+
+/** Individual settings that search can jump to. Most use the visible title;
+ * provider-specific controls also name their disclosure and stable target. */
+const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "general", label: "Escape stops the active run", keywords: "esc keyboard shortcut cancel" },
   { pane: "general", label: "Warn before using Max reasoning", keywords: "reasoning effort warning" },
   { pane: "general", label: "Theme", keywords: "dark light colour color appearance" },
@@ -192,8 +201,8 @@ const SETTINGS_ROWS: ReadonlyArray<{ pane: SettingsPane; label: string; keywords
   { pane: "projects", label: "Automatic thread titles", keywords: "name rename title luna" },
   { pane: "projects", label: "Project profiles", keywords: "export import copy share project settings profile differs defaults" },
   { pane: "models", label: "Accounts & connections", keywords: "sign in login account" },
-  { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter" },
-  { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token" },
+  { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter", target: "openrouter-key", accountProvider: "openrouter" },
+  { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token", target: "lmstudio-server", accountProvider: "lmstudio" },
   { pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
   { pane: "prompts", label: "Your instructions", keywords: "system prompt global codex claude profile" },
   { pane: "prompts", label: "Project files", keywords: "agents.md claude.md discovery" },
@@ -1202,8 +1211,10 @@ export function SettingsModal({
   const rowMatches = useMemo(() => navQuery.trim()
     ? SETTINGS_ROWS.filter((row) => settingsNavMatches({ label: row.label, detail: SETTINGS_PANES.get(row.pane)?.label ?? "", keywords: row.keywords ?? "" }, navQuery)).slice(0, 8)
     : [], [navQuery]);
-  const [rowFocus, setRowFocus] = useState<{ pane: SettingsPane; label: string; nonce: number } | null>(null);
-  const goToRow = (row: { pane: SettingsPane; label: string }) => {
+  const [rowFocus, setRowFocus] = useState<(SettingsRow & { nonce: number }) | null>(null);
+  const goToRow = (row: SettingsRow) => {
+    // Reveal the account panel without editing the default provider/model.
+    if (row.accountProvider) setAccountProvider(row.accountProvider);
     setSettingsSection(row.pane);
     setRowFocus((current) => ({ ...row, nonce: (current?.nonce ?? 0) + 1 }));
   };
@@ -1230,13 +1241,15 @@ export function SettingsModal({
     const find = () => {
       const content = contentRef.current;
       const label = rowFocus.label.toLowerCase();
-      const match = content && [...content.querySelectorAll<HTMLElement>("h4, .set-row strong, summary")]
-        .find((element) => element.textContent?.trim().toLowerCase() === label);
+      const match = rowFocus.target
+        ? content?.querySelector<HTMLElement>(`[data-settings-row="${rowFocus.target}"]`)
+        : content && [...content.querySelectorAll<HTMLElement>("h4, .set-row strong, summary")]
+          .find((element) => element.textContent?.trim().toLowerCase() === label);
       if (!match) {
         if (++attempts < 30) frame = requestAnimationFrame(find);
         return;
       }
-      marked = match.closest<HTMLElement>(".set-row, .set-group") ?? match;
+      marked = rowFocus.target ? match : match.closest<HTMLElement>(".set-row, .set-group") ?? match;
       marked.scrollIntoView?.({ block: "center" });
       marked.classList.add("settings-row-highlight");
       timer = window.setTimeout(() => marked?.classList.remove("settings-row-highlight"), 1_600);
@@ -1347,8 +1360,8 @@ export function SettingsModal({
                     if (event.key === "Escape" && navQuery) { event.stopPropagation(); setNavQuery(""); }
                     // Once a search has narrowed to one answer, Enter goes
                     // there: no second aim with the mouse.
-                    if (event.key === "Enter" && navMatches.length === 1) setSettingsSection(navMatches[0]!.id);
-                    else if (event.key === "Enter" && !navMatches.length && rowMatches.length === 1) goToRow(rowMatches[0]!);
+                    if (event.key === "Enter" && rowMatches.length === 1) goToRow(rowMatches[0]!);
+                    else if (event.key === "Enter" && navMatches.length === 1) setSettingsSection(navMatches[0]!.id);
                   }}
                 />
                 {navQuery && <button type="button" className="settings-search-clear" aria-label="Clear search" onClick={() => setNavQuery("")}><X size={12} /></button>}
@@ -2163,7 +2176,7 @@ export function SettingsModal({
                 {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh ChatGPT sign-in" aria-label="Refresh ChatGPT sign-in" aria-busy={openAiRefreshing > 0}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
               </div>
             ) : accountProvider === "openrouter" ? (
-              <div className="credential-panel stacked">
+              <div className="credential-panel stacked" data-settings-row="openrouter-key">
                 <div className="credential-status">
                   <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Stored securely on this device" : "No key stored"}</small></div>
                   {openRouterReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
@@ -2174,7 +2187,7 @@ export function SettingsModal({
                 </div>
               </div>
             ) : accountProvider === "lmstudio" ? (
-              <div className="credential-panel stacked">
+              <div className="credential-panel stacked" data-settings-row="lmstudio-server">
                 <div className="credential-status">
                   <div>
                     <strong>LM Studio local server</strong>

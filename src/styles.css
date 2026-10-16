@@ -1478,15 +1478,6 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 
 
-/* -- Short windows: the sidebar gives up its group labels before its rows -- */
-@media (max-height: 720px) {
-  .settings-nav-scroll { gap: 0; }
-  .settings-nav-label { display: none; }
-  .settings-nav-group + .settings-nav-group { margin-top: var(--s-1); padding-top: var(--s-1); border-top: 1px solid var(--line); }
-  .settings-nav button { min-height: 29px; }
-  .settings-nav-head { padding-top: var(--s-3); }
-}
-
 
 
 
@@ -2718,8 +2709,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 @media (prefers-reduced-motion: reduce) {
   .studio-dock { transition: none; animation: none; }
-  .command-palette, .model-menu, .openrouter-menu, .thread-provider-menu, .settings-backdrop, .settings-modal, .runtime-setup-modal,
-  .workflow-card, .studio-list-row, .theme-card, .provider-card, .skill-card,
+  .command-palette, .model-menu, .openrouter-menu, .thread-provider-menu, .settings-backdrop, .runtime-setup-modal, .studio-list-row,
   .usage-hero i, .provider-quota-track > i, .update-progress > span { transition: none; animation: none; }
   .status-orb.inProgress, .status-orb.started { animation: none; }
   .update-progress.indeterminate > span { animation: none; width: 100%; }
@@ -2734,44 +2724,15 @@ button[aria-disabled="true"] { cursor: not-allowed; }
   .model-power-control { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .reasoning-control { grid-column: 1 / -1; }
   .model-picker-copy em { display: none; }
-  .settings-modal, .settings-modal.settings-modal-wide { height: 100%; }
-  .settings-layout { --settings-nav-width: 0px; grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
-  /* The rail becomes a scrolling tab strip above the pane. The window title
-     goes with it — the pane header already says where you are — but the search
-     field stays, because it is the fastest way through thirteen destinations
-     on a narrow window. */
-  .settings-nav { border-right: 0; border-bottom: 1px solid var(--line); }
-  .settings-nav-head { padding: var(--s-2) var(--s-2) 0; }
-  .settings-nav-head h2 { display: none; }
-  .settings-nav-scroll { flex-direction: row; gap: var(--s-1); padding: var(--s-2); overflow-x: auto; overflow-y: hidden; }
-  .settings-nav-group { display: contents; }
-  .settings-nav-label { display: none; }
-  .settings-nav button { flex: 0 0 auto; width: auto; grid-template-columns: 18px auto; padding: 0 10px; }
-  .settings-nav-empty { flex: 0 0 auto; margin: 0; align-self: center; white-space: nowrap; }
-  .worker-config, .worker-add { grid-template-columns: 1fr; }
-  .preset-create-actions { flex-wrap: wrap; justify-content: flex-start; }
-  .settings-pane-heading { padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4); }
-  .settings-content { --settings-content-end: 16px; padding: 16px 16px var(--settings-content-end); }
   /* Narrow rows put the control under its label instead of squeezing both —
      except a toggle, which is small enough to stay on the right where the
      eye already expects to find it. */
   .set-row { grid-template-columns: minmax(0,1fr); }
-  .set-row > .set-control { justify-self: stretch; }
-  .set-row > .set-control > .app-select { min-width: 0; }
   .set-row:has(> .set-control > .toggle-switch) { grid-template-columns: minmax(0,1fr) auto; }
   .set-row:has(> .set-control > .toggle-switch) > .set-control { justify-self: end; }
-  .usage-display-layout { grid-template-columns: 1fr; gap: var(--s-3); }
-  .set-row > .set-control.usage-display-controls { justify-self: start; }
-  .theme-grid, .chat-font-grid, .provider-cards { grid-template-columns: 1fr; }
+  .chat-font-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr 1fr; }
   .inline-create.two, .schedule-create-grid { grid-template-columns: 1fr; }
-  /* Skills: the folder actions and composer buttons stop competing for a
-     row of their own and stack full width instead. */
-  .skill-folder-actions { width: 100%; margin-left: 0; }
-  .skill-folder-actions > button { flex: 1 1 130px; }
-  .skill-library-toolbar .secondary-button { flex: 1 1 100%; }
-  .skill-create-actions { flex-direction: column-reverse; align-items: stretch; }
-  .skill-card-list { max-height: none; }
 }
 
 /* Archived threads */
@@ -2912,7 +2873,6 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 
 
-@media (max-width: 760px) { .project-default-grid { grid-template-columns: 1fr; } }
 
 
 
