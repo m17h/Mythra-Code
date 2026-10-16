@@ -67,6 +67,7 @@ import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
+import { createTurnContextReceipt, recordTurnContext, type TurnContextReceipt } from "../lib/turnContextReceipts";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
@@ -638,6 +639,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let providerText: string;
     let resolvedSystemPrompt = effectiveSettings.systemPrompt;
     let userSkillMetadata: Pick<ChatMessage, "skillReferences" | "skillsFolder" | "skillDependencies"> = {};
+    // What this turn's instructions were built from, for the dock's audit.
+    let contextReceipt: TurnContextReceipt | null = null;
     if (mode === "steer" && running && activeThread) {
       const steerOwner = useTaskStore.getState().tasks[activeThread.id];
       const expectedSteerTurnId = steerOwner?.activeTurnId;
@@ -961,6 +964,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       await strategy.prepareTurn(thread, updatedThread);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
+      if (contextReceipt) recordTurnContext(thread.id, contextReceipt);
       useTaskStore.getState().appendUserMessage(thread.id, {
         id: sentMessageId,
         role: "user",
@@ -1043,11 +1047,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
         providerText = await resolveSkillPrompt(text, ctx.skillInvocationText);
         userSkillMetadata = ctx.resolveSkillMentions === false ? { skillReferences: [] } : ctx.getSkillReferences?.(text, ctx.skillInvocationText) ?? {};
       }
+      const instructionsWithSkills = resolvedSystemPrompt;
       // Learned documents never enter authored skill resolution or saved
       // settings/child baselines. Read the captured target's current documents
       // once for this new turn; steering keeps its running policy frozen.
       assertCanStart();
       resolvedSystemPrompt = await appendCurrentLearnedPreferences(resolvedSystemPrompt, activeProject?.id ?? null);
+      const instructionsWithMemory = resolvedSystemPrompt;
       assertCanStart();
       let executionPath = activeWorkspace.path;
       if (!activeThread && draftThreadIsolated && activeProject) {
@@ -1062,6 +1068,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
         resolvedSystemPrompt, activeProject ? executionPath : null, effectiveSettings, assertCanStart,
       );
       assertCanStart();
+      contextReceipt = createTurnContextReceipt({
+        provider: effectiveSettings.provider,
+        model: effectiveSettings.model,
+        effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
+        permission: effectiveSettings.permission,
+        stages: [
+          { label: "Your instructions", text: effectiveSettings.systemPrompt },
+          { label: "Skills", text: instructionsWithSkills },
+          { label: "Memory", text: instructionsWithMemory },
+          { label: "Project files", text: resolvedSystemPrompt },
+        ],
+        skills: userSkillMetadata.skillReferences?.map((reference) => reference.name),
+        attachments: sentAttachments.length,
+      });
       if (isPullRequestMutationRunning(executionPath)) {
         throw new Error("Wait for the pull request operation to finish before starting another model turn.");
       }
@@ -1303,6 +1323,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
+      if (contextReceipt) recordTurnContext(threadId, contextReceipt);
       useTaskStore.getState().appendUserMessage(threadId, {
         id: sentMessageId,
         role: "user",

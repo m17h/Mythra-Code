@@ -43,6 +43,8 @@ import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
 import type { TerminalPanelProps } from "./TerminalPanel";
 import { scheduleIdlePreload } from "../lib/settingsPreload";
+import { useTurnContextReceipt } from "../lib/turnContextReceipts";
+import "./LastTurnInstructions.css";
 import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
 import type { RunningTerminalCommand, TerminalOutputStore } from "../hooks/useTerminal";
@@ -189,6 +191,8 @@ export function StudioDock(props: {
   projectName?: string;
   projectPath?: string;
   activeThread: boolean;
+  /** For the last turn's instruction receipt in Usage & audit. */
+  activeThreadId?: string | null;
   reviewDiff: ReviewDiff;
   /** Set when AI review cannot run for this thread's provider. */
   reviewDisabledReason?: string;
@@ -745,6 +749,7 @@ export function StudioDock(props: {
           )}
           {props.costTotals && <div className="rate-card"><span>OpenRouter history</span><strong>{props.costTotals}</strong></div>}
           <h3 className="panel-label">Request audit</h3><div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
+          <LastTurnInstructions threadId={props.activeThreadId ?? null} />
         </>}
 
         {props.tab === "tools" && <>
@@ -811,6 +816,31 @@ export function StudioDock(props: {
       </div>
     </aside>
   );
+}
+
+/** Exactly what this device assembled as instructions for the thread's last
+ * turn: each layer's size and the full text, so "what did the model see?"
+ * has a concrete answer. */
+function LastTurnInstructions({ threadId }: { threadId: string | null }) {
+  const receipt = useTurnContextReceipt(threadId);
+  if (!threadId) return null;
+  if (!receipt) return <p className="last-turn-empty">Send a message from this device to see the instructions its turn received.</p>;
+  const total = receipt.instructions.length;
+  return <section className="last-turn-instructions" aria-label="Instructions sent with the last turn">
+    <h3 className="panel-label">Last turn&rsquo;s instructions</h3>
+    <div className="audit-table">
+      <div><span>Sent</span><code>{new Date(receipt.at).toLocaleString()}</code></div>
+      <div><span>Model</span><code>{[receipt.provider, receipt.model, receipt.effort].filter(Boolean).join(" · ")}</code></div>
+      {receipt.layers.map((layer) => <div key={layer.label}><span>{layer.label}</span><code>{layer.chars ? `${layer.chars.toLocaleString()} chars` : "none"}</code></div>)}
+      {receipt.skills.length > 0 && <div><span>Skills referenced</span><code>{receipt.skills.join(", ")}</code></div>}
+      {receipt.attachments > 0 && <div><span>Attachments</span><code>{receipt.attachments}</code></div>}
+    </div>
+    <details className="last-turn-text">
+      <summary>Show the {total.toLocaleString()} characters{receipt.truncated ? " (first 32,000 kept)" : ""}</summary>
+      <textarea readOnly rows={10} spellCheck={false} value={receipt.instructions} aria-label="Last turn's assembled instructions" placeholder="No instructions were added for this turn." />
+      <small>Mythra Code also sends its own operating guidance for tools and delegation, and each provider adds its built-in instructions.</small>
+    </details>
+  </section>;
 }
 
 function Empty({ icon: Icon, title, text }: { icon: typeof CodeXml; title: string; text: string }) {

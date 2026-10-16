@@ -62,6 +62,7 @@ import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
 import { TransitionInput } from "./components/TransitionInput";
 import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
+import { forgetTurnContext } from "./lib/turnContextReceipts";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
@@ -2384,6 +2385,7 @@ export default function App() {
 
   const forgetThread = useCallback((threadId: string, keepQuestions = false) => {
     forgetRuntimePerformanceProvider(threadId);
+    forgetTurnContext(threadId);
     if (!keepQuestions) forgetQuestionRecords(threadId);
     const next = forgetSidebarThread(knownThreadsRef.current ?? {}, threadId);
     knownThreadsRef.current = next;
@@ -9487,6 +9489,7 @@ export default function App() {
             projectName={activeProject?.name}
             projectPath={activeExecutionPath || activeProject?.path}
             activeThread={Boolean(activeThread)}
+            activeThreadId={activeThread?.id ?? null}
             reviewDiff={reviewDiff}
             reviewDisabledReason={reviewDisabledReason}
             checksControl={activeProject ? <Suspense fallback={<button disabled>Loading checks…</button>}><ChecksControl

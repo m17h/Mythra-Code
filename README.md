@@ -175,6 +175,8 @@ Automatic titles use a separate request to your chosen provider/model; the defau
 
 **Settings → Prompts** holds your global and provider-specific instructions. The user-defined prompt starts empty. Project-instruction loading is opt-in for Codex-backed providers. Mythra Code also supplies operational guidance for its tools, delegation, completion, and project commands; an empty user prompt does **not** mean an instruction-free request. Provider policies and runtime tool instructions still apply.
 
+To see exactly what a turn received, open the workspace panel's **Usage & audit** tab: **Last turn's instructions** lists the size of each layer (your instructions, skills, Memory, project files) and the full assembled text for the thread's most recent turn sent from this device.
+
 ## Usage and privacy
 
 **Settings → Usage** shows this device's recorded tokens, daily activity, model/provider breakdowns, and estimated API-equivalent cost. These estimates are **not a subscription bill** and do not measure what every other app or computer has used. Account quota indicators use provider-reported information where available; unavailable information is not zero usage. See the [usage guide](docs/usage-dashboard.md) for coverage and pricing details.
