@@ -984,7 +984,26 @@ fn resolve_windows_cursor_install_at(local_app_data: &Path) -> Option<CursorRunt
     })
 }
 
+static CURSOR_RUNTIME_CACHE: super::BinaryCache<CursorRuntime> = super::BinaryCache::new();
+
 pub(super) async fn resolve_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
+    CURSOR_RUNTIME_CACHE
+        .get_or_resolve(cursor_runtime_still_present, || discover_cursor_runtime(app))
+        .await
+}
+
+fn cursor_runtime_still_present(runtime: &CursorRuntime) -> bool {
+    match runtime {
+        CursorRuntime::Native(path) => path.is_file(),
+        #[cfg(windows)]
+        CursorRuntime::WindowsNode { node, script, .. } => node.is_file() && script.is_file(),
+        // Probing WSL is the expensive part being cached; the TTL bounds it.
+        #[cfg(windows)]
+        CursorRuntime::Wsl(_) => true,
+    }
+}
+
+async fn discover_cursor_runtime(app: &AppHandle) -> Result<CursorRuntime, String> {
     let legacy_override = concat!("OPEN", "KIWI_CURSOR_PATH");
     if let Some(override_path) =
         env::var_os("MYTHRA_CODE_CURSOR_PATH").or_else(|| env::var_os(legacy_override))

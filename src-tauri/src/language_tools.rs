@@ -1994,14 +1994,29 @@ fn detect_project(cwd: &Path) -> Result<(PathBuf, BTreeSet<String>), String> {
             if visited > 6000 {
                 return Ok((canonical, detected));
             }
+            // Unix directory entries already carry their (non-following) type,
+            // so skip the extra lstat per entry. Windows still needs metadata
+            // to see reparse points such as junctions.
+            #[cfg(unix)]
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            #[cfg(unix)]
+            if file_type.is_symlink() {
+                continue;
+            }
+            #[cfg(not(unix))]
             let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
                 continue;
             };
+            #[cfg(not(unix))]
             if redirected(&metadata) {
                 continue;
             }
+            #[cfg(not(unix))]
+            let file_type = metadata.file_type();
             let name = entry.file_name().to_string_lossy().into_owned();
-            if metadata.is_dir() {
+            if file_type.is_dir() {
                 if depth < 4
                     && !name.starts_with('.')
                     && ![
@@ -2025,7 +2040,7 @@ fn detect_project(cwd: &Path) -> Result<(PathBuf, BTreeSet<String>), String> {
                 {
                     queue.push((entry.path(), depth + 1));
                 }
-            } else if metadata.is_file() {
+            } else if file_type.is_file() {
                 for tool in TOOLS {
                     let manifest = match tool.id {
                         "typescript" => ["package.json", "tsconfig.json", "jsconfig.json"]
@@ -2411,7 +2426,12 @@ async fn prepare_project_inner(
     {
         return Ok(None);
     }
-    let (canonical, detected) = detect_project(Path::new(cwd))?;
+    // Scanning up to 6000 entries is blocking I/O; keep it off the async
+    // workers that also drive provider output.
+    let project = cwd.to_string();
+    let (canonical, detected) = tokio::task::spawn_blocking(move || detect_project(Path::new(&project)))
+        .await
+        .map_err(|_| "Could not inspect the project folder.")??;
     if detected.is_empty() {
         return Ok(None);
     }

@@ -18,6 +18,13 @@ tauri-build = { version = "2.5.6", features = [] }
 [profile.dev.package.sha2]
 opt-level = 3
 
+# Smaller, faster release binaries. Unwinding stays on: poisoned-lock recovery
+# and spawn_blocking JoinError handling rely on panics unwinding.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dependencies]
 axum = "0.8"
 base64 = "0.22"

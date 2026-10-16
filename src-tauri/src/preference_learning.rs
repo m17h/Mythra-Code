@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager};
 
 const MAX_REGISTRY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCOPES: usize = 128;
@@ -592,54 +592,66 @@ pub(crate) struct PreferenceSnapshot {
     creation_revision: u64,
 }
 
-#[tauri::command]
-pub(crate) fn preference_learning_list(
+/// Registry I/O fsyncs (F_FULLFSYNC on macOS). Run it on the blocking pool,
+/// not the main thread where synchronous commands execute; the state lock
+/// still serializes every operation.
+async fn with_registry<T: Send + 'static>(
     app: AppHandle,
-    state: State<'_, PreferenceLearningState>,
-) -> Result<PreferenceSnapshot, String> {
-    let _guard = state.lock.lock().map_err(|_| error())?;
-    let root = prepare_root(&crate::release_qa::app_data_dir(&app).map_err(|_| error())?)?;
-    let registry = read_registry(&root)?;
-    Ok(PreferenceSnapshot {
-        creation_revision: registry.last_revision,
-        scopes: registry
-            .scopes
-            .into_iter()
-            .map(|entry| entry.state)
-            .collect(),
+    operation: impl FnOnce(&Path) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<PreferenceLearningState>();
+        let _guard = state.lock.lock().map_err(|_| error())?;
+        let root = prepare_root(&crate::release_qa::app_data_dir(&app).map_err(|_| error())?)?;
+        operation(&root)
     })
+    .await
+    .map_err(|_| error())?
 }
 
 #[tauri::command]
-pub(crate) fn preference_learning_save(
+pub(crate) async fn preference_learning_list(app: AppHandle) -> Result<PreferenceSnapshot, String> {
+    with_registry(app, |root| {
+        let registry = read_registry(root)?;
+        Ok(PreferenceSnapshot {
+            creation_revision: registry.last_revision,
+            scopes: registry
+                .scopes
+                .into_iter()
+                .map(|entry| entry.state)
+                .collect(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn preference_learning_save(
     app: AppHandle,
-    state: State<'_, PreferenceLearningState>,
     scope_key: String,
     expected_revision: u64,
     expected_creation_revision: Option<u64>,
     value: PreferenceValue,
 ) -> Result<ScopeState, String> {
-    let _guard = state.lock.lock().map_err(|_| error())?;
-    let root = prepare_root(&crate::release_qa::app_data_dir(&app).map_err(|_| error())?)?;
-    save_with_snapshot(
-        &root,
-        scope_key,
-        expected_revision,
-        expected_creation_revision,
-        value,
-        replace,
-        prune_generated,
-    )
+    with_registry(app, move |root| {
+        save_with_snapshot(
+            root,
+            scope_key,
+            expected_revision,
+            expected_creation_revision,
+            value,
+            replace,
+            prune_generated,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn preference_learning_forget(
+pub(crate) async fn preference_learning_forget(
     app: AppHandle,
-    state: State<'_, PreferenceLearningState>,
     scope_key: String,
     expected_revision: u64,
 ) -> Result<(), String> {
-    let _guard = state.lock.lock().map_err(|_| error())?;
-    let root = prepare_root(&crate::release_qa::app_data_dir(&app).map_err(|_| error())?)?;
-    forget(&root, &scope_key, expected_revision)
+    with_registry(app, move |root| forget(root, &scope_key, expected_revision)).await
 }

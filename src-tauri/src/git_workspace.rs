@@ -1965,12 +1965,17 @@ fn wait_for_git_completion(
     let mut stdout = None;
     let mut stderr = None;
     let mut next_child_poll = Instant::now();
+    let mut child_polls = 0u32;
     loop {
         if status.is_none() {
             status = child
                 .try_wait()
                 .map_err(|error| stop(child, format!("Could not wait for Git: {error}")))?;
-            next_child_poll = next_git_child_poll(next_child_poll, Instant::now());
+            let checked_at = Instant::now();
+            if checked_at >= next_child_poll {
+                child_polls = child_polls.saturating_add(1);
+            }
+            next_child_poll = next_git_child_poll(next_child_poll, checked_at, child_polls);
         }
         if let (Some(status), Some(stdout), Some(stderr)) =
             (status, stdout.as_mut(), stderr.as_mut())
@@ -2016,9 +2021,13 @@ fn wait_for_git_completion(
     }
 }
 
-fn next_git_child_poll(previous: Instant, checked_at: Instant) -> Instant {
+/// Most Git reads finish within a few milliseconds of their output closing,
+/// so poll for the exit on a short backoff (1, 2, 4, 8, 16 ms) before settling
+/// at 25 ms. A fixed 25 ms grid added up to 25 ms to every subprocess.
+fn next_git_child_poll(previous: Instant, checked_at: Instant, polls: u32) -> Instant {
     if checked_at >= previous {
-        checked_at + Duration::from_millis(25)
+        let step = 1u64 << polls.saturating_sub(1).min(5);
+        checked_at + Duration::from_millis(step.min(25))
     } else {
         previous
     }
