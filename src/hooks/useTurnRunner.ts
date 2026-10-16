@@ -736,7 +736,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
     }
 
-    const willUseSharedFolder = !currentIsolation && !(draftThreadIsolated && !activeThread);
+    const willUseSharedFolder = !activeWorkspace.isChat && !currentIsolation && !(draftThreadIsolated && !activeThread);
     const sharedDraftStart = !activeThread && willUseSharedFolder ? Symbol("shared draft start") : undefined;
     const sharedFolderOverlapMessage = activeThread
       ? "This queued follow-up is waiting because another conversation is working in the same shared project folder. Start it again after that task finishes."

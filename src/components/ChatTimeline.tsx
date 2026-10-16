@@ -33,6 +33,8 @@ import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/stream
 import { createLineStreamingTextPacer } from "../lib/lineStreamingTextPacer";
 import { createCompletionReveal, type CompletionReveal } from "../lib/completionReveal";
 import { MessageImagePreview } from "./MessageImagePreview";
+import { inlinePathParts, type InlinePathParts } from "../lib/inlinePath";
+import "./InlinePath.css";
 
 export type WorkItemEntry =
   | { kind: "message"; value: ChatMessage }
@@ -591,7 +593,7 @@ function MarkdownLink({ href, children, node }: { href?: string; children?: Reac
     return <a href="#skills" className="message-skill-mention"
       title={`Open @${name} in Settings · Skills${disabled ? " (disabled)" : ""}`}
       onClick={(event) => { event.preventDefault(); skillNavigation?.onOpenSkill?.(path); }}
-    >{children}</a>;
+    ><InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider></a>;
   }
   const external = Boolean(href && /^https?:\/\//i.test(href));
   return (
@@ -603,7 +605,7 @@ function MarkdownLink({ href, children, node }: { href?: string; children?: Reac
         if (external && href) void openUrl(href);
       }}
     >
-      {children}
+      <InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider>
     </a>
   );
 }
@@ -620,6 +622,27 @@ const WORK_HISTORY_STREAMING = { presentation: "lines", immediate: false } as co
 const WORK_HISTORY_SEARCHING = { presentation: "lines", immediate: true } as const;
 const SkillNavigation = createContext<{ skills: LocalSkill[]; onOpenSkill?: (path: string) => void } | undefined>(undefined);
 const NO_SKILLS: LocalSkill[] = [];
+const InsideCodeBlock = createContext(false);
+const InsideMarkdownLink = createContext(false);
+
+function MarkdownCode({ children, className }: { children?: ReactNode; className?: string }) {
+  const block = useContext(InsideCodeBlock);
+  const linked = useContext(InsideMarkdownLink);
+  const text = typeof children === "string" ? children : "";
+  const parts = !block && !className ? inlinePathParts(text) : null;
+  if (parts === null) return <code className={className}>{children}</code>;
+  return <InlinePath text={text} parts={parts} linked={linked} />;
+}
+
+function InlinePath({ text, parts, linked }: { text: string; parts: InlinePathParts; linked: boolean }) {
+  const [copied, copy] = useCopyFeedback();
+  return <span className={`inline-path${linked ? " inline-path-linked" : ""}`} title={text}>
+    <code><span className="inline-path-directory"><span className="inline-path-prefix">{parts.prefix}</span><span className="inline-path-middle">{parts.middle}</span></span><span className="inline-path-destination">{parts.destination}</span></code>
+    {!linked && <button type="button" className="inline-path-copy" aria-label={copied ? "Path copied" : "Copy full path"} title={copied ? "Copied" : "Copy full path"} onClick={() => copy(text)}>
+      {copied ? <Check size={11} /> : <Clipboard size={11} />}
+    </button>}
+  </span>;
+}
 
 function CodePre({ children }: { children?: ReactNode }) {
   const [copied, copy] = useCopyFeedback();
@@ -641,12 +664,12 @@ function CodePre({ children }: { children?: ReactNode }) {
         {copied ? <Check size={12} /> : <Clipboard size={12} />}
         {copied ? "Copied" : "Copy"}
       </button>
-      <pre ref={preRef}>{children}</pre>
+      <InsideCodeBlock.Provider value><pre ref={preRef}>{children}</pre></InsideCodeBlock.Provider>
     </div>
   );
 }
 
-const MARKDOWN_COMPONENTS = { pre: CodePre, a: MarkdownLink };
+const MARKDOWN_COMPONENTS = { pre: CodePre, a: MarkdownLink, code: MarkdownCode };
 const REASONING_MARKDOWN_COMPONENTS = { a: MarkdownLink };
 const DEFAULT_MARKDOWN_PLUGINS = [remarkGfm];
 // Model-authored soft newlines are intentional line breaks (for example, poetry).
