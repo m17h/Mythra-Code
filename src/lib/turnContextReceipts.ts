@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Provider } from "../types";
-import { loadStored, removeStoredValue, storeValue } from "./storage";
+import { loadStored, storeValue } from "./storage";
 
 /**
  * Instruction context for the latest provider-confirmed turn: exact assembled
@@ -56,14 +56,26 @@ function sanitize(value: unknown): Record<string, TurnContextReceipt> {
   return Object.fromEntries(Object.entries(result).sort(([, left], [, right]) => right.at - left.at).slice(0, MAX_THREADS));
 }
 
-let receipts = sanitize(loadStored<unknown>(KEY, {}));
-let recordingEnabled = loadStored<boolean>(ENABLED_KEY, false) === true;
+// Shared chunks can evaluate before native storage hydrates. Read these only
+// when the mounted app first needs them, not while importing this module.
+let receipts: Record<string, TurnContextReceipt> | undefined;
+let recordingEnabled: boolean | undefined;
+let recordingGeneration = 0;
 const listeners = new Set<() => void>();
 interface PendingReceipt { revoked: boolean }
 const pendingReceipts = new Map<string, Set<PendingReceipt>>();
 
 export function turnContextRecordingEnabled(): boolean {
-  return recordingEnabled;
+  return recordingEnabled ??= loadStored<boolean>(ENABLED_KEY, false) === true;
+}
+
+function currentReceipts(): Record<string, TurnContextReceipt> {
+  return receipts ??= sanitize(loadStored<unknown>(KEY, {}));
+}
+
+/** Capture before preparing a send, including before its thread ID exists. */
+export function turnContextRecordingGeneration(): number | null {
+  return turnContextRecordingEnabled() ? recordingGeneration : null;
 }
 
 function revokePendingReceipts(): void {
@@ -75,13 +87,16 @@ function revokePendingReceipts(): void {
 
 /** Per-device privacy choice, applied immediately like other diagnostic controls. */
 export function setTurnContextRecordingEnabled(enabled: boolean): void {
-  if (recordingEnabled === enabled && enabled) return;
+  if (turnContextRecordingEnabled() === enabled && enabled) return;
   // Enable only after the choice reaches the storage layer. Disabling must
   // take effect in memory even if storage is temporarily unavailable.
   if (enabled) storeValue(ENABLED_KEY, true);
   recordingEnabled = enabled;
   // Re-enabling must not capture a start prepared before recording was paused.
-  if (!enabled) revokePendingReceipts();
+  if (!enabled) {
+    recordingGeneration += 1;
+    revokePendingReceipts();
+  }
   try { if (!enabled) storeValue(ENABLED_KEY, false); }
   finally { for (const listener of listeners) listener(); }
 }
@@ -89,10 +104,13 @@ export function setTurnContextRecordingEnabled(enabled: boolean): void {
 /** Delete only the app's instruction records, not conversations or their sources. */
 export function clearTurnContextReceipts(): void {
   setTurnContextRecordingEnabled(false);
-  removeStoredValue(KEY);
   revokePendingReceipts();
   receipts = {};
-  for (const listener of listeners) listener();
+  // Keep an explicit empty native record: an absent SQLite row would let
+  // startup re-import a stale browser copy after a cache-removal failure.
+  // Also require the browser copy to be replaced before claiming deletion.
+  try { storeValue(KEY, receipts, { requireCache: true }); }
+  finally { for (const listener of listeners) listener(); }
 }
 
 export function useTurnContextRecordingEnabled(): boolean {
@@ -100,13 +118,15 @@ export function useTurnContextRecordingEnabled(): boolean {
 }
 
 export function useTurnContextReceiptCount(): number {
-  return useSyncExternalStore(subscribe, () => Object.keys(receipts).length, () => 0);
+  return useSyncExternalStore(subscribe, () => Object.keys(currentReceipts()).length, () => 0);
 }
 
 /** Hold only in-flight attempts, so archive/delete can revoke late responses
  * without retaining a tombstone for every thread ever forgotten. */
-export function beginTurnContextReceipt(threadId: string): { confirm: (receipt: TurnContextReceipt) => void; finish: () => void } {
-  if (!recordingEnabled) return { confirm: () => undefined, finish: () => undefined };
+export function beginTurnContextReceipt(threadId: string, generation: number | null): { confirm: (receipt: TurnContextReceipt) => void; finish: () => void } {
+  if (generation === null || generation !== recordingGeneration || !turnContextRecordingEnabled()) {
+    return { confirm: () => undefined, finish: () => undefined };
+  }
   const pending: PendingReceipt = { revoked: false };
   const attempts = pendingReceipts.get(threadId) ?? new Set<PendingReceipt>();
   attempts.add(pending);
@@ -118,7 +138,7 @@ export function beginTurnContextReceipt(threadId: string): { confirm: (receipt: 
   };
   return {
     confirm(receipt) {
-      if (!pending.revoked && recordingEnabled) recordTurnContext(threadId, receipt);
+      if (!pending.revoked && generation === recordingGeneration && turnContextRecordingEnabled()) recordTurnContext(threadId, receipt);
       finish();
     },
     finish,
@@ -195,7 +215,7 @@ export function createTurnContextReceipt(input: {
 }
 
 function recordTurnContext(threadId: string, receipt: TurnContextReceipt): void {
-  receipts = sanitize({ ...receipts, [threadId]: { ...receipt, at: Date.now() } });
+  receipts = sanitize({ ...currentReceipts(), [threadId]: { ...receipt, at: Date.now() } });
   try { storeValue(KEY, receipts); } catch { /* The receipt stays available for this session. */ }
   for (const listener of listeners) listener();
 }
@@ -203,8 +223,8 @@ function recordTurnContext(threadId: string, receipt: TurnContextReceipt): void 
 export function forgetTurnContext(threadId: string): void {
   for (const pending of pendingReceipts.get(threadId) ?? []) pending.revoked = true;
   pendingReceipts.delete(threadId);
-  if (!(threadId in receipts)) return;
-  const next = { ...receipts };
+  if (!(threadId in currentReceipts())) return;
+  const next = { ...currentReceipts() };
   delete next[threadId];
   receipts = next;
   try { storeValue(KEY, receipts); } catch { /* Best effort. */ }
@@ -217,5 +237,5 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function useTurnContextReceipt(threadId: string | null | undefined): TurnContextReceipt | undefined {
-  return useSyncExternalStore(subscribe, () => (threadId ? receipts[threadId] : undefined), () => undefined);
+  return useSyncExternalStore(subscribe, () => (threadId ? currentReceipts()[threadId] : undefined), () => undefined);
 }

@@ -237,7 +237,7 @@ export function PromptsSettings({
         <div className="prompts-profile-controls">
           <AppSelectMenu
             ariaLabel="Prompt profile"
-            value={selectedProfile && profiles.includes(selectedProfile) ? selectedProfile.id : ""}
+            value={selectedProfile?.id ?? ""}
             options={profileOptions}
             selectedDisplay={selectedProfile && !profiles.includes(selectedProfile) ? { label: selectedProfile.name, detail: "Global file preset" } : undefined}
             placeholder={profiles.length ? "Custom" : "No saved profiles"}
