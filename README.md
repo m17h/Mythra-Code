@@ -175,7 +175,9 @@ Automatic titles use a separate request to your chosen provider/model; the defau
 
 **Settings → Prompts** holds your global and provider-specific instructions. The user-defined prompt starts empty. Project-instruction loading is opt-in for Codex-backed providers. Mythra Code also supplies operational guidance for its tools, delegation, completion, and project commands; an empty user prompt does **not** mean an instruction-free request. Provider policies and runtime tool instructions still apply.
 
-To see exactly what a turn received, open the workspace panel's **Usage & audit** tab: **Last turn's instructions** lists the size of each layer (your instructions, skills, Memory, project files) and the full assembled text for the thread's most recent turn sent from this device.
+To keep a local instruction record, enable **Settings → Usage → Record last-turn instructions** (off by default, saved immediately per device). The workspace panel's **Usage & audit → Last confirmed turn's instructions** shows the assembled system text and separately represented user-invoked skill context for the latest provider-confirmed start. It lists layer sizes, referenced skills and attachment counts, but omits ordinary user-message and attachment content, Mythra's additional operating guidance, and provider-built-in instructions. It confirms the provider accepted the start, not that the model followed every instruction.
+
+Records are limited to 24 threads and the first 32,000 instruction characters per thread; the full pre-truncation character count remains visible. These copies can contain private instructions, Memory and skill text and remain locally until replaced, evicted, archived or deleted, even if their sources change. Turning recording off stops new records without erasing existing ones. **Delete existing instruction records** in Settings → Usage removes these copies from the browser cache and native store and turns recording off, without deleting chats or source files. The feature makes no additional model request or network upload; it is not secure erasure of filesystem backups or SQLite journal remnants.
 
 ## Usage and privacy
 

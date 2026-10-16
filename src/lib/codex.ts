@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { annotateThreadUsage, usageForThread } from "./usageLedger";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
-import { countProviderEvents } from "./performanceOverlay";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -74,10 +73,9 @@ export async function respond(id: number | string, result: JsonObject, expected?
 export async function onCodexEvent(handler: (event: CodexEvent) => void): Promise<UnlistenFn> {
   // The backend emits single messages on "codex-event" and coalesced bursts of
   // delta notifications on "codex-events" as an ordered array.
-  const single = await listen<CodexEvent>("codex-event", ({ payload }) => { countProviderEvents(); handler(payload); });
+  const single = await listen<CodexEvent>("codex-event", ({ payload }) => handler(payload));
   try {
     const batched = await listen<CodexEvent[]>("codex-events", ({ payload }) => {
-      countProviderEvents(payload.length);
       for (const event of payload) handler(event);
     });
     return () => {

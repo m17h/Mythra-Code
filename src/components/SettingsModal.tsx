@@ -73,6 +73,8 @@ import { SkillLibrary } from "./SkillLibrary";
 import { PromptsSettings, type PromptLayer } from "./PromptsSettings";
 import { setPerformanceOverlayEnabled, usePerformanceOverlayEnabled } from "../lib/performanceOverlay";
 import { setTrayStatusEnabled, useTrayStatusEnabled } from "../lib/trayStatus";
+import { clearTurnContextReceipts, setTurnContextRecordingEnabled, useTurnContextReceiptCount, useTurnContextRecordingEnabled } from "../lib/turnContextReceipts";
+import { flushPendingStateWrites } from "../lib/storage";
 import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
@@ -190,6 +192,7 @@ type SettingsRow = {
 /** Individual settings that search can jump to. Most use the visible title;
  * provider-specific controls also name their disclosure and stable target. */
 const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
+  { pane: "usage", label: "Record last-turn instructions", keywords: "privacy instruction records receipts context delete history" },
   { pane: "general", label: "Escape stops the active run", keywords: "esc keyboard shortcut cancel" },
   { pane: "general", label: "Warn before using Max reasoning", keywords: "reasoning effort warning" },
   { pane: "general", label: "Theme", keywords: "dark light colour color appearance" },
@@ -721,6 +724,11 @@ export function SettingsModal({
   const [promptLayer, setPromptLayer] = useState<PromptLayer>("global");
   const performanceOverlay = usePerformanceOverlayEnabled();
   const trayStatus = useTrayStatusEnabled();
+  const instructionRecording = useTurnContextRecordingEnabled();
+  const instructionRecordCount = useTurnContextReceiptCount();
+  const [instructionRecordBusy, setInstructionRecordBusy] = useState(false);
+  const [instructionRecordError, setInstructionRecordError] = useState("");
+  const [instructionRecordStatus, setInstructionRecordStatus] = useState("");
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
@@ -1754,6 +1762,46 @@ export function SettingsModal({
           {settingsSection === "usage" && <>
             {open && <UsageDashboard onRefreshPricing={onRefreshUsagePricing} openRouterPricingError={openRouterPricingError} />}
             <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
+            <div className="set-group">
+              <h4>Instruction records</h4>
+              <p>Optional, off by default, and saved immediately on this device. Records can contain private prompts, learned preferences and skill instructions. They are not uploaded by this feature.</p>
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong>Record last-turn instructions</strong>
+                    <small>Keep the last confirmed turn for up to 24 threads, with the first 32,000 instruction characters each. View them in the workspace panel&rsquo;s Usage &amp; audit tab. Turning this off stops new records; existing records remain until deleted.</small>
+                  </div>
+                  <div className="set-control">
+                    <button type="button" role="switch" aria-label="Record last-turn instructions" aria-checked={instructionRecording} disabled={instructionRecordBusy} className={`toggle-switch ${instructionRecording ? "on" : ""}`} onClick={() => {
+                      try {
+                        setTurnContextRecordingEnabled(!instructionRecording);
+                        setInstructionRecordError("");
+                        setInstructionRecordStatus("");
+                      } catch { setInstructionRecordError("Could not save this privacy preference. Please try again."); }
+                    }}><span /></button>
+                  </div>
+                </div>
+                <div className="set-row">
+                  <div className="set-copy"><strong>Delete existing instruction records</strong><small>{instructionRecordCount} saved {instructionRecordCount === 1 ? "thread" : "threads"}. Deletes these local copies and turns recording off. Chats, skills, learned preferences and original instruction files are not deleted.</small></div>
+                  <div className="set-control"><button type="button" className="secondary-button compact" disabled={instructionRecordBusy || (!instructionRecordCount && !instructionRecordError)} onClick={() => {
+                    void (async () => {
+                      if (!await confirmDialog("Delete all saved instruction records on this device and turn recording off? Your chats and original instructions will stay untouched.", { confirmLabel: "Delete records", inApp: true })) return;
+                      setInstructionRecordBusy(true);
+                      setInstructionRecordError("");
+                      setInstructionRecordStatus("");
+                      try {
+                        clearTurnContextReceipts();
+                        if (isTauri()) await flushPendingStateWrites();
+                        setInstructionRecordStatus("Instruction records deleted. Recording is off.");
+                      } catch { setInstructionRecordError("Recording has been stopped, but deletion could not be confirmed. Please try again."); }
+                      finally { setInstructionRecordBusy(false); }
+                    })();
+                  }}>{instructionRecordBusy ? <LoaderCircle size={12} className="spin" /> : <Trash2 size={12} />} Delete records</button></div>
+                </div>
+              </div>
+              {instructionRecordError && <p role="alert">{instructionRecordError}</p>}
+              {instructionRecordStatus && <p role="status">{instructionRecordStatus}</p>}
+            </div>
           </>}
 
           {settingsSection === "pricing" && open && <FrontierPricingSettings onRefreshAvailableModels={onRefreshAvailableModels} />}

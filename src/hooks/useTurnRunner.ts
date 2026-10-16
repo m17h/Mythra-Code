@@ -67,7 +67,7 @@ import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
-import { beginTurnContextReceipt, createTurnContextReceipt, type TurnContextReceipt } from "../lib/turnContextReceipts";
+import { beginTurnContextReceipt, createTurnContextReceipt, turnContextRecordingEnabled, type TurnContextReceipt } from "../lib/turnContextReceipts";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
@@ -1073,7 +1073,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         resolvedSystemPrompt, activeProject ? executionPath : null, effectiveSettings, assertCanStart,
       );
       assertCanStart();
-      contextReceipt = createTurnContextReceipt({
+      contextReceipt = turnContextRecordingEnabled() ? createTurnContextReceipt({
         provider: effectiveSettings.provider,
         model: effectiveSettings.model,
         effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
@@ -1087,7 +1087,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         userSkillPrompt: providerText,
         skills: userSkillMetadata.skillReferences?.map((reference) => reference.name),
         attachments: sentAttachments.length,
-      });
+      }) : null;
       if (isPullRequestMutationRunning(executionPath)) {
         throw new Error("Wait for the pull request operation to finish before starting another model turn.");
       }
