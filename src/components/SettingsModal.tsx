@@ -1,3 +1,4 @@
+import "./SettingsModal.legacy.css";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
