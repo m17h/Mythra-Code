@@ -62,6 +62,7 @@ import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
 import { TransitionInput } from "./components/TransitionInput";
 import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
+import { configureTrayStatus, updateTrayStatus, useTrayStatusEnabled } from "./lib/trayStatus";
 import { forgetTurnContext } from "./lib/turnContextReceipts";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -692,6 +693,30 @@ export default function App() {
   const appUpdater = useAppUpdater();
   const updateNoticePreview = useUpdateNoticePreview();
   const performanceOverlay = usePerformanceOverlayEnabled();
+  // Optional menu bar / tray status: working threads and pending approvals.
+  const trayStatus = useTrayStatusEnabled();
+  const trayCounts = useTaskStore((state) => {
+    if (!trayStatus) return "";
+    let working = 0;
+    let approvals = 0;
+    for (const [threadId, status] of Object.entries(state.statuses)) {
+      if (status === "starting" || status === "running") working++;
+      approvals += state.tasks[threadId]?.approvals.length ?? 0;
+    }
+    return `${working}:${approvals}`;
+  });
+  const [trayReady, setTrayReady] = useState(false);
+  useEffect(() => {
+    let current = true;
+    setTrayReady(false);
+    configureTrayStatus(trayStatus).then(() => { if (current) setTrayReady(trayStatus); }, () => undefined);
+    return () => { current = false; };
+  }, [trayStatus]);
+  useEffect(() => {
+    if (!trayReady || !trayCounts) return;
+    const [working, approvals] = trayCounts.split(":").map(Number);
+    void updateTrayStatus(working ?? 0, approvals ?? 0).catch(() => undefined);
+  }, [trayCounts, trayReady]);
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });

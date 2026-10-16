@@ -51,6 +51,7 @@ mod normal_chat;
 mod official_skills;
 mod openrouter_usage;
 mod persistence;
+mod tray;
 mod preference_learning;
 mod pricing_sources;
 mod process_launch;
@@ -8616,6 +8617,7 @@ pub fn run() {
         .manage(ChildAgentState::default())
         .manage(RunDiscoveryState::default())
         .manage(preference_learning::PreferenceLearningState::default())
+        .manage(tray::TrayState::default())
         .manage(CloseGuardState::default())
         .manage(StartupGuardState::default())
         .invoke_handler({
@@ -8771,6 +8773,8 @@ pub fn run() {
                     run_discovery::generate_thread_title,
                     run_discovery::analyze_user_preferences,
                     persistence::local_transcript_search,
+                    tray::tray_configure,
+                    tray::tray_status,
                     preference_learning::preference_learning_list,
                     preference_learning::preference_learning_save,
                     preference_learning::preference_learning_forget,
