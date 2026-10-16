@@ -1,6 +1,6 @@
 # Model pricing reference
 
-Settings → Model pricing shows published OpenAI and Anthropic standard
+Settings → Usage → Model pricing shows published OpenAI and Anthropic standard
 text-generation API token prices in US dollars per million tokens. It covers
 input, output, cached input, and published cache-write rates, including
 Anthropic's five-minute and one-hour write durations. Published long-context
