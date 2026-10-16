@@ -280,44 +280,34 @@ fn tracking_stdout(repo: &Path, args: &[&str], deadline: Instant) -> Option<Stri
 }
 
 
+/// Upstream metadata for the checked-out branch, read in the same
+/// `for-each-ref` as the branch list and HEAD, so it is bound to that HEAD.
+struct BranchUpstream {
+    short: String,
+    full: String,
+    remote: String,
+}
+
 fn snapshot_tracking_with_deadline(
     repo: &Path,
-    branch: Option<&str>,
     head_oid: Option<&str>,
+    upstream: Option<&BranchUpstream>,
     deadline: Instant,
 ) -> (Option<String>, Option<String>, Option<usize>, Option<usize>) {
-    let (Some(branch), Some(head_oid)) = (branch, head_oid) else {
+    let (Some(head_oid), Some(metadata)) = (head_oid, upstream) else {
         return (None, None, None, None);
     };
-    let reference = format!("refs/heads/{branch}");
-    let Some(metadata) = tracking_stdout(
-        repo,
-        &[
-            "for-each-ref",
-            "--format=%(upstream:short)%00%(upstream)%00%(objectname)%00%(upstream:remotename)",
-            &reference,
-        ],
-        deadline,
-    ) else {
-        return (None, None, None, None);
-    };
-    let fields: Vec<_> = metadata
-        .trim_end_matches(['\r', '\n'])
-        .split('\0')
-        .collect();
-    // Bind tracking metadata to the captured branch and HEAD. An external
-    // commit during this read must not give a different commit's counts.
-    if fields.len() != 4 || fields[2] != head_oid || fields[1].is_empty() {
+    if metadata.full.is_empty() {
         return (None, None, None, None);
     }
-    let upstream = Some(fields[0].to_string());
-    let upstream_remote = (!fields[3].is_empty()).then(|| fields[3].to_string());
+    let upstream = Some(metadata.short.clone());
+    let upstream_remote = (!metadata.remote.is_empty()).then(|| metadata.remote.clone());
     let Some(upstream_oid) = tracking_stdout(
         repo,
         &[
             "rev-parse",
             "--verify",
-            &format!("{}^{{commit}}", fields[1]),
+            &format!("{}^{{commit}}", metadata.full),
         ],
         deadline,
     ) else {
@@ -351,16 +341,50 @@ fn snapshot_with_read(
     repo: &Path,
     read: &GitReadOperation,
 ) -> Result<GitWorkspaceSnapshot, String> {
-    let branch = read.optional_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"])?;
-    let head_oid = read.optional_stdout(repo, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
-    let occupied = worktree_branch_paths_with_read(repo, read)?;
+    // One read gives the branch list, the checked-out branch (%(HEAD)), its
+    // commit and its upstream, all from the same moment. Separate
+    // symbolic-ref / rev-parse / upstream reads remain only for a detached
+    // or unborn HEAD, which no listed branch marks as current.
     let refs = read.stdout(
         repo,
-        &["for-each-ref", "--format=%(refname:strip=2)", "refs/heads"],
+        &[
+            "for-each-ref",
+            "--format=%(HEAD)%00%(refname:strip=2)%00%(objectname)%00%(upstream:short)%00%(upstream)%00%(upstream:remotename)",
+            "refs/heads",
+        ],
     )?;
-    let mut branches: Vec<_> = refs
-        .lines()
-        .filter(|name| !name.is_empty())
+    let mut names = Vec::new();
+    let mut current: Option<(String, String, BranchUpstream)> = None;
+    for line in refs.lines().filter(|line| !line.is_empty()) {
+        let fields: Vec<_> = line.split('\0').collect();
+        if fields.len() != 6 || fields[1].is_empty() {
+            return Err("Git returned unreadable branch information".into());
+        }
+        if fields[0] == "*" {
+            current = Some((
+                fields[1].to_string(),
+                fields[2].to_string(),
+                BranchUpstream {
+                    short: fields[3].to_string(),
+                    full: fields[4].to_string(),
+                    remote: fields[5].to_string(),
+                },
+            ));
+        }
+        names.push(fields[1].to_string());
+    }
+    let (branch, head_oid, upstream_metadata) = match current {
+        Some((name, oid, upstream)) => (Some(name), Some(oid), Some(upstream)),
+        None => (
+            read.optional_stdout(repo, &["symbolic-ref", "--short", "-q", "HEAD"])?,
+            read.optional_stdout(repo, &["rev-parse", "--verify", "--quiet", "HEAD"])?,
+            None,
+        ),
+    };
+    let occupied = worktree_branch_paths_with_read(repo, read)?;
+    let mut branches: Vec<_> = names
+        .iter()
+        .map(|name| name.as_str())
         .map(|name| GitWorkspaceBranch {
             name: name.to_string(),
             current: branch.as_deref() == Some(name),
@@ -439,8 +463,8 @@ fn snapshot_with_read(
         };
     let (upstream, upstream_remote, ahead, behind) = snapshot_tracking_with_deadline(
         repo,
-        branch.as_deref(),
         head_oid.as_deref(),
+        upstream_metadata.as_ref(),
         read.deadline().min(Instant::now() + TRACKING_READ_TIMEOUT),
     );
     Ok(GitWorkspaceSnapshot {
