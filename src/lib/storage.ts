@@ -385,7 +385,7 @@ export function loadStored<T>(key: string, fallback: T): T {
 
 /** Returns the stored JSON text, so callers that cache it need not
  * serialize the same value a second time. */
-export function storeValue<T>(key: string, value: T): string {
+export function storeValue<T>(key: string, value: T, options?: { requireCache?: boolean }): string {
   // Capture the exact revision now: callers such as drafts mutate their maps
   // while earlier writes are still queued.
   const serialized = JSON.stringify(value);
@@ -396,6 +396,10 @@ export function storeValue<T>(key: string, value: T): string {
     await invoke("state_write", { key, value: JSON.parse(serialized) });
     if (token) clearNativeOperationPending(key, token);
   });
+  // Ordinary saves can rely on SQLite when the browser cache is unavailable.
+  // Privacy-sensitive clearing must not report success while its browser copy
+  // survives. Still queue the empty native value before surfacing that failure.
+  if (options?.requireCache && !cached) throw new Error("The local browser copy could not be replaced.");
   return serialized;
 }
 

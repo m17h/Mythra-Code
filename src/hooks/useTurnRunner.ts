@@ -67,7 +67,7 @@ import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
-import { beginTurnContextReceipt, createTurnContextReceipt, turnContextRecordingEnabled, type TurnContextReceipt } from "../lib/turnContextReceipts";
+import { beginTurnContextReceipt, createTurnContextReceipt, turnContextRecordingGeneration, type TurnContextReceipt } from "../lib/turnContextReceipts";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
@@ -640,6 +640,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let resolvedSystemPrompt = effectiveSettings.systemPrompt;
     let userSkillMetadata: Pick<ChatMessage, "skillReferences" | "skillsFolder" | "skillDependencies"> = {};
     // What this turn's instructions were built from, for the dock's audit.
+    const receiptGeneration = turnContextRecordingGeneration();
     let contextReceipt: TurnContextReceipt | null = null;
     let receiptAttempt: ReturnType<typeof beginTurnContextReceipt> | undefined;
     if (mode === "steer" && running && activeThread) {
@@ -965,7 +966,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       await strategy.prepareTurn(thread, updatedThread);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
-      receiptAttempt = beginTurnContextReceipt(thread.id);
+      receiptAttempt = beginTurnContextReceipt(thread.id, receiptGeneration);
       useTaskStore.getState().appendUserMessage(thread.id, {
         id: sentMessageId,
         role: "user",
@@ -1073,7 +1074,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         resolvedSystemPrompt, activeProject ? executionPath : null, effectiveSettings, assertCanStart,
       );
       assertCanStart();
-      contextReceipt = turnContextRecordingEnabled() ? createTurnContextReceipt({
+      contextReceipt = receiptGeneration !== null && receiptGeneration === turnContextRecordingGeneration() ? createTurnContextReceipt({
         provider: effectiveSettings.provider,
         model: effectiveSettings.model,
         effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
@@ -1329,7 +1330,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
-      receiptAttempt = beginTurnContextReceipt(threadId);
+      receiptAttempt = beginTurnContextReceipt(threadId, receiptGeneration);
       useTaskStore.getState().appendUserMessage(threadId, {
         id: sentMessageId,
         role: "user",
