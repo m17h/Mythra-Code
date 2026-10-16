@@ -9,15 +9,18 @@ import { loadStored, storeValue } from "./storage";
  * is off.
  */
 const KEY = "kiwi.performanceOverlay";
-let enabled = loadStored<boolean>(KEY, false) === true;
+// Provider event counting imports this module before native storage hydrates.
+// Read the preference only when the UI first needs it, after hydration, so a
+// recovered native value is not shadowed by an early browser-cache snapshot.
+let enabled: boolean | undefined;
 const listeners = new Set<() => void>();
 
 export function performanceOverlayEnabled(): boolean {
-  return enabled;
+  return enabled ??= loadStored<boolean>(KEY, false) === true;
 }
 
 export function setPerformanceOverlayEnabled(value: boolean): void {
-  if (value === enabled) return;
+  if (value === performanceOverlayEnabled()) return;
   enabled = value;
   storeValue(KEY, value);
   for (const listener of listeners) listener();
