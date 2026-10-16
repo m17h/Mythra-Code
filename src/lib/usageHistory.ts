@@ -829,9 +829,8 @@ export function flushUsageHistory(now = Date.now()): void {
   if (!dirty || !cachedState) return;
   pruneUsageHistory(now);
   const serialized = serialize(cachedState);
-  cachedRaw = JSON.stringify(serialized);
   dirty = false;
-  storeValue(USAGE_HISTORY_KEY, serialized);
+  cachedRaw = storeValue(USAGE_HISTORY_KEY, serialized);
 }
 
 export function resetUsageHistoryCache(): void {

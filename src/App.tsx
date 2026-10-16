@@ -12,7 +12,7 @@ import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
 import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, pullGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceRevertPreview, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -60,6 +60,7 @@ import { Composer, discardDraft, draftFor, type ComposerHandle } from "./compone
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
+import { TransitionInput } from "./components/TransitionInput";
 import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
@@ -647,7 +648,32 @@ function RendererLaunchCommitMarker() {
   return null;
 }
 
-function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: ChatTimelineView; threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
+/** The rename draft lives here, not in the app shell, so typing a name does
+ * not re-render the whole window. Enter and blur share one save; Escape
+ * cancels without saving even if the field then loses focus. */
+function ThreadRenameInput({ initial, onCommit, onCancel }: { initial: string; onCommit: (name: string) => void; onCancel: () => void }) {
+  const [draft, setDraft] = useState(initial);
+  const cancelled = useRef(false);
+  return <input
+    autoFocus
+    value={draft}
+    onChange={(event) => setDraft(event.target.value)}
+    onBlur={() => { if (!cancelled.current) onCommit(draft); }}
+    onKeyDown={(event) => {
+      if (event.key === "Enter") onCommit(draft);
+      if (event.key === "Escape") {
+        cancelled.current = true;
+        onCancel();
+      }
+    }}
+    aria-label="Thread name"
+  />;
+}
+
+// Memoized: the app shell re-renders for many unrelated reasons (usage,
+// Git status, sidebar input); the transcript re-renders only for its own
+// props and store slices.
+const ConversationTimeline = memo(function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: ChatTimelineView; threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
   const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
@@ -656,7 +682,7 @@ function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, appr
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
   return <Timeline key={threadId} messages={messages} activities={activities} running={running} activeTurnId={activeTurnId} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
-}
+});
 
 export default function App() {
   useEffect(() => subscribeBackgroundUsage(() => recordError("Background helper usage could not be recorded.")), []);
@@ -839,7 +865,6 @@ export default function App() {
   });
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
-  const [threadNameDraft, setThreadNameDraft] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
   const draggedProjectIdRef = useRef<string | null>(null);
@@ -5783,16 +5808,32 @@ export default function App() {
     setAuthRequiredOpen,
     openSettings,
   });
+  // Stable props for the memoized transcript (see ConversationTimeline).
+  const agentQuestionDelivery = useMemo(() => activeThreadId ? { threadId: activeThreadId, send: answerQuestions } : null, [activeThreadId, answerQuestions]);
+  const loadEarlierActive = useCallback(() => { if (activeThreadId) void loadEarlier(activeThreadId); }, [activeThreadId, loadEarlier]);
+  // Stable handlers for the memoized sub-agent command center.
+  const showInfoToast = useCallback((message: string) => showToast(message, "info"), [showToast]);
+  const openAgentSettings = useCallback(() => openSettings("agents"), [openSettings]);
+  const openAccountSettings = useCallback(() => openSettings("models"), [openSettings]);
+  const saveChildAgentPreset = useCallback((name: string, policy: ProjectSubagentSettings) => {
+    persistSettings((current) => {
+      if (current.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS) return current;
+      const preset = { id: uniqueChildAgentPresetId(name, current.childAgentPresets), name, policy };
+      return { ...current, childAgentPresets: sanitizeChildAgentPresets([...current.childAgentPresets, preset]) };
+    });
+  }, [persistSettings]);
 
   const visiblePendingFirstPrompt = pendingFirstPromptForView(pendingFirstPrompts, activeThreadId, activeWorkspace?.path, selectedFirstPrompt?.id);
   const workspacePendingFirstPrompts = pendingFirstPrompts.filter((prompt) => !prompt.threadId
     && prompt.workspacePath === activeWorkspacePathRef.current);
-  const displayedPendingFirstPrompts = threadKindView === "main" ? workspacePendingFirstPrompts.filter((prompt) => prompt.text.toLowerCase().includes(threadSearch.trim().toLowerCase())) : [];
+  // An empty search matches everything; skip lowercasing every draft and note.
+  const inboxQuery = threadSearch.trim().toLowerCase();
+  const displayedPendingFirstPrompts = threadKindView === "main" ? workspacePendingFirstPrompts.filter((prompt) => !inboxQuery || prompt.text.toLowerCase().includes(inboxQuery)) : [];
   const storedWorkspaceDraftKeys = activeWorkspace ? savedWorkspaceDraftKeys[normalizedProjectPath(activeWorkspace.path)] : undefined;
   const displayedSavedDraftKeys = threadKindView === "main" && activeWorkspace && Array.isArray(storedWorkspaceDraftKeys)
     ? storedWorkspaceDraftKeys.filter((key) => isWorkspaceDraftKey(key, activeWorkspace.path) && key !== attachmentKey
-      && hasSavedDraftContent(key) && [draftFor(key), savedDraftTitle(key), ...notesForDraftKey(key).map((note) => note.comment), ...attachmentsFor(attachmentDrafts, key).map((entry) => entry.name)]
-        .join("\n").toLowerCase().includes(threadSearch.trim().toLowerCase()))
+      && hasSavedDraftContent(key) && (!inboxQuery || [draftFor(key), savedDraftTitle(key), ...notesForDraftKey(key).map((note) => note.comment), ...attachmentsFor(attachmentDrafts, key).map((entry) => entry.name)]
+        .join("\n").toLowerCase().includes(inboxQuery)))
     : [];
   const openSavedDraft = (key: string) => {
     if (!activeWorkspace || !isWorkspaceDraftKey(key, activeWorkspace.path)) return;
@@ -6374,11 +6415,10 @@ export default function App() {
   const threadRenameWritesRef = useRef(new Map<string, { token: symbol; name: string; promise: Promise<void> }>());
   const startThreadRename = (thread: Thread) => {
     setRenamingThreadId(thread.id);
-    setThreadNameDraft(thread.name || thread.preview || "Untitled thread");
   };
 
-  const renameThread = async (thread: Thread) => {
-    const name = threadNameDraft.trim();
+  const renameThread = async (thread: Thread, draft: string) => {
+    const name = draft.trim();
     const previous = threadRenameWritesRef.current.get(thread.id);
     setRenamingThreadId(null);
     if (!name || name === thread.name && !previous) return;
@@ -8599,19 +8639,10 @@ export default function App() {
       {renamingThreadId === thread.id ? (
         <div className="thread-rename-row">
           <MessageSquare size={14} />
-          <input
-            autoFocus
-            value={threadNameDraft}
-            onChange={(event) => setThreadNameDraft(event.target.value)}
-            onBlur={() => void renameThread(thread)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void renameThread(thread);
-              if (event.key === "Escape") {
-                setThreadNameDraft(thread.name || "");
-                setRenamingThreadId(null);
-              }
-            }}
-            aria-label="Thread name"
+          <ThreadRenameInput
+            initial={thread.name || thread.preview || "Untitled thread"}
+            onCommit={(name) => void renameThread(thread, name)}
+            onCancel={() => setRenamingThreadId(null)}
           />
         </div>
       ) : (
@@ -8773,7 +8804,7 @@ export default function App() {
             <div className="thread-search-actions">
               <label className="thread-search">
                 <Search size={11} />
-                <input value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`} />
+                <TransitionInput value={threadSearch} onValueChange={setThreadSearch} placeholder={`Search ${workspaceMode === "chat" ? "chats" : (activeProject?.name ?? "threads")}…`} />
               </label>
               <button
                 className="thread-bulk-button"
@@ -9076,11 +9107,11 @@ export default function App() {
               {convSearchOpen && activeThreadId && (
                 <div className="conv-search-bar" role="search">
                   <Search size={12} />
-                  <input
+                  <TransitionInput
                     ref={convSearchInputRef}
                     value={convSearchQuery}
-                    onChange={(event) => {
-                      setConvSearchQuery(event.target.value);
+                    onValueChange={(query) => {
+                      setConvSearchQuery(query);
                       setConvSearchIndex(0);
                     }}
                     onKeyDown={(event) => {
@@ -9224,7 +9255,7 @@ export default function App() {
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} historyWorkers={historicalSubAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker} onAccept={acceptSubAgentWorker}>
-                    <AgentQuestionDelivery value={{ threadId: activeThreadId, send: answerQuestions }}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={() => void loadEarlier(activeThreadId)} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
+                    <AgentQuestionDelivery value={agentQuestionDelivery}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
@@ -9383,25 +9414,19 @@ export default function App() {
                       capturedPolicy={activeDelegationPolicy ?? null}
                       mode={subagentPolicyMode}
                       readiness={childAgentReadiness}
-                      onUnavailable={(message) => showToast(message, "info")}
+                      onUnavailable={showInfoToast}
                       workers={subAgentWorkers}
                       parentActive={running || hasQueuedWork}
                       scopeLabel={activeThreadId ? "this thread" : "this new thread"}
                       projectOverride={false}
                       presets={settings.childAgentPresets}
-                      onSavePreset={(name, policy) => {
-                        persistSettings((current) => {
-                          if (current.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS) return current;
-                          const preset = { id: uniqueChildAgentPresetId(name, current.childAgentPresets), name, policy };
-                          return { ...current, childAgentPresets: sanitizeChildAgentPresets([...current.childAgentPresets, preset]) };
-                        });
-                      }}
+                      onSavePreset={saveChildAgentPreset}
                       modelCatalogs={subAgentModelCatalogs}
                       modelFavorites={modelFavorites}
                       onToggleModelFavorite={toggleModelFavorite}
                       onChange={activeDelegationPolicy ? persistActiveThreadSubagentPolicy : persistComposerSubagentPolicy}
-                      onOpenSettings={() => openSettings("agents")}
-                      onOpenAccounts={() => openSettings("models")}
+                      onOpenSettings={openAgentSettings}
+                      onOpenAccounts={openAccountSettings}
                       onOpenWorker={openSubAgentWorker}
                       onStopWorker={stopSubAgentWorker}
                       onAcceptWorker={acceptSubAgentWorker}

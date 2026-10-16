@@ -51,6 +51,9 @@ export function useGitWorkspace(options: Options) {
     if (!mounted.current || optionsRef.current.cwd !== cwd) return;
     setState((old) => {
       const next = { ...(old.cwd === cwd ? old : empty(cwd)), ...value, cwd };
+      // A successful read always advances readRevision, so it can never equal
+      // the old state; skip serializing both snapshots to find that out.
+      if (next.readRevision !== old.readRevision) return next;
       return JSON.stringify(old) === JSON.stringify(next) ? old : next;
     });
   }, []);

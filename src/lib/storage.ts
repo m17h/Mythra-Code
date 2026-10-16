@@ -166,6 +166,11 @@ function clearNativeOperationPending(key: string, token: string): void {
 function runNativeStateRevision(key: string, revision: NativeStateRevision): void {
   const previous = nativeWriteQueues.get(key);
   const write = async () => {
+    // Every operation writes or deletes the key's whole value. If a newer
+    // revision was queued while this one waited, it supersedes this write;
+    // SQLite only needs the latest value, and the newer revision owns the
+    // acknowledgement and the pending marker.
+    if (unacknowledgedNativeState.get(key) !== revision) return;
     try { await revision.operation(); }
     catch (error) {
       // Browser-only development has no native store. It must not acquire
@@ -374,7 +379,9 @@ export function loadStored<T>(key: string, fallback: T): T {
   }
 }
 
-export function storeValue<T>(key: string, value: T): void {
+/** Returns the stored JSON text, so callers that cache it need not
+ * serialize the same value a second time. */
+export function storeValue<T>(key: string, value: T): string {
   // Capture the exact revision now: callers such as drafts mutate their maps
   // while earlier writes are still queued.
   const serialized = JSON.stringify(value);
@@ -385,6 +392,7 @@ export function storeValue<T>(key: string, value: T): void {
     await invoke("state_write", { key, value: JSON.parse(serialized) });
     if (token) clearNativeOperationPending(key, token);
   });
+  return serialized;
 }
 
 export function removeStoredValue(key: string): void {

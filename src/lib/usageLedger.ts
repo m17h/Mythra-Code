@@ -830,9 +830,8 @@ export function flushUsageLedger(): void {
     }
     const records = compactUsageRecords([...cachedLedger]).sort((left, right) => right.updatedAt - left.updatedAt);
     cachedLedger = records;
-    cachedRaw = JSON.stringify(records);
     ledgerDirty = false;
-    storeValue(USAGE_LEDGER_KEY, records);
+    cachedRaw = storeValue(USAGE_LEDGER_KEY, records);
     historySink?.flush();
     notifyUsage();
     return;

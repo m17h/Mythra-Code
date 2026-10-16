@@ -6,8 +6,12 @@ interface RunningSave {
 interface PendingSave {
   revision: number;
   firstChangedAt: number;
+  /** Latest change while coalescing; the save is due 900 ms after it. */
+  lastChangedAt?: number;
   automaticFailures: number;
   timer?: ReturnType<typeof setTimeout>;
+  /** The armed timer is the coalescing timer (not a fixed retry delay). */
+  coalescing?: boolean;
   running?: RunningSave;
 }
 
@@ -31,15 +35,33 @@ export function createTranscriptSaveScheduler(options: {
     COALESCE_DELAY_MS * (2 ** failures),
   );
 
+  const coalesceDue = (entry: PendingSave) => Math.min(
+    (entry.lastChangedAt ?? Date.now()) + COALESCE_DELAY_MS,
+    entry.firstChangedAt + CONTINUOUS_SAVE_LIMIT_MS,
+  );
+
   const arm = (id: string, entry: PendingSave, delay?: number) => {
+    if (delay === undefined) {
+      entry.lastChangedAt = Date.now();
+      // Streaming calls this for every token. An armed coalescing timer can
+      // only fire at or before the new due time, and it re-checks then, so
+      // there is no need to clear and recreate it each time.
+      if (entry.timer !== undefined && entry.coalescing) return;
+    }
     clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => {
+    entry.coalescing = delay === undefined;
+    const fire = () => {
       entry.timer = undefined;
+      if (entry.coalescing) {
+        const remaining = coalesceDue(entry) - Date.now();
+        if (remaining > 0) {
+          entry.timer = setTimeout(fire, remaining);
+          return;
+        }
+      }
       void attempt(id, true).catch(options.onError);
-    }, delay ?? Math.max(0, Math.min(
-      COALESCE_DELAY_MS,
-      entry.firstChangedAt + CONTINUOUS_SAVE_LIMIT_MS - Date.now(),
-    )));
+    };
+    entry.timer = setTimeout(fire, delay ?? Math.max(0, coalesceDue(entry) - Date.now()));
   };
 
   const attempt = (id: string, automatic: boolean): Promise<void> => {
