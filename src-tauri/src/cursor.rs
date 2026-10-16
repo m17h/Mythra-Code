@@ -1854,7 +1854,7 @@ pub async fn cursor_turn_start(
     app: AppHandle,
     state: State<'_, CursorState>,
     agent_state: State<'_, ChildAgentState>,
-    options: CursorTurnOptions,
+    mut options: CursorTurnOptions,
 ) -> Result<CursorTurnStarted, String> {
     let mut process_requested = false;
     let mut safe_not_dispatched = false;
@@ -1870,6 +1870,9 @@ pub async fn cursor_turn_start(
     }
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
         return Err("Choose a valid project folder before starting this Cursor thread.".into());
+    }
+    if crate::normal_chat::contains(&app, &options.cwd)? {
+        options.system_prompt = crate::normal_chat::instructions(&options.system_prompt);
     }
     let authorized_generation = cursor_auth_generation(&state);
     if !state.authenticated.load(Ordering::Acquire) {

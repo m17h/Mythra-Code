@@ -1,0 +1,65 @@
+/* One inline box moves to the next line as a unit. All source text stays in
+ * the DOM for selection; only the directory display is visually shortened. */
+.rich-markdown table:has(.inline-path) {
+  table-layout: fixed;
+}
+.rich-markdown .inline-path {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: min(100%, 52ch);
+  vertical-align: baseline;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.rich-markdown .inline-path > code {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.rich-markdown .inline-path-directory {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.rich-markdown .inline-path-prefix {
+  flex: 0 0 auto;
+}
+.rich-markdown .inline-path-middle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rich-markdown .inline-path-destination {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Linked source remains selectable in full, with no button nested in an
+ * anchor and no replacement label changing what selection copies. */
+.rich-markdown .inline-path-linked { max-width: 100%; }
+.rich-markdown .inline-path-copy {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  margin-inline-start: 2px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.rich-markdown .inline-path-copy:hover,
+.rich-markdown .inline-path-copy:focus-visible {
+  color: var(--text);
+  background: var(--line);
+}

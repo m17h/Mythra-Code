@@ -47,6 +47,7 @@ mod language_framing;
 mod language_queries;
 mod language_recipes;
 mod language_tools;
+mod normal_chat;
 mod official_skills;
 mod openrouter_usage;
 mod persistence;
@@ -5734,7 +5735,7 @@ async fn claude_turn_start(
     app: AppHandle,
     state: State<'_, ClaudeState>,
     agent_state: State<'_, ChildAgentState>,
-    options: ClaudeTurnOptions,
+    mut options: ClaudeTurnOptions,
 ) -> Result<ClaudeTurnStarted, String> {
     let mut process_requested = false;
     let mut safe_not_dispatched = false;
@@ -5755,6 +5756,9 @@ async fn claude_turn_start(
     }
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
         return Err("Choose a valid project folder before starting this Claude thread.".into());
+    }
+    if normal_chat::contains(&app, &options.cwd)? {
+        options.system_prompt = normal_chat::instructions(&options.system_prompt);
     }
     validate_cli_value(&options.thread_id, "The thread identity")?;
     validate_cli_value(&options.model, "The model identity")?;
@@ -7805,6 +7809,7 @@ async fn codex_rpc(
             "Mythra Code's desktop bridge does not allow the RPC method `{method}`"
         )));
     }
+    normal_chat::annotate_codex(&app, &method, &mut params).map_err(native_predispatch_refusal)?;
     enforce_codex_delegation_config(&method, &mut params).map_err(native_predispatch_refusal)?;
     validate_rpc_params(&method, &params).map_err(native_predispatch_refusal)?;
     validate_native_codex_bridges(&app.state::<ChildAgentState>(), &method, &params).await.map_err(native_predispatch_refusal)?;
