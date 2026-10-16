@@ -575,3 +575,48 @@
 .recent-errors-list > div:last-child { border-bottom: 0; }
 .recent-errors-list small { color: var(--muted-2); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .recent-errors-list span { min-width: 0; color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
+
+/* Keep the overrides for these lazy rules after their desktop defaults.
+   Leaving them in the eager sheet would let equal-specificity defaults win. */
+@media (max-height: 720px) {
+  .settings-nav-scroll { gap: 0; }
+  .settings-nav-label { display: none; }
+  .settings-nav-group + .settings-nav-group { margin-top: var(--s-1); padding-top: var(--s-1); border-top: 1px solid var(--line); }
+  .settings-nav button { min-height: 29px; }
+  .settings-nav-head { padding-top: var(--s-3); }
+}
+
+@media (max-width: 760px) {
+  .settings-modal, .settings-modal.settings-modal-wide { height: 100%; }
+  .settings-layout { --settings-nav-width: 0px; grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
+  /* The navigation becomes a horizontal scrolling strip above the pane. */
+  .settings-nav { border-right: 0; border-bottom: 1px solid var(--line); }
+  .settings-nav-head { padding: var(--s-2) var(--s-2) 0; }
+  .settings-nav-head h2 { display: none; }
+  .settings-nav-scroll { flex-direction: row; gap: var(--s-1); padding: var(--s-2); overflow-x: auto; overflow-y: hidden; }
+  .settings-nav-group { display: contents; }
+  .settings-nav-label { display: none; }
+  .settings-nav button { flex: 0 0 auto; width: auto; grid-template-columns: 18px auto; padding: 0 10px; }
+  .settings-nav-empty { flex: 0 0 auto; margin: 0; align-self: center; white-space: nowrap; }
+  .worker-config, .worker-add { grid-template-columns: 1fr; }
+  .preset-create-actions { flex-wrap: wrap; justify-content: flex-start; }
+  .settings-pane-heading { padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4); }
+  .settings-content { --settings-content-end: 16px; padding: 16px 16px var(--settings-content-end); }
+  .set-row > .set-control { justify-self: stretch; }
+  .set-row > .set-control > .app-select { min-width: 0; }
+  .set-row:has(> .set-control > .toggle-switch) > .set-control { justify-self: end; }
+  .usage-display-layout { grid-template-columns: 1fr; gap: var(--s-3); }
+  .set-row > .set-control.usage-display-controls { justify-self: start; }
+  .theme-grid, .provider-cards, .project-default-grid { grid-template-columns: 1fr; }
+  /* Stack the folder actions and composer buttons on narrow panes. */
+  .skill-folder-actions { width: 100%; margin-left: 0; }
+  .skill-folder-actions > button { flex: 1 1 130px; }
+  .skill-library-toolbar .secondary-button { flex: 1 1 100%; }
+  .skill-create-actions { flex-direction: column-reverse; align-items: stretch; }
+  .skill-card-list { max-height: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-modal, .settings-backdrop.open .settings-modal, .settings-backdrop.closed .settings-modal,
+  .workflow-card, .theme-card, .provider-card, .skill-card { transition: none; animation: none; }
+}
