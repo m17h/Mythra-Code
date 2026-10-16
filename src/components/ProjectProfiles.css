@@ -1,0 +1,23 @@
+.project-profiles { margin-top: var(--s-5); }
+.project-profiles :is(.primary-button, .secondary-button).compact { min-height: var(--ctl-sm, 28px); gap: 5px; padding: 0 10px; border-radius: var(--r-sm); font-size: var(--fs-meta); }
+.project-profile-row { align-items: center; }
+.project-profile-row .set-copy { min-width: 0; }
+.project-profile-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.project-profile-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.project-profile-chip { padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-micro, 11px); line-height: 1.6; }
+.project-profile-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.project-profile-review { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+.project-profile-review:has(.app-select.open) { z-index: 31; }
+.project-profile-review-head { display: flex; flex-direction: column; gap: 2px; }
+.project-profile-review-head strong { color: var(--ink-2); font-size: var(--fs-ui); }
+.project-profile-review-head small, .project-profile-note, .project-profile-status { margin: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+.project-profile-parts { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.project-profile-parts label { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 8px; cursor: pointer; }
+.project-profile-parts input { margin: 2px 0 0; accent-color: var(--green); }
+.project-profile-parts label > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.project-profile-parts strong { color: var(--ink-2); font-size: var(--fs-meta); font-weight: 600; }
+.project-profile-parts small { color: var(--muted); font-size: var(--fs-meta); line-height: 1.4; }
+.project-profile-parts code { overflow-wrap: anywhere; padding: 3px 6px; border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 6%, transparent); font: var(--fs-meta)/1.45 var(--font-mono, ui-monospace, Menlo, Consolas, monospace); }
+.project-profile-parts .project-profile-caution { color: var(--amber, #c9973d); }
+.project-profile-review-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.project-profile-status { margin-top: 2px; padding: 0 2px; }
