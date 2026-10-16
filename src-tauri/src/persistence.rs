@@ -5,7 +5,7 @@ use std::{
 };
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
@@ -1540,6 +1540,20 @@ pub(super) struct LocalTranscriptSearchHit {
     snippet: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptSearchThread {
+    provider: String,
+    thread_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptSearchResponse {
+    hits: Vec<LocalTranscriptSearchHit>,
+    incomplete: bool,
+}
+
 const LOCAL_TRANSCRIPT_SEARCH_MAX_RESULTS: usize = 200;
 const LOCAL_TRANSCRIPT_SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
 
@@ -1556,88 +1570,165 @@ fn search_snippet(text: &str, start: usize, matched_chars: usize) -> String {
     format!("{}{}{}", if from > 0 { "…" } else { "" }, excerpt, if to < text.len() { "…" } else { "" })
 }
 
-/// Content search across locally stored Claude and Cursor conversations.
-/// SQLite narrows chunks by their stored JSON text (ASCII case-insensitive);
-/// each candidate's user and assistant messages are then matched properly,
-/// so keys, ids and tool payloads never produce hits.
+/// Match Unicode text, mapping the lowercase match back to the original
+/// character boundary (lowercasing can expand a character).
+fn local_message_snippet(text: &str, needle: &str) -> Option<String> {
+    let lowered = text.to_lowercase();
+    let at = lowered.find(needle)?;
+    let end = at + needle.len();
+    let mut lowered_offset = 0;
+    let mut start = 0;
+    let mut matched_chars = 0;
+    for (original_offset, character) in text.char_indices() {
+        let next = lowered_offset + character.to_lowercase().map(char::len_utf8).sum::<usize>();
+        if lowered_offset <= at && at < next {
+            start = original_offset;
+        }
+        if next > at && lowered_offset < end {
+            matched_chars += 1;
+        }
+        if next >= end {
+            break;
+        }
+        lowered_offset = next;
+    }
+    Some(search_snippet(text, start, matched_chars))
+}
+
+/// Search one eligible transcript through its indexed identity. Project only
+/// actual user/assistant message text: JSON keys and tool payloads cannot hit,
+/// and SQLite's ASCII-only lower() must not discard Unicode matches.
+fn search_local_transcript(
+    connection: &Connection,
+    thread: &LocalTranscriptSearchThread,
+    needle: &str,
+    deadline: std::time::Instant,
+) -> rusqlite::Result<Option<String>> {
+    let legacy_key = format!("kiwi.{}Thread.{}", thread.provider, thread.thread_id);
+    let legacy_is_current: bool = connection.query_row(
+        "SELECT EXISTS (
+           SELECT 1 FROM app_state legacy
+           LEFT JOIN local_transcript_meta meta ON meta.provider = ?1 AND meta.thread_id = ?2
+           WHERE legacy.key = ?3 AND (meta.thread_id IS NULL OR legacy.updated_at > meta.legacy_updated_at)
+         )",
+        params![thread.provider, thread.thread_id, legacy_key],
+        |row| row.get(0),
+    )?;
+    // Read legacy data directly, without migrating or writing any profile
+    // state. A newer compatibility snapshot is authoritative, just as it is
+    // when the conversation is opened through the migration path.
+    let sql = if legacy_is_current {
+        "SELECT json_extract(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.text')
+         FROM app_state legacy,
+              json_each(CASE WHEN json_valid(legacy.value) THEN legacy.value ELSE '{}' END, '$.messages') message
+         WHERE legacy.key = ?3
+           AND json_extract(CASE WHEN json_valid(legacy.value) THEN legacy.value ELSE '{}' END, '$.thread.id') = ?2
+           AND json_extract(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.role') IN ('user', 'assistant')
+           AND json_type(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.text') = 'text'"
+    } else {
+        "SELECT json_extract(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.entry.text')
+         FROM local_transcript_chunks chunk,
+              json_each(CASE WHEN json_valid(chunk.entries_json) THEN chunk.entries_json ELSE '[]' END) message
+         WHERE chunk.provider = ?1 AND chunk.thread_id = ?2
+           AND json_extract(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.kind') = 'message'
+           AND json_extract(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.entry.role') IN ('user', 'assistant')
+           AND json_type(CASE WHEN message.type = 'object' THEN message.value ELSE '{}' END, '$.entry.text') = 'text'"
+    };
+    let mut statement = connection.prepare_cached(sql)?;
+    // The legacy query's highest parameter is ?3; the chunk query uses two.
+    let mut rows = if legacy_is_current {
+        statement.query(params![thread.provider, thread.thread_id, legacy_key])?
+    } else {
+        statement.query(params![thread.provider, thread.thread_id])?
+    };
+    while let Some(row) = rows.next()? {
+        if std::time::Instant::now() >= deadline {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT), None,
+            ));
+        }
+        let text: String = row.get(0)?;
+        if let Some(snippet) = local_message_snippet(&text, needle) {
+            return Ok(Some(snippet));
+        }
+    }
+    Ok(None)
+}
+
+/// The caller supplies workspace-eligible identities before the result cap.
+/// Each transcript uses its primary-key lookup; no global JSON scan/sort can
+/// consume the deadline before the first result is returned.
 fn search_local_transcripts(
     connection: &Connection,
     query: &str,
+    eligible_threads: &[LocalTranscriptSearchThread],
     limit: usize,
-) -> Result<Vec<LocalTranscriptSearchHit>, String> {
+    deadline: std::time::Instant,
+) -> Result<LocalTranscriptSearchResponse, String> {
     let needle = query.to_lowercase();
-    // Stored text is JSON-escaped: search for the escaped form of the query.
-    let escaped = serde_json::to_string(query).map_err(|_| "Invalid search text".to_string())?;
-    let escaped = escaped[1..escaped.len() - 1].to_ascii_lowercase();
-    let started = std::time::Instant::now();
-    let mut statement = connection
-        .prepare(
-            "SELECT c.provider, c.thread_id, c.entries_json
-             FROM local_transcript_chunks c
-             JOIN local_transcript_meta m ON m.provider = c.provider AND m.thread_id = c.thread_id
-             WHERE instr(lower(c.entries_json), ?1) > 0
-             ORDER BY m.updated_at DESC, c.seq DESC",
-        )
-        .map_err(|error| format!("Could not search local conversations: {error}"))?;
-    let mut rows = statement
-        .query(params![escaped])
-        .map_err(|error| format!("Could not search local conversations: {error}"))?;
     let mut seen = std::collections::HashSet::new();
     let mut hits = Vec::new();
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| format!("Could not search local conversations: {error}"))?
-    {
-        if hits.len() >= limit || started.elapsed() > LOCAL_TRANSCRIPT_SEARCH_BUDGET {
-            break;
+    for thread in eligible_threads {
+        if hits.len() >= limit || std::time::Instant::now() >= deadline {
+            return Ok(LocalTranscriptSearchResponse { hits, incomplete: true });
         }
-        let provider: String = row.get(0).map_err(|error| error.to_string())?;
-        let thread_id: String = row.get(1).map_err(|error| error.to_string())?;
-        if seen.contains(&(provider.clone(), thread_id.clone())) {
+        if !seen.insert((&thread.provider, &thread.thread_id)) {
             continue;
         }
-        let entries_json: String = row.get(2).map_err(|error| error.to_string())?;
-        let Ok(entries) = serde_json::from_str::<Vec<Value>>(&entries_json) else {
-            continue;
-        };
-        let snippet = entries.iter().rev().find_map(|wrapped| {
-            if wrapped.get("kind").and_then(Value::as_str) != Some("message") {
-                return None;
+        match search_local_transcript(connection, thread, &needle, deadline) {
+            Ok(Some(snippet)) => hits.push(LocalTranscriptSearchHit {
+                provider: thread.provider.clone(), thread_id: thread.thread_id.clone(), snippet,
+            }),
+            Ok(None) => {},
+            Err(_) if std::time::Instant::now() >= deadline => {
+                return Ok(LocalTranscriptSearchResponse { hits, incomplete: true });
             }
-            let entry = wrapped.get("entry")?;
-            if !matches!(entry.get("role").and_then(Value::as_str), Some("user" | "assistant")) {
-                return None;
+            Err(error) => {
+                return Err(format!("Could not search local conversations: {error}"));
             }
-            let text = entry.get("text").and_then(Value::as_str)?;
-            let lowered = text.to_lowercase();
-            let at = lowered.find(&needle)?;
-            // Lowercasing can change byte lengths; map back conservatively.
-            let start = text.char_indices().map(|(index, _)| index).find(|index| *index >= at.min(text.len())).unwrap_or(0);
-            Some(search_snippet(text, start, query.chars().count()))
-        });
-        if let Some(snippet) = snippet {
-            seen.insert((provider.clone(), thread_id.clone()));
-            hits.push(LocalTranscriptSearchHit { provider, thread_id, snippet });
         }
     }
-    Ok(hits)
+    Ok(LocalTranscriptSearchResponse { hits, incomplete: false })
 }
 
 #[tauri::command]
 pub(super) async fn local_transcript_search(
     app: AppHandle,
     query: String,
+    eligible_threads: Vec<LocalTranscriptSearchThread>,
     limit: Option<usize>,
-) -> Result<Vec<LocalTranscriptSearchHit>, String> {
+) -> Result<LocalTranscriptSearchResponse, String> {
     let query = query.trim().to_string();
-    if query.is_empty() || query.chars().count() > 200 {
-        return Ok(Vec::new());
+    if query.is_empty() {
+        return Ok(LocalTranscriptSearchResponse { hits: Vec::new(), incomplete: false });
+    }
+    if query.chars().count() > 200 {
+        return Err("Local conversation search supports at most 200 characters".into());
+    }
+    if eligible_threads.iter().any(|thread| {
+        !matches!(thread.provider.as_str(), "claude" | "cursor")
+            || thread.thread_id.trim().is_empty() || thread.thread_id.len() > 256
+    }) {
+        return Err("Local conversation search received an invalid thread identity".into());
     }
     let limit = limit.unwrap_or(50).clamp(1, LOCAL_TRANSCRIPT_SEARCH_MAX_RESULTS);
-    let connection = shared_state_db_reader(&app)?;
+    let path = state_db_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let connection = lock_state_db(&connection)?;
-        search_local_transcripts(&connection, &query, limit)
+        let deadline = std::time::Instant::now() + LOCAL_TRANSCRIPT_SEARCH_BUDGET;
+        // Searches own their read-only connection, so an expensive/obsolete
+        // request never takes the shared reader mutex used by sidebar/state.
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ).map_err(|error| format!("Could not open local conversation search: {error}"))?;
+        connection.busy_timeout(std::time::Duration::from_millis(25))
+            .map_err(|error| format!("Could not prepare local conversation search: {error}"))?;
+        connection.progress_handler(1_000, Some(move || std::time::Instant::now() >= deadline));
+        // Keep legacy/chunk selection and message reads on one WAL snapshot
+        // even if a conversation is migrated or saved while search is running.
+        let transaction = connection.unchecked_transaction()
+            .map_err(|error| format!("Could not begin local conversation search: {error}"))?;
+        search_local_transcripts(&transaction, &query, &eligible_threads, limit, deadline)
     })
     .await
     .map_err(|error| format!("Local conversation search failed: {error}"))?
