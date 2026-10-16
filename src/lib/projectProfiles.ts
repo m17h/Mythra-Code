@@ -55,7 +55,9 @@ function importedSubagentPolicy(value: unknown): ProjectSubagentSettings | null 
       || !["inherit", "fixed", "agent"].includes(target.reasoningMode as string)
       || !CHILD_AGENT_REASONING_EFFORTS.includes(target.reasoningEffort as ChildAgentTarget["reasoningEffort"])
       || !CHILD_AGENT_REASONING_EFFORTS.includes(target.reasoningMaxEffort as ChildAgentTarget["reasoningMaxEffort"])
-      || autoCompactTokensError(target.autoCompactTokens) !== null) return null;
+      // 0 is how storage marks an invalid compaction window (that worker stays
+      // off). Accept it so a profile exported from such a crew still imports.
+      || (target.autoCompactTokens !== 0 && autoCompactTokensError(target.autoCompactTokens) !== null)) return null;
   }
   const policy = sanitizeProjectSubagentSettings(value);
   // Preserve benign normalization and concurrency limits, but never accept a
