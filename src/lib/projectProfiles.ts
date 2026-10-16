@@ -1,9 +1,10 @@
-import type { Project, ProjectOverrides } from "../types";
-import { sanitizeProjectSubagentOverrides } from "./childAgents";
+import type { ChildAgentTarget, Project, ProjectOverrides, ProjectSubagentSettings } from "../types";
+import { CHILD_AGENT_REASONING_EFFORTS, sanitizeProjectSubagentOverrides, sanitizeProjectSubagentSettings } from "./childAgents";
 import { sanitizeProjectCheckOverrides } from "./projectChecks";
 import { sanitizeProjectDefaultOverrides } from "./projectDefaults";
 import { MAX_PROJECT_PROFILE_PROMPT } from "./projectPromptProfiles";
 import { sanitizeProjectRunOverrides } from "./projectRun";
+import { autoCompactTokensError } from "./threadSubagentSettings";
 
 /**
  * A project profile is everything a project changes from the app defaults:
@@ -35,6 +36,37 @@ const PART_KEYS: Record<ProjectProfilePart, ReadonlyArray<keyof ProjectOverrides
 const FORMAT = "mythra-project-profile";
 const VERSION = 1;
 export const MAX_PROJECT_PROFILE_BYTES = 4 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Imported policies must be complete; storage migration must not invent a crew. */
+function importedSubagentPolicy(value: unknown): ProjectSubagentSettings | null {
+  if (!isRecord(value) || typeof value.enabled !== "boolean"
+    || typeof value.maxConcurrent !== "number" || !Number.isInteger(value.maxConcurrent) || value.maxConcurrent < 1
+    || !isRecord(value.childAgents) || typeof value.childAgents.enabled !== "boolean"
+    || !Array.isArray(value.childAgents.targets)) return null;
+  const targets = value.childAgents.targets;
+  for (const target of targets) {
+    if (!isRecord(target) || typeof target.id !== "string" || typeof target.provider !== "string"
+      || typeof target.model !== "string" || typeof target.label !== "string" || typeof target.description !== "string"
+      || typeof target.enabled !== "boolean"
+      || !["inherit", "fixed", "agent"].includes(target.reasoningMode as string)
+      || !CHILD_AGENT_REASONING_EFFORTS.includes(target.reasoningEffort as ChildAgentTarget["reasoningEffort"])
+      || !CHILD_AGENT_REASONING_EFFORTS.includes(target.reasoningMaxEffort as ChildAgentTarget["reasoningMaxEffort"])
+      || autoCompactTokensError(target.autoCompactTokens) !== null) return null;
+  }
+  const policy = sanitizeProjectSubagentSettings(value);
+  // Preserve benign normalization and concurrency limits, but never accept a
+  // partial roster after invalid ids/providers, duplicates or excess entries
+  // were discarded. An explicitly empty roster is a valid authored choice.
+  if (!policy || policy.childAgents.targets.length !== targets.length) return null;
+  // A model identity must not become a different destination through truncation.
+  if (policy.childAgents.targets.some((target, index) => target.model !==
+    (targets[index] as Record<string, string>).model.replace(/\s+/g, " ").trim())) return null;
+  return policy;
+}
 
 export function projectProfileParts(overrides: ProjectOverrides | undefined): ProjectProfilePart[] {
   if (!overrides) return [];
@@ -75,19 +107,17 @@ export function applyProjectProfile(project: Project, profile: ProjectOverrides,
 
 /** The same validation saved projects get at launch, applied to untrusted input. */
 export function sanitizeProjectProfile(value: unknown): ProjectOverrides {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const raw = value as Record<string, unknown>;
+  if (!isRecord(value)) return {};
+  const raw = value;
   const candidate: Record<string, unknown> = {};
   for (const keys of Object.values(PART_KEYS)) {
     for (const key of keys) if (raw[key] !== undefined) candidate[key] = raw[key];
   }
   if (typeof candidate.systemPrompt !== "string" || candidate.systemPrompt.length > MAX_PROJECT_PROFILE_PROMPT) delete candidate.systemPrompt;
   if (candidate.systemPromptMode !== "append" && candidate.systemPromptMode !== "replace") delete candidate.systemPromptMode;
-  // The stored-settings sanitizer fills gaps with defaults. A file must carry
-  // a complete policy instead, so a malformed one is left out, not turned on or off.
-  const subagents = candidate.subagents as Record<string, unknown> | undefined;
-  if (subagents !== undefined && (!subagents || typeof subagents !== "object" || typeof subagents.enabled !== "boolean"
-    || typeof subagents.maxConcurrent !== "number" || !subagents.childAgents || typeof subagents.childAgents !== "object")) delete candidate.subagents;
+  const subagents = importedSubagentPolicy(candidate.subagents);
+  if (subagents) candidate.subagents = subagents;
+  else delete candidate.subagents;
   const [project] = sanitizeProjectCheckOverrides(sanitizeProjectRunOverrides(sanitizeProjectDefaultOverrides(
     sanitizeProjectSubagentOverrides([{ id: "profile", name: "profile", path: "", overrides: candidate as ProjectOverrides }]),
   )));
@@ -112,14 +142,16 @@ export function importProjectProfile(contents: string): ImportedProjectProfile {
   if (new TextEncoder().encode(contents).byteLength > MAX_PROJECT_PROFILE_BYTES) throw new Error("Project profiles must be smaller than 4 MB.");
   let parsed: unknown;
   try { parsed = JSON.parse(contents); } catch { throw new Error("This file is not a valid project profile."); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("This file is not a valid project profile.");
-  const value = parsed as Record<string, unknown>;
+  if (!isRecord(parsed)) throw new Error("This file is not a valid project profile.");
+  const value = parsed;
   if (value.format !== FORMAT || value.version !== VERSION) throw new Error("Unsupported project profile format or version.");
-  const raw = value.settings && typeof value.settings === "object" && !Array.isArray(value.settings)
-    ? value.settings as ProjectOverrides : {};
+  const raw = isRecord(value.settings) ? value.settings : {};
   const settings = sanitizeProjectProfile(raw);
   const kept = new Set(projectProfileParts(settings));
-  const dropped = projectProfileParts(raw).filter((part) => !kept.has(part));
+  // Raw file values are not ProjectOverrides yet: count the supplied keys
+  // without calling typed methods such as systemPrompt.trim() on them.
+  const dropped = PROJECT_PROFILE_PARTS.map((part) => part.id).filter((part) =>
+    PART_KEYS[part].some((key) => Object.prototype.hasOwnProperty.call(raw, key)) && !kept.has(part));
   if (!kept.size) throw new Error(dropped.length ? "None of the settings in this profile could be used." : "This project profile has no settings.");
   const name = typeof value.name === "string" ? value.name.replace(/\s+/g, " ").trim().slice(0, 120) : "";
   return { name: name || "Imported profile", settings, dropped };
