@@ -67,7 +67,7 @@ import { isPullRequestMutationRunning } from "../lib/pullRequestOperations";
 import { unsupportedImageReason } from "../lib/attachments";
 import type { ResolvedSkillPrompts } from "../lib/skills";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
-import { createTurnContextReceipt, recordTurnContext, type TurnContextReceipt } from "../lib/turnContextReceipts";
+import { beginTurnContextReceipt, createTurnContextReceipt, type TurnContextReceipt } from "../lib/turnContextReceipts";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
 import { invoke } from "@tauri-apps/api/core";
 import { PendingTurnStarts, type PendingTurnStart } from "../lib/pendingTurnStarts";
@@ -641,6 +641,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let userSkillMetadata: Pick<ChatMessage, "skillReferences" | "skillsFolder" | "skillDependencies"> = {};
     // What this turn's instructions were built from, for the dock's audit.
     let contextReceipt: TurnContextReceipt | null = null;
+    let receiptAttempt: ReturnType<typeof beginTurnContextReceipt> | undefined;
     if (mode === "steer" && running && activeThread) {
       const steerOwner = useTaskStore.getState().tasks[activeThread.id];
       const expectedSteerTurnId = steerOwner?.activeTurnId;
@@ -964,7 +965,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       await strategy.prepareTurn(thread, updatedThread);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
-      if (contextReceipt) recordTurnContext(thread.id, contextReceipt);
+      receiptAttempt = beginTurnContextReceipt(thread.id);
       useTaskStore.getState().appendUserMessage(thread.id, {
         id: sentMessageId,
         role: "user",
@@ -1002,6 +1003,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
       const ownsIdentity = explicitAttemptCurrent()
         && useTaskStore.getState().tasks[thread.id]?.agentRunStartedAt === guardedRunStartedAt
         && !result.superseded && (!cursorAttempt || isCurrentCursorTurnStart(thread.id, cursorAttempt));
+      if (ownsIdentity && contextReceipt) receiptAttempt.confirm({
+        ...contextReceipt,
+        model: effectiveSettings.model || (provider === "claude" ? DEFAULT_CLAUDE_MODEL : DEFAULT_CURSOR_MODEL),
+      });
       const ownsStart = ownsIdentity && !result.stopped;
       if (ownsStart && !completedBeforeStartReturned) {
         useTaskStore.getState().setActiveTurn(thread.id, result.turnId);
@@ -1079,6 +1084,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           { label: "Memory", text: instructionsWithMemory },
           { label: "Project files", text: resolvedSystemPrompt },
         ],
+        userSkillPrompt: providerText,
         skills: userSkillMetadata.skillReferences?.map((reference) => reference.name),
         attachments: sentAttachments.length,
       });
@@ -1323,7 +1329,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       sentMessageId = `local-${crypto.randomUUID()}`;
-      if (contextReceipt) recordTurnContext(threadId, contextReceipt);
+      receiptAttempt = beginTurnContextReceipt(threadId);
       useTaskStore.getState().appendUserMessage(threadId, {
         id: sentMessageId,
         role: "user",
@@ -1361,6 +1367,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
         throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The runtime accepted the start without returning its turn identifier.");
       }
       providerAccepted = true;
+      // Retain the last confirmed receipt through rejected/cancelled starts.
+      // An older response must not replace a newer turn's confirmed context.
+      if (contextReceipt && explicitAttemptCurrent()
+        && useTaskStore.getState().tasks[threadId]?.agentRunStartedAt === guardedRunStartedAt) {
+        receiptAttempt.confirm({
+          ...contextReceipt,
+          model: typeof runtimeTurnModel === "string" ? runtimeTurnModel : contextReceipt.model,
+        });
+      }
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(threadId, text);
       recordAuthoredPrompt(threadId, sentMessageId);
       const resultTurnId = result.turn?.id;
@@ -1469,6 +1484,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       else setError(friendlyError(reason));
       return false;
     } finally {
+      receiptAttempt?.finish();
       if (sharedDraftStart) {
         pendingSharedDraftStarts.delete(sharedDraftStart);
         ordinarySharedDraftStartsRef.current.delete(sharedDraftStart);

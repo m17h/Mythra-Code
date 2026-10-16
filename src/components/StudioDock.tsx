@@ -818,27 +818,25 @@ export function StudioDock(props: {
   );
 }
 
-/** Exactly what this device assembled as instructions for the thread's last
- * turn: each layer's size and the full text, so "what did the model see?"
- * has a concrete answer. */
+/** The instruction context of the latest turn whose start was confirmed. */
 function LastTurnInstructions({ threadId }: { threadId: string | null }) {
   const receipt = useTurnContextReceipt(threadId);
   if (!threadId) return null;
-  if (!receipt) return <p className="last-turn-empty">Send a message from this device to see the instructions its turn received.</p>;
-  const total = receipt.instructions.length;
-  return <section className="last-turn-instructions" aria-label="Instructions sent with the last turn">
-    <h3 className="panel-label">Last turn&rsquo;s instructions</h3>
+  if (!receipt) return <p className="last-turn-empty">Instructions appear after a turn sent from this device is confirmed by its provider.</p>;
+  const total = receipt.totalInstructionChars;
+  return <section className="last-turn-instructions" aria-label="Instructions for the last confirmed turn">
+    <h3 className="panel-label">Last confirmed turn&rsquo;s instructions</h3>
     <div className="audit-table">
-      <div><span>Sent</span><code>{new Date(receipt.at).toLocaleString()}</code></div>
+      <div><span>Start confirmed</span><code>{new Date(receipt.at).toLocaleString()}</code></div>
       <div><span>Model</span><code>{[receipt.provider, receipt.model, receipt.effort].filter(Boolean).join(" · ")}</code></div>
       {receipt.layers.map((layer) => <div key={layer.label}><span>{layer.label}</span><code>{layer.chars ? `${layer.chars.toLocaleString()} chars` : "none"}</code></div>)}
       {receipt.skills.length > 0 && <div><span>Skills referenced</span><code>{receipt.skills.join(", ")}</code></div>}
       {receipt.attachments > 0 && <div><span>Attachments</span><code>{receipt.attachments}</code></div>}
     </div>
     <details className="last-turn-text">
-      <summary>Show the {total.toLocaleString()} characters{receipt.truncated ? " (first 32,000 kept)" : ""}</summary>
+      <summary>Show instruction context ({total.toLocaleString()} characters{receipt.truncated ? "; first 32,000 kept" : ""})</summary>
       <textarea readOnly rows={10} spellCheck={false} value={receipt.instructions} aria-label="Last turn's assembled instructions" placeholder="No instructions were added for this turn." />
-      <small>Mythra Code also sends its own operating guidance for tools and delegation, and each provider adds its built-in instructions.</small>
+      <small>System text is shown as assembled. Skills supplied with your message are shown separately with their delivery guidance; your message and attachments are omitted. Layer sizes include this formatting. Rejected starts, preparation cancelled before delivery and unconfirmed starts keep the previous receipt. A confirmed start is recorded even if the turn is then stopped. Mythra Code also sends operating guidance for tools and delegation, and each provider adds built-in instructions.</small>
     </details>
   </section>;
 }
