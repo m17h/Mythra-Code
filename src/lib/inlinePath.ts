@@ -1,4 +1,6 @@
-export type InlinePathParts = { prefix: string; middle: string; destination: string };
+export type InlinePathParts = { prefix: string; middle: string; destination: string; middleLabel?: string };
+
+const ABBREVIATE_AFTER = 48;
 
 /** Recognize standalone paths without changing their source text. The three
  * slices join to the original path, including mixed or trailing separators. */
@@ -28,10 +30,19 @@ export function inlinePathParts(text: string): InlinePathParts | null {
   // Retain the root and first directory when there is a real middle to hide.
   // Otherwise the directory portion itself can shrink beside the destination.
   const next = components[1];
-  const prefixEnd = next && next.index! < destinationStart ? next.index! : 0;
+  const ordinaryPrefixEnd = next && next.index! < destinationStart ? next.index! : 0;
+  // Shortening is based on the actual path, not the surrounding font/window
+  // width. Keep Windows drive + first folder (or UNC server + share), and
+  // only abbreviate when there is a real intermediate component to omit.
+  const keptComponents = windows && (/^[a-z]:/i.test(text) || text.startsWith("\\\\")) ? 2 : 1;
+  const abbreviatedStart = components[keptComponents]?.index;
+  const abbreviate = text.length > ABBREVIATE_AFTER
+    && components.length > keptComponents + 1 && abbreviatedStart !== undefined;
+  const prefixEnd = abbreviate ? abbreviatedStart : ordinaryPrefixEnd;
   return {
     prefix: prefixEnd ? text.slice(0, prefixEnd) : "",
     middle: text.slice(prefixEnd, destinationStart),
     destination: text.slice(destinationStart),
+    ...(abbreviate ? { middleLabel: `…${text[destinationStart - 1]}` } : {}),
   };
 }
