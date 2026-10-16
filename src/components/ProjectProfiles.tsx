@@ -10,6 +10,7 @@ import {
   applyProjectProfile,
   exportProjectProfile,
   importProjectProfile,
+  MAX_PROJECT_PROFILE_BYTES,
   pickProjectProfile,
   PROJECT_PROFILE_COMMAND_PARTS,
   PROJECT_PROFILE_PARTS,
@@ -114,6 +115,7 @@ export function ProjectProfiles({ projects, onProjects, onAppliedToActive, activ
 
   const importFile = async (file: File) => {
     try {
+      if (file.size > MAX_PROJECT_PROFILE_BYTES) throw new Error("Project profiles must be smaller than 4 MB.");
       const imported = importProjectProfile(await file.text());
       const parts = projectProfileParts(imported.settings);
       setStatus("");
