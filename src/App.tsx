@@ -12,7 +12,7 @@ import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
 import { commitGitWorkspace, stageGitWorkspace, pushGitWorkspace, pullGitWorkspace, getGitWorkspace, previewGitWorkspaceRevert, revertGitWorkspace, previewGitWorkspaceRevertAll, revertGitWorkspaceAll, type GitWorkflowControls, type GitWorkspaceRevertPreview, type GitWorkspaceSnapshot } from "./lib/gitWorkspace";
 import { useGitHubLogin } from "./hooks/useGitHubLogin";
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ComponentType, type CSSProperties, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -245,7 +245,8 @@ const loadChatTimeline = () => import("./components/ChatTimeline").then((module)
   return { default: module.ChatTimeline };
 });
 const ChatTimeline = lazy(loadChatTimeline);
-type ChatTimelineView = typeof ChatTimeline | NonNullable<typeof loadedChatTimeline>;
+// Either the lazy wrapper or the component it resolved to; both take the same props.
+type ChatTimelineView = ComponentType<ComponentProps<typeof ChatTimeline>>;
 // An explicit, credential-free native QA replay. Vite removes this branch and
 // its fixture import from ordinary production builds; the fixture also verifies
 // the native isolated-profile identity before exposing any simulated activity.
