@@ -72,6 +72,7 @@ import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { SkillLibrary } from "./SkillLibrary";
 import { PromptsSettings, type PromptLayer } from "./PromptsSettings";
 import { setPerformanceOverlayEnabled, usePerformanceOverlayEnabled } from "../lib/performanceOverlay";
+import { setTrayStatusEnabled, useTrayStatusEnabled } from "../lib/trayStatus";
 import type { McpView } from "./StudioDock";
 import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github";
 import { joinPath } from "../lib/paths";
@@ -206,6 +207,8 @@ const SETTINGS_ROWS: ReadonlyArray<{ pane: SettingsPane; label: string; keywords
   { pane: "usage", label: "Provider quota display", keywords: "remaining consumed percentage" },
   { pane: "system", label: "Guided setup", keywords: "onboarding tour getting started" },
   { pane: "system", label: "Desktop notifications", keywords: "notify alert" },
+  { pane: "system", label: "Status in the menu bar", keywords: "tray menu bar notification area icon running" },
+  { pane: "system", label: "Performance overlay", keywords: "fps frame rate memory heap debug" },
   { pane: "system", label: "OpenAI service tier", keywords: "fast priority" },
   { pane: "system", label: "Terminal scrollback", keywords: "terminal memory buffer" },
   { pane: "system", label: "Terminal and local-server timeout", keywords: "terminal timeout minutes dev server" },
@@ -706,6 +709,7 @@ export function SettingsModal({
   const promptAnalyzers = useMemo(() => ({ global: analyzeGlobalPrompt, codex: analyzeCodexPrompt, claude: analyzeClaudePrompt }), [analyzeClaudePrompt, analyzeCodexPrompt, analyzeGlobalPrompt]);
   const [promptLayer, setPromptLayer] = useState<PromptLayer>("global");
   const performanceOverlay = usePerformanceOverlayEnabled();
+  const trayStatus = useTrayStatusEnabled();
   const [cloneUrl, setCloneUrl] = useState("");
   const [cloneParent, setCloneParent] = useState("");
   const githubRefreshRequestedRef = useRef(false);
@@ -1766,6 +1770,15 @@ export function SettingsModal({
                 </div>
                 <div className="set-control">
                   <button type="button" role="switch" aria-label="Desktop notifications" aria-checked={local.notificationsEnabled} className={`toggle-switch ${local.notificationsEnabled ? "on" : ""}`} onClick={() => setLocal({ ...local, notificationsEnabled: !local.notificationsEnabled })}><span /></button>
+                </div>
+              </div>
+              <div className="set-row">
+                <div className="set-copy">
+                  <strong>Status in the menu bar</strong>
+                  <small>Shows how many threads are working or waiting for approval in the macOS menu bar or the Windows notification area, with a shortcut back to the app. Saves automatically.</small>
+                </div>
+                <div className="set-control">
+                  <button type="button" role="switch" aria-label="Status in the menu bar" aria-checked={trayStatus} className={`toggle-switch ${trayStatus ? "on" : ""}`} onClick={() => setTrayStatusEnabled(!trayStatus)}><span /></button>
                 </div>
               </div>
               <div className="set-row">
