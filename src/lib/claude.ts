@@ -13,6 +13,7 @@ import type { JsonObject } from "./codex";
 import { clampUsedPercent, type ProviderRateLimits } from "./providerUsage";
 import { parseResetLabelToEpochSeconds } from "./resetTimeParsing";
 import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscriptPage, saveLocalTranscript, type LocalTranscriptPage } from "./localTranscriptPersistence";
+import { countProviderEvents } from "./performanceOverlay";
 
 export interface ClaudeRuntimeStatus {
   available: boolean;
@@ -403,9 +404,10 @@ export async function onClaudeEvent(
   // The backend emits single messages on "claude-event" and coalesced bursts
   // of stream deltas on "claude-events" as an ordered array. Keep both
   // subscriptions so either backend version works.
-  const single = await listen<ClaudeEvent>("claude-event", ({ payload }) => handler(payload));
+  const single = await listen<ClaudeEvent>("claude-event", ({ payload }) => { countProviderEvents(); handler(payload); });
   try {
     const batched = await listen<ClaudeEvent[]>("claude-events", ({ payload }) => {
+      countProviderEvents(payload.length);
       for (const event of payload) handler(event);
     });
     return () => {
