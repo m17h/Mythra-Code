@@ -41,7 +41,8 @@ import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
 import { GitPanel, type GitPanelAction, type GitPanelDraft, type GitRepositoryState } from "./GitPanel";
 import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
-import { TerminalPanel } from "./TerminalPanel";
+import type { TerminalPanelProps } from "./TerminalPanel";
+import { scheduleIdlePreload } from "../lib/settingsPreload";
 import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
 import type { RunningTerminalCommand, TerminalOutputStore } from "../hooks/useTerminal";
@@ -124,6 +125,43 @@ const TABS: Array<{ id: StudioTab; label: string; icon: typeof CodeXml }> = [
 ];
 
 const COMMAND_READ_ONLY_REASON = "Read only: commands run without permission to write in this project. Switch the thread to Ask or Full access first.";
+
+// xterm is most of this chunk's weight. Load the terminal only once the dock
+// opens, so a closed dock costs nothing at launch.
+type TerminalPanelComponent = typeof import("./TerminalPanel").TerminalPanel;
+let loadedTerminalPanel: TerminalPanelComponent | null = null;
+let terminalPanelPromise: Promise<TerminalPanelComponent> | null = null;
+function loadTerminalPanel(): Promise<TerminalPanelComponent> {
+  terminalPanelPromise ??= import("./TerminalPanel").then((module) => {
+    loadedTerminalPanel = module.TerminalPanel;
+    return module.TerminalPanel;
+  }).catch((error) => {
+    terminalPanelPromise = null;
+    throw error;
+  });
+  return terminalPanelPromise;
+}
+function preloadTerminalPanel() {
+  void loadTerminalPanel().catch(() => undefined);
+}
+
+/** Stable host that renders the resolved panel directly (no React.lazy
+ * suspension on first read). Import failures reach the dock's error boundary. */
+function TerminalPanelHost(props: TerminalPanelProps) {
+  const [Component, setComponent] = useState(() => loadedTerminalPanel);
+  const [failure, setFailure] = useState<{ reason: unknown } | null>(null);
+  useEffect(() => {
+    if (Component) return;
+    let disposed = false;
+    loadTerminalPanel().then(
+      (component) => { if (!disposed) setComponent(() => component); },
+      (reason) => { if (!disposed) setFailure({ reason }); },
+    );
+    return () => { disposed = true; };
+  }, [Component]);
+  if (failure) throw failure.reason;
+  return Component ? <Component {...props} /> : null;
+}
 
 function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof CodeXml; title: string; subtitle: string; onClose: () => void }) {
   return <div className="studio-header"><span className="studio-header-icon"><Icon size={16} /></span><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close workspace tools"><X size={16} /></button></div>;
@@ -274,6 +312,10 @@ export function StudioDock(props: {
     return () => window.clearTimeout(timer);
   }, [props.open]);
   const renderContent = props.open || contentMounted;
+  useEffect(() => {
+    if (!props.open || loadedTerminalPanel) return;
+    return scheduleIdlePreload(preloadTerminalPanel, 0);
+  }, [props.open]);
   // The Git view survives dock tab switches; a route request picks it and
   // hands its focus target to the panel once.
   const [gitView, setGitView] = useState<GitView>("changes");
@@ -471,7 +513,7 @@ export function StudioDock(props: {
 
         {props.tab === "terminal" && <>
           <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={projectLabel} onClose={props.onClose} />
-          <TerminalPanel
+          <TerminalPanelHost
             key={props.projectPath ?? ""}
             outputStore={props.terminalOutput}
             scope={props.projectPath ?? ""}

@@ -12,7 +12,7 @@ import { remarkSkillMentions } from "../lib/skillMentionMarkdown";
 import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference } from "../types";
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
-import { SubAgentControls } from "./SubAgentControls";
+import { SubAgentClock, SubAgentControls } from "./SubAgentControls";
 import { activityTurnSegments, compactActivityPresentation, failedRunPresentationState, hasTerminalTurnEvidence, type CompactWorkState } from "../lib/compactActivity";
 import { ActivityStatus, describeLiveActivity, type LiveActivityDescriptor } from "./ActivityStatus";
 import { ActivityDetailsModal, workEntrySearchText, type ActivityDetailsRun } from "./ActivityDetailsModal";
@@ -986,6 +986,7 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
 export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dealIndex }: { activity: Activity; dealIndex?: number }) {
   const metadata = activity.agent;
   const controls = useContext(SubAgentControls);
+  const now = useContext(SubAgentClock);
   const readouts = controls?.historyWorkers ?? controls?.workers ?? [];
   const represented = resolveSubAgentActivityWorkers(activity, readouts);
   const count = represented.reduce((total, entry) => total + entry.count, 0);
@@ -999,7 +1000,7 @@ export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dea
   const [actionError, setActionError] = useState<string | null>(null);
   const active = !historical && !unconfirmedAssignment && worker ? isSubAgentWorkerActive(worker.status) : false;
   const elapsed = !historical && !unconfirmedAssignment && worker && worker.createdAt > 0 && (active || worker.finishedAt)
-    ? Math.max(0, Math.floor(((worker.finishedAt ?? controls!.now) - worker.createdAt) / 1000)) : null;
+    ? Math.max(0, Math.floor(((worker.finishedAt ?? now) - worker.createdAt) / 1000)) : null;
   const awaitingReview = !historical && !unconfirmedAssignment && worker?.review === "awaiting" && !active;
   const runAction = async (kind: "open" | "stop" | "accept") => {
     if (!worker || !controls || action) return;

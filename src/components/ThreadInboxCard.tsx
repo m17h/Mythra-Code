@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import {
   CornerDownRight,
   Folder,
@@ -192,7 +192,7 @@ function threadCardLifecycle(status: string, unread: boolean, approvals: number)
   return "";
 }
 
-export function ThreadInboxCard({
+export const ThreadInboxCard = memo(function ThreadInboxCard({
   threadId,
   title,
   titlePending = false,
@@ -280,4 +280,4 @@ export function ThreadInboxCard({
       </span>
     </button>
   );
-}
+});

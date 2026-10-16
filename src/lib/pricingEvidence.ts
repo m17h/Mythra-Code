@@ -1,4 +1,4 @@
-import { loadStored, readStoredRaw } from "./storage";
+import { loadStored, readStoredRaw, storedRevision } from "./storage";
 import {
   evidenceSources, finiteRate, OFFICIAL_PRICING_KEY, pricingSource, withClaudeHourCacheRate,
   type ModelPricing, type UsageProvider,
@@ -25,7 +25,7 @@ export const OBSERVATION_GAP_MS = 48 * 3_600_000;
 export const MAX_EPOCHS_PER_MODEL = 32;
 export type RateEpoch = [firstSeenAt: number, lastSeenAt: number, input: number, output: number, cacheRead: number | null, cacheWrite: number | null, cacheWrite1h: number | null, open: 0 | 1];
 const DAY_MS = 86_400_000;
-let epochCache: { raw: string | null; epochs: Record<string, RateEpoch[]> } | null = null;
+let epochCache: { raw: string | null; revision: number; epochs: Record<string, RateEpoch[]> } | null = null;
 
 function positiveTime(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -57,10 +57,15 @@ export function parseRateEpochs(raw: unknown): Record<string, RateEpoch[]> {
 }
 
 function officialEpochs(): Record<string, RateEpoch[]> {
+  const revision = storedRevision(OFFICIAL_PRICING_KEY);
+  if (epochCache && epochCache.revision === revision) return epochCache.epochs;
   const raw = readStoredRaw(OFFICIAL_PRICING_KEY);
-  if (epochCache && epochCache.raw === raw) return epochCache.epochs;
+  if (epochCache && epochCache.raw === raw) {
+    epochCache.revision = revision;
+    return epochCache.epochs;
+  }
   const stored = loadStored<{ epochs?: unknown } | null>(OFFICIAL_PRICING_KEY, null);
-  epochCache = { raw, epochs: parseRateEpochs(stored?.epochs) };
+  epochCache = { raw, revision, epochs: parseRateEpochs(stored?.epochs) };
   return epochCache.epochs;
 }
 
