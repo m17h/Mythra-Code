@@ -875,7 +875,12 @@ export default function App() {
   const [convSearchIndex, setConvSearchIndex] = useState(0);
   const [convSearchCount, setConvSearchCount] = useState(0);
   const convSearchInputRef = useRef<HTMLInputElement>(null);
-  const [searchResults, setSearchResults] = useState<Thread[] | null>(null);
+  const [searchResults, setSearchResults] = useState<{
+    query: string;
+    workspacePath: string;
+    threads: Thread[];
+    status: "searching" | "complete" | "partial" | "unavailable";
+  } | null>(null);
   const [pinnedThreadIds, setPinnedThreadIds] = usePersistedState<string[]>("kiwi.pinnedThreads", []);
   const [archivedThreads, persistArchivedThreads, archivedThreadsRef] = usePersistedStateRef<ArchivedThread[]>("kiwi.archivedThreads", []);
   const archivingThreadIdsRef = useRef(new Set<string>());
@@ -1646,6 +1651,11 @@ export default function App() {
     archived: archivedThreads,
     bindings: sidebarThreadBindings ?? {},
   }), [archivedThreads, sidebarKnownThreads, sidebarThreadBindings, subAgentParentContext, threads]);
+  // Never show a previous query/workspace's content matches or completeness.
+  const activeThreadSearch = threadSearch.trim() && searchResults?.query === threadSearch.trim()
+    && searchResults.workspacePath === activeWorkspace?.path ? searchResults : null;
+  const threadSearchStatus = threadSearch.trim() && activeWorkspace
+    ? activeThreadSearch?.status ?? "searching" : null;
   const displayedThreads = useMemo(() => {
     if (!activeWorkspace) return [];
     const threadProjectBindings = threadProjectBindingsRef.current ?? {};
@@ -1659,7 +1669,7 @@ export default function App() {
     const merged = workspaceKindThreads
       .filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(query) || matchesParent(thread));
     const mergedIds = new Set(merged.map((thread) => thread.id));
-    for (const found of filterThreadsForWorkspace(searchResults ?? [], activeWorkspace.path, threadProjectBindings)) {
+    for (const found of filterThreadsForWorkspace(activeThreadSearch?.threads ?? [], activeWorkspace.path, threadProjectBindings)) {
       if (!filterThreadsByKind([found], childThreadLinks, threadKindView, childThreadRootIds).length) continue;
       if (!mergedIds.has(found.id)) {
         mergedIds.add(found.id);
@@ -1668,7 +1678,7 @@ export default function App() {
     }
     const pinned = new Set(pinnedThreadIds);
     return merged.sort((a, b) => Number(pinned.has(b.id)) - Number(pinned.has(a.id)) || b.updatedAt - a.updatedAt);
-  }, [activeWorkspace, childThreadLinks, childThreadRootIds, pinnedThreadIds, searchResults, subAgentParents, threadKindView, threadSearch, workspaceKindThreads]);
+  }, [activeThreadSearch, activeWorkspace, childThreadLinks, childThreadRootIds, pinnedThreadIds, subAgentParents, threadKindView, threadSearch, workspaceKindThreads]);
   const subAgentGroups = useMemo(() => (threadKindView === "subagents"
     ? groupSubAgentThreads(displayedThreads, (thread) => subAgentParents.info(thread.id, thread), new Set(pinnedThreadIds))
     : []), [displayedThreads, pinnedThreadIds, subAgentParents, threadKindView]);
@@ -4664,6 +4674,14 @@ export default function App() {
   // Cursor threads (which the runtime does not know about).
   const searchableThreadsRef = useRef(threads);
   searchableThreadsRef.current = threads;
+  // Identity/membership changes restart search, while token updates and fresh
+  // Thread object instances do not. Scope is applied before the native cap.
+  const localSearchScope = useMemo(() => JSON.stringify(filterThreadsForWorkspace(
+    threads, activeWorkspace?.path ?? "", sidebarThreadBindings ?? {},
+  ).filter((thread) => isLocalSubscriptionThread(thread))
+    .map((thread) => ({ provider: thread.modelProvider.toLowerCase() as "claude" | "cursor", threadId: thread.id }))
+    .sort((left, right) => left.provider.localeCompare(right.provider) || left.threadId.localeCompare(right.threadId))),
+  [activeWorkspace?.path, sidebarThreadBindings, threads]);
   useEffect(() => {
     const requestId = ++threadSearchRequestRef.current;
     const query = threadSearch.trim();
@@ -4673,32 +4691,65 @@ export default function App() {
     }
     const workspacePath = activeWorkspace.path;
     const runtimeAvailable = Boolean(runtimeStatus?.available);
+    const controller = new AbortController();
+    const eligibleThreads = JSON.parse(localSearchScope) as Array<{ provider: "claude" | "cursor"; threadId: string }>;
+    const updatedAt = new Map(searchableThreadsRef.current.map((thread) => [thread.id, thread.updatedAt]));
+    eligibleThreads.sort((left, right) => (updatedAt.get(right.threadId) ?? 0) - (updatedAt.get(left.threadId) ?? 0));
+    setSearchResults({ query, workspacePath, threads: [], status: "searching" });
     const timer = window.setTimeout(() => {
-      void (async () => {
-        const [runtime, local] = await Promise.allSettled([
-          runtimeAvailable ? rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query)) : Promise.reject(new Error("Codex runtime unavailable")),
-          searchLocalTranscripts(query),
-        ]);
-        if (threadSearchRequestRef.current !== requestId) return;
-        if (runtime.status === "rejected" && local.status === "rejected") {
-          setSearchResults(null);
-          return;
-        }
-        const found = runtime.status === "fulfilled"
-          ? threadsForWorkspace(runtime.value.data ?? [], workspacePath, threadProjectBindingsRef.current ?? {})
-          : [];
-        if (local.status === "fulfilled" && local.value.length) {
-          const localIds = new Set(local.value.map((hit) => hit.threadId));
+      let runtimePending = true;
+      let localPending = true;
+      let runtimeFailed = false;
+      let localFailed = false;
+      let localIncomplete = false;
+      let runtimeMatches: Thread[] = [];
+      let localIds = new Set<string>();
+      // Publish each source independently: a slow runtime cannot hide local
+      // matches, and one failed source cannot discard the other's results.
+      const publish = () => {
+        if (controller.signal.aborted || threadSearchRequestRef.current !== requestId) return;
+        const found = [...runtimeMatches];
+        if (localIds.size) {
           const foundIds = new Set(found.map((thread) => thread.id));
           for (const thread of searchableThreadsRef.current) {
             if (localIds.has(thread.id) && !foundIds.has(thread.id)) found.push(thread);
           }
         }
-        setSearchResults(found);
+        const status = runtimePending || localPending ? "searching"
+          : runtimeFailed && localFailed ? "unavailable"
+          : runtimeFailed || localFailed || localIncomplete ? "partial" : "complete";
+        setSearchResults({ query, workspacePath, threads: found, status });
+      };
+      void (async () => {
+        try {
+          if (!runtimeAvailable) throw new Error("Codex runtime unavailable");
+          const result = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query));
+          runtimeMatches = threadsForWorkspace(result.data ?? [], workspacePath, threadProjectBindingsRef.current ?? {});
+        } catch {
+          runtimeFailed = true;
+        } finally {
+          runtimePending = false;
+          publish();
+        }
+      })();
+      void (async () => {
+        try {
+          const result = await searchLocalTranscripts(query, eligibleThreads, controller.signal);
+          localIds = new Set(result.hits.map((hit) => hit.threadId));
+          localIncomplete = result.incomplete;
+        } catch {
+          localFailed = true;
+        } finally {
+          localPending = false;
+          publish();
+        }
       })();
     }, 300);
-    return () => window.clearTimeout(timer);
-  }, [activeWorkspace, runtimeStatus?.available, threadSearch]);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch]);
 
   const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
     if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;
@@ -8911,7 +8962,16 @@ export default function App() {
                 </div>
               ))}
             </>}
-            {activeWorkspace && !displayedThreads.length && !displayedPendingFirstPrompts.length && <div className="empty-threads">{threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}</div>}
+            {threadSearchStatus && threadSearchStatus !== "complete" && <div className="empty-threads" role="status">
+              {threadSearchStatus === "searching" ? "Searching conversation content… Matches found so far are shown above."
+                : threadSearchStatus === "partial" ? "Search is partial. More conversations may match. Narrow your search or try again."
+                : "Conversation content search is unavailable. Only name and preview matches are shown."}
+            </div>}
+            {activeWorkspace && !displayedThreads.length && !displayedPendingFirstPrompts.length && !displayedSavedDraftKeys.length
+              && (!threadSearchStatus || threadSearchStatus === "complete") && <div className="empty-threads">
+                {threadSearchStatus ? "No matching conversations."
+                  : threadKindView === "subagents" ? "No sub-agent threads yet" : workspaceMode === "chat" ? "No normal chats yet" : "No threads in this project yet"}
+              </div>}
           </div>
           {workspaceArchived.length > 0 && (
             <div className="archived-threads">
