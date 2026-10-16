@@ -16,10 +16,11 @@ the read rather than silently dropping enabled instructions.
 
 ## Enable learning
 
-Open **Settings → Prompts → Learned preferences**:
+Open **Settings → Memory**:
 
 1. Choose **App** or a saved project under **Scope**.
-2. Review the disclosure about conversation content and account usage.
+2. Review the disclosure about conversation content and account usage
+   (**Details** expands it).
 3. Choose the **Learning provider** and **Learning model**.
 4. Turn on **Automatically learn preferences**.
 
@@ -51,8 +52,8 @@ New completed conversations are collected for a one-minute quiet window before
 analysis. Pending work for the same scope is combined. One analysis runs at a
 time, with at most eight active or queued requests across scopes.
 
-To include older conversations, enable the desired scope and choose **Analyze
-recent past conversations**. One pass examines at most eight recent eligible
+To include older conversations, enable the desired scope, expand **Learn from
+past conversations** and choose **Analyze recent past conversations**. One pass examines at most eight recent eligible
 chats and three pages per chat. Codex-backed pages contain at most 12 turns;
 local transcript pages use a 40 KB read budget. Only selected, bounded text is
 sent for analysis, so this action does not cover your full history. Some older

@@ -49,7 +49,13 @@ To give precise feedback, select text in a completed reply or a file's diff in R
 
 ### Instruction files and prompt presets
 
-In **Settings → Prompts**, independently enable project **AGENTS.md** and
+**Settings → Prompts** has one instruction editor with **Every provider**,
+**Codex** and **Claude** tabs (a dot marks tabs that have text), a profile menu
+for switching saved sets, and a **What the agent receives** summary with a
+preview of your combined instructions. Learned preferences live in
+**Settings → Memory**.
+
+Under **Project files**, independently enable project **AGENTS.md** and
 **CLAUDE.md** discovery. Both are off by default. Enabled files are read fresh
 from the thread's project or isolated working folder for future turns, for any
 provider. AGENTS.override.md takes precedence over AGENTS.md; CLAUDE.md can
@@ -57,14 +63,15 @@ fall back to .claude/CLAUDE.md. The combined limit is 32 KiB. Nested directories
 ancestor folders and instruction-file imports are not scanned or expanded.
 
 Global Codex and Claude instruction files are discovered locally as available
-presets. Preview them before use: they may contain personal information or
-credentials. **Use for Codex/Claude** replaces only that provider's prompt layer
+presets and appear in the matching provider tab. Preview them before use: they
+may contain personal information or credentials, and **Use for Codex/Claude**
+asks you to confirm. **Use for Codex/Claude** replaces only that provider's prompt layer
 after saving Settings, preserving other prompts. **Save copy** keeps a local
 snapshot. Discovery and Refresh never activate files or overwrite active prompts
 and saved copies. Configured CODEX_HOME and CLAUDE_CONFIG_DIR locations are honored.
 
 Each global file is labelled with its provider logo. **Edit original file**
-opens a live file editor in the prompt builder: edits automatically save back
+opens a live file editor beside the preset: edits automatically save back
 to that file, with saving/saved/error feedback. These disk edits are separate
 from Settings Save/Cancel; Cancel does not undo them. Detected file changes or
 unsafe write paths stop saving and retain your draft. Avoid editing the same

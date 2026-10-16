@@ -79,9 +79,8 @@ export function PreferenceLearningSettings(props: Props) {
   const scopeKey = selectedScopeAvailable ? selectedScope : "app";
   useEffect(() => { if (!selectedScopeAvailable) setSelectedScope("app"); }, [selectedScopeAvailable]);
   return <div className="set-group preference-learning-settings">
-    <div className="set-group-head"><h4>Learned preferences</h4><span className="set-group-note">saved independently</span></div>
-    <LearningExperimentalNotice />
-    <p>Learn how you like to work from conversations. Updates apply automatically to future messages, with a notification when preferences change.</p>
+    <div className="set-group-head"><h4>Learned preferences</h4><span className="set-group-note">Saves automatically</span><LearningExperimentalNotice /></div>
+    <p>Learn how you like to work from finished conversations. Learned instructions are added as their own layer; your prompts are never edited. You get a notification whenever they change.</p>
     <fieldset ref={scopePickerRef} className="preference-learning-scope" disabled={scopeBusy}>
       <span>Scope</span>
       <AppSelectMenu ariaLabel="Preference learning scope" value={scopeKey} options={scopes} portal searchable={scopes.length > 8} onChange={setSelectedScope} />
@@ -153,6 +152,13 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
   const markdown = draft?.markdown ?? scope.markdown;
   const conflict = draft !== null && draft.revision !== scope.revision;
   const dirty = draft !== null && markdown !== scope.markdown;
+  // Progressive disclosure: the document appears once there is something to
+  // review or edit; a scope that has never learned anything needs only its
+  // switch, account and model.
+  const showDocument = scope.enabled || Boolean(scope.markdown) || draft !== null || recoverable !== null || removedProject;
+  const historyActive = historyWorking || Boolean(history);
+  const [historyOpen, setHistoryOpen] = useState(historyActive);
+  useEffect(() => { if (historyActive) setHistoryOpen(true); }, [historyActive]);
 
   const run = async (action: () => Promise<unknown>, message?: string) => {
     if (writing.current || !hydrated) return;
@@ -210,8 +216,11 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
     <fieldset className="preference-learning-controls" disabled={busy || !hydrated} aria-busy={busy}>
       <div className="preference-learning-disclosure" role="note">
         {removedProject && <p>This project is no longer in your project list. Automatic learning and history analysis are unavailable. You can review its saved preferences or forget them.</p>}
-        <p><strong>{providerDisplayName(scope.provider)} receives conversation content from this scope.</strong> Learning sends selected conversation messages and existing learned preferences to the chosen provider. It uses your account's quota or API credits. App scope includes chats across projects; project scope includes only that project's chats.</p>
-        <p>Learning is off by default. Enabling starts with new completed conversations. Past conversations are included only when you choose the history action below.</p>
+        <div className="preference-learning-consent"><strong>{providerDisplayName(scope.provider)} receives conversation content from this scope</strong> and it uses your quota or credits.{" "}
+          <InfoPopover className="preference-learning-inline-info" triggerClassName="preference-learning-info compact" label="What learning sends" trigger={<><Info size={12} aria-hidden="true" /><span>Details</span></>}>
+            <p className="preference-learning-info-message">Learning sends selected conversation messages and your existing learned preferences to the chosen provider, using your account&rsquo;s quota or API credits. App scope includes chats across projects; project scope includes only that project&rsquo;s chats. Learning is off by default and starts with new completed conversations. Past conversations are included only when you choose to analyze them.</p>
+          </InfoPopover>
+        </div>
       </div>
       <fieldset className="preference-learning-controls" disabled={removedProject}>
       <div className="set-row">
@@ -228,7 +237,7 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
       </div>
       {!usableModel && <p className="preference-learning-unavailable" role="status">{scope.provider === "openai" ? "Automatic learning is waiting for GPT-6 Luna in the live model catalog. Choose an available model or refresh Models & accounts." : "Choose a learning model before enabling."}</p>}
       </fieldset>
-      <div className="set-row stack">
+      {showDocument && <div className="set-row stack">
         <div className="set-copy"><strong>Learned instructions</strong><small>Added as a separate system prompt layer. Your global, provider, project, and profile prompts stay as you wrote them. Disabling this scope stops learning and applying its layer.</small></div>
         <div className="set-control"><textarea aria-label={`Learned instructions for ${scopeName}`} className="prompt-editor preference-learning-editor" rows={7} maxLength={PREFERENCE_LEARNING_LIMITS.documentChars} value={markdown} placeholder="No learned preferences yet" onChange={(event) => setDraft({ markdown: event.target.value, revision: draft?.revision ?? scope.revision, baseMarkdown: draft?.baseMarkdown ?? scope.markdown })} /></div>
         {conflict && <p role="status">Preferences changed while you were editing. Copy your draft if needed, then load the latest preferences before saving.</p>}
@@ -244,17 +253,17 @@ function ScopeEditor({ scopeKey, scopeName, removedProject, modelCatalogs, onLea
             onForgot(scopeName);
           })}>Forget removed project preferences</button>}
         </div>
-      </div>
+      </div>}
     </fieldset>
-      {onLearnPastConversations && <div className="set-body preference-learning-history">
-        <p>Optionally analyze a bounded selection of recent past conversations in this scope, up to eight chats and three pages per chat in one pass. This does not cover all history. The chosen provider receives selected older messages and this uses additional quota or credits.</p>
-        <p>Older conversations may contain unmarked automated input. Review any preferences learned from history.</p>
+      {onLearnPastConversations && <details className="set-body preference-learning-history" open={historyOpen} onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
+        <summary>Learn from past conversations</summary>
+        <p>Analyze a bounded selection of recent conversations in this scope: up to eight chats and three pages per chat in one pass, not all history. The chosen provider receives those older messages, using additional quota or credits. Older conversations may contain unmarked automated input, so review what is learned.</p>
         {historyStatus}
         <div className="preference-learning-actions">
           <button type="button" className="secondary-button" disabled={busy || !hydrated || removedProject || !scope.enabled || !usableModel || processing || historyWorking || historyActiveElsewhere} onClick={() => void learnHistory()}>Analyze recent past conversations</button>
           {historyWorking && onCancelLearning && <button type="button" className="secondary-button" disabled={historySaving} onClick={() => onCancelLearning(scopeKey)}>{historySaving ? "Finishing save…" : "Cancel preference learning"}</button>}
         </div>
-      </div>}
+      </details>}
     <div className="set-body preference-learning-status" aria-live="polite">
       {!hydrated && !error && <p>Loading learned preferences…</p>}
       {busy && <p>Saving…</p>}

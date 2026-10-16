@@ -39,3 +39,11 @@
 .preference-learning-info:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 /* The shared floating popover owns the surface and viewport placement. */
 .preference-learning-info-message { margin: 0; }
+.preference-learning-settings > .set-group-head { align-items: center; }
+.preference-learning-settings > .set-group-head > .preference-learning-experimental { margin: 0 0 0 auto; }
+.preference-learning-info.compact { padding: 1px 6px; gap: 4px; vertical-align: baseline; }
+.preference-learning-inline-info { display: inline-flex; vertical-align: middle; }
+.preference-learning-history > summary { cursor: pointer; color: var(--text); font-weight: 600; font-size: var(--fs-ui); }
+.preference-learning-history > summary:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 3px; }
+.preference-learning-history[open] > summary { margin-bottom: 8px; }
+.preference-learning-consent { line-height: 1.5; }

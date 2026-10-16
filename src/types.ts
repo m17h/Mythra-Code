@@ -22,7 +22,7 @@ export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aur
 /** Typeface family used for chat prose and the composer. Built-in stacks only. */
 export type ChatFont = "system" | "humanist" | "serif" | "mono";
 export type WorkspaceMode = "chat" | "project";
-export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
+export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "memory" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
 export type ProjectPromptMode = "replace" | "append";
 
 /** A user-authored snapshot of this project's instructions and layering choice. */
