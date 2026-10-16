@@ -1532,6 +1532,117 @@ pub(super) async fn state_read(app: AppHandle, key: String) -> Result<Option<Val
     .map_err(|error| format!("State read task failed: {error}"))?
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptSearchHit {
+    provider: String,
+    thread_id: String,
+    snippet: String,
+}
+
+const LOCAL_TRANSCRIPT_SEARCH_MAX_RESULTS: usize = 200;
+const LOCAL_TRANSCRIPT_SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
+
+/// A short excerpt around a match starting at byte `start`, on character
+/// boundaries, with whitespace collapsed.
+fn search_snippet(text: &str, start: usize, matched_chars: usize) -> String {
+    let from = text[..start].char_indices().rev().take(48).last().map(|(index, _)| index).unwrap_or(start);
+    let to = text[start..]
+        .char_indices()
+        .nth(matched_chars.saturating_add(72))
+        .map(|(index, _)| start + index)
+        .unwrap_or(text.len());
+    let excerpt = text[from..to].split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{}{}{}", if from > 0 { "…" } else { "" }, excerpt, if to < text.len() { "…" } else { "" })
+}
+
+/// Content search across locally stored Claude and Cursor conversations.
+/// SQLite narrows chunks by their stored JSON text (ASCII case-insensitive);
+/// each candidate's user and assistant messages are then matched properly,
+/// so keys, ids and tool payloads never produce hits.
+fn search_local_transcripts(
+    connection: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<LocalTranscriptSearchHit>, String> {
+    let needle = query.to_lowercase();
+    // Stored text is JSON-escaped: search for the escaped form of the query.
+    let escaped = serde_json::to_string(query).map_err(|_| "Invalid search text".to_string())?;
+    let escaped = escaped[1..escaped.len() - 1].to_ascii_lowercase();
+    let started = std::time::Instant::now();
+    let mut statement = connection
+        .prepare(
+            "SELECT c.provider, c.thread_id, c.entries_json
+             FROM local_transcript_chunks c
+             JOIN local_transcript_meta m ON m.provider = c.provider AND m.thread_id = c.thread_id
+             WHERE instr(lower(c.entries_json), ?1) > 0
+             ORDER BY m.updated_at DESC, c.seq DESC",
+        )
+        .map_err(|error| format!("Could not search local conversations: {error}"))?;
+    let mut rows = statement
+        .query(params![escaped])
+        .map_err(|error| format!("Could not search local conversations: {error}"))?;
+    let mut seen = std::collections::HashSet::new();
+    let mut hits = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("Could not search local conversations: {error}"))?
+    {
+        if hits.len() >= limit || started.elapsed() > LOCAL_TRANSCRIPT_SEARCH_BUDGET {
+            break;
+        }
+        let provider: String = row.get(0).map_err(|error| error.to_string())?;
+        let thread_id: String = row.get(1).map_err(|error| error.to_string())?;
+        if seen.contains(&(provider.clone(), thread_id.clone())) {
+            continue;
+        }
+        let entries_json: String = row.get(2).map_err(|error| error.to_string())?;
+        let Ok(entries) = serde_json::from_str::<Vec<Value>>(&entries_json) else {
+            continue;
+        };
+        let snippet = entries.iter().rev().find_map(|wrapped| {
+            if wrapped.get("kind").and_then(Value::as_str) != Some("message") {
+                return None;
+            }
+            let entry = wrapped.get("entry")?;
+            if !matches!(entry.get("role").and_then(Value::as_str), Some("user" | "assistant")) {
+                return None;
+            }
+            let text = entry.get("text").and_then(Value::as_str)?;
+            let lowered = text.to_lowercase();
+            let at = lowered.find(&needle)?;
+            // Lowercasing can change byte lengths; map back conservatively.
+            let start = text.char_indices().map(|(index, _)| index).find(|index| *index >= at.min(text.len())).unwrap_or(0);
+            Some(search_snippet(text, start, query.chars().count()))
+        });
+        if let Some(snippet) = snippet {
+            seen.insert((provider.clone(), thread_id.clone()));
+            hits.push(LocalTranscriptSearchHit { provider, thread_id, snippet });
+        }
+    }
+    Ok(hits)
+}
+
+#[tauri::command]
+pub(super) async fn local_transcript_search(
+    app: AppHandle,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<LocalTranscriptSearchHit>, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() || query.chars().count() > 200 {
+        return Ok(Vec::new());
+    }
+    let limit = limit.unwrap_or(50).clamp(1, LOCAL_TRANSCRIPT_SEARCH_MAX_RESULTS);
+    let connection = shared_state_db_reader(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = lock_state_db(&connection)?;
+        search_local_transcripts(&connection, &query, limit)
+    })
+    .await
+    .map_err(|error| format!("Local conversation search failed: {error}"))?
+}
+
 // Startup must distinguish a missing record from a saved JSON `null` (or
 // malformed JSON). Returning serialized data preserves that distinction and
 // lets the frontend stop before migrations could replace an invalid record.
