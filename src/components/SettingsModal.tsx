@@ -35,6 +35,8 @@ import {
   Wrench,
   X,
   Brain,
+  CornerDownRight,
+  Cpu,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
@@ -122,27 +124,29 @@ import { cachedDeveloperRuntimeUpdates, checkDeveloperRuntimeUpdates, updateDeve
  * the rail. A superset, so it keeps compiling once App can link to them too. */
 type SettingsPane = SettingsSection | "pricing";
 
-const SETTINGS_NAV: ReadonlyArray<{
-  group: string;
-  items: ReadonlyArray<{ id: SettingsPane; label: string; icon: typeof Palette; detail: string; keywords: string }>;
-}> = [
+type SettingsNavItem = {
+  id: SettingsPane; label: string; icon: typeof Palette; detail: string; keywords: string;
+  /** Shown as a tab of this pane; listed in the sidebar only while searching. */
+  parent?: SettingsPane;
+};
+
+// Grouped by what someone is trying to do, not by implementation.
+const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<SettingsNavItem> }> = [
   {
-    group: "Workspace",
-    items: [
-      { id: "general", label: "Interface", icon: Palette, detail: "Appearance and keyboard shortcuts. Appearance previews instantly; save to keep your changes.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look keyboard shortcut escape esc stop cancel active run" },
-      { id: "projects", label: "Projects", icon: FolderCog, detail: "Set up Git, name new threads automatically, and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository repo git init initialize initialization automatic thread title titles naming rename luna" },
-    ],
-  },
-  {
-    group: "Intelligence",
+    group: "AI",
     items: [
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
-      { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
-      { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
-      { id: "pricing", label: "Model pricing", icon: BadgeDollarSign, detail: "Official OpenAI and Anthropic API list prices per 1M tokens. Reference only; subscriptions aren’t billed at these rates.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "What every agent is told before your message.", keywords: "prompt system instructions agents.md claude.md guidance context profile profiles preset global codex claude layer" },
       { id: "memory", label: "Memory", icon: Brain, detail: "Optionally learn how you like to work from your conversations.", keywords: "memory learning learned preferences history personalize personalization remember experimental" },
       { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review" },
+    ],
+  },
+  {
+    group: "Connections",
+    items: [
+      { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
+      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Language tools, local MCP servers, and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace language languages lsp install automatic setup" },
+      { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
     ],
   },
   {
@@ -150,18 +154,75 @@ const SETTINGS_NAV: ReadonlyArray<{
     items: [
       { id: "workflows", label: "Workflows", icon: Play, detail: "Multi-step agent recipes and one-click project actions.", keywords: "workflow automation recipe steps pipeline action command run trigger" },
       { id: "scheduled-tasks", label: "Scheduled tasks", icon: CalendarClock, detail: "Prompts that run on their own in a chat or a project.", keywords: "schedule scheduled cron timer interval recurring unattended background task reminder" },
-      { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
-      { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Language tools, local MCP servers, and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace language languages lsp install automatic setup" },
     ],
   },
   {
-    group: "System",
+    group: "Usage",
     items: [
-      { id: "system", label: "Runtime", icon: Wrench, detail: "Onboarding, notifications, service tier, terminal memory and timeout, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory timeout time limit stop kill command local server dev server long-running minutes diagnostics logs errors performance onboarding getting started" },
+      { id: "usage", label: "Usage", icon: Gauge, detail: "How quotas are shown, plus everything this device has used.", keywords: "usage quota limit tokens cost price pricing spend billing rate percentage remaining consumed" },
+      { id: "pricing", label: "Model pricing", icon: BadgeDollarSign, parent: "usage", detail: "Official OpenAI and Anthropic API list prices per 1M tokens. Reference only; subscriptions aren’t billed at these rates.", keywords: "pricing price prices rate rates cost api list per million mtok token tokens input output cache read write cached long context openai anthropic claude gpt opus sonnet haiku" },
+    ],
+  },
+  {
+    group: "App",
+    items: [
+      { id: "general", label: "Interface", icon: Palette, detail: "Appearance and keyboard shortcuts. Appearance previews instantly; save to keep your changes.", keywords: "theme dark light appearance colour color scheme font typeface text size scale zoom density effort slider logo icon mark look keyboard shortcut escape esc stop cancel active run" },
+      { id: "projects", label: "Projects", icon: FolderCog, detail: "Set up Git, name new threads automatically, and give each project its own provider, model, and look.", keywords: "project folder workspace default override per-project repository repo git init initialize initialization automatic thread title titles naming rename luna" },
+      { id: "system", label: "Runtime", icon: Cpu, detail: "Onboarding, notifications, service tier, terminal memory and timeout, and diagnostics.", keywords: "runtime notification alert service tier terminal scrollback memory timeout time limit stop kill command local server dev server long-running minutes diagnostics logs errors performance onboarding getting started" },
       { id: "updates", label: "Updates", icon: Download, detail: "Mythra Code, Claude Code, and Codex updates in one place, always from their official channels.", keywords: "update upgrade version release install download changelog notes" },
     ],
   },
 ];
+
+/** Individual settings that search can jump to. `label` is the row's visible
+ * title (or group heading) so the pane can find, scroll to and highlight it. */
+const SETTINGS_ROWS: ReadonlyArray<{ pane: SettingsPane; label: string; keywords?: string }> = [
+  { pane: "general", label: "Escape stops the active run", keywords: "esc keyboard shortcut cancel" },
+  { pane: "general", label: "Warn before using Max reasoning", keywords: "reasoning effort warning" },
+  { pane: "general", label: "Theme", keywords: "dark light colour color appearance" },
+  { pane: "general", label: "App scale", keywords: "zoom size interface text bigger smaller" },
+  { pane: "general", label: "Chat typeface", keywords: "font serif mono" },
+  { pane: "general", label: "Effort slider style", keywords: "reasoning slider" },
+  { pane: "general", label: "Provider marks", keywords: "logo icon openai claude cursor" },
+  { pane: "projects", label: "Automatically initialize Git for new project threads", keywords: "git init repository" },
+  { pane: "projects", label: "Automatic thread titles", keywords: "name rename title luna" },
+  { pane: "models", label: "Accounts & connections", keywords: "sign in login account" },
+  { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter" },
+  { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token" },
+  { pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
+  { pane: "prompts", label: "Your instructions", keywords: "system prompt global codex claude profile" },
+  { pane: "prompts", label: "Project files", keywords: "agents.md claude.md discovery" },
+  { pane: "prompts", label: "What the agent receives", keywords: "preview combined layers" },
+  { pane: "memory", label: "Learned preferences", keywords: "learning history scope" },
+  { pane: "agents", label: "Sub-agent defaults", keywords: "concurrency parallel delegate" },
+  { pane: "agents", label: "Archive sub-agent threads automatically", keywords: "cleanup archive" },
+  { pane: "agents", label: "Sub-agent presets", keywords: "preset crew setup" },
+  { pane: "agents", label: "Custom agents", keywords: "specialist instructions" },
+  { pane: "tools", label: "MCP servers", keywords: "mcp server stdio" },
+  { pane: "tools", label: "Live tool controls", keywords: "workspace tools" },
+  { pane: "workflows", label: "Quick project actions", keywords: "action command button" },
+  { pane: "usage", label: "Provider quota display", keywords: "remaining consumed percentage" },
+  { pane: "system", label: "Guided setup", keywords: "onboarding tour getting started" },
+  { pane: "system", label: "Desktop notifications", keywords: "notify alert" },
+  { pane: "system", label: "OpenAI service tier", keywords: "fast priority" },
+  { pane: "system", label: "Terminal scrollback", keywords: "terminal memory buffer" },
+  { pane: "system", label: "Terminal and local-server timeout", keywords: "terminal timeout minutes dev server" },
+  { pane: "system", label: "Export a diagnostic bundle", keywords: "diagnostics logs support" },
+];
+
+/** Which pane edits each saved setting, for the sidebar's unsaved markers. */
+const SETTING_PANES: Partial<Record<keyof AppSettings, SettingsPane>> = {
+  provider: "models", model: "models", lmStudioBaseUrl: "models", reasoningEffort: "models", ultra: "models", permission: "models",
+  openAiLogo: "general", claudeLogo: "general", cursorLogo: "general", theme: "general", effortSlider: "general", chatFont: "general",
+  escapeStopsRun: "general", warnOnMaxReasoning: "general", uiScale: "general",
+  systemPrompt: "prompts", codexSystemPrompt: "prompts", claudeSystemPrompt: "prompts", promptProfileId: "prompts",
+  projectInstructionsEnabled: "prompts", projectClaudeInstructionsEnabled: "prompts",
+  subagentsEnabled: "agents", subagentMax: "agents", subagentEngine: "agents", nativeSubagentMax: "agents", nativeSubagentOptions: "agents",
+  autoCompactTokens: "agents", autoArchiveSubagentThreads: "agents", childAgents: "agents", childAgentPresets: "agents", managedSubagentV2: "agents",
+  automaticGitInitialization: "projects", automaticThreadTitles: "projects", threadTitleProvider: "projects", threadTitleModel: "projects",
+  serviceTier: "system", notificationsEnabled: "system", terminalScrollback: "system", terminalTimeoutMinutes: "system",
+  usageDisplay: "usage",
+};
 
 /** Does a pane match what someone typed into the sidebar's search field? */
 function settingsNavMatches(item: { label: string; detail: string; keywords: string }, query: string): boolean {
@@ -1125,9 +1186,60 @@ export function SettingsModal({
   // swapped out mid-edit just because you started typing.
   const [navQuery, setNavQuery] = useState("");
   const navGroups = useMemo(() => SETTINGS_NAV
-    .map((section) => ({ ...section, items: section.items.filter((item) => settingsNavMatches(item, navQuery)) }))
+    .map((section) => ({ ...section, items: section.items.filter((item) => (navQuery.trim() || !item.parent) && settingsNavMatches(item, navQuery)) }))
     .filter((section) => section.items.length > 0), [navQuery]);
   const navMatches = useMemo(() => navGroups.flatMap((section) => section.items), [navGroups]);
+  // Individual settings, so "scrollback" lands on the row, not just Runtime.
+  const rowMatches = useMemo(() => navQuery.trim()
+    ? SETTINGS_ROWS.filter((row) => settingsNavMatches({ label: row.label, detail: SETTINGS_PANES.get(row.pane)?.label ?? "", keywords: row.keywords ?? "" }, navQuery)).slice(0, 8)
+    : [], [navQuery]);
+  const [rowFocus, setRowFocus] = useState<{ pane: SettingsPane; label: string; nonce: number } | null>(null);
+  const goToRow = (row: { pane: SettingsPane; label: string }) => {
+    setSettingsSection(row.pane);
+    setRowFocus((current) => ({ ...row, nonce: (current?.nonce ?? 0) + 1 }));
+  };
+  // Panes with edits that Save would write, marked in the sidebar.
+  const dirtyPanes = useMemo(() => {
+    const panes = new Set<SettingsPane>();
+    if (!open) return panes;
+    for (const key of Object.keys(SETTING_PANES) as Array<keyof AppSettings>) {
+      if (JSON.stringify(local[key]) !== JSON.stringify(settings[key])) panes.add(SETTING_PANES[key]!);
+    }
+    if (JSON.stringify(localProjects) !== JSON.stringify(projects)) panes.add("projects");
+    if (JSON.stringify(localProfiles) !== JSON.stringify(profiles)) panes.add("prompts");
+    if (terminalTimeoutTyped !== terminalTimeoutMinutes) panes.add("system");
+    return panes;
+  }, [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes]);
+  // A search result names a row; once its pane renders, bring that row into
+  // view and mark it briefly. Lazy panes can take a few frames to mount.
+  useEffect(() => {
+    if (!open || !rowFocus || settingsSection !== rowFocus.pane) return;
+    let frame = 0;
+    let attempts = 0;
+    let marked: HTMLElement | null = null;
+    let timer: number | undefined;
+    const find = () => {
+      const content = contentRef.current;
+      const label = rowFocus.label.toLowerCase();
+      const match = content && [...content.querySelectorAll<HTMLElement>("h4, .set-row strong, summary")]
+        .find((element) => element.textContent?.trim().toLowerCase() === label);
+      if (!match) {
+        if (++attempts < 30) frame = requestAnimationFrame(find);
+        return;
+      }
+      marked = match.closest<HTMLElement>(".set-row, .set-group") ?? match;
+      marked.scrollIntoView?.({ block: "center" });
+      marked.classList.add("settings-row-highlight");
+      timer = window.setTimeout(() => marked?.classList.remove("settings-row-highlight"), 1_600);
+    };
+    frame = requestAnimationFrame(find);
+    return () => {
+      cancelAnimationFrame(frame);
+      if (timer !== undefined) window.clearTimeout(timer);
+      marked?.classList.remove("settings-row-highlight");
+    };
+  }, [open, rowFocus, settingsSection]);
+
 
   // A soft fade at the bottom of the pane says "there is more" without
   // adding chrome; it disappears once the pane is scrolled to its end.
@@ -1227,6 +1339,7 @@ export function SettingsModal({
                     // Once a search has narrowed to one answer, Enter goes
                     // there: no second aim with the mouse.
                     if (event.key === "Enter" && navMatches.length === 1) setSettingsSection(navMatches[0]!.id);
+                    else if (event.key === "Enter" && !navMatches.length && rowMatches.length === 1) goToRow(rowMatches[0]!);
                   }}
                 />
                 {navQuery && <button type="button" className="settings-search-clear" aria-label="Clear search" onClick={() => setNavQuery("")}><X size={12} /></button>}
@@ -1236,19 +1349,27 @@ export function SettingsModal({
               {navGroups.map((section) => (
                 <div className="settings-nav-group" key={section.group} role="group" aria-label={section.group}>
                   <span className="settings-nav-label" aria-hidden>{section.group}</span>
-                  {section.items.map(({ id, label, icon: Icon }) => (
-                    <button
+                  {section.items.map(({ id, label, icon: Icon }) => {
+                    const current = settingsSection === id || (!navQuery.trim() && SETTINGS_PANES.get(settingsSection)?.parent === id);
+                    const dirtyHere = dirtyPanes.has(id) || [...dirtyPanes].some((pane) => SETTINGS_PANES.get(pane)?.parent === id);
+                    return <button
                       key={id}
-                      className={settingsSection === id ? "active" : ""}
+                      className={current ? "active" : ""}
                       onClick={() => setSettingsSection(id)}
-                      aria-current={settingsSection === id ? "page" : undefined}
+                      aria-current={current ? "page" : undefined}
                     >
-                      <Icon size={14} aria-hidden="true" /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}
-                    </button>
-                  ))}
+                      <Icon size={14} aria-hidden="true" /><span>{label}</span>{id === "updates" && anyUpdateAvailable && <span className="settings-update-dot" role="img" aria-label="Update available" />}{dirtyHere && <span className="settings-dirty-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
+                    </button>;
+                  })}
                 </div>
               ))}
-              {!navGroups.length && <p className="settings-nav-empty">Nothing matches &ldquo;{navQuery.trim()}&rdquo;.</p>}
+              {rowMatches.length > 0 && <div className="settings-nav-group settings-row-results" role="group" aria-label="Settings">
+                <span className="settings-nav-label" aria-hidden>Settings</span>
+                {rowMatches.map((row) => <button key={`${row.pane}:${row.label}`} type="button" onClick={() => goToRow(row)}>
+                  <CornerDownRight size={14} aria-hidden="true" /><span className="settings-row-result"><small>{SETTINGS_PANES.get(row.pane)?.label}</small><span>{row.label}</span></span>
+                </button>)}
+              </div>}
+              {!navGroups.length && !rowMatches.length && <p className="settings-nav-empty">Nothing matches &ldquo;{navQuery.trim()}&rdquo;.</p>}
             </div>
           </nav>
           <div className="settings-pane">
@@ -1278,26 +1399,6 @@ export function SettingsModal({
           {settingsSection === "general" &&
           <section className="settings-section theme-settings-section">
             {activeProjectHasAppearanceOverride && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Save updates app-wide defaults. This project has appearance overrides; edit them in Projects.</span></p>}
-            <div className="set-group">
-              <h4>Keyboard shortcuts</h4>
-              <div className="set-card"><div className="set-row">
-                <div className="set-copy">
-                  <strong>Escape stops the active run</strong>
-                  <small id={escapeStopsRunId}>Applies across the app. Escape still dismisses menus and dialogs when this is off. Editable fields keep their own Escape behavior.</small>
-                </div>
-                <button type="button" role="switch" aria-label="Escape stops the active run" aria-describedby={escapeStopsRunId} aria-checked={local.escapeStopsRun} className={`toggle-switch ${local.escapeStopsRun ? "on" : ""}`} onClick={() => setLocal({ ...local, escapeStopsRun: !local.escapeStopsRun })}><span /></button>
-              </div></div>
-            </div>
-            <div className="set-group">
-              <h4>Reasoning warnings</h4>
-              <div className="set-card"><div className="set-row">
-                <div className="set-copy">
-                  <strong>Warn before using Max reasoning</strong>
-                  <small id={maxReasoningWarningId}>Ask before selecting Max in model and sub-agent controls. Extra reasoning can use much more of your allowance or API budget without a meaningful improvement. Applies app-wide.</small>
-                </div>
-                <button type="button" role="switch" aria-label="Warn before using Max reasoning" aria-describedby={maxReasoningWarningId} aria-checked={local.warnOnMaxReasoning !== false} className={`toggle-switch ${local.warnOnMaxReasoning !== false ? "on" : ""}`} onClick={() => setLocal((current) => ({ ...current, warnOnMaxReasoning: current.warnOnMaxReasoning === false }))}><span /></button>
-              </div></div>
-            </div>
             <div className="set-group">
               <h4>Theme</h4>
               <div className="set-card bare"><div className="set-body">
@@ -1369,6 +1470,25 @@ export function SettingsModal({
               </div></div>
             </div>
 
+            <div className="set-group">
+              <h4>Behavior</h4>
+              <div className="set-card">
+                <div className="set-row">
+                <div className="set-copy">
+                  <strong>Escape stops the active run</strong>
+                  <small id={escapeStopsRunId}>Applies across the app. Escape still dismisses menus and dialogs when this is off. Editable fields keep their own Escape behavior.</small>
+                </div>
+                <button type="button" role="switch" aria-label="Escape stops the active run" aria-describedby={escapeStopsRunId} aria-checked={local.escapeStopsRun} className={`toggle-switch ${local.escapeStopsRun ? "on" : ""}`} onClick={() => setLocal({ ...local, escapeStopsRun: !local.escapeStopsRun })}><span /></button>
+              </div>
+                <div className="set-row">
+                <div className="set-copy">
+                  <strong>Warn before using Max reasoning</strong>
+                  <small id={maxReasoningWarningId}>Ask before selecting Max in model and sub-agent controls. Extra reasoning can use much more of your allowance or API budget without a meaningful improvement. Applies app-wide.</small>
+                </div>
+                <button type="button" role="switch" aria-label="Warn before using Max reasoning" aria-describedby={maxReasoningWarningId} aria-checked={local.warnOnMaxReasoning !== false} className={`toggle-switch ${local.warnOnMaxReasoning !== false ? "on" : ""}`} onClick={() => setLocal((current) => ({ ...current, warnOnMaxReasoning: current.warnOnMaxReasoning === false }))}><span /></button>
+              </div>
+              </div>
+            </div>
             <div className="set-group">
               <h4>Effort slider style</h4>
               <p>How the reasoning-effort slider looks for every provider.</p>
@@ -1594,6 +1714,10 @@ export function SettingsModal({
             }}
           />}
 
+          {(settingsSection === "usage" || settingsSection === "pricing") && <div className="settings-pane-tabs" role="tablist" aria-label="Usage views">
+            <button type="button" role="tab" aria-selected={settingsSection === "usage"} className={settingsSection === "usage" ? "selected" : ""} onClick={() => setSettingsSection("usage")}>Usage</button>
+            <button type="button" role="tab" aria-selected={settingsSection === "pricing"} className={settingsSection === "pricing" ? "selected" : ""} onClick={() => setSettingsSection("pricing")}>Model pricing</button>
+          </div>}
           {settingsSection === "usage" && <>
             {open && <UsageDashboard onRefreshPricing={onRefreshUsagePricing} openRouterPricingError={openRouterPricingError} />}
             <UsageDisplaySettings value={local.usageDisplay} onChange={(usageDisplay) => setLocal({ ...local, usageDisplay })} />
@@ -2125,7 +2249,7 @@ export function SettingsModal({
           </section>}
             </div>
             <div className="modal-footer">
-              {dirty && <span className="unsaved-hint"><span>Unsaved changes</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}</span>}
+              {dirty && <span className="unsaved-hint"><span>{dirtyPanes.size ? `Unsaved changes in ${[...dirtyPanes].map((pane) => SETTINGS_PANES.get(pane)?.label ?? pane).join(", ")}` : "Unsaved changes"}</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}</span>}
               <button className="secondary-button" onClick={requestClose}>Cancel</button>
               <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete || terminalTimeoutInvalid}>Save settings</button>
             </div>
