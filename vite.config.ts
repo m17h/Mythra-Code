@@ -1,4 +1,5 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+import type { OutputChunk } from "rolldown";
 import react from "@vitejs/plugin-react";
 
 // This file runs under Node, but the project deliberately avoids depending on
@@ -8,8 +9,48 @@ declare const process: { env: Record<string, string | undefined> };
 const buildTarget = process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13";
 const debugBuild = process.env.TAURI_ENV_DEBUG === "true" || process.env.TAURI_ENV_DEBUG === "1";
 
+/**
+ * Startup imports the application module only after saved data is hydrated,
+ * because App reads storage when it evaluates. A modulepreload hint lets the
+ * webview fetch and compile the App chunk (and its static imports) during
+ * hydration without evaluating anything; the import that follows then has
+ * no network or parse work left. Engines without modulepreload ignore it.
+ */
+function preloadApplicationChunk(): Plugin {
+  return {
+    name: "mythra-preload-application-chunk",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html, context) {
+        const bundle = context.bundle;
+        if (!bundle) return html;
+        const chunks = Object.values(bundle).filter((output): output is OutputChunk => output.type === "chunk");
+        const app = chunks.find((chunk) => chunk.facadeModuleId?.replace(/\\/g, "/").endsWith("/src/App.tsx"));
+        if (!app) return html;
+        const seen = new Set<string>();
+        const files: string[] = [];
+        const visit = (fileName: string) => {
+          if (seen.has(fileName)) return;
+          seen.add(fileName);
+          const chunk = bundle[fileName];
+          if (!chunk || chunk.type !== "chunk") return;
+          for (const imported of chunk.imports) visit(imported);
+          files.push(fileName);
+        };
+        visit(app.fileName);
+        const links = files
+          .filter((fileName) => !html.includes(`/${fileName}`))
+          .map((fileName) => `    <link rel="modulepreload" crossorigin href="/${fileName}">\n`)
+          .join("");
+        return links ? html.replace("</head>", `${links}  </head>`) : html;
+      },
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), preloadApplicationChunk()],
   clearScreen: false,
   server: {
     port: 1420,
