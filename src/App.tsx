@@ -4404,6 +4404,9 @@ export default function App() {
       }
       const runtimeChanged = Boolean(runtime.runningVersion && runtime.runningPath && runtime.runtimeChanged);
       if (runtimeChanged) {
+        if (runtime.installedOlder) {
+          throw new Error("The selected Codex installation is older than the version currently running. Mythra Code has kept the running version. Update Codex in Settings → Updates before refreshing the model catalog again.");
+        }
         // Native reservation closes the gap between the initial idle check and
         // server shutdown: it refuses if a turn/command is active and rejects
         // any new work until the replacement finishes or the lease is released.
@@ -4435,7 +4438,7 @@ export default function App() {
           }) || Object.values(taskState.tasks).some((task) => task.agents.some((agent) => agent.runtime !== "claude" && agent.provider !== "claude" && agent.provider !== "cursor" && isActiveAgentRecord(agent.status)))
             || Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
           if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand || unresolvedNativeWork) {
-            throw new Error("A newer Codex runtime is installed, but an AI task, terminal command, workflow, or approval is still using the current runtime. Finish active work and respond to pending approvals, then refresh the model catalog again.");
+            throw new Error("A different Codex runtime is installed, but an AI task, terminal command, workflow, or approval is still using the current runtime. Finish active work and respond to pending approvals, then refresh the model catalog again.");
           }
           await deliberateRestartRuntime(() => restartRuntimeReserved(reservation));
         } finally {

@@ -934,7 +934,8 @@ struct RuntimeState {
     /// Runtime discovery launches external processes on Windows. Cache the
     /// first verified executable/version pair for this Mythra Code process so
     /// status checks and app-server startup cannot repeat `where.exe` and
-    /// `codex --version` during one cold launch.
+    /// `codex --version` during one cold launch. The pair is reused only while
+    /// the executable keeps the file identity it had when probed.
     codex_runtime: Mutex<Option<ResolvedCodexRuntime>>,
     /// Identity of the app-server child, published when it is spawned and
     /// cleared only after confirmed cutoff. Unlike `server`, this
@@ -1095,6 +1096,8 @@ fn clear_server_identity(slot: &ServerIdentitySlot, identity: Option<ManagedProc
 struct ResolvedCodexRuntime {
     path: PathBuf,
     version: String,
+    /// The executable observed both before and after `version` was probed.
+    identity: ExecutableIdentity,
 }
 
 /// Kill a provider child and all of its descendants. Provider children are
@@ -1273,7 +1276,7 @@ struct ClaudeUsageScope {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct ClaudeExecutableIdentity {
+struct ExecutableIdentity {
     path: PathBuf,
     target: Option<PathBuf>,
     metadata: Option<(u64, Option<SystemTime>)>,
@@ -1281,7 +1284,7 @@ struct ClaudeExecutableIdentity {
 }
 
 struct ClaudePromptSnapshotSupport {
-    identity: ClaudeExecutableIdentity,
+    identity: ExecutableIdentity,
     supported: Option<bool>,
     native_supported: Option<bool>,
     haiku55_supported: Option<bool>,
@@ -1295,7 +1298,7 @@ struct ClaudePromptSnapshotSupport {
 const CLAUDE_PROMPT_SNAPSHOT_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 impl ClaudePromptSnapshotSupport {
-    fn reusable(&self, identity: &ClaudeExecutableIdentity, now: Instant) -> bool {
+    fn reusable(&self, identity: &ExecutableIdentity, now: Instant) -> bool {
         self.identity == *identity
             && (self.supported.is_some()
                 || now.saturating_duration_since(self.checked_at)
@@ -1810,6 +1813,9 @@ struct CodexRuntimeStatus {
     running_version: Option<String>,
     running_commands: usize,
     runtime_changed: bool,
+    /// The installed version is lower than the one the running app-server
+    /// loaded. Switching to it would be a downgrade.
+    installed_older: bool,
     compatible: bool,
     warning: Option<String>,
 }
@@ -1871,6 +1877,15 @@ struct DeveloperRuntimeTargetStatus {
     can_update: bool,
     source: Option<String>,
     error: Option<String>,
+    /// Executable Mythra Code would start next (a disk probe).
+    path: Option<String>,
+    /// Codex only: facts recorded when the running app-server started.
+    running_path: Option<String>,
+    running_version: Option<String>,
+    /// Codex only: a selectable installation differs from the running one
+    /// and is not older than it.
+    restart_required: bool,
+    notice: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -2901,14 +2916,97 @@ async fn resolve_codex_runtime(
     // every follower reuse the first verified path instead of launching its
     // own where.exe / codex --version process tree.
     let mut cached = state.codex_runtime.lock().await;
-    if cached
-        .as_ref()
-        .is_some_and(|runtime| runtime.path.is_file())
-    {
-        return Ok(cached.as_ref().expect("checked above").clone());
+    if let Some(runtime) = cached.as_ref() {
+        // The same path is not the same binary: the official installer
+        // retargets its link in place, so reuse requires the same file.
+        if executable_identity(&runtime.path).await == runtime.identity {
+            return Ok(runtime.clone());
+        }
     }
     *cached = None;
+    let resolved = discover_codex_runtime(app).await?;
+    *cached = Some(resolved.clone());
+    Ok(resolved)
+}
 
+/// Probe a Codex executable and bind the reported version to the file that
+/// reported it. A file replaced during the probe is never certified.
+async fn probe_codex_runtime(path: &Path) -> Option<ResolvedCodexRuntime> {
+    // One retry lets a link swap that finished during the probe verify.
+    for _ in 0..2 {
+        let identity = executable_identity(path).await;
+        if identity.metadata.is_none() {
+            return None;
+        }
+        let version = runtime_version(path).await?;
+        if executable_identity(path).await == identity {
+            return Some(ResolvedCodexRuntime {
+                path: path.to_path_buf(),
+                version,
+                identity,
+            });
+        }
+    }
+    None
+}
+
+/// The launcher and selection markers of the official Codex installer, using
+/// the same `CODEX_INSTALL_DIR` and `CODEX_HOME` rules as install.sh and
+/// install.ps1. These come from the user's environment that Mythra Code and
+/// the installer it runs both inherit, never the private CODEX_HOME given to
+/// Mythra Code's own app-server.
+struct OfficialCodexSelection {
+    launcher: PathBuf,
+    markers: Vec<PathBuf>,
+}
+
+impl OfficialCodexSelection {
+    /// `symlink_metadata` counts a dangling symlink or junction as present.
+    fn present(&self) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| fs::symlink_metadata(marker).is_ok())
+    }
+}
+
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn official_codex_selection(app: &AppHandle) -> Option<OfficialCodexSelection> {
+    let home = crate::release_qa::home_dir(app).ok();
+    #[cfg(windows)]
+    let install_dir = nonempty_env_path("CODEX_INSTALL_DIR").or_else(|| {
+        nonempty_env_path("LOCALAPPDATA").map(|directory| directory.join("Programs/OpenAI/Codex/bin"))
+    })?;
+    #[cfg(not(windows))]
+    let install_dir = nonempty_env_path("CODEX_INSTALL_DIR")
+        .or_else(|| home.as_ref().map(|home| home.join(".local/bin")))?;
+    let launcher = install_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    let mut markers = vec![launcher.clone()];
+    // The Windows visible bin directory is itself the installer's junction.
+    // On Unix it is a shared directory such as ~/.local/bin, so only the
+    // Codex entry in it counts.
+    #[cfg(windows)]
+    markers.push(install_dir);
+    if let Some(codex_home) =
+        nonempty_env_path("CODEX_HOME").or_else(|| home.as_ref().map(|home| home.join(".codex")))
+    {
+        markers.push(codex_home.join("packages/standalone/current"));
+    }
+    Some(OfficialCodexSelection { launcher, markers })
+}
+
+fn broken_codex_selection_error(launcher: &Path) -> String {
+    format!(
+        "The official Codex installation at {} can't be started, so Mythra Code won't switch to a different Codex installation. Reinstall Codex in Settings › Updates. If that doesn't fix it, repair or remove that installation, or set MYTHRA_CODE_CODEX_PATH to a working Codex executable.",
+        launcher.display()
+    )
+}
+
+async fn discover_codex_runtime(app: &AppHandle) -> Result<ResolvedCodexRuntime, String> {
     let mut candidates = Vec::new();
     let executable_name = if cfg!(windows) { "codex.exe" } else { "codex" };
 
@@ -2919,20 +3017,24 @@ async fn resolve_codex_runtime(
             "MYTHRA_CODE_CODEX_PATH does not point to a Codex executable. Update or remove it, then choose Try again.".into()
             );
         }
-        let version = runtime_version(&override_path).await.ok_or_else(|| {
+        return probe_codex_runtime(&override_path).await.ok_or_else(|| {
             "MYTHRA_CODE_CODEX_PATH could not be started. Update or remove it, then choose Try again.".to_string()
-        })?;
-        let resolved = ResolvedCodexRuntime {
-            path: override_path,
-            version,
-        };
-        *cached = Some(resolved.clone());
-        return Ok(resolved);
+        });
     }
 
-    // Prefer the official standalone installer location. This lets the
-    // Updates pane move a machine away from a stale npm shim or an embedded
-    // ChatGPT copy without relying on the sparse PATH of a GUI launch.
+    // Prefer the official installer's launcher. This lets the Updates pane
+    // move a machine away from a stale npm shim or an embedded ChatGPT copy
+    // without relying on the sparse PATH of a GUI launch. When that
+    // installation exists but cannot start, do not silently fall back to an
+    // older package-manager copy; npm-only setups have no markers at all.
+    if let Some(selection) = official_codex_selection(app) {
+        if let Some(runtime) = probe_codex_runtime(&selection.launcher).await {
+            return Ok(runtime);
+        }
+        if selection.present() {
+            return Err(broken_codex_selection_error(&selection.launcher));
+        }
+    }
     if let Ok(home) = crate::release_qa::home_dir(app) {
         #[cfg(windows)]
         if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
@@ -2954,12 +3056,7 @@ async fn resolve_codex_runtime(
     // execution alias cannot delay every startup.
     #[cfg(windows)]
     for candidate in candidates.iter().filter(|candidate| candidate.is_file()) {
-        if let Some(version) = runtime_version(candidate).await {
-            let resolved = ResolvedCodexRuntime {
-                path: candidate.clone(),
-                version,
-            };
-            *cached = Some(resolved.clone());
+        if let Some(resolved) = probe_codex_runtime(candidate).await {
             return Ok(resolved);
         }
     }
@@ -3003,33 +3100,18 @@ async fn resolve_codex_runtime(
         // `where.exe` can expose protected WindowsApps resource paths that
         // exist but cannot be launched directly. Accept only a runtime that
         // successfully executes, then the later app-server spawn is reliable.
-        if let Some(version) = runtime_version(&candidate).await {
-            let resolved = ResolvedCodexRuntime {
-                path: candidate,
-                version,
-            };
-            *cached = Some(resolved.clone());
+        if let Some(resolved) = probe_codex_runtime(&candidate).await {
             return Ok(resolved);
         }
     }
     #[cfg(not(windows))]
     if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
-        if let Some(version) = runtime_version(&candidate).await {
-            let resolved = ResolvedCodexRuntime {
-                path: candidate,
-                version,
-            };
-            *cached = Some(resolved.clone());
+        if let Some(resolved) = probe_codex_runtime(&candidate).await {
             return Ok(resolved);
         }
     }
     if let Some(candidate) = find_with_login_shell(executable_name).await {
-        if let Some(version) = runtime_version(&candidate).await {
-            let resolved = ResolvedCodexRuntime {
-                path: candidate,
-                version,
-            };
-            *cached = Some(resolved.clone());
+        if let Some(resolved) = probe_codex_runtime(&candidate).await {
             return Ok(resolved);
         }
     }
@@ -3069,7 +3151,7 @@ async fn runtime_version(path: &Path) -> Option<String> {
 }
 
 struct ClaudeRuntimeVersionCache {
-    identity: ClaudeExecutableIdentity,
+    identity: ExecutableIdentity,
     version: String,
     checked_at: Instant,
 }
@@ -3082,7 +3164,7 @@ async fn claude_runtime_version(path: &Path, force: bool) -> Option<String> {
     static CACHE: std::sync::OnceLock<Mutex<Option<ClaudeRuntimeVersionCache>>> =
         std::sync::OnceLock::new();
     let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().await;
-    let identity = claude_executable_identity(path).await;
+    let identity = executable_identity(path).await;
     if !force {
         if let Some(cached) = cache.as_ref() {
             if identity.metadata.is_some()
@@ -3096,7 +3178,7 @@ async fn claude_runtime_version(path: &Path, force: bool) -> Option<String> {
     *cache = None;
     let version = runtime_version(path).await?;
     // Do not associate a result with a binary replaced during the probe.
-    if identity != claude_executable_identity(path).await {
+    if identity != executable_identity(path).await {
         return None;
     }
     if identity.metadata.is_some() {
@@ -3317,6 +3399,13 @@ fn codex_runtime_changed(
     installed_path != running_path || installed_version != running_version
 }
 
+fn codex_installed_older(installed_version: &str, running_version: &str) -> bool {
+    matches!(
+        (parsed_runtime_version(installed_version), parsed_runtime_version(running_version)),
+        (Some(installed), Some(running)) if installed < running
+    )
+}
+
 async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> CodexRuntimeStatus {
     let data_home = crate::release_qa::app_data_dir(app)
         .ok()
@@ -3334,6 +3423,9 @@ async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> Cod
             let runtime_changed = running_runtime.as_ref().is_some_and(|(path, version, _)| {
                 codex_runtime_changed(&runtime.path, &runtime.version, path, version)
             });
+            let installed_older = running_runtime.as_ref().is_some_and(|(_, version, _)| {
+                codex_installed_older(&runtime.version, version)
+            });
             CodexRuntimeStatus {
                 available: true,
                 source: Some(runtime_source(&runtime.path)),
@@ -3347,6 +3439,7 @@ async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> Cod
                 running_version: running_runtime.as_ref().map(|(_, version, _)| version.clone()),
                 running_commands: running_runtime.as_ref().map_or(0, |(_, _, count)| *count),
                 runtime_changed,
+                installed_older,
                 compatible,
             }
         }
@@ -3364,6 +3457,7 @@ async fn read_codex_runtime_status(app: &AppHandle, state: &RuntimeState) -> Cod
                 .map(|(_, version, _)| version.clone()),
             running_commands: running_runtime.as_ref().map_or(0, |(_, _, count)| *count),
             runtime_changed: false,
+            installed_older: false,
             compatible: false,
             warning: Some(error),
         },
@@ -3427,6 +3521,7 @@ fn developer_runtime_target_status(
     source: Option<String>,
     custom_path: bool,
     resolution_error: Option<String>,
+    path: Option<String>,
 ) -> DeveloperRuntimeTargetStatus {
     let latest_version = latest.as_ref().ok().cloned();
     let update_available =
@@ -3443,6 +3538,40 @@ fn developer_runtime_target_status(
             source
         },
         error: resolution_error.or_else(|| latest.err()),
+        path,
+        running_path: None,
+        running_version: None,
+        restart_required: false,
+        notice: None,
+    }
+}
+
+fn codex_update_source(path: &Path, selection: Option<&OfficialCodexSelection>) -> String {
+    if codex_runtime_override().is_some_and(|configured| Path::new(&configured) == path) {
+        return "Custom path".into();
+    }
+    if selection.is_some_and(|selection| selection.launcher == path) {
+        return "Official installer".into();
+    }
+    let display = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let resolved = fs::canonicalize(path)
+        .map(|path| path.to_string_lossy().replace('\\', "/").to_lowercase())
+        .unwrap_or_default();
+    let locations = format!("{display}\n{resolved}");
+    if locations.contains("chatgpt.app/") {
+        "ChatGPT app".into()
+    } else if locations.contains("/node_modules/")
+        || locations.contains("/npm-global/")
+        || locations.contains("/appdata/roaming/npm/")
+    {
+        "npm".into()
+    } else if locations.contains("/cellar/")
+        || locations.contains("/caskroom/")
+        || display.starts_with("/opt/homebrew/")
+    {
+        "Homebrew".into()
+    } else {
+        "Codex CLI".into()
     }
 }
 
@@ -3874,21 +4003,90 @@ async fn read_developer_runtime_updates(
         latest_codex_version(),
         latest_claude_version(),
     );
-    let (codex_installed, codex_current, codex_source, codex_resolution_error) = match codex_runtime
-    {
-        Ok(runtime) => (
-            true,
-            normalized_runtime_version(&runtime.version),
-            Some(runtime_source(&runtime.path).to_string()),
-            None,
-        ),
-        Err(error) => (
-            false,
-            None,
-            codex_custom.then(|| "Custom path".to_string()),
-            codex_custom.then_some(error),
-        ),
-    };
+    // Process-start facts of the serving app-server. Do not wait behind a
+    // spawn or shutdown holding the slot (Err): that state is unknown, not
+    // "no server", and must not read as up to date.
+    let codex_running = state.server.try_lock().map(|slot| {
+        slot.as_ref()
+            .filter(|server| server.is_alive())
+            .map(|server| (server.runtime_path.clone(), server.runtime_version.clone()))
+    });
+    let codex_selection = official_codex_selection(app);
+    let (codex_installed, codex_current, codex_source, codex_resolution_error, codex_path) =
+        match &codex_runtime {
+            Ok(runtime) => (
+                true,
+                normalized_runtime_version(&runtime.version),
+                Some(codex_update_source(&runtime.path, codex_selection.as_ref())),
+                None,
+                Some(runtime.path.to_string_lossy().into_owned()),
+            ),
+            Err(error) if codex_custom => {
+                (false, None, Some("Custom path".to_string()), Some(error.clone()), None)
+            }
+            // An official installation that exists but cannot start is
+            // installed and repairable, not absent.
+            Err(error)
+                if codex_selection
+                    .as_ref()
+                    .is_some_and(OfficialCodexSelection::present) =>
+            {
+                (
+                    true,
+                    None,
+                    Some("Official installer".to_string()),
+                    Some(error.clone()),
+                    codex_selection
+                        .as_ref()
+                        .map(|selection| selection.launcher.to_string_lossy().into_owned()),
+                )
+            }
+            Err(_) => (false, None, None, None, None),
+        };
+    let mut codex = developer_runtime_target_status(
+        codex_installed,
+        codex_current,
+        codex_latest,
+        codex_source,
+        codex_custom,
+        codex_resolution_error,
+        codex_path,
+    );
+    if codex_running.is_err() {
+        codex.notice = Some(
+            "Codex is starting or restarting in Mythra Code. Check again in a moment to confirm which version is running."
+                .to_string(),
+        );
+    }
+    if let Ok(Some((running_path, running_version))) = codex_running {
+        let installed = codex_runtime.as_ref().ok();
+        let older = installed
+            .is_some_and(|runtime| codex_installed_older(&runtime.version, &running_version));
+        // Only a selectable installation that differs from the running
+        // process needs a restart, and never one that would downgrade it.
+        codex.restart_required = !older
+            && installed.is_some_and(|runtime| {
+                codex_runtime_changed(&runtime.path, &runtime.version, &running_path, &running_version)
+            });
+        let running_display =
+            normalized_runtime_version(&running_version).unwrap_or_else(|| running_version.clone());
+        codex.notice = match installed {
+            Some(runtime) if older => Some(format!(
+                "Mythra Code is running Codex {running_display}. The installed version is older ({}); restart Mythra Code only if you intend to switch to it.",
+                normalized_runtime_version(&runtime.version).unwrap_or_else(|| runtime.version.clone())
+            )),
+            None => Some(format!(
+                "Mythra Code is still running Codex {running_display}, which it started earlier."
+            )),
+            _ => None,
+        };
+        codex.running_path = Some(running_path.to_string_lossy().into_owned());
+        codex.running_version = Some(running_display);
+    }
+    let claude_display_path = claude_path
+        .as_ref()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
     let (claude_installed, claude_current, claude_source, claude_resolution_error) =
         match claude_path {
             Ok(path) => {
@@ -3922,14 +4120,7 @@ async fn read_developer_runtime_updates(
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64,
-        codex: developer_runtime_target_status(
-            codex_installed,
-            codex_current,
-            codex_latest,
-            codex_source,
-            codex_custom,
-            codex_resolution_error,
-        ),
+        codex,
         claude: developer_runtime_target_status(
             claude_installed,
             claude_current,
@@ -3937,6 +4128,7 @@ async fn read_developer_runtime_updates(
             claude_source,
             claude_custom,
             claude_resolution_error,
+            claude_display_path,
         ),
     }
 }
@@ -3960,7 +4152,9 @@ async fn developer_runtime_update(
         .runtime_update
         .try_lock()
         .map_err(|_| "A developer runtime update is already running.".to_string())?;
-    let (message, restart_required) = match target.as_str() {
+    // Codex only: the official launcher and the version it verified with.
+    let mut codex_verified = None;
+    let message = match target.as_str() {
         "claude" => {
             if !claude_state.turns.lock().await.is_empty() {
                 return Err("Stop active Claude tasks before updating Claude Code.".into());
@@ -3968,7 +4162,7 @@ async fn developer_runtime_update(
             if claude_runtime_override().is_some() {
                 return Err("Mythra Code will not overwrite a custom Claude Code path. Update that executable yourself or remove MYTHRA_CODE_CLAUDE_PATH.".into());
             }
-            let message = match resolve_claude_binary(&app).await {
+            let outcome = match resolve_claude_binary(&app).await {
                 Ok(path) => {
                     // Package-manager installs cannot update themselves
                     // reliably (`claude update` explicitly excludes Homebrew
@@ -3982,11 +4176,11 @@ async fn developer_runtime_update(
                             CLAUDE_INSTALLER_WINDOWS_URL,
                             false,
                         )
-                        .await?
+                        .await
                     } else {
                         let mut command = background_command(path);
                         command.arg("update");
-                        run_runtime_update_command(command, None).await?
+                        run_runtime_update_command(command, None).await
                     }
                 }
                 Err(_) => {
@@ -3995,26 +4189,63 @@ async fn developer_runtime_update(
                         CLAUDE_INSTALLER_WINDOWS_URL,
                         false,
                     )
-                    .await?
+                    .await
                 }
             };
-            // The official installer may now outrank the cached location.
+            // The official installer may now outrank the cached location,
+            // even when it failed after writing part of the installation.
             CLAUDE_BINARY_CACHE.clear().await;
-            (message, false)
+            outcome?
         }
         "codex" => {
             if codex_runtime_override().is_some() {
                 return Err("Mythra Code will not overwrite a custom Codex path. Update that executable yourself or remove MYTHRA_CODE_CODEX_PATH.".into());
             }
-            let message =
+            let outcome =
                 run_official_installer(CODEX_INSTALLER_URL, CODEX_INSTALLER_WINDOWS_URL, true)
-                    .await?;
+                    .await;
+            // The installer may have changed disk even when it failed.
             *runtime_state.codex_runtime.lock().await = None;
-            (message, true)
+            let message = outcome?;
+            // Exit 0 is not proof. Verify the launcher this installer owns
+            // (honouring CODEX_INSTALL_DIR), never a fallback found elsewhere.
+            // An unchanged version is fine: the release may already be latest.
+            let Some(launcher) = official_codex_selection(&app).map(|selection| selection.launcher) else {
+                return Err("The Codex installer finished, but Mythra Code couldn't determine where it installs Codex. Check again.".into());
+            };
+            // A successful --version without a recognizable version does not
+            // certify the update either.
+            let Some(version) = probe_codex_runtime(&launcher)
+                .await
+                .and_then(|runtime| normalized_runtime_version(&runtime.version))
+            else {
+                return Err(format!(
+                    "The Codex installer finished, but {} can't be started or didn't report a recognizable version. Try the update again. If it keeps failing, repair or remove that installation, or set MYTHRA_CODE_CODEX_PATH to a working Codex executable.",
+                    launcher.display()
+                ));
+            };
+            codex_verified = Some((launcher, version));
+            message
         }
         _ => return Err("Unknown developer runtime update target".into()),
     };
     let status = read_developer_runtime_updates(&app, &runtime_state).await;
+    // Unchanged is fine when it is already the latest release, and failed
+    // metadata is not proof of a failed install. Fresh metadata that is still
+    // newer than the verified launcher means the requested update didn't apply.
+    if let (Some((launcher, version)), Some(latest)) =
+        (&codex_verified, status.codex.latest_version.as_deref())
+    {
+        if runtime_update_available(Some(version.as_str()), Some(latest)) {
+            return Err(format!(
+                "The Codex installer finished, but {} still reports Codex {version} while the latest release is {latest}. Try the update again.",
+                launcher.display()
+            ));
+        }
+    }
+    // Restart only when the running app-server differs from what is now
+    // selectable, not after every successful installer run.
+    let restart_required = target == "codex" && status.codex.restart_required;
     Ok(DeveloperRuntimeUpdateResult {
         status,
         message,
@@ -4245,7 +4476,7 @@ fn claude_runtime_warnings(
     (!warnings.is_empty()).then(|| warnings.join(" "))
 }
 
-async fn claude_executable_identity(path: &Path) -> ClaudeExecutableIdentity {
+async fn executable_identity(path: &Path) -> ExecutableIdentity {
     let metadata = tokio::fs::metadata(path).await.ok();
     #[cfg(unix)]
     let file_identity = {
@@ -4279,7 +4510,7 @@ async fn claude_executable_identity(path: &Path) -> ClaudeExecutableIdentity {
     };
     #[cfg(not(any(unix, windows)))]
     let file_identity = None;
-    ClaudeExecutableIdentity {
+    ExecutableIdentity {
         path: path.to_path_buf(),
         target: tokio::fs::canonicalize(path).await.ok(),
         metadata: metadata.map(|metadata| (metadata.len(), metadata.modified().ok())),
@@ -4296,7 +4527,7 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Option<String>>,
 {
-    let identity = claude_executable_identity(path).await;
+    let identity = executable_identity(path).await;
     let mut cached = cache.lock().await;
     if let Some(runtime) = cached
         .as_ref()
@@ -4311,7 +4542,7 @@ where
     let model_compaction_supported = claude_model_compaction_version_support(version.as_deref());
     // An updater can replace the CLI during a probe. Never attribute the old
     // version to the new executable (or send a new flag to a replaced old CLI).
-    if claude_executable_identity(path).await != identity {
+    if executable_identity(path).await != identity {
         *cached = None;
         return false;
     }
@@ -4340,7 +4571,7 @@ async fn cached_claude_native_subagent_support(
     // The snapshot probe fills both capabilities from the same executable.
     // Recheck identity so an updater cannot transfer permission guarantees
     // from the probed CLI to a replacement binary.
-    let identity = claude_executable_identity(path).await;
+    let identity = executable_identity(path).await;
     cache
         .lock()
         .await
@@ -4354,7 +4585,7 @@ async fn cached_claude_haiku55_support(
     cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
     path: &Path,
 ) -> bool {
-    let identity = claude_executable_identity(path).await;
+    let identity = executable_identity(path).await;
     cache.lock().await.as_ref()
         .filter(|runtime| runtime.reusable(&identity, Instant::now()))
         .and_then(|runtime| runtime.haiku55_supported)
@@ -4365,7 +4596,7 @@ async fn cached_claude_model_compaction_support(
     cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
     path: &Path,
 ) -> bool {
-    let identity = claude_executable_identity(path).await;
+    let identity = executable_identity(path).await;
     cache.lock().await.as_ref()
         .filter(|runtime| runtime.reusable(&identity, Instant::now()))
         .and_then(|runtime| runtime.model_compaction_supported)
@@ -7345,6 +7576,17 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<A
         command.env("PATH", path);
     }
 
+    // The recorded version must describe the binary about to start.
+    // Keychain, proxy and config work ran since discovery; refuse a file
+    // that changed in that window while no child exists to clean up.
+    if executable_identity(&codex_binary).await != codex_runtime.identity {
+        if let Some(task) = &openrouter_proxy_task {
+            task.abort();
+        }
+        *state.codex_runtime.lock().await = None;
+        return Err("Codex changed while Mythra Code was starting it. Try again.".to_string());
+    }
+
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -7672,6 +7914,54 @@ async fn shutdown_current_runtime(state: &RuntimeState) -> Result<(), String> {
         *slot = None;
     }
     Ok(())
+}
+
+/// Check the replacement before stopping a healthy app-server. A broken
+/// official selection, an executable without a recognizable version, or an
+/// older installation leaves the running server in place. An explicit
+/// MYTHRA_CODE_CODEX_PATH is the user's own choice and may change versions.
+async fn preflight_runtime_replacement(app: &AppHandle, state: &RuntimeState) -> Result<(), String> {
+    // Resolve, releasing the discovery cache lock, before reading the server
+    // slot: spawning holds the slot and then takes the cache lock.
+    let replacement = resolve_codex_runtime(app, state).await;
+    let running = state
+        .server
+        .lock()
+        .await
+        .as_ref()
+        .filter(|server| server.is_alive())
+        .map(|server| (server.runtime_path.clone(), server.runtime_version.clone()));
+    let Some((running_path, running_version)) = running else {
+        // Nothing healthy to preserve; startup reports its own failure.
+        return replacement.map(|_| ());
+    };
+    let running_display =
+        normalized_runtime_version(&running_version).unwrap_or_else(|| running_version.clone());
+    let replacement = replacement
+        .map_err(|error| format!("Mythra Code kept the running Codex {running_display}. {error}"))?;
+    if codex_runtime_override().is_some()
+        || !codex_runtime_changed(&replacement.path, &replacement.version, &running_path, &running_version)
+    {
+        return Ok(());
+    }
+    let Some(replacement_version) = normalized_runtime_version(&replacement.version) else {
+        return Err(format!(
+            "Mythra Code kept the running Codex {running_display}. The installation at {} didn't report a recognizable Codex version.",
+            replacement.path.display()
+        ));
+    };
+    if codex_installed_older(&replacement.version, &running_version) {
+        return Err(format!(
+            "The selected Codex installation ({replacement_version}) is older than the running Codex {running_display}, so Mythra Code kept the running version. Update Codex in Settings › Updates, or restart Mythra Code to use the older installation deliberately."
+        ));
+    }
+    Ok(())
+}
+
+async fn replace_current_runtime(app: &AppHandle, state: &RuntimeState) -> Result<(), String> {
+    preflight_runtime_replacement(app, state).await?;
+    shutdown_current_runtime(state).await?;
+    ensure_server(app, state).await.map(|_| ())
 }
 
 /// Validate the high-impact RPCs that the webview is allowed to forward.
@@ -8045,8 +8335,7 @@ async fn save_openrouter_key(
 
     let published = publish_saved_key(&OPENROUTER_KEY_READ, saved_key);
 
-    shutdown_current_runtime(&state).await?;
-    let restarted = ensure_server(&app, &state).await.map(|_| ());
+    let restarted = replace_current_runtime(&app, &state).await;
     clear_saved_key_after_restart(&OPENROUTER_KEY_READ, &published);
     restarted
 }
@@ -8084,8 +8373,7 @@ async fn save_lmstudio_key(
 
     let published = publish_saved_key(&LMSTUDIO_KEY_READ, saved_key);
 
-    shutdown_current_runtime(&state).await?;
-    let restarted = ensure_server(&app, &state).await.map(|_| ());
+    let restarted = replace_current_runtime(&app, &state).await;
     clear_saved_key_after_restart(&LMSTUDIO_KEY_READ, &published);
     restarted
 }
@@ -8396,9 +8684,7 @@ async fn restart_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Resu
     // Serialize ordinary capability/provider restarts with the tokenized
     // model-refresh restart, and gate new mutation RPCs during replacement.
     let _restart_guard = state.lifecycle.begin_generic_restart()?;
-    shutdown_current_runtime(&state).await?;
-    let _ = ensure_server(&app, &state).await?;
-    Ok(())
+    replace_current_runtime(&app, &state).await
 }
 
 #[tauri::command]
@@ -8422,9 +8708,7 @@ async fn restart_runtime_reserved(
         lifecycle: state.lifecycle.clone(),
         token,
     };
-    shutdown_current_runtime(&state).await?;
-    let _ = ensure_server(&app, &state).await?;
-    Ok(())
+    replace_current_runtime(&app, &state).await
 }
 
 /// Synchronously shut down the managed Codex app-server before the process

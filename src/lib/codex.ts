@@ -28,6 +28,8 @@ export interface CodexRuntimeStatus {
   runningCommands?: number;
   /** The resolved executable differs from the binary loaded by app-server. */
   runtimeChanged?: boolean;
+  /** The selected disk version is older than the active app-server. */
+  installedOlder?: boolean;
   compatible: boolean;
   warning: string | null;
 }
