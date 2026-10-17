@@ -1404,9 +1404,16 @@ export function SettingsModal({
           </nav>
           <div className="settings-pane">
             <header className="settings-pane-heading">
-              <div>
-                <h3>{SETTINGS_PANES.get(settingsSection)?.label}</h3>
-                <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
+              <div className={wideSheet ? "settings-heading-stack" : undefined}>
+                {wideSheet ? (["usage", "pricing"] as const).map((pane) => (
+                  <div className="settings-heading-copy" key={pane} aria-hidden={settingsSection !== pane}>
+                    <h3>{SETTINGS_PANES.get(pane)?.label}</h3>
+                    <small>{SETTINGS_PANES.get(pane)?.detail}</small>
+                  </div>
+                )) : <>
+                  <h3>{SETTINGS_PANES.get(settingsSection)?.label}</h3>
+                  <small>{SETTINGS_PANES.get(settingsSection)?.detail}</small>
+                </>}
               </div>
               {paneAction}
               <button className="icon-button settings-close" onClick={requestClose} aria-label="Close settings"><X size={17} /></button>

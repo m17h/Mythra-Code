@@ -13,7 +13,7 @@
 .app-shell[data-color-scheme="light"] .mini-toggle span { background: #ffffff; box-shadow: 0 1px 2px rgba(40,50,35,.25); }
 .app-shell[data-color-scheme="light"] .mini-toggle.on { background: var(--toggle-active-track); }
 .app-shell[data-color-scheme="light"] .mini-toggle.on span { background: var(--green); }
-.settings-modal { --settings-target-width: 920px; position: relative; width: min(var(--settings-target-width), 100%); height: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
+.settings-modal { --settings-target-width: 1000px; position: relative; width: min(var(--settings-target-width), 100%); height: min(800px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-xl); background: var(--panel); box-shadow: var(--shadow); opacity: 0; transform: translateY(22px) scale(.965); filter: saturate(.72); transition: opacity 190ms ease, transform 300ms cubic-bezier(.2,.86,.24,1), filter 260ms ease, background 260ms ease; }
 .settings-modal.settings-modal-wide { --settings-target-width: 1200px; height: min(880px, 100%); }
 .settings-modal[data-sheet-resizing] .settings-pane { position: relative; }
 .settings-modal[data-sheet-resizing] .settings-content { flex: none; height: var(--settings-content-hold); contain: strict; will-change: transform; }
@@ -45,8 +45,13 @@
 .settings-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .settings-pane-heading { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: start; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-4) var(--s-6); border-bottom: 1px solid var(--line); }
 .settings-pane-heading > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.settings-pane-heading > div > h3 { margin: 0; color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
-.settings-pane-heading > div > small { max-width: 68ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+.settings-pane-heading h3 { margin: 0; color: var(--text); font-size: var(--fs-lede); font-weight: 650; letter-spacing: var(--track-display); }
+.settings-pane-heading small { max-width: 68ch; color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; text-wrap: pretty; }
+/* Both Usage views size the same grid cell. The inactive copy keeps its
+   natural wrapped height without being visible or exposed to screen readers. */
+.settings-pane-heading > .settings-heading-stack { display: grid; }
+.settings-heading-copy { grid-area: 1 / 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.settings-heading-copy[aria-hidden="true"] { visibility: hidden; }
 .settings-pane-heading > .secondary-button { margin-top: 2px; }
 .settings-close { flex: 0 0 auto; margin-top: -2px; }
 .settings-content { --settings-content-end: var(--s-6); position: relative; min-width: 0; width: calc(min(var(--settings-target-width), var(--settings-available-width)) - var(--settings-frame-border, 2px) - var(--settings-nav-width)); flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--s-5) var(--s-6) var(--settings-content-end); scroll-padding-top: var(--s-5); }
