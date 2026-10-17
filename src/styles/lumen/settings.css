@@ -19,10 +19,10 @@
   background: var(--panel);
   box-shadow: 0 1px 0 var(--lm-island-highlight) inset, 0 50px 120px -30px rgba(0, 0, 0, .75), 0 0 0 1px rgba(0, 0, 0, .2);
 }
-/* Give the standard sheet 40px more headroom, centered by its existing
-   backdrop. Keep Usage's larger dashboard and short-window clamping intact. */
+/* Fit the complete sidebar in the standard sheet, centered by its existing
+   backdrop. Keep Usage/Pricing's dashboard and short-window clamping intact. */
 .app-shell[data-theme][data-color-scheme] .settings-modal:not(.settings-modal-wide) {
-  height: min(760px, 100%);
+  height: min(800px, 100%);
 }
 .app-shell[data-theme][data-color-scheme="light"] .settings-modal { box-shadow: 0 1px 0 #fff inset, 0 50px 110px -34px rgba(25, 35, 55, .4), 0 0 0 1px rgba(25, 35, 55, .06); }
 .app-shell[data-theme][data-color-scheme] .settings-layout { --settings-nav-width: 248px; grid-template-columns: var(--settings-nav-width) minmax(0, 1fr); }
@@ -89,7 +89,7 @@
   border-bottom: 0;
   background: linear-gradient(180deg, var(--lm-wash), transparent);
 }
-.app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > h3 {
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading h3 {
   color: var(--text);
   font-family: var(--font-display);
   font-size: 26px;
@@ -97,7 +97,7 @@
   line-height: 1.1;
   letter-spacing: -.04em;
 }
-.app-shell[data-theme][data-color-scheme] .settings-pane-heading > div > small { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading small { font-size: 12.5px; }
 .app-shell[data-theme][data-color-scheme] .settings-close { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--panel-2); }
 .app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 32px; padding: 8px 32px var(--settings-content-end); }
 .app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, transparent, var(--panel)); }
