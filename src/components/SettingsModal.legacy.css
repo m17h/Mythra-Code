@@ -328,6 +328,16 @@
 .update-version-available { align-items: flex-end; color: var(--green); }
 .update-version-available.stale { color: var(--muted); }
 .developer-runtime-update-card.unverified .update-status-row svg { color: var(--muted); }
+.runtime-running-version { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 0 14px 10px; font-size: var(--fs-micro); color: var(--muted); }
+.runtime-running-version strong { color: var(--text); font-weight: 600; }
+.developer-runtime-update-card .runtime-activation-note { padding-top: 8px; padding-bottom: 10px; align-items: flex-start; line-height: 1.5; }
+.developer-runtime-update-card .runtime-activation-note svg { margin-top: 2px; color: var(--muted); }
+.runtime-launch-note { margin: 0; padding: 0 14px 10px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.runtime-executable-paths { margin: 0 14px 12px; color: var(--muted-2); font-size: var(--fs-meta); }
+.runtime-executable-paths summary { cursor: pointer; }
+.runtime-executable-paths dl { margin: 8px 0 0; display: grid; gap: 3px; min-width: 0; }
+.runtime-executable-paths dt { color: var(--muted); }
+.runtime-executable-paths dd { margin: 0 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .update-status-row { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px; color: var(--muted); font-size: var(--fs-micro); }
 .update-status-row svg { flex: 0 0 auto; color: var(--green); }
 .update-card.error .update-status-row, .update-card.error .update-status-row svg { color: var(--red); }

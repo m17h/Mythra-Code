@@ -2915,8 +2915,12 @@ function DeveloperRuntimeUpdateCard({
   const updating = updater.updating === target;
   const busy = updater.checking || updater.updating !== null;
   const stale = Boolean(status?.latestVersionStale || status?.installedVersionStale);
-  const provablyCurrent = Boolean(status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable && !status.error && !stale);
-  const actionAvailable = Boolean(status?.canUpdate && !provablyCurrent);
+  const needsRestart = target === "codex" && Boolean(status?.restartRequired) && !status?.installedVersionStale;
+  const installedCurrent = Boolean(status?.installed && status.currentVersion && status.latestVersion && !status.updateAvailable && !status.error && !stale);
+  const provablyCurrent = installedCurrent && !status?.notice && !needsRestart;
+  // A pending restart is not another available download. Otherwise users can
+  // repeatedly reinstall an update that's already on disk without activating it.
+  const actionAvailable = Boolean(status?.canUpdate && !installedCurrent);
   const state = status?.error || stale ? "unverified" : status?.updateAvailable || status?.installed === false ? "available" : "current";
   const detail = updating ? `Updating ${name}…`
     : updater.checking ? `Checking for ${name} updates…`
@@ -2924,6 +2928,7 @@ function DeveloperRuntimeUpdateCard({
         : stale ? `Couldn’t refresh ${name} updates. Showing previously checked information.`
         : status?.installed === false ? `${name} is not installed. Install ${status.latestVersion ? `version ${status.latestVersion}` : "the latest version"} here.`
           : status?.updateAvailable ? `${name} ${status.latestVersion} is available.`
+            : needsRestart ? "The installed Codex runtime differs from the one Mythra Code is running."
             : provablyCurrent ? `${name} is up to date.`
               : `Check for the latest ${name} release.`;
   const actionLabel = status?.installed === false ? `Install ${name}` : `Update ${name}`;
@@ -2941,6 +2946,20 @@ function DeveloperRuntimeUpdateCard({
       {!updating && !updater.checking && !status?.error && !stale && status?.updateAvailable && <Download size={15} />}
       <span>{detail}</span>
     </div>
+    {target === "codex" && status?.runningVersion && <div className="runtime-running-version">
+      <span>{status.installedVersionStale ? "Previously running in Mythra Code" : "Running in Mythra Code"}</span>
+      <strong>Codex {status.runningVersion}</strong>
+    </div>}
+    {status?.notice && <div className="update-status-row runtime-activation-note"><Info size={15} /><span>{status.installedVersionStale ? `Previously reported: ${status.notice}` : status.notice}</span></div>}
+    {needsRestart && !updater.checking && !updating && !status?.notice && <div className="update-status-row runtime-activation-note"><Info size={15} /><span>Finish active work, then restart Mythra Code to use the installed version. Nothing running will be interrupted automatically.</span></div>}
+    {target === "claude" && status?.installed && !status.installedVersionStale && <p className="runtime-launch-note">New Mythra Code runs use the installed version. Claude Code already open in a terminal needs a separate restart.</p>}
+    {(status?.path || status?.runningPath) && <details className="runtime-executable-paths">
+      <summary>{status.installedVersionStale ? "Previously detected executable locations" : "Executable locations"}</summary>
+      <dl>
+        {status.path && <><dt>Installed</dt><dd title={status.path}>{status.path}</dd></>}
+        {status.runningPath && <><dt>Running in Mythra Code</dt><dd title={status.runningPath}>{status.runningPath}</dd></>}
+      </dl>
+    </details>}
     {status && (!status.canUpdate || actionAvailable || status.error || stale) && (
       <div className="update-actions">
         {!status.canUpdate && <small>Mythra Code will not overwrite a custom executable path.</small>}

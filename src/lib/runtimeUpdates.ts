@@ -16,6 +16,12 @@ export interface DeveloperRuntimeTargetStatus {
   canUpdate: boolean;
   source: string | null;
   error: string | null;
+  /** Executable selected on disk; it may differ from the active app-server. */
+  path: string | null;
+  runningPath: string | null;
+  runningVersion: string | null;
+  restartRequired: boolean;
+  notice: string | null;
 }
 
 export interface DeveloperRuntimeUpdateStatus {
