@@ -628,7 +628,9 @@ export function ActivityDetailsModal({
             live={live}
             renderMessage={renderMessage}
             renderSubAgents={renderSubAgents}
-            onAnswerQuestion={run.state === "interrupted" ? undefined : onAnswerQuestion}
+            // "Answer in chat" needs a chat row to reveal. Failed or stopped
+            // runs keep their no-longer-answerable questions in details only.
+            onAnswerQuestion={run.state === "interrupted" || !visibleIds?.has(step.id) ? undefined : onAnswerQuestion}
           />
         ))}
       </ol>

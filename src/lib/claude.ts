@@ -373,6 +373,17 @@ export function isClaudeTurnActive(threadId: string): Promise<boolean> {
   return invoke<boolean>("claude_turn_active", { threadId });
 }
 
+/** The exact turn's terminal event, recorded before its process released the
+ * thread. Null when that turn has no recorded ending. */
+export function claudeTurnTerminalReceipt(threadId: string, turnId: string): Promise<JsonObject | null> {
+  return invoke<JsonObject | null>("claude_turn_terminal_receipt", { threadId, turnId });
+}
+
+/** The renderer handled (or retired) this exact turn's terminal event. */
+export function acknowledgeClaudeTerminalReceipt(threadId: string, turnId: string): Promise<void> {
+  return invoke("claude_turn_terminal_receipt_ack", { threadId, turnId });
+}
+
 /** Matches the backend's per-thread busy rejection from claude_turn_start. */
 export function isClaudeThreadBusyError(reason: unknown): boolean {
   return String(reason).includes("Claude is already working in this thread");

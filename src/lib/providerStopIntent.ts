@@ -13,6 +13,11 @@ export function clearProviderStopIntent(threadId: string, turnId: string): void 
   requestedStops.delete(key(threadId, turnId));
 }
 
+/** Non-consuming: a Stop is still settling this exact turn. */
+export function hasProviderStopIntent(threadId: string, turnId: string): boolean {
+  return requestedStops.has(key(threadId, turnId));
+}
+
 /** Consume the intent once a terminal provider event classifies the turn. */
 export function consumeProviderStopIntent(threadId: string, turnId: string): boolean {
   const stopKey = key(threadId, turnId);

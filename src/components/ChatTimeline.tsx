@@ -14,7 +14,7 @@ import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference }
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentClock, SubAgentControls } from "./SubAgentControls";
-import { activityTurnSegments, compactActivityPresentation, failedRunPresentationState, hasTerminalTurnEvidence, type CompactWorkState } from "../lib/compactActivity";
+import { activityTurnSegments, compactActivityPresentation, hasTerminalTurnEvidence, runtimeTurnOutcome, settledRunPresentationState, type CompactWorkState } from "../lib/compactActivity";
 import { ActivityStatus, describeLiveActivity, type LiveActivityDescriptor } from "./ActivityStatus";
 import { ActivityDetailsModal, workEntrySearchText, type ActivityDetailsRun } from "./ActivityDetailsModal";
 import { useFeedbackMessageSource } from "./FeedbackProvider";
@@ -56,6 +56,8 @@ export type WorkTimelineEntry = {
   turnId?: string;
   /** Idle without terminal evidence for the current turn: neither live nor done. */
   unconfirmed?: boolean;
+  /** Partially completed by recorded work, but its run never recorded an end. */
+  completionUnconfirmed?: boolean;
   /** Metadata-only opener for a run with recorded skills but no folded work.
    * It represents no command or synthetic transcript step. */
   skillCount?: number;
@@ -331,7 +333,7 @@ function canBeStartingRun(run: TimelineRun): boolean {
   const values = run.entries.flatMap((entry) => entry.kind === "message" || entry.kind === "activity" ? [entry.value] : entry.value);
   // Child work may outlive its parent and stale tool statuses can survive
   // hydration. Neither reopens an explicitly terminal parent turn.
-  if (runOutcome(run.entries) !== "unknown") return false;
+  if (runtimeTurnOutcome(run.entries) !== "unknown") return false;
   if (values.some((value) => ("role" in value && value.streaming) || value.turnStatus === "inProgress"
     || ("kind" in value && ["inProgress", "running", "started", "starting", "pending"].includes(value.status ?? "")))) return true;
   return !values.some((value) => "role" in value && value.role === "assistant"
@@ -393,7 +395,8 @@ function presentTimeline(
     // work tagged with the actual turn; older unknown history is untagged
     // by that identity and reads as plain settled activity.
     const unconfirmed = !running && entry.state === "unknown" && Boolean(activeTurnId) && entry.turnId === activeTurnId;
-    const work: WorkTimelineEntry = { kind: "work", value: entry.value, state: entry.state, runKey, turnId: entry.turnId, unconfirmed };
+    const work: WorkTimelineEntry = { kind: "work", value: entry.value, state: entry.state, runKey, turnId: entry.turnId, unconfirmed,
+      ...(entry.completionUnconfirmed ? { completionUnconfirmed: true } : {}) };
     if (entry.state === "running" && running) liveWork = work;
     else output.push(work);
   }
@@ -417,9 +420,10 @@ function presentTimeline(
     const skillCount = usedSkillsForRun(run.entries).length;
     if (!skillCount) continue;
     const turnId = run.entries.map(workItemTurnId).find(Boolean);
-    const state = runOutcome(run.entries);
+    const { state, completionUnconfirmed } = settledRunPresentationState(run.entries, activeTurnId);
     const row: WorkTimelineEntry = { kind: "work", value: [], runKey: run.key, turnId, state, skillCount,
-      unconfirmed: state === "unknown" && Boolean(activeTurnId) && turnId === activeTurnId };
+      unconfirmed: state === "unknown" && Boolean(activeTurnId) && turnId === activeTurnId,
+      ...(completionUnconfirmed ? { completionUnconfirmed } : {}) };
     const firstOutput = run.entries.find((entry) => entry.kind !== "message" || entry.value.role !== "user");
     const anchor = firstOutput ?? run.entries.at(-1);
     const id = anchor && workItemId(anchor);
@@ -520,21 +524,9 @@ function stepCountLabel(count: number): string {
   return count ? `${count} step${count === 1 ? "" : "s"}` : "";
 }
 
-/** Outcome of a run with no folded work, from its own runtime metadata. */
-function runOutcome(entries: WorkItemEntry[]): CompactWorkState {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    // Runtime user echoes can default to completed before any provider output.
-    // They are direction, not evidence that the run reached a terminal state.
-    if (entry.kind === "message" && entry.value.role === "user") continue;
-    if (entry.kind === "message" && entry.value.streaming) return "unknown";
-    const status = workItemTurnStatus(entry);
-    // Newer unfinished output must not inherit an older terminal outcome.
-    if (status === "inProgress") return "unknown";
-    if (status === "failed") return failedRunPresentationState(entries);
-    if (status === "completed" || status === "interrupted") return status;
-  }
-  return "unknown";
+/** A settled outcome inferred from recorded work says so, without a cause. */
+function withCompletionNote(summary: string, completionUnconfirmed?: boolean): string {
+  return completionUnconfirmed ? ["Completion unconfirmed", summary].filter(Boolean).join(" · ") : summary;
 }
 
 const QUESTION_APPROVAL_METHODS = new Set(["item/tool/requestUserInput", "cursor/ask_question", "mcpServer/elicitation/request"]);
@@ -1313,7 +1305,7 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
     playful={entry.live?.playful}
     unconfirmed={entry.unconfirmed}
     seed={entry.runKey}
-    summary={summary}
+    summary={live ? summary : withCompletionNote(summary, entry.completionUnconfirmed)}
     searchMatches={searchMatches}
     runKey={entry.runKey}
     open={open}
@@ -1322,7 +1314,7 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
 }, (previous, next) => previous.open === next.open && previous.searchMatches === next.searchMatches
   && previous.onOpenActivity === next.onOpenActivity && previous.entry.state === next.entry.state
   && previous.entry.unconfirmed === next.entry.unconfirmed && previous.entry.runKey === next.entry.runKey && previous.entry.live?.label === next.entry.live?.label
-  && previous.entry.skillCount === next.entry.skillCount
+  && previous.entry.skillCount === next.entry.skillCount && previous.entry.completionUnconfirmed === next.entry.completionUnconfirmed
   && previous.entry.live?.category === next.entry.live?.category && previous.entry.live?.playful === next.entry.live?.playful
   && sameWorkItems(previous.entry.value, next.entry.value));
 
@@ -2106,12 +2098,13 @@ export function ChatTimeline({
       ? { entries: selectedRun.entries, state: "running", label: liveGroup.live?.label, category: liveGroup.live?.category }
       : {
         entries: selectedRun.entries,
-        state: groups[0]?.state ?? runOutcome(selectedRun.entries),
-        summary: groups[0]?.skillCount !== undefined ? undefined : workSummary(hidden),
+        state: groups[0]?.state ?? settledRunPresentationState(selectedRun.entries, activeTurnId).state,
+        summary: groups[0]?.skillCount !== undefined ? undefined
+          : withCompletionNote(workSummary(hidden), groups.some((group) => group.completionUnconfirmed)),
         unconfirmed: groups.some((group) => group.unconfirmed),
       };
     return { run, visibleIds };
-  }, [presented, selectedRun]);
+  }, [activeTurnId, presented, selectedRun]);
 
   // A blocking approval outranks reading: close so its own surface is usable.
   useEffect(() => {
