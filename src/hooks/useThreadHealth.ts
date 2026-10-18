@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { rpc } from "../lib/codex";
-import { isClaudeTurnActive } from "../lib/claude";
+import { claudeTurnTerminalReceipt, isClaudeTurnActive, type ClaudeEvent } from "../lib/claude";
 import { isCursorTurnActive } from "../lib/cursor";
+import { hasProviderStopIntent } from "../lib/providerStopIntent";
 import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
 import { isPaginatedHistoryUnsupported, normalizeThreadTurnsPage } from "../lib/threadHistory";
 import { useTaskStore, type TaskStatus, type ThreadTaskState } from "../lib/taskStore";
@@ -63,6 +64,42 @@ export async function latestCodexTurn(threadId: string): Promise<Turn | undefine
 export interface ThreadHealthContext {
   runtimeAvailable: boolean;
   threadFor: (threadId: string) => Thread | undefined;
+  /** The normal Claude event route, for a terminal event the process
+   * recorded before releasing the thread but the renderer has not handled. */
+  deliverClaudeEvent?: (event: ClaudeEvent) => void;
+}
+
+/** The probed snapshot still describes the task: same owner, still working,
+ * untouched since, and no replacement activation pending. */
+function unchangedSince(task: ThreadTaskState): boolean {
+  const current = useTaskStore.getState().tasks[task.threadId];
+  return current !== undefined && current.activeTurnId === task.activeTurnId && current.updatedAt === task.updatedAt
+    && (current.status === "starting" || current.status === "running") && !current.pendingNativeActivationId;
+}
+
+/**
+ * Reconcile an inactive Claude process. Returns without sealing whenever the
+ * outcome is not yet known:
+ * - a Stop for this exact turn is still settling (the kill clears liveness
+ *   before its exit is published; Stop's own handler classifies it);
+ * - the process recorded its exact ending, possibly still queued for the
+ *   renderer: it is delivered through the normal handler, with its own
+ *   retired-turn and Stop guards, instead of sealing a finished turn failed;
+ * - the task changed during a probe.
+ * A receipt read failure propagates to the caller, which leaves live state.
+ */
+async function reconcileInactiveClaudeTurn(task: ThreadTaskState, deliver?: (event: ClaudeEvent) => void): Promise<void> {
+  const turnId = task.activeTurnId;
+  if (turnId && hasProviderStopIntent(task.threadId, turnId)) return;
+  if (turnId && deliver) {
+    const message = await claudeTurnTerminalReceipt(task.threadId, turnId);
+    if (!unchangedSince(task) || hasProviderStopIntent(task.threadId, turnId)) return;
+    if (message) {
+      deliver({ threadId: task.threadId, turnId, message });
+      return;
+    }
+  }
+  recordRecoveredStatus(task.threadId, task, "error");
 }
 
 /** Periodically repairs a working status whose provider process already ended. */
@@ -88,7 +125,9 @@ export function useThreadHealth(context: ThreadHealthContext): void {
           if (!thread) continue;
           try {
             if (isClaudeThread(thread)) {
-              if (!await isClaudeTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "error");
+              if (await isClaudeTurnActive(task.threadId)) continue;
+              if (!unchangedSince(task)) continue;
+              await reconcileInactiveClaudeTurn(task, contextRef.current.deliverClaudeEvent);
               continue;
             }
             if (isCursorThread(thread)) {

@@ -1,7 +1,7 @@
-import { parseClaudeRateLimitEvent, type ClaudeEvent } from "./claude";
+import { acknowledgeClaudeTerminalReceipt, parseClaudeRateLimitEvent, type ClaudeEvent } from "./claude";
 import { auditEvent, type JsonObject } from "./codex";
 import type { ProviderRateLimits } from "./providerUsage";
-import type { Activity } from "../types";
+import type { Activity, ChatMessage } from "../types";
 import { claudeToolSkillUsage, validSkillUsage } from "./skillUsage";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
@@ -21,7 +21,21 @@ interface ClaudeBlock {
   turnId: string;
 }
 
-const assistantIds = new Map<string, string>();
+/** The message currently streaming in a thread's turn. A message_start with
+ * no provider id (or deltas with no start) gets a fresh locally generated row
+ * id, so a later message never lands in an already finalized fallback row. */
+interface ClaudeStream { id: string; turnId: string; generated: boolean; claimed?: boolean }
+const streams = new Map<string, ClaudeStream>();
+/** Per thread, for the current turn: provider assistant id -> transcript row
+ * id, only when that provider message completed the generated stream row it
+ * was streamed into. Lets the terminal identity find its row. */
+const assistantRowIds = new Map<string, { turnId: string; rows: Map<string, string> }>();
+/** Per thread, for the current turn: each row's text blocks so far. Claude
+ * Code emits one assistant envelope per content block under one message id
+ * (thinking, text and tool_use envelopes share it), so a single-block
+ * envelope adds a block; an envelope with several blocks is the message so
+ * far and replaces them. */
+const assistantTexts = new Map<string, { turnId: string; rows: Map<string, string[]> }>();
 const blocks = new Map<string, Map<number, ClaudeBlock>>();
 interface ClaudePartialUsage {
   usage: TokenUsageView;
@@ -71,6 +85,76 @@ function turnHasTimelineOutput(threadId: string, turnId: string): boolean {
 
 function terminalTurnStatus(status: string | undefined): boolean {
   return status === "completed" || status === "failed" || status === "interrupted";
+}
+
+/** Only an explicitly requested standalone `/compact` that the provider
+ * confirmed (a completed compaction with its boundary) has no answer to
+ * deliver. Automatic, failed or unfinished compaction inside an ordinary
+ * request does not replace that request's final response. */
+function explicitCompactionCompleted(threadId: string, turnId: string): boolean {
+  const task = useTaskStore.getState().tasks[threadId];
+  if (!task) return false;
+  let prompt: ChatMessage | undefined;
+  for (let index = task.messages.length - 1; index >= 0 && !prompt; index -= 1) {
+    const entry = task.messages[index];
+    if (entry.role === "user" && entry.turnId === turnId) prompt = entry;
+  }
+  if (!prompt || !/^\/compact(?:\s|$)/.test(prompt.text.trim())) return false;
+  const activities = task.activities.filter((activity) => activity.turnId === turnId);
+  const compactions = activities.filter((activity) => activity.kind === "compaction");
+  return compactions.length > 0
+    && compactions.every((activity) => compactionState(activity.status) === "complete" && Boolean(activity.compaction?.boundaryId))
+    && activities.every((activity) => activity.kind === "compaction" || activity.kind === "reasoning")
+    && !task.messages.some((entry) => entry.role === "assistant" && entry.turnId === turnId && hasVisibleText(entry.text));
+}
+
+function currentStream(threadId: string, turnId: string): ClaudeStream {
+  const stream = streams.get(threadId);
+  if (stream?.turnId === turnId) return stream;
+  const generated = { id: `claude-${turnId}-${crypto.randomUUID()}`, turnId, generated: true };
+  streams.set(threadId, generated);
+  return generated;
+}
+
+/** The transcript row for a provider assistant message. Only the current
+ * generated stream row can be claimed, once, by the first provider id that
+ * completes it; a differing explicit stream id is a different message. */
+function assistantRowId(threadId: string, turnId: string, providerId: string): string {
+  const previous = assistantRowIds.get(threadId);
+  const rows = previous?.turnId === turnId ? previous.rows : undefined;
+  const aliased = rows?.get(providerId);
+  if (aliased) return aliased;
+  const stream = streams.get(threadId);
+  if (stream?.turnId !== turnId || !stream.generated || stream.claimed) return providerId;
+  stream.claimed = true;
+  const next = rows ?? new Map<string, string>();
+  next.set(providerId, stream.id);
+  assistantRowIds.set(threadId, { turnId, rows: next });
+  return stream.id;
+}
+
+function aggregatedAssistantText(threadId: string, turnId: string, rowId: string, blockCount: number, answer: string): string {
+  let state = assistantTexts.get(threadId);
+  if (!state || state.turnId !== turnId) {
+    state = { turnId, rows: new Map() };
+    assistantTexts.set(threadId, state);
+  }
+  const texts = blockCount > 1 ? [answer] : [...(state.rows.get(rowId) ?? []), answer];
+  state.rows.set(rowId, texts);
+  return texts.join("");
+}
+
+function clearAssistantTurnState(threadId: string): void {
+  streams.delete(threadId);
+  assistantRowIds.delete(threadId);
+  assistantTexts.delete(threadId);
+}
+
+/** Release the native receipt only once this exact turn is no longer owned:
+ * a refused completion keeps it available to health reconciliation. */
+function acknowledgeSettledTurn(threadId: string, turnId: string): void {
+  if (useTaskStore.getState().tasks[threadId]?.activeTurnId === turnId) return;
+  void acknowledgeClaudeTerminalReceipt(threadId, turnId).catch(() => {});
 }
 
 /**
@@ -778,7 +862,12 @@ export function routeClaudeEvent(
   const type = text(message.type);
   const store = useTaskStore.getState();
   store.ensureTask(threadId, ctx.bindingFor(threadId));
-  if (isRetiredClaudeTurn(threadId, turnId)) return;
+  const terminalEvent = type === "result" || type === "openkiwi_exit";
+  if (isRetiredClaudeTurn(threadId, turnId)) {
+    // Already settled (by its receipt, Stop or recovery): nothing to keep.
+    if (terminalEvent) void acknowledgeClaudeTerminalReceipt(threadId, turnId).catch(() => {});
+    return;
+  }
 
   if (type === "openkiwi_cutoff_uncertain") {
     const detail = text(message.message) || "Claude Code's process exit could not be confirmed. Inspect the conversation before continuing.";
@@ -904,7 +993,8 @@ export function routeClaudeEvent(
       blocks.delete(threadId);
       clearClaudeNativeTaskBindings(threadId, turnId, true);
       const assistant = object(stream.message);
-      assistantIds.set(threadId, text(assistant.id) || `claude-${turnId}`);
+      const providerId = text(assistant.id);
+      streams.set(threadId, { id: providerId || `claude-${turnId}-${crypto.randomUUID()}`, turnId, generated: !providerId });
       store.setActiveTurn(threadId, turnId);
       store.setTaskStatus(threadId, "running");
       foregroundStatus(ctx, threadId, "Working");
@@ -929,8 +1019,9 @@ export function routeClaudeEvent(
       if (delta.type === "text_delta") {
         store.queueAssistantDelta(
           threadId,
-          assistantIds.get(threadId) || `claude-${turnId}`,
+          currentStream(threadId, turnId).id,
           text(delta.text),
+          turnId,
         );
       } else if (delta.type === "thinking_delta") {
         store.queueReasoningDelta(
@@ -938,6 +1029,7 @@ export function routeClaudeEvent(
           `thinking-${turnId}`,
           text(delta.thinking),
           "content",
+          turnId,
         );
       } else if (delta.type === "input_json_delta") {
         const block = blocks.get(threadId)?.get(Number(stream.index ?? 0));
@@ -960,8 +1052,9 @@ export function routeClaudeEvent(
 
   if (type === "assistant") {
     const assistant = object(message.message);
-    const id =
-      text(assistant.id) || assistantIds.get(threadId) || `claude-${turnId}`;
+    const stream = streams.get(threadId);
+    const providerId = text(assistant.id);
+    const id = providerId || (stream?.turnId === turnId ? stream.id : `claude-${turnId}`);
     const content = Array.isArray(assistant.content) ? assistant.content : [];
     recordAssistantUsage(threadId, turnId, id, text(assistant.model), assistant.usage, ctx.bindingFor(threadId));
     const answer = content
@@ -983,8 +1076,15 @@ export function routeClaudeEvent(
         turnId,
       });
     }
-    if (answer)
-      store.completeMessage(threadId, { id, role: "assistant", text: answer, turnId });
+    if (answer) {
+      // The stream row normally shares the provider id. A message streamed
+      // under a locally generated id (its start had none) is completed in
+      // that row, so its queued partial cannot land after the full text and
+      // read as the latest answer. Each text block envelope adds to the
+      // message instead of replacing its earlier blocks.
+      const rowId = providerId ? assistantRowId(threadId, turnId, providerId) : id;
+      store.completeMessage(threadId, { id: rowId, role: "assistant", text: aggregatedAssistantText(threadId, turnId, rowId, content.length, answer), turnId });
+    }
     for (const entry of content
       .map(object)
       .filter((entry) => entry.type === "tool_use")) {
@@ -1056,27 +1156,51 @@ export function routeClaudeEvent(
     clearClaudeNativeTaskBindings(threadId, turnId);
     // A successful result supplies authoritative final text. Earlier progress
     // or tool output is not evidence that the final assistant event arrived.
-    // Reuse a matching last assistant message; otherwise recover the answer
-    // under a turn-scoped id without overwriting intermediate work.
+    // Reuse the exact root end_turn message the backend identified, or a
+    // matching last assistant message; otherwise recover the answer under a
+    // turn-scoped id without overwriting intermediate work. With no result
+    // text, the backend's complete observed text of that exact message is the
+    // answer (its envelope may still be queued behind this event). Never
+    // promote arbitrary progress: a success without a final is reported.
     const resultText = text(message.result);
-    let hasOutput = turnHasTimelineOutput(threadId, turnId);
-    if (!interrupted && !failed && hasVisibleText(resultText)) {
+    const hasOutput = turnHasTimelineOutput(threadId, turnId);
+    let answered = false;
+    if (!interrupted && !failed) {
       const assistants = (useTaskStore.getState().tasks[threadId]?.messages ?? [])
         .filter((entry) => entry.role === "assistant" && entry.turnId === turnId);
+      const terminalId = text(message.openkiwi_terminal_assistant_id);
+      const terminalText = text(message.openkiwi_terminal_assistant_text);
+      const terminalRowId = terminalId ? assistantRowId(threadId, turnId, terminalId) : "";
+      const terminal = terminalRowId ? assistants.find((entry) => entry.id === terminalRowId) : undefined;
       const lastAssistant = assistants.at(-1);
-      const matching = lastAssistant?.text.trim() === resultText.trim() ? lastAssistant : undefined;
-      store.completeMessage(threadId, {
-        ...(matching ?? {}),
-        id: matching?.id ?? `claude-result-${turnId}`,
-        role: "assistant",
-        text: matching?.text ?? resultText,
-        phase: "final",
-        turnId,
-      });
-      hasOutput = true;
+      if (hasVisibleText(resultText)) {
+        const matching = [terminal, lastAssistant].find((entry) => entry?.text.trim() === resultText.trim());
+        store.completeMessage(threadId, {
+          ...(matching ?? {}),
+          id: matching?.id ?? `claude-result-${turnId}`,
+          role: "assistant",
+          text: matching?.text ?? resultText,
+          phase: "final",
+          turnId,
+        });
+        answered = true;
+      } else if (terminalRowId && hasVisibleText(terminalText)) {
+        store.completeMessage(threadId, {
+          ...(terminal ?? {}),
+          id: terminalRowId,
+          role: "assistant",
+          text: terminalText,
+          phase: "final",
+          turnId,
+        });
+        answered = true;
+      }
     }
-    const emptySuccess = !interrupted && !failed && !hasOutput;
-    void auditEvent("claude.turn.completed", { empty: emptySuccess, failed, interrupted }, threadId).catch(() => {});
+    const emptySuccess = !interrupted && !failed && !answered && !hasOutput;
+    // Work happened, but no final response arrived. Keep the turn's work in
+    // its history and say so instead of settling it as a silent success.
+    const missingFinal = !interrupted && !failed && !answered && hasOutput && !explicitCompactionCompleted(threadId, turnId);
+    void auditEvent("claude.turn.completed", { empty: emptySuccess, missingFinal, failed, interrupted }, threadId).catch(() => {});
     const thinking = useTaskStore
       .getState()
       .tasks[threadId]?.activities.find(
@@ -1090,7 +1214,9 @@ export function routeClaudeEvent(
     settleActiveCompaction(threadId, turnId, failed ? "failed" : "interrupted");
     const emptySuccessError = emptySuccess
       ? "Claude Code finished without returning a response. Your prompt was saved, but no assistant message or tool activity was produced. You can retry it."
-      : "";
+      : missingFinal
+        ? "Claude Code finished without sending a final response. Its work so far is kept in this run's activity details. You can ask it to continue."
+        : "";
     const failedResultError = failed ? claudeResultError(message) : "";
     // Add the diagnostic before sealing the turn so it receives the same
     // terminal metadata as the prompt and survives transcript persistence and
@@ -1104,11 +1230,11 @@ export function routeClaudeEvent(
         status: "failed",
         turnId,
       });
-    } else if (emptySuccess) {
+    } else if (emptySuccess || missingFinal) {
       store.upsertActivity(threadId, {
         id: `claude-empty-result-${turnId}`,
         kind: "warning",
-        title: "Claude Code returned no response",
+        title: emptySuccess ? "Claude Code returned no response" : "Claude Code returned no final response",
         detail: emptySuccessError,
         status: "failed",
         turnId,
@@ -1117,11 +1243,11 @@ export function routeClaudeEvent(
     store.completeTurn(
       threadId,
       turnId,
-      interrupted ? "interrupted" : failed || emptySuccess ? "error" : "completed",
+      interrupted ? "interrupted" : failed || emptySuccess || missingFinal ? "error" : "completed",
     );
     if (interrupted) {
       foregroundStatus(ctx, threadId, "Stopped");
-    } else if (failed || emptySuccess) {
+    } else if (failed || emptySuccess || missingFinal) {
       const error =
         failed
           ? failedResultError
@@ -1132,9 +1258,10 @@ export function routeClaudeEvent(
     } else {
       foregroundStatus(ctx, threadId, "Ready");
     }
-    assistantIds.delete(threadId);
+    clearAssistantTurnState(threadId);
     blocks.delete(threadId);
     ctx.onTurnCompleted(threadId);
+    acknowledgeSettledTurn(threadId, turnId);
     return;
   }
 
@@ -1186,9 +1313,10 @@ export function routeClaudeEvent(
       foregroundError(ctx, threadId, detail);
       foregroundStatus(ctx, threadId, "Task failed");
     }
-    assistantIds.delete(threadId);
+    clearAssistantTurnState(threadId);
     blocks.delete(threadId);
     ctx.onTurnCompleted(threadId);
+    acknowledgeSettledTurn(threadId, turnId);
     return;
   }
 

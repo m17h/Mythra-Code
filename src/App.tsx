@@ -4145,7 +4145,7 @@ export default function App() {
     return accepted;
   };
 
-  useClaudeEvents({
+  const deliverClaudeEvent = useClaudeEvents({
     onNativeAgentDiscovered,
     onNativeAgentReidentified: onClaudeNativeAgentReidentified,
     nativeAgentLinkFor: (childThreadId) => nativeAgentLinksRef.current[childThreadId],
@@ -8494,6 +8494,7 @@ export default function App() {
   useThreadHealth({
     runtimeAvailable: Boolean(runtimeStatus?.available),
     threadFor: (threadId) => knownThreadsRef.current?.[threadId] ?? (activeThread?.id === threadId ? activeThread : undefined),
+    deliverClaudeEvent,
   });
 
   const recordScheduleRun = useCallback((run: ScheduleRunRecord) => {

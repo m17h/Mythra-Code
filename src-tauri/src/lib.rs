@@ -1232,6 +1232,11 @@ pub(crate) async fn await_native_start_settlement(attempt: Option<Arc<NativeStar
 #[derive(Default)]
 struct ClaudeState {
     turns: Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
+    /// Terminal events keyed by exact (thread, turn), recorded before that
+    /// turn releases its slot. Emitting is not renderer delivery: health
+    /// reconciliation consumes an exact-turn receipt through the normal event
+    /// route instead of sealing a finished turn as failed.
+    terminal_receipts: Arc<StdMutex<ClaudeTerminalReceipts>>,
     starts: NativeStartRegistry,
     authenticated: AtomicBool,
     /// Advances only at sign-in, which can change credentials outside this
@@ -1245,6 +1250,69 @@ struct ClaudeState {
     usage_lock: Mutex<()>,
     usage_probes: StdMutex<ClaudeUsageProbes>,
     prompt_snapshot_support: Mutex<Option<ClaudePromptSnapshotSupport>>,
+}
+
+/// Receipts normally live only until the renderer acknowledges handling that
+/// exact turn's terminal event. The bounds only matter when acknowledgments
+/// never come (for example a reloaded renderer): the oldest are evicted
+/// whole, never truncated, and the newest is always kept. An evicted turn
+/// falls back to the ordinary unexpected-exit recovery.
+const CLAUDE_TERMINAL_RECEIPT_LIMIT: usize = 32;
+const CLAUDE_TERMINAL_RECEIPT_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+struct ClaudeTerminalReceipts {
+    /// (thread, turn, message, serialized size), oldest first.
+    entries: std::collections::VecDeque<(String, String, Value, usize)>,
+    bytes: usize,
+}
+
+impl ClaudeTerminalReceipts {
+    fn remove(&mut self, thread_id: &str, turn_id: &str) {
+        let bytes = &mut self.bytes;
+        self.entries.retain(|(thread, turn, _, size)| {
+            let keep = thread != thread_id || turn != turn_id;
+            if !keep {
+                *bytes -= size;
+            }
+            keep
+        });
+    }
+
+    /// Keyed by exact turn, so a stopped predecessor's late exit can never
+    /// replace or erase its successor's outcome.
+    fn record(&mut self, thread_id: &str, turn_id: &str, message: &Value) {
+        self.remove(thread_id, turn_id);
+        let size = message.to_string().len();
+        self.entries.push_back((thread_id.to_string(), turn_id.to_string(), message.clone(), size));
+        self.bytes += size;
+        while self.entries.len() > 1
+            && (self.entries.len() > CLAUDE_TERMINAL_RECEIPT_LIMIT || self.bytes > CLAUDE_TERMINAL_RECEIPT_BYTES)
+        {
+            if let Some((_, _, _, size)) = self.entries.pop_front() {
+                self.bytes -= size;
+            }
+        }
+    }
+
+    fn get(&self, thread_id: &str, turn_id: &str) -> Option<Value> {
+        self.entries
+            .iter()
+            .find(|(thread, turn, _, _)| thread == thread_id && turn == turn_id)
+            .map(|(_, _, message, _)| message.clone())
+    }
+}
+
+fn record_claude_terminal_receipt(
+    receipts: &StdMutex<ClaudeTerminalReceipts>,
+    thread_id: &str,
+    turn_id: &str,
+    message: &Value,
+) {
+    receipts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record(thread_id, turn_id, message);
 }
 
 /// Callers that waited behind a probe share its result instead of queueing
@@ -1671,6 +1739,17 @@ impl ClaudeTurnBoundary {
 /// envelope. Preserve the stronger result boundary when it arrives, but use
 /// this provider-authored stop reason as recovery evidence after process exit.
 fn claude_assistant_ends_turn(message: &Value) -> bool {
+    claude_root_assistant(message)
+        && message
+            .get("message")
+            .and_then(|message| message.get("stop_reason"))
+            .and_then(Value::as_str)
+            == Some("end_turn")
+}
+
+/// A root assistant envelope that can carry the answer: not a nested agent's
+/// message and not a provider-authored error.
+fn claude_root_assistant(message: &Value) -> bool {
     message.get("type").and_then(Value::as_str) == Some("assistant")
         // Provider-authored error messages can also carry `end_turn`. They
         // never prove a successful answer when the result envelope is missing.
@@ -1681,11 +1760,49 @@ fn claude_assistant_ends_turn(message: &Value) -> bool {
         && message
             .get("parent_tool_use_id")
             .is_none_or(Value::is_null)
-        && message
-            .get("message")
-            .and_then(|message| message.get("stop_reason"))
-            .and_then(Value::as_str)
-            == Some("end_turn")
+}
+
+/// The root assistant message being assembled, so exit recovery and empty
+/// results name that exact whole message rather than whatever text came last.
+/// Claude Code emits one envelope per content block under one message id
+/// (thinking, text and tool_use envelopes share it, one block each), so a
+/// single-block envelope adds its block; an envelope carrying several blocks
+/// is the message so far and replaces them.
+#[derive(Default)]
+struct ClaudeRootAssistant {
+    id: String,
+    text: String,
+    tool_use: bool,
+}
+
+fn accumulate_claude_root_assistant(message: &Value, current: Option<ClaudeRootAssistant>) -> ClaudeRootAssistant {
+    let assistant = message.get("message");
+    let id = assistant
+        .and_then(|assistant| assistant.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let content: &[Value] = assistant
+        .and_then(|assistant| assistant.get("content"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let text: String = content
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect();
+    let tool_use = content
+        .iter()
+        .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"));
+    match current {
+        Some(mut current) if current.id == id && content.len() <= 1 => {
+            current.text.push_str(&text);
+            current.tool_use |= tool_use;
+            current
+        }
+        _ => ClaudeRootAssistant { id, text, tool_use },
+    }
 }
 
 /// Output proving the CLI kept working after an assistant ended its turn: a
@@ -6336,11 +6453,16 @@ async fn claude_turn_start(
     let stdout_thread = options.thread_id;
     let stdout_turn = turn_id.clone();
     let turns = state.turns.clone();
+    let receipts = state.terminal_receipts.clone();
     let stdout_child = turn.child.clone();
     let stdout_runtime = turn.clone();
     tauri::async_runtime::spawn(async move {
         let mut terminal_result = None;
-        let mut saw_terminal_assistant = false;
+        let mut root_assistant: Option<ClaudeRootAssistant> = None;
+        // The root `end_turn` assistant (provider id, whole-message text)
+        // still standing as the CLI's last word. Any reopening output
+        // withdraws it. A message that invoked a tool is never an answer.
+        let mut terminal_assistant: Option<(String, String)> = None;
         // High-frequency `stream_event` messages are coalesced into a single
         // "claude-events" array emit (mirroring the Codex reader), flushed on
         // a ~25ms tick, at the event or byte flush threshold, or before any non-delta
@@ -6432,7 +6554,7 @@ async fn claude_turn_start(
             };
             if message.get("type").and_then(Value::as_str) == Some("stream_event") {
                 if claude_reopens_turn(&message) {
-                    saw_terminal_assistant = false;
+                    terminal_assistant = None;
                 }
                 let event = json!({
                     "threadId": stdout_thread,
@@ -6459,10 +6581,19 @@ async fn claude_turn_start(
             // one — that output belongs to a resumed session's restored work —
             // and later tool results or a steered follow-up mean work was
             // still in flight at exit.
+            if claude_root_assistant(&message) {
+                root_assistant = Some(accumulate_claude_root_assistant(&message, root_assistant.take()));
+            }
             if claude_assistant_ends_turn(&message) {
-                saw_terminal_assistant = !turn_boundary.prompt_pending();
+                terminal_assistant = if turn_boundary.prompt_pending() {
+                    None
+                } else {
+                    root_assistant.as_ref().map(|assistant| {
+                        (assistant.id.clone(), if assistant.tool_use { String::new() } else { assistant.text.clone() })
+                    })
+                };
             } else if claude_reopens_turn(&message) {
-                saw_terminal_assistant = false;
+                terminal_assistant = None;
             }
             if ends_turn {
                 // Result delivery is not a transcript flush acknowledgement.
@@ -6540,8 +6671,28 @@ async fn claude_turn_start(
                 return;
             }
         };
-        let recovered = claude_can_recover_at_exit(saw_terminal_assistant, exit.as_ref());
-        if let Some(message) = terminal_result {
+        let recovered = claude_can_recover_at_exit(terminal_assistant.is_some(), exit.as_ref());
+        let (terminal_assistant_id, terminal_assistant_text) = terminal_assistant.unwrap_or_default();
+        // Each terminal event is recorded as this turn's receipt BEFORE the
+        // slot is released, so a health probe that finds the process inactive
+        // always finds the exact outcome too. The slot still releases before
+        // emission so a follow-up the renderer starts on completion is not
+        // rejected as busy.
+        if let Some(mut message) = terminal_result {
+            // Provenance: the renderer confirms this exact root message as the
+            // answer, never the latest arbitrary text. With no result text,
+            // its whole observed text travels too, since that envelope may
+            // still be queued when a health probe delivers this receipt.
+            if !terminal_assistant_id.is_empty() {
+                let empty = message.get("result").and_then(Value::as_str).is_none_or(|result| result.trim().is_empty());
+                if let Some(object) = message.as_object_mut() {
+                    object.insert("openkiwi_terminal_assistant_id".to_string(), Value::String(terminal_assistant_id.clone()));
+                    if empty && !terminal_assistant_text.trim().is_empty() {
+                        object.insert("openkiwi_terminal_assistant_text".to_string(), Value::String(terminal_assistant_text.clone()));
+                    }
+                }
+            }
+            record_claude_terminal_receipt(&receipts, &stdout_thread, &stdout_turn, &message);
             stdout_runtime.alive.store(false, Ordering::Release);
             remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
@@ -6549,23 +6700,24 @@ async fn claude_turn_start(
             // The direct process is gone, so no later result can carry usage
             // or a different terminal state. The assistant event was already
             // forwarded and contains its own usage; synthesize only the
-            // missing lifecycle envelope so the renderer can seal the turn.
+            // missing lifecycle envelope so the renderer can seal the turn,
+            // naming the exact end_turn message and its whole observed text
+            // instead of leaving the answer to inference or to delivery of a
+            // still-queued assistant envelope.
+            let message = json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "num_turns": 1,
+                "result": "",
+                "openkiwi_recovered_from_assistant_end_turn": true,
+                "openkiwi_terminal_assistant_id": terminal_assistant_id,
+                "openkiwi_terminal_assistant_text": terminal_assistant_text,
+            });
+            record_claude_terminal_receipt(&receipts, &stdout_thread, &stdout_turn, &message);
             stdout_runtime.alive.store(false, Ordering::Release);
             remove_claude_turn_if_current(&turns, &stdout_thread, &stdout_runtime).await;
-            emit_claude_event(
-                &stdout_app,
-                &stdout_thread,
-                &stdout_turn,
-                json!({
-                    "type": "result",
-                    "subtype": "success",
-                    "is_error": false,
-                    "num_turns": 1,
-                    "result": "",
-                    "openkiwi_recovered_from_assistant_end_turn": true,
-                }),
-            )
-            .await;
+            emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
         // A descendant can inherit stderr just as it can stdout. Never let an
         // orphaned pipe retain the turn slot after the direct Claude process
@@ -6591,17 +6743,13 @@ async fn claude_turn_start(
                     .rev()
                     .collect()
             };
-            emit_claude_event(
-                &stdout_app,
-                &stdout_thread,
-                &stdout_turn,
-                json!({
-                    "type": "openkiwi_exit",
-                    "message": detail,
-                    "code": exit.and_then(|status| status.code()),
-                }),
-            )
-            .await;
+            let message = json!({
+                "type": "openkiwi_exit",
+                "message": detail,
+                "code": exit.and_then(|status| status.code()),
+            });
+            record_claude_terminal_receipt(&receipts, &stdout_thread, &stdout_turn, &message);
+            emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
         // Keep the turn visible as active until its terminal event has been
         // emitted. This closes the recovery race where the UI saw an inactive
@@ -6727,6 +6875,38 @@ async fn claude_turn_active(
         .await
         .get(&thread_id)
         .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)))
+}
+
+/// The exact turn's recorded terminal event, if its process already ended.
+/// Health reconciliation delivers it through the normal event handler, which
+/// still applies its own retired-turn and Stop guards.
+#[tauri::command]
+async fn claude_turn_terminal_receipt(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+    turn_id: String,
+) -> Result<Option<Value>, String> {
+    Ok(state
+        .terminal_receipts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&thread_id, &turn_id))
+}
+
+/// The renderer handled this exact turn's terminal event (or retired it), so
+/// its receipt is no longer needed for reconciliation.
+#[tauri::command]
+async fn claude_turn_terminal_receipt_ack(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+    turn_id: String,
+) -> Result<(), String> {
+    state
+        .terminal_receipts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&thread_id, &turn_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -8966,6 +9146,8 @@ pub fn run() {
                     claude_turn_interrupt,
                     claude_turn_kill,
                     claude_turn_active,
+                    claude_turn_terminal_receipt,
+                    claude_turn_terminal_receipt_ack,
                     claude_permission_respond,
                     claude_control_error,
                     cursor_turn_start,

@@ -17,6 +17,9 @@ export type CompactPresentationEntry = CompactWorkEntry | {
   turnId?: string;
   /** Stable source identity when a stopped run has no hidden output yet. */
   anchorId?: string;
+  /** `partial` inferred from recorded successful work in a run whose
+   * terminal outcome was never recorded; it did not confirm completion. */
+  completionUnconfirmed?: boolean;
 };
 
 export interface CompactActivityOptions {
@@ -70,6 +73,14 @@ function meaningful(message: ChatMessage): boolean {
   return Boolean(message.text.trim() || message.attachments?.length || message.questions?.length);
 }
 
+/** A recorded successful concrete operation: thinking, progress text,
+ * warnings and agent dispatch alone are not. */
+function succeededConcreteWork(activity: Activity): boolean {
+  const finishedWork = activity.kind === "command" || activity.kind === "file"
+    || (activity.kind === "agent" && activity.agent?.action === "spawn" && Boolean(activity.agent.result?.trim()));
+  return finishedWork && ["completed", "succeeded", "success"].includes(activity.status ?? "");
+}
+
 /** Presentation evidence, not a change to the provider's failed outcome or
  * a claim that the user's whole request succeeded. Only recorded successful
  * operations count: thinking, progress text, warnings and agent dispatch do not. */
@@ -83,26 +94,176 @@ export function failedRunPresentationState(entries: readonly CompactWorkEntry[])
       // A separately completed provider turn is not evidence about this failure.
       if (failedTurns.size ? !activity.turnId || !failedTurns.has(activity.turnId)
         : Boolean(activity.turnId) || activity.turnStatus === "completed") continue;
-      const finishedWork = activity.kind === "command" || activity.kind === "file"
-        || (activity.kind === "agent" && activity.agent?.action === "spawn" && Boolean(activity.agent.result?.trim()));
-      if (finishedWork
-        && ["completed", "succeeded", "success"].includes(activity.status ?? "")) return "partial";
+      if (succeededConcreteWork(activity)) return "partial";
     }
   }
   return "failed";
 }
 
-function stateFor(segment: CompactWorkEntry[], active: boolean): CompactWorkState {
-  if (active) return "running";
-  for (let index = segment.length - 1; index >= 0; index -= 1) {
-    const status = values(segment[index]).find((value) => value.turnStatus)?.turnStatus;
-    if (status === "failed" || status === "interrupted" || status === "completed") return status;
+export type RuntimeTurnOutcome = "completed" | "failed" | "interrupted" | "unknown";
+
+/**
+ * Conservative outcome from the newest runtime evidence, optionally for one
+ * provider turn. Only non-user output decides: newer streaming, inProgress or
+ * unsealed tagged output (Claude rows carry no status while live) is
+ * unfinished and never inherits an older terminal status. Opening user echoes
+ * can default to completed, so they only anchor a failed/stopped outcome
+ * when no runtime output exists. Grouped rows are read item by item because
+ * one group can mix turns.
+ */
+export function runtimeTurnOutcome(entries: readonly CompactWorkEntry[], id?: string): RuntimeTurnOutcome {
+  let userOutcome: "failed" | "interrupted" | undefined;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    const items = values(entry);
+    for (let item = items.length - 1; item >= 0; item -= 1) {
+      const value = items[item];
+      if (id !== undefined && value.turnId !== id) continue;
+      const status = value.turnStatus;
+      if (entry.kind === "message" && entry.value.role === "user") {
+        if (!userOutcome && (status === "failed" || status === "interrupted")) userOutcome = status;
+        continue;
+      }
+      if (entry.kind === "message" && entry.value.streaming) return "unknown";
+      if (status === "completed" || status === "failed" || status === "interrupted") return status;
+      // Untagged statusless rows (legacy history, local diagnostics) are not runtime evidence.
+      if (status === "inProgress" || value.turnId) return "unknown";
+    }
   }
+  return userOutcome ?? "unknown";
+}
+
+/** Every provider turn's own outcome, by the same newest-evidence rules as
+ * `runtimeTurnOutcome`, in one reverse pass over the logical run. */
+function turnOutcomes(segment: readonly CompactWorkEntry[]): Map<string, RuntimeTurnOutcome> {
+  const decided = new Map<string, RuntimeTurnOutcome>();
+  const userOutcomes = new Map<string, "failed" | "interrupted">();
+  for (let index = segment.length - 1; index >= 0; index -= 1) {
+    const entry = segment[index];
+    const items = values(entry);
+    for (let item = items.length - 1; item >= 0; item -= 1) {
+      const { turnId: id, turnStatus: status } = items[item];
+      if (!id || decided.has(id)) continue;
+      if (entry.kind === "message" && entry.value.role === "user") {
+        if (!userOutcomes.has(id) && (status === "failed" || status === "interrupted")) userOutcomes.set(id, status);
+        continue;
+      }
+      decided.set(id, entry.kind === "message" && entry.value.streaming ? "unknown"
+        : status === "completed" || status === "failed" || status === "interrupted" ? status : "unknown");
+    }
+  }
+  for (const [id, status] of userOutcomes) if (!decided.has(id)) decided.set(id, status);
+  return decided;
+}
+
+type AssistantEntry = { kind: "message"; value: ChatMessage };
+
+/** Any meaningful assistant text other than a question, whatever its phase. */
+function assistantText(entry: CompactWorkEntry): entry is AssistantEntry {
+  return entry.kind === "message" && entry.value.role === "assistant"
+    && !entry.value.questions?.length && meaningful(entry.value);
+}
+
+/** A settled explicit final wins. Otherwise only the turn's ACTUAL last
+ * message can be its answer, and only when it is settled and unphased: an
+ * explicit commentary (or still-streaming) last message means no answer,
+ * rather than promoting earlier progress. */
+function addAnswers(messages: AssistantEntry[], answers: Set<CompactWorkEntry>): void {
+  const finals = messages.filter((entry) => entry.value.phase === "final" && !entry.value.streaming);
+  if (finals.length) {
+    for (const entry of finals) answers.add(entry);
+    return;
+  }
+  const last = messages.at(-1);
+  if (last && !last.value.phase && !last.value.streaming) answers.add(last);
+}
+
+function settledLegacyStatus(value: ChatMessage | Activity): boolean {
+  return value.turnStatus !== "inProgress" && value.turnStatus !== "failed" && value.turnStatus !== "interrupted";
+}
+
+/**
+ * Answers chosen by each message's OWN turn evidence, never by a status
+ * borrowed from another turn in the same logical run.
+ * - A completed provider turn (not the still-owned live turn) shows its
+ *   explicit finals, or else its last message when that is settled and unphased.
+ * - Weak unphased fallback is only for wholly untagged, settled legacy runs.
+ *   An untagged prefix alone cannot prove historical completion: it may be
+ *   progress emitted before the current provider turn acquired its identity.
+ * - An untagged explicit final with its own completed metadata is preserved
+ *   anywhere in the run, without borrowing another row's outcome.
+ */
+function segmentAnswers(
+  segment: CompactWorkEntry[], outcomes: Map<string, RuntimeTurnOutcome>, live: boolean, liveTurnId?: string,
+): { answers: Set<CompactWorkEntry>; legacy: boolean } {
+  const answers = new Set<CompactWorkEntry>();
+  const byTurn = new Map<string, AssistantEntry[]>();
+  const untagged: AssistantEntry[] = [];
+  let legacy = true;
+  let legacySettled = true;
+  for (const entry of segment) {
+    if (values(entry).some((value) => value.turnId)) legacy = false;
+    if ((entry.kind === "message" && entry.value.streaming) || !values(entry).every(settledLegacyStatus)) legacySettled = false;
+    if (!assistantText(entry)) continue;
+    const id = entry.value.turnId;
+    if (id) {
+      const messages = byTurn.get(id);
+      if (messages) messages.push(entry);
+      else byTurn.set(id, [entry]);
+    } else {
+      untagged.push(entry);
+      if (entry.value.phase === "final" && !entry.value.streaming && entry.value.turnStatus === "completed") answers.add(entry);
+    }
+  }
+  for (const [id, messages] of byTurn) {
+    if (id !== liveTurnId && outcomes.get(id) === "completed") addAnswers(messages, answers);
+  }
+  // A wholly untagged run is the live run itself while it is active.
+  if (legacy && legacySettled && !live) addAnswers(untagged, answers);
+  return { answers, legacy };
+}
+
+function stateFor(segment: CompactWorkEntry[], active: boolean, legacyAnswered: boolean): CompactWorkState {
+  if (active) return "running";
+  const outcome = runtimeTurnOutcome(segment);
+  if (outcome !== "unknown") return outcome;
   // Preserve legacy completed transcript behavior, but never call an
   // unfinished runtime-tagged turn complete merely because it is idle.
-  const legacyAnswer = segment.some((entry) => entry.kind === "message" && entry.value.role === "assistant"
-    && !entry.value.streaming && meaningful(entry.value));
-  return legacyAnswer && segment.every((entry) => values(entry).every((value) => !value.turnId)) ? "completed" : "unknown";
+  return legacyAnswered ? "completed" : "unknown";
+}
+
+/** A settled run with no recorded terminal outcome (not one this renderer
+ * still owns). Successful concrete work in its own unfinished provider turns
+ * reads as partially completed, flagged unconfirmed; no cause or success is
+ * inferred. Work from a separately completed turn is not evidence. */
+function unknownRunPresentationState(segment: CompactWorkEntry[], outcomes: Map<string, RuntimeTurnOutcome>): "partial" | "unknown" {
+  for (const entry of segment) {
+    if (entry.kind === "message") continue;
+    for (const activity of values(entry) as Activity[]) {
+      if (activity.turnId && outcomes.get(activity.turnId) === "unknown" && succeededConcreteWork(activity)) return "partial";
+    }
+  }
+  return "unknown";
+}
+
+/** The outcome a settled logical run's history opener shows, for callers
+ * that render a run without folded work (skill-only openers), so it always
+ * matches the work row's state. `activeTurnId` keeps an owned, unconfirmed
+ * turn `unknown` exactly as the timeline does. */
+export function settledRunPresentationState(
+  segment: CompactWorkEntry[], activeTurnId?: string,
+): { state: CompactWorkState; completionUnconfirmed: boolean } {
+  const outcomes = turnOutcomes(segment);
+  const { answers, legacy } = segmentAnswers(segment, outcomes, false);
+  if (activeTurnId && segment.some((entry) => values(entry).some((value) => value.turnId === activeTurnId))
+    && !hasTerminalTurnEvidence(segment, activeTurnId)) return { state: "unknown", completionUnconfirmed: false };
+  const state = stateFor(segment, false, legacy && answers.size > 0);
+  if (state === "failed") return { state: failedRunPresentationState(segment), completionUnconfirmed: false };
+  if (state === "unknown") {
+    const inferred = unknownRunPresentationState(segment, outcomes);
+    return { state: inferred, completionUnconfirmed: inferred === "partial" };
+  }
+  return { state, completionUnconfirmed: false };
 }
 
 /** Non-user output seals a turn only after all of its output has settled. */
@@ -155,7 +316,11 @@ function isolateImportantActivities(entries: readonly CompactWorkEntry[]): Compa
  * assistant text, including a native final channel, waits for turn completion.
  * Questions and warning activities remain actionable while work can continue.
  * Interrupted or failed output stays in one history disclosure, including
- * unfinished answers.
+ * unfinished answers. Each logical run has at most one disclosure, placed at
+ * its first hidden entry and holding every hidden entry in original order, so
+ * steering, questions, warnings and answers never split it. Unknown outcomes
+ * (lost terminal metadata, reopened unfinished runs) fail closed: their
+ * progress stays in that disclosure rather than becoming chat messages.
  */
 export function compactActivityPresentation(
   entries: readonly CompactWorkEntry[], options: CompactActivityOptions,
@@ -178,86 +343,43 @@ export function compactActivityPresentation(
       && !hasTerminalTurnEvidence(segment, options.activeTurnId);
     // An idle notification can precede the terminal turn event. Retain its
     // current output in details without claiming the provider is still busy.
-    // Old unknown history and explicitly stopped/failed output stay readable.
+    // Old unknown history keeps its output in one disclosure as well.
     const unconfirmed = !active && Boolean(options.activeTurnId) && index === activeSegment
       && !hasTerminalTurnEvidence(segment, options.activeTurnId);
-    const state = unconfirmed ? "unknown" : stateFor(segment, active);
-    if (state === "interrupted" || state === "failed") {
-      const outcome = state === "failed" ? failedRunPresentationState(segment) : state;
-      // A failed or stopped run does not turn progress or a partial final
-      // response into an answer. Keep one history opener across steering,
-      // retaining successful steps and the failure for the details window.
-      // A completed final belonging to a separate recovered provider turn is
-      // still an answer; a terminal failure must not swallow unrelated results.
-      const output: CompactPresentationEntry[] = [];
-      const stoppedTurnIds = new Set(segment.flatMap(values)
-        .filter((value) => (value.turnStatus === "interrupted" || value.turnStatus === "failed") && value.turnId)
-        .map((value) => value.turnId));
-      const lastCompletedAssistant = new Map<string, CompactWorkEntry>();
-      for (const entry of segment) {
-        if (entry.kind === "message" && entry.value.role === "assistant" && entry.value.turnId
-          && entry.value.turnStatus === "completed" && meaningful(entry.value) && !entry.value.questions?.length) {
-          lastCompletedAssistant.set(entry.value.turnId, entry);
-        }
-      }
-      let stoppedWork: Extract<CompactPresentationEntry, { kind: "work" }> | undefined;
-      for (const entry of segment) {
-        if (entry.kind === "message" && (entry.value.role === "user"
-          || (entry.value.role === "assistant" && (entry.value.phase === "final"
-              || (!entry.value.phase && entry.value.turnId && lastCompletedAssistant.get(entry.value.turnId) === entry))
-            && entry.value.turnStatus === "completed" && !entry.value.streaming
-            && entry.value.turnId && !stoppedTurnIds.has(entry.value.turnId)))) {
-          output.push(entry);
-        } else {
-          if (!stoppedWork) {
-            stoppedWork = { kind: "work", value: [], state: outcome, turnId: turnId(segment[0]) };
-            output.push(stoppedWork);
-          }
-          stoppedWork.value.push(entry);
-        }
-      }
-      // A failure before the first provider output still settles the existing
-      // live opener. Its details contain the retained opening user prompt.
-      if (!stoppedWork) output.push({ kind: "work", value: [], state: outcome, turnId: turnId(segment[0]), anchorId: values(segment[0])[0]?.id });
-      return output;
-    }
-    const assistants = segment.filter((entry) => entry.kind === "message" && entry.value.role === "assistant"
-      && !entry.value.questions?.length && meaningful(entry.value));
-    const lastAssistant = assistants.at(-1);
-    // Completion seals all messages, not only the answer. Promote ONLY the
-    // terminal unphased message; an explicit commentary row is never an answer.
-    const fallback = state === "completed" && lastAssistant?.kind === "message"
-      && !lastAssistant.value.phase && !lastAssistant.value.streaming ? lastAssistant : undefined;
+    // Completed answers from a separate recovered provider turn survive a
+    // later live, unknown, failed or stopped turn in the same run. The
+    // unfinished turn's own progress or partial final is never an answer.
+    const outcomes = turnOutcomes(segment);
+    const { answers, legacy } = segmentAnswers(segment, outcomes, active || unconfirmed,
+      active || unconfirmed ? options.activeTurnId : undefined);
+    const state = unconfirmed ? "unknown" : stateFor(segment, active, legacy && answers.size > 0);
+    const stopped = state === "interrupted" || state === "failed";
+    // Owned unconfirmed and live runs are never reclassified.
+    const outcome = state === "failed" ? failedRunPresentationState(segment)
+      : state === "unknown" && !unconfirmed ? unknownRunPresentationState(segment, outcomes) : state;
+    const completionUnconfirmed = state === "unknown" && outcome === "partial";
     const output: CompactPresentationEntry[] = [];
-    let work: CompactWorkEntry[] = [];
-    const flush = () => {
-      if (work.length) output.push({ kind: "work", value: work, state,
-        turnId: options.activeTurnId && (active || unconfirmed) ? options.activeTurnId : turnId(segment[0]) });
-      work = [];
-    };
-    let liveWork: Extract<CompactPresentationEntry, { kind: "work" }> | undefined;
+    let work: Extract<CompactPresentationEntry, { kind: "work" }> | undefined;
     for (const entry of segment) {
+      // A failed or stopped run keeps its questions and warnings with the
+      // failure in details; they can no longer be acted on.
       const visible = entry.kind === "message"
-        ? entry.value.role === "user" || Boolean(entry.value.questions?.length)
-          || (meaningful(entry.value) && ((!active && !unconfirmed && entry.value.phase === "final") || entry === fallback
-            || (!unconfirmed && state === "unknown")))
-        : values(entry).some((value) => importantActivity(value as Activity));
-      if (active || unconfirmed) {
-        // A steer/question/warning must not create a second live status line.
-        // Source history retains the full interleaving; this single disclosure
-        // retains hidden entries in their original relative order.
-        if (visible) output.push(entry);
-        else {
-          if (!liveWork) {
-            liveWork = { kind: "work", value: [], state, turnId: options.activeTurnId ?? turnId(segment[0]) };
-            output.push(liveWork);
-          }
-          liveWork.value.push(entry);
+        ? entry.value.role === "user" || answers.has(entry) || (!stopped && Boolean(entry.value.questions?.length))
+        : !stopped && values(entry).some((value) => importantActivity(value as Activity));
+      if (visible) output.push(entry);
+      else {
+        if (!work) {
+          work = { kind: "work", value: [], state: outcome,
+            turnId: stopped ? turnId(segment[0]) : options.activeTurnId && (active || unconfirmed) ? options.activeTurnId : turnId(segment[0]),
+            ...(completionUnconfirmed ? { completionUnconfirmed } : {}) };
+          output.push(work);
         }
-      } else if (visible) { flush(); output.push(entry); }
-      else work.push(entry);
+        work.value.push(entry);
+      }
     }
-    flush();
+    // A failure before the first provider output still settles the existing
+    // live opener. Its details contain the retained opening user prompt.
+    if (stopped && !work) output.push({ kind: "work", value: [], state: outcome, turnId: turnId(segment[0]), anchorId: values(segment[0])[0]?.id });
     return output;
   });
 }
