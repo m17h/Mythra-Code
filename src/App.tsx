@@ -6142,13 +6142,13 @@ export default function App() {
     lmStudioModels,
     lmStudioBaseUrl: settings.lmStudioBaseUrl,
     readiness: childAgentReadiness,
-    subagentsEnabledForThread: (threadId) => {
+    subagentWorkflowForThread: (threadId) => {
       const project = projectForThread(threadId);
       const resolved = settingsForThreadSubagents(
         settingsWithProjectSubagents(settings, project?.overrides?.subagents),
         threadId, threadSubagentSettings,
       );
-      return resolved.subagentsEnabled;
+      return { enabled: resolved.subagentsEnabled, native: resolved.subagentEngine === "native" };
     },
     projectPathForThread: (threadId) => threadProjectBindingsRef.current?.[threadId],
     projectIdForThread: (threadId) => {
