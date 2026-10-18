@@ -121,13 +121,13 @@ export function hasTerminalTurnEvidence(segment: CompactWorkEntry[], id?: string
 }
 
 function importantActivity(activity: Activity): boolean {
-  // A tool failure is still work history, not a chat message. Providers may
-  // recover from it while continuing the same turn. Keep its command, output
-  // and status in details regardless of outcome; actionable warnings and
-  // approvals have their own presentation and must remain visible.
-  if (activity.kind === "command") return false;
-  return activity.kind === "warning" || activity.kind === "compaction"
-    || ["failed", "error", "interrupted", "cancelled"].includes(activity.status ?? "");
+  // Visibility follows the activity's purpose, never its outcome. A failed
+  // file edit or sub-agent operation is work history just like a failed
+  // command; promoting it here splits the run and leaks tool output into chat.
+  // Keep all tool output/status in details, even after recovery or reopening.
+  // Explicit warnings and context boundaries remain visible. Approvals and
+  // questions have their own presentation and are unaffected.
+  return activity.kind === "warning" || activity.kind === "compaction";
 }
 
 function isolateImportantActivities(entries: readonly CompactWorkEntry[]): CompactWorkEntry[] {
@@ -160,7 +160,7 @@ function isolateImportantActivities(entries: readonly CompactWorkEntry[]): Compa
 export function compactActivityPresentation(
   entries: readonly CompactWorkEntry[], options: CompactActivityOptions,
 ): CompactPresentationEntry[] {
-  // Split out visible warnings/landmarks without exposing grouped commands.
+  // Split out explicit warnings/landmarks without exposing grouped tools.
   // Original activities/history stay intact, including failed operations.
   const segments = activityTurnSegments(isolateImportantActivities(entries));
   let activeSegment = -1;
