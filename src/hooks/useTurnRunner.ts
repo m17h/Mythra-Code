@@ -424,7 +424,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // synchronously, including drafts no longer selected in the visible UI.
     for (const id of firstPromptAttemptsRef.current.keys()) {
       const captured = firstPromptContextsRef.current.get(id);
-      if (captured?.effectiveSettings.subagentsEnabled && !captured.activeThreadIsChild
+      if (captured?.effectiveSettings.subagentsEnabled && captured.effectiveSettings.subagentEngine !== "native" && !captured.activeThreadIsChild
         && !(captured.activeThread && captured.childAgentLinks[captured.activeThread.id])) {
         return "Wait for the parent turn to finish preparing before changing this preview.";
       }
@@ -498,7 +498,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const explicitAttemptId = explicitThreadId ? crypto.randomUUID() : undefined;
     let explicitDispatched = false;
     const localStartRequestId = explicitAttemptId ?? crypto.randomUUID();
-    const subagentPreparation = mode === "turn" && ctx.effectiveSettings.subagentsEnabled
+    const subagentPreparation = mode === "turn" && ctx.effectiveSettings.subagentsEnabled && ctx.effectiveSettings.subagentEngine !== "native"
       && !ctx.activeThreadIsChild && !(ctx.activeThread && ctx.childAgentLinks[ctx.activeThread.id])
       ? Symbol("parent sub-agent preparation") : undefined;
     if (subagentPreparation) {

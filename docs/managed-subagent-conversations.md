@@ -11,10 +11,11 @@ On additionally enables questions, parent guidance, same-conversation follow-ups
 and explicit assignment sign-off. The shared ownership, Stop and recovery
 protections apply in both modes; this is not a rollback to older source code.
 
-The switch is locked while sub-agent work is starting, running, queued for
+The switch is locked while Mythra-managed sub-agent work is starting, running, queued for
 delivery or has an unconfirmed outcome. Save rechecks the live state so a run
 that starts after the settings window opens cannot change mode mid-flight.
-Native Claude Code/Codex delegation is not enabled or disabled by this setting.
+Native Claude Code/Codex work and saved native-agent history do not lock this
+Mythra-only switch. Native delegation is not enabled or disabled by this setting.
 Their native models, concurrency limits, compaction settings and tools are not
 changed by the preview switch. Native bridge registrations cannot advertise or
 execute the Mythra V2 conversation tools, and native runtime instructions omit

@@ -179,8 +179,8 @@ export interface ChildAgentContext {
    * when one exists. A parent follow-up never silently overrides it.
    */
   explicitThreadExecutionFor?: (threadId: string) => { provider?: Provider; model?: string; reasoningEffort?: string } | undefined;
-  /** Live delegation enabled state covers roots still preparing their first policy. */
-  subagentsEnabledForThread?: (threadId: string) => boolean;
+  /** Live engine choice also scopes older captured policies to Mythra work. */
+  subagentWorkflowForThread?: (threadId: string) => { enabled: boolean; native: boolean };
   /** Optional setup for an identified new child before its first dispatch. */
   prepareNewThreadGit?: (threadId: string, projectId: string, projectPath: string) => Promise<boolean>;
 }
@@ -863,11 +863,6 @@ export function useChildAgents(context: ChildAgentContext): {
 } {
   const contextRef = useRef(context);
   contextRef.current = context;
-  // Native worker events update their parent's roster without necessarily
-  // changing any conversation status. Subscribe across all conversations,
-  // but re-render only when the active/uncertain boundary changes.
-  useTaskStore((state) => Object.values(state.tasks)
-    .some((task) => task.agents.some((agent) => isActiveAgentRecord(agent.status))));
   const [managedSubagentV2LockRevision, setManagedSubagentV2LockRevision] = useState(0);
   const notifyModeLockChanged = useCallback(() => setManagedSubagentV2LockRevision((revision) => revision + 1), []);
   /** Roots already reported finished, so a slot is released exactly once. */
@@ -1026,34 +1021,30 @@ export function useChildAgents(context: ChildAgentContext): {
     for (const link of Object.values(links)) {
       const status = store.statuses[link.childThreadId] ?? "idle";
       if (link.activationPending || isChildActive(status) || childLifecycleForLink(link, status) === "unknown") {
-        return "Finish or stop active sub-agents before changing this preview.";
+        return `Finish or stop active sub-agents before changing this preview. Still unsettled: “${link.title}”.`;
       }
       if (getChildMailbox(link.childThreadId)?.messages.some((message) => message.direction === "toChild"
         && (message.state === "queued" || message.state === "delivering"))) {
         return "Let queued sub-agent guidance settle before changing this preview.";
       }
     }
-    // Native records can outlive their hydrated child conversation, including
-    // Claude workers running inside the root process.
-    const nativeRoots = new Set(Object.values(ctx.nativeLinks ?? {}).map((link) => link.rootThreadId));
-    for (const [threadId, task] of Object.entries(store.tasks)) {
-      if (task.agents.length) nativeRoots.add(threadId);
-    }
-    for (const rootThreadId of nativeRoots) {
-      if (nativeChildrenFor(rootThreadId, ctx.nativeLinks).some((agent) => !links[agent.id]
-        && isActiveAgentRecord(agent.status))) {
-        return "Finish or stop active native sub-agents before changing this preview.";
-      }
-    }
+    // Provider-native delegation never reads this preview. Neither its live
+    // workers nor durable records (including legacy links with no status)
+    // may block a Mythra-only preference. Native Stop and slot accounting
+    // deliberately keep their separate conservative unknown-state handling.
     for (const stored of Object.values(ctx.policies)) {
       const policy = childAgentPolicyForSession(ctx.policies, stored.sessionId);
-      if (policy?.targets.length && isChildActive(store.statuses[policy.rootThreadId] ?? "idle")) {
+      // A saved Mythra roster can remain after this thread switched engines;
+      // it is not evidence that its current native turn can use that roster.
+      if (policy?.targets.length && isChildActive(store.statuses[policy.rootThreadId] ?? "idle")
+        && !ctx.subagentWorkflowForThread?.(policy.rootThreadId).native) {
         return "Finish the running parent turn before changing this preview.";
       }
     }
     for (const [threadId, status] of Object.entries(store.statuses)) {
+      const workflow = isChildActive(status) ? ctx.subagentWorkflowForThread?.(threadId) : undefined;
       if (!links[threadId] && !ctx.nativeLinks?.[threadId] && isChildActive(status)
-        && ctx.subagentsEnabledForThread?.(threadId)) {
+        && workflow?.enabled && !workflow.native) {
         return "Finish the running parent turn before changing this preview.";
       }
     }
