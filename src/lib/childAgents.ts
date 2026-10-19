@@ -1,7 +1,7 @@
 import { DEFAULT_CHILD_AGENT_SETTINGS, DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_OPENAI_MODEL } from "./appConfig";
 import { canOwnThread } from "./nativeAgentLinks";
 import type { TaskStatus } from "./taskStore";
-import type { AppSettings, ChildAgentPreset, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider } from "../types";
+import type { AppSettings, ChildAgentPreset, ChildAgentSettings, ChildAgentTarget, PermissionMode, Project, ProjectSubagentSettings, Provider, SubagentModelGuidance } from "../types";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import { autoCompactTokensError, storedAutoCompactTokens } from "./threadSubagentSettings";
 
@@ -19,6 +19,9 @@ export const CHILD_AGENT_PROVIDERS: Provider[] = ["openai", "openrouter", "lmstu
 /** Mirrors the backend ceiling in `agents.rs`. */
 export const MAX_CHILD_AGENT_TARGETS = 24;
 export const MAX_CHILD_AGENT_PRESETS = 12;
+/** Reusable model notes kept in Settings; a crew only ever sees its own. */
+export const MAX_SUBAGENT_MODEL_GUIDANCE = 40;
+export const MAX_SUBAGENT_MODEL_GUIDANCE_NOTE = 400;
 /**
  * Most children one thread may run at once. Numerically the same as the
  * destination ceiling today, but a different rule: a roster of destinations is
@@ -423,6 +426,79 @@ export function sanitizeChildAgentSettings(stored: unknown): ChildAgentSettings 
   // The roster is the provider allow-list. A legacy cross-provider switch
   // must not leave configured targets silently disabled behind the main switch.
   return { enabled: targets.length > 0, targets };
+}
+
+/**
+ * Exact provider/model identity shared by destinations and model notes. An
+ * empty model resolves through {@link childAgentModel}, so a provider-default
+ * destination matches the note for the model it actually starts with. No
+ * alias or case folding: `opus` and `claude-opus-5` are different notes.
+ */
+export function subagentModelGuidanceKey(entry: Pick<ChildAgentTarget, "provider" | "model">): string {
+  return `${entry.provider}\u0000${childAgentModel(entry)}`;
+}
+
+/** Keep saved notes valid Unicode within the textarea's UTF-16 budget. */
+function sanitizeModelGuidanceNote(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const note = value
+    .replace(/[\u0000-\u0008\u000e-\u001f]/g, "")
+    // In Unicode mode this matches lone surrogates, never a valid pair.
+    .replace(/[\ud800-\udfff]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_SUBAGENT_MODEL_GUIDANCE_NOTE);
+  // A well-formed string can still be split between an emoji's two units.
+  const last = note.charCodeAt(note.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? note.slice(0, -1) : note;
+}
+
+/**
+ * Rebuild saved model notes. Models are stored as resolved IDs, entries
+ * without a usable model or note are dropped, and only the first note for a
+ * provider/model survives.
+ */
+export function sanitizeSubagentModelGuidance(stored: unknown): SubagentModelGuidance[] {
+  if (!Array.isArray(stored)) return [];
+  const seen = new Set<string>();
+  const result: SubagentModelGuidance[] = [];
+  for (const candidate of stored) {
+    if (result.length >= MAX_SUBAGENT_MODEL_GUIDANCE) break;
+    if (!candidate || typeof candidate !== "object") continue;
+    const entry = candidate as Record<string, unknown>;
+    const provider = entry.provider as Provider;
+    if (!CHILD_AGENT_PROVIDERS.includes(provider)) continue;
+    const model = childAgentModel({ provider, model: sanitizeText(entry.model, 128) });
+    const note = sanitizeModelGuidanceNote(entry.note);
+    if (!model || !note) continue;
+    const key = subagentModelGuidanceKey({ provider, model });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ provider, model, note });
+  }
+  return result;
+}
+
+/**
+ * The saved notes a parent may see: only models in its captured, enabled
+ * crew, once per provider/model however many destinations share it.
+ */
+export function modelGuidanceForTargets(
+  guidance: unknown,
+  targets: ChildAgentTarget[],
+): SubagentModelGuidance[] {
+  const notes = new Map(sanitizeSubagentModelGuidance(guidance).map((entry) => [subagentModelGuidanceKey(entry), entry]));
+  const emitted = new Set<string>();
+  const result: SubagentModelGuidance[] = [];
+  for (const target of targets) {
+    if (!target.enabled) continue;
+    const key = subagentModelGuidanceKey(target);
+    if (emitted.has(key)) continue;
+    emitted.add(key);
+    const note = notes.get(key);
+    if (note) result.push({ ...note });
+  }
+  return result;
 }
 
 /** How many workers are configured in the crew window, enabled or parked. */

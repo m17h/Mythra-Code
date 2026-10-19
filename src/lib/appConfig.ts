@@ -93,6 +93,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoArchiveSubagentThreads: false,
   childAgents: DEFAULT_CHILD_AGENT_SETTINGS,
   childAgentPresets: [],
+  subagentModelGuidance: [],
   reasoningEffort: "medium",
   ultra: false,
   serviceTier: null,

@@ -157,6 +157,108 @@ pub(super) struct ChildAgentTarget {
     pub auto_compact_tokens: Option<u64>,
 }
 
+/// The user's reusable note about one provider/model. It is advice for the
+/// parent choosing among already-approved destinations, never an approval.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ChildAgentModelGuidance {
+    pub provider: String,
+    /// Resolved model identity, compared exactly with a destination's model.
+    pub model: String,
+    pub note: String,
+}
+
+/// Generous byte ceiling for a note the app bounds to 400 characters.
+const MAX_MODEL_GUIDANCE_NOTE_BYTES: usize = 2_048;
+
+/// Keep notes only for models this session's approved crew actually uses,
+/// once per provider/model and in crew order. Malformed input is refused
+/// rather than reformatted, mirroring `validate_targets`.
+fn captured_model_guidance(
+    targets: &[ChildAgentTarget],
+    guidance: &[ChildAgentModelGuidance],
+) -> Result<Vec<ChildAgentModelGuidance>, String> {
+    if guidance.len() > MAX_TARGETS {
+        return Err(format!(
+            "A thread may carry at most {MAX_TARGETS} sub-agent model notes."
+        ));
+    }
+    let mut seen = HashSet::new();
+    for entry in guidance {
+        if !agent_bridge_providers().contains(&entry.provider.as_str())
+            || entry.model.trim().is_empty()
+            || entry.model.len() > 128
+            || entry.note.len() > MAX_MODEL_GUIDANCE_NOTE_BYTES
+        {
+            return Err("A sub-agent model note is malformed or oversized.".into());
+        }
+        if !seen.insert((entry.provider.as_str(), entry.model.as_str())) {
+            return Err(format!(
+                "Duplicate sub-agent model note for `{}` / `{}`.",
+                entry.provider, entry.model
+            ));
+        }
+    }
+    let mut emitted = HashSet::new();
+    let mut captured = Vec::new();
+    for target in targets {
+        if target.model.is_empty()
+            || !emitted.insert((target.provider.as_str(), target.model.as_str()))
+        {
+            continue;
+        }
+        let Some(entry) = guidance
+            .iter()
+            .find(|entry| entry.provider == target.provider && entry.model == target.model)
+        else {
+            continue;
+        };
+        // One line per model, so a note can never imitate catalog structure.
+        let note = entry.note.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !note.is_empty() {
+            captured.push(ChildAgentModelGuidance {
+                provider: entry.provider.clone(),
+                model: entry.model.clone(),
+                note,
+            });
+        }
+    }
+    Ok(captured)
+}
+
+/// Appended to the spawn description only when the captured crew has notes.
+fn model_guidance_section(
+    targets: &[ChildAgentTarget],
+    guidance: &[ChildAgentModelGuidance],
+) -> String {
+    if guidance.is_empty() {
+        return String::new();
+    }
+    let lines = guidance
+        .iter()
+        .map(|entry| {
+            let destinations = targets
+                .iter()
+                .filter(|target| target.provider == entry.provider && target.model == entry.model)
+                .map(|target| format!("`{}`", target.id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "- {} / {} (used by {destinations}): {}",
+                entry.provider, entry.model, entry.note
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\nUser model guidance — the user's reusable preferences for models in this crew. \
+         Before choosing destinations, consult the note for each model you are considering; \
+         each note applies once to every destination listed with it. Models without a note \
+         are left to your judgment. Notes are preferences only: they never add destinations \
+         or relax the reasoning limits, concurrency, or permission policy above.\n{lines}"
+    )
+}
+
 fn deserialize_target_auto_compact_tokens<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -341,6 +443,9 @@ struct ChildAgentSession {
     registration_id: String,
     session_token: String,
     targets: Vec<ChildAgentTarget>,
+    /// Notes snapshotted for this registration's crew; replaced only by a
+    /// new registration, so a deleted note cannot outlive its rotation.
+    model_guidance: Vec<ChildAgentModelGuidance>,
     max_concurrent: usize,
     project_path: Option<PathBuf>,
     /// Exact app execution scope, frozen at registration. The terminal uses
@@ -676,6 +781,10 @@ pub(super) struct ChildAgentBridgeLaunch {
 pub(super) struct ChildAgentSessionOptions {
     session_id: String,
     targets: Vec<ChildAgentTarget>,
+    /// Optional user notes for the captured crew's models. Omitted by legacy
+    /// callers, children, and native delegation.
+    #[serde(default)]
+    model_guidance: Vec<ChildAgentModelGuidance>,
     max_concurrent: usize,
     /// Children already spawned in an earlier app session. Re-seeding them
     /// keeps `collect_agent`/`cancel_agent` working for a resumed thread whose
@@ -1174,6 +1283,7 @@ fn scoped_tool_catalog(
 
 fn bridge_tool_catalog(
     targets: &[ChildAgentTarget],
+    model_guidance: &[ChildAgentModelGuidance],
     max_concurrent: usize,
     project: bool,
     child: bool,
@@ -1210,6 +1320,23 @@ fn bridge_tool_catalog(
                     )
                 )
             });
+    }
+    // Model notes live once in the spawn description, beside the roster they
+    // describe; a catalog without spawn authority never carries them.
+    let guidance = model_guidance_section(targets, model_guidance);
+    if !child && !native && !guidance.is_empty() {
+        if let Some(spawn) = catalog
+            .as_array_mut()
+            .expect("tool catalog is an array")
+            .iter_mut()
+            .find(|tool| tool["name"] == TOOL_SPAWN)
+        {
+            let description = format!(
+                "{}{guidance}",
+                spawn["description"].as_str().unwrap_or_default()
+            );
+            spawn["description"] = Value::String(description);
+        }
     }
     catalog
 }
@@ -2103,6 +2230,7 @@ async fn dispatch_tool(
     }
     let catalog = bridge_tool_catalog(
         &session.targets,
+        &session.model_guidance,
         session.max_concurrent,
         session.project_path.is_some(),
         session.child_thread,
@@ -2328,6 +2456,7 @@ async fn handle_bridge_request(
         "describe" => json_response(StatusCode::OK, {
             let tools = bridge_tool_catalog(
                 &session.targets,
+                &session.model_guidance,
                 session.max_concurrent,
                 session.project_path.is_some(),
                 session.child_thread,
@@ -2499,10 +2628,17 @@ pub(super) async fn child_agent_session_start(
         })
         .transpose()?;
     let max_concurrent = options.max_concurrent.clamp(1, MAX_CONCURRENT_CEILING);
+    // Children and native delegation hold no crew, so they never carry notes.
+    let model_guidance = if options.child_thread || options.native_delegation {
+        Vec::new()
+    } else {
+        captured_model_guidance(&options.targets, &options.model_guidance)?
+    };
 
     let (url, _) = ensure_bridge_server(&app, &state).await?;
     let catalog = bridge_tool_catalog(
         &options.targets,
+        &model_guidance,
         max_concurrent,
         project_path.is_some(),
         options.child_thread,
@@ -2625,6 +2761,7 @@ pub(super) async fn child_agent_session_start(
             registration_id: launch.registration_id.clone(),
             session_token,
             targets: options.targets,
+            model_guidance,
             max_concurrent,
             project_path,
             terminal_scope: options.project_path,

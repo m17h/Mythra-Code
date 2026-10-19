@@ -202,6 +202,7 @@ import {
   readyChildAgentTargets,
   sanitizeChildAgentPresets,
   sanitizeChildAgentLinks,
+  sanitizeSubagentModelGuidance,
   sanitizeChildAgentPolicies,
   sanitizeChildAgentSettings,
   sanitizeProjectSubagentOverrides,
@@ -211,7 +212,7 @@ import {
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./lib/childAgents";
-import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions } from "./lib/childAgentSessions";
+import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions, setSavedSubagentModelGuidance } from "./lib/childAgentSessions";
 import { cancelQueuedForChild, forgetChildMailbox, getChildMailbox, summarizeChildMailbox, useChildMailboxes } from "./lib/childAgentMailbox";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { boundedNativeText, canOwnNativeThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
@@ -554,7 +555,7 @@ const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
 const storedSettings = { ...rawStoredSettings, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
-const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
+const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
 /**
  * Claude/Cursor transcripts flow memory → disk on a debounced save, so the
@@ -747,6 +748,9 @@ export default function App() {
     setActiveFirstPrompt(null);
   }, []);
   const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  // Parents read model notes from the saved settings at their next real turn.
+  // Publishing during render keeps queued starts from racing a later effect.
+  setSavedSubagentModelGuidance(settings.subagentModelGuidance);
   const confirmationOpen = useConfirmStore((state) => state.queue.length > 0);
   const spellingMenuOpen = useSpellingMenu((state) => state.menu !== null);
   const [headerUsageWindows, setHeaderUsageWindows] = usePersistedState<HeaderUsageWindows>("kiwi.headerUsageWindows", {}, {
