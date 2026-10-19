@@ -1655,9 +1655,9 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                                 disabled: Boolean(providerSignInIssue(provider, readiness)),
                                 label: providerDisplayName(provider),
                                 detail: provider === "openai"
-                                  ? "ChatGPT subscription"
+                                  ? "Codex · subscription or API key"
                                   : provider === "claude"
-                                    ? "Claude Code subscription"
+                                    ? "Claude Code · subscription or API key"
                                     : provider === "cursor"
                                       ? "Cursor subscription"
                                       : provider === "lmstudio"

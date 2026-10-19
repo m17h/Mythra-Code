@@ -4,8 +4,8 @@ import type { Provider } from "../types";
 import { ProviderLogo } from "./BrandLogos";
 
 const PROVIDERS: Array<{ id: Provider; label: string; detail: string }> = [
-  { id: "openai", label: "OpenAI", detail: "ChatGPT subscription" },
-  { id: "claude", label: "Claude", detail: "Claude Code subscription" },
+  { id: "openai", label: "OpenAI", detail: "Codex · subscription or API key" },
+  { id: "claude", label: "Claude", detail: "Claude Code · subscription or API key" },
   { id: "cursor", label: "Cursor", detail: "Cursor subscription models" },
   { id: "openrouter", label: "OpenRouter", detail: "API model routing" },
   { id: "lmstudio", label: "LM Studio", detail: "Local models on your computer" },

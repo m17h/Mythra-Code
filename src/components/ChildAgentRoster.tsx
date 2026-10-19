@@ -157,9 +157,9 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                           value: provider,
                           label: providerDisplayName(provider),
                           detail: provider === "openai"
-                            ? "ChatGPT subscription"
+                            ? "Codex · subscription or API key"
                             : provider === "claude"
-                              ? "Claude Code subscription"
+                              ? "Claude Code · subscription or API key"
                               : provider === "cursor"
                                 ? "Cursor subscription"
                                 : provider === "lmstudio"

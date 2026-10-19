@@ -1,0 +1,21 @@
+.provider-api-key { gap: var(--s-2); }
+.provider-api-key > .credential-status { display: flex; justify-content: space-between; gap: var(--s-3); }
+.provider-api-help { color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.5; }
+.provider-api-key .provider-api-error { color: var(--red, #e5766b); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.provider-api-key .provider-api-notice { color: var(--muted); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.provider-api-link { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; color: var(--green); background: none; font: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; }
+.provider-api-link:hover { text-decoration-color: currentColor; }
+.provider-api-link:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 3px; }
+.provider-api-key > .provider-billing-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-2); }
+.provider-billing-options > button { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 14px; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: var(--surface-quiet); text-align: left; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.provider-billing-options > button:hover:not(:disabled) { color: var(--ink-2); border-color: var(--line-strong); }
+.provider-billing-options > button.selected { color: var(--text); border-color: var(--green-line); background: var(--surface-selected); }
+.provider-billing-options > button:disabled { cursor: default; opacity: .7; }
+.provider-billing-options > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.provider-billing-options strong { color: inherit; font-size: var(--fs-ui); font-weight: 600; }
+.provider-billing-options small { overflow: hidden; color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
+.provider-billing-options > button > svg { color: var(--green); }
+.provider-api-key .key-input-row { flex-wrap: wrap; }
+.provider-api-key .key-input-row input { flex: 1 1 160px; min-width: 0; }
+.provider-api-key .key-input-row button { flex-shrink: 0; }
+@media (max-width: 560px) { .provider-api-key > .provider-billing-options { grid-template-columns: minmax(0, 1fr); } }

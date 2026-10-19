@@ -47,6 +47,7 @@ import {
   type NewThreadTimedPrompt,
 } from "../lib/newThreadTimedPrompts";
 import { friendlyError, safeErrorText } from "../lib/errors";
+import { beginProviderPreparation } from "../lib/providerAuth";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
@@ -507,7 +508,16 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
     const explicitAttemptCurrent = () => !explicitThreadId || !explicitAttemptId
       || ctx.isExplicitChildStartCurrent?.(explicitThreadId, explicitAttemptId) !== false;
+    let finishProviderPreparation: (() => void) | undefined;
     try {
+    try {
+      if (ctx.effectiveSettings.provider === "openai" || ctx.effectiveSettings.provider === "claude") {
+        finishProviderPreparation = beginProviderPreparation(ctx.effectiveSettings.provider === "openai" ? "openai" : "anthropic");
+      }
+    } catch (reason) {
+      ctx.setError(friendlyError(reason));
+      return false;
+    }
     if (explicitThreadId && explicitAttemptId) ctx.onExplicitChildStart?.(explicitThreadId, explicitAttemptId);
     const capturedAt = Date.now();
     const recordAuthoredPrompt = (threadId: string, messageId: string) => {
@@ -598,9 +608,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
       setError("Set up the model runtime before starting this prompt.");
       return false;
     }
-    if (effectiveSettings.provider === "openai" && account?.type !== "chatgpt") {
+    if (effectiveSettings.provider === "openai" && account?.type !== "chatgpt" && account?.type !== "apiKey") {
       if (!deferredDelivery) setAuthRequiredOpen(true);
-      setError("Sign in to ChatGPT before starting this prompt.");
+      setError("Sign in to ChatGPT or use an OpenAI API key before starting this prompt.");
       return false;
     }
     if (effectiveSettings.provider === "openrouter" && !openRouterReady) {
@@ -615,7 +625,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
     if (effectiveSettings.provider === "claude" && (!claudeStatus?.available || !claudeStatus.loggedIn)) {
       if (!deferredDelivery) openSettings("models");
-      setError(claudeStatus?.available ? "Sign in to Claude Code before using your Claude subscription." : "Install Claude Code, then sign in before using the Claude provider.");
+      setError(!claudeStatus?.available
+        ? "Install Claude Code, then sign in or add an Anthropic API key before using the Claude provider."
+        : claudeStatus.billing === "apiKey"
+          ? "Add an Anthropic API key in Models & accounts, or switch Claude back to your subscription."
+          : "Sign in to Claude Code before using your Claude subscription.");
       return false;
     }
     if (effectiveSettings.provider === "cursor" && (!cursorStatus?.available || !cursorStatus.loggedIn)) {
@@ -1492,6 +1506,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
     }
     } finally {
+      finishProviderPreparation?.();
       if (subagentPreparation) {
         subagentPreparationsRef.current.delete(subagentPreparation);
         notifySubagentPreparationChanged();

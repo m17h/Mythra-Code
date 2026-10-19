@@ -7,7 +7,7 @@ export type OnboardingProviderStatus = { ready: boolean; detail: string; verifie
 
 export function onboardingProviderReadiness(input: {
   runtimeStatus: Pick<CodexRuntimeStatus, "available" | "compatible"> | null;
-  claudeStatus: Pick<ClaudeRuntimeStatus, "available" | "loggedIn"> | null;
+  claudeStatus: Pick<ClaudeRuntimeStatus, "available" | "loggedIn" | "billing" | "authVerified"> | null;
   cursorStatus: Pick<CursorRuntimeStatus, "available" | "loggedIn" | "authVerified"> | null;
   account: Pick<Account, "type"> | null;
   openRouterReady: boolean;
@@ -26,7 +26,9 @@ export function onboardingProviderReadiness(input: {
       ? { ready: false, detail: codexIssue }
       : input.account?.type === "chatgpt"
         ? { ready: true, detail: "ChatGPT ready" }
-        : { ready: false, detail: "Sign in to ChatGPT" },
+        : input.account?.type === "apiKey"
+          ? { ready: true, detail: "OpenAI API key ready" }
+          : { ready: false, detail: "Sign in to ChatGPT or add an API key" },
     openrouter: codexIssue
       ? { ready: false, detail: codexIssue }
       : input.openRouterReady
@@ -41,9 +43,13 @@ export function onboardingProviderReadiness(input: {
       ? { ready: false, detail: "Checking Claude Code…" }
       : !input.claudeStatus.available
         ? { ready: false, detail: "Install Claude Code" }
+        : input.claudeStatus.billing === null
+          ? { ready: false, detail: "Choose Claude billing in Models & accounts" }
+        : input.claudeStatus.billing === "apiKey" && input.claudeStatus.authVerified === false
+          ? { ready: false, detail: "Check the Anthropic API key connection" }
         : input.claudeStatus.loggedIn
-          ? { ready: true, detail: "Claude ready" }
-          : { ready: false, detail: "Sign in to Claude" },
+          ? { ready: true, detail: input.claudeStatus.billing === "apiKey" ? "Anthropic API key ready" : "Claude ready" }
+          : { ready: false, detail: input.claudeStatus.billing === "apiKey" ? "Add an Anthropic API key" : "Sign in to Claude or add an API key" },
     cursor: !input.cursorStatus
       ? { ready: false, detail: "Checking Cursor Agent…" }
       : !input.cursorStatus.available

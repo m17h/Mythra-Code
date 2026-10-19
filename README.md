@@ -21,8 +21,8 @@ Configure each provider in **Settings → Models & accounts**. You only need to 
 
 | Provider | What you need | How Mythra Code connects |
 | --- | --- | --- |
-| **OpenAI** | A ChatGPT account with Codex access and a supported Codex runtime | Official Codex browser sign-in through App Server. Mythra Code uses an isolated Codex home, separate from your normal `~/.codex` state. |
-| **Claude** | Claude Code CLI and an eligible signed-in account | The local Claude Code runtime, with API-key and alternate cloud-provider overrides removed from subscription turns. |
+| **OpenAI** | A supported Codex runtime and either a ChatGPT account with Codex access or an OpenAI API key | Official Codex browser/API-key sign-in through App Server, using an isolated Codex home separate from your normal `~/.codex` state. |
+| **Claude** | Claude Code CLI and either an eligible subscription login or an Anthropic API key | The local Claude Code headless runtime. Subscription turns ignore API-key/alternate-cloud environment overrides; API turns receive only the key explicitly saved for Claude. |
 | **Cursor** | Cursor Agent and an eligible signed-in account | Cursor's ACP interface and the model catalog available to your account. |
 | **OpenRouter** | An OpenRouter API key **and the Codex runtime** | OpenRouter's Responses-compatible endpoint through Codex App Server. Model and tool compatibility depend on the route. |
 | **LM Studio** | A running LM Studio server **and the Codex runtime** | A Responses-compatible local model through Codex App Server. The default server address is `http://127.0.0.1:1234/v1`; a trusted remote server and optional token are also supported. |
@@ -32,6 +32,14 @@ Mythra Code does not bundle Codex. It looks for the Codex CLI and can also recog
 Model pickers use the available provider catalogs rather than a fixed generation of models. Sol, Luna, and Astra have distinct artwork and animated controls; supported reasoning levels and Fast/priority availability depend on the selected model and account. Selecting a model or effort changes the actual request, not just the label.
 
 Subscriptions and API charges remain with the selected provider. Sub-agents and optional background features use the account configured for them, which can differ from the main conversation's account.
+
+### Subscription or API key
+
+For OpenAI and Claude, choose **Subscription** or **API key** first in Models & accounts. Only that billing method is allowed: missing credentials, exhausted limits/credits, or provider errors never trigger an automatic switch. Billing/key changes apply immediately (Settings Cancel does not undo them), and are refused while the relevant runtime has active work. This includes managed/native sub-agents and background title, learning and discovery requests. Saving a key while Subscription is selected does not activate API billing. Chat keys are separate from voice-input keys.
+
+OpenAI's **Connect saved key** replaces the ChatGPT sign-in in Mythra Code's private Codex profile. Returning to Subscription may require browser sign-in again. ChatGPT subscription usage is not OpenAI API credit. Claude's API choice leaves the external Claude subscription login untouched, so switching back reuses it if it is still valid. API billing does not require a paid chat subscription, but does require the provider's runtime, a valid key, supported models and available API credit/billing. Provider-specific subscription-only services may not be available with API authentication.
+
+Eligible Anthropic subscriber credits must be linked to the Console organization that owns the key. Mythra Code uses the self-run, headless `claude -p`/Agent SDK integration; Anthropic [explains credit eligibility and exclusions](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans). The provider dashboard is authoritative for credit balances and charges; Mythra Code does not read an organization balance or impose an API spending cap. When giving another person access, use a dedicated key/workspace and configure provider-side spending limits. Commands and MCP servers run locally with the selected permissions; Claude's API credential is passed to its runtime environment, so only use trusted tools.
 
 ## Everyday work
 
@@ -187,7 +195,7 @@ Mythra Code has no app telemetry, analytics, or crash reporting. Conversations, 
 
 Other network activity includes runtime authentication, app/runtime update checks, model and pricing catalogs, GitHub operations, and any network tools or MCP servers you choose to use. Pricing checks do not upload your prompts or usage records. Provider runtimes have their own storage, network behavior, and policies.
 
-OpenRouter and LM Studio tokens use the operating system credential store. GitHub authentication is managed by `gh`; OpenAI uses Mythra Code's isolated Codex home, while Claude and Cursor manage their own sign-ins. Model text is rendered without raw HTML. Agents with command access can still use credential-aware tools available on the computer, so permissions matter.
+API keys saved by Mythra Code use the operating system credential store. GitHub authentication is managed by `gh`; OpenAI uses Mythra Code's isolated Codex home, while Claude and Cursor manage their own subscription sign-ins. Model text is rendered without raw HTML. Agents with command access can still use credential-aware tools available on the computer, so permissions matter.
 
 ## Build and contribute
 

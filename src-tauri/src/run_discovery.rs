@@ -20,14 +20,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::{Child, Command},
-    sync::Notify,
+    sync::{Notify, OwnedRwLockReadGuard},
     time::{timeout, Duration},
 };
 
 use super::{
-    background_command, claude_effort, cursor, kill_managed_process_tree, lmstudio_key,
+    background_command, claude_billed_command, claude_effort, cursor, kill_managed_process_tree, lmstudio_key,
     managed_identity_for, normalize_lmstudio_base_url, openrouter_key, resolve_claude_binary,
-    resolve_codex_runtime, runtime_path, subscription_only_command, ManagedProcessIdentity,
+    resolve_codex_runtime, runtime_path, ManagedProcessIdentity,
     RuntimeState, MYTHRA_CODE_NATIVE_DELEGATION_POLICY, OPENROUTER_DEFAULT_BASE_URL,
 };
 
@@ -122,6 +122,10 @@ struct DiscoveryRegistry {
 #[derive(Default)]
 struct DiscoveryRequest {
     identity: StdMutex<Option<ManagedProcessIdentity>>,
+    /// An uncertain cutoff keeps its process and billing admission owned.
+    /// No worker polls indefinitely: cancellation can retry a parked owner.
+    retirement: StdMutex<Option<RetiredNativeHelper>>,
+    retiring: AtomicBool,
     workspace_path: StdMutex<Option<PathBuf>>,
     cleanup_error: StdMutex<Option<String>>,
     cancelled: AtomicBool,
@@ -137,6 +141,17 @@ pub(crate) struct RunDiscoveryState {
 
 impl RunDiscoveryState {
     fn reserve(&self, request_id: &str) -> Result<DiscoveryGuard, String> {
+        // A later helper request can retire an earlier failed cutoff once;
+        // convenience jobs need not retain a visible Cancel button forever.
+        let retirements: Vec<_> = self.registry.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active.iter()
+            .filter(|(_, request)| request.retiring.load(Ordering::Acquire))
+            .map(|(id, request)| (id.clone(), request.clone()))
+            .collect();
+        for (id, request) in retirements {
+            retry_native_retirement(self, &id, &request);
+        }
         let now = StdInstant::now();
         let mut registry = self
             .registry
@@ -266,7 +281,9 @@ struct DiscoveryGuard {
 
 impl Drop for DiscoveryGuard {
     fn drop(&mut self) {
-        self.state.finish(&self.request_id, &self.request);
+        if !self.request.retiring.load(Ordering::Acquire) {
+            self.state.finish(&self.request_id, &self.request);
+        }
     }
 }
 
@@ -877,10 +894,11 @@ fn cursor_arguments(
 struct DiscoveryWorkspace {
     path: PathBuf,
     cleaned: bool,
+    request: Arc<DiscoveryRequest>,
 }
 
 impl DiscoveryWorkspace {
-    fn create() -> Result<Self, String> {
+    fn create(request: Arc<DiscoveryRequest>) -> Result<Self, String> {
         let path =
             std::env::temp_dir().join(format!("mythra-run-discovery-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path)
@@ -904,6 +922,7 @@ impl DiscoveryWorkspace {
         Ok(Self {
             path,
             cleaned: false,
+            request,
         })
     }
 
@@ -952,6 +971,27 @@ impl DiscoveryWorkspace {
         Ok((config_dir, data_dir, cursor_workspace))
     }
 
+    fn cleanup_after_request(mut self, request: &DiscoveryRequest) -> Result<(), String> {
+        // Publish cleanup under the same lock as retirement completion. A
+        // caller finishing its original error must not overwrite a later,
+        // confirmed retirement with an obsolete cutoff warning.
+        let mut cleanup_error = request.cleanup_error.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if request.retiring.load(Ordering::Acquire) {
+            // The request registry now owns cleanup after provider cutoff.
+            self.cleaned = true;
+            let error = "The provider process has not confirmed cutoff. Its temporary files and billing admission are retained; stop this helper again to retry cleanup.".to_string();
+            *cleanup_error = Some(error.clone());
+            return Err(error);
+        }
+        let result = self.cleanup();
+        if result.is_ok() {
+            set_request_workspace(request, None);
+        }
+        *cleanup_error = result.as_ref().err().cloned();
+        result
+    }
+
     fn cleanup(mut self) -> Result<(), String> {
         match fs::remove_dir_all(&self.path) {
             Ok(()) => {
@@ -971,7 +1011,7 @@ impl DiscoveryWorkspace {
 
 impl Drop for DiscoveryWorkspace {
     fn drop(&mut self) {
-        if !self.cleaned {
+        if !self.cleaned && !self.request.retiring.load(Ordering::Acquire) {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
@@ -1494,13 +1534,99 @@ async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Bo
     Ok(BoundedOutput { bytes, exceeded })
 }
 
+struct RetiredNativeHelper {
+    child: Child,
+    identity: Option<ManagedProcessIdentity>,
+    _billing_admission: Option<OwnedRwLockReadGuard<()>>,
+}
+
+/// Owns admission until the child is reaped, including cancellation of the
+/// executing future. An uncertain child moves to the existing bounded request
+/// registry, rather than releasing billing merely because an IPC call ended.
+struct NativeHelperProcess {
+    owned: Option<RetiredNativeHelper>,
+    state: RunDiscoveryState,
+    request_id: String,
+    request: Arc<DiscoveryRequest>,
+    stopped: bool,
+}
+
+impl std::ops::Deref for NativeHelperProcess {
+    type Target = Child;
+
+    fn deref(&self) -> &Child {
+        &self.owned.as_ref().expect("native helper owns its child").child
+    }
+}
+
+impl std::ops::DerefMut for NativeHelperProcess {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.owned.as_mut().expect("native helper owns its child").child
+    }
+}
+
+impl NativeHelperProcess {
+    fn confirm_stopped(&mut self) {
+        self.stopped = true;
+        clear_request_identity(&self.request, self.owned.as_ref().and_then(|owned| owned.identity));
+    }
+
+    async fn stop(&mut self) -> Result<(), String> {
+        let owned = self.owned.as_mut().expect("native helper owns its child");
+        terminate_and_reap(&mut owned.child, owned.identity).await?;
+        self.confirm_stopped();
+        Ok(())
+    }
+}
+
+impl Drop for NativeHelperProcess {
+    fn drop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        self.request.retiring.store(true, Ordering::Release);
+        *self.request.cleanup_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some("Provider cutoff remains unconfirmed. Billing changes are blocked until this helper stops; cancel it again to retry cleanup.".into());
+        *self.request.retirement.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.owned.take();
+        retry_native_retirement(&self.state, &self.request_id, &self.request);
+    }
+}
+
+/// One bounded attempt per retirement or explicit cancellation. On failure
+/// retain an inert owner (at most MAX_ACTIVE_DISCOVERIES), with no retry loop.
+fn retry_native_retirement(state: &RunDiscoveryState, request_id: &str, request: &Arc<DiscoveryRequest>) {
+    let owned = request.retirement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    let Some(mut owned) = owned else { return; };
+    let state = state.clone();
+    let request_id = request_id.to_owned();
+    let request = request.clone();
+    tauri::async_runtime::spawn(async move {
+        match terminate_and_reap(&mut owned.child, owned.identity).await {
+            Ok(()) => {
+                clear_request_identity(&request, owned.identity);
+                let mut cleanup_error = request.cleanup_error.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Retiring owns the temporary files as well as the process.
+                // Do not announce completion before actually removing them.
+                *cleanup_error = cleanup_retired_workspace(&request).err();
+                request.retiring.store(false, Ordering::Release);
+                state.finish(&request_id, &request);
+            }
+            Err(_) => {
+                *request.retirement.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owned);
+                request.completion.notify_waiters();
+            }
+        }
+    });
+}
+
 async fn terminate_and_reap(
     child: &mut Child,
     identity: Option<ManagedProcessIdentity>,
 ) -> Result<(), String> {
     let signalled = identity.is_some_and(kill_managed_process_tree);
     if !signalled {
-        match child.kill().await {
+        match child.start_kill() {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
             Err(error) => {
@@ -1534,6 +1660,22 @@ fn set_request_workspace(request: &DiscoveryRequest, path: Option<PathBuf>) {
         .workspace_path
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+}
+
+fn cleanup_retired_workspace(request: &DiscoveryRequest) -> Result<(), String> {
+    let mut workspace = request.workspace_path.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(path) = workspace.as_ref() else { return Ok(()); };
+    if !is_owned_workspace(path) {
+        return Err("The provider stopped, but its temporary folder could not be verified for cleanup.".into());
+    }
+    match fs::remove_dir_all(path) {
+        Ok(()) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(_) => return Err("The provider stopped, but its temporary files could not be removed. Cleanup will be retried automatically.".into()),
+    }
+    *workspace = None;
+    Ok(())
 }
 
 fn request_completion_result(request: &DiscoveryRequest) -> Result<(), String> {
@@ -2853,8 +2995,18 @@ async fn execute_native_request<T>(
         return Err("Run command discovery was cancelled.".into());
     }
     let home = crate::release_qa::home_dir(app).ok();
+    // Titles, learning and discovery hold the same admission as turns for
+    // their entire process lifetime, not only while reading credentials.
+    let billing_admission = match options.provider.as_str() {
+        "openai" => Some(crate::provider_auth::begin_use(app, crate::provider_auth::ApiKeyProvider::Openai)?),
+        "claude" => Some(crate::provider_auth::begin_use(app, crate::provider_auth::ApiKeyProvider::Anthropic)?),
+        _ => None,
+    };
     let mut command: Command = match options.provider.as_str() {
         "openai" => {
+            let server = await_or_cancel(&guard.request, crate::ensure_server(app, runtime_state)).await??;
+            let account = await_or_cancel(&guard.request, server.request("account/read", json!({ "refreshToken": false }))).await??;
+            crate::provider_auth::assert_openai_account(app, &account)?;
             let runtime =
                 await_or_cancel(&guard.request, resolve_codex_runtime(app, runtime_state))
                     .await??;
@@ -2884,7 +3036,13 @@ async fn execute_native_request<T>(
         }
         "claude" => {
             let binary = await_or_cancel(&guard.request, resolve_claude_binary(app)).await??;
-            let mut command = subscription_only_command(&binary, home.as_deref());
+            // Helpers (titles, run discovery) bill like the user's Claude
+            // turns: subscription, or the API key selected for Claude.
+            let mut command = await_or_cancel(
+                &guard.request,
+                claude_billed_command(app, &binary, home.as_deref()),
+            )
+            .await??;
             command
                 .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
                 .args(native_task_arguments(
@@ -2922,7 +3080,7 @@ async fn execute_native_request<T>(
     #[cfg(unix)]
     command.process_group(0);
 
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|error| format!("Could not start run command discovery: {error}"))?;
     // One identity per actual execution, never per logical discovery/retry.
@@ -2931,6 +3089,13 @@ async fn execute_native_request<T>(
     usage.begin();
     usage.outcome("failed");
     let identity = child.id().map(managed_identity_for);
+    let mut child = NativeHelperProcess {
+        owned: Some(RetiredNativeHelper { child, identity, _billing_admission: billing_admission }),
+        state: guard.state.clone(),
+        request_id: guard.request_id.clone(),
+        request: guard.request.clone(),
+        stopped: false,
+    };
     *guard
         .request
         .identity
@@ -2938,27 +3103,21 @@ async fn execute_native_request<T>(
         .unwrap_or_else(std::sync::PoisonError::into_inner) = identity;
 
     if guard.request.cancelled.load(Ordering::Acquire) {
-        let stopped = terminate_and_reap(&mut child, identity).await;
-        clear_request_identity(&guard.request, identity);
-        stopped?;
+        child.stop().await?;
         return Err("Run command discovery was cancelled.".into());
     }
 
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
-            stopped?;
+            child.stop().await?;
             return Err("Run command discovery did not expose output.".into());
         }
     };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
-            stopped?;
+            child.stop().await?;
             return Err("Run command discovery did not expose diagnostics.".into());
         }
     };
@@ -2967,8 +3126,7 @@ async fn execute_native_request<T>(
     let mut stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
+            let stopped = child.stop().await;
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
             return Err("Run command discovery did not accept input.".into());
@@ -2977,8 +3135,7 @@ async fn execute_native_request<T>(
     match timeout(Duration::from_secs(30), stdin.write_all(prompt.as_bytes())).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
+            let stopped = child.stop().await;
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
             if guard.request.cancelled.load(Ordering::Acquire) {
@@ -2989,8 +3146,7 @@ async fn execute_native_request<T>(
             ));
         }
         Err(_) => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
+            let stopped = child.stop().await;
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
             usage.outcome("timed-out");
@@ -3007,8 +3163,7 @@ async fn execute_native_request<T>(
     let status = match timeout(task_timeout, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
+            let stopped = child.stop().await;
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
             return Err(format!(
@@ -3016,15 +3171,14 @@ async fn execute_native_request<T>(
             ));
         }
         Err(_) => {
-            let stopped = terminate_and_reap(&mut child, identity).await;
-            clear_request_identity(&guard.request, identity);
+            let stopped = child.stop().await;
             discard_readers(stdout_task, stderr_task).await;
             stopped?;
             usage.outcome("timed-out");
             return Err("Run command discovery timed out.".into());
         }
     };
-    clear_request_identity(&guard.request, identity);
+    child.confirm_stopped();
 
     let (stdout, stderr) = tokio::join!(
         finish_reader(stdout_task, "output"),
@@ -3072,7 +3226,7 @@ pub(crate) async fn run_discovery_start(
 ) -> Result<RunDiscoveryResult, String> {
     let cwd = validate_options(&mut options)?;
     let guard = discovery_state.reserve(&options.request_id)?;
-    let workspace = DiscoveryWorkspace::create()?;
+    let workspace = DiscoveryWorkspace::create(guard.request.clone())?;
     set_request_workspace(&guard.request, Some(workspace.path.clone()));
     let result = if matches!(options.provider.as_str(), "openrouter" | "lmstudio") {
         inspection::investigate_with_purpose(
@@ -3096,17 +3250,7 @@ pub(crate) async fn run_discovery_start(
         DiscoveryPurpose::Run => project_relative_result(result, Path::new(&options.cwd)),
         DiscoveryPurpose::Checks => project_relative_check_result(result, Path::new(&options.cwd)),
     });
-    let cleanup = workspace.cleanup();
-    match &cleanup {
-        Ok(()) => set_request_workspace(&guard.request, None),
-        Err(error) => {
-            *guard
-                .request
-                .cleanup_error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
-        }
-    }
+    let cleanup = workspace.cleanup_after_request(&guard.request);
     match (result, cleanup) {
         (Ok(result), Ok(())) => Ok(result),
         (Err(error), Ok(())) => Err(error),
@@ -3124,6 +3268,7 @@ async fn cancel_request(state: &RunDiscoveryState, request_id: &str) -> Result<(
     let Some(request) = state.cancel_or_tombstone(request_id) else {
         return Ok(());
     };
+    retry_native_retirement(state, request_id, &request);
     let identity = *request
         .identity
         .lock()
@@ -3143,6 +3288,7 @@ async fn cancel_request(state: &RunDiscoveryState, request_id: &str) -> Result<(
     timeout(CANCEL_TIMEOUT, &mut notified).await.map_err(|_| {
         "Run command discovery cancellation could not confirm process cleanup.".to_string()
     })?;
+    request_completion_result(&request)?;
     request
         .done
         .load(Ordering::Acquire)
@@ -3370,7 +3516,7 @@ pub(crate) async fn analyze_user_preferences(
 ) -> Result<PreferenceResult, String> {
     let input = preference_input(&payload)?;
     let guard = discovery_state.reserve(&options.request_id)?;
-    let workspace = DiscoveryWorkspace::create()?;
+    let workspace = DiscoveryWorkspace::create(guard.request.clone())?;
     set_request_workspace(&guard.request, Some(workspace.path.clone()));
     options.cwd = workspace.path.to_string_lossy().into_owned();
     validate_options(&mut options)?;
@@ -3401,17 +3547,7 @@ pub(crate) async fn analyze_user_preferences(
         )
         .await
     };
-    let cleanup = workspace.cleanup();
-    match &cleanup {
-        Ok(()) => set_request_workspace(&guard.request, None),
-        Err(error) => {
-            *guard
-                .request
-                .cleanup_error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone())
-        }
-    }
+    let cleanup = workspace.cleanup_after_request(&guard.request);
     // Provider diagnostics can include quoted evidence. Surface only fixed text.
     match (result, cleanup) {
         (Ok(result), Ok(())) => {
@@ -3581,7 +3717,7 @@ pub(crate) async fn generate_thread_title(
         return Err("Invalid thread title request.".into());
     }
     let guard = discovery_state.reserve(&options.request_id)?;
-    let workspace = DiscoveryWorkspace::create()?;
+    let workspace = DiscoveryWorkspace::create(guard.request.clone())?;
     set_request_workspace(&guard.request, Some(workspace.path.clone()));
     // A title worker never opens the user's project or inherits its instructions.
     options.cwd = workspace.path.to_string_lossy().into_owned();
@@ -3614,17 +3750,7 @@ pub(crate) async fn generate_thread_title(
         )
         .await
     };
-    let cleanup = workspace.cleanup();
-    match &cleanup {
-        Ok(()) => set_request_workspace(&guard.request, None),
-        Err(error) => {
-            *guard
-                .request
-                .cleanup_error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
-        }
-    }
+    let cleanup = workspace.cleanup_after_request(&guard.request);
     // Title failures are best-effort and must never surface prompt excerpts in logs.
     match (result, cleanup) {
         (Ok(title), Ok(())) if title_script_matches_request(&original_prompt, &title) => Ok(title),

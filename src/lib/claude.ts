@@ -25,6 +25,8 @@ export interface ClaudeRuntimeStatus {
   authMethod: string | null;
   email: string | null;
   subscriptionType: string | null;
+  /** How Claude turns bill; with "apiKey", `loggedIn` means a key is saved. Null when unreadable. */
+  billing?: "subscription" | "apiKey" | null;
   warning: string | null;
 }
 

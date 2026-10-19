@@ -212,6 +212,7 @@ interface WorkflowEngineDeps {
   automaticGitInitialization?: boolean;
   prepareNewThreadGit?: (threadId: string, workspace: Project, enabled: boolean) => Promise<boolean>;
   runtimeAvailable: boolean;
+  /** OpenAI can run: a ChatGPT sign-in or an OpenAI API key. */
   chatGptConnected: boolean;
   claudeReady?: boolean;
   cursorReady?: boolean;
@@ -258,7 +259,7 @@ function workflowPreflight(
       : "Install or reconnect the Codex runtime before running workflows." };
   }
   if (workflow.run.provider === "openai" && !current.chatGptConnected) {
-    return { ready: false, retryWhenReady: true, message: "Sign in to ChatGPT before running this OpenAI workflow." };
+    return { ready: false, retryWhenReady: true, message: "Sign in to ChatGPT or use an OpenAI API key before running this OpenAI workflow." };
   }
   if (workflow.run.provider === "openrouter" && !current.openRouterReady) {
     return { ready: false, retryWhenReady: true, message: "Add an OpenRouter API key before running this workflow." };

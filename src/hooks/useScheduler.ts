@@ -21,6 +21,7 @@ export interface SchedulerDeps {
   chatWorkspace?: Project | null;
   settings: AppSettings;
   runtimeAvailable: boolean;
+  /** OpenAI can run: a ChatGPT sign-in or an OpenAI API key. */
   chatGptConnected: boolean;
   openRouterReady: boolean;
   lmStudioReady?: boolean;

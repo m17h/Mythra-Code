@@ -314,10 +314,10 @@ export function childAgentModel(target: Pick<ChildAgentTarget, "provider" | "mod
   return DEFAULT_OPENAI_MODEL;
 }
 
-/** A selection stays visible while its subscription needs a sign-in. */
+/** A selection stays visible while its subscription or API key needs setup. */
 export function providerSignInIssue(provider: Provider, readiness: ChildAgentReadiness): string | null {
-  if (provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT in Settings → Models & accounts to use OpenAI.";
-  if (provider === "claude" && !readiness.claudeReady) return "Sign in to Claude Code in Settings → Models & accounts to use Claude.";
+  if (provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT or use an OpenAI API key in Settings → Models & accounts to use OpenAI.";
+  if (provider === "claude" && !readiness.claudeReady) return "Sign in to Claude Code or add an Anthropic API key in Settings → Models & accounts to use Claude.";
   return null;
 }
 
@@ -364,10 +364,10 @@ export function childAgentTargetIssue(
   if (target.provider === "openai" || target.provider === "openrouter" || target.provider === "lmstudio") {
     if (!readiness.codexRuntimeAvailable) return "The OpenAI runtime is not installed.";
   }
-  if (target.provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT first.";
+  if (target.provider === "openai" && !readiness.openAiSignedIn) return "Sign in to ChatGPT or use an OpenAI API key first.";
   if (target.provider === "openrouter" && !readiness.openRouterReady) return "Add an OpenRouter API key first.";
   if (target.provider === "lmstudio" && !readiness.lmStudioReady) return "Start LM Studio's local server and refresh its models first.";
-  if (target.provider === "claude" && !readiness.claudeReady) return "Install and sign in to Claude Code first.";
+  if (target.provider === "claude" && !readiness.claudeReady) return "Install Claude Code, then sign in or add an Anthropic API key first.";
   if (target.provider === "cursor" && !readiness.cursorReady) return "Install and sign in to Cursor Agent first.";
   return null;
 }
@@ -894,7 +894,7 @@ export function describeChildAgentRoster(
 
 /** Starting points offered in Settings so the roster is never a blank page. */
 export const SUGGESTED_CHILD_AGENT_TARGETS: Array<Omit<ChildAgentTarget, "enabled">> = [
-  { id: "openai", provider: "openai", model: "", label: "OpenAI", description: "General implementation and refactoring on the ChatGPT subscription.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
+  { id: "openai", provider: "openai", model: "", label: "OpenAI", description: "General implementation and refactoring using the selected OpenAI billing method.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
   { id: "claude", provider: "claude", model: "", label: "Claude Code", description: "Careful review, long-context reasoning, and test writing.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
   { id: "cursor", provider: "cursor", model: "auto", label: "Cursor", description: "Fast in-repo edits through the Cursor subscription.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },
   { id: "openrouter", provider: "openrouter", model: "", label: "OpenRouter", description: "A specific third-party model routed through OpenRouter.", reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" },

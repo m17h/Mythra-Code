@@ -184,7 +184,7 @@ export function nativeSubagentUnavailableReason(provider: Provider, context: {
     const supported = model ? context.nativeReasoningEfforts?.[model] : undefined;
     if (preferred?.reasoningEffort && supported && !supported.includes(preferred.reasoningEffort)) return `The selected native sub-agent model does not support ${preferred.reasoningEffort} reasoning effort. Choose a supported effort or provider default.`;
     if (!context.codexRuntime?.available || !context.readiness.codexRuntimeAvailable) return "Install the Codex runtime to use native sub-agents.";
-    if (!context.readiness.openAiSignedIn) return "Sign in to ChatGPT to use native sub-agents.";
+    if (!context.readiness.openAiSignedIn) return "Sign in to ChatGPT or use an OpenAI API key to use native sub-agents.";
     if (!nativeSubagentVersionAtLeast(context.codexRuntime.runningVersion ?? context.codexRuntime.version, [0, 161, 0])) return "Native sub-agents require Codex 0.161.0 or newer; update or refresh the runtime.";
     return null;
   }
@@ -193,7 +193,7 @@ export function nativeSubagentUnavailableReason(provider: Provider, context: {
     const compactConflict = claudeNativeCompactionConflict(context.nativeDefaultModel ?? "", context.autoCompactTokens, preferred?.model, preferred?.autoCompactTokens);
     if (compactConflict) return compactConflict;
     if (!context.claudeRuntime?.available) return "Install Claude Code to use native sub-agents.";
-    if (!context.claudeRuntime.loggedIn || !context.readiness.claudeReady) return "Sign in to Claude Code to use native sub-agents.";
+    if (!context.claudeRuntime.loggedIn || !context.readiness.claudeReady) return "Sign in to Claude Code or add an Anthropic API key to use native sub-agents.";
     if (!nativeSubagentVersionAtLeast(context.claudeRuntime.version, [2, 1, 267])) return "Native sub-agents require Claude Code 2.1.267 or newer for inherited permissions; update Claude Code and start the next turn with the refreshed runtime.";
     if (preferred?.autoCompactTokens !== undefined && !nativeSubagentVersionAtLeast(context.claudeRuntime.version, [2, 1, 288])) return "Independent Claude model compaction requires Claude Code 2.1.288 or newer; update Claude Code.";
     const nativeModel = preferred?.model?.trim().toLowerCase().replace(/\[1m\]$/, "");

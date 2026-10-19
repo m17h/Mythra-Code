@@ -35,7 +35,7 @@ export function RuntimeSetupModal({
   onRetry: () => void;
 }) {
   return (
-    <RuntimeDialog open={open} onClose={onClose} mark={<TerminalSquare size={25} />} eyebrow="One-time setup" title="Connect the Codex runtime" description="Install the official Codex CLI for ChatGPT sign-in, OpenRouter, tools, approvals, and threads.">
+    <RuntimeDialog open={open} onClose={onClose} mark={<TerminalSquare size={25} />} eyebrow="One-time setup" title="Connect the Codex runtime" description="Install the official Codex CLI for OpenAI sign-in or API keys, OpenRouter, tools, approvals, and threads.">
         <div className="runtime-options">
           <div className="runtime-option recommended">
             <span className="runtime-option-icon"><Download size={17} /></span>
@@ -55,23 +55,29 @@ export function RuntimeSetupModal({
 export function AuthRequiredModal({
   open,
   busy,
+  apiKeyBilling = false,
   onClose,
   onSignIn,
+  onUseApiKey,
 }: {
   open: boolean;
   busy: boolean;
+  apiKeyBilling?: boolean;
   onClose: () => void;
   onSignIn: () => void;
+  /** Opens Models & accounts, where an OpenAI API key can be used instead. */
+  onUseApiKey?: () => void;
 }) {
   return (
-    <RuntimeDialog open={open} onClose={onClose} auth mark={<KeyRound size={24} />} eyebrow="ChatGPT authentication" title="Sign in before sending" description="Sign in to reconnect your ChatGPT subscription.">
+    <RuntimeDialog open={open} onClose={onClose} auth mark={<KeyRound size={24} />} eyebrow="OpenAI authentication" title={apiKeyBilling ? "Connect an API key before sending" : "Sign in before sending"} description={apiKeyBilling ? "OpenAI is set to API billing. Connect your key in Models & accounts to continue." : "Sign in to reconnect your ChatGPT subscription, or use an OpenAI API key billed to your API account."}>
         <div className="auth-required-detail">
           <ShieldCheck size={17} />
-          <div><strong>Official browser sign-in</strong><small>Browser sign-in keeps credentials in Mythra Code’s isolated store.</small></div>
+          <div><strong>{apiKeyBilling ? "Your selected API billing" : "Official browser sign-in"}</strong><small>{apiKeyBilling ? "Your key stays in the OS credential store. Change billing in Models & accounts to use a subscription." : "Browser sign-in keeps credentials in Mythra Code’s isolated store."}</small></div>
         </div>
         <div className="runtime-setup-actions">
           <button className="secondary-button" onClick={onClose}>Not now</button>
-          <button className="primary-button" onClick={onSignIn} disabled={busy}>{busy ? <LoaderCircle className="spin" size={14} /> : <ExternalLink size={13} />} Sign in with ChatGPT</button>
+          {onUseApiKey && <button className={apiKeyBilling ? "primary-button" : "secondary-button"} onClick={onUseApiKey} disabled={busy}>{apiKeyBilling ? "Models & accounts" : "Use an API key"}</button>}
+          {!apiKeyBilling && <button className="primary-button" onClick={onSignIn} disabled={busy}>{busy ? <LoaderCircle className="spin" size={14} /> : <ExternalLink size={13} />} Sign in with ChatGPT</button>}
         </div>
     </RuntimeDialog>
   );
