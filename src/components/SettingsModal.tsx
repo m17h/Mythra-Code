@@ -22,6 +22,7 @@ import {
   Info,
   KeyRound,
   LoaderCircle,
+  Mic,
   NotebookPen,
   Palette,
   PanelRight,
@@ -83,6 +84,7 @@ import { parseGitHubCloneTarget, type GitHubAccountStatus } from "../lib/github"
 import { joinPath } from "../lib/paths";
 import { UsageDashboard } from "./UsageDashboard";
 import { FrontierPricingSettings } from "./FrontierPricingSettings";
+import { TranscriptionSettings } from "./TranscriptionSettings";
 import type {
   Account,
   AppSettings,
@@ -145,6 +147,7 @@ const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<Settings
     group: "AI",
     items: [
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
+      { id: "voice", label: "Voice input", icon: Mic, detail: "Dictate into the message box. Uses its own transcription API key, separate from your chat accounts.", keywords: "voice input dictation dictate microphone mic speech to text speech-to-text transcription transcribe whisper audio record recording api key openai openrouter model" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "What every agent is told before your message.", keywords: "prompt system instructions agents.md claude.md guidance context profile profiles preset global codex claude layer" },
       { id: "memory", label: "Memory", icon: Brain, detail: "Optionally learn how you like to work from your conversations.", keywords: "memory learning learned preferences history personalize personalization remember experimental" },
       { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review model guidance notes" },
@@ -188,7 +191,7 @@ type SettingsRow = {
   label: string;
   keywords?: string;
   /** Stable target for controls outside the shared setting-row markup. */
-  target?: "openrouter-key" | "lmstudio-server";
+  target?: "openrouter-key" | "lmstudio-server" | "transcription-key";
   accountProvider?: Provider;
 };
 
@@ -210,6 +213,9 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter", target: "openrouter-key", accountProvider: "openrouter" },
   { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token", target: "lmstudio-server", accountProvider: "lmstudio" },
   { pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
+  { pane: "voice", label: "Transcription provider", keywords: "voice dictation speech openai openrouter" },
+  { pane: "voice", label: "Transcription API key", keywords: "voice dictation speech key token credential", target: "transcription-key" },
+  { pane: "voice", label: "Transcription model", keywords: "voice dictation speech whisper gpt transcribe" },
   { pane: "prompts", label: "Your instructions", keywords: "system prompt global codex claude profile" },
   { pane: "prompts", label: "Project files", keywords: "agents.md claude.md discovery" },
   { pane: "prompts", label: "What the agent receives", keywords: "preview combined layers" },
@@ -245,6 +251,7 @@ const SETTING_PANES: Partial<Record<keyof AppSettings, SettingsPane>> = {
   automaticGitInitialization: "projects", automaticThreadTitles: "projects", threadTitleProvider: "projects", threadTitleModel: "projects",
   serviceTier: "system", notificationsEnabled: "system", terminalScrollback: "system", terminalTimeoutMinutes: "system",
   usageDisplay: "usage",
+  transcription: "voice",
 };
 
 /** Does a pane match what someone typed into the sidebar's search field? */
@@ -1424,6 +1431,18 @@ export function SettingsModal({
               <button className="icon-button settings-close" onClick={requestClose} aria-label="Close settings"><X size={17} /></button>
             </header>
             <div className={`settings-content ${moreBelow ? "has-more-below" : ""}`} ref={contentRef}>
+          {settingsSection === "voice" &&
+          <TranscriptionSettings
+            visible={open}
+            value={local.transcription}
+            onChange={(transcription) => setLocal((current) => ({ ...current, transcription }))}
+            accountOpenRouterKeySaved={openRouterReady}
+            onOpenAccounts={() => {
+              setAccountProvider("openrouter");
+              setSettingsSection("models");
+            }}
+          />}
+
           {settingsSection === "system" &&
           <div className="set-group">
             <h4>Getting started</h4>

@@ -22,8 +22,18 @@ export type EffortSliderStyle = "spectrum" | "classic" | "neon" | "pixel" | "aur
 /** Typeface family used for chat prose and the composer. Built-in stacks only. */
 export type ChatFont = "system" | "humanist" | "serif" | "mono";
 export type WorkspaceMode = "chat" | "project";
-export type SettingsSection = "general" | "models" | "github" | "usage" | "prompts" | "memory" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
+export type SettingsSection = "general" | "models" | "voice" | "github" | "usage" | "prompts" | "memory" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
 export type ProjectPromptMode = "replace" | "append";
+
+/** Voice input's own API provider, independent of every chat provider. */
+export type TranscriptionProvider = "openai" | "openrouter";
+
+/** Non-secret voice input choices. Keys live only in the OS credential store. */
+export interface TranscriptionSettings {
+  provider: TranscriptionProvider;
+  /** Remembered per provider, so switching back restores the earlier choice. */
+  models: Partial<Record<TranscriptionProvider, string>>;
+}
 
 /** A user-authored snapshot of this project's instructions and layering choice. */
 export interface ProjectPromptProfile {
@@ -564,4 +574,6 @@ export interface AppSettings {
   uiScale: number;
   /** Direction provider quota percentages are shown in. Absent before 1.7.6. */
   usageDisplay: UsageDisplayMode;
+  /** Voice input provider and models. Absent before voice input existed. */
+  transcription?: TranscriptionSettings;
 }

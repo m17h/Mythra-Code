@@ -47,7 +47,10 @@
       "icons/icon.ico"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "Mythra Code, a transparent AI coding harness"
+    "shortDescription": "Mythra Code, a transparent AI coding harness",
+    "macOS": {
+      "entitlements": "./Entitlements.plist"
+    }
   },
   "plugins": {
     "updater": {

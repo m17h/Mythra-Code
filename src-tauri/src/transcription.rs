@@ -1,0 +1,965 @@
+//! Voice input transcription.
+//!
+//! Transcription keys are separate OS credential entries, never the chat
+//! accounts: saving or removing one restarts no runtime and touches no other
+//! credential. A pasted key arrives once, to be saved; no command returns a
+//! stored key, and keys are never logged or kept in app settings. Each
+//! recording is one WAV upload to the selected provider's fixed HTTPS
+//! endpoint. Nothing is retried, because a repeated upload after an uncertain
+//! response could be billed twice. Provider error text is never relayed.
+
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tauri::ipc::{InvokeBody, Request};
+use tauri::State;
+use tokio::sync::{oneshot, watch, Mutex};
+use tokio::time::timeout;
+
+use crate::{openrouter_key, KEYRING_READ_TIMEOUT, KEYRING_SERVICE};
+
+const OPENAI_KEY_ACCOUNT: &str = "transcription-openai-api-key";
+const OPENROUTER_KEY_ACCOUNT: &str = "transcription-openrouter-api-key";
+const EMPTY_KEY_SLOT: KeySlot = KeySlot {
+    known: None,
+    reading: None,
+    read_serial: 0,
+    generation: 0,
+};
+static KEY_SLOTS: [StdMutex<KeySlot>; 2] = [StdMutex::new(EMPTY_KEY_SLOT), StdMutex::new(EMPTY_KEY_SLOT)];
+
+const OPENAI_TRANSCRIPTION_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
+const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
+const OPENROUTER_TRANSCRIPTION_URL: &str = "https://openrouter.ai/api/v1/audio/transcriptions";
+const OPENROUTER_TRANSCRIPTION_MODELS_URL: &str =
+    "https://openrouter.ai/api/v1/models?output_modalities=transcription";
+
+/// A credential store write that does not finish in time is reported; its
+/// worker keeps the provider's write guard until the OS call returns.
+const KEYRING_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
+/// Upload plus OpenRouter's 60-second upstream processing limit.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(180);
+const CATALOG_TTL: Duration = Duration::from_secs(30 * 60);
+/// Repeated Refresh clicks within this window reuse the catalog just fetched.
+const CATALOG_REFRESH_THROTTLE: Duration = Duration::from_secs(10);
+const CATALOG_RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
+const TRANSCRIPT_RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
+/// Both providers accept 25 MB uploads; stay safely below it.
+const MAX_AUDIO_BYTES: usize = 24 * 1024 * 1024;
+const MAX_TRANSCRIPT_CHARS: usize = 100_000;
+const MAX_CATALOG_ROWS: usize = 1_000;
+const CANCELED_TOMBSTONES: usize = 16;
+
+const ID_HEADER: &str = "mythra-transcription-id";
+const PROVIDER_HEADER: &str = "mythra-transcription-provider";
+const MODEL_HEADER: &str = "mythra-transcription-model";
+
+const CANCELED: &str = "Transcription canceled.";
+
+/// Models the OpenAI upload endpoint accepts for plain dictation, with their
+/// labels. `/v1/models` carries no modality metadata, so the live list is
+/// this allowlist intersected with what the key can see. Realtime-only
+/// transcribers and the diarization model (which needs extra parameters) are
+/// deliberately absent.
+const OPENAI_MODELS: [(&str, &str, &str); 4] = [
+    ("gpt-transcribe", "GPT Transcribe", "Recommended for dictation"),
+    ("gpt-4o-transcribe", "GPT-4o Transcribe", "Earlier high-accuracy model"),
+    ("gpt-4o-mini-transcribe", "GPT-4o mini Transcribe", "Lower cost"),
+    ("whisper-1", "Whisper", "The original Whisper model"),
+];
+/// Families whose dated snapshots (`family-YYYY-MM-DD`) use the same endpoint.
+const OPENAI_SNAPSHOT_FAMILIES: [&str; 3] =
+    ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"];
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TranscriptionProvider {
+    Openai,
+    Openrouter,
+}
+
+impl TranscriptionProvider {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "openai" => Some(Self::Openai),
+            "openrouter" => Some(Self::Openrouter),
+            _ => None,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Openai => 0,
+            Self::Openrouter => 1,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Openai => "OpenAI",
+            Self::Openrouter => "OpenRouter",
+        }
+    }
+
+    fn account(self) -> &'static str {
+        match self {
+            Self::Openai => OPENAI_KEY_ACCOUNT,
+            Self::Openrouter => OPENROUTER_KEY_ACCOUNT,
+        }
+    }
+
+    fn transcription_url(self) -> &'static str {
+        match self {
+            Self::Openai => OPENAI_TRANSCRIPTION_URL,
+            Self::Openrouter => OPENROUTER_TRANSCRIPTION_URL,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum KeyState {
+    Saved,
+    Missing,
+    /// The OS credential store failed, refused access or did not answer in time.
+    Unavailable,
+}
+
+#[derive(Clone)]
+enum KeyRead {
+    Saved(String),
+    Missing,
+    Unavailable,
+}
+
+impl KeyRead {
+    fn state(&self) -> KeyState {
+        match self {
+            Self::Saved(_) => KeyState::Saved,
+            Self::Missing => KeyState::Missing,
+            Self::Unavailable => KeyState::Unavailable,
+        }
+    }
+
+    fn from_known(known: Option<String>) -> Self {
+        known.map_or(Self::Missing, Self::Saved)
+    }
+}
+
+/// Per-provider credential state. A blocked OS read is joined by later
+/// callers instead of starting another worker; a successful write is
+/// authoritative from then on and bumps `generation`, which invalidates any
+/// model list fetched with the previous key.
+struct KeySlot {
+    known: Option<Option<String>>,
+    reading: Option<(u64, watch::Receiver<Option<KeyRead>>)>,
+    read_serial: u64,
+    generation: u64,
+}
+
+fn key_slot(provider: TranscriptionProvider) -> MutexGuard<'static, KeySlot> {
+    KEY_SLOTS[provider.index()]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+fn key_generation(provider: TranscriptionProvider) -> u64 {
+    key_slot(provider).generation
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TranscriptionKeyStatus {
+    openai: KeyState,
+    openrouter: KeyState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranscriptionModel {
+    id: String,
+    name: String,
+    description: Option<String>,
+    recommended: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranscriptionCatalog {
+    models: Vec<TranscriptionModel>,
+    /// "live" came from the provider; "builtin" is the documented allowlist.
+    source: &'static str,
+    notice: Option<String>,
+}
+
+struct CachedCatalog {
+    fetched: Instant,
+    /// Key generation the list was fetched with (OpenAI lists depend on the key).
+    generation: u64,
+    models: Vec<TranscriptionModel>,
+}
+
+#[derive(Default)]
+struct ActiveUploads {
+    current: Option<(String, oneshot::Sender<()>)>,
+    /// Cancels that arrived before their upload registered.
+    canceled: VecDeque<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct TranscriptionState {
+    /// One credential write per provider. The guard moves into the blocking
+    /// worker, so a stuck OS call blocks only later writes for that provider
+    /// and repeated clicks never queue more workers.
+    writes: [Arc<Mutex<()>>; 2],
+    /// Held across a fetch, so concurrent callers share one request.
+    catalogs: [Mutex<Option<CachedCatalog>>; 2],
+    uploads: StdMutex<ActiveUploads>,
+}
+
+struct UploadGuard<'a> {
+    state: &'a TranscriptionState,
+    id: String,
+}
+
+impl Drop for UploadGuard<'_> {
+    fn drop(&mut self) {
+        let mut uploads = self
+            .state
+            .uploads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if uploads
+            .current
+            .as_ref()
+            .is_some_and(|(id, _)| *id == self.id)
+        {
+            uploads.current = None;
+        }
+    }
+}
+
+impl TranscriptionState {
+    fn begin_upload(&self, id: &str) -> Result<(UploadGuard<'_>, oneshot::Receiver<()>), String> {
+        let mut uploads = self
+            .uploads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(position) = uploads.canceled.iter().position(|canceled| canceled == id) {
+            uploads.canceled.remove(position);
+            return Err(CANCELED.into());
+        }
+        if uploads.current.is_some() {
+            return Err("Another recording is still being transcribed.".into());
+        }
+        let (sender, receiver) = oneshot::channel();
+        uploads.current = Some((id.to_string(), sender));
+        Ok((
+            UploadGuard {
+                state: self,
+                id: id.to_string(),
+            },
+            receiver,
+        ))
+    }
+
+    fn cancel_upload(&self, id: &str) {
+        let mut uploads = self
+            .uploads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if uploads
+            .current
+            .as_ref()
+            .is_some_and(|(current, _)| current == id)
+        {
+            if let Some((_, sender)) = uploads.current.take() {
+                let _ = sender.send(());
+            }
+            return;
+        }
+        if uploads.canceled.len() >= CANCELED_TOMBSTONES {
+            uploads.canceled.pop_front();
+        }
+        uploads.canceled.push_back(id.to_string());
+    }
+}
+
+fn client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    // No redirects: a bearer key must only ever reach the fixed host it was
+    // addressed to. Disable reqwest's default protocol-level retries too:
+    // one recording must never be replayed by our HTTP retry policy.
+    let built = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .https_only(true)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|_| "Could not prepare the transcription connection.".to_string())?;
+    Ok(CLIENT.get_or_init(|| built))
+}
+
+/// Only a confirmed absent entry is `Missing`; locked, denied, failed or
+/// slow credential store reads are `Unavailable`.
+async fn read_key(provider: TranscriptionProvider) -> KeyRead {
+    let mut receiver = {
+        let mut slot = key_slot(provider);
+        if let Some(known) = slot.known.clone() {
+            return KeyRead::from_known(known);
+        }
+        if let Some((_, receiver)) = slot.reading.as_ref() {
+            receiver.clone()
+        } else {
+            slot.read_serial = slot.read_serial.wrapping_add(1);
+            let serial = slot.read_serial;
+            let (sender, receiver) = watch::channel(None);
+            slot.reading = Some((serial, receiver.clone()));
+            let account = provider.account();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = match keyring::Entry::new(KEYRING_SERVICE, account)
+                    .and_then(|entry| entry.get_password())
+                {
+                    Ok(value) if !value.trim().is_empty() => KeyRead::Saved(value),
+                    Ok(_) | Err(keyring::Error::NoEntry) => KeyRead::Missing,
+                    Err(_) => KeyRead::Unavailable,
+                };
+                {
+                    let mut slot = key_slot(provider);
+                    if slot.reading.as_ref().is_some_and(|(current, _)| *current == serial) {
+                        slot.reading = None;
+                    }
+                }
+                let _ = sender.send(Some(result));
+            });
+            receiver
+        }
+    };
+    let result = timeout(KEYRING_READ_TIMEOUT, async {
+        loop {
+            if let Some(value) = receiver.borrow().clone() {
+                return value;
+            }
+            if receiver.changed().await.is_err() {
+                return KeyRead::Unavailable;
+            }
+        }
+    })
+    .await
+    .unwrap_or(KeyRead::Unavailable);
+    // A write that finished while this read was pending is authoritative.
+    if let Some(known) = key_slot(provider).known.clone() {
+        return KeyRead::from_known(known);
+    }
+    result
+}
+
+fn validate_api_key(value: &str) -> Result<String, String> {
+    let key = value.trim();
+    if key.len() < 8
+        || key.len() > 512
+        || key.chars().any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err("That doesn't look like an API key. Paste the whole key and try again.".into());
+    }
+    Ok(key.to_string())
+}
+
+async fn write_key(
+    state: &TranscriptionState,
+    provider: TranscriptionProvider,
+    value: Option<String>,
+) -> Result<(), String> {
+    let label = provider.label();
+    let guard = state.writes[provider.index()]
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| {
+            format!("The {label} transcription key is still being updated. Try again in a moment.")
+        })?;
+    let account = provider.account();
+    let task = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let _guard = guard;
+        let entry = keyring::Entry::new(KEYRING_SERVICE, account)
+            .map_err(|_| "Could not open the OS credential store. Check for a system prompt, then try again.".to_string())?;
+        let written = match value.as_deref() {
+            Some(key) => entry
+                .set_password(key)
+                .map_err(|_| format!("Could not save the {label} transcription key. Check that the OS credential store is unlocked, then try again.")),
+            None => match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(_) => Err(format!(
+                    "Could not remove the {label} transcription key. Check that the OS credential store is unlocked, then try again."
+                )),
+            },
+        };
+        if written.is_ok() {
+            // Published while the write guard is still held, so writes are
+            // published in order, including one that finishes after its
+            // caller stopped waiting.
+            let mut slot = key_slot(provider);
+            slot.known = Some(value);
+            slot.generation = slot.generation.wrapping_add(1);
+        }
+        written
+    });
+    match timeout(KEYRING_WRITE_TIMEOUT, task).await {
+        Err(_) => {
+            return Err(
+                "The OS credential store did not respond. Check for a system prompt, then reopen Voice input settings to see whether the key was saved."
+                    .into(),
+            )
+        }
+        Ok(Err(_)) => return Err("The credential task failed. Try again.".into()),
+        Ok(Ok(result)) => result?,
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn transcription_key_status() -> TranscriptionKeyStatus {
+    let (openai, openrouter) = tokio::join!(
+        read_key(TranscriptionProvider::Openai),
+        read_key(TranscriptionProvider::Openrouter)
+    );
+    TranscriptionKeyStatus {
+        openai: openai.state(),
+        openrouter: openrouter.state(),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn transcription_save_key(
+    state: State<'_, TranscriptionState>,
+    provider: TranscriptionProvider,
+    api_key: String,
+) -> Result<(), String> {
+    let key = validate_api_key(&api_key)?;
+    write_key(&state, provider, Some(key)).await
+}
+
+#[tauri::command]
+pub(crate) async fn transcription_remove_key(
+    state: State<'_, TranscriptionState>,
+    provider: TranscriptionProvider,
+) -> Result<(), String> {
+    write_key(&state, provider, None).await
+}
+
+/// Copies the Models & accounts OpenRouter key into the separate transcription
+/// entry without it ever reaching the renderer. `false` means there was no
+/// account key to copy. The chat key itself is only read.
+#[tauri::command]
+pub(crate) async fn transcription_copy_openrouter_account_key(
+    state: State<'_, TranscriptionState>,
+) -> Result<bool, String> {
+    let Some(key) = openrouter_key().await else {
+        return Ok(false);
+    };
+    let key = validate_api_key(&key)?;
+    write_key(&state, TranscriptionProvider::Openrouter, Some(key)).await?;
+    Ok(true)
+}
+
+fn valid_model_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'/'))
+}
+
+fn openai_model_supported(id: &str) -> bool {
+    if OPENAI_MODELS.iter().any(|(model, _, _)| *model == id) {
+        return true;
+    }
+    OPENAI_SNAPSHOT_FAMILIES.iter().any(|family| {
+        id.strip_prefix(family)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|date| {
+                let bytes = date.as_bytes();
+                bytes.len() == 10
+                    && bytes.iter().enumerate().all(|(index, byte)| {
+                        if index == 4 || index == 7 {
+                            *byte == b'-'
+                        } else {
+                            byte.is_ascii_digit()
+                        }
+                    })
+            })
+    })
+}
+
+fn openai_model_entry(id: &str) -> TranscriptionModel {
+    let known = OPENAI_MODELS.iter().find(|(model, _, _)| *model == id);
+    TranscriptionModel {
+        id: id.to_string(),
+        name: known.map_or_else(|| id.to_string(), |(_, name, _)| (*name).to_string()),
+        description: Some(known.map_or("Dated snapshot", |(_, _, detail)| *detail).to_string()),
+        recommended: id == OPENAI_MODELS[0].0,
+    }
+}
+
+fn builtin_openai_models() -> Vec<TranscriptionModel> {
+    OPENAI_MODELS
+        .iter()
+        .map(|(id, _, _)| openai_model_entry(id))
+        .collect()
+}
+
+fn parse_openai_models(value: &Value) -> Vec<TranscriptionModel> {
+    let mut seen = HashSet::new();
+    let mut models: Vec<TranscriptionModel> = value
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(MAX_CATALOG_ROWS * 4)
+        .filter_map(|row| row.get("id").and_then(Value::as_str))
+        .filter(|id| openai_model_supported(id) && seen.insert(id.to_string()))
+        .map(openai_model_entry)
+        .collect();
+    let rank = |id: &str| {
+        OPENAI_MODELS
+            .iter()
+            .position(|(model, _, _)| *model == id)
+            .unwrap_or(OPENAI_MODELS.len())
+    };
+    models.sort_by(|left, right| rank(&left.id).cmp(&rank(&right.id)).then(left.id.cmp(&right.id)));
+    models
+}
+
+fn bounded_text(value: Option<&Value>, limit: usize) -> Option<String> {
+    let text = value?.as_str()?.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    Some(if text.chars().count() > limit {
+        format!("{}…", text.chars().take(limit).collect::<String>())
+    } else {
+        text
+    })
+}
+
+fn parse_openrouter_models(value: &Value) -> Vec<TranscriptionModel> {
+    let has_modality = |row: &Value, field: &str, wanted: &str| {
+        row.pointer(&format!("/architecture/{field}"))
+            .and_then(Value::as_array)
+            .is_some_and(|modalities| modalities.iter().any(|entry| entry.as_str() == Some(wanted)))
+    };
+    let mut seen = HashSet::new();
+    let mut models: Vec<TranscriptionModel> = value
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(MAX_CATALOG_ROWS)
+        .filter_map(|row| {
+            let id = row.get("id").and_then(Value::as_str)?;
+            // The query filter is advisory; the metadata is what qualifies a
+            // model for the transcription endpoint.
+            if !valid_model_id(id)
+                || !has_modality(row, "input_modalities", "audio")
+                || !has_modality(row, "output_modalities", "transcription")
+                || !seen.insert(id.to_string())
+            {
+                return None;
+            }
+            Some(TranscriptionModel {
+                id: id.to_string(),
+                name: bounded_text(row.get("name"), 120).unwrap_or_else(|| id.to_string()),
+                description: bounded_text(row.get("description"), 200),
+                recommended: false,
+            })
+        })
+        .collect();
+    models.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    models
+}
+
+async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err("The provider's response was unexpectedly large.".into());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "The provider's response was interrupted.".to_string())?
+    {
+        if body.len() + chunk.len() > limit {
+            return Err("The provider's response was unexpectedly large.".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Fixed, status-based messages only. Provider error bodies can echo key
+/// fragments or request details, so they are never read into an error.
+fn status_error(provider: TranscriptionProvider, status: reqwest::StatusCode) -> String {
+    let label = provider.label();
+    match status.as_u16() {
+        401 => format!("{label} rejected the transcription API key. Replace it in Settings › Voice input."),
+        402 => format!("{label} reports that the account has no credits left for transcription."),
+        403 => format!("{label} denied this key access to the transcription model (HTTP 403). Check the key's permissions, or choose another model in Settings › Voice input."),
+        404 => format!("{label} could not find this transcription model (HTTP 404). Choose another in Settings › Voice input."),
+        408 | 504 | 524 => format!("{label} timed out while transcribing. Try a shorter recording."),
+        413 => format!("The recording is too large for {label}. Try a shorter recording."),
+        429 => format!("{label} rate-limited the request, or the account's quota is used up (HTTP 429)."),
+        400 | 415 | 422 => format!("{label} could not process this recording with the selected model (HTTP {}). Try again, or choose another model in Settings › Voice input.", status.as_u16()),
+        code if (500..600).contains(&code) => {
+            format!("{label} had a temporary problem (HTTP {code}). Try again in a moment.")
+        }
+        code => format!("{label} returned HTTP {code}."),
+    }
+}
+
+fn catalog_network_error(provider: TranscriptionProvider, error: &reqwest::Error) -> String {
+    let label = provider.label();
+    if error.is_timeout() {
+        format!("{label} did not answer in time.")
+    } else if error.is_connect() {
+        format!("Could not connect to {label}. Check your internet connection.")
+    } else {
+        format!("Could not reach {label}.")
+    }
+}
+
+async fn fetch_catalog_json(
+    provider: TranscriptionProvider,
+    url: &str,
+    key: Option<&str>,
+) -> Result<Value, String> {
+    let mut request = client()?.get(url).timeout(CATALOG_TIMEOUT);
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    if provider == TranscriptionProvider::Openrouter {
+        request = request.header("X-Title", "Mythra Code");
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| catalog_network_error(provider, &error))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status_error(provider, status));
+    }
+    let body = read_limited(response, CATALOG_RESPONSE_LIMIT).await?;
+    serde_json::from_slice(&body)
+        .map_err(|_| format!("{} returned an unreadable model list.", provider.label()))
+}
+
+async fn fetch_models(provider: TranscriptionProvider) -> Result<Vec<TranscriptionModel>, String> {
+    match provider {
+        TranscriptionProvider::Openai => {
+            let key = match read_key(provider).await {
+                KeyRead::Saved(key) => key,
+                KeyRead::Missing => {
+                    return Err("Add an OpenAI transcription key to see which models it can use.".into())
+                }
+                KeyRead::Unavailable => {
+                    return Err("The OS credential store could not be read.".into())
+                }
+            };
+            let value = fetch_catalog_json(provider, OPENAI_MODELS_URL, Some(&key)).await?;
+            Ok(parse_openai_models(&value))
+        }
+        // OpenRouter's catalog is public; no key is sent for it.
+        TranscriptionProvider::Openrouter => {
+            let value =
+                fetch_catalog_json(provider, OPENROUTER_TRANSCRIPTION_MODELS_URL, None).await?;
+            Ok(parse_openrouter_models(&value))
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn transcription_models(
+    state: State<'_, TranscriptionState>,
+    provider: TranscriptionProvider,
+    force: Option<bool>,
+) -> Result<TranscriptionCatalog, String> {
+    let mut cache = state.catalogs[provider.index()].lock().await;
+    // Only OpenAI's list depends on the key.
+    let generation = match provider {
+        TranscriptionProvider::Openai => key_generation(provider),
+        TranscriptionProvider::Openrouter => 0,
+    };
+    if let Some(cached) = cache.as_ref() {
+        let age = cached.fetched.elapsed();
+        if cached.generation == generation
+            && age < CATALOG_TTL
+            && (force != Some(true) || age < CATALOG_REFRESH_THROTTLE)
+        {
+            return Ok(TranscriptionCatalog {
+                models: cached.models.clone(),
+                source: "live",
+                notice: None,
+            });
+        }
+    }
+    if cache.as_ref().is_some_and(|cached| cached.generation != generation) {
+        *cache = None;
+    }
+    match fetch_models(provider).await {
+        Ok(models) => {
+            let notice = models.is_empty().then(|| match provider {
+                TranscriptionProvider::Openai => {
+                    "This OpenAI key doesn't list any supported transcription models.".to_string()
+                }
+                TranscriptionProvider::Openrouter => {
+                    "OpenRouter currently lists no transcription models.".to_string()
+                }
+            });
+            // A key saved during the fetch bumps the generation, so this
+            // entry is then treated as stale rather than served for the new key.
+            *cache = Some(CachedCatalog {
+                fetched: Instant::now(),
+                generation,
+                models: models.clone(),
+            });
+            Ok(TranscriptionCatalog {
+                models,
+                source: "live",
+                notice,
+            })
+        }
+        Err(error) => match provider {
+            TranscriptionProvider::Openai => Ok(TranscriptionCatalog {
+                models: builtin_openai_models(),
+                source: "builtin",
+                notice: Some(error),
+            }),
+            TranscriptionProvider::Openrouter => match cache.as_ref() {
+                Some(cached) => Ok(TranscriptionCatalog {
+                    models: cached.models.clone(),
+                    source: "live",
+                    notice: Some(format!("{error} Showing the last list.")),
+                }),
+                None => Err(error),
+            },
+        },
+    }
+}
+
+/// The OpenRouter model must be one the transcription catalog lists, so a
+/// chat or text-to-speech model is never billed for an upload it can't use.
+async fn ensure_openrouter_model(state: &TranscriptionState, model: &str) -> Result<(), String> {
+    let index = TranscriptionProvider::Openrouter.index();
+    let mut cache = state.catalogs[index].lock().await;
+    let stale = cache
+        .as_ref()
+        .is_none_or(|cached| cached.fetched.elapsed() >= CATALOG_TTL);
+    if stale {
+        match fetch_models(TranscriptionProvider::Openrouter).await {
+            Ok(models) => {
+                *cache = Some(CachedCatalog {
+                    fetched: Instant::now(),
+                    generation: 0,
+                    models,
+                })
+            }
+            Err(error) if cache.is_none() => {
+                return Err(format!("Could not confirm the OpenRouter model: {error}"))
+            }
+            Err(_) => {}
+        }
+    }
+    if cache
+        .as_ref()
+        .is_some_and(|cached| cached.models.iter().any(|entry| entry.id == model))
+    {
+        Ok(())
+    } else {
+        Err("This model isn't an OpenRouter transcription model. Choose another in Settings › Voice input.".into())
+    }
+}
+
+/// Accepts only the 16-bit PCM WAV the recorder produces.
+fn validate_wav(audio: &[u8]) -> Result<(), String> {
+    if audio.len() > MAX_AUDIO_BYTES {
+        return Err("The recording is too large to transcribe.".into());
+    }
+    let le16 = |offset: usize| u16::from_le_bytes([audio[offset], audio[offset + 1]]);
+    let le32 = |offset: usize| {
+        u32::from_le_bytes([audio[offset], audio[offset + 1], audio[offset + 2], audio[offset + 3]])
+    };
+    let valid = audio.len() > 44
+        && &audio[0..4] == b"RIFF"
+        && le32(4) as usize == audio.len() - 8
+        && &audio[8..12] == b"WAVE"
+        && &audio[12..16] == b"fmt "
+        && le32(16) == 16
+        && le16(20) == 1
+        && le16(22) == 1
+        && (8_000..=48_000).contains(&le32(24))
+        && le32(28) == le32(24) * 2
+        && le16(32) == 2
+        && le16(34) == 16
+        && &audio[36..40] == b"data"
+        && le32(40) as usize == audio.len() - 44
+        && (audio.len() - 44) % 2 == 0;
+    if valid {
+        Ok(())
+    } else {
+        Err("The recording is not in the expected audio format.".into())
+    }
+}
+
+fn multipart_body(boundary: &str, model: &str, audio: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(audio.len() + 512);
+    for (name, value) in [("model", model), ("response_format", "json")] {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+                .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+async fn upload(
+    provider: TranscriptionProvider,
+    key: &str,
+    model: &str,
+    audio: Vec<u8>,
+) -> Result<String, String> {
+    let label = provider.label();
+    let boundary = format!("mythra-{}", uuid::Uuid::new_v4().simple());
+    let body = multipart_body(&boundary, model, &audio);
+    drop(audio);
+    let mut request = client()?
+        .post(provider.transcription_url())
+        .timeout(UPLOAD_TIMEOUT)
+        .bearer_auth(key)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body);
+    if provider == TranscriptionProvider::Openrouter {
+        request = request.header("X-Title", "Mythra Code");
+    }
+    let response = request.send().await.map_err(|error| {
+        if error.is_connect() {
+            format!("Could not connect to {label}. Check your internet connection.")
+        } else if error.is_timeout() {
+            format!("{label} did not finish in time. It may still bill the request; Mythra Code did not retry it.")
+        } else {
+            format!("The upload to {label} failed. It may still bill the request; Mythra Code did not retry it.")
+        }
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(status_error(provider, status));
+    }
+    let body = read_limited(response, TRANSCRIPT_RESPONSE_LIMIT).await?;
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|_| format!("{label} returned an unreadable transcript."))?;
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} returned no transcript."))?
+        .trim();
+    if text.is_empty() {
+        return Err("No speech was recognized in the recording.".into());
+    }
+    if text.chars().count() > MAX_TRANSCRIPT_CHARS {
+        return Err(format!("{label} returned an unusually long transcript. Nothing was added to your draft. Try a shorter recording."));
+    }
+    Ok(text.to_string())
+}
+
+/// Body: the WAV bytes. Headers: request id, provider and model. The upload
+/// is cancelled by `transcription_cancel`, which drops the HTTP request.
+#[tauri::command]
+pub(crate) async fn transcription_transcribe(
+    state: State<'_, TranscriptionState>,
+    request: Request<'_>,
+) -> Result<String, String> {
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let id = header(ID_HEADER)
+        .filter(|id| {
+            (8..=64).contains(&id.len())
+                && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+        .ok_or_else(|| "The transcription request was incomplete.".to_string())?;
+    let provider = header(PROVIDER_HEADER)
+        .as_deref()
+        .and_then(TranscriptionProvider::parse)
+        .ok_or_else(|| "Choose OpenAI or OpenRouter for transcription.".to_string())?;
+    let model = header(MODEL_HEADER)
+        .filter(|model| valid_model_id(model))
+        .ok_or_else(|| "Choose a transcription model in Settings › Voice input.".to_string())?;
+    if provider == TranscriptionProvider::Openai && !openai_model_supported(&model) {
+        return Err("This model can't transcribe uploaded audio. Choose another in Settings › Voice input.".into());
+    }
+    let audio = match request.body() {
+        InvokeBody::Raw(bytes) => {
+            validate_wav(bytes)?;
+            bytes.clone()
+        }
+        InvokeBody::Json(_) => return Err("The recording did not reach Mythra Code.".into()),
+    };
+    let (_guard, canceled) = state.begin_upload(&id)?;
+    let work = async {
+        if provider == TranscriptionProvider::Openrouter {
+            ensure_openrouter_model(&state, &model).await?;
+        }
+        let key = match read_key(provider).await {
+            KeyRead::Saved(key) => key,
+            KeyRead::Missing => {
+                return Err(format!(
+                    "No {} transcription key is saved. Add one in Settings › Voice input.",
+                    provider.label()
+                ))
+            }
+            KeyRead::Unavailable => {
+                return Err(
+                    "The OS credential store could not be read. Check for a system prompt, then try again."
+                        .into(),
+                )
+            }
+        };
+        upload(provider, &key, &model, audio).await
+    };
+    tokio::select! {
+        // A queued cancel wins before work can dispatch an upload or return
+        // a transcript that the caller has already discarded.
+        biased;
+        _ = canceled => Err(CANCELED.into()),
+        result = work => result,
+    }
+}
+
+#[tauri::command]
+pub(crate) fn transcription_cancel(state: State<'_, TranscriptionState>, id: String) {
+    if id.len() <= 64 {
+        state.cancel_upload(&id);
+    }
+}

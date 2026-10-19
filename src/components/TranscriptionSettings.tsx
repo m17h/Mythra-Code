@@ -1,0 +1,280 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Check, ExternalLink, Info, KeyRound, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
+import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
+import { OpenAILogo, OpenRouterLogo } from "./BrandLogos";
+import { safeErrorText } from "../lib/errors";
+import {
+  copyOpenRouterAccountKey,
+  listTranscriptionModels,
+  refreshTranscriptionKeys,
+  removeTranscriptionKey,
+  sanitizeTranscriptionSettings,
+  saveTranscriptionKey,
+  transcriptionModelFor,
+  TRANSCRIPTION_LINKS,
+  TRANSCRIPTION_PROVIDER_LABELS,
+  TRANSCRIPTION_PROVIDERS,
+  useTranscriptionKeys,
+  type TranscriptionCatalog,
+  type TranscriptionKeyState,
+} from "../lib/transcription";
+import { MAX_RECORDING_SECONDS } from "../lib/voiceRecorder";
+import type { TranscriptionProvider, TranscriptionSettings as TranscriptionSettingsValue } from "../types";
+import "./TranscriptionSettings.css";
+
+type CatalogState = { status: "idle" | "loading" | "ready" | "error"; catalog: TranscriptionCatalog | null; error: string };
+
+const IDLE_CATALOG: CatalogState = { status: "idle", catalog: null, error: "" };
+
+function openExternal(url: string): void {
+  void openUrl(url).catch(() => undefined);
+}
+
+function ExternalButton({ url, children }: { url: string; children: string }) {
+  return <button type="button" className="transcription-link" onClick={() => openExternal(url)}>{children} <ExternalLink size={11} aria-hidden="true" /></button>;
+}
+
+function keyStatusLabel(state: TranscriptionKeyState, checking: boolean): string {
+  if (state === "saved") return "Key saved";
+  if (state === "missing") return "No key yet";
+  if (state === "unavailable") return "Can't check";
+  return checking ? "Checking…" : "Not checked";
+}
+
+/**
+ * Voice input settings. Provider and model are ordinary drafts saved with
+ * Save settings. Keys are saved or removed immediately in the OS credential
+ * store and never pass through the settings draft.
+ */
+export function TranscriptionSettings({ visible, value, onChange, accountOpenRouterKeySaved, onOpenAccounts }: {
+  /** The pane is on screen; key status and catalogs load only then. */
+  visible: boolean;
+  value: TranscriptionSettingsValue | undefined;
+  onChange: (next: TranscriptionSettingsValue) => void;
+  accountOpenRouterKeySaved: boolean;
+  onOpenAccounts: () => void;
+}) {
+  const settings = useMemo(() => sanitizeTranscriptionSettings(value), [value]);
+  const provider = settings.provider;
+  const keys = useTranscriptionKeys((state) => state.keys);
+  const checking = useTranscriptionKeys((state) => state.checking);
+
+  useEffect(() => {
+    if (visible) void refreshTranscriptionKeys();
+  }, [visible]);
+
+  const [catalogs, setCatalogs] = useState<Record<TranscriptionProvider, CatalogState>>({ openai: IDLE_CATALOG, openrouter: IDLE_CATALOG });
+  // Only the newest request per provider may update its list.
+  const requestRef = useRef<Record<TranscriptionProvider, number>>({ openai: 0, openrouter: 0 });
+  const loadCatalog = useCallback((target: TranscriptionProvider, force = false, clear = false) => {
+    const request = ++requestRef.current[target];
+    setCatalogs((current) => ({ ...current, [target]: { status: "loading", catalog: clear ? null : current[target].catalog, error: "" } }));
+    listTranscriptionModels(target, force)
+      .then((catalog) => {
+        if (requestRef.current[target] !== request) return;
+        setCatalogs((current) => ({ ...current, [target]: { status: "ready", catalog, error: "" } }));
+      })
+      .catch((reason) => {
+        if (requestRef.current[target] !== request) return;
+        setCatalogs((current) => ({ ...current, [target]: { status: "error", catalog: current[target].catalog, error: safeErrorText(reason, "The model list couldn't be loaded.") } }));
+      });
+  }, []);
+
+  // Reopening the pane rechecks the native cache's freshness. OpenAI's list
+  // also depends on its key, including replacements that keep "saved" status.
+  // Clear the old key's choices while loading and ignore completions after
+  // the pane is hidden, switched or a newer key revision takes over.
+  const catalogRevision = useTranscriptionKeys((state) => provider === "openai" ? state.revisions.openai : 0);
+  useEffect(() => {
+    if (!visible) return;
+    loadCatalog(provider, false, true);
+    return () => { requestRef.current[provider] += 1; };
+  }, [catalogRevision, loadCatalog, provider, visible]);
+
+  const catalogState = catalogs[provider];
+  const models = useMemo(() => catalogState.catalog?.models ?? [], [catalogState.catalog]);
+  const selectedModel = transcriptionModelFor(settings, provider);
+  const modelOptions = useMemo<AppSelectOption[]>(() => models.map((model) => ({
+    value: model.id,
+    label: model.name,
+    detail: [model.id !== model.name ? model.id : "", model.recommended ? "Recommended" : model.description ?? ""].filter(Boolean).join(" · "),
+    keywords: `${model.id} ${model.description ?? ""}`,
+  })), [models]);
+  const selectedDisplay = selectedModel && !models.some((model) => model.id === selectedModel)
+    ? { label: selectedModel, detail: catalogState.status === "loading" || catalogState.status === "idle" ? "Checking the model list…" : "Not in the current model list" }
+    : undefined;
+  const catalogNote = catalogState.status === "loading"
+    ? "Loading models…"
+    : catalogState.status === "error"
+      ? catalogState.error
+      : catalogState.catalog?.source === "builtin"
+        ? `Showing OpenAI's documented transcription models. ${catalogState.catalog.notice ?? ""}`.trim()
+        : catalogState.catalog?.notice
+          ?? (provider === "openai" ? "Transcription models this OpenAI key can use." : "Every model OpenRouter lists for speech-to-text.");
+
+  const chooseProvider = (next: TranscriptionProvider) => {
+    if (next !== provider) onChange({ ...settings, provider: next });
+  };
+
+  return (
+    <section className="settings-section transcription-settings">
+      <div className="set-group">
+        <h4>Transcription provider</h4>
+        <p>The microphone in the message box records you. When you stop, the recording is uploaded to the provider chosen here, and the text it returns is added to your draft so you can edit it. Your message isn't sent until you send it.</p>
+        <div className="provider-cards transcription-provider-cards">
+          {TRANSCRIPTION_PROVIDERS.map((id) => (
+            <button key={id} type="button" className={`provider-card ${provider === id ? "selected" : ""}`} aria-pressed={provider === id} onClick={() => chooseProvider(id)}>
+              <span className={`provider-logo ${id}`}>{id === "openai" ? <OpenAILogo size={17} /> : <OpenRouterLogo size={18} />}</span>
+              <span><strong>{TRANSCRIPTION_PROVIDER_LABELS[id]}</strong><small>{id === "openai" ? "OpenAI API key" : "OpenRouter API key"}</small></span>
+              <span className={`provider-status ${keys[id] === "saved" ? "on" : ""}`}>{keyStatusLabel(keys[id], checking)}</span>
+              {provider === id && <Check size={16} />}
+            </button>
+          ))}
+        </div>
+        <small className="set-control-help">Only the selected provider receives your recordings. Both keys stay saved when you switch.</small>
+      </div>
+
+      <div className="set-group">
+        <h4>Transcription API key</h4>
+        <TranscriptionKeyPanel
+          key={provider}
+          visible={visible}
+          provider={provider}
+          accountKeySaved={accountOpenRouterKeySaved}
+          onOpenAccounts={onOpenAccounts}
+        />
+      </div>
+
+      <div className="set-group">
+        <h4>Transcription model</h4>
+        <div className="set-card"><div className="set-row stack">
+          <div className="set-control transcription-model-row">
+            <AppSelectMenu
+              key={provider}
+              value={selectedModel}
+              options={modelOptions}
+              selectedDisplay={selectedDisplay}
+              ariaLabel={`${TRANSCRIPTION_PROVIDER_LABELS[provider]} transcription model`}
+              placeholder="Choose a transcription model"
+              searchable={modelOptions.length > 8}
+              portal
+              emptyMessage={catalogState.status === "loading" ? "Loading models…" : "No transcription models are available."}
+              onChange={(model) => onChange({ ...settings, models: { ...settings.models, [provider]: model } })}
+            />
+            <button type="button" className="icon-button" onClick={() => loadCatalog(provider, true)} disabled={catalogState.status === "loading"} title="Refresh the model list" aria-label="Refresh the model list">
+              {catalogState.status === "loading" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}
+            </button>
+          </div>
+          <small className={`set-control-help${catalogState.status === "error" ? " transcription-error-text" : ""}`} role={catalogState.status === "error" ? "alert" : undefined}>{catalogNote}</small>
+          <div className="transcription-links">
+            {provider === "openai" ? <>
+              <ExternalButton url={TRANSCRIPTION_LINKS.openai.models}>Transcription models</ExternalButton>
+              <ExternalButton url={TRANSCRIPTION_LINKS.openai.pricing}>Pricing</ExternalButton>
+            </> : <ExternalButton url={TRANSCRIPTION_LINKS.openrouter.models}>Speech-to-text models and pricing</ExternalButton>}
+          </div>
+        </div></div>
+      </div>
+
+      <p className="settings-footnote" role="note">
+        <Info size={13} aria-hidden="true" />
+        <span><strong>Billing and privacy.</strong> {TRANSCRIPTION_PROVIDER_LABELS[provider]} bills transcription to the API key you add here. ChatGPT, Claude, and Cursor subscriptions don't cover it. Recordings stop after {MAX_RECORDING_SECONDS / 60} minutes. Mythra Code keeps a recording in memory only until the text arrives and never saves it to disk; {TRANSCRIPTION_PROVIDER_LABELS[provider]} processes and retains it under its own policies.</span>
+      </p>
+    </section>
+  );
+}
+
+function TranscriptionKeyPanel({ visible, provider, accountKeySaved, onOpenAccounts }: {
+  visible: boolean;
+  provider: TranscriptionProvider;
+  accountKeySaved: boolean;
+  onOpenAccounts: () => void;
+}) {
+  // Typed text belongs to this provider's panel only; status refreshes never
+  // write into it, and switching provider remounts the panel empty.
+  const [input, setInput] = useState("");
+  // Settings stays mounted while closed. Do not retain an unsaved secret in
+  // its hidden input after the user leaves the dialog.
+  useEffect(() => {
+    if (!visible) setInput("");
+  }, [visible]);
+  const state = useTranscriptionKeys((store) => store.keys[provider]);
+  const checking = useTranscriptionKeys((store) => store.checking);
+  const busy = useTranscriptionKeys((store) => store.busy[provider]);
+  const error = useTranscriptionKeys((store) => store.errors[provider]);
+  const notice = useTranscriptionKeys((store) => store.notices[provider]);
+  const label = TRANSCRIPTION_PROVIDER_LABELS[provider];
+
+  const save = async () => {
+    const submitted = input.trim();
+    if (!submitted || busy) return;
+    if (await saveTranscriptionKey(provider, submitted)) setInput((current) => current.trim() === submitted ? "" : current);
+  };
+
+  const statusCopy = state === "saved"
+    ? "Stored securely on this device"
+    : state === "missing"
+      ? "No key saved"
+      : state === "unavailable"
+        ? "The OS credential store didn't respond. Try again in a moment."
+        : checking ? "Checking…" : "Not checked yet";
+
+  return (
+    <div className="credential-panel stacked" data-settings-row="transcription-key">
+      <div className="credential-status">
+        <div><strong>{label} transcription key</strong><small>{statusCopy}</small></div>
+        {state === "saved" && <span className="connected-badge"><Check size={12} /> Saved</span>}
+      </div>
+      <div className="key-input-row">
+        <input
+          type="password"
+          value={input}
+          autoComplete="off"
+          spellCheck={false}
+          aria-label={`${label} transcription API key`}
+          placeholder={state === "saved" ? "Paste a new key to replace the saved one" : provider === "openai" ? "sk-…" : "sk-or-v1-…"}
+          disabled={Boolean(busy)}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void save();
+            }
+          }}
+        />
+        <button type="button" className="secondary-button" onClick={() => void save()} disabled={!input.trim() || Boolean(busy)}>
+          {busy === "saving" && <LoaderCircle className="spin" size={13} />} Save key
+        </button>
+        {state === "saved" && (
+          <button type="button" className="secondary-button" onClick={() => void removeTranscriptionKey(provider)} disabled={Boolean(busy)}>
+            {busy === "removing" ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Remove
+          </button>
+        )}
+      </div>
+      {provider === "openrouter" && (
+        <div className="transcription-key-copy">
+          <button type="button" className="secondary-button" onClick={() => void copyOpenRouterAccountKey()} disabled={Boolean(busy)}>
+            {busy === "copying" ? <LoaderCircle className="spin" size={13} /> : <KeyRound size={13} />} Use key from Models &amp; accounts
+          </button>
+          <small>
+            {accountKeySaved
+              ? "Saves a separate copy for voice input. The key isn't shown or put on the clipboard, and your chat key stays as it is."
+              : "No OpenRouter key is saved in Models & accounts yet."}
+            {" "}
+            {!accountKeySaved && <button type="button" className="transcription-link" onClick={onOpenAccounts}>Open Models &amp; accounts</button>}
+          </small>
+        </div>
+      )}
+      {(error || notice) && (
+        <small className={error ? "transcription-error-text" : "transcription-notice-text"} role={error ? "alert" : "status"}>
+          {error || notice}
+          {error && provider === "openrouter" && /Models & accounts/.test(error) && accountKeySaved && <> <button type="button" className="transcription-link" onClick={onOpenAccounts}>Open Models &amp; accounts</button></>}
+        </small>
+      )}
+      <small className="transcription-key-help">
+        Keys are saved or removed immediately in your OS credential store, separately from your chat accounts. Cancel doesn't undo key changes. Removing a key doesn't change Models &amp; accounts.
+        {" "}<ExternalButton url={TRANSCRIPTION_LINKS[provider].keys}>{`Create an ${label} API key`}</ExternalButton>
+      </small>
+    </div>
+  );
+}

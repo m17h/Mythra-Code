@@ -57,6 +57,8 @@ import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
+import { sanitizeTranscriptionSettings, transcriptionModelFor } from "./lib/transcription";
+import type { VoiceInputConfig } from "./hooks/useVoiceInput";
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
@@ -553,7 +555,7 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: readStoredRaw("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const storedSettings = { ...rawStoredSettings, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true };
+const storedSettings = { ...rawStoredSettings, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true, transcription: sanitizeTranscriptionSettings(rawStoredSettings.transcription) };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
 const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
@@ -5950,6 +5952,11 @@ export default function App() {
   const showInfoToast = useCallback((message: string) => showToast(message, "info"), [showToast]);
   const openAgentSettings = useCallback(() => openSettings("agents"), [openSettings]);
   const openAccountSettings = useCallback(() => openSettings("models"), [openSettings]);
+  const openTranscriptionSettings = useCallback(() => openSettings("voice"), [openSettings]);
+  const voiceInputConfig = useMemo<VoiceInputConfig>(() => {
+    const transcription = sanitizeTranscriptionSettings(settings.transcription);
+    return { provider: transcription.provider, model: transcriptionModelFor(transcription), onOpenSettings: openTranscriptionSettings };
+  }, [openTranscriptionSettings, settings.transcription]);
   const saveChildAgentPreset = useCallback((name: string, policy: ProjectSubagentSettings) => {
     persistSettings((current) => {
       if (current.childAgentPresets.length >= MAX_CHILD_AGENT_PRESETS) return current;
@@ -9462,6 +9469,7 @@ export default function App() {
                 continuationNotice={claudeContinuation && (
                   <ClaudeContinuationNotice variant={claudeContinuation.kind} rateLimitType={claudeContinuation.rateLimitType} onOpenUsage={() => openSettings("usage")} />
                 )}
+                voiceInput={voiceInputConfig}
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>

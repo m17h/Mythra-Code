@@ -1,0 +1,42 @@
+.voice-input-button { width: var(--ctl-md); height: var(--ctl-md); display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.voice-input-button:hover:not(:disabled) { color: var(--green); border-color: var(--green-line, color-mix(in srgb, var(--green) 34%, var(--line))); background: color-mix(in srgb, var(--green) 8%, transparent); }
+.voice-input-button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.voice-input-button:disabled { cursor: default; opacity: .7; }
+.voice-input-button.busy { color: var(--green); }
+.voice-input-button.recording { position: relative; color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.voice-input-button.recording:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 56%, transparent); background: color-mix(in srgb, var(--red) 18%, transparent); }
+
+.voice-input-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 36px; margin: 0 10px 6px; padding: 6px 6px 6px 11px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--ink-2, var(--text)); background: color-mix(in srgb, var(--panel-2) 70%, transparent); font-size: var(--fs-meta); }
+.voice-input-status > svg { flex: 0 0 auto; }
+.voice-input-status strong { font-weight: 600; color: var(--text); }
+.voice-input-status.recording { border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 6%, var(--panel-2)); }
+.voice-input-status.working { color: var(--green); }
+.voice-input-status.error { border-color: color-mix(in srgb, var(--red) 32%, var(--line)); color: var(--red); background: color-mix(in srgb, var(--red) 7%, transparent); }
+.voice-input-status.info { color: var(--muted); }
+.voice-input-copy { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 1px; overflow-wrap: anywhere; }
+.voice-input-copy small { color: var(--muted); font-size: var(--fs-micro, 10px); }
+.voice-input-status.error .voice-input-copy strong { font-weight: 500; }
+.voice-input-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent); }
+.voice-input-clock { color: var(--muted); font-variant-numeric: tabular-nums; }
+.voice-input-clock small { font-size: inherit; }
+.voice-input-meter { --voice-level: 0; height: 16px; display: inline-flex; align-items: center; gap: 2px; }
+.voice-input-meter i { width: 3px; height: 16px; border-radius: 2px; background: var(--red); transform-origin: center; transform: scaleY(calc(.18 + var(--voice-level) * var(--voice-bar) * .82)); opacity: calc(.45 + var(--voice-level) * .55); }
+.voice-input-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: auto; max-width: 100%; }
+.voice-input-text-button { height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2, var(--text)); background: transparent; font-size: var(--fs-meta); cursor: pointer; white-space: nowrap; transition: background var(--t-fast) ease, border-color var(--t-fast) ease, color var(--t-fast) ease; }
+.voice-input-text-button:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
+.voice-input-text-button.primary { color: var(--red); border-color: color-mix(in srgb, var(--red) 36%, var(--line)); background: color-mix(in srgb, var(--red) 10%, transparent); font-weight: 600; }
+.voice-input-text-button.primary:hover { background: color-mix(in srgb, var(--red) 16%, transparent); }
+.voice-input-text-button:focus-visible, .voice-input-dismiss:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.voice-input-dismiss { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; }
+.voice-input-dismiss:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes voice-input-arrive { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: none; } }
+  @keyframes voice-input-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.78); } }
+  @keyframes voice-input-ring { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 38%, transparent); } to { box-shadow: 0 0 0 7px transparent; } }
+  .voice-input-status { animation: voice-input-arrive var(--lm-d-3, 320ms) var(--lm-ease-out, ease-out) backwards; }
+  /* Live recording indicators only exist while the microphone is open. */
+  .voice-input-dot { animation: voice-input-pulse 1.4s ease-in-out infinite; }
+  .voice-input-button.recording { animation: voice-input-ring 1.4s ease-out infinite; }
+  .voice-input-meter i { transition: transform 90ms linear, opacity 90ms linear; }
+}
