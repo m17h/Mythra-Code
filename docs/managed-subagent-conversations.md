@@ -48,11 +48,15 @@ the resolved default model. Saved changes apply at the next parent turn.
 Notes never approve or enable sub-agents, override permissions or limits, or
 change provider-native Claude Code or Codex delegation.
 
-Claude Code keeps only the first 4,096 characters of a tool description, so
-the spawn description with its notes is kept under that limit. When a crew's
-notes do not all fit, whole notes are included in saved order and the parent
-is told how many were left out; shorter notes let more of them through. A note
-for a provider-default entry matches the default model's current ID, so a
+Model notes use the room remaining in a 3,800-unit tool-description budget,
+counted in UTF-16 units like Claude Code's default 4,096-unit limit (including
+emoji). Notes that all fit are included without reserving space for an
+unnecessary omission warning. Otherwise, the longest prefix of whole notes
+that fits together with its omission count is included in captured crew order.
+If no such prefix fits, only an omission notice is included when there is room.
+Shorter notes let more of them through. The crew roster itself is never trimmed
+to make room for notes. A note for a provider-default entry matches the default
+model's current ID, so a
 future change of default stops matching until the note is moved to the new
 model.
 
