@@ -498,10 +498,11 @@ pub(crate) async fn provider_api_key_save(
         ApiKeyProvider::Openai => {
             runtime.lifecycle.auth_change_idle()?;
             // Replacing the stored API key must not leave Codex billing the
-            // old key if saving or reconnecting the replacement fails.
-            if openai_billing(&app)? == ClaudeBilling::ApiKey {
-                crate::codex_sign_out_api_key(&app, &runtime).await?;
-            }
+            // old key if saving or reconnecting the replacement fails. The
+            // private Codex profile can retain that key while Subscription
+            // is selected, so inspect its actual sign-in in either mode.
+            // A ChatGPT sign-in is left untouched by this helper.
+            crate::codex_sign_out_api_key(&app, &runtime).await?;
         }
     }
     write_key(app, &state, provider, Some(key), change).await?;

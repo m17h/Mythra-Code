@@ -8570,16 +8570,16 @@ async fn codex_sign_out_api_key(app: &AppHandle, state: &RuntimeState) -> Result
 /// keeps the current session until the browser flow replaces it, as before
 /// API keys. A profile still holding an API key is retired first and signed
 /// out before the browser opens, so it cannot bill while the switch is pending.
+/// Both paths reserve the lifecycle before reading the account: an unchanged
+/// billing method must not allow sign-in/out underneath active work, and an
+/// idle snapshot alone would leave a race with a command starting afterward.
 async fn codex_subscription_auth(app: &AppHandle, state: &RuntimeState, method: &str, params: Value) -> Result<Value, String> {
-    {
-        let _rpc = state.lifecycle.begin_rpc_call(method)?;
-        let server = ensure_server(app, state).await?;
-        let account = server.request("account/read", json!({ "refreshToken": false })).await?;
-        if account.pointer("/account/type").and_then(Value::as_str) != Some("apiKey") {
-            return server.request(method, params).await;
-        }
-    }
     let _switch = state.lifecycle.begin_auth_switch()?;
+    let server = ensure_server(app, state).await?;
+    let account = server.request("account/read", json!({ "refreshToken": false })).await?;
+    if account.pointer("/account/type").and_then(Value::as_str) != Some("apiKey") {
+        return server.request(method, params).await;
+    }
     retire_codex_for_auth_change(app, state).await?;
     let server = ensure_server(app, state).await?;
     if method == "account/login/start" {
