@@ -179,6 +179,11 @@ export function listTranscriptionModels(provider: TranscriptionProvider, force =
   return invoke<TranscriptionCatalog>("transcription_models", { provider, force });
 }
 
+/** Native-issued monotonic IDs make IPC transport replay non-billable. */
+export function createTranscriptionRequestId(): Promise<string> {
+  return invoke<string>("transcription_request_id");
+}
+
 /** Uploads one WAV recording. The bytes travel as the raw IPC body. */
 export function transcribeRecording(id: string, provider: TranscriptionProvider, model: string, wav: Uint8Array): Promise<string> {
   return invoke<string>("transcription_transcribe", wav, {

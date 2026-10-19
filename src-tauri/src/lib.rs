@@ -9921,6 +9921,7 @@ pub fn run() {
                     transcription::transcription_remove_key,
                     transcription::transcription_copy_openrouter_account_key,
                     transcription::transcription_models,
+                    transcription::transcription_request_id,
                     transcription::transcription_transcribe,
                     transcription::transcription_cancel
                 ]);

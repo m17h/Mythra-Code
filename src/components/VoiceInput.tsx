@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { CircleAlert, Info, LoaderCircle, Mic, Settings, Square, X } from "lucide-react";
 import type { VoiceInputMessage, VoiceInputView } from "../hooks/useVoiceInput";
 import { TRANSCRIPTION_PROVIDER_LABELS } from "../lib/transcription";
 import { MAX_RECORDING_SECONDS, type VoiceRecorder } from "../lib/voiceRecorder";
+import type { VoiceInteractionSession } from "../lib/voiceInputLock";
+import { useModalFocus } from "../hooks/useModalFocus";
 import "./VoiceInput.css";
 
 function formatClock(seconds: number): string {
@@ -125,7 +127,7 @@ export function VoiceInputStatus({ view, message, onStop, onCancel, onDismiss, o
         <LoaderCircle className="spin" size={13} aria-hidden="true" />
         <span className="voice-input-copy">
           <strong>{copy}</strong>
-          {view.phase === "transcribing" && <small>You can keep typing. The text is added to your draft; your message isn't sent until you send it. Sending, switching threads or changing voice settings cancels this.</small>}
+          {view.phase === "transcribing" && <small>The text will be added to your draft, not sent. Finish or cancel voice input before continuing.</small>}
         </span>
         <span className="voice-input-actions">
           <button type="button" className="voice-input-text-button" onClick={onCancel}>Cancel</button>
@@ -142,6 +144,36 @@ export function VoiceInputStatus({ view, message, onStop, onCancel, onDismiss, o
         {message.settings && <button type="button" className="voice-input-text-button" onClick={onOpenSettings}><Settings size={11} /> Voice input settings</button>}
         <button type="button" className="voice-input-dismiss" onClick={onDismiss} aria-label="Dismiss"><X size={12} /></button>
       </span>
+    </div>
+  );
+}
+
+/** Keep the draft and destination fixed until voice finishes or is canceled. */
+export function VoiceInputLockModal({ session }: { session: VoiceInteractionSession | null }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousPhase = useRef<string | null>(null);
+  useModalFocus(dialogRef, session !== null);
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    const previous = previousPhase.current;
+    previousPhase.current = session ? `${session.id}:${session.view.phase}` : null;
+    // Stop is replaced by Cancel between phases; do not leave keyboard
+    // focus on the body when the formerly focused action is removed. Initial
+    // focus still belongs to useModalFocus, which captures its return target.
+    // Prefer Stop & transcribe so recovered focus doesn't default to Discard.
+    if (previous && session && dialog && !dialog.contains(document.activeElement)) {
+      (dialog.querySelector<HTMLButtonElement>("button.primary:not([disabled])")
+        ?? dialog.querySelector<HTMLButtonElement>("button:not([disabled])"))?.focus();
+    }
+  }, [session?.id, session?.view.phase]);
+  if (!session) return null;
+  return (
+    <div className="modal-backdrop voice-input-lock-backdrop" data-voice-input-lock>
+      <div className="confirm-dialog voice-input-lock-dialog" role="dialog" aria-modal="true" aria-labelledby="voice-input-lock-title" aria-describedby="voice-input-lock-description" ref={dialogRef}>
+        <h2 id="voice-input-lock-title">Voice input</h2>
+        <p id="voice-input-lock-description">Finish or cancel voice input before opening another thread or changing anything else. Your draft stays right here.</p>
+        <VoiceInputStatus view={session.view} message={null} onStop={session.onStop} onCancel={session.onCancel} onDismiss={() => {}} onOpenSettings={() => {}} />
+      </div>
     </div>
   );
 }

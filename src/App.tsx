@@ -60,6 +60,8 @@ import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
 import { sanitizeTranscriptionSettings, transcriptionModelFor } from "./lib/transcription";
 import type { VoiceInputConfig } from "./hooks/useVoiceInput";
+import { VoiceInputLockModal } from "./components/VoiceInput";
+import { isVoiceInputLocked, useVoiceInputLock, voiceInputLockGeneration } from "./lib/voiceInputLock";
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
@@ -693,6 +695,66 @@ const ConversationTimeline = memo(function ConversationTimeline({ Timeline, thre
 });
 
 export default function App() {
+  const voiceSession = useVoiceInputLock((state) => state.session);
+  // Capture covers all React surfaces, including existing dialogs and portals.
+  // The voice dialog alone owns controls until it releases the synchronous lock.
+  const guardVoiceInteraction = (event: { target: EventTarget | null; preventDefault: () => void; stopPropagation: () => void }) => {
+    if (!isVoiceInputLocked()) return;
+    if (event.target instanceof Element && event.target.closest("[data-voice-input-lock]")) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const session = useVoiceInputLock.getState().session;
+      if (!session) return;
+      // Native close/Quit still reach the close guard and cancel voice.
+      if ((event.metaKey || event.ctrlKey) && ["w", "q"].includes(event.key.toLowerCase())) return;
+      if (event.altKey && event.key === "F4") return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        session.onCancel();
+        return;
+      }
+      if (event.key === "Tab") {
+        // Voice owns every Tab, including recovery after Stop disappears or
+        // another overlay tries to trap focus. Window capture runs before
+        // those dialogs' document listeners regardless of mount order.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const dialog = document.querySelector<HTMLElement>("[data-voice-input-lock] [role='dialog']");
+        const controls = dialog ? Array.from(dialog.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]",
+        )).filter((element) => element.tabIndex >= 0 && !element.matches(":disabled")
+          && element.getAttribute("aria-disabled") !== "true" && !element.closest("[hidden], [inert]")) : [];
+        if (controls.length) {
+          const index = controls.findIndex((element) => element === document.activeElement);
+          const next = index < 0 ? 0 : (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+          controls[next].focus();
+        }
+        return;
+      }
+      if (event.target instanceof Element && event.target.closest("[data-voice-input-lock]")) {
+        if (["Enter", " "].includes(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (!isVoiceInputLocked() || (event.target instanceof Element && event.target.closest("[data-voice-input-lock]"))) return;
+      // Other overlays can finish asynchronous work and request focus. Keep
+      // their programmatic focus changes behind the voice controls too.
+      (document.querySelector<HTMLElement>("[data-voice-input-lock] button.primary:not([disabled])")
+        ?? document.querySelector<HTMLElement>("[data-voice-input-lock] button:not([disabled])"))?.focus();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusin", onFocusIn, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("focusin", onFocusIn, true);
+    };
+  }, []);
   useEffect(() => subscribeBackgroundUsage(() => recordError("Background helper usage could not be recorded.")), []);
   const appUpdater = useAppUpdater();
   const updateNoticePreview = useUpdateNoticePreview();
@@ -1892,6 +1954,7 @@ export default function App() {
     threadProjectBindingsRef.current?.[thread.id] || thread.cwd || activeWorkspace?.path || "",
   );
   const openWorkspaceFolder = async (path: string) => {
+    if (isVoiceInputLocked()) return;
     try {
       await invoke("open_workspace_folder", { path });
     } catch (reason) {
@@ -2314,6 +2377,7 @@ export default function App() {
   ]);
 
   const openSettings = useCallback((section: SettingsSection = "general", draft?: OnboardingSettingsDraft) => {
+    if (isVoiceInputLocked()) return;
     void preloadSettingsModal();
     setSettingsMounted(true);
     setSettingsInitialSection(section);
@@ -2322,6 +2386,7 @@ export default function App() {
   }, []);
 
   const openSkillInSettings = useCallback((path: string) => {
+    if (isVoiceInputLocked()) return;
     setOpenSkillRequest({ path, nonce: ++openSkillNonceRef.current });
     openSettings("skills");
   }, [openSettings]);
@@ -2340,6 +2405,7 @@ export default function App() {
     });
   }, [activeProject, activeProvider, activeWorkspace?.path, settings]);
   const openPromptRepair = useCallback((target: SkillPromptRepairTarget) => {
+    if (isVoiceInputLocked()) return;
     const nonce = ++promptFocusNonceRef.current;
     if (target.layer === "project") {
       setProjectPromptOpenRequest({ name: target.name, nonce });
@@ -2385,6 +2451,7 @@ export default function App() {
   }, []);
 
   const openOnboarding = useCallback(() => {
+    if (isVoiceInputLocked()) return;
     setOnboardingSession((session) => session + 1);
     resumeOnboardingAfterSettings.current = false;
     if (onboardingExitTimerRef.current !== null) {
@@ -2413,6 +2480,7 @@ export default function App() {
   );
 
   const startNormalChat = useCallback(() => {
+    if (isVoiceInputLocked()) return;
     setWorkspaceMode("chat");
   }, [setWorkspaceMode]);
 
@@ -4719,6 +4787,8 @@ export default function App() {
     try {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
+          // Native drops bypass DOM inert and pointer capture.
+          if (isVoiceInputLocked()) { setDropActive(false); return; }
           if (event.payload.type === "over") setDropActive(true);
           else if (event.payload.type === "drop") {
             setDropActive(false);
@@ -4871,6 +4941,7 @@ export default function App() {
   }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch, workspaceHasRuntimeThreads, sidebarThreadBindings]);
 
   const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
+    if (isVoiceInputLocked()) return;
     if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;
     const pointerId = event.pointerId;
     const startX = event.clientX;
@@ -4964,7 +5035,10 @@ export default function App() {
   };
 
   const addProject = async () => {
+    if (isVoiceInputLocked()) return false;
+    const voiceGeneration = voiceInputLockGeneration();
     const selected = await open({ directory: true, multiple: false, title: "Choose a project folder" });
+    if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return false;
     if (!selected || Array.isArray(selected)) return false;
     const existing = projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(selected));
     if (existing) {
@@ -5052,6 +5126,8 @@ export default function App() {
   };
 
   const removeProject = async (project: Project) => {
+    if (isVoiceInputLocked()) return;
+    const voiceGeneration = voiceInputLockGeneration();
     const isolatedCount = Object.values(threadWorktreesRef.current).filter(
       (record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(project.path)
         && record.status !== "removed",
@@ -5061,7 +5137,7 @@ export default function App() {
       return;
     }
     const confirmed = await confirmDialog(`Remove “${project.name}” from Mythra Code?\n\nIts folder and every file inside it will remain untouched on your computer.`);
-    if (!confirmed) return;
+    if (!confirmed || isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
     const next = projects.filter((entry) => entry.id !== project.id);
     autoPublish.disable(project.id);
     setProjects(next);
@@ -5073,6 +5149,12 @@ export default function App() {
 
   const selectThreadRequestRef = useRef(0);
   const pendingThreadSelectionRef = useRef<{ threadId: string; requestId: number } | null>(null);
+  useEffect(() => useVoiceInputLock.subscribe((next, previous) => {
+    if (!next.session || next.session.id === previous.session?.id) return;
+    // Store subscribers run during acquisition, before React rerenders.
+    ++selectThreadRequestRef.current;
+    pendingThreadSelectionRef.current = null;
+  }), []);
   const invalidatePendingThreadSelection = useCallback((threadId: string) => {
     const pending = pendingThreadSelectionRef.current;
     if (!pending || pending.threadId !== threadId || pending.requestId !== selectThreadRequestRef.current) return;
@@ -5226,6 +5308,8 @@ export default function App() {
   }, [activeThread, projectDefaultProvider, threads, watchThreadNameSaves]);
 
   const selectThread = async (thread: Thread) => {
+    if (isVoiceInputLocked()) return;
+    const voiceGeneration = voiceInputLockGeneration();
     if (!activeWorkspace) return;
     const threadAvailable = () => !archivingThreadIdsRef.current.has(thread.id)
       && !deletedThreadIdsRef.current.has(thread.id)
@@ -5245,7 +5329,9 @@ export default function App() {
     // one whose resume RPC happened to finish last.
     const requestId = ++selectThreadRequestRef.current;
     pendingThreadSelectionRef.current = { threadId: thread.id, requestId };
-    const ownsSelection = () => selectThreadRequestRef.current === requestId && threadAvailable();
+    const ownsSelection = () => !isVoiceInputLocked()
+      && voiceGeneration === voiceInputLockGeneration()
+      && selectThreadRequestRef.current === requestId && threadAvailable();
     const selectedProvider = providerFromThread(thread, projectDefaultProvider);
     const existingTask = useTaskStore.getState().tasks[thread.id];
     beginThreadOpen(
@@ -5727,10 +5813,12 @@ export default function App() {
   };
 
   const editMessageIntoComposer = useCallback((text: string) => {
+    if (isVoiceInputLocked()) return;
     composerRef.current?.setDraft(text);
   }, []);
 
   const newThread = () => {
+    if (isVoiceInputLocked()) return;
     selectThreadRequestRef.current += 1;
     // A still-submitting first send owns its original composer and attachment
     // draft. New must have another key so failure recovery cannot write into it.
@@ -5753,6 +5841,8 @@ export default function App() {
   };
 
   const startNewThreadWithProvider = async (provider: Provider) => {
+    if (isVoiceInputLocked()) return;
+    const voiceGeneration = voiceInputLockGeneration();
     if (running) {
       setError("Stop the running task before starting a thread with another provider.");
       return;
@@ -5780,7 +5870,8 @@ export default function App() {
         setError(friendlyError(reason));
         return null;
       });
-      if (!formatter || selection !== selectThreadRequestRef.current) return;
+      if (!formatter || selection !== selectThreadRequestRef.current || isVoiceInputLocked()
+        || voiceGeneration !== voiceInputLockGeneration()) return;
       const prompt = formatter.buildProviderHandoffPrompt({
         title: sourceTitle,
         sourceProvider,
@@ -5799,7 +5890,9 @@ export default function App() {
       setDraftThreadModel(provider === projectDefaultProvider ? null : modelForProvider(provider, ""));
       setDraftThreadIsolated(false);
       setError(null);
-      requestAnimationFrame(() => composerRef.current?.setDraft(prompt));
+      requestAnimationFrame(() => {
+        if (!isVoiceInputLocked() && voiceGeneration === voiceInputLockGeneration()) composerRef.current?.setDraft(prompt);
+      });
       return;
     }
     if (pendingHandoffForWorkspace) setPendingHandoff({ ...pendingHandoffForWorkspace, targetProvider: provider });
@@ -6058,6 +6151,7 @@ export default function App() {
         .join("\n").toLowerCase().includes(inboxQuery)))
     : [];
   const openSavedDraft = (key: string) => {
+    if (isVoiceInputLocked()) return;
     if (!activeWorkspace || !isWorkspaceDraftKey(key, activeWorkspace.path)) return;
     const workspacePath = normalizedProjectPath(activeWorkspace.path);
     if (hasSavedDraftContent(workspaceDraftKey)) setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath, key: workspaceDraftKey }));
@@ -6074,6 +6168,7 @@ export default function App() {
     requestAnimationFrame(() => composerRef.current?.focus());
   };
   const openPendingFirstPrompt = (prompt: PendingPrompt) => {
+    if (isVoiceInputLocked()) return;
     if (prompt.workspacePath !== activeWorkspacePathRef.current) return;
     if (activeWorkspace && hasSavedDraftContent(workspaceDraftKey)) {
       setSavedWorkspaceDraftKeys((current) => retainSavedWorkspaceDraftKeys(current, hasSavedDraftContent, new Set(firstPromptDraftKeysRef.current.values()), { workspacePath: activeWorkspace.path, key: workspaceDraftKey }));
@@ -6338,6 +6433,7 @@ export default function App() {
    * too, and a genuinely unresolvable id reports why instead of doing nothing.
    */
   const openSubAgentWorker = useCallback(async (worker: SubAgentWorker) => {
+    if (isVoiceInputLocked()) return;
     if (archivedThreadsRef.current.some((record) => record.id === worker.id)) {
       throw new Error("This sub-agent's conversation is archived. Restore it from the Sub-agents inbox's Archived list to open it.");
     }
@@ -7073,12 +7169,14 @@ export default function App() {
   };
 
   const openStudio = (tab: StudioTab) => {
+    if (isVoiceInputLocked()) return;
     setStudioTab(tab);
     setStudioOpen(true);
     if (tab === "git") void refreshGitHubAccount();
   };
 
   const openGitRoute = (route: Omit<GitRoute, "nonce">) => {
+    if (isVoiceInputLocked()) return;
     gitRouteNonceRef.current += 1;
     setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
     openStudio("git");
@@ -7168,6 +7266,7 @@ export default function App() {
   };
 
   const openAgent = async (threadId: string) => {
+    if (isVoiceInputLocked()) return;
     const localLink = childAgentLinks[threadId];
     const nativeLink = nativeAgentLinks[threadId];
     if (nativeLink?.runtime === "claude" || threadId.startsWith("claude-native:")) {
@@ -7217,6 +7316,8 @@ export default function App() {
   };
 
   const forkThread = async (checkpoint?: CheckpointRecord) => {
+    if (isVoiceInputLocked()) return;
+    const voiceGeneration = voiceInputLockGeneration();
     if (!activeThread) return;
     if (activeThreadWorktree && activeThreadWorktree.status !== "removed") {
       setError(
@@ -7246,6 +7347,9 @@ export default function App() {
       rememberThread(loaded.thread);
       persistThreadModel(result.thread.id, effectiveSettings.model);
       persistThreadReasoning(result.thread.id, { reasoningEffort: effectiveSettings.reasoningEffort, ultra: effectiveSettings.ultra });
+      // The fork remains available in the sidebar, but a voice session that
+      // started during preparation permanently abandons this navigation.
+      if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
       setActiveThread(loaded.thread);
       const history = timelineFromTurns(loaded.turns, { includeContextCompaction: effectiveSettings.provider === "openai" });
       useTaskStore.getState().hydrateTask(result.thread.id, history.messages, history.activities, activeWorkspace?.path, loaded.history);
@@ -7261,12 +7365,15 @@ export default function App() {
   };
 
   const rollbackTurn = async () => {
+    if (isVoiceInputLocked()) return;
+    const voiceGeneration = voiceInputLockGeneration();
     if (!activeThread) return;
     if (!await confirmDialog("Undo the last turn?\n\nThis permanently removes the latest exchange from the conversation. Files changed by the turn are not reverted.")) return;
     try {
       await waitForThreadPreparation(activeThread.id);
       const result = await rpc<{ thread: Thread }>("thread/rollback", { threadId: activeThread.id, numTurns: 1 });
       rememberThread(result.thread);
+      if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
       setActiveThread(sidebarThread(result.thread));
       const history = timelineFromTurns(result.thread.turns, {
         includeContextCompaction: providerFromThread(activeThread, projectDefaultProvider) === "openai",
@@ -8246,6 +8353,8 @@ export default function App() {
   };
 
   const cloneGitHubProject = async (url: string, parent: string): Promise<boolean> => {
+    if (isVoiceInputLocked()) return false;
+    const voiceGeneration = voiceInputLockGeneration();
     if (githubClonePendingRef.current) return false;
     const target = parseGitHubCloneTarget(url);
     if (!target) throw new Error("Enter a valid GitHub repository URL with a cross-platform folder name.");
@@ -8259,6 +8368,7 @@ export default function App() {
       const project: Project = existing ?? { id: crypto.randomUUID(), name: target.name, path: destination };
       // A clone can take minutes. Never replace projects added while it was running.
       if (!existing) setProjects((current) => [...current, project]);
+      if (isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return true;
       setActiveProjectId(project.id);
       setWorkspaceMode("project");
       showSuccessToast("GitHub repository cloned and added");
@@ -8580,7 +8690,7 @@ export default function App() {
   useAppShortcuts({
     escapeStopsRun: settings.escapeStopsRun,
     running: Boolean((running || childrenRunning) && activeThread),
-    modalOpen: spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: Boolean(activeThreadId),
     workspaceOpen: studioOpen && Boolean(activeProject),
@@ -8617,7 +8727,8 @@ export default function App() {
     });
   }, [setWorkflowRuns]);
 
-  const [pendingWorkflowOpen, setPendingWorkflowOpen] = useState<{ projectId: string; threadId: string } | null>(null);
+  const [pendingWorkflowOpen, setPendingWorkflowOpen] = useState<{ projectId: string; threadId: string; voiceGeneration: number } | null>(null);
+  const workflowNavigationGenerations = useRef(new Map<string, number>());
   const openWorkflowThreadRef = useRef(openAgent);
   openWorkflowThreadRef.current = openAgent;
 
@@ -8664,9 +8775,12 @@ export default function App() {
     },
     onThreadStarted: (project, threadId, source) => {
       if (source === "manual") {
+        const voiceGeneration = workflowNavigationGenerations.current.get(threadId);
+        workflowNavigationGenerations.current.delete(threadId);
+        if (voiceGeneration === undefined || isVoiceInputLocked() || voiceGeneration !== voiceInputLockGeneration()) return;
         setActiveProjectId(project.id);
         setWorkspaceMode("project");
-        setPendingWorkflowOpen({ projectId: project.id, threadId });
+        setPendingWorkflowOpen({ projectId: project.id, threadId, voiceGeneration });
       } else if (activeProject?.id === project.id) {
         void loadThreads(project);
       }
@@ -8676,6 +8790,10 @@ export default function App() {
   stopWorkflowRef.current = stopWorkflow;
 
   useEffect(() => {
+    if (pendingWorkflowOpen && (isVoiceInputLocked() || pendingWorkflowOpen.voiceGeneration !== voiceInputLockGeneration())) {
+      setPendingWorkflowOpen(null);
+      return;
+    }
     if (!pendingWorkflowOpen || workspaceMode !== "project" || activeProject?.id !== pendingWorkflowOpen.projectId) return;
     // The workspace-change effect has now committed the target project. Open
     // through its current selection closure so the path guard and hydration
@@ -8686,6 +8804,7 @@ export default function App() {
   }, [activeProject?.id, pendingWorkflowOpen, workspaceMode]);
 
   const openWorkflowRunThread = (threadId: string) => {
+    if (isVoiceInputLocked()) return;
     const run = workflowRuns.find((item) => item.threadId === threadId);
     const workflow = workflows.find((item) => item.lastThreadId === threadId);
     const projectId = run?.projectId ?? workflow?.projectId;
@@ -8698,7 +8817,7 @@ export default function App() {
     }
     setActiveProjectId(project.id);
     setWorkspaceMode("project");
-    setPendingWorkflowOpen({ projectId: project.id, threadId });
+    setPendingWorkflowOpen({ projectId: project.id, threadId, voiceGeneration: voiceInputLockGeneration() });
   };
 
   const workflowLaunchRef = useRef(workflowLaunch);
@@ -8713,6 +8832,7 @@ export default function App() {
     setWorkflowLaunch(null);
   }, []);
   const runWorkflowFromShortcut = useCallback((workflow: WorkflowDefinition) => {
+    if (isVoiceInputLocked()) return;
     if (workflowLaunchRef.current || workflowLaunchStarting.current) return;
     if (workflowRuns.some((run) => run.workflowId === workflow.id && run.status === "running")) {
       setError(`“${workflow.name}” is already running.`);
@@ -8724,6 +8844,7 @@ export default function App() {
   }, [workflowRuns, activeProject?.id]);
 
   const invokeComposerWorkflow = (id: string, prompt: string): Promise<boolean> => {
+    if (isVoiceInputLocked()) return Promise.resolve(false);
     const workflow = workflows.find((item) => item.id === id && item.enabled);
     if (!workflow || workflowLaunchRef.current || workflowLaunchStarting.current) return Promise.resolve(false);
     if (running || hasQueuedWork || attachments.length || feedback.notes.length) {
@@ -8754,6 +8875,7 @@ export default function App() {
   };
 
   const launchReviewedWorkflow = (id: string, variables: Record<string, string>, projectId: string) => {
+    if (isVoiceInputLocked()) return;
     const launch = workflowLaunchRef.current;
     if (!launch || launch.workflow.id !== id || workflowLaunchStarting.current) return;
     const latest = workflows.find((workflow) => workflow.id === id);
@@ -8769,9 +8891,11 @@ export default function App() {
     workflowLaunchStarting.current = launch;
     workflowLaunchRef.current = null;
     setWorkflowLaunch(null);
+    const voiceGeneration = voiceInputLockGeneration();
     void runWorkflow(id, "manual", variables, projectId, {
       userPrompt: launch.prompt,
-      onStarted: () => {
+      onStarted: (threadId) => {
+        workflowNavigationGenerations.current.set(threadId, voiceGeneration);
         if (workflowLaunchStarting.current === launch) workflowLaunchStarting.current = null;
         launch.resolve?.(true);
       },
@@ -8925,7 +9049,7 @@ export default function App() {
   }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
 
   return (
-    <div className="app-shell" data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
+    <div className="app-shell" onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
       <RendererLaunchCommitMarker />
       <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
       <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
@@ -8947,7 +9071,7 @@ export default function App() {
           directly so the edge tracks the pointer without rendering the app,
           and an unrelated render mid-drag cannot snap the sidebar back to the
           last committed width. */}
-      <aside ref={paneRefs.sidebar} inert={settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
+      <aside ref={paneRefs.sidebar} inert={voiceSession || settingsOpen || onboardingOpen ? true : undefined} className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
         {sidebarOpen && (
           <div
             className="pane-resize sidebar-resize"
@@ -9172,7 +9296,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main inert={settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
+      <main inert={voiceSession || settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
         <header className="topbar">
           <div className="topbar-left">
             {!sidebarOpen && (
@@ -10031,8 +10155,12 @@ export default function App() {
         onSchedules={setScheduledTasks}
         onWorkflows={setWorkflows}
         onRunWorkflow={async (workflowId, variables, projectId) => {
+          if (isVoiceInputLocked()) return;
+          const voiceGeneration = voiceInputLockGeneration();
           closeSettings();
-          await runWorkflow(workflowId, "manual", variables, projectId);
+          await runWorkflow(workflowId, "manual", variables, projectId, {
+            onStarted: (threadId) => workflowNavigationGenerations.current.set(threadId, voiceGeneration),
+          });
         }}
         onStopWorkflow={(workflowId) => stopWorkflow(workflowId)}
         onProjects={setProjects}
@@ -10118,7 +10246,8 @@ export default function App() {
       />
       </Suspense></ErrorBoundary>}
       <ConfirmDialogModal />
-      <SpellingMenu scope={JSON.stringify([attachmentKey, settingsOpen, confirmationOpen, Boolean(pendingApproval)])} />
+      <SpellingMenu scope={JSON.stringify([attachmentKey, settingsOpen, confirmationOpen, Boolean(pendingApproval), voiceSession?.id])} />
+      <VoiceInputLockModal session={voiceSession} />
       </FeedbackProvider>
       </MaxReasoningWarningContext.Provider>
     </div>

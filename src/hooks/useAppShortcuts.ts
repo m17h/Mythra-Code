@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { primaryModifierLabel, primaryModifierPressed } from "../lib/platform";
+import { isVoiceInputLocked } from "../lib/voiceInputLock";
 
 export interface AppShortcutContext {
   modalOpen: boolean;
@@ -49,6 +50,10 @@ export function useAppShortcuts(context: AppShortcutContext): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      // Read synchronously: voice owns interaction before React can render its
+      // modal, including the command-palette exception below. Native window
+      // close/Quit shortcuts are left to the OS and the close guard.
+      if (isVoiceInputLocked()) return;
       const current = contextRef.current;
       const shortcutModifier = primaryModifierPressed(event);
       const key = event.key.toLowerCase();

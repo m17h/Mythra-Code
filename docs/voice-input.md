@@ -17,17 +17,14 @@ Catalogs are cached for 30 minutes per provider, and requests share one fetch. T
 
 ## Recording to draft
 
-1. Pressing the microphone checks the key first, then the model. With no key, the **No transcription API key** dialog offers **Open transcription settings**; with no model, a similar dialog asks for one. The microphone is not opened until these checks pass. (The audio context is created inside the click, because some engines require a user gesture for audio; that does not open the microphone.) Setup, including an OS permission prompt, is abandoned after 60 seconds.
-2. Recording captures mono 16-bit PCM WAV at 16 kHz (an AudioWorklet served from the app, with a fallback for engines without one). It stops and transcribes automatically at 10 minutes, about 19 MB, below the providers' 25 MB limit. A wall-clock timer enforces the limit even if the audio graph stops delivering samples.
+1. Pressing the microphone checks the key first, then the model, and obtains a native request ID before recording. With no key, the **No transcription API key** dialog offers **Open transcription settings**; with no model, a similar dialog asks for one. These setup dialogs remain usable. The microphone is not opened until these checks pass. (The audio context is created inside the click, because some engines require a user gesture for audio; that does not open the microphone.) Setup, including an OS permission prompt, is abandoned after 60 seconds.
+2. Recording captures mono 16-bit PCM WAV at 16 kHz, or the device rate if lower (an AudioWorklet served from the app, with a fallback for engines without one). It stops and transcribes automatically at 10 minutes, about 19 MB of WAV data, below the providers' 25 MB limit. Total working memory can be higher than the final WAV size. A wall-clock timer enforces the limit even if the audio graph stops delivering samples. Stopping the older fallback collects one final audio callback, normally waiting up to 400 ms. Lower sample rates get time for one audio buffer plus scheduling room, capped at one second; Discard still releases capture immediately.
 3. **Stop & transcribe** uploads that one file to the fixed HTTPS endpoint of the active provider. Redirects are refused, responses are size-limited, and Mythra Code never automatically retries an uncertain request. Very short or silent recordings are not uploaded.
-4. While the transcription runs you can keep typing in the same thread. The text is appended to that draft; your message is only sent when you send it.
+4. An app-themed voice dialog keeps the destination fixed during setup, recording, finishing and transcription. New thread, conversation/project navigation, Settings, draft actions and their keyboard shortcuts are blocked until voice input finishes or is canceled. Stop & transcribe and Discard/Cancel remain available, as does closing the window. The transcript is appended to the preserved draft; the message is not sent automatically. Afterward the rest of the app becomes usable again.
 
-Voice input is canceled, the microphone released and any upload aborted natively when you:
+Voice input is canceled, the microphone released and any upload aborted natively when you press Discard/Cancel, close the composer, or request to close the window (including Quit). The same cancellation guards remain in place if the app replaces the draft or its thread, provider or model changes through another asynchronous path; a late transcript cannot be appended to a different draft.
 
-- send, steer, schedule or run a workflow from the draft, or the app replaces the draft;
-- switch threads (including starting a new conversation);
-- change the saved transcription provider or model (audio is never rerouted to the new choice);
-- press Discard or Cancel, close the composer, or request to close the window (including Quit).
+The app's backup communication transport is supported too. A repeated invocation for the same native-issued request ID joins the existing upload or retrieves its recent result instead of uploading again. Changing the audio, provider or model while reusing that ID is refused. Even after a cached result expires, a consumed ID cannot start another upload in the same app process.
 
 Hiding the window, or a disconnected microphone, discards a recording that hasn't been uploaded yet. An upload already in progress continues while the window is hidden, because its text still goes to the open draft. Requesting to close the window cancels voice input immediately, even while pending changes are being saved or a close confirmation is open. A provider may still bill an upload it had received before it was canceled.
 
@@ -38,7 +35,7 @@ Provider errors use fixed messages chosen from the HTTP status. Provider error t
 - **macOS** asks for microphone permission the first time (the app declares `NSMicrophoneUsageDescription` and the hardened-runtime `audio-input` entitlement). If access was denied, turn it on in System Settings › Privacy & Security › Microphone.
 - **Windows** shows the WebView's microphone prompt, and the system setting Settings › Privacy & security › Microphone must allow desktop apps.
 
-Mythra Code keeps a recording only in memory until the transcript arrives and never writes it to disk. The provider processes, and may retain, the uploaded audio under its own policies.
+Mythra Code keeps audio only in memory until the request ends and never writes it to disk. To recover a lost internal response without another paid upload, native code retains recent transcript/error results in memory for at most 10 minutes, bounded to 16 results and 2 MiB total; canceling discards the request's cached transcript. No audio is retained in this cache. The provider processes, and may retain, the uploaded audio under its own policies.
 
 ## Known limitations
 

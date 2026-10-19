@@ -923,12 +923,12 @@ export const Composer = forwardRef<ComposerHandle, {
           {props.voiceInput && (
             <VoiceInputButton
               view={voice.view}
-              disabled={workflowSubmitting}
+              disabled={workflowSubmitting || submitting || (props.running && !props.queueing)}
               onStart={() => {
                 // Workflow acceptance consumes this draft asynchronously. The
                 // textarea stays disabled until it settles; dictation must
                 // obey the same admission, including before React rerenders.
-                if (workflowSubmittingRef.current.has(threadKeyRef.current)) return;
+                if (workflowSubmittingRef.current.has(threadKeyRef.current) || submittingRef.current.has(threadKeyRef.current) || (props.running && !props.queueing)) return;
                 void voice.start();
               }}
               onStop={() => void voice.stop()}

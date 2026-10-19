@@ -273,6 +273,10 @@ export class VoiceRecorder {
     node.onaudioprocess = (event) => {
       // getChannelData returns a view the engine reuses; copy it.
       this.accept(new Float32Array(event.inputBuffer.getChannelData(0)));
+      // Unlike a worklet, ScriptProcessor cannot flush a partial input buffer.
+      // Stop keeps exactly one final callback so the buffered speech tail is
+      // retained; resolving the flush also freezes further fallback capture.
+      if (this.stopping) this.flushed?.();
     };
     this.source.connect(node);
     node.connect(this.sink);
@@ -312,18 +316,30 @@ export class VoiceRecorder {
     this.stopping = true;
     if (this.deadline !== undefined) window.clearTimeout(this.deadline);
     this.deadline = undefined;
-    if (this.worklet) {
+    if (this.worklet || this.fallback) {
       const worklet = this.worklet;
+      const fallback = this.fallback;
+      // At 8 kHz a 4096-frame fallback buffer takes 512 ms, so a fixed
+      // 400 ms timeout can drop its tail even on a healthy audio graph.
+      // Allow one buffer plus scheduling room, but never wait indefinitely.
+      const flushTimeout = fallback
+        ? Math.min(1_000, Math.max(FLUSH_TIMEOUT_MS, Math.ceil(FALLBACK_BUFFER_FRAMES * 1000 / this.context.sampleRate) + 100))
+        : FLUSH_TIMEOUT_MS;
       await new Promise<void>((resolve) => {
-        const timer = window.setTimeout(resolve, FLUSH_TIMEOUT_MS);
-        this.flushed = () => {
+        const finish = () => {
+          if (this.flushed !== finish) return;
           window.clearTimeout(timer);
+          this.flushed = null;
+          if (fallback) fallback.onaudioprocess = null;
           resolve();
         };
-        try { worklet.port.postMessage("flush"); }
-        catch { this.flushed?.(); }
+        const timer = window.setTimeout(finish, flushTimeout);
+        this.flushed = finish;
+        if (worklet) {
+          try { worklet.port.postMessage("flush"); }
+          catch { finish(); }
+        }
       });
-      this.flushed = null;
     }
     if (this.released) return null;
     const { chunks, samples, sampleRate } = this;
