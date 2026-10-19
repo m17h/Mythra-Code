@@ -72,7 +72,6 @@
 }
 .app-shell[data-theme][data-color-scheme] .stop-button:hover { background: var(--panel-3); }
 .app-shell[data-theme][data-color-scheme] .steer-button { height: 34px; padding: 0 13px; border-radius: var(--r-control); font-weight: 600; }
-.app-shell[data-theme][data-color-scheme] .queue-hint { height: 30px; padding: 0 11px; border-radius: var(--r-control); font-family: var(--font-mono); font-size: 10px; }
 
 .app-shell[data-theme][data-color-scheme] .composer-caption { margin-top: 8px; color: var(--muted-2); font-size: 10.5px; text-align: center; }
 .app-shell[data-theme][data-color-scheme] .context-meter { font-family: var(--font-mono); }
@@ -219,8 +218,7 @@
   .app-shell[data-theme][data-color-scheme] .send-button:hover:not(:disabled) { transform: scale(1.07); }
   .app-shell[data-theme][data-color-scheme] .send-button > svg { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
   .app-shell[data-theme][data-color-scheme] .stop-button { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
-  .app-shell[data-theme][data-color-scheme] .steer-button,
-  .app-shell[data-theme][data-color-scheme] .queue-hint { animation: lm-slide-left var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .steer-button { animation: lm-slide-left var(--lm-d-3) var(--lm-ease-out) backwards; }
   .app-shell[data-theme][data-color-scheme] .queued-turn { animation: lm-rise-sm var(--lm-d-3) var(--lm-spring-soft) backwards; }
   .app-shell[data-theme][data-color-scheme] .composer-attachments > span { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
   .app-shell[data-theme][data-color-scheme] .mention-menu { animation: lm-pop var(--lm-d-2) var(--lm-ease-out) backwards; transform-origin: bottom left; }

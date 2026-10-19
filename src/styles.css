@@ -2776,7 +2776,6 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 
 /* Running composer: follow-ups queue by default; steering is explicit. */
 .composer.queueing { border-color: color-mix(in srgb, var(--green) 24%, var(--line-strong)); }
-.queue-hint { display: flex; align-items: center; gap: 5px; height: 29px; padding: 0 8px; border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.035); font-size: var(--fs-meta); white-space: nowrap; }
 .steer-button { height: var(--ctl-md); display: flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--info) 24%, var(--line)); border-radius: var(--r-md); color: var(--info); background: color-mix(in srgb, var(--info) 7%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: background var(--t-fast) ease, border-color var(--t-fast) ease, opacity var(--t-fast) ease; }
 .steer-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); background: color-mix(in srgb, var(--info) 13%, transparent); }
 .steer-button:disabled { opacity: .42; cursor: default; }

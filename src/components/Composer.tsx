@@ -25,6 +25,8 @@ import { useSkillReferenceInspector } from "./SkillReferenceInspector";
 import { eligibleQueuedTurns, formatDeliveryTime, pendingTimedTurns } from "../lib/timedPrompts";
 import { ScheduledPrompts, type TimedPromptActions } from "./ScheduledPrompts";
 import { TimedPromptPicker } from "./TimedPromptPicker";
+import { useVoiceInput, type VoiceInputConfig } from "../hooks/useVoiceInput";
+import { VoiceInputButton, VoiceInputStatus } from "./VoiceInput";
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
@@ -268,6 +270,8 @@ export const Composer = forwardRef<ComposerHandle, {
   newThreadPromptDetail?: (entry: QueuedTurn) => string | undefined;
   /** Live, turn-scoped provider notice (for example Claude continuation). */
   continuationNotice?: ReactNode;
+  /** Voice input's saved provider and model. Absent hides the microphone. */
+  voiceInput?: VoiceInputConfig;
   onStop: () => void;
 }>(function Composer(props, ref) {
   // Pending timed prompts are not part of the FIFO: they neither make Enter
@@ -325,13 +329,38 @@ export const Composer = forwardRef<ComposerHandle, {
     setScheduleOpen(false);
   }
 
+  // A transcript joins the end of the open draft and is never sent. Voice is
+  // canceled on every thread switch and before the draft is sent, scheduled
+  // or replaced, so the thread check is only a last guard. The persisted
+  // draft is canonical (typing persists synchronously); persist once, then
+  // show it only if that thread is still open.
+  const appendTranscript = useCallback((key: string, text: string) => {
+    if (threadKeyRef.current !== key) return;
+    const current = draftFor(key);
+    const next = !current ? text : /\s$/.test(current) ? `${current}${text}` : `${current} ${text}`;
+    persistDraft(key, next);
+    setDraftState((shown) => threadKeyRef.current === key ? draftFor(key) : shown);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea || threadKeyRef.current !== key || document.activeElement === textarea) return;
+      // Land after the new text unless focus has moved somewhere else.
+      const active = document.activeElement;
+      if (active && active !== document.body && !textarea.closest(".composer")?.contains(active)) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  }, []);
+  const voice = useVoiceInput({ threadKey: props.threadKey, config: props.voiceInput, onTranscript: appendTranscript });
+  const cancelVoice = voice.cancel;
+
   useImperativeHandle(ref, () => ({
     setDraft: (text: string) => {
+      cancelVoice("Voice input canceled because the draft was replaced.");
       setDraft(text);
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
     focus: () => textareaRef.current?.focus(),
-  }), [setDraft]);
+  }), [cancelVoice, setDraft]);
 
   // Dismissing also abandons the file lookup already in flight. Without that,
   // the debounced search from the last keystroke resolves a moment later and
@@ -507,6 +536,7 @@ export const Composer = forwardRef<ComposerHandle, {
       const submittedDraft = draft;
       const submittedSelection = selectedWorkflowsRef.current.get(sentFromKey);
       if (workflowSubmittingRef.current.has(sentFromKey)) return;
+      cancelVoice("Voice input canceled because the draft was used to run a workflow.");
       workflowSubmittingRef.current.add(sentFromKey);
       setWorkflowSubmittingKeys(new Set(workflowSubmittingRef.current));
       closeWorkflows();
@@ -541,6 +571,8 @@ export const Composer = forwardRef<ComposerHandle, {
     // until that short startup window closes instead of starting a second
     // independent thread.
     if ((!text && !props.hasFeedback) || submittingRef.current.has(threadKeyRef.current) || (props.running && !props.queueing)) return;
+    // A transcript arriving after this would recreate the consumed draft.
+    cancelVoice("Voice input canceled because the message was sent.");
     // Capture the sending thread's key: the user may switch threads while the
     // RPC is in flight, and a failed send must restore into the ORIGINAL
     // thread's draft, not whichever thread is now visible.
@@ -560,23 +592,17 @@ export const Composer = forwardRef<ComposerHandle, {
       submittingRef.current.delete(sentFromKey);
       setSubmittingKeys(new Set(submittingRef.current));
       if (!delivered && text) {
+        // Persist synchronously, just like typing and transcript admission.
+        // A deferred React updater can otherwise overwrite a transcript that
+        // arrived after this callback but before React processes the queue.
+        const existing = draftFor(sentFromKey);
+        persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
         if (threadKeyRef.current === sentFromKey) {
-          // Still on the same thread — restore the failed text ahead of anything
-          // the user typed while the send was in flight, so neither is lost.
-          setDraftState((current) => {
-            const restored = current && current !== text ? `${text}\n\n${current}` : text;
-            persistDraft(sentFromKey, restored);
-            return restored;
-          });
-        } else {
-          // Restore silently into the original thread's persisted draft,
-          // keeping any draft written there since.
-          const existing = draftFor(sentFromKey);
-          persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
+          setDraftState((shown) => threadKeyRef.current === sentFromKey ? draftFor(sentFromKey) : shown);
         }
       }
     }
-  }, [canLaunchWorkflow, closeMentions, closeWorkflows, draft, props, selectedWorkflow, setDraft]);
+  }, [canLaunchWorkflow, cancelVoice, closeMentions, closeWorkflows, draft, props, selectedWorkflow, setDraft]);
 
   const canSchedule = Boolean(props.onSchedule) && !selectedWorkflow && !submitting && !workflowSubmitting
     && Boolean(draft.trim() || props.hasFeedback);
@@ -585,6 +611,7 @@ export const Composer = forwardRef<ComposerHandle, {
   const schedule = useCallback(async (deliverAt: number): Promise<boolean> => {
     const text = draft.trim();
     if (!props.onSchedule || (!text && !props.hasFeedback) || submittingRef.current.has(threadKeyRef.current)) return false;
+    cancelVoice("Voice input canceled because the message was scheduled.");
     const sentFromKey = threadKeyRef.current;
     submittingRef.current.add(sentFromKey);
     setSubmittingKeys(new Set(submittingRef.current));
@@ -600,20 +627,15 @@ export const Composer = forwardRef<ComposerHandle, {
       submittingRef.current.delete(sentFromKey);
       setSubmittingKeys(new Set(submittingRef.current));
       if (!scheduled && text) {
+        const existing = draftFor(sentFromKey);
+        persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
         if (threadKeyRef.current === sentFromKey) {
-          setDraftState((current) => {
-            const restored = current && current !== text ? `${text}\n\n${current}` : text;
-            persistDraft(sentFromKey, restored);
-            return restored;
-          });
-        } else {
-          const existing = draftFor(sentFromKey);
-          persistDraft(sentFromKey, existing && existing !== text ? `${text}\n\n${existing}` : text);
+          setDraftState((shown) => threadKeyRef.current === sentFromKey ? draftFor(sentFromKey) : shown);
         }
       }
     }
     return scheduled;
-  }, [closeMentions, closeWorkflows, draft, props, setDraft]);
+  }, [cancelVoice, closeMentions, closeWorkflows, draft, props, setDraft]);
 
   return (
     <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""}`}>
@@ -862,13 +884,20 @@ export const Composer = forwardRef<ComposerHandle, {
       </div>
       <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
       {dependencyPreview.report && hasBlockedSkillDependencies(dependencyPreview.report) && <SkillDependencyDetails report={dependencyPreview.report} />}
+      {props.voiceInput && (
+        <VoiceInputStatus
+          view={voice.view}
+          message={voice.message}
+          onStop={() => void voice.stop()}
+          onCancel={() => voice.cancel()}
+          onDismiss={voice.dismissMessage}
+          onOpenSettings={props.voiceInput.onOpenSettings}
+        />
+      )}
       {props.modelControls}
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>
         <div className="composer-actions">
-          {willQueue && (
-            <span className="queue-hint" title={props.queueing ? "Enter queues this message as the next turn. Use Steer to change the work already in progress." : "Enter adds this message after the messages already in the queue."}><ListPlus size={12} /> Enter queues</span>
-          )}
           {(props.running || props.childrenRunning) && (
             <button
               className="stop-button"
@@ -890,6 +919,21 @@ export const Composer = forwardRef<ComposerHandle, {
             >
               <CornerUpRight size={14} /> <span>Steer</span>
             </button>
+          )}
+          {props.voiceInput && (
+            <VoiceInputButton
+              view={voice.view}
+              disabled={workflowSubmitting}
+              onStart={() => {
+                // Workflow acceptance consumes this draft asynchronously. The
+                // textarea stays disabled until it settles; dictation must
+                // obey the same admission, including before React rerenders.
+                if (workflowSubmittingRef.current.has(threadKeyRef.current)) return;
+                void voice.start();
+              }}
+              onStop={() => void voice.stop()}
+              onCancel={() => voice.cancel()}
+            />
           )}
           {props.onSchedule && (
             <button

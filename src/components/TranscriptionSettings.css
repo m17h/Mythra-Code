@@ -1,0 +1,15 @@
+.transcription-settings .transcription-provider-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+.transcription-settings .credential-panel small { line-height: 1.45; }
+.transcription-settings .key-input-row { flex-wrap: wrap; }
+.transcription-settings .key-input-row input { flex: 1 1 180px; min-width: 0; }
+.transcription-settings .key-input-row button { flex-shrink: 0; }
+.transcription-settings .set-row.stack > .set-control.transcription-model-row { display: flex; align-items: center; gap: var(--s-2); }
+.transcription-model-row > .app-select { flex: 1 1 auto; min-width: 0; }
+.transcription-settings .credential-panel > .transcription-key-copy { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
+.transcription-settings .transcription-key-copy small { flex: 1 1 220px; color: var(--muted); }
+.transcription-settings .transcription-error-text { color: var(--red); }
+.transcription-settings .transcription-notice-text { color: var(--green); }
+.transcription-links { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-3); margin-top: var(--s-2); }
+.transcription-link { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; color: var(--green); background: none; font: inherit; font-size: var(--fs-meta); cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; }
+.transcription-link:hover { text-decoration-color: currentColor; }
+.transcription-link:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 3px; }

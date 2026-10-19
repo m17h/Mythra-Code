@@ -62,6 +62,7 @@ mod skills;
 mod spelling;
 mod instruction_files;
 mod startup_guard;
+mod transcription;
 mod workspace_folder;
 use agents::{
     child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
@@ -9084,6 +9085,7 @@ pub fn run() {
         .manage(tray::TrayState::default())
         .manage(CloseGuardState::default())
         .manage(StartupGuardState::default())
+        .manage(transcription::TranscriptionState::default())
         .invoke_handler({
             let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> =
                 Box::new(tauri::generate_handler![
@@ -9249,7 +9251,14 @@ pub fn run() {
                     language_tools_set_auto_install,
                     language_tools_install,
                     language_tools_set_enabled,
-                    language_tools_prepare_project
+                    language_tools_prepare_project,
+                    transcription::transcription_key_status,
+                    transcription::transcription_save_key,
+                    transcription::transcription_remove_key,
+                    transcription::transcription_copy_openrouter_account_key,
+                    transcription::transcription_models,
+                    transcription::transcription_transcribe,
+                    transcription::transcription_cancel
                 ]);
             move |invoke: tauri::ipc::Invoke| {
                 if release_qa::active() {
