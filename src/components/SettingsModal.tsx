@@ -41,7 +41,9 @@ import {
   Cpu,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
-import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
+import { cancelClaudeLogin, isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
+import { claudeUsesApiKey, codexAccountReady } from "../lib/providerAuth";
+import { ClaudeBillingPanel, OpenAiApiKeyPanel, useProviderAuthOperation } from "./ProviderApiKeyPanel";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
 import { DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_SETTINGS, DEFAULT_TERMINAL_TIMEOUT_MINUTES, EFFORT_SLIDER_STYLES, MAX_TERMINAL_TIMEOUT_MINUTES, RELEASE_NOTES_URL, THEMES, sanitizeTerminalTimeoutMinutes } from "../lib/appConfig";
 import { resolveThreadTitleModel } from "../lib/threadTitles";
@@ -191,7 +193,7 @@ type SettingsRow = {
   label: string;
   keywords?: string;
   /** Stable target for controls outside the shared setting-row markup. */
-  target?: "openrouter-key" | "lmstudio-server" | "transcription-key";
+  target?: "openrouter-key" | "lmstudio-server" | "transcription-key" | "openai-api-key" | "claude-billing";
   accountProvider?: Provider;
 };
 
@@ -210,6 +212,8 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "projects", label: "Automatic thread titles", keywords: "name rename title luna" },
   { pane: "projects", label: "Project profiles", keywords: "export import copy share project settings profile differs defaults" },
   { pane: "models", label: "Accounts & connections", keywords: "sign in login account" },
+  { pane: "models", label: "OpenAI API key and billing", keywords: "openai api key billing subscription chatgpt codex pay as you go", target: "openai-api-key", accountProvider: "openai" },
+  { pane: "models", label: "Claude API key and billing", keywords: "anthropic claude api key billing subscription console", target: "claude-billing", accountProvider: "claude" },
   { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter", target: "openrouter-key", accountProvider: "openrouter" },
   { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token", target: "lmstudio-server", accountProvider: "lmstudio" },
   { pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
@@ -292,8 +296,8 @@ const INTERFACE_SIZE_OPTIONS: AppSelectOption[] = [
 ];
 
 const SERVICE_TIER_OPTIONS: AppSelectOption[] = [
-  { value: "", label: "Standard", detail: "Regular ChatGPT subscription speed" },
-  { value: "priority", label: "Fast / priority", detail: "Priority processing when your plan includes it" },
+  { value: "", label: "Standard", detail: "Regular processing" },
+  { value: "priority", label: "Fast / priority", detail: "When supported · API pricing or plan limits may differ" },
 ];
 
 const TERMINAL_SCROLLBACK_OPTIONS: AppSelectOption[] = [
@@ -303,8 +307,8 @@ const TERMINAL_SCROLLBACK_OPTIONS: AppSelectOption[] = [
 ];
 
 const PROJECT_PROVIDER_OPTIONS: AppSelectOption[] = [
-  { value: "openai", label: "OpenAI", detail: "ChatGPT subscription", icon: <ProviderLogo provider="openai" size={15} /> },
-  { value: "claude", label: "Claude", detail: "Claude Code subscription", icon: <ProviderLogo provider="claude" size={15} /> },
+  { value: "openai", label: "OpenAI", detail: "Codex · subscription or API key", icon: <ProviderLogo provider="openai" size={15} /> },
+  { value: "claude", label: "Claude", detail: "Claude Code · subscription or API key", icon: <ProviderLogo provider="claude" size={15} /> },
   { value: "cursor", label: "Cursor", detail: "Cursor subscription", icon: <ProviderLogo provider="cursor" size={15} /> },
   { value: "openrouter", label: "OpenRouter", detail: "API model routing", icon: <ProviderLogo provider="openrouter" size={15} /> },
   { value: "lmstudio", label: "LM Studio", detail: "Local models", icon: <ProviderLogo provider="lmstudio" size={15} /> },
@@ -375,7 +379,7 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
 }
 
 /** An ordinary account read reports Codex's local sign-in, not service health. */
-const OPENAI_SIGNED_IN_NOTE = "Signed in according to Codex on this device. ChatGPT service status is not checked.";
+const OPENAI_SIGNED_IN_NOTE = "Signed in according to Codex on this device. OpenAI service status is not checked.";
 
 function accountConnectionLabel(check: string | undefined, connected: boolean, available: boolean, missing: string, signedInLabel = "Connected"): string {
   if (check === "Checking connection…") return "Checking…";
@@ -465,6 +469,7 @@ export function SettingsModal({
   onRefreshAccounts,
   runtimeStatus,
   claudeStatus = null,
+  openAiLoginStarting = false,
   claudeLoginStarting = false,
   cursorStatus = null,
   cursorLoginStarting = false,
@@ -503,6 +508,8 @@ export function SettingsModal({
   onOpenAiRefresh = async () => {},
   onClaudeSignIn = async () => {},
   onClaudeRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, authMethod: null, email: null, subscriptionType: null, warning: null }),
+  onOpenAiBillingChanged = async () => {},
+  onClaudeBillingChanged,
   onCursorSignIn = async () => {},
   onCursorRefresh = async () => ({ available: false, path: null, version: null, loggedIn: false, email: null, subscriptionType: null, warning: null }),
   onRuntimeRequired,
@@ -583,6 +590,7 @@ export function SettingsModal({
   onRefreshAccounts?: () => Promise<void>;
   runtimeStatus: CodexRuntimeStatus | null;
   claudeStatus?: ClaudeRuntimeStatus | null;
+  openAiLoginStarting?: boolean;
   claudeLoginStarting?: boolean;
   cursorStatus?: CursorRuntimeStatus | null;
   cursorLoginStarting?: boolean;
@@ -628,6 +636,10 @@ export function SettingsModal({
   onOpenAiRefresh?: () => Promise<unknown>;
   onClaudeSignIn?: () => Promise<void>;
   onClaudeRefresh?: () => Promise<ClaudeRuntimeStatus | null>;
+  /** Codex's sign-in changed between ChatGPT and an OpenAI API key. */
+  onOpenAiBillingChanged?: () => Promise<void>;
+  /** Claude's billing choice or Anthropic API key changed. */
+  onClaudeBillingChanged?: () => Promise<unknown>;
   onCursorSignIn?: () => Promise<void>;
   onCursorRefresh?: () => Promise<CursorRuntimeStatus | null>;
   onRuntimeRequired: () => void;
@@ -701,6 +713,9 @@ export function SettingsModal({
   const [local, setLocal] = useState(settings);
   // Browsing credentials is not an edit to the defaults for new threads.
   const [accountProvider, setAccountProvider] = useState<Provider>(settings.provider);
+  const [openAiBilling, setOpenAiBilling] = useState<"subscription" | "apiKey" | null>(null);
+  const openAiAuthOperation = useProviderAuthOperation();
+  const claudeAuthOperation = useProviderAuthOperation();
   const analyzeGlobalPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", text), [onAnalyzeSkillDependencies]);
   const analyzeCodexPrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "openai", text, "")), [local.systemPrompt, onAnalyzeSkillDependencies]);
   const analyzeClaudePrompt = useCallback((text: string) => onAnalyzeSkillDependencies!("", resolveProviderSystemPrompt(local.systemPrompt, "claude", "", text)), [local.systemPrompt, onAnalyzeSkillDependencies]);
@@ -807,7 +822,7 @@ export function SettingsModal({
         ? "Live catalog from your Claude Code CLI."
         : local.provider === "cursor"
           ? "Choose from the live catalog associated with your Cursor subscription."
-          : "Availability follows the signed-in ChatGPT account.";
+          : "Availability follows the selected OpenAI account.";
   const developerUpdateAvailable = Boolean(
     developerRuntimeUpdater.status?.claude.updateAvailable
     || developerRuntimeUpdater.status?.codex.updateAvailable,
@@ -1016,6 +1031,9 @@ export function SettingsModal({
       onRuntimeRequired();
       return;
     }
+    if (openAiLoginStarting) return;
+    const finish = openAiAuthOperation.begin("signingIn");
+    if (!finish) return;
     setBusy(true);
     onError(null);
     try {
@@ -1024,10 +1042,14 @@ export function SettingsModal({
       onError(friendlyError(reason));
     } finally {
       setBusy(false);
+      finish();
     }
   };
 
   const signOut = async () => {
+    if (openAiLoginStarting) return;
+    const finish = openAiAuthOperation.begin("signingOut");
+    if (!finish) return;
     setBusy(true);
     try {
       await onSignOut();
@@ -1035,15 +1057,50 @@ export function SettingsModal({
       onError(friendlyError(reason));
     } finally {
       setBusy(false);
+      finish();
     }
   };
 
-  // Shows this button's own renewal. Not disabled: repeat clicks join the
-  // renewal in flight, and a click during a routine check still renews.
+  const signInClaude = async () => {
+    if (claudeLoginStarting) return;
+    const finish = claudeAuthOperation.begin("signingIn");
+    if (!finish) return;
+    try {
+      await (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"));
+    } catch (reason) {
+      onError(friendlyError(reason));
+    } finally {
+      // Sign-in resolves once the browser flow finishes, is cancelled or
+      // times out; the card offers Cancel while it waits.
+      finish();
+    }
+  };
+
+  // Manual account reads share the provider's operation lock with mutations.
+  // Routine background checks remain managed by the account refresh owner.
   const [openAiRefreshing, setOpenAiRefreshing] = useState(0);
   const refreshOpenAi = () => {
+    if (openAiLoginStarting || openAiAuthOperation.busy) return;
+    const finish = openAiAuthOperation.begin("refreshing");
+    if (!finish) return;
     setOpenAiRefreshing((count) => count + 1);
-    void onOpenAiRefresh().catch(() => undefined).finally(() => setOpenAiRefreshing((count) => count - 1));
+    void onOpenAiRefresh().catch(() => undefined).finally(() => {
+      setOpenAiRefreshing((count) => count - 1);
+      finish();
+    });
+  };
+
+  const refreshClaude = async () => {
+    if (claudeLoginStarting) return;
+    const finish = claudeAuthOperation.begin("refreshing");
+    if (!finish) return;
+    try {
+      await onClaudeRefresh();
+    } catch (reason) {
+      onError(friendlyError(reason));
+    } finally {
+      finish();
+    }
   };
 
   const storeKey = async () => {
@@ -1889,7 +1946,7 @@ export function SettingsModal({
               <div className="set-row">
                 <div className="set-copy">
                   <strong>OpenAI service tier</strong>
-                  <small>How ChatGPT subscription requests are scheduled.</small>
+                  <small>How OpenAI requests are scheduled. API pricing or subscription limits may differ.</small>
                 </div>
                 <div className="set-control">
                   <AppSelectMenu value={local.serviceTier ?? ""} options={SERVICE_TIER_OPTIONS} ariaLabel="OpenAI service tier" onChange={(value) => setLocal({ ...local, serviceTier: value || null })} />
@@ -2222,14 +2279,14 @@ export function SettingsModal({
             <div className="provider-cards">
               <button className={`provider-card ${accountProvider === "openai" ? "selected" : ""}`} aria-pressed={accountProvider === "openai"} onClick={() => setAccountProvider("openai")}>
                 <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
-                <span><strong>OpenAI</strong><small>ChatGPT subscription</small></span>
-                <span className={`provider-status ${account?.type === "chatgpt" && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (account?.type === "chatgpt" ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, account?.type === "chatgpt", Boolean(runtimeStatus?.available), "Codex CLI needed", "Signed in")}</span>
+                <span><strong>OpenAI</strong><small>ChatGPT plan or API key</small></span>
+                <span className={`provider-status ${codexAccountReady(account) && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (codexAccountReady(account) ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, codexAccountReady(account), Boolean(runtimeStatus?.available), "Codex CLI needed", account?.type === "apiKey" ? "API key" : "Signed in")}</span>
                 {accountProvider === "openai" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "claude" ? "selected" : ""}`} aria-pressed={accountProvider === "claude"} onClick={() => setAccountProvider("claude")}>
                 <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={18} />}</span>
-                <span><strong>Anthropic</strong><small>Claude Code subscription</small></span>
-                <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available), "Claude Code needed")}</span>
+                <span><strong>Anthropic</strong><small>Claude plan or API key</small></span>
+                <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{claudeUsesApiKey(claudeStatus) && !claudeStatus?.loggedIn && !accountChecks.claude ? "Key needed" : accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available), "Claude Code needed", claudeUsesApiKey(claudeStatus) ? "API key" : "Connected")}</span>
                 {accountProvider === "claude" && <Check size={16} />}
               </button>
               <button className={`provider-card ${accountProvider === "cursor" ? "selected" : ""}`} aria-pressed={accountProvider === "cursor"} onClick={() => setAccountProvider("cursor")}>
@@ -2253,23 +2310,26 @@ export function SettingsModal({
             </div>
 
             {accountProvider === "openai" ? (
+              <>
+              <OpenAiApiKeyPanel visible={open} account={account} runtimeAvailable={Boolean(runtimeStatus?.available)} operation={openAiAuthOperation} disabled={openAiLoginStarting || busy} onChanged={onOpenAiBillingChanged} onBillingRead={setOpenAiBilling} />
               <div className="credential-panel">
                 <div>
-                  <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : "ChatGPT subscription"}</strong>
-                  <small>{accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan · signed in to Codex` : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
+                  <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : openAiBilling === "apiKey" ? "OpenAI API connection" : "OpenAI connection"}</strong>
+                  <small>{accountChecks.openai === "Checking connection…" ? accountChecks.openai : openAiBilling === "apiKey" && !account ? "Save or connect an API key above" : accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan · signed in to Codex` : account?.type === "apiKey" ? "Billed per token to your OpenAI API account · signed in to Codex" : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
                 </div>
-                {account?.type === "chatgpt" ? (
+                {codexAccountReady(account) ? (
                   <div className="credential-actions">
                     <span className={`connected-badge${accountChecks.openai ? " unverified" : ""}`} title={accountChecks.openai ? undefined : OPENAI_SIGNED_IN_NOTE} aria-live="polite">{accountChecks.openai === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.openai ? <Check size={12} /> : null} {accountChecks.openai === "Checking connection…" ? "Checking…" : accountChecks.openai ? "Unverified" : "Signed in"}</span>
-                    <button className="secondary-button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
+                    <button className="secondary-button" onClick={() => void signOut()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>Sign out</button>
                   </div>
-                ) : (
-                  <button className="secondary-button" onClick={() => void signIn()} disabled={busy}>
-                    {busy ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
+                ) : openAiBilling !== "apiKey" || !runtimeStatus?.available ? (
+                  <button className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
+                    {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
                   </button>
-                )}
-                {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh ChatGPT sign-in" aria-label="Refresh ChatGPT sign-in" aria-busy={openAiRefreshing > 0}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
+                ) : null}
+                {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh OpenAI connection" aria-label="Refresh OpenAI connection" aria-busy={openAiRefreshing > 0} disabled={openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
               </div>
+              </>
             ) : accountProvider === "openrouter" ? (
               <div className="credential-panel stacked" data-settings-row="openrouter-key">
                 <div className="credential-status">
@@ -2307,22 +2367,31 @@ export function SettingsModal({
               </div>
             ) : accountProvider === "claude" ? (
               <>
+              <ClaudeBillingPanel visible={open} claudeStatus={claudeStatus} operation={claudeAuthOperation} disabled={claudeLoginStarting} onChanged={onClaudeBillingChanged ?? onClaudeRefresh} />
               <div className="credential-panel">
                 <div>
-                  <strong>{claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
-                  <small>{accountChecks.claude || (claudeStatus?.loggedIn
+                  <strong>{claudeUsesApiKey(claudeStatus) ? "Anthropic API key" : claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
+                  <small>{accountChecks.claude || (claudeUsesApiKey(claudeStatus)
+                    ? claudeStatus?.loggedIn ? `Billed per token through ${claudeStatus.version || "Claude Code"}` : claudeStatus?.warning || "Add an Anthropic API key above"
+                    : claudeStatus?.loggedIn
                     ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
                     : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"))}</small>
                 </div>
                 {claudeStatus?.loggedIn ? (
                   <span className={`connected-badge${accountChecks.claude ? " unverified" : ""}`} aria-live="polite">{accountChecks.claude === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.claude ? <Check size={12} /> : null} {accountChecks.claude === "Checking connection…" ? "Checking…" : accountChecks.claude ? "Unverified" : "Connected"}</span>
-                ) : (
-                  <button className="secondary-button" onClick={() => void (claudeStatus?.available ? onClaudeSignIn() : openUrl("https://docs.anthropic.com/en/docs/claude-code/setup"))} disabled={claudeLoginStarting}>
-                    {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
-                    {claudeLoginStarting ? "Signing in…" : claudeStatus?.available ? "Sign in" : "Install Claude Code"}
-                  </button>
+                ) : claudeUsesApiKey(claudeStatus) && claudeStatus?.available ? null : (
+                  claudeLoginStarting ? (
+                    <button className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel">
+                      <LoaderCircle className="spin" size={14} /> Cancel sign-in
+                    </button>
+                  ) : (
+                    <button className="secondary-button" onClick={() => void signInClaude()} disabled={Boolean(claudeAuthOperation.busy)}>
+                      {!claudeStatus?.available ? <Download size={14} /> : null}
+                      {claudeStatus?.available ? "Sign in" : "Install Claude Code"}
+                    </button>
+                  )
                 )}
-                <button className="icon-button" onClick={() => void onClaudeRefresh()} title="Refresh Claude status" aria-label="Refresh Claude status"><RotateCcw size={14} /></button>
+                <button className="icon-button" onClick={() => void refreshClaude()} title="Refresh Claude status" aria-label="Refresh Claude status" disabled={claudeLoginStarting || Boolean(claudeAuthOperation.busy)} aria-busy={claudeAuthOperation.busy === "refreshing"}>{claudeAuthOperation.busy === "refreshing" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>
               </div>
               {claudeStatus?.loggedIn && claudeStatus.warning && <div className="settings-notice" role="status">
                 <Info size={13} /><span>{claudeStatus.warning}</span>

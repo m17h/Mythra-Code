@@ -21,7 +21,8 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging } from "./lib/providerAuth";
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
@@ -928,6 +929,9 @@ export default function App() {
   const [authRequiredOpen, setAuthRequiredOpen] = useState(false);
   const [loginStarting, setLoginStarting] = useState(false);
   const [account, setAccount] = useState<Account | null>(null);
+  const [openAiBilling, setOpenAiBilling] = useState<"subscription" | "apiKey" | null>(null);
+  const openAiBillingRef = useRef(openAiBilling);
+  openAiBillingRef.current = openAiBilling;
   const [accountChecks, setAccountChecks] = useState<Partial<Record<Provider, string>>>({});
   const setAccountCheck = useCallback((provider: Provider, value: string) => {
     setAccountChecks((current) => ({ ...current, [provider]: value }));
@@ -1261,7 +1265,8 @@ export default function App() {
   // of failing at the moment the model tries to delegate.
   const childAgentReadiness = useMemo<ChildAgentReadiness>(() => ({
     codexRuntimeAvailable: Boolean(runtimeStatus?.available),
-    openAiSignedIn: account?.type === "chatgpt",
+    // A ChatGPT plan or an OpenAI API key; both run every Codex workflow.
+    openAiSignedIn: account?.type === "chatgpt" || account?.type === "apiKey",
     openRouterReady,
     lmStudioReady,
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
@@ -1784,6 +1789,8 @@ export default function App() {
     && activeUsageRecord.unpricedTokens
     && !activeUsageRecord.pricedTokens,
   );
+  // Historical usage has no billing provenance; changing the current account
+  // must not turn a subscription comparison into claimed API spend.
   const costEstimate = !tokenUsage
     ? ""
     : effectiveSettings.provider === "lmstudio"
@@ -1823,6 +1830,8 @@ export default function App() {
       openAiRateLimitsRead: Boolean(openAiCurrent),
       openAiUpdatedAt: openAiOwned?.updatedAt,
       openAiConnected: account?.type === "chatgpt",
+      openAiApiKey: openAiBilling === "apiKey",
+      openAiApiKeyReady: account?.type === "apiKey",
       claudeStatus,
       claudeRateLimits: claudeCurrent?.limits ?? null,
       claudeUpdatedAt: claudeOwned?.updatedAt,
@@ -1835,7 +1844,7 @@ export default function App() {
       usageDisplay: settings.usageDisplay,
       now,
     });
-  }, [account?.type, claudeAccountKey, claudeStatus, claudeUsageSnapshot, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiAccountKey, openAiUsageSnapshot, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady, settings.usageDisplay, usageSnapshotClock]);
+  }, [account?.type, claudeAccountKey, claudeStatus, claudeUsageSnapshot, cursorStatus, effectiveSettings.provider, lmStudioReady, openAiAccountKey, openAiBilling, openAiUsageSnapshot, openRouterCredits, openRouterCreditsError, openRouterCreditsRead, openRouterReady, settings.usageDisplay, usageSnapshotClock]);
   const headerUsageView = useMemo(() => providerHeaderUsage(effectiveSettings.provider, accountUsageView, {
     selectedWindow: effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? headerUsageWindows[effectiveSettings.provider] : undefined,
     openRouterReady,
@@ -2512,20 +2521,43 @@ export default function App() {
   }, []);
 
   const refreshClaudeStatus = useCallback((quiet = false) => readAccountStatus(claudeStatusRefreshRef.current, claudeStatusRequestRef, quiet ? "join" : "own", async (request) => {
+    const clearAccountScope = () => {
+      claudeModelsRequestRef.current += 1;
+      resetModelRefresh(claudeModelRefreshRef);
+      setClaudeModels([]);
+      setClaudeModelsLoading(false);
+      setClaudeModelsError("");
+      claudeUsageRequestRef.current += 1;
+      claudeAccountKeyRef.current = "";
+      setClaudeAccountKey("");
+      setClaudeUsageSnapshot(null);
+    };
     setAccountCheck("claude", "Checking connection…");
     try {
       const result = await getClaudeRuntimeStatus();
       if (claudeStatusRequestRef.current !== request) return null;
       if (result.authVerified === false) {
-        setClaudeStatus((current) => current ? { ...current, authVerified: false, available: result.available,
-          path: result.path, version: result.version, warning: result.warning } : result);
+        // Subscription probes may retain the last sign-in through a transient
+        // failure. An unavailable API key or billing choice authorizes no work.
+        setClaudeStatus((current) => current && result.billing === "subscription" && current.billing === result.billing
+          ? { ...current, authVerified: false, available: result.available,
+            path: result.path, version: result.version, warning: result.warning }
+          : { ...result, loggedIn: false });
+        if (result.billing !== "subscription" || claudeAccountKeyRef.current.startsWith("claude:api-key:")) {
+          clearAccountScope();
+        }
         setAccountCheck("claude", "Connection check unavailable");
         return null;
       }
       setClaudeStatus(result);
       setAccountCheck("claude", result.loggedIn ? "" : "Sign-in required");
       if (result.loggedIn) {
-        const accountKey = subscriptionAccountKey("claude", result.email, request, claudeAccountKeyRef.current);
+        const apiKeyBilling = claudeUsesApiKey(result);
+        // An API key has no email; its identity lasts until a witnessed
+        // billing or key change, and never shares a subscription's key.
+        const accountKey = apiKeyBilling
+          ? (claudeAccountKeyRef.current.startsWith("claude:api-key:") ? claudeAccountKeyRef.current : `claude:api-key:${request}`)
+          : subscriptionAccountKey("claude", result.email, request, claudeAccountKeyRef.current);
         if (claudeAccountKeyRef.current !== accountKey) {
           claudeModelsRequestRef.current += 1;
           resetModelRefresh(claudeModelRefreshRef);
@@ -2538,7 +2570,8 @@ export default function App() {
           setClaudeUsageSnapshot(null);
         }
         // Page-entry checks need account state, not a second usage request.
-        if (!quiet) {
+        // An API key has no subscription quota to read.
+        if (!quiet && !apiKeyBilling) {
           const usageRequest = ++claudeUsageRequestRef.current;
           // Publish verified sign-in immediately; quota is independent and
           // must not keep refresh/sign-in callbacks waiting on another CLI.
@@ -2549,19 +2582,15 @@ export default function App() {
           }).catch(() => undefined);
         }
       } else {
-        claudeModelsRequestRef.current += 1;
-        resetModelRefresh(claudeModelRefreshRef);
-        setClaudeModels([]);
-        setClaudeModelsLoading(false);
-        setClaudeModelsError("");
-        claudeUsageRequestRef.current += 1;
-        claudeAccountKeyRef.current = "";
-        setClaudeAccountKey("");
-        setClaudeUsageSnapshot(null);
+        clearAccountScope();
       }
       return result;
     } catch (reason) {
       if (claudeStatusRequestRef.current === request) {
+        if (claudeAccountKeyRef.current.startsWith("claude:api-key:")) clearAccountScope();
+        setClaudeStatus((current) => current && current.billing !== "subscription"
+          ? { ...current, loggedIn: false, authVerified: false }
+          : current);
         setAccountCheck("claude", "Connection check unavailable");
         if (!quiet) setError(friendlyError(reason));
       }
@@ -2866,8 +2895,10 @@ export default function App() {
 
   const requireOpenAiLogin = useCallback(() => {
     clearOpenAiAccount();
+    // The dialog has an API-key variant that links to Models & accounts, so a
+    // background helper's auth error never opens Settings on its own.
     setAuthRequiredOpen(true);
-    setStatus("Sign-in required");
+    setStatus(openAiBillingRef.current === "apiKey" ? "API key connection required" : "Sign-in required");
   }, [clearOpenAiAccount]);
 
   // Set while the user is signing out on purpose. Codex confirms a logout
@@ -2880,6 +2911,7 @@ export default function App() {
   // Assigned once the quiet account re-read below is defined.
   const recheckOpenAiAccountRef = useRef<(sharing?: AccountReadSharing) => Promise<unknown>>(async () => null);
   const signOutChatGpt = useCallback(async () => {
+    const finishAuthChange = beginProviderAuthChange("openai");
     const intent = ++openAiSignOutIntentRef.current;
     deliberateSignOutRef.current = true;
     openAiLogoutPendingRef.current = true;
@@ -2895,11 +2927,12 @@ export default function App() {
       await rpc("account/logout");
       clearOpenAiAccount();
       setAuthRequiredOpen(false);
-      setStatus("Signed out of ChatGPT");
+      setStatus("Signed out of OpenAI");
     } catch (reason) {
       failed = true;
       throw reason;
     } finally {
+      finishAuthChange();
       openAiLogoutPendingRef.current = false;
       // A failed logout proves nothing about the session; read it again
       // rather than leave a cancelled check spinning or guess an outcome.
@@ -2911,7 +2944,9 @@ export default function App() {
   }, [clearOpenAiAccount]);
 
   const handleOpenAiAuthRequired = useCallback(() => {
-    if (deliberateSignOutRef.current) clearOpenAiAccount();
+    // Retire-first sign-in/key replacement deliberately emits signed-out
+    // notices. Don't reopen a sign-in dialog in the middle of that action.
+    if (deliberateSignOutRef.current || providerAuthChanging("openai")) clearOpenAiAccount();
     else requireOpenAiLogin();
   }, [clearOpenAiAccount, requireOpenAiLogin]);
 
@@ -2933,7 +2968,7 @@ export default function App() {
     const ownsRead = () => openAiAccountRequestRef.current === request && openAiAuthEpochRef.current === authEpoch;
     setAccountCheck("openai", "Checking connection…");
     try {
-      const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean; runtimeInstance?: string;
+      const result = await rpc<{ account: Account | null; requiresOpenaiAuth?: boolean; runtimeInstance?: string; billing?: "subscription" | "apiKey" | null;
         workspaceRouting?: { chatgptAccountId?: string } | null }>("account/read", { refreshToken: renew });
       if (!ownsRead()) return null;
       // Judge the process that answered: the bridge re-sends an interrupted
@@ -2948,10 +2983,16 @@ export default function App() {
       }
       openAiAccountResultRef.current = { request, result };
       openAiAccountRuntimeRef.current = answeredBy;
+      openAiBillingRef.current = result.billing ?? null;
+      setOpenAiBilling(result.billing ?? null);
       setAccount(result.account);
       setAccountCheck("openai", result.account ? "" : "Sign-in required");
-      if (result.account?.type === "chatgpt") {
-        const identity = subscriptionAccountKey("openai", result.account.email, request, openAiAccountIdentityRef.current);
+      if (codexAccountReady(result.account)) {
+        // An API-key sign-in has no email or workspace; its identity lasts
+        // until a witnessed change, and never shares a ChatGPT key.
+        const identity = result.account?.type === "apiKey"
+          ? (openAiAccountIdentityRef.current.startsWith("openai:api-key:") ? openAiAccountIdentityRef.current : `openai:api-key:${request}`)
+          : subscriptionAccountKey("openai", result.account?.email, request, openAiAccountIdentityRef.current);
         openAiAccountIdentityRef.current = identity;
         // One email can own several workspaces. Prefer the runtime's
         // workspace id; without it, any account notice or runtime change may
@@ -3025,7 +3066,7 @@ export default function App() {
     const previousKey = openAiAccountKeyRef.current;
     const result = await refreshAccount(false, true, sharing);
     const accepted = openAiAccountResultRef.current;
-    if (accepted?.result === result && accepted.request === openAiAccountRequestRef.current && result?.account?.type === "chatgpt"
+    if (accepted?.result === result && accepted.request === openAiAccountRequestRef.current && codexAccountReady(result?.account)
       && (previousKey !== openAiAccountKeyRef.current || !runtimeModels.length)) {
       void refreshModels();
     }
@@ -3090,6 +3131,38 @@ export default function App() {
     return status?.available && status.loggedIn ? refreshClaudeModels() : [];
   }, [refreshClaudeModels, refreshClaudeStatus]);
 
+  /**
+   * OpenAI's billing changed in Models & accounts (an API-key sign-in, or a
+   * removed key that signed Codex out). The runtime was restarted natively;
+   * reads begun before it never publish, and catalog/quota follow the key.
+   */
+  const handleOpenAiBillingChanged = useCallback(async () => {
+    clearOpenAiAccount();
+    openAiBillingRef.current = null;
+    setOpenAiBilling(null);
+    await recheckOpenAiAccount("own");
+  }, [recheckOpenAiAccount, clearOpenAiAccount]);
+
+  /**
+   * Claude's billing or its API key changed. Catalog and quota from the
+   * previous credential are released before the new state is read.
+   */
+  const handleClaudeBillingChanged = useCallback(async () => {
+    claudeModelsRequestRef.current += 1;
+    resetModelRefresh(claudeModelRefreshRef);
+    setClaudeModels([]);
+    setClaudeModelsLoading(false);
+    setClaudeModelsError("");
+    claudeUsageRequestRef.current += 1;
+    claudeAccountKeyRef.current = "";
+    setClaudeAccountKey("");
+    setClaudeUsageSnapshot(null);
+    setClaudeStatus(null);
+    const status = await refreshClaudeStatus();
+    if (status?.loggedIn) void refreshClaudeModels();
+    return status;
+  }, [refreshClaudeModels, refreshClaudeStatus]);
+
   const toggleModelFavorite = useCallback((provider: Provider, model: string) => {
     setModelFavorites((current) => toggleFavoriteModel(current, provider, model));
   }, [setModelFavorites]);
@@ -3105,7 +3178,8 @@ export default function App() {
     const accountKey = openAiAccountKeyRef.current;
     // New quota publishes only into an identity accepted since the last
     // account notice or sign-in/out. Until then the last reading stays shown.
-    if (!accountKey || !openAiAccountResultRef.current) return;
+    // An API-key sign-in has no subscription quota to read.
+    if (!accountKey || !openAiAccountResultRef.current || openAiAccountResultRef.current.result.account?.type !== "chatgpt") return;
     const authEpoch = openAiAuthEpochRef.current;
     const runtimeAtStart = activeCodexRuntimeInstanceRef.current;
     const ownsScope = () => openAiUsageRequestRef.current === request && openAiAccountKeyRef.current === accountKey
@@ -3149,7 +3223,8 @@ export default function App() {
   const refreshClaudeUsage = useCallback(async () => {
     const request = ++claudeUsageRequestRef.current;
     const accountKey = claudeAccountKeyRef.current;
-    if (!accountKey) return;
+    // API-key billing has no plan windows; tracked spend covers it.
+    if (!accountKey || accountKey.startsWith("claude:api-key:")) return;
     const limits = await getClaudeRateLimits(accountKey, claudeStatus?.path);
     if (claudeUsageRequestRef.current === request && claudeAccountKeyRef.current === accountKey) {
       setClaudeUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
@@ -3183,7 +3258,7 @@ export default function App() {
   const refreshAccountData = useCallback(async (refreshToken = false, sharing: AccountReadSharing = "own") => {
     const result = await refreshAccount(refreshToken, false, sharing);
     const accepted = openAiAccountResultRef.current;
-    if (result?.account?.type !== "chatgpt" || accepted?.result !== result
+    if (!codexAccountReady(result?.account) || accepted?.result !== result
       || accepted.request !== openAiAccountRequestRef.current) return result;
     if (sharing !== "own" && openAiAccountDataRequestRef.current === accepted.request) return result;
     openAiAccountDataRequestRef.current = accepted.request;
@@ -3191,7 +3266,9 @@ export default function App() {
     const catalogFresh = sharing !== "own"
       && modelCatalogRecentlyRefreshed(runtimeModelRefreshRef.current, openAiAccountKeyRef.current);
     // Account progress ends with the account read, not catalog/quota work.
-    void Promise.all([catalogFresh ? undefined : refreshModels(), refreshUsage()]).catch(() => undefined);
+    // An API key has no subscription quota to read.
+    void Promise.all([catalogFresh ? undefined : refreshModels(),
+      result?.account?.type === "chatgpt" ? refreshUsage() : undefined]).catch(() => undefined);
     return result;
   }, [refreshAccount, refreshModels, refreshUsage]);
 
@@ -3239,7 +3316,7 @@ export default function App() {
 
   const usageRefreshEnabled =
     activeUsageProvider === "claude"
-      ? Boolean(claudeStatus?.available && claudeStatus.loggedIn)
+      ? Boolean(claudeStatus?.available && claudeStatus.loggedIn && !claudeUsesApiKey(claudeStatus))
       : activeUsageProvider === "openrouter"
         ? openRouterReady
         : activeUsageProvider === "openai" && account?.type === "chatgpt";
@@ -4014,7 +4091,7 @@ export default function App() {
       // while an account notice awaits its read.
       const identityRuntime = openAiAccountRuntimeRef.current;
       const activeRuntime = activeCodexRuntimeInstanceRef.current;
-      if (accountKey && openAiAccountResultRef.current && (!identityRuntime || !activeRuntime || identityRuntime === activeRuntime)) {
+      if (accountKey && openAiAccountResultRef.current?.result.account?.type === "chatgpt" && (!identityRuntime || !activeRuntime || identityRuntime === activeRuntime)) {
         setOpenAiUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
       }
     },
@@ -4163,7 +4240,8 @@ export default function App() {
     onError: setError,
     onRateLimits: (update) => {
       const accountKey = claudeAccountKeyRef.current;
-      if (!accountKey) return;
+      // Subscription windows only; never attach one to an API-key identity.
+      if (!accountKey || accountKey.startsWith("claude:api-key:")) return;
       setClaudeUsageSnapshot((current) => mergeAccountUsageSnapshot(current, accountKey, update));
     },
     onTranscriptChanged: scheduleClaudeThreadSave,
@@ -4467,7 +4545,7 @@ export default function App() {
     const recent = (state: ModelRefreshState<unknown>, key: string) => !manual && modelCatalogRecentlyRefreshed(state, key);
     const openAiKey = openAiAccountKeyRef.current;
     const claudeKey = claudeAccountKeyRef.current;
-    if (runtimeStatus?.available && account?.type === "chatgpt" && openAiAccountKeyRef.current
+    if (runtimeStatus?.available && (account?.type === "chatgpt" || account?.type === "apiKey") && openAiAccountKeyRef.current
       && !recent(runtimeModelRefreshRef.current, openAiKey)) reads.push({ provider: "OpenAI", read: manual ? refreshOpenAiModelsFromPicker : refreshModels,
         stillCurrent: () => openAiKey === openAiAccountKeyRef.current, error: () => runtimeModelRefreshRef.current.error });
     if (claudeStatus?.available && claudeStatus.loggedIn && claudeAccountKeyRef.current
@@ -6391,6 +6469,13 @@ export default function App() {
       setRuntimeSetupOpen(true);
       return;
     }
+    let finishAuthChange: () => void;
+    try {
+      finishAuthChange = beginProviderAuthChange("openai");
+    } catch (reason) {
+      setError(friendlyError(reason));
+      return;
+    }
     setLoginStarting(true);
     const intent = ++openAiSignOutIntentRef.current;
     deliberateSignOutRef.current = false;
@@ -6413,6 +6498,7 @@ export default function App() {
       // Show the session that still exists, unless a newer attempt owns the card.
       if (openAiSignOutIntentRef.current === intent) void recheckOpenAiAccount();
     } finally {
+      finishAuthChange();
       setLoginStarting(false);
     }
   };
@@ -6441,6 +6527,13 @@ export default function App() {
       setError("Install Claude Code first, then return here to sign in.");
       return;
     }
+    let finishAuthChange: () => void;
+    try {
+      finishAuthChange = beginProviderAuthChange("anthropic");
+    } catch (reason) {
+      setError(friendlyError(reason));
+      return;
+    }
     setClaudeLoginStarting(true);
     // Cancels any older check; until this attempt settles, the card waits.
     const request = ++claudeStatusRequestRef.current;
@@ -6448,25 +6541,24 @@ export default function App() {
     // Unless a newer check or attempt owns the card, re-read the real state.
     const recheck = () => { if (claudeStatusRequestRef.current === request) void refreshClaudeStatus(true); };
     setError(null);
-    setStatus("Opening Claude sign-in");
+    setStatus("Finish Claude sign-in in your browser");
     try {
       await startClaudeLogin();
-      setStatus("Finish sign-in in Terminal");
-      // The browser flow takes as long as the user needs, so keep probing
-      // quietly (a raw status read, not the full refresh that flashes
-      // "Checking connection…") until Claude Code reports the login.
-      watchSignIn("claude", async () => (await getClaudeRuntimeStatus()).loggedIn, async () => {
-        const next = await refreshClaudeStatus();
-        if (next?.loggedIn) {
-          setStatus("Ready");
-          void refreshClaudeModels();
-        }
-      }, recheck);
+      // Native login now owns and verifies the browser flow before returning.
+      const next = await refreshClaudeStatus();
+      if (next?.loggedIn) {
+        setStatus("Ready");
+        void refreshClaudeModels();
+      } else {
+        setStatus("Check Claude connection");
+      }
     } catch (reason) {
       setStatus("Setup required");
-      setError(friendlyError(reason));
+      // Cancelling is the user's own choice, not a failure to report.
+      if (String(reason) !== CLAUDE_LOGIN_CANCELLED) setError(friendlyError(reason));
       recheck();
     } finally {
+      finishAuthChange();
       setClaudeLoginStarting(false);
     }
   };
@@ -8533,7 +8625,7 @@ export default function App() {
     automaticGitInitialization: settings.automaticGitInitialization === true,
     prepareNewThreadGit,
     runtimeAvailable: Boolean(runtimeStatus?.available),
-    chatGptConnected: account?.type === "chatgpt",
+    chatGptConnected: account?.type === "chatgpt" || account?.type === "apiKey",
     claudeReady: Boolean(claudeStatus?.available && claudeStatus.loggedIn),
     cursorReady: cursorCanAttemptRequest(cursorStatus),
     openRouterReady,
@@ -8696,7 +8788,7 @@ export default function App() {
     settings,
     prepareNewThreadGit,
     runtimeAvailable: Boolean(runtimeStatus?.available),
-    chatGptConnected: account?.type === "chatgpt",
+    chatGptConnected: account?.type === "chatgpt" || account?.type === "apiKey",
     openRouterReady,
     lmStudioReady,
     lmStudioModels,
@@ -9805,6 +9897,7 @@ export default function App() {
         accountChecks={accountChecks}
         onRefreshAccounts={refreshSettingsAccounts}
         runtimeStatus={runtimeStatus}
+        openAiLoginStarting={loginStarting}
         claudeStatus={claudeStatus}
         claudeLoginStarting={claudeLoginStarting}
         cursorStatus={cursorStatus}
@@ -9880,6 +9973,8 @@ export default function App() {
           if (status?.loggedIn) void refreshClaudeModels();
           return status;
         }}
+        onOpenAiBillingChanged={handleOpenAiBillingChanged}
+        onClaudeBillingChanged={handleClaudeBillingChanged}
         onCursorSignIn={beginCursorLogin}
         onCursorRefresh={refreshCursorStatus}
         onRuntimeRequired={() => setRuntimeSetupOpen(true)}
@@ -9983,7 +10078,8 @@ export default function App() {
 
       <RuntimeSetupModal open={runtimeSetupOpen} checking={runtimeChecking} onClose={() => setRuntimeSetupOpen(false)} onRetry={() => void retryRuntime()} />
 
-      <AuthRequiredModal open={authRequiredOpen} busy={loginStarting} onClose={() => setAuthRequiredOpen(false)} onSignIn={() => void beginChatGptLogin()} />
+      <AuthRequiredModal open={authRequiredOpen} busy={loginStarting} apiKeyBilling={openAiBilling === "apiKey"} onClose={() => setAuthRequiredOpen(false)} onSignIn={() => void beginChatGptLogin()}
+        onUseApiKey={() => { setAuthRequiredOpen(false); openSettings("models"); }} />
 
       {pendingApproval && (
         <ApprovalCenter

@@ -25,6 +25,8 @@ export interface ClaudeRuntimeStatus {
   authMethod: string | null;
   email: string | null;
   subscriptionType: string | null;
+  /** How Claude turns bill; with "apiKey", `loggedIn` means a key is saved. Null when unreadable. */
+  billing?: "subscription" | "apiKey" | null;
   warning: string | null;
 }
 
@@ -328,6 +330,13 @@ export async function getClaudeRateLimits(accountKey: string, runtimePath?: stri
 export async function startClaudeLogin(): Promise<void> {
   await invoke("claude_login");
 }
+
+/** Stops a browser sign-in that `startClaudeLogin` is still waiting for. */
+export async function cancelClaudeLogin(): Promise<boolean> {
+  return invoke<boolean>("claude_login_cancel");
+}
+
+export const CLAUDE_LOGIN_CANCELLED = "Claude sign-in was cancelled.";
 
 export async function startClaudeTurn(
   options: ClaudeTurnOptions,

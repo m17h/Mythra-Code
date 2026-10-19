@@ -100,6 +100,14 @@ export function providerHeaderUsage(
   }
   if (provider !== "openai" && provider !== "claude") return null;
   const title = `${accountUsage.label} · ${accountUsage.summary}`;
+  if (accountUsage.label === "Claude billing") return { text: "Choose billing", title, needsConnection: true };
+  if (accountUsage.label === "OpenAI API key" || accountUsage.label === "Anthropic API key") {
+    // API billing has no plan windows; spend is tracked from turn usage.
+    const missing = /^(add|install)/i.test(accountUsage.summary);
+    const unavailable = /unavailable|unverified/i.test(accountUsage.summary);
+    return { text: unavailable ? "Check API key" : missing ? "Add API key" : "API key billing", title,
+      ...(missing || unavailable ? { needsConnection: true } : {}) };
+  }
   const windows = accountUsage.windows ?? [];
   if (!windows.length) {
     const summary = accountUsage.summary.toLowerCase();
@@ -457,6 +465,9 @@ export function providerAccountUsage(
     openAiUpdatedAt?: number;
     /** Distinguishes a connected account with a transient read failure from no account. */
     openAiConnected?: boolean;
+    /** Codex bills an OpenAI API key: no subscription quota exists to show. */
+    openAiApiKey?: boolean;
+    openAiApiKeyReady?: boolean;
     claudeStatus: ClaudeRuntimeStatus | null;
     claudeRateLimits?: ProviderRateLimits | null;
     claudeUpdatedAt?: number;
@@ -473,6 +484,24 @@ export function providerAccountUsage(
   const mode = options.usageDisplay ?? DEFAULT_USAGE_DISPLAY;
   const now = options.now ?? Date.now();
   const label = `${provider === "claude" ? "Claude" : provider === "cursor" ? "Cursor" : "OpenAI"} subscription`;
+  if (provider === "claude" && options.claudeStatus?.billing === null) {
+    return { label: "Claude billing", summary: "Billing choice unavailable · choose it again in Models & accounts" };
+  }
+  if (provider === "claude" && options.claudeStatus?.billing === "apiKey") {
+    const status = options.claudeStatus;
+    return {
+      label: "Anthropic API key",
+      summary: !status.available ? "Install Claude Code to use this key"
+        : status.authVerified === false ? "API key connection unavailable · refresh in Models & accounts"
+        : !status.loggedIn ? "Add an Anthropic API key in Models & accounts"
+          : "Billed per token to your Claude Console account · the Console shows spend and any credits",
+    };
+  }
+  if (provider === "openai" && options.openAiApiKey) {
+    return { label: "OpenAI API key", summary: options.openAiApiKeyReady
+      ? "Billed per token to your OpenAI API account · the OpenAI dashboard shows spend"
+      : "Add or connect your API key in Models & accounts" };
+  }
   if (provider === "claude" || provider === "cursor") {
     const status = provider === "claude" ? options.claudeStatus : options.cursorStatus;
     const name = provider === "claude" ? "Claude Code" : "Cursor Agent";

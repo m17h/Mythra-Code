@@ -69,8 +69,8 @@ type HeadingRef = RefObject<HTMLHeadingElement | null>;
 type ProviderInfo = { id: Provider; name: string; kind: string; runtime: string; Logo: ComponentType<{ size?: number }>; guide: string };
 
 const PROVIDERS: ProviderInfo[] = [
-  { id: "openai", name: "ChatGPT", kind: "ChatGPT plan", runtime: "Codex CLI", Logo: OpenAILogo, guide: CODEX_INSTALL_URL },
-  { id: "claude", name: "Claude", kind: "Claude plan", runtime: "Claude Code", Logo: ClaudeLogo, guide: CLAUDE_INSTALL_URL },
+  { id: "openai", name: "OpenAI", kind: "ChatGPT plan or API key", runtime: "Codex CLI", Logo: OpenAILogo, guide: CODEX_INSTALL_URL },
+  { id: "claude", name: "Claude", kind: "Claude plan or API key", runtime: "Claude Code", Logo: ClaudeLogo, guide: CLAUDE_INSTALL_URL },
   { id: "cursor", name: "Cursor", kind: "Cursor plan", runtime: "Cursor Agent", Logo: CursorLogo, guide: CURSOR_INSTALL_URL },
   { id: "openrouter", name: "OpenRouter", kind: "API credits", runtime: "Codex CLI", Logo: OpenRouterLogo, guide: OPENROUTER_GUIDE_URL },
   { id: "lmstudio", name: "LM Studio", kind: "LM Studio server", runtime: "Codex CLI", Logo: LmStudioLogo, guide: LM_STUDIO_SERVER_URL },
@@ -103,8 +103,10 @@ function providerNextStep(provider: ProviderInfo, stage: ProviderStage, status: 
   if (provider.id === "openrouter") return "Choose OpenRouter in Models & accounts, then add an API key. Paid models use your OpenRouter credits.";
   if (provider.id === "lmstudio") return "Start an LM Studio server with a model loaded. Choose LM Studio in Models & accounts and test the connection.";
   return provider.id === "openai"
-    ? "Choose OpenAI in Models & accounts. Sign in opens your browser; you never enter your subscription password here."
-    : `Choose ${provider.name} in Models & accounts. Sign in opens its command-line sign-in in a terminal; follow the prompts there.`;
+    ? "Choose OpenAI in Models & accounts. Sign in opens your browser; you never enter your subscription password here. Or add an OpenAI API key, billed to your API account."
+    : provider.id === "claude"
+      ? "Choose Anthropic in Models & accounts. Sign in opens your browser to sign in to your Claude subscription; you never enter your password here. Or add an Anthropic API key, billed to your Claude Console account."
+      : `Choose ${provider.name} in Models & accounts. Sign in opens its command-line sign-in in a terminal; follow the prompts there.`;
 }
 
 function defaultProvider(readiness: Readiness, inputs: RuntimeInputs, preferredProvider?: Provider): Provider | null {

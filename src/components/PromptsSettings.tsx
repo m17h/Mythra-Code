@@ -17,8 +17,8 @@ export type PromptLayer = "global" | "codex" | "claude";
 
 const LAYERS: ReadonlyArray<{ id: PromptLayer; label: string; caption: string; placeholder: string }> = [
   { id: "global", label: "Every provider", caption: "Sent first, to every provider.", placeholder: "Empty. Add instructions every agent should follow, for example: Use pnpm. Explain risky changes before making them." },
-  { id: "codex", label: "Codex", caption: "Added after the shared instructions in ChatGPT subscription threads.", placeholder: "Optional Codex-only instructions" },
-  { id: "claude", label: "Claude", caption: "Added after the shared instructions in Claude subscription threads.", placeholder: "Optional Claude-only instructions" },
+  { id: "codex", label: "Codex", caption: "Added after the shared instructions in Codex threads, with subscription or API billing.", placeholder: "Optional Codex-only instructions" },
+  { id: "claude", label: "Claude", caption: "Added after the shared instructions in Claude threads, with subscription or API billing.", placeholder: "Optional Claude-only instructions" },
 ];
 
 const EMPTY_FILES: InstructionFileDescriptor[] = [];
@@ -293,7 +293,7 @@ export function PromptsSettings({
             <SkillPromptEditor
               ref={promptRefs[entry.id]}
               skills={skills}
-              aria-label={entry.id === "global" ? "Global Mythra Code prompt" : entry.id === "codex" ? "Codex subscription prompt" : "Claude Code subscription prompt"}
+              aria-label={entry.id === "global" ? "Global Mythra Code prompt" : entry.id === "codex" ? "Codex prompt" : "Claude Code prompt"}
               onAnalyze={visible ? analyze?.[entry.id] : undefined}
               className="prompt-editor"
               value={layerText(settings, entry.id)}
