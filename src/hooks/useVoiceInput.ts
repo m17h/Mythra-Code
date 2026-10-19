@@ -64,6 +64,7 @@ interface Session {
 
 /** Key check plus microphone start, including an OS permission prompt. */
 const SETUP_TIMEOUT_MS = 60_000;
+const HIDDEN_NOTICE = "Voice input discarded because Mythra Code was hidden. Nothing was uploaded.";
 
 function newSessionId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -152,6 +153,15 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     setMessage(notice ? { text: notice, tone: "info" } : null);
   }, [release]);
 
+  // Visibility can change before its event is dispatched, or before the
+  // session's listener mounts. Recheck after local awaits before opening the
+  // microphone or submitting audio; an existing upload may still finish.
+  const cancelIfHidden = useCallback((session: Session) => {
+    if (document.visibilityState !== "hidden" || session.phase === "transcribing") return false;
+    if (sessionRef.current === session) cancel(HIDDEN_NOTICE);
+    return true;
+  }, [cancel]);
+
   const fail = useCallback((session: Session, text: string, settings = false) => {
     if (!active(session)) return;
     if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
@@ -162,11 +172,12 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   const stop = useCallback(async () => {
     const session = sessionRef.current;
     if (!session || session.phase !== "recording" || !session.recorder) return;
+    if (cancelIfHidden(session)) return;
     session.phase = "finishing";
     publish(session);
     try {
       const recording = await session.recorder.stop();
-      if (!active(session)) return;
+      if (!active(session) || cancelIfHidden(session)) return;
       if (!recording || recording.seconds < MIN_RECORDING_SECONDS) {
         fail(session, "That recording was too short to transcribe. Nothing was uploaded.");
         return;
@@ -192,7 +203,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
         fail(session, "The recording couldn't be prepared for upload. Nothing was uploaded.");
       }
     }
-  }, [fail, publish, release]);
+  }, [cancelIfHidden, fail, publish, release]);
 
   /** Keeps the session as the only admission while the dialog is open. */
   const askForSettings = useCallback(async (session: Session, prompt: string) => {
@@ -207,14 +218,14 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       inApp: true,
       signal: session.controller.signal,
     });
-    const current = active(session);
+    const current = active(session) && !cancelIfHidden(session);
     release(session);
     if (confirmed && current) configRef.current?.onOpenSettings();
-  }, [release]);
+  }, [cancelIfHidden, release]);
 
   const start = useCallback(async () => {
     const current = configRef.current;
-    if (sessionRef.current || !current || isVoiceInputLocked()) return;
+    if (sessionRef.current || !current || isVoiceInputLocked() || document.visibilityState === "hidden") return;
     setMessage(null);
     if (!voiceCaptureSupported()) {
       setMessage({ text: "Voice input isn't supported in this window.", tone: "error" });
@@ -249,7 +260,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     }, SETUP_TIMEOUT_MS);
     try {
       const keys = await refreshTranscriptionKeys();
-      if (!active(session)) return;
+      if (!active(session) || cancelIfHidden(session)) return;
       if (keys[session.provider] === "missing") {
         window.clearTimeout(setupTimer);
         await askForSettings(session, `No transcription API key\n\nNo API key is set for transcription. Voice input uses its own ${providerLabel} API key, separate from your chat accounts and subscriptions.`);
@@ -272,13 +283,14 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
         // Consuming it would incorrectly invalidate that newer recording.
         return;
       }
+      if (cancelIfHidden(session)) return;
       const recorder = new VoiceRecorder(context, {
         onLimit: () => void stop(),
         onInterrupted: () => fail(session, "Recording stopped because the microphone was disconnected or access was turned off. Nothing was uploaded."),
       });
       session.recorder = recorder;
       await recorder.start();
-      if (!active(session)) return;
+      if (!active(session) || cancelIfHidden(session)) return;
       session.phase = "recording";
       session.startedAt = performance.now();
       publish(session);
@@ -289,7 +301,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     } finally {
       window.clearTimeout(setupTimer);
     }
-  }, [askForSettings, fail, publish, stop]);
+  }, [askForSettings, cancelIfHidden, fail, publish, stop]);
 
   useEffect(() => {
     const session = sessionRef.current;
@@ -317,15 +329,14 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     const onHidden = () => {
       const session = sessionRef.current;
       if (document.visibilityState !== "hidden" || !session) return;
-      // macOS also reports a fully covered window (a full-screen app, another
-      // Space) as hidden. Release the microphone, but keep what was said:
-      // a recording is finished and transcribed into its own thread.
-      if (session.phase === "recording") void stop();
-      else if (session.phase === "preparing") cancel("Voice input canceled because Mythra Code was hidden.");
+      // Hiding must not turn an unsent recording into a paid upload. Discard
+      // setup, recording, and the local flush; a submitted upload may finish.
+      cancelIfHidden(session);
     };
     const onPageHide = () => cancel();
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", onPageHide);
+    onHidden();
     if (isTauri()) {
       // App's close guard keeps the WebView alive while saves or a native
       // consent dialog are pending. pagehide happens too late to release the
@@ -345,7 +356,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [cancel, hasSession, stop]);
+  }, [cancel, cancelIfHidden, hasSession]);
 
   // Unmount releases the microphone and aborts any upload.
   useEffect(() => () => {

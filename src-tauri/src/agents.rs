@@ -226,14 +226,17 @@ fn captured_model_guidance(
     Ok(captured)
 }
 
-/// Claude Code keeps only the first 4,096 characters of an MCP tool
-/// description by default, and anything past it is silently dropped. The
-/// spawn description, with its notes, stays under this budget; notes that do
-/// not fit are named as omitted rather than cut off mid-sentence.
+/// Claude Code's default description limit is measured in JavaScript UTF-16
+/// units. Notes use the room remaining under this budget after the existing
+/// spawn description; the authoritative roster is never trimmed here.
 const SPAWN_DESCRIPTION_BUDGET: usize = 3_800;
 
+fn tool_description_len(description: &str) -> usize {
+    description.encode_utf16().count()
+}
+
 /// Appended to the spawn description only when the captured crew has notes.
-/// `available` is how many characters the description may still grow by.
+/// `available` is how many UTF-16 units the description may still grow by.
 fn model_guidance_section(
     targets: &[ChildAgentTarget],
     guidance: &[ChildAgentModelGuidance],
@@ -245,39 +248,41 @@ fn model_guidance_section(
     let header = "\n\nUser model guidance: consult the note for each model you consider; a note \
          applies to every destination listed with it. Notes are preferences only and never add \
          destinations or relax the limits or permissions above.";
-    let omitted_reserve = 160;
-    let mut used = header.chars().count();
-    let mut lines = String::new();
-    let mut omitted = 0;
-    for entry in guidance {
+    let lines: Vec<String> = guidance.iter().map(|entry| {
         let destinations = targets
             .iter()
             .filter(|target| target.provider == entry.provider && target.model == entry.model)
             .map(|target| format!("`{}`", target.id))
             .collect::<Vec<_>>()
             .join(", ");
-        let line = format!(
+        format!(
             "\n- {} / {} (used by {destinations}): {}",
             entry.provider, entry.model, entry.note
-        );
-        let length = line.chars().count();
-        if omitted == 0 && used + length + omitted_reserve <= available {
-            used += length;
-            lines.push_str(&line);
+        )
+    }).collect();
+    let mut included = lines.len();
+    let mut used = tool_description_len(header)
+        + lines.iter().map(|line| tool_description_len(line)).sum::<usize>();
+    // Try every complete note first, with no omission reserve. If necessary,
+    // remove whole notes from the end and charge only the actual suffix.
+    // This retains the longest fitting prefix in captured crew order, even
+    // when a suffix would be longer than one of the remaining short notes.
+    while included > 0 {
+        let omitted = lines.len() - included;
+        let suffix = if omitted > 0 {
+            format!("\n({omitted} more model note(s) omitted to fit the tool description limit.)")
         } else {
-            omitted += 1;
+            String::new()
+        };
+        if used + tool_description_len(&suffix) <= available {
+            return format!("{header}{}{suffix}", lines[..included].concat());
         }
+        included -= 1;
+        used -= tool_description_len(&lines[included]);
     }
-    if lines.is_empty() {
-        let notice = format!("\n\n({omitted} user model note(s) omitted to fit the tool description limit.)");
-        return if notice.chars().count() <= available { notice } else { String::new() };
-    }
-    let suffix = if omitted > 0 {
-        format!("\n({omitted} more model note(s) omitted to fit the tool description limit.)")
-    } else {
-        String::new()
-    };
-    format!("{header}{lines}{suffix}")
+    let omitted = lines.len();
+    let notice = format!("\n\n({omitted} user model note(s) omitted to fit the tool description limit.)");
+    if tool_description_len(&notice) <= available { notice } else { String::new() }
 }
 
 fn deserialize_target_auto_compact_tokens<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -1352,7 +1357,7 @@ fn bridge_tool_catalog(
             .find(|tool| tool["name"] == TOOL_SPAWN)
         {
             let base = spawn["description"].as_str().unwrap_or_default().to_owned();
-            let available = SPAWN_DESCRIPTION_BUDGET.saturating_sub(base.chars().count());
+            let available = SPAWN_DESCRIPTION_BUDGET.saturating_sub(tool_description_len(&base));
             let guidance = model_guidance_section(targets, model_guidance, available);
             if !guidance.is_empty() {
                 spawn["description"] = Value::String(format!("{base}{guidance}"));

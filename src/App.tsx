@@ -705,18 +705,27 @@ export default function App() {
     event.stopPropagation();
   };
   useEffect(() => {
+    let voiceEscapeHeld = false;
     const onKeyDown = (event: KeyboardEvent) => {
+      // A held cancellation key still belongs to voice after its dialog
+      // disappears; its repeats must not stop a run or dismiss another dialog.
+      if (event.key === "Escape" && event.repeat && voiceEscapeHeld) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       const session = useVoiceInputLock.getState().session;
       if (!session) return;
       // Native close/Quit still reach the close guard and cancel voice.
       if ((event.metaKey || event.ctrlKey) && ["w", "q"].includes(event.key.toLowerCase())) return;
       if (event.altKey && event.key === "F4") return;
       if (event.key === "Escape") {
+        voiceEscapeHeld = true;
         event.preventDefault();
         event.stopImmediatePropagation();
-        // Escape abandons setup or a recording. An upload the provider may
-        // already be billing is cancelled only with the explicit Cancel button.
-        if (session.view.phase !== "finishing" && session.view.phase !== "transcribing") session.onCancel();
+        // Finishing still only flushes local audio, so Escape can discard it.
+        // Once audio is submitted, require the explicit Cancel button instead.
+        if (session.view.phase !== "transcribing") session.onCancel();
         return;
       }
       if (event.key === "Tab") {
@@ -743,6 +752,10 @@ export default function App() {
       event.preventDefault();
       event.stopImmediatePropagation();
     };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Escape") voiceEscapeHeld = false;
+    };
+    const onBlur = () => { voiceEscapeHeld = false; };
     const onFocusIn = (event: FocusEvent) => {
       if (!isVoiceInputLocked() || (event.target instanceof Element && event.target.closest("[data-voice-input-lock]"))) return;
       // Other overlays can finish asynchronous work and request focus. Keep
@@ -751,9 +764,13 @@ export default function App() {
         ?? document.querySelector<HTMLElement>("[data-voice-input-lock] button:not([disabled])"))?.focus();
     };
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onBlur);
     document.addEventListener("focusin", onFocusIn, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onBlur);
       document.removeEventListener("focusin", onFocusIn, true);
     };
   }, []);
