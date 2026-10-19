@@ -3004,8 +3004,13 @@ async fn execute_native_request<T>(
     };
     let mut command: Command = match options.provider.as_str() {
         "openai" => {
-            let server = await_or_cancel(&guard.request, crate::ensure_server(app, runtime_state)).await??;
-            let account = await_or_cancel(&guard.request, server.request("account/read", json!({ "refreshToken": false }))).await??;
+            let account = {
+                // Register like a bridge read, so a reserved runtime restart
+                // cannot have a helper spawn or reuse a server inside its window.
+                let _rpc = runtime_state.lifecycle.begin_rpc_call("account/read")?;
+                let server = await_or_cancel(&guard.request, crate::ensure_server(app, runtime_state)).await??;
+                await_or_cancel(&guard.request, server.request("account/read", json!({ "refreshToken": false }))).await??
+            };
             crate::provider_auth::assert_openai_account(app, &account)?;
             let runtime =
                 await_or_cancel(&guard.request, resolve_codex_runtime(app, runtime_state))

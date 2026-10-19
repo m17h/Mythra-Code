@@ -331,6 +331,13 @@ export async function startClaudeLogin(): Promise<void> {
   await invoke("claude_login");
 }
 
+/** Stops a browser sign-in that `startClaudeLogin` is still waiting for. */
+export async function cancelClaudeLogin(): Promise<boolean> {
+  return invoke<boolean>("claude_login_cancel");
+}
+
+export const CLAUDE_LOGIN_CANCELLED = "Claude sign-in was cancelled.";
+
 export async function startClaudeTurn(
   options: ClaudeTurnOptions,
 ): Promise<{ turnId: string }> {

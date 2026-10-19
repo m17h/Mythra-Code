@@ -40,6 +40,7 @@ const BILLING_FILE: &str = "provider-billing.json";
 /// A credential store write that does not finish in time is reported; its
 /// worker keeps the provider's write guard until the OS call returns.
 const KEYRING_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const CHANGE_ADMISSION_WAIT: Duration = Duration::from_secs(3);
 const EMPTY_KEY_SLOT: KeySlot = KeySlot {
     known: None,
     reading: None,
@@ -89,8 +90,11 @@ pub(crate) enum ClaudeBilling {
     ApiKey,
 }
 
+/// Unknown fields are ignored so a file written by a newer Mythra Code still
+/// reads after a downgrade; an unrecognized value for a known provider is
+/// still an error, never a guessed default.
 #[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct BillingFile {
     #[serde(default = "default_billing")]
     openai: Option<ClaudeBilling>,
@@ -354,9 +358,13 @@ pub(crate) fn begin_use(app: &AppHandle, provider: ApiKeyProvider) -> Result<Own
         .try_read_owned().map_err(|_| format!("{} billing or credentials are changing. Try again in a moment.", provider.label()))
 }
 
-pub(crate) fn begin_change(app: &AppHandle, provider: ApiKeyProvider) -> Result<OwnedRwLockWriteGuard<()>, String> {
-    app.state::<ProviderAuthState>().admission[provider.index()].clone()
-        .try_write_owned().map_err(|_| format!("Finish active {} work and account requests before changing billing or credentials.", provider.label()))
+/// Waits briefly for billed work that is only dispatching (a start request
+/// returns quickly) before refusing. Long-lived holders, such as a running
+/// helper process, still refuse after the wait.
+pub(crate) async fn begin_change(app: &AppHandle, provider: ApiKeyProvider) -> Result<OwnedRwLockWriteGuard<()>, String> {
+    let admission = app.state::<ProviderAuthState>().admission[provider.index()].clone();
+    timeout(CHANGE_ADMISSION_WAIT, admission.write_owned()).await
+        .map_err(|_| format!("Finish active {} work and account requests before changing billing or credentials.", provider.label()))
 }
 
 pub(crate) fn assert_openai_account(app: &AppHandle, account: &serde_json::Value) -> Result<(), String> {
@@ -388,27 +396,67 @@ pub(crate) async fn claude_idle(state: &ClaudeState) -> Result<(), String> {
     Ok(())
 }
 
+/// A launch-credential check costs a Claude Code process (`auth status`).
+/// A success is reused until sign-in, key or billing changes (each advances
+/// the Claude auth generation), and for at most a minute so a `claude auth`
+/// change made outside Mythra Code is still noticed.
+const CLAUDE_VERIFIED_TTL: Duration = Duration::from_secs(60);
+static CLAUDE_VERIFIED: StdMutex<Option<(u64, ClaudeBilling, std::time::Instant)>> = StdMutex::new(None);
+
+pub(crate) fn claude_launch_verified(app: &AppHandle, billing: ClaudeBilling) -> bool {
+    let generation = crate::claude_auth_generation(app);
+    CLAUDE_VERIFIED.lock().unwrap_or_else(PoisonError::into_inner).is_some_and(|(checked, verified, at)| {
+        checked == generation && verified == billing && at.elapsed() < CLAUDE_VERIFIED_TTL
+    })
+}
+
+/// Record a check that began at `generation`; one overtaken by a change is dropped.
+pub(crate) fn remember_claude_launch_verified(app: &AppHandle, generation: u64, billing: ClaudeBilling) {
+    if crate::claude_auth_generation(app) == generation {
+        *CLAUDE_VERIFIED.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, billing, std::time::Instant::now()));
+    }
+}
+
+async fn saved_anthropic_key() -> Result<String, String> {
+    match read_key(ApiKeyProvider::Anthropic).await {
+        KeyRead::Saved(key) => Ok(key),
+        KeyRead::Missing => Err("Claude is set to bill an Anthropic API key, but none is saved. Add one in Settings › Models & accounts, or switch Claude back to your subscription.".into()),
+        KeyRead::Unavailable => Err("The OS credential store didn't return the Anthropic API key. Check for a system prompt, then try again.".into()),
+    }
+}
+
 /// The Anthropic key a Claude Code process about to start must receive, or
 /// None under subscription billing. Never falls back between the two.
 pub(crate) async fn claude_process_api_key(app: &AppHandle) -> Result<Option<String>, String> {
     match claude_billing(app)? {
         ClaudeBilling::Subscription => {
-            // Every subscription launch, including text helpers and catalog
-            // requests, must verify the CLI selected subscription credentials.
-            // Merely omitting our key still permits a saved Console login.
+            // Text helpers, catalog and usage requests cannot inspect a stream
+            // initialization, so verify the CLI selected subscription
+            // credentials: omitting our key still permits a saved Console login.
+            if claude_launch_verified(app, ClaudeBilling::Subscription) {
+                return Ok(None);
+            }
+            let generation = crate::claude_auth_generation(app);
             let binary = crate::resolve_claude_binary(app).await?;
             let home = crate::release_qa::home_dir(app).ok();
             let auth = crate::probe_claude_auth(&binary, home.as_deref()).await?;
             if auth.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
                 return Err("Sign in with your Claude subscription in Settings › Models & accounts before starting Claude work.".into());
             }
+            remember_claude_launch_verified(app, generation, ClaudeBilling::Subscription);
             Ok(None)
         }
-        ClaudeBilling::ApiKey => match read_key(ApiKeyProvider::Anthropic).await {
-            KeyRead::Saved(key) => Ok(Some(key)),
-            KeyRead::Missing => Err("Claude is set to bill an Anthropic API key, but none is saved. Add one in Settings › Models & accounts, or switch Claude back to your subscription.".into()),
-            KeyRead::Unavailable => Err("The OS credential store didn't return the Anthropic API key. Check for a system prompt, then try again.".into()),
-        },
+        ClaudeBilling::ApiKey => saved_anthropic_key().await.map(Some),
+    }
+}
+
+/// The credential for a streamed turn. Its initialize response is validated
+/// against the selected billing before the user's input is written, so an
+/// `auth status` process here would only repeat that check.
+pub(crate) async fn claude_turn_api_key(app: &AppHandle) -> Result<Option<String>, String> {
+    match claude_billing(app)? {
+        ClaudeBilling::Subscription => Ok(None),
+        ClaudeBilling::ApiKey => saved_anthropic_key().await.map(Some),
     }
 }
 
@@ -444,7 +492,7 @@ pub(crate) async fn provider_api_key_save(
 ) -> Result<(), String> {
     crate::release_qa::require_providers()?;
     let key = validate_api_key(provider, &api_key)?;
-    let change = begin_change(&app, provider)?;
+    let change = begin_change(&app, provider).await?;
     match provider {
         ApiKeyProvider::Anthropic => claude_idle(&claude).await?,
         ApiKeyProvider::Openai => {
@@ -472,7 +520,7 @@ pub(crate) async fn provider_api_key_remove(
     provider: ApiKeyProvider,
 ) -> Result<Option<String>, String> {
     crate::release_qa::require_providers()?;
-    let change = begin_change(&app, provider)?;
+    let change = begin_change(&app, provider).await?;
     match provider {
         ApiKeyProvider::Openai => {
             let notice = crate::codex_sign_out_api_key(&app, &runtime).await?;
@@ -496,7 +544,7 @@ pub(crate) async fn openai_api_key_use(
     runtime: State<'_, RuntimeState>,
 ) -> Result<(), String> {
     crate::release_qa::require_providers()?;
-    let _change = begin_change(&app, ApiKeyProvider::Openai)?;
+    let _change = begin_change(&app, ApiKeyProvider::Openai).await?;
     if openai_billing(&app)? != ClaudeBilling::ApiKey {
         return Err("Choose API key billing for OpenAI first. Saving or connecting a key never switches billing automatically.".into());
     }
@@ -518,7 +566,7 @@ pub(crate) async fn claude_billing_set(
     billing: ClaudeBilling,
 ) -> Result<(), String> {
     crate::release_qa::require_providers()?;
-    let _change = begin_change(&app, ApiKeyProvider::Anthropic)?;
+    let _change = begin_change(&app, ApiKeyProvider::Anthropic).await?;
     if claude_billing(&app).ok() == Some(billing) {
         return Ok(());
     }
@@ -540,12 +588,17 @@ pub(crate) async fn openai_billing_set(
     billing: ClaudeBilling,
 ) -> Result<(), String> {
     crate::release_qa::require_providers()?;
-    let _change = begin_change(&app, ApiKeyProvider::Openai)?;
+    let _change = begin_change(&app, ApiKeyProvider::Openai).await?;
     if openai_billing(&app).ok() == Some(billing) { return Ok(()); }
     let _restart = runtime.lifecycle.begin_auth_switch()?;
-    crate::retire_codex_for_auth_change(&app, &runtime).await?;
-    write_billing(&app, &state, ApiKeyProvider::Openai, billing).await?;
-    // Retire all starts prepared under the old billing and pending browser
-    // login callbacks owned by that process. No automatic sign-in/fallback.
-    crate::ensure_server(&app, &runtime).await.map(|_| ())
+    // Retire a running process so starts prepared under the old billing and
+    // its pending browser login callbacks cannot outlive the change. With none
+    // running there is nothing to retire, and Codex need not be installed yet.
+    let running = runtime.server.lock().await.as_ref().is_some_and(|server| server.is_alive());
+    if running {
+        crate::retire_codex_for_auth_change(&app, &runtime).await?;
+    }
+    // The next request starts Codex on demand; a start problem then is
+    // reported there rather than failing a choice that was already saved.
+    write_billing(&app, &state, ApiKeyProvider::Openai, billing).await
 }

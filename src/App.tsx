@@ -21,7 +21,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging } from "./lib/providerAuth";
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
@@ -1797,7 +1797,7 @@ export default function App() {
       ? "Local inference · no API charge"
     : activeUsageCost === null || activeUsageIsUnpriced
       ? "Cost estimate unavailable"
-      : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "estimated API cost"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
+      : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
   const costTotalsView = (() => {
     const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
     if (!totals.today && !totals.project) return "";
@@ -2895,15 +2895,11 @@ export default function App() {
 
   const requireOpenAiLogin = useCallback(() => {
     clearOpenAiAccount();
-    if (openAiBillingRef.current === "apiKey") {
-      setAuthRequiredOpen(false);
-      openSettings("models");
-      setStatus("API key connection required");
-    } else {
-      setAuthRequiredOpen(true);
-      setStatus("Sign-in required");
-    }
-  }, [clearOpenAiAccount, openSettings]);
+    // The dialog has an API-key variant that links to Models & accounts, so a
+    // background helper's auth error never opens Settings on its own.
+    setAuthRequiredOpen(true);
+    setStatus(openAiBillingRef.current === "apiKey" ? "API key connection required" : "Sign-in required");
+  }, [clearOpenAiAccount]);
 
   // Set while the user is signing out on purpose. Codex confirms a logout
   // with `account/updated { authMode: null }`, the same notification an
@@ -6545,7 +6541,7 @@ export default function App() {
     // Unless a newer check or attempt owns the card, re-read the real state.
     const recheck = () => { if (claudeStatusRequestRef.current === request) void refreshClaudeStatus(true); };
     setError(null);
-    setStatus("Opening Claude sign-in");
+    setStatus("Finish Claude sign-in in your browser");
     try {
       await startClaudeLogin();
       // Native login now owns and verifies the browser flow before returning.
@@ -6558,7 +6554,8 @@ export default function App() {
       }
     } catch (reason) {
       setStatus("Setup required");
-      setError(friendlyError(reason));
+      // Cancelling is the user's own choice, not a failure to report.
+      if (String(reason) !== CLAUDE_LOGIN_CANCELLED) setError(friendlyError(reason));
       recheck();
     } finally {
       finishAuthChange();

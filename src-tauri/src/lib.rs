@@ -1684,7 +1684,11 @@ fn validate_claude_initialized_account(
     initialized: &Value,
 ) -> Result<(), String> {
     let account = initialized.get("account").unwrap_or(&Value::Null);
-    if account.get("apiProvider").and_then(Value::as_str) != Some("firstParty") {
+    // Claude Code before 2.1.77 omits apiProvider here. Hosted providers are
+    // already stripped from the launch environment and settings, and the
+    // billing evidence below is still required, so only an explicit other
+    // provider is refused.
+    if account.get("apiProvider").is_some_and(|provider| provider.as_str() != Some("firstParty")) {
         return Err("Claude Code selected a different or unverified API provider. Check Models & accounts; your message was not sent.".into());
     }
     let admitted = match billing {
@@ -4704,6 +4708,11 @@ async fn claude_billed_command(app: &AppHandle, path: &Path, home: Option<&Path>
     let api_key = provider_auth::claude_process_api_key(app).await?;
     let mut command = subscription_only_command(path, home);
     if let Some(key) = api_key {
+        if provider_auth::claude_launch_verified(app, provider_auth::ClaudeBilling::ApiKey) {
+            command.env("ANTHROPIC_API_KEY", key);
+            return Ok(command);
+        }
+        let generation = claude_auth_generation(app);
         // Text helpers cannot inspect a stream initialization response. Check
         // the backend with their exact credential environment first. Auth
         // method is deliberately not compared here: non-print auth status can
@@ -4728,6 +4737,7 @@ async fn claude_billed_command(app: &AppHandle, path: &Path, home: Option<&Path>
         {
             return Err("Claude Code selected a different or unverified API provider. Mythra Code will not run this helper under another billing method.".into());
         }
+        provider_auth::remember_claude_launch_verified(app, generation, provider_auth::ClaudeBilling::ApiKey);
         command.env("ANTHROPIC_API_KEY", key);
     }
     Ok(command)
@@ -4970,7 +4980,7 @@ fn invalidate_claude_auth(app: &AppHandle) {
     state.authenticated.store(false, Ordering::Release);
 }
 
-fn claude_auth_generation(app: &AppHandle) -> u64 {
+pub(crate) fn claude_auth_generation(app: &AppHandle) -> u64 {
     let Some(state) = app.try_state::<ClaudeState>() else { return 0; };
     let generation = *state.auth_check_generation.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -5024,9 +5034,14 @@ async fn probe_claude_auth(path: &Path, home: Option<&Path>) -> Result<Value, St
     if !output.status.success() && !signed_out {
         return Err("Claude Code could not verify your account. Try checking the connection again.".into());
     }
+    // Claude Code before 2.1.300 reports a Console login as authMethod
+    // "claude.ai" with an apiKeySource ("/login managed key"); only a
+    // subscription sign-in has none.
+    let api_key_source = auth.get("apiKeySource").and_then(Value::as_str).filter(|source| *source != "none");
     if auth.get("loggedIn").and_then(Value::as_bool) == Some(true)
         && (auth.get("authMethod").and_then(Value::as_str) != Some("claude.ai")
-            || auth.get("apiProvider").and_then(Value::as_str) != Some("firstParty"))
+            || auth.get("apiProvider").and_then(Value::as_str) != Some("firstParty")
+            || api_key_source.is_some())
     {
         // A Console key, profile or hosted-provider login is not the selected
         // subscription. Leave external credentials untouched and fail closed.
@@ -5573,10 +5588,20 @@ async fn claude_runtime_status(
     Ok(read_claude_runtime_status(&app).await)
 }
 
+/// Cancels the browser sign-in `claude_login` is waiting for, so an abandoned
+/// browser does not hold Claude work and billing changes until the timeout.
+static CLAUDE_LOGIN_CANCEL: std::sync::Mutex<Option<oneshot::Sender<()>>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+fn claude_login_cancel() -> bool {
+    CLAUDE_LOGIN_CANCEL.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+        .is_some_and(|cancel| cancel.send(()).is_ok())
+}
+
 #[tauri::command]
 async fn claude_login(app: AppHandle) -> Result<(), String> {
     crate::release_qa::require_providers()?;
-    let change = provider_auth::begin_change(&app, provider_auth::ApiKeyProvider::Anthropic)?;
+    let change = provider_auth::begin_change(&app, provider_auth::ApiKeyProvider::Anthropic).await?;
     provider_auth::claude_idle(&app.state::<ClaudeState>()).await?;
     if provider_auth::claude_billing(&app)? != provider_auth::ClaudeBilling::Subscription {
         return Err("Choose Subscription for Claude in Models & accounts before signing in. Mythra Code never changes billing automatically.".into());
@@ -5600,9 +5625,16 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         let mut child = command.spawn()
             .map_err(|_| "Could not start Claude subscription sign-in. Run `claude auth login --claudeai` in a terminal, then refresh the connection.".to_string())?;
-        let outcome = timeout(Duration::from_secs(300), child.wait()).await;
-        let success = matches!(&outcome, Ok(Ok(status)) if status.success());
-        if !matches!(&outcome, Ok(Ok(_))) {
+        let (cancel, cancelled) = oneshot::channel::<()>();
+        *CLAUDE_LOGIN_CANCEL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cancel);
+        let mut was_cancelled = false;
+        let outcome = tokio::select! {
+            waited = timeout(Duration::from_secs(300), child.wait()) => waited.ok().and_then(Result::ok),
+            _ = cancelled => { was_cancelled = true; None }
+        };
+        CLAUDE_LOGIN_CANCEL.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let success = outcome.is_some_and(|status| status.success());
+        if outcome.is_none() {
             let _ = child.start_kill();
             if !matches!(timeout(Duration::from_secs(2), child.wait()).await, Ok(Ok(_))) {
                 let pending_app = app.clone();
@@ -5620,6 +5652,9 @@ async fn claude_login(app: AppHandle) -> Result<(), String> {
         }
         // Keep the exclusive admission alive through credential verification.
         let _change = change;
+        if was_cancelled {
+            return Err("Claude sign-in was cancelled.".into());
+        }
         if !success {
             return Err("Claude subscription sign-in did not finish. Try again; if the browser did not open, run `claude auth login --claudeai` in a terminal, then refresh the connection.".into());
         }
@@ -6467,7 +6502,7 @@ async fn claude_turn_start(
     // Read after the authorization generation: a billing or key change
     // publishes before it advances the generation, so a start holding the
     // old choice is refused at spawn by `claude_auth_admits`.
-    let api_key = provider_auth::claude_process_api_key(&app).await?;
+    let api_key = provider_auth::claude_turn_api_key(&app).await?;
     let selected_billing = provider_auth::claude_billing(&app)?;
     if options.cwd.trim().is_empty() || !Path::new(&options.cwd).is_dir() {
         return Err("Choose a valid project folder before starting this Claude thread.".into());
@@ -8530,10 +8565,20 @@ async fn codex_sign_out_api_key(app: &AppHandle, state: &RuntimeState) -> Result
     Ok(None)
 }
 
-/// Subscription auth changes use the same retire-first barrier as API
-/// changes. Logout before opening the browser means no old account can run
-/// work while a later browser callback is about to replace it.
+/// ChatGPT sign-in and sign-out. Re-signing in (or to another workspace) or
+/// signing out of a ChatGPT profile does not change the billing method, so it
+/// keeps the current session until the browser flow replaces it, as before
+/// API keys. A profile still holding an API key is retired first and signed
+/// out before the browser opens, so it cannot bill while the switch is pending.
 async fn codex_subscription_auth(app: &AppHandle, state: &RuntimeState, method: &str, params: Value) -> Result<Value, String> {
+    {
+        let _rpc = state.lifecycle.begin_rpc_call(method)?;
+        let server = ensure_server(app, state).await?;
+        let account = server.request("account/read", json!({ "refreshToken": false })).await?;
+        if account.pointer("/account/type").and_then(Value::as_str) != Some("apiKey") {
+            return server.request(method, params).await;
+        }
+    }
     let _switch = state.lifecycle.begin_auth_switch()?;
     retire_codex_for_auth_change(app, state).await?;
     let server = ensure_server(app, state).await?;
@@ -8795,9 +8840,15 @@ async fn codex_rpc(
     }
     let auth_change = matches!(method.as_str(), "account/login/start" | "account/logout");
     let _billing_change = if auth_change {
-        Some(provider_auth::begin_change(&app, provider_auth::ApiKeyProvider::Openai).map_err(native_predispatch_refusal)?)
+        Some(provider_auth::begin_change(&app, provider_auth::ApiKeyProvider::Openai).await.map_err(native_predispatch_refusal)?)
     } else { None };
-    let _billing_admission = if !auth_change {
+    // Only requests that dispatch model work bill the selected method. Reads,
+    // terminal commands and listing must not hold (or be refused by) billing
+    // and credential changes; the runtime lifecycle already refuses a switch
+    // while turns, commands or requests are active.
+    let billed = matches!(method.as_str(),
+        "thread/start" | "thread/resume" | "thread/fork" | "turn/start" | "turn/steer" | "review/start" | "thread/compact/start");
+    let _billing_admission = if billed {
         Some(provider_auth::begin_use(&app, provider_auth::ApiKeyProvider::Openai).map_err(native_predispatch_refusal)?)
     } else { None };
     if method == "account/rateLimits/read"
@@ -8848,7 +8899,10 @@ async fn codex_rpc(
                     .ok_or_else(|| native_predispatch_refusal("Could not verify this thread's provider. Reopen the thread before sending.".into()))?.to_owned()
             }
         } else { "openai".to_owned() };
-        if provider == "openai" {
+        // Only the destinations Mythra Code configures itself bill elsewhere.
+        // Any other provider name, including a custom one defined through
+        // `config`, may use Codex's OpenAI credential, so it is checked too.
+        if !matches!(provider.as_str(), "openrouter" | "lmstudio" | "lmstudio_openkiwi" | "openkiwi-lmstudio") {
             let account = server.request("account/read", json!({ "refreshToken": false })).await.map_err(native_predispatch_refusal)?;
             provider_auth::assert_openai_account(&app, &account).map_err(native_predispatch_refusal)?;
         }
@@ -9563,6 +9617,7 @@ pub fn run() {
                     claude_models,
                     claude_usage,
                     claude_login,
+                    claude_login_cancel,
                     cursor_runtime_status,
                     cursor_login,
                     cursor_models,

@@ -1,3 +1,4 @@
+import { safeErrorText } from "./errors";
 import { invoke } from "@tauri-apps/api/core";
 import type { Account } from "../types";
 import type { ClaudeRuntimeStatus } from "./claude";
@@ -120,8 +121,9 @@ export async function saveAndConnectOpenAiApiKey(apiKey: string): Promise<void> 
     await invoke<void>("provider_api_key_save", { provider: "openai", apiKey });
     try {
       await invoke<void>("openai_api_key_use");
-    } catch {
-      throw new Error("The key was saved, but Codex couldn't connect it. Use Connect saved key to retry; the billing choice has not changed.");
+    } catch (reason) {
+      // The native command returns fixed messages that never contain the key.
+      throw new Error(`The key was saved, but Codex couldn't connect it: ${safeErrorText(reason)} Use Connect saved key to retry; the billing choice has not changed.`);
     }
   });
 }

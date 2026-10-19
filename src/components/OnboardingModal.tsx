@@ -105,7 +105,7 @@ function providerNextStep(provider: ProviderInfo, stage: ProviderStage, status: 
   return provider.id === "openai"
     ? "Choose OpenAI in Models & accounts. Sign in opens your browser; you never enter your subscription password here. Or add an OpenAI API key, billed to your API account."
     : provider.id === "claude"
-      ? "Choose Anthropic in Models & accounts. Sign in opens Claude Code's sign-in in a terminal; follow the prompts there. Or add an Anthropic API key, billed to your Claude Console account."
+      ? "Choose Anthropic in Models & accounts. Sign in opens your browser to sign in to your Claude subscription; you never enter your password here. Or add an Anthropic API key, billed to your Claude Console account."
       : `Choose ${provider.name} in Models & accounts. Sign in opens its command-line sign-in in a terminal; follow the prompts there.`;
 }
 

@@ -41,7 +41,7 @@ import {
   Cpu,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
-import { isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
+import { cancelClaudeLogin, isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import { claudeUsesApiKey, codexAccountReady } from "../lib/providerAuth";
 import { ClaudeBillingPanel, OpenAiApiKeyPanel, useProviderAuthOperation } from "./ProviderApiKeyPanel";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
@@ -193,7 +193,7 @@ type SettingsRow = {
   label: string;
   keywords?: string;
   /** Stable target for controls outside the shared setting-row markup. */
-  target?: "openrouter-key" | "lmstudio-server" | "transcription-key";
+  target?: "openrouter-key" | "lmstudio-server" | "transcription-key" | "openai-api-key" | "claude-billing";
   accountProvider?: Provider;
 };
 
@@ -212,6 +212,8 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "projects", label: "Automatic thread titles", keywords: "name rename title luna" },
   { pane: "projects", label: "Project profiles", keywords: "export import copy share project settings profile differs defaults" },
   { pane: "models", label: "Accounts & connections", keywords: "sign in login account" },
+  { pane: "models", label: "OpenAI API key and billing", keywords: "openai api key billing subscription chatgpt codex pay as you go", target: "openai-api-key", accountProvider: "openai" },
+  { pane: "models", label: "Claude API key and billing", keywords: "anthropic claude api key billing subscription console", target: "claude-billing", accountProvider: "claude" },
   { pane: "models", label: "OpenRouter API key", keywords: "key token openrouter", target: "openrouter-key", accountProvider: "openrouter" },
   { pane: "models", label: "LM Studio local server", keywords: "lm studio local url token", target: "lmstudio-server", accountProvider: "lmstudio" },
   { pane: "models", label: "Defaults for new threads", keywords: "default provider model" },
@@ -1068,8 +1070,8 @@ export function SettingsModal({
     } catch (reason) {
       onError(friendlyError(reason));
     } finally {
-      // The launcher resolves after opening sign-in; the browser's eventual
-      // completion must not lock the billing selector indefinitely.
+      // Sign-in resolves once the browser flow finishes, is cancelled or
+      // times out; the card offers Cancel while it waits.
       finish();
     }
   };
@@ -2320,7 +2322,7 @@ export function SettingsModal({
                     <span className={`connected-badge${accountChecks.openai ? " unverified" : ""}`} title={accountChecks.openai ? undefined : OPENAI_SIGNED_IN_NOTE} aria-live="polite">{accountChecks.openai === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.openai ? <Check size={12} /> : null} {accountChecks.openai === "Checking connection…" ? "Checking…" : accountChecks.openai ? "Unverified" : "Signed in"}</span>
                     <button className="secondary-button" onClick={() => void signOut()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>Sign out</button>
                   </div>
-                ) : openAiBilling === "subscription" || !runtimeStatus?.available ? (
+                ) : openAiBilling !== "apiKey" || !runtimeStatus?.available ? (
                   <button className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
                     {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
                   </button>
@@ -2378,10 +2380,16 @@ export function SettingsModal({
                 {claudeStatus?.loggedIn ? (
                   <span className={`connected-badge${accountChecks.claude ? " unverified" : ""}`} aria-live="polite">{accountChecks.claude === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.claude ? <Check size={12} /> : null} {accountChecks.claude === "Checking connection…" ? "Checking…" : accountChecks.claude ? "Unverified" : "Connected"}</span>
                 ) : claudeUsesApiKey(claudeStatus) && claudeStatus?.available ? null : (
-                  <button className="secondary-button" onClick={() => void signInClaude()} disabled={claudeLoginStarting || Boolean(claudeAuthOperation.busy)}>
-                    {claudeLoginStarting ? <LoaderCircle className="spin" size={14} /> : !claudeStatus?.available ? <Download size={14} /> : null}
-                    {claudeLoginStarting ? "Signing in…" : claudeStatus?.available ? "Sign in" : "Install Claude Code"}
-                  </button>
+                  claudeLoginStarting ? (
+                    <button className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel">
+                      <LoaderCircle className="spin" size={14} /> Cancel sign-in
+                    </button>
+                  ) : (
+                    <button className="secondary-button" onClick={() => void signInClaude()} disabled={Boolean(claudeAuthOperation.busy)}>
+                      {!claudeStatus?.available ? <Download size={14} /> : null}
+                      {claudeStatus?.available ? "Sign in" : "Install Claude Code"}
+                    </button>
+                  )
                 )}
                 <button className="icon-button" onClick={() => void refreshClaude()} title="Refresh Claude status" aria-label="Refresh Claude status" disabled={claudeLoginStarting || Boolean(claudeAuthOperation.busy)} aria-busy={claudeAuthOperation.busy === "refreshing"}>{claudeAuthOperation.busy === "refreshing" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>
               </div>

@@ -113,7 +113,7 @@ function KeyInputRow({ provider, visible, billing, state, busy, disabled, saveLa
       <input
         type="password"
         value={input}
-        autoComplete="off"
+        autoComplete="new-password"
         spellCheck={false}
         aria-label={`${label} API key`}
         placeholder={state === "saved" ? "Paste a new key to replace the saved one" : provider === "openai" ? "sk-proj-…" : "sk-ant-api…"}
@@ -349,6 +349,10 @@ export function ClaudeBillingPanel({ visible, claudeStatus, operation, disabled 
   const choose = (next: ClaudeBilling) => {
     if (blocked || next === billing) return;
     void run("billing", async () => {
+      if (next === "apiKey" && !(await confirmDialog(
+        "Use Anthropic API billing?\n\nNew Claude turns, sub-agents, titles and helpers will bill your Anthropic API key per token instead of your Claude subscription, even if that key fails or runs out of credits. Your Claude Code login stays as it is, so you can switch back here.",
+        { confirmLabel: "Select API key" },
+      ))) return false;
       await setClaudeBilling(next);
       if (next === "subscription") return "New Claude turns use your Claude subscription.";
       return state === "saved" ? "New Claude turns bill your Anthropic API key." : "Add an Anthropic API key to start Claude turns.";
@@ -392,7 +396,10 @@ export function ClaudeBillingPanel({ visible, claudeStatus, operation, disabled 
         busy={busy}
         disabled={blocked || billing === null}
         saveLabel="Save key"
-        onSave={(key) => run("saving", () => saveProviderApiKey("anthropic", key), "The key couldn't be saved.", billing !== "subscription")}
+        onSave={(key) => run("saving", async () => {
+          await saveProviderApiKey("anthropic", key);
+          return billing === "apiKey" ? "Key saved. New Claude turns bill this key." : "Key saved. Billing is unchanged; choose API key above to use it.";
+        }, "The key couldn't be saved.", billing !== "subscription")}
         onRemove={() => void remove()}
       />
       <Feedback error={error} notice={notice} />
