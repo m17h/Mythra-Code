@@ -226,37 +226,58 @@ fn captured_model_guidance(
     Ok(captured)
 }
 
+/// Claude Code keeps only the first 4,096 characters of an MCP tool
+/// description by default, and anything past it is silently dropped. The
+/// spawn description, with its notes, stays under this budget; notes that do
+/// not fit are named as omitted rather than cut off mid-sentence.
+const SPAWN_DESCRIPTION_BUDGET: usize = 3_800;
+
 /// Appended to the spawn description only when the captured crew has notes.
+/// `available` is how many characters the description may still grow by.
 fn model_guidance_section(
     targets: &[ChildAgentTarget],
     guidance: &[ChildAgentModelGuidance],
+    available: usize,
 ) -> String {
     if guidance.is_empty() {
         return String::new();
     }
-    let lines = guidance
-        .iter()
-        .map(|entry| {
-            let destinations = targets
-                .iter()
-                .filter(|target| target.provider == entry.provider && target.model == entry.model)
-                .map(|target| format!("`{}`", target.id))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "- {} / {} (used by {destinations}): {}",
-                entry.provider, entry.model, entry.note
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "\n\nUser model guidance — the user's reusable preferences for models in this crew. \
-         Before choosing destinations, consult the note for each model you are considering; \
-         each note applies once to every destination listed with it. Models without a note \
-         are left to your judgment. Notes are preferences only: they never add destinations \
-         or relax the reasoning limits, concurrency, or permission policy above.\n{lines}"
-    )
+    let header = "\n\nUser model guidance: consult the note for each model you consider; a note \
+         applies to every destination listed with it. Notes are preferences only and never add \
+         destinations or relax the limits or permissions above.";
+    let omitted_reserve = 160;
+    let mut used = header.chars().count();
+    let mut lines = String::new();
+    let mut omitted = 0;
+    for entry in guidance {
+        let destinations = targets
+            .iter()
+            .filter(|target| target.provider == entry.provider && target.model == entry.model)
+            .map(|target| format!("`{}`", target.id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let line = format!(
+            "\n- {} / {} (used by {destinations}): {}",
+            entry.provider, entry.model, entry.note
+        );
+        let length = line.chars().count();
+        if omitted == 0 && used + length + omitted_reserve <= available {
+            used += length;
+            lines.push_str(&line);
+        } else {
+            omitted += 1;
+        }
+    }
+    if lines.is_empty() {
+        let notice = format!("\n\n({omitted} user model note(s) omitted to fit the tool description limit.)");
+        return if notice.chars().count() <= available { notice } else { String::new() };
+    }
+    let suffix = if omitted > 0 {
+        format!("\n({omitted} more model note(s) omitted to fit the tool description limit.)")
+    } else {
+        String::new()
+    };
+    format!("{header}{lines}{suffix}")
 }
 
 fn deserialize_target_auto_compact_tokens<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -1323,19 +1344,19 @@ fn bridge_tool_catalog(
     }
     // Model notes live once in the spawn description, beside the roster they
     // describe; a catalog without spawn authority never carries them.
-    let guidance = model_guidance_section(targets, model_guidance);
-    if !child && !native && !guidance.is_empty() {
+    if !child && !native && !model_guidance.is_empty() {
         if let Some(spawn) = catalog
             .as_array_mut()
             .expect("tool catalog is an array")
             .iter_mut()
             .find(|tool| tool["name"] == TOOL_SPAWN)
         {
-            let description = format!(
-                "{}{guidance}",
-                spawn["description"].as_str().unwrap_or_default()
-            );
-            spawn["description"] = Value::String(description);
+            let base = spawn["description"].as_str().unwrap_or_default().to_owned();
+            let available = SPAWN_DESCRIPTION_BUDGET.saturating_sub(base.chars().count());
+            let guidance = model_guidance_section(targets, model_guidance, available);
+            if !guidance.is_empty() {
+                spawn["description"] = Value::String(format!("{base}{guidance}"));
+            }
         }
     }
     catalog

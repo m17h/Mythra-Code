@@ -8677,7 +8677,11 @@ async fn codex_login_with_api_key(app: &AppHandle, state: &RuntimeState, api_key
 /// Signs Codex out if it is using an API key, so a key removed from Mythra
 /// Code cannot keep billing. A ChatGPT sign-in is left alone. The returned
 /// notice reports a sign-out state that could not be confirmed.
-async fn codex_sign_out_api_key(app: &AppHandle, state: &RuntimeState) -> Result<Option<String>, String> {
+async fn codex_sign_out_api_key(app: &AppHandle, state: &RuntimeState, replacing: bool) -> Result<Option<String>, String> {
+    // Saving a replacement key and removing a key both sign a previous key out
+    // first; say which action was refused so the user retries the right one.
+    let kept = if replacing { "so the new key wasn't saved" } else { "so the key was kept" };
+    let retry = if replacing { "save the key again" } else { "remove the key again" };
     async fn uses_api_key(server: &AppServer) -> Result<bool, String> {
         let account = server.request("account/read", json!({ "refreshToken": false })).await?;
         Ok(account.pointer("/account/type").and_then(Value::as_str) == Some("apiKey"))
@@ -8686,8 +8690,8 @@ async fn codex_sign_out_api_key(app: &AppHandle, state: &RuntimeState) -> Result
     // A never-created private profile cannot hold a Codex credential. This
     // lets users remove a saved, never-connected key before installing Codex.
     let home = crate::release_qa::app_data_dir(app)
-        .map_err(|_| "Could not inspect Codex's private profile. The key was kept.".to_string())?.join("codex-home");
-    if !home.try_exists().map_err(|_| "Could not inspect Codex's private profile. The key was kept.".to_string())? {
+        .map_err(|_| format!("Could not inspect Codex's private profile, {kept}."))?.join("codex-home");
+    if !home.try_exists().map_err(|_| format!("Could not inspect Codex's private profile, {kept}."))? {
         return Ok(None);
     }
     let running = state.server.lock().await.as_ref().filter(|server| server.is_alive()).cloned();
@@ -8695,19 +8699,19 @@ async fn codex_sign_out_api_key(app: &AppHandle, state: &RuntimeState) -> Result
         Some(server) => server,
         None => match ensure_server(app, state).await {
             Ok(server) => server,
-            Err(_) => return Err("Codex couldn't confirm sign-out, so the saved key was kept. Start or repair Codex, then remove the key again.".into()),
+            Err(_) => return Err(format!("Codex couldn't confirm it stopped using the previous key, {kept}. Start or repair Codex, then {retry}.")),
         },
     };
-    if !uses_api_key(&server).await.map_err(|_| "Mythra Code couldn't read Codex's sign-in, so the key was kept. Try again.".to_string())? {
+    if !uses_api_key(&server).await.map_err(|_| format!("Mythra Code couldn't read Codex's sign-in, {kept}. Try again."))? {
         return Ok(None);
     }
     retire_codex_for_auth_change(app, state).await?;
     let server = ensure_server(app, state).await?;
-    if uses_api_key(&server).await.map_err(|_| "Mythra Code couldn't read Codex's sign-in, so the key was kept. Try again.".to_string())? {
+    if uses_api_key(&server).await.map_err(|_| format!("Mythra Code couldn't read Codex's sign-in, {kept}. Try again."))? {
         server
             .request("account/logout", json!({}))
             .await
-            .map_err(|_| "Codex did not sign out of the OpenAI API key, so the key was kept. Try again.".to_string())?;
+            .map_err(|_| format!("Codex did not sign out of the previous OpenAI API key, {kept}. Try again."))?;
     }
     Ok(None)
 }

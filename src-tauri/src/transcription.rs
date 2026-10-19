@@ -595,7 +595,8 @@ pub(crate) async fn transcription_copy_openrouter_account_key(
     let Some(key) = openrouter_key().await else {
         return Ok(false);
     };
-    let key = validate_api_key(&key)?;
+    // The account key was saved for chat, so "paste the whole key" would not help.
+    let key = validate_api_key(&key).map_err(|_| "The OpenRouter key saved in Models & accounts can't be used for voice input. Replace it there, or add a separate voice input key.".to_string())?;
     write_key(&state, TranscriptionProvider::Openrouter, Some(key)).await?;
     Ok(true)
 }

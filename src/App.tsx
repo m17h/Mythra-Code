@@ -714,7 +714,9 @@ export default function App() {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopImmediatePropagation();
-        session.onCancel();
+        // Escape abandons setup or a recording. An upload the provider may
+        // already be billing is cancelled only with the explicit Cancel button.
+        if (session.view.phase !== "finishing" && session.view.phase !== "transcribing") session.onCancel();
         return;
       }
       if (event.key === "Tab") {

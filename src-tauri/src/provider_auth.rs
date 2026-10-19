@@ -501,7 +501,7 @@ pub(crate) async fn provider_api_key_save(
             // private Codex profile can retain that key while Subscription
             // is selected, so inspect its actual sign-in in either mode.
             // A ChatGPT sign-in is left untouched by this helper.
-            crate::codex_sign_out_api_key(&app, &runtime).await?;
+            crate::codex_sign_out_api_key(&app, &runtime, true).await?;
         }
     }
     write_key(app, &state, provider, Some(key), change).await?;
@@ -523,7 +523,7 @@ pub(crate) async fn provider_api_key_remove(
     let change = begin_change(&app, provider).await?;
     match provider {
         ApiKeyProvider::Openai => {
-            let notice = crate::codex_sign_out_api_key(&app, &runtime).await?;
+            let notice = crate::codex_sign_out_api_key(&app, &runtime, false).await?;
             write_key(app, &state, provider, None, change).await?;
             Ok(notice)
         }
