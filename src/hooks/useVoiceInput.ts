@@ -307,14 +307,21 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     }
   }, [cancel, configModel, configProvider]);
 
+  // Listen only while a session exists: an idle composer must not hold a
+  // close-requested listener, which would make Tauri wait on the close guard.
+  const hasSession = view !== null;
   useEffect(() => {
+    if (!hasSession) return;
     let disposed = false;
     let stopClose: (() => void) | undefined;
     const onHidden = () => {
       const session = sessionRef.current;
-      if (document.visibilityState === "hidden" && session && session.phase !== "transcribing") {
-        cancel("Recording discarded because Mythra Code was hidden.");
-      }
+      if (document.visibilityState !== "hidden" || !session) return;
+      // macOS also reports a fully covered window (a full-screen app, another
+      // Space) as hidden. Release the microphone, but keep what was said:
+      // a recording is finished and transcribed into its own thread.
+      if (session.phase === "recording") void stop();
+      else if (session.phase === "preparing") cancel("Voice input canceled because Mythra Code was hidden.");
     };
     const onPageHide = () => cancel();
     document.addEventListener("visibilitychange", onHidden);
@@ -338,7 +345,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [cancel]);
+  }, [cancel, hasSession, stop]);
 
   // Unmount releases the microphone and aborts any upload.
   useEffect(() => () => {
