@@ -1674,43 +1674,195 @@ type ClaudeEarlyOutput = std::collections::VecDeque<std::io::Result<Option<Strin
 enum ClaudeStartupInputError {
     /// Refused before the user's message was written; nothing was dispatched.
     NotSent(String),
+    /// Billing confirmation failed before the user's message was written.
+    Refused(ClaudeStartRefusal),
     Failed(String),
+}
+
+/// Why a Claude Code process was refused before any prompt or request was
+/// written to it. Each cause has its own next step, so they are kept apart.
+pub(crate) enum ClaudeStartRefusal {
+    /// It reported a credential other than the selected billing.
+    Credential(provider_auth::ClaudeBilling),
+    /// It reported no credential at all for the selected billing.
+    NoCredential(provider_auth::ClaudeBilling),
+    /// It reported an API provider other than Anthropic's.
+    Provider,
+    /// Its initialize answer had no usable account evidence.
+    Unreported,
+    /// It answered initialize with an error.
+    Rejected,
+    /// It exited, or stopped reading or writing, before answering.
+    Exited,
+    /// It did not answer before the startup deadline.
+    Late,
+}
+
+impl ClaudeStartRefusal {
+    /// User-facing text. `stderr` is only inspected for the CLI's own
+    /// unknown-option error, the one exit that does indicate an outdated or
+    /// incompatible Claude Code; other exits are not attributed to a version.
+    /// Avoids wording that the renderer's generic error rewriting replaces.
+    pub(crate) fn message(&self, stderr: &str) -> String {
+        match self {
+            Self::Credential(provider_auth::ClaudeBilling::Subscription) => "Claude Code is using an API key or another credential instead of your Claude subscription, which is the billing selected in Settings › Models & accounts. Sign in with your Claude subscription there, or explicitly choose API key billing.".into(),
+            Self::Credential(provider_auth::ClaudeBilling::ApiKey) => "Claude Code is using a different credential instead of the Anthropic API key selected in Settings › Models & accounts. Check the saved key there, or explicitly switch Claude to your subscription.".into(),
+            Self::NoCredential(provider_auth::ClaudeBilling::Subscription) => "Claude Code reports no Claude subscription sign-in. Sign in with your subscription in Settings › Models & accounts, then try again.".into(),
+            Self::NoCredential(provider_auth::ClaudeBilling::ApiKey) => "Claude Code did not pick up the Anthropic API key selected in Settings › Models & accounts. Check the saved key there, then try again.".into(),
+            Self::Provider => "Claude Code is set to use an API provider other than Anthropic, for example through an organization policy. Mythra Code bills Claude only through the method selected in Settings › Models & accounts.".into(),
+            Self::Unreported => "Claude Code started without reporting which credential it is using, so the billing selected in Settings › Models & accounts could not be confirmed. Check your Claude connection there. If it looks correct, this Claude Code version may not report its account; check Settings › Updates › Claude Code.".into(),
+            Self::Rejected => "Claude Code refused Mythra Code's startup request, so its billing could not be confirmed. This Claude Code version may not support it; check Settings › Updates › Claude Code.".into(),
+            Self::Exited if stderr.contains("error: unknown option") => "Claude Code stopped because it does not recognize an option Mythra Code needs, which usually means it is out of date. Update it in Settings › Updates › Claude Code.".into(),
+            Self::Exited => "Claude Code stopped before confirming the billing selected in Settings › Models & accounts. Try again; if it keeps happening, check Claude in Models & accounts.".into(),
+            Self::Late => "Claude Code took too long to start and confirm its billing. Try again in a moment.".into(),
+        }
+    }
 }
 
 /// Validate the credential chosen by the actual headless runtime, rather than
 /// assuming the launch environment won over managed policy or a saved gateway.
+/// Evidence of the other billing is a credential mismatch; missing or
+/// malformed evidence is unconfirmed. Neither is ever admitted.
 fn validate_claude_initialized_account(
     billing: provider_auth::ClaudeBilling,
     initialized: &Value,
-) -> Result<(), String> {
-    let account = initialized.get("account").unwrap_or(&Value::Null);
+) -> Result<(), ClaudeStartRefusal> {
+    let Some(account) = initialized.get("account").filter(|account| account.is_object()) else {
+        return Err(ClaudeStartRefusal::Unreported);
+    };
     // Claude Code before 2.1.77 omits apiProvider here. Hosted providers are
     // already stripped from the launch environment and settings, and the
     // billing evidence below is still required, so only an explicit other
     // provider is refused.
-    if account.get("apiProvider").is_some_and(|provider| provider.as_str() != Some("firstParty")) {
-        return Err("Claude Code selected a different or unverified API provider. Check Models & accounts; your message was not sent.".into());
+    match account.get("apiProvider") {
+        None => {}
+        Some(Value::String(provider)) if provider == "firstParty" => {}
+        Some(Value::String(_)) => return Err(ClaudeStartRefusal::Provider),
+        Some(_) => return Err(ClaudeStartRefusal::Unreported),
     }
-    let admitted = match billing {
+    // A string field is reported evidence; any other type is malformed.
+    let text = |field: &str| match account.get(field) {
+        None => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.as_str())),
+        Some(_) => Err(ClaudeStartRefusal::Unreported),
+    };
+    let api_key_source = text("apiKeySource")?;
+    let subscription_type = text("subscriptionType")?;
+    let token_source = text("tokenSource")?;
+    let subscription = subscription_type.is_some_and(|value| !value.trim().is_empty())
+        || token_source == Some("claude.ai");
+    // Claude Code reports "none" for a source that supplies nothing.
+    let reported_none = token_source == Some("none");
+    match billing {
         provider_auth::ClaudeBilling::Subscription => {
             // Current Claude Code emits subscriptionType, and deliberately
             // omits tokenSource, when subscription OAuth is the active auth.
-            // A bare claude.ai tokenSource can coexist with an overriding API
-            // key, so only accept that older shape without an API-key source.
-            account.get("subscriptionType").and_then(Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty())
-                || (account.get("tokenSource").and_then(Value::as_str) == Some("claude.ai")
-                    && account.get("apiKeySource").and_then(Value::as_str)
-                        .is_none_or(|source| source == "none"))
+            // Either subscription shape can coexist with an overriding API
+            // key. Only an omitted source or explicit "none" confirms none,
+            // and any other token source (for example a long-lived OAuth
+            // token from managed settings) is not the selected sign-in.
+            if api_key_source.is_some_and(|source| source != "none")
+                || token_source.is_some_and(|source| source != "claude.ai" && source != "none")
+            {
+                return Err(ClaudeStartRefusal::Credential(billing));
+            }
+            if !subscription {
+                return Err(if reported_none {
+                    ClaudeStartRefusal::NoCredential(billing)
+                } else {
+                    ClaudeStartRefusal::Unreported
+                });
+            }
         }
-        provider_auth::ClaudeBilling::ApiKey => {
-            account.get("apiKeySource").and_then(Value::as_str) == Some("ANTHROPIC_API_KEY")
-        }
-    };
-    if !admitted {
-        return Err("Claude Code did not confirm the billing method selected in Models & accounts. Your message was not sent; check the connection before trying again.".into());
+        // A stored claude.ai login is still reported as tokenSource beside an
+        // overriding key, so only the key source admits; the other fields
+        // only choose which refusal explains a missing key.
+        provider_auth::ClaudeBilling::ApiKey => match api_key_source {
+            Some("ANTHROPIC_API_KEY") => {}
+            Some("none") if !subscription && (reported_none || token_source.is_none()) => {
+                return Err(ClaudeStartRefusal::NoCredential(billing))
+            }
+            Some(_) => return Err(ClaudeStartRefusal::Credential(billing)),
+            None if subscription || token_source.is_some_and(|source| source != "none") => {
+                return Err(ClaudeStartRefusal::Credential(billing))
+            }
+            None if reported_none => return Err(ClaudeStartRefusal::NoCredential(billing)),
+            None => return Err(ClaudeStartRefusal::Unreported),
+        },
     }
     Ok(())
+}
+
+/// The billing verdict when `message` answers the initialize request
+/// `request_id`, or None for any other output. Shared by streamed turns,
+/// helpers and the catalog so their admission cannot drift apart.
+fn claude_initialize_answer(
+    message: &Value,
+    request_id: &str,
+    billing: provider_auth::ClaudeBilling,
+) -> Option<Result<(), ClaudeStartRefusal>> {
+    let response = message.get("response")?;
+    if message.get("type").and_then(Value::as_str) != Some("control_response")
+        || response.get("request_id").and_then(Value::as_str) != Some(request_id)
+    {
+        return None;
+    }
+    Some(if response.get("subtype").and_then(Value::as_str) == Some("success") {
+        validate_claude_initialized_account(billing, response.get("response").unwrap_or(&Value::Null))
+    } else {
+        Err(ClaudeStartRefusal::Rejected)
+    })
+}
+
+/// How long a helper or catalog process may take to answer `initialize`.
+const CLAUDE_PROCESS_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a refused start waits for its stopped process's last stderr.
+const CLAUDE_REFUSAL_STDERR_WAIT: Duration = Duration::from_millis(500);
+/// Stdout a helper or catalog process may write before that answer.
+const CLAUDE_PROCESS_INITIALIZE_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+/// Ask a started `-p` stream-json Claude Code process which credential it
+/// selected, and refuse unless it is the billing selected in Models &
+/// accounts. Callers write nothing else before this succeeds, so a refused
+/// process never receives a prompt or request. A check in another process
+/// (`auth status`) would be stale by the time this one starts. The caller
+/// must drain stderr meanwhile and stop the process on any error.
+pub(crate) async fn confirm_claude_process_billing<W, R>(
+    stdin: &mut W,
+    stdout: &mut R,
+    billing: provider_auth::ClaudeBilling,
+) -> Result<(), ClaudeStartRefusal>
+where
+    W: AsyncWrite + Unpin,
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let request = json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "initialize" },
+    });
+    timeout(CLAUDE_PROCESS_INITIALIZE_TIMEOUT, async {
+        stdin.write_all(format!("{request}\n").as_bytes()).await.map_err(|_| ClaudeStartRefusal::Exited)?;
+        stdin.flush().await.map_err(|_| ClaudeStartRefusal::Exited)?;
+        // Only the initialize answer matters here, and nothing earlier is
+        // billed output, so earlier lines are dropped within a fixed budget.
+        let mut output = (&mut *stdout).take(CLAUDE_PROCESS_INITIALIZE_OUTPUT_BYTES);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            // EOF, a read error, or the budget running out all end the check.
+            if output.read_until(b'\n', &mut line).await.map_err(|_| ClaudeStartRefusal::Exited)? == 0 {
+                return Err(ClaudeStartRefusal::Exited);
+            }
+            let Ok(message) = serde_json::from_slice::<Value>(&line) else { continue };
+            if let Some(verdict) = claude_initialize_answer(&message, &request_id, billing) {
+                return verdict;
+            }
+        }
+    })
+    .await
+    .map_err(|_| ClaudeStartRefusal::Late)?
 }
 
 /// Write initialization and drain its matching response before allowing the
@@ -1733,15 +1885,19 @@ async fn write_claude_startup_input<R: tokio::io::AsyncBufRead + Unpin>(
         .and_then(|message| message.get("request_id").and_then(Value::as_str))
         .ok_or_else(|| ClaudeStartupInputError::NotSent("Claude initialization was not configured; your message was not sent.".into()))?
         .to_owned();
-    let (initialized_sender, initialized_receiver) = oneshot::channel::<Result<(), String>>();
+    let (initialized_sender, initialized_receiver) = oneshot::channel::<Result<(), ClaudeStartRefusal>>();
     let mut initialized_sender = Some(initialized_sender);
     let writes = timeout_at(deadline, async {
         for message in control {
-            turn.write(message).await.map_err(ClaudeStartupInputError::Failed)?;
+            // Only initialization is being written here, not the prompt.
+            // An old CLI may exit on an unsupported option before it reads
+            // even this first frame; retain the same refusal/recovery path.
+            turn.write(message).await
+                .map_err(|_| ClaudeStartupInputError::Refused(ClaudeStartRefusal::Exited))?;
         }
         initialized_receiver.await
-            .map_err(|_| ClaudeStartupInputError::NotSent("Claude Code closed before confirming its billing method. Your message was not sent.".into()))?
-            .map_err(ClaudeStartupInputError::NotSent)?;
+            .map_err(|_| ClaudeStartupInputError::Refused(ClaudeStartRefusal::Exited))?
+            .map_err(ClaudeStartupInputError::Refused)?;
         admit_input().map_err(ClaudeStartupInputError::NotSent)?;
         turn.write(input).await.map_err(ClaudeStartupInputError::Failed)?;
         turn.input_ready.store(true, Ordering::Release);
@@ -1764,7 +1920,7 @@ async fn write_claude_startup_input<R: tokio::io::AsyncBufRead + Unpin>(
             Progress::Written(Ok(Err(error))) => return Err(error),
             Progress::Written(Err(_)) => {
                 return Err(if initialized_sender.is_some() {
-                    ClaudeStartupInputError::NotSent("Claude Code did not confirm its billing method in time. Your message was not sent.".into())
+                    ClaudeStartupInputError::Refused(ClaudeStartRefusal::Late)
                 } else {
                     ClaudeStartupInputError::Failed("Claude Code did not accept its input in time.".into())
                 })
@@ -1774,21 +1930,13 @@ async fn write_claude_startup_input<R: tokio::io::AsyncBufRead + Unpin>(
                     early_bytes = early_bytes.saturating_add(text.len());
                     if initialized_sender.is_some() {
                         if let Ok(message) = serde_json::from_str::<Value>(text) {
-                            let response = message.get("response").unwrap_or(&Value::Null);
-                            if message.get("type").and_then(Value::as_str) == Some("control_response")
-                                && response.get("request_id").and_then(Value::as_str) == Some(initialize_id.as_str())
-                            {
-                                let result = if response.get("subtype").and_then(Value::as_str) == Some("success") {
-                                    validate_claude_initialized_account(billing, response.get("response").unwrap_or(&Value::Null))
-                                } else {
-                                    Err("Claude Code could not initialize the selected billing method. Your message was not sent.".into())
-                                };
-                                if let Some(sender) = initialized_sender.take() { let _ = sender.send(result); }
+                            if let Some(verdict) = claude_initialize_answer(&message, &initialize_id, billing) {
+                                if let Some(sender) = initialized_sender.take() { let _ = sender.send(verdict); }
                             }
                         }
                     }
                 } else if let Some(sender) = initialized_sender.take() {
-                    let _ = sender.send(Err("Claude Code closed before confirming its billing method. Your message was not sent.".into()));
+                    let _ = sender.send(Err(ClaudeStartRefusal::Exited));
                 }
                 early.push_back(line);
             }
@@ -4699,48 +4847,29 @@ fn subscription_only_command(path: &Path, home: Option<&Path>) -> Command {
     command
 }
 
-/// A Claude Code command billed the way Models & accounts selects. With
-/// API-key billing the saved key is the only credential added back after
-/// the overrides are stripped; Claude Code's documented precedence then
-/// uses it instead of the subscription login. The user's environment and
-/// external Claude Code login are never changed.
-async fn claude_billed_command(app: &AppHandle, path: &Path, home: Option<&Path>) -> Result<Command, String> {
-    let api_key = provider_auth::claude_process_api_key(app).await?;
+/// A stream-json Claude Code command billed the way Models & accounts
+/// selects, and the billing its process must confirm through
+/// `confirm_claude_process_billing` before anything else is written. With
+/// API-key billing the saved key is the only credential added back after the
+/// overrides are stripped; Claude Code's documented precedence then uses it
+/// instead of the subscription login. The user's environment and external
+/// Claude Code login are never changed. Callers hold Claude admission, so the
+/// selection cannot change before the process is confirmed.
+async fn claude_billed_command(
+    app: &AppHandle,
+    path: &Path,
+    home: Option<&Path>,
+) -> Result<(Command, provider_auth::ClaudeBilling), String> {
+    let api_key = provider_auth::claude_turn_api_key(app).await?;
     let mut command = subscription_only_command(path, home);
-    if let Some(key) = api_key {
-        if provider_auth::claude_launch_verified(app, provider_auth::ClaudeBilling::ApiKey) {
+    let billing = match api_key {
+        Some(key) => {
             command.env("ANTHROPIC_API_KEY", key);
-            return Ok(command);
+            provider_auth::ClaudeBilling::ApiKey
         }
-        let generation = claude_auth_generation(app);
-        // Text helpers cannot inspect a stream initialization response. Check
-        // the backend with their exact credential environment first. Auth
-        // method is deliberately not compared here: non-print auth status can
-        // report an unapproved environment key differently from headless -p.
-        let output = timeout(
-            CLAUDE_AUTH_STATUS_TIMEOUT,
-            subscription_only_command(path, home)
-                .env("ANTHROPIC_API_KEY", &key)
-                .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
-                .args(["--setting-sources", "", "auth", "status"])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .output(),
-        ).await
-            .map_err(|_| "Claude Code took too long to verify the API provider. Try again.".to_string())?
-            .map_err(|_| "Claude Code could not verify the API provider. Try again.".to_string())?;
-        let auth = parse_claude_auth_status(&output.stdout)
-            .ok_or_else(|| "Claude Code returned an unrecognized API provider. Check Models & accounts.".to_string())?;
-        if !output.status.success()
-            || auth.get("apiProvider").and_then(Value::as_str) != Some("firstParty")
-        {
-            return Err("Claude Code selected a different or unverified API provider. Mythra Code will not run this helper under another billing method.".into());
-        }
-        provider_auth::remember_claude_launch_verified(app, generation, provider_auth::ClaudeBilling::ApiKey);
-        command.env("ANTHROPIC_API_KEY", key);
-    }
-    Ok(command)
+        None => provider_auth::ClaudeBilling::Subscription,
+    };
+    Ok((command, billing))
 }
 
 fn claude_prompt_snapshot_version_support(version: Option<&str>) -> Option<bool> {
@@ -5229,7 +5358,10 @@ async fn probe_claude_usage(app: &AppHandle) -> Result<ClaudeUsageLimits, String
     if !matches!(provider_auth::claude_billing(app), Ok(provider_auth::ClaudeBilling::Subscription)) {
         return Err("CLAUDE_USAGE_API_BILLING".into());
     }
-    provider_auth::claude_process_api_key(app).await?;
+    // `/usage` is a local command in print mode and sends no model request,
+    // so this read is not billed; the preflight keeps a Console or other
+    // login from being reported as subscription quota.
+    provider_auth::claude_subscription_login_verified(app).await?;
     let path = resolve_claude_binary(app).await?;
     let home = crate::release_qa::home_dir(app).ok();
     #[cfg(windows)]
@@ -5313,8 +5445,8 @@ async fn claude_models(app: AppHandle) -> Result<Value, String> {
         .ok()
         .filter(|path| path.is_dir())
         .unwrap_or_else(env::temp_dir);
-    let mut child = claude_billed_command(&app, &binary, Some(&cwd))
-        .await?
+    let (mut command, billing) = claude_billed_command(&app, &binary, Some(&cwd)).await?;
+    let mut child = command
         .current_dir(cwd)
         .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
         .env("ENABLE_CLAUDEAI_MCP_SERVERS", "false")
@@ -5356,6 +5488,11 @@ async fn claude_models(app: AppHandle) -> Result<Value, String> {
             .ok_or_else(|| "Claude Code did not accept a model catalog request".to_string())?;
         let stdout = child.stdout.take()
             .ok_or_else(|| "Claude Code did not return a model catalog".to_string())?;
+        let mut stdout = BufReader::new(stdout);
+        // The catalog depends on the account, so it is read only from a
+        // process confirmed to use the selected billing.
+        confirm_claude_process_billing(&mut stdin, &mut stdout, billing).await
+            .map_err(|refusal| refusal.message(""))?;
         stdin
             .write_all(format!("{request}\n").as_bytes())
             .await
@@ -5364,7 +5501,7 @@ async fn claude_models(app: AppHandle) -> Result<Value, String> {
             .flush()
             .await
             .map_err(|error| format!("Could not ask Claude Code for its models: {error}"))?;
-        let mut lines = BufReader::new(stdout).lines();
+        let mut lines = stdout.lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
@@ -6755,11 +6892,21 @@ async fn claude_turn_start(
     {
         Ok(early_output) => early_output,
         Err(failure) => {
+            let cutoff = turn.shutdown().await;
             let (error, not_sent) = match failure {
                 ClaudeStartupInputError::NotSent(error) => (error, true),
+                ClaudeStartupInputError::Refused(refusal) => {
+                    // Give the drain a moment to collect a final stderr line,
+                    // such as an unknown-option error, from the stopped CLI.
+                    if cutoff.is_ok() {
+                        let _ = timeout(CLAUDE_REFUSAL_STDERR_WAIT, &mut stderr_task).await;
+                    }
+                    let stderr = stderr_lines.lock().await.contents().to_owned();
+                    (format!("{} Your message was not sent.", refusal.message(&stderr)), true)
+                }
                 ClaudeStartupInputError::Failed(error) => (error, false),
             };
-            if let Err(cutoff) = turn.shutdown().await {
+            if let Err(cutoff) = cutoff {
                 start.record_cutoff_error(&cutoff);
                 stderr_task.abort();
                 return Err(format!("{error} Claude startup cleanup could not confirm cutoff: {cutoff}"));

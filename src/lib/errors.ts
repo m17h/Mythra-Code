@@ -22,6 +22,8 @@ export function friendlyError(reason: unknown): string {
   }
   const cleaned = raw
     .replace(/^Error:\s*/i, "")
+    // A native refusal marker proves nothing was sent; it is not user copy.
+    .replace(/^MYTHRA_NOT_DISPATCHED:\s*/, "")
     .replace(/^App Server error:\s*/i, "")
     .replace(/^RPC\s+[^:]+:\s*/i, "")
     .trim();
