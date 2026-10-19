@@ -1858,6 +1858,8 @@ export default function App() {
   // interface-only.
   const errorSettingsSection = useMemo<SettingsSection | null>(() => {
     if (!error) return null;
+    // Explicit runtime-update guidance must win over the provider name below.
+    if (/Settings\s*›\s*Updates\s*›\s*Claude Code/i.test(error)) return "updates";
     if (/sign in|api key|openrouter|lm studio|claude|model|account/i.test(error)) return "models";
     if (/runtime|codex|settings/i.test(error)) return "system";
     return null;

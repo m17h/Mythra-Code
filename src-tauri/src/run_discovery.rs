@@ -18,14 +18,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
     sync::{Notify, OwnedRwLockReadGuard},
     time::{timeout, Duration},
 };
 
 use super::{
-    background_command, claude_billed_command, claude_effort, cursor, kill_managed_process_tree, lmstudio_key,
+    background_command, claude_billed_command, claude_effort, confirm_claude_process_billing, cursor,
+    kill_managed_process_tree, lmstudio_key,
     managed_identity_for, normalize_lmstudio_base_url, openrouter_key, resolve_claude_binary,
     resolve_codex_runtime, runtime_path, ManagedProcessIdentity,
     RuntimeState, MYTHRA_CODE_NATIVE_DELEGATION_POLICY, OPENROUTER_DEFAULT_BASE_URL,
@@ -848,8 +849,13 @@ fn claude_arguments(options: &RunDiscoveryOptions) -> Vec<OsString> {
         "none".into(),
         "--disable-slash-commands".into(),
         "--no-chrome".into(),
+        // Stream input lets the process report its selected credential before
+        // the task is written; that input format requires stream output.
+        "--input-format".into(),
+        "stream-json".into(),
         "--output-format".into(),
-        "json".into(),
+        "stream-json".into(),
+        "--verbose".into(),
         "--json-schema".into(),
         RESULT_SCHEMA.into(),
         "--model".into(),
@@ -1490,13 +1496,61 @@ impl Drop for HelperUsageGuard {
     }
 }
 
+/// Keeps only the first `result` message of a Claude helper stream: the
+/// object `--output-format json` printed. Streamed tool output therefore
+/// cannot crowd it out of the usual output bound.
+#[derive(Default)]
+struct ClaudeResultLine {
+    line: Vec<u8>,
+    oversized: bool,
+    skipped_oversized: bool,
+    result: Option<Vec<u8>>,
+}
+
+impl ClaudeResultLine {
+    fn feed(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            if *byte == b'\n' {
+                self.finish_line();
+            } else if self.line.len() < MAX_OUTPUT_BYTES && !self.oversized {
+                self.line.push(*byte);
+            } else {
+                self.line.clear();
+                self.oversized = true;
+            }
+        }
+    }
+
+    fn finish_line(&mut self) {
+        if self.oversized {
+            self.skipped_oversized = true;
+        } else if self.result.is_none()
+            && serde_json::from_slice::<Value>(&self.line)
+                .is_ok_and(|value| value.get("type").and_then(Value::as_str) == Some("result"))
+        {
+            self.result = Some(std::mem::take(&mut self.line));
+        }
+        self.line.clear();
+        self.oversized = false;
+    }
+
+    fn finish(mut self) -> BoundedOutput {
+        self.finish_line();
+        // Without a result, a dropped line may have been it.
+        let exceeded = self.result.is_none() && self.skipped_oversized;
+        BoundedOutput { bytes: self.result.unwrap_or_default(), exceeded }
+    }
+}
+
 async fn read_bounded_with_usage<R: AsyncRead + Unpin>(
     mut reader: R,
     observer: SharedHelperUsage,
+    claude_stream: bool,
 ) -> std::io::Result<BoundedOutput> {
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 8192];
     let mut exceeded = false;
+    let mut claude_result = ClaudeResultLine::default();
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
@@ -1506,6 +1560,10 @@ async fn read_bounded_with_usage<R: AsyncRead + Unpin>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .feed(&buffer[..read]);
+        if claude_stream {
+            claude_result.feed(&buffer[..read]);
+            continue;
+        }
         let retained = MAX_OUTPUT_BYTES.saturating_sub(bytes.len()).min(read);
         bytes.extend_from_slice(&buffer[..retained]);
         exceeded |= retained < read;
@@ -1514,6 +1572,9 @@ async fn read_bounded_with_usage<R: AsyncRead + Unpin>(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .finish_line();
+    if claude_stream {
+        return Ok(claude_result.finish());
+    }
     Ok(BoundedOutput { bytes, exceeded })
 }
 
@@ -3002,6 +3063,9 @@ async fn execute_native_request<T>(
         "claude" => Some(crate::provider_auth::begin_use(app, crate::provider_auth::ApiKeyProvider::Anthropic)?),
         _ => None,
     };
+    // Set for Claude, whose started process must confirm this billing before
+    // the task is written.
+    let mut claude_billing = None;
     let mut command: Command = match options.provider.as_str() {
         "openai" => {
             let account = {
@@ -3043,11 +3107,12 @@ async fn execute_native_request<T>(
             let binary = await_or_cancel(&guard.request, resolve_claude_binary(app)).await??;
             // Helpers (titles, run discovery) bill like the user's Claude
             // turns: subscription, or the API key selected for Claude.
-            let mut command = await_or_cancel(
+            let (mut command, billing) = await_or_cancel(
                 &guard.request,
                 claude_billed_command(app, &binary, home.as_deref()),
             )
             .await??;
+            claude_billing = Some(billing);
             command
                 .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
                 .args(native_task_arguments(
@@ -3088,11 +3153,6 @@ async fn execute_native_request<T>(
     let child = command
         .spawn()
         .map_err(|error| format!("Could not start run command discovery: {error}"))?;
-    // One identity per actual execution, never per logical discovery/retry.
-    // Creating it only after spawn excludes launch/preflight failures.
-    let usage = HelperUsageGuard::new(app, options, task, guard.request.clone());
-    usage.begin();
-    usage.outcome("failed");
     let identity = child.id().map(managed_identity_for);
     let mut child = NativeHelperProcess {
         owned: Some(RetiredNativeHelper { child, identity, _billing_admission: billing_admission }),
@@ -3126,18 +3186,81 @@ async fn execute_native_request<T>(
             return Err("Run command discovery did not expose diagnostics.".into());
         }
     };
-    let stdout_task = tokio::spawn(read_bounded_with_usage(stdout, usage.observer.clone()));
-    let stderr_task = tokio::spawn(read_bounded(stderr));
     let mut stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => {
-            let stopped = child.stop().await;
-            discard_readers(stdout_task, stderr_task).await;
-            stopped?;
+            child.stop().await?;
             return Err("Run command discovery did not accept input.".into());
         }
     };
-    match timeout(Duration::from_secs(30), stdin.write_all(prompt.as_bytes())).await {
+    let stderr_task = tokio::spawn(read_bounded(stderr));
+    let mut stdout = BufReader::new(stdout);
+    if let Some(billing) = claude_billing {
+        // Ask this process, not an earlier check, which credential it uses.
+        // A mismatch stops it before the task is written, so nothing bills.
+        let failure = match await_or_cancel(
+            &guard.request,
+            confirm_claude_process_billing(&mut stdin, &mut stdout, billing),
+        )
+        .await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(refusal)) => Some(Ok(refusal)),
+            Err(error) => Some(Err(error)),
+        };
+        if let Some(failure) = failure {
+            let stopped = child.stop().await;
+            // Bounded like every other drain; only an unknown-option error
+            // in it changes the advice, and it is never shown.
+            let stderr = finish_reader(stderr_task, "diagnostics").await;
+            stopped?;
+            if guard.request.cancelled.load(Ordering::Acquire) {
+                return Err("Run command discovery was cancelled.".into());
+            }
+            return Err(match failure {
+                Ok(refusal) => {
+                    let stderr = stderr.map(|output| String::from_utf8_lossy(&output.bytes).into_owned());
+                    format!("{} Nothing was sent to Claude.", refusal.message(stderr.as_deref().unwrap_or("")))
+                }
+                Err(error) => error,
+            });
+        }
+    }
+    // Initialization can finish concurrently with cancellation. Refuse the
+    // paid input even when the best-effort external process signal failed.
+    if guard.request.cancelled.load(Ordering::Acquire) {
+        let stopped = child.stop().await;
+        discard_reader(stderr_task).await;
+        stopped?;
+        return Err("Run command discovery was cancelled.".into());
+    }
+    // One identity per actual execution, never per logical discovery/retry.
+    // Creating it only once input can be sent excludes launch, preflight and
+    // billing refusals.
+    let usage = HelperUsageGuard::new(app, options, task, guard.request.clone());
+    usage.begin();
+    usage.outcome("failed");
+    let stdout_task = tokio::spawn(read_bounded_with_usage(
+        stdout,
+        usage.observer.clone(),
+        claude_billing.is_some(),
+    ));
+    let input: std::borrow::Cow<[u8]> = if claude_billing.is_some() {
+        format!(
+            "{}\n",
+            json!({
+                "type": "user",
+                "message": { "role": "user", "content": [{ "type": "text", "text": prompt }] },
+                "parent_tool_use_id": Value::Null,
+                "session_id": "",
+            })
+        )
+        .into_bytes()
+        .into()
+    } else {
+        prompt.as_bytes().into()
+    };
+    match timeout(Duration::from_secs(30), stdin.write_all(&input)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             let stopped = child.stop().await;

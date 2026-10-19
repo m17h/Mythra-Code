@@ -396,14 +396,15 @@ pub(crate) async fn claude_idle(state: &ClaudeState) -> Result<(), String> {
     Ok(())
 }
 
-/// A launch-credential check costs a Claude Code process (`auth status`).
+/// A subscription quota check costs a Claude Code process (`auth status`).
 /// A success is reused until sign-in, key or billing changes (each advances
 /// the Claude auth generation), and for at most a minute so a `claude auth`
-/// change made outside Mythra Code is still noticed.
+/// change made outside Mythra Code is still noticed. It never admits billed
+/// work: turns, helpers and catalog reads confirm their own process instead.
 const CLAUDE_VERIFIED_TTL: Duration = Duration::from_secs(60);
 static CLAUDE_VERIFIED: StdMutex<Option<(u64, ClaudeBilling, std::time::Instant)>> = StdMutex::new(None);
 
-pub(crate) fn claude_launch_verified(app: &AppHandle, billing: ClaudeBilling) -> bool {
+fn claude_launch_verified(app: &AppHandle, billing: ClaudeBilling) -> bool {
     let generation = crate::claude_auth_generation(app);
     CLAUDE_VERIFIED.lock().unwrap_or_else(PoisonError::into_inner).is_some_and(|(checked, verified, at)| {
         checked == generation && verified == billing && at.elapsed() < CLAUDE_VERIFIED_TTL
@@ -411,7 +412,7 @@ pub(crate) fn claude_launch_verified(app: &AppHandle, billing: ClaudeBilling) ->
 }
 
 /// Record a check that began at `generation`; one overtaken by a change is dropped.
-pub(crate) fn remember_claude_launch_verified(app: &AppHandle, generation: u64, billing: ClaudeBilling) {
+fn remember_claude_launch_verified(app: &AppHandle, generation: u64, billing: ClaudeBilling) {
     if crate::claude_auth_generation(app) == generation {
         *CLAUDE_VERIFIED.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, billing, std::time::Instant::now()));
     }
@@ -425,34 +426,32 @@ async fn saved_anthropic_key() -> Result<String, String> {
     }
 }
 
-/// The Anthropic key a Claude Code process about to start must receive, or
-/// None under subscription billing. Never falls back between the two.
-pub(crate) async fn claude_process_api_key(app: &AppHandle) -> Result<Option<String>, String> {
-    match claude_billing(app)? {
-        ClaudeBilling::Subscription => {
-            // Text helpers, catalog and usage requests cannot inspect a stream
-            // initialization, so verify the CLI selected subscription
-            // credentials: omitting our key still permits a saved Console login.
-            if claude_launch_verified(app, ClaudeBilling::Subscription) {
-                return Ok(None);
-            }
-            let generation = crate::claude_auth_generation(app);
-            let binary = crate::resolve_claude_binary(app).await?;
-            let home = crate::release_qa::home_dir(app).ok();
-            let auth = crate::probe_claude_auth(&binary, home.as_deref()).await?;
-            if auth.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
-                return Err("Sign in with your Claude subscription in Settings › Models & accounts before starting Claude work.".into());
-            }
-            remember_claude_launch_verified(app, generation, ClaudeBilling::Subscription);
-            Ok(None)
-        }
-        ClaudeBilling::ApiKey => saved_anthropic_key().await.map(Some),
+/// Confirms, before a subscription quota read, that Claude Code's own login
+/// is the subscription: omitting our key still permits a saved Console login.
+/// The `/usage` read has no initialize response to inspect and is not billed.
+pub(crate) async fn claude_subscription_login_verified(app: &AppHandle) -> Result<(), String> {
+    if claude_billing(app)? != ClaudeBilling::Subscription {
+        return Err("Claude is set to API key billing, which has no subscription usage limits.".into());
     }
+    if claude_launch_verified(app, ClaudeBilling::Subscription) {
+        return Ok(());
+    }
+    let generation = crate::claude_auth_generation(app);
+    let binary = crate::resolve_claude_binary(app).await?;
+    let home = crate::release_qa::home_dir(app).ok();
+    let auth = crate::probe_claude_auth(&binary, home.as_deref()).await?;
+    if auth.get("loggedIn").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("Sign in with your Claude subscription in Settings › Models & accounts before starting Claude work.".into());
+    }
+    remember_claude_launch_verified(app, generation, ClaudeBilling::Subscription);
+    Ok(())
 }
 
-/// The credential for a streamed turn. Its initialize response is validated
-/// against the selected billing before the user's input is written, so an
-/// `auth status` process here would only repeat that check.
+/// The Anthropic key a Claude Code process about to start must receive, or
+/// None under subscription billing. Never falls back between the two. Each
+/// process started with it (streamed turns, helpers, the catalog) validates
+/// its own initialize response against the selected billing before any input
+/// is written, so an `auth status` process here would only repeat that check.
 pub(crate) async fn claude_turn_api_key(app: &AppHandle) -> Result<Option<String>, String> {
     match claude_billing(app)? {
         ClaudeBilling::Subscription => Ok(None),
