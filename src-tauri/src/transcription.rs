@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::State;
 use tokio::sync::{oneshot, watch, Mutex};
@@ -50,10 +51,12 @@ const CATALOG_REFRESH_THROTTLE: Duration = Duration::from_secs(10);
 const CATALOG_RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
 const TRANSCRIPT_RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
 /// Both providers accept 25 MB uploads; stay safely below it.
-const MAX_AUDIO_BYTES: usize = 24 * 1024 * 1024;
+const MAX_AUDIO_BYTES: usize = 24_000_000;
 const MAX_TRANSCRIPT_CHARS: usize = 100_000;
 const MAX_CATALOG_ROWS: usize = 1_000;
-const CANCELED_TOMBSTONES: usize = 16;
+const MAX_CACHED_UPLOAD_RESULTS: usize = 16;
+const MAX_CACHED_UPLOAD_BYTES: usize = 2 * 1024 * 1024;
+const UPLOAD_RESULT_TTL: Duration = Duration::from_secs(10 * 60);
 
 const ID_HEADER: &str = "mythra-transcription-id";
 const PROVIDER_HEADER: &str = "mythra-transcription-provider";
@@ -203,11 +206,63 @@ struct CachedCatalog {
     models: Vec<TranscriptionModel>,
 }
 
+type UploadResult = Result<String, String>;
+type SharedUploadResult = Arc<UploadResult>;
+
+#[derive(PartialEq, Eq)]
+struct UploadIdentity {
+    provider: TranscriptionProvider,
+    model: String,
+    audio_digest: [u8; 32],
+}
+
+struct RunningUpload {
+    id: String,
+    identity: UploadIdentity,
+    cancel: Option<oneshot::Sender<()>>,
+    cancel_requested: bool,
+    result: watch::Sender<Option<SharedUploadResult>>,
+}
+
+struct CachedUploadResult {
+    id: String,
+    identity: UploadIdentity,
+    finished: Instant,
+    result: SharedUploadResult,
+}
+
 #[derive(Default)]
 struct ActiveUploads {
-    current: Option<(String, oneshot::Sender<()>)>,
-    /// Cancels that arrived before their upload registered.
-    canceled: VecDeque<String>,
+    current: Option<RunningUpload>,
+    /// Native-issued IDs are monotonic within a random process namespace.
+    /// IDs below the high-water mark can never dispatch another paid request,
+    /// even after their cached result has expired or been evicted.
+    issued_sequence: u64,
+    consumed_sequence: u64,
+    results: VecDeque<CachedUploadResult>,
+    result_cleanup_running: bool,
+}
+
+impl ActiveUploads {
+    fn prune_results(&mut self) {
+        while self.results.front().is_some_and(|entry| entry.finished.elapsed() >= UPLOAD_RESULT_TTL) {
+            self.results.pop_front();
+        }
+    }
+
+    fn remember_result(&mut self, id: String, identity: UploadIdentity, result: SharedUploadResult) {
+        self.prune_results();
+        self.results.retain(|entry| entry.id != id);
+        self.results.push_back(CachedUploadResult { id, identity, finished: Instant::now(), result });
+        let result_bytes = |entry: &CachedUploadResult| match entry.result.as_ref() {
+            Ok(text) | Err(text) => text.len(),
+        };
+        while self.results.len() > MAX_CACHED_UPLOAD_RESULTS
+            || self.results.iter().map(result_bytes).sum::<usize>() > MAX_CACHED_UPLOAD_BYTES
+        {
+            self.results.pop_front();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -218,53 +273,124 @@ pub(crate) struct TranscriptionState {
     writes: [Arc<Mutex<()>>; 2],
     /// Held across a fetch, so concurrent callers share one request.
     catalogs: [Mutex<Option<CachedCatalog>>; 2],
-    uploads: StdMutex<ActiveUploads>,
+    uploads: Arc<StdMutex<ActiveUploads>>,
+    request_namespace: OnceLock<String>,
 }
 
 struct UploadGuard<'a> {
     state: &'a TranscriptionState,
     id: String,
+    finished: bool,
+}
+
+enum UploadAdmission<'a> {
+    Start(UploadGuard<'a>, oneshot::Receiver<()>),
+    Join(watch::Receiver<Option<SharedUploadResult>>),
+    Complete(SharedUploadResult),
+}
+
+impl UploadGuard<'_> {
+    fn finish(mut self, result: UploadResult) -> UploadResult {
+        let result = self.state.finish_upload(&self.id, result);
+        self.finished = true;
+        result.as_ref().clone()
+    }
 }
 
 impl Drop for UploadGuard<'_> {
     fn drop(&mut self) {
-        let mut uploads = self
-            .state
-            .uploads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if uploads
-            .current
-            .as_ref()
-            .is_some_and(|(id, _)| *id == self.id)
-        {
-            uploads.current = None;
+        if !self.finished {
+            self.state.finish_upload(&self.id, Err(
+                "The transcription stopped before its result was received. It may still be billed; Mythra Code did not retry it.".into(),
+            ));
         }
     }
 }
 
 impl TranscriptionState {
-    fn begin_upload(&self, id: &str) -> Result<(UploadGuard<'_>, oneshot::Receiver<()>), String> {
+    fn request_sequence(&self, uploads: &ActiveUploads, id: &str) -> Option<u64> {
+        let prefix = self.request_namespace.get()?;
+        let suffix = id.strip_prefix(prefix.as_str())?.strip_prefix('-')?;
+        if suffix.len() != 16 || !suffix.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+            return None;
+        }
+        let sequence = u64::from_str_radix(suffix, 16).ok()?;
+        (sequence > 0 && sequence <= uploads.issued_sequence).then_some(sequence)
+    }
+
+    fn begin_upload(&self, id: &str, identity: UploadIdentity) -> Result<UploadAdmission<'_>, String> {
         let mut uploads = self
             .uploads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(position) = uploads.canceled.iter().position(|canceled| canceled == id) {
-            uploads.canceled.remove(position);
-            return Err(CANCELED.into());
+        uploads.prune_results();
+        let sequence = self.request_sequence(&uploads, id)
+            .ok_or_else(|| "The transcription request ID is invalid. Start a new recording.".to_string())?;
+        if let Some(current) = uploads.current.as_ref().filter(|current| current.id == id) {
+            if current.identity != identity {
+                return Err("The transcription request ID was reused for a different recording.".into());
+            }
+            return Ok(UploadAdmission::Join(current.result.subscribe()));
+        }
+        if let Some(cached) = uploads.results.iter().find(|entry| entry.id == id) {
+            if cached.identity != identity {
+                return Err("The transcription request ID was reused for a different recording.".into());
+            }
+            return Ok(UploadAdmission::Complete(cached.result.clone()));
+        }
+        if sequence <= uploads.consumed_sequence {
+            return Err("This recording was already processed or canceled. Its result is no longer available; it was not uploaded again.".into());
         }
         if uploads.current.is_some() {
             return Err("Another recording is still being transcribed.".into());
         }
         let (sender, receiver) = oneshot::channel();
-        uploads.current = Some((id.to_string(), sender));
-        Ok((
+        let (result, _) = watch::channel(None);
+        uploads.consumed_sequence = sequence;
+        uploads.current = Some(RunningUpload {
+            id: id.to_string(), identity, cancel: Some(sender), cancel_requested: false, result,
+        });
+        Ok(UploadAdmission::Start(
             UploadGuard {
                 state: self,
                 id: id.to_string(),
+                finished: false,
             },
             receiver,
         ))
+    }
+
+    fn finish_upload(&self, id: &str, result: UploadResult) -> SharedUploadResult {
+        let mut uploads = self.uploads.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(current) = uploads.current.take() else { return Arc::new(result); };
+        if current.id != id {
+            uploads.current = Some(current);
+            return Arc::new(result);
+        }
+        let result = Arc::new(if current.cancel_requested { Err(CANCELED.into()) } else { result });
+        uploads.remember_result(id.to_string(), current.identity, result.clone());
+        current.result.send_replace(Some(result.clone()));
+        if !uploads.result_cleanup_running {
+            uploads.result_cleanup_running = true;
+            let weak_uploads = Arc::downgrade(&self.uploads);
+            // One expiry worker per state; it retains neither audio nor the
+            // state while sleeping and releases transcripts even when idle.
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let delay = {
+                        let Some(shared) = weak_uploads.upgrade() else { return; };
+                        let mut uploads = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                        uploads.prune_results();
+                        match uploads.results.front() {
+                            Some(entry) => UPLOAD_RESULT_TTL.saturating_sub(entry.finished.elapsed()),
+                            None => { uploads.result_cleanup_running = false; return; }
+                        }
+                    };
+                    tokio::time::sleep(delay).await;
+                }
+            });
+        }
+        result
     }
 
     fn cancel_upload(&self, id: &str) {
@@ -272,21 +398,27 @@ impl TranscriptionState {
             .uploads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if uploads
-            .current
-            .as_ref()
-            .is_some_and(|(current, _)| current == id)
-        {
-            if let Some((_, sender)) = uploads.current.take() {
+        let Some(sequence) = self.request_sequence(&uploads, id) else { return; };
+        uploads.consumed_sequence = uploads.consumed_sequence.max(sequence);
+        if let Some(current) = uploads.current.as_mut().filter(|current| current.id == id) {
+            current.cancel_requested = true;
+            if let Some(sender) = current.cancel.take() {
                 let _ = sender.send(());
             }
             return;
         }
-        if uploads.canceled.len() >= CANCELED_TOMBSTONES {
-            uploads.canceled.pop_front();
-        }
-        uploads.canceled.push_back(id.to_string());
+        // A cancel after completion also discards any retained transcript.
+        uploads.results.retain(|entry| entry.id != id);
     }
+}
+
+#[tauri::command]
+pub(crate) fn transcription_request_id(state: State<'_, TranscriptionState>) -> Result<String, String> {
+    let namespace = state.request_namespace.get_or_init(|| uuid::Uuid::new_v4().to_string());
+    let mut uploads = state.uploads.lock().unwrap_or_else(PoisonError::into_inner);
+    uploads.issued_sequence = uploads.issued_sequence.checked_add(1)
+        .ok_or_else(|| "Could not create a transcription request ID.".to_string())?;
+    Ok(format!("{namespace}-{:016x}", uploads.issued_sequence))
 }
 
 fn client() -> Result<&'static reqwest::Client, String> {
@@ -924,9 +1056,47 @@ pub(crate) async fn transcription_transcribe(
             validate_wav(bytes)?;
             bytes.clone()
         }
-        InvokeBody::Json(_) => return Err("The recording did not reach Mythra Code.".into()),
+        // Tauri's channel fallback serializes a binary body as a JSON byte
+        // array when custom-protocol IPC fails. Accept exactly that shape,
+        // bounded before allocating, and validate the decoded WAV identically.
+        InvokeBody::Json(value) => {
+            let values = value.as_array()
+                .ok_or_else(|| "The recording did not reach Mythra Code.".to_string())?;
+            if values.len() > MAX_AUDIO_BYTES {
+                return Err("The recording is too large to transcribe.".into());
+            }
+            let mut bytes = Vec::with_capacity(values.len());
+            for value in values {
+                let byte = value.as_u64().filter(|byte| *byte <= u8::MAX as u64)
+                    .ok_or_else(|| "The recording did not reach Mythra Code.".to_string())?;
+                bytes.push(byte as u8);
+            }
+            validate_wav(&bytes)?;
+            bytes
+        }
     };
-    let (_guard, canceled) = state.begin_upload(&id)?;
+    let identity = UploadIdentity {
+        provider,
+        model: model.clone(),
+        audio_digest: Sha256::digest(&audio).into(),
+    };
+    let (guard, canceled) = match state.begin_upload(&id, identity)? {
+        UploadAdmission::Start(guard, canceled) => (guard, canceled),
+        UploadAdmission::Complete(result) => return result.as_ref().clone(),
+        UploadAdmission::Join(mut receiver) => {
+            // A transport replay waits for the same operation. It never owns
+            // another HTTP request or starts work if the first caller exits.
+            drop(audio);
+            loop {
+                if let Some(result) = receiver.borrow().clone() {
+                    return result.as_ref().clone();
+                }
+                if receiver.changed().await.is_err() {
+                    return Err("The transcription result became unavailable. It was not uploaded again.".into());
+                }
+            }
+        }
+    };
     let work = async {
         if provider == TranscriptionProvider::Openrouter {
             ensure_openrouter_model(&state, &model).await?;
@@ -948,13 +1118,14 @@ pub(crate) async fn transcription_transcribe(
         };
         upload(provider, &key, &model, audio).await
     };
-    tokio::select! {
+    let result = tokio::select! {
         // A queued cancel wins before work can dispatch an upload or return
         // a transcript that the caller has already discarded.
         biased;
         _ = canceled => Err(CANCELED.into()),
         result = work => result,
-    }
+    };
+    guard.finish(result)
 }
 
 #[tauri::command]

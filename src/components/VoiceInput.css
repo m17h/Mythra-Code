@@ -30,6 +30,11 @@
 .voice-input-dismiss { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; }
 .voice-input-dismiss:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 
+.voice-input-lock-backdrop { z-index: 1000; }
+.voice-input-lock-dialog { width: min(520px, 100%); }
+.voice-input-lock-dialog .voice-input-status { margin: 18px 0 0; padding: 10px; }
+.voice-input-lock-dialog .voice-input-copy { flex-basis: 180px; }
+
 @media (prefers-reduced-motion: no-preference) {
   @keyframes voice-input-arrive { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: none; } }
   @keyframes voice-input-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.78); } }

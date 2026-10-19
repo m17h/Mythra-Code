@@ -6,10 +6,12 @@ import { confirmDialog } from "../lib/confirmDialog";
 import { safeErrorText } from "../lib/errors";
 import {
   cancelTranscription,
+  createTranscriptionRequestId,
   refreshTranscriptionKeys,
   transcribeRecording,
   TRANSCRIPTION_PROVIDER_LABELS,
 } from "../lib/transcription";
+import { clearVoiceInputSession, isVoiceInputLocked, publishVoiceInputSession } from "../lib/voiceInputLock";
 import {
   createVoiceAudioContext,
   MIN_RECORDING_SECONDS,
@@ -47,6 +49,7 @@ export interface VoiceInputMessage {
 
 interface Session {
   id: string;
+  requestId: string | null;
   threadKey: string;
   provider: TranscriptionProvider;
   model: string;
@@ -99,16 +102,24 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   onTranscriptRef.current = onTranscript;
   const threadKeyRef = useRef(threadKey);
   threadKeyRef.current = threadKey;
+  const controlsRef = useRef({ onStop: () => {}, onCancel: () => {} });
 
   const publish = useCallback((session: Session | null) => {
-    setView(session ? {
+    const next = session ? {
       phase: session.phase,
       threadKey: session.threadKey,
       provider: session.provider,
       model: session.model,
       startedAt: session.startedAt,
       recorder: session.recorder,
-    } : null);
+    } : null;
+    setView(next);
+    if (session && next) publishVoiceInputSession({
+      id: session.id,
+      view: next,
+      onStop: () => controlsRef.current.onStop(),
+      onCancel: () => controlsRef.current.onCancel(),
+    });
   }, []);
 
   // Async completions can run after a new render but before its cancellation
@@ -123,6 +134,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   const release = useCallback((session: Session) => {
     session.canceled = true;
     session.controller.abort();
+    clearVoiceInputSession(session.id);
     if (session.recorder) session.recorder.cancel();
     else if (session.context && session.context.state !== "closed") void session.context.close().catch(() => undefined);
     if (sessionRef.current === session) {
@@ -135,14 +147,14 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   const cancel = useCallback((notice?: string) => {
     const session = sessionRef.current;
     if (!session) return;
-    if (session.phase === "transcribing") cancelTranscription(session.id);
+    if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
     release(session);
     setMessage(notice ? { text: notice, tone: "info" } : null);
   }, [release]);
 
   const fail = useCallback((session: Session, text: string, settings = false) => {
     if (!active(session)) return;
-    if (session.phase === "transcribing") cancelTranscription(session.id);
+    if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
     release(session);
     setMessage({ text, tone: "error", settings });
   }, [release]);
@@ -165,7 +177,9 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       }
       session.phase = "transcribing";
       publish(session);
-      const text = await transcribeRecording(session.id, session.provider, session.model, recording.wav);
+      if (!active(session)) return;
+      if (!session.requestId) throw new Error("Could not prepare the transcription request. Start a new recording.");
+      const text = await transcribeRecording(session.requestId, session.provider, session.model, recording.wav);
       if (!active(session)) return;
       release(session);
       onTranscriptRef.current(session.threadKey, text);
@@ -184,6 +198,9 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   const askForSettings = useCallback(async (session: Session, prompt: string) => {
     if (session.context && session.context.state !== "closed") void session.context.close().catch(() => undefined);
     session.context = null;
+    // No microphone is open. Let the setup confirmation own focus instead
+    // of trapping it behind the voice interaction dialog.
+    clearVoiceInputSession(session.id);
     const confirmed = await confirmDialog(prompt, {
       confirmLabel: "Open transcription settings",
       cancelLabel: "Not now",
@@ -197,7 +214,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
 
   const start = useCallback(async () => {
     const current = configRef.current;
-    if (sessionRef.current || !current) return;
+    if (sessionRef.current || !current || isVoiceInputLocked()) return;
     setMessage(null);
     if (!voiceCaptureSupported()) {
       setMessage({ text: "Voice input isn't supported in this window.", tone: "error" });
@@ -213,6 +230,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     }
     const session: Session = {
       id: newSessionId(),
+      requestId: null,
       threadKey: threadKeyRef.current,
       provider: current.provider,
       model: current.model.trim(),
@@ -246,6 +264,14 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
         await askForSettings(session, `Choose a transcription model\n\nPick which ${providerLabel} model turns your recordings into text.`);
         return;
       }
+      const requestId = await createTranscriptionRequestId();
+      session.requestId = requestId;
+      if (!active(session)) {
+        // No audio request was submitted. Leave this unused ticket alone:
+        // an IPC retry can mint it after a newer recording obtained its ID.
+        // Consuming it would incorrectly invalidate that newer recording.
+        return;
+      }
       const recorder = new VoiceRecorder(context, {
         onLimit: () => void stop(),
         onInterrupted: () => fail(session, "Recording stopped because the microphone was disconnected or access was turned off. Nothing was uploaded."),
@@ -257,7 +283,9 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       session.startedAt = performance.now();
       publish(session);
     } catch (reason) {
-      fail(session, reason instanceof VoiceCaptureError ? reason.message : "The microphone couldn't be started.");
+      fail(session, reason instanceof VoiceCaptureError ? reason.message
+        : session.recorder ? "The microphone couldn't be started."
+          : "Voice input couldn't be prepared. Nothing was recorded.");
     } finally {
       window.clearTimeout(setupTimer);
     }
@@ -316,11 +344,12 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   useEffect(() => () => {
     const session = sessionRef.current;
     if (!session) return;
-    if (session.phase === "transcribing") cancelTranscription(session.id);
+    if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
     release(session);
   }, [release]);
 
   const dismissMessage = useCallback(() => setMessage(null), []);
+  controlsRef.current = { onStop: () => void stop(), onCancel: () => cancel() };
 
   return { view, message, start, stop, cancel, dismissMessage };
 }
