@@ -29,6 +29,25 @@ Deferred queued and timed prompts read the current preview choice when they
 actually begin, even if the user has navigated to another project. Their
 captured provider, model and permission choices remain unchanged.
 
+## Model guidance
+
+Settings → Sub-agents → Model guidance lets users save a short note about
+when and how to use a provider's model. Add a model, choose its provider and
+model, and describe its strengths or preferred uses. Entries can be edited or
+removed, and follow the Settings window's Save and Cancel behavior.
+
+This applies to Mythra-managed crews in both V1 and V2, regardless of the
+parent's provider. A parent receives only notes matching its approved crew,
+once per provider/model even when several workers use that model. Notes appear
+beside the crew in the `spawn_mythra_agent` description, with no extra lookup
+call. Without a matching note, the parent uses its own judgment.
+
+Notes match the crew's exact provider and model ID; different aliases are not
+automatically treated as the same model. Provider-default crew entries match
+the resolved default model. Saved changes apply at the next parent turn.
+Notes never approve or enable sub-agents, override permissions or limits, or
+change provider-native Claude Code or Codex delegation.
+
 ## Working together
 
 A child can send a question or an update with `message_parent`. Its parent

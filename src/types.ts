@@ -358,6 +358,18 @@ export interface ChildAgentSettings {
   targets: ChildAgentTarget[];
 }
 
+/**
+ * A reusable note about one provider/model for Mythra Code-managed crews.
+ * Parents see it only for models in their approved crew; it is a preference,
+ * never an approval, and is separate from a destination's own description.
+ */
+export interface SubagentModelGuidance {
+  provider: Provider;
+  /** Model ID, resolved through the provider default when sanitized. */
+  model: string;
+  note: string;
+}
+
 /** The single delegation route selected by this conversation. */
 export type SubagentEngine = "mythra" | "native";
 
@@ -524,6 +536,8 @@ export interface AppSettings {
   childAgents: ChildAgentSettings;
   /** Reusable crew configurations. Absent in settings written before presets existed. */
   childAgentPresets: ChildAgentPreset[];
+  /** Global model notes for Mythra-managed parents. Absent in older settings. */
+  subagentModelGuidance?: SubagentModelGuidance[];
   reasoningEffort: ReasoningEffort;
   ultra: boolean;
   serviceTier: string | null;

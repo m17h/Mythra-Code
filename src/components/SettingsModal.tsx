@@ -57,14 +57,17 @@ import {
   sanitizeChildAgentPresetPolicy,
   sanitizeChildAgentPresets,
   sanitizeProjectSubagentOverrides,
+  sanitizeSubagentModelGuidance,
   uniqueChildAgentPresetId,
   MAX_CHILD_AGENT_PRESETS,
+  MAX_SUBAGENT_MODEL_GUIDANCE,
   type ChildAgentReadiness,
 } from "../lib/childAgents";
 import type { LocalSkill } from "../lib/skills";
 import type { InstructionFileDescriptor } from "../lib/instructionFiles";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
+import { SubagentModelGuidanceEditor } from "./SubagentModelGuidanceEditor";
 import { HarnessSettings } from "./HarnessSettings";
 import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
 import { LanguageToolsSettings } from "./LanguageToolsSettings";
@@ -144,7 +147,7 @@ const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<Settings
       { id: "models", label: "Models & accounts", icon: KeyRound, detail: "Choose the default provider, connect your accounts, and pick a default model.", keywords: "model provider account sign in login api key openai chatgpt codex anthropic claude cursor openrouter lm studio subscription credentials token default" },
       { id: "prompts", label: "Prompts", icon: NotebookPen, detail: "What every agent is told before your message.", keywords: "prompt system instructions agents.md claude.md guidance context profile profiles preset global codex claude layer" },
       { id: "memory", label: "Memory", icon: Brain, detail: "Optionally learn how you like to work from your conversations.", keywords: "memory learning learned preferences history personalize personalization remember experimental" },
-      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review" },
+      { id: "agents", label: "Sub-agents", icon: UsersRound, detail: "Sub-agent workflows, thread cleanup, and reusable setups.", keywords: "sub-agent subagent child agent delegate parallel concurrency preset archive cleanup crew mythra v2 preview conversation steering review model guidance notes" },
     ],
   },
   {
@@ -212,6 +215,7 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "prompts", label: "What the agent receives", keywords: "preview combined layers" },
   { pane: "memory", label: "Learned preferences", keywords: "learning history scope" },
   { pane: "agents", label: "Sub-agent defaults", keywords: "concurrency parallel delegate" },
+  { pane: "agents", label: "Model guidance", keywords: "model notes when to use sub-agent preferences" },
   { pane: "agents", label: "Archive sub-agent threads automatically", keywords: "cleanup archive" },
   { pane: "agents", label: "Sub-agent presets", keywords: "preset crew setup" },
   { pane: "agents", label: "Custom agents", keywords: "specialist instructions" },
@@ -237,7 +241,7 @@ const SETTING_PANES: Partial<Record<keyof AppSettings, SettingsPane>> = {
   systemPrompt: "prompts", codexSystemPrompt: "prompts", claudeSystemPrompt: "prompts", promptProfileId: "prompts",
   projectInstructionsEnabled: "prompts", projectClaudeInstructionsEnabled: "prompts",
   subagentsEnabled: "agents", subagentMax: "agents", subagentEngine: "agents", nativeSubagentMax: "agents", nativeSubagentOptions: "agents",
-  autoCompactTokens: "agents", autoArchiveSubagentThreads: "agents", childAgents: "agents", childAgentPresets: "agents", managedSubagentV2: "agents",
+  autoCompactTokens: "agents", autoArchiveSubagentThreads: "agents", childAgents: "agents", childAgentPresets: "agents", managedSubagentV2: "agents", subagentModelGuidance: "agents",
   automaticGitInitialization: "projects", automaticThreadTitles: "projects", threadTitleProvider: "projects", threadTitleModel: "projects",
   serviceTier: "system", notificationsEnabled: "system", terminalScrollback: "system", terminalTimeoutMinutes: "system",
   usageDisplay: "usage",
@@ -1328,6 +1332,7 @@ export function SettingsModal({
       ...local,
       childAgents: normalizedSubagents.childAgents,
       childAgentPresets: sanitizeChildAgentPresets(local.childAgentPresets),
+      subagentModelGuidance: sanitizeSubagentModelGuidance(local.subagentModelGuidance),
       subagentMax: normalizedSubagents.maxConcurrent,
       terminalTimeoutMinutes,
     });
@@ -2008,6 +2013,22 @@ export function SettingsModal({
             {editedAgentProject?.overrides?.subagents && <button type="button" className="secondary-button" onClick={() => clearProjectAgentPolicy(editedAgentProject.id)}>Use app defaults for this project</button>}
             </div>}
               </div>
+            </div>
+
+            <div className="set-group">
+              <div className="set-group-head">
+                <h4>Model guidance</h4>
+                <span className="set-group-note">{(local.subagentModelGuidance ?? []).length} of {MAX_SUBAGENT_MODEL_GUIDANCE}</span>
+              </div>
+              <p>Tell parent agents when and how to use a model in Mythra Code-managed sub-agent crews. A parent sees notes only for models already in its approved crew, once per model, starting with its next message. Notes are preferences: they never add sub-agents, turn them on, or affect native Claude Code and Codex sub-agents.</p>
+              <SubagentModelGuidanceEditor
+                value={local.subagentModelGuidance ?? []}
+                modelCatalogs={subAgentModelCatalogs}
+                modelFavorites={modelFavorites}
+                onToggleModelFavorite={onToggleModelFavorite}
+                onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
+                onChange={(subagentModelGuidance) => setLocal((current) => ({ ...current, subagentModelGuidance }))}
+              />
             </div>
 
             <div className="set-group">

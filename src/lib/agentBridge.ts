@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ChildAgentPolicy } from "./childAgents";
 import { childAgentSessionOptions } from "./childAgents";
-import type { PermissionMode, Provider } from "../types";
+import type { PermissionMode, Provider, SubagentModelGuidance } from "../types";
 
 /**
  * Front-end half of the cross-provider sub-agent bridge. The backend owns the
@@ -51,10 +51,14 @@ export async function startChildAgentSession(
   knownChildren: string[] = [],
   finishedChildren: string[] = [],
   projectContext?: ProjectBridgeContext,
+  /** Notes already narrowed to this crew; only a managed root carries them. */
+  modelGuidance: SubagentModelGuidance[] = [],
 ): Promise<ChildAgentBridgeLaunch> {
+  const guidance = projectContext?.childThread || projectContext?.nativeDelegation ? [] : modelGuidance;
   return invoke<ChildAgentBridgeLaunch>("child_agent_session_start", {
     options: {
       ...childAgentSessionOptions(policy, knownChildren),
+      ...(guidance.length ? { modelGuidance: guidance.map(({ provider, model, note }) => ({ provider, model, note })) } : {}),
       finishedChildren,
       permission: policy.permission,
       ...projectContext,

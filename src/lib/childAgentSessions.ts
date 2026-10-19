@@ -7,13 +7,17 @@ import {
 } from "./agentBridge";
 import {
   childAgentPolicyFor,
+  childAgentSessionOptions,
   readyChildAgentTargets,
   childAgentPolicyForThread,
+  modelGuidanceForTargets,
+  sanitizeSubagentModelGuidance,
+  subagentModelGuidanceKey,
   type ChildAgentLink,
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./childAgents";
-import type { AppSettings, PermissionMode, Provider } from "../types";
+import type { AppSettings, PermissionMode, Provider, SubagentModelGuidance } from "../types";
 
 /**
  * Owns the lifetime of a root thread's delegation bridge.
@@ -51,6 +55,107 @@ const sessionLifetimes = new Map<string, object>();
 /** Only pending child ensures are retained; ownership starts before async hashing. */
 const pendingChildRegistrations = new Map<string, object>();
 const pendingThreadReleases = new Map<string, Promise<void>>();
+/**
+ * Saved reusable model notes. Read from here rather than a turn's settings so
+ * queued and background prompts see the current saved notes, not a draft or
+ * the settings their context happened to capture.
+ */
+let savedModelGuidance: SubagentModelGuidance[] = [];
+let savedModelGuidanceSource: unknown;
+
+/**
+ * Who a root registration belongs to. A real prompt owns the policy its turn
+ * captured; an attach (thread selection) only ever borrows a registration.
+ */
+interface RegistrationOwner {
+  policy: ChildAgentPolicy;
+  prompt: boolean;
+}
+/**
+ * A root registration still waiting on its native start. Equivalent starts
+ * share it, and an attach adopts a real prompt's start instead of replacing
+ * it; only another prompt, Stop, or revocation may supersede a prompt.
+ */
+interface PendingRegistration {
+  registration: object;
+  /** Everything the native start receives, for exact-match sharing. */
+  request: string;
+  /** Execution context plus spawn capability; an attach adopts only a match. */
+  authority: string;
+  /** A prompt joining an identical start becomes its owner. */
+  owner: RegistrationOwner;
+  launch: Promise<ChildAgentBridgeLaunch>;
+}
+const pendingRegistrations = new Map<string, PendingRegistration>();
+/**
+ * What the latest successful root registration committed, together with its
+ * launch: the notes it carries and the policy of the real prompt behind it.
+ * Durable storage only catches up after that prompt's turn starts, so an
+ * attach builds on `promptPolicy` instead of republishing a replaced roster.
+ */
+interface CommittedRegistration {
+  guidance: { crew: string; guidance: SubagentModelGuidance[] } | null;
+  promptPolicy?: ChildAgentPolicy;
+}
+const committedRegistrations = new Map<string, CommittedRegistration>();
+/** Admitted root Stops still queued; later ensures wait instead of racing them. */
+const stopBarriers = new Map<string, Promise<void>>();
+
+/**
+ * An attach whose current authority differs from a prompt's in-flight start
+ * waits for that start to settle, then is evaluated again from scratch, so
+ * the normal switch, context and revocation rules apply to the result.
+ */
+class AttachDeferred extends Error {}
+const MAX_ATTACH_ATTEMPTS = 3;
+const deferAttach = (): never => {
+  throw new AttachDeferred("This project bridge registration was cancelled.");
+};
+
+/**
+ * Resolve a registration an attach adopted. If a real prompt with an allowed
+ * authority supersedes it, follow that prompt's start rather than failing.
+ */
+function adoptRegistration(sessionId: string, pending: PendingRegistration, allowed: string[]): Promise<{ launch: ChildAgentBridgeLaunch; owner: RegistrationOwner }> {
+  return pending.launch.then((launch) => ({ launch, owner: pending.owner }), (reason: unknown) => {
+    const successor = pendingRegistrations.get(sessionId);
+    if (!successor || successor === pending || !successor.owner.prompt
+      || sessionRegistrations.get(sessionId) !== successor.registration) throw reason;
+    if (allowed.includes(successor.authority)) return adoptRegistration(sessionId, successor, allowed);
+    return successor.launch.then(deferAttach, deferAttach);
+  });
+}
+
+/** A real prompt's start still in flight for this thread, if any. */
+function promptRegistrationForThread(threadId: string, sessionId: string | undefined): [string, PendingRegistration] | undefined {
+  return [...pendingRegistrations.entries()].find(([id, pending]) => pending.owner.prompt
+    && (id === sessionId || pending.owner.policy.rootThreadId === threadId)
+    && sessionRegistrations.get(id) === pending.registration);
+}
+
+/**
+ * The base an attach must start from. The committed prompt policy wins over a
+ * durable record that has not caught up yet; a staged edit approved after
+ * that prompt captured its roster is newer and stays staged.
+ */
+function attachBasePolicy(stored: ChildAgentPolicy | undefined, threadId: string | undefined): ChildAgentPolicy | undefined {
+  const committed = stored
+    ? committedRegistrations.get(stored.sessionId)?.promptPolicy
+    : threadId ? [...committedRegistrations.values()].find((entry) => entry.promptPolicy?.rootThreadId === threadId)?.promptPolicy : undefined;
+  if (!committed) return stored;
+  const staged = stored?.pendingRecapture && stored.pendingRecapture.approvedAt > committed.capturedAt
+    ? stored.pendingRecapture
+    : undefined;
+  return { ...committed, rootThreadId: stored?.rootThreadId || committed.rootThreadId, pendingRecapture: staged };
+}
+
+/** Publish the saved notes; the next real parent turn picks them up. */
+export function setSavedSubagentModelGuidance(entries: unknown): void {
+  // Called on every app render; saved settings keep a stable array identity.
+  if (entries === savedModelGuidanceSource) return;
+  savedModelGuidanceSource = entries;
+  savedModelGuidance = sanitizeSubagentModelGuidance(entries);
+}
 
 function queueSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
   const previous = sessionOperations.get(sessionId);
@@ -100,6 +205,9 @@ export function resetChildAgentLaunches(): void {
   sessionRegistrations.clear();
   sessionLifetimes.clear();
   pendingChildRegistrations.clear();
+  pendingRegistrations.clear();
+  committedRegistrations.clear();
+  stopBarriers.clear();
 }
 
 /** Queue a fresh launch for the next root turn without revoking the bridge
@@ -127,14 +235,27 @@ export function revokeRootChildAgentRegistration(sessionId: string, registration
     if (registrationId === undefined || cached?.registrationId === registrationId) {
       launches.delete(sessionId);
       terminalScopes.delete(sessionId);
+      // The stopped turn's roster is no longer a live prompt registration, so
+      // attaches fall back to durable storage, keeping unsent staged edits.
+      const committed = committedRegistrations.get(sessionId);
+      if (committed?.promptPolicy) committedRegistrations.set(sessionId, { guidance: committed.guidance });
     }
   };
   if (!stillCurrent()) return Promise.resolve(false);
   invalidateCaptured();
-  return queueSessionOperation(sessionId, async () => {
+  // Without a descriptor this Stop targets the start still in flight: it
+  // completes in queue order and is then revoked, so nothing may adopt it.
+  if (registrationId === undefined) pendingRegistrations.delete(sessionId);
+  const revoked = queueSessionOperation(sessionId, async () => {
     invalidateCaptured();
     return revokeChildAgentRootRegistration(sessionId, registrationId);
   });
+  const barrier = revoked.then(() => undefined, () => undefined);
+  stopBarriers.set(sessionId, barrier);
+  void barrier.then(() => {
+    if (stopBarriers.get(sessionId) === barrier) stopBarriers.delete(sessionId);
+  });
+  return revoked;
 }
 
 export function cacheChildAgentPolicy(policy: ChildAgentPolicy): void {
@@ -197,6 +318,21 @@ export interface ChildAgentBridgeResult {
 export async function ensureChildAgentBridge(
   input: ChildAgentBridgeInput,
 ): Promise<ChildAgentBridgeResult | null> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await ensureChildAgentBridgeOnce(input);
+    } catch (reason) {
+      if (!(reason instanceof AttachDeferred)) throw reason;
+      // Only attaches defer, and only after a prompt's start settled. Bound
+      // the loop in case prompts keep arriving with a different authority.
+      if (attempt >= MAX_ATTACH_ATTEMPTS) throw new Error("This project bridge registration was cancelled.");
+    }
+  }
+}
+
+async function ensureChildAgentBridgeOnce(
+  input: ChildAgentBridgeInput,
+): Promise<ChildAgentBridgeResult | null> {
   const childThread = Boolean(input.isChildThread || (input.threadId && input.links[input.threadId]));
   // Only a Mythra Code-owned child has a parent mailbox. Provider-native
   // children keep their language-only bridge exactly as before.
@@ -213,13 +349,54 @@ export async function ensureChildAgentBridge(
     // children remain language-only and never acquire this managed authority.
     ...(!managedChild && input.settings.subagentEngine === "native" ? { nativeDelegation: true } : {}),
   };
-  const contextIdentityFor = (policy: ChildAgentPolicy) => JSON.stringify({
+  // Only a real prompt re-reads the saved notes. The roster stays frozen;
+  // just the advice shown for it follows the user's current preferences.
+  // Resolved once per call, so lookup and registration agree on the notes.
+  const resolvedGuidance = new Map<string, { crew: string; guidance: SubagentModelGuidance[] }>();
+  const guidanceFor = (policy: ChildAgentPolicy): { crew: string; guidance: SubagentModelGuidance[] } | null => {
+    if (childThread || input.settings.subagentEngine === "native") return null;
+    const targets = policy.targets.filter((target) => target.enabled);
+    if (!targets.length) return null;
+    const crew = JSON.stringify(targets.map(subagentModelGuidanceKey));
+    const memo = `${policy.sessionId}\u0000${crew}`;
+    const resolved = resolvedGuidance.get(memo);
+    if (resolved) return resolved;
+    // Attaches keep the notes their bridge is registered with, so navigation
+    // never rotates a bridge; an unregistered crew starts from saved notes.
+    const registered = committedRegistrations.get(policy.sessionId)?.guidance;
+    const next = !input.promoteStagedEdits && registered?.crew === crew
+      ? registered
+      : { crew, guidance: modelGuidanceForTargets(savedModelGuidance, targets) };
+    resolvedGuidance.set(memo, next);
+    return next;
+  };
+  // Notes are part of the registered tool description, so changed notes need
+  // a new registration exactly like a changed execution context.
+  const contextIdentityFor = (policy: ChildAgentPolicy, guidance = guidanceFor(policy)?.guidance ?? []) => JSON.stringify({
     ...projectContext,
     collaborationV2: policy.collaborationV2 === true,
+    ...(guidance.length ? { modelGuidance: guidance } : {}),
   });
+  // Authority of a start: execution context (permission, provider, project,
+  // native engine) plus spawn capability.
+  const authorityOf = (delegation: boolean) => JSON.stringify({ ...projectContext, delegation });
+  // The one rule for an attach borrowing a prompt's start: the exact same
+  // context, and never more spawn capability than the attach itself asks for.
+  // A start without delegation (for example a prompt that consumed an empty
+  // staged roster) is a safe borrow for an attach that would delegate.
+  const allowedAuthorities = (delegation: boolean) => delegation ? [authorityOf(false), authorityOf(true)] : [authorityOf(false)];
+  // Wait out an incompatible prompt start, then retry the whole ensure. Undo
+  // only this attach's own immediate cache write, as a borrowed result would.
+  const deferToPrompt = async (pending: PendingRegistration, own?: ChildAgentPolicy): Promise<never> => {
+    await pending.launch.catch(() => undefined);
+    if (own && activePolicies.get(own.sessionId) === own) cacheChildAgentPolicy(pending.owner.policy);
+    return deferAttach();
+  };
   let invocationCurrent = () => true;
   let lifetime: object | undefined;
-  const cachedLaunch = async (policy: ChildAgentPolicy) => {
+  // Synchronous on purpose: a root caller must decide on the descriptor in the
+  // same run that read it, before a concurrent prompt can invalidate it.
+  const cachedLaunch = (policy: ChildAgentPolicy): ChildAgentBridgeLaunch | undefined => {
     const sessionId = policy.sessionId;
     const contextIdentity = contextIdentityFor(policy);
     lifetime = sessionLifetimes.get(sessionId) ?? {};
@@ -238,32 +415,88 @@ export async function ensureChildAgentBridge(
       throw new Error("This project bridge registration was cancelled.");
     }
   };
-  const startSession = async (policy: ChildAgentPolicy, known: string[], finished: string[] = []) => {
+  const startSession = async (policy: ChildAgentPolicy, known: string[], finished: string[] = []): Promise<{ launch: ChildAgentBridgeLaunch; owner: RegistrationOwner }> => {
     assertLifetime(policy.sessionId);
+    const sessionId = policy.sessionId;
+    const resolved = guidanceFor(policy);
+    const guidance = resolved?.guidance ?? [];
+    const promoting = input.promoteStagedEdits === true;
+    const authority = authorityOf(policy.targets.length > 0);
+    const allowed = allowedAuthorities(policy.targets.length > 0);
+    // Everything the native start receives. Child sessions keep their own
+    // per-invocation cancellation and are never shared.
+    const request = childThread ? undefined : JSON.stringify({
+      context: contextIdentityFor(policy, guidance),
+      options: childAgentSessionOptions(policy, known),
+      finished,
+      permission: policy.permission,
+    });
+    const inFlight = request ? pendingRegistrations.get(sessionId) : undefined;
+    if (inFlight && sessionRegistrations.get(sessionId) === inFlight.registration) {
+      if (inFlight.request === request || (inFlight.owner.prompt && !promoting && allowed.includes(inFlight.authority))) {
+        // An attach borrows a compatible start. A prompt joining an identical
+        // start owns it, so its policy is the one committed and handed out.
+        if (!promoting) return adoptRegistration(sessionId, inFlight, allowed);
+        const owner = { policy, prompt: true };
+        inFlight.owner = owner;
+        return { launch: await inFlight.launch, owner };
+      }
+      // An attach never cancels a prompt's start, even when it disagrees.
+      if (inFlight.owner.prompt && !promoting) return deferToPrompt(inFlight, policy);
+    }
     const registration = {};
-    sessionRegistrations.set(policy.sessionId, registration);
-    return queueSessionOperation(policy.sessionId, async () => {
-      const current = () => invocationCurrent() && sessionRegistrations.get(policy.sessionId) === registration;
+    sessionRegistrations.set(sessionId, registration);
+    let entry: PendingRegistration | undefined;
+    const started = queueSessionOperation(sessionId, async () => {
+      const current = () => invocationCurrent() && sessionRegistrations.get(sessionId) === registration;
       if (!current()) throw new Error("This project bridge registration was cancelled.");
       // Keep the existing call shape for projectless roots. A projectless
       // managed child still needs its child scope and parent mailbox flags.
       const launch = input.projectPath || projectContext.childThread
-        ? await startChildAgentSession(policy, known, finished, projectContext)
-        : await startChildAgentSession(policy, known, ...(finished.length ? [finished] : []));
+        ? await startChildAgentSession(policy, known, finished, projectContext, ...(guidance.length ? [guidance] : []))
+        : guidance.length
+          ? await startChildAgentSession(policy, known, finished, undefined, guidance)
+          : await startChildAgentSession(policy, known, ...(finished.length ? [finished] : []));
       if (!current()) {
         // This operation still owns the native session until the next queued
         // start/end. Retire it here, before a newer registration can reach Rust.
-        await endChildAgentSession(policy.sessionId).catch(() => undefined);
+        await endChildAgentSession(sessionId).catch(() => undefined);
         throw new Error("This project bridge registration was cancelled.");
       }
-      launches.set(policy.sessionId, launch);
-      launchContexts.set(policy.sessionId, contextIdentityFor(policy));
+      launches.set(sessionId, launch);
+      launchContexts.set(sessionId, contextIdentityFor(policy, guidance));
+      // Commit notes and owning prompt policy atomically with the launch. A
+      // proposal-only or attach start keeps the last prompt's roster.
+      const owner = entry?.owner ?? { policy, prompt: promoting };
+      const promptPolicy = owner.prompt && owner.policy.targets.length
+        ? owner.policy
+        : committedRegistrations.get(sessionId)?.promptPolicy;
+      committedRegistrations.set(sessionId, { guidance: resolved, ...(promptPolicy ? { promptPolicy } : {}) });
       if (!projectContext.childThread && projectContext.projectPath?.trim()
         && launch.toolNames.includes("read_project_terminal")) {
-        terminalScopes.set(policy.sessionId, projectContext.projectPath);
-      } else terminalScopes.delete(policy.sessionId);
+        terminalScopes.set(sessionId, projectContext.projectPath);
+      } else terminalScopes.delete(sessionId);
       return launch;
     });
+    if (!request) return { launch: await started, owner: { policy, prompt: promoting } };
+    const pending: PendingRegistration = { registration, request, authority, owner: { policy, prompt: promoting }, launch: started };
+    entry = pending;
+    pendingRegistrations.set(sessionId, pending);
+    const settle = () => {
+      if (pendingRegistrations.get(sessionId) === pending) pendingRegistrations.delete(sessionId);
+    };
+    void started.then(settle, settle);
+    if (!promoting) return adoptRegistration(sessionId, pending, allowed);
+    return { launch: await started, owner: pending.owner };
+  };
+  // An attach whose start a real prompt owns returns that prompt's policy and
+  // never claims capture or an update, so App can neither persist its stale
+  // view over the prompt nor release the prompt's session on abandonment. It
+  // undoes only its own immediate cache write.
+  const promptOwnedResult = (own: ChildAgentPolicy, started: { launch: ChildAgentBridgeLaunch; owner: RegistrationOwner }): ChildAgentBridgeResult | undefined => {
+    if (input.promoteStagedEdits || !started.owner.prompt) return undefined;
+    if (activePolicies.get(own.sessionId) === own) cacheChildAgentPolicy(started.owner.policy);
+    return { policy: started.owner.policy, launch: started.launch, captured: false };
   };
   if (childThread) {
     if (!input.threadId || (!input.projectPath && !managedChild)) return null;
@@ -303,13 +536,17 @@ export async function ensureChildAgentBridge(
       const cached = await cachedLaunch(policy);
       if (!invocationCurrent()) throw new Error("This project bridge registration was cancelled.");
       assertLifetime(sessionId);
-      return { policy, launch: cached ?? await startSession(policy, []), captured: false };
+      return { policy, launch: cached ?? (await startSession(policy, [])).launch, captured: false };
     } finally {
       if (invocationCurrent()) pendingChildRegistrations.delete(threadId);
     }
   }
 
   const persistedStored = childAgentPolicyForThread(input.policies, input.threadId);
+  // A Stop still queued for this session finishes first, so neither a prompt
+  // nor an attach can share or supersede the start it is about to revoke.
+  const stopBarrier = persistedStored ? stopBarriers.get(persistedStored.sessionId) : undefined;
+  if (stopBarrier) await stopBarrier;
   // A composer edit can be followed by Send before React persistence renders.
   // Prefer an immediately staged record once storage identifies the session.
   // Other cached policies (notably the temporary proposal-only bridge used
@@ -317,7 +554,10 @@ export async function ensureChildAgentBridge(
   const immediateStored = persistedStored
     ? childAgentPolicyForSession(input.policies, persistedStored.sessionId)
     : undefined;
-  const stored = immediateStored?.pendingRecapture ? immediateStored : persistedStored;
+  const latestStored = immediateStored?.pendingRecapture ? immediateStored : persistedStored;
+  // Only a real prompt reads the durable record as authoritative; an attach
+  // builds on the roster the latest successful prompt actually registered.
+  const stored = input.promoteStagedEdits ? latestStored : attachBasePolicy(latestStored, input.threadId);
   // An explicit empty draft is a durable thread-local revocation. Keep it
   // until the user supplies another roster: dropping it would let the old
   // frozen crew or global defaults silently repopulate the cleared thread.
@@ -375,6 +615,19 @@ export async function ensureChildAgentBridge(
   // above while leaving a registered bridge alive in Rust.
   const delegationEnabled = input.settings.subagentEngine !== "native" && !clearedRoster && input.settings.subagentsEnabled && input.settings.childAgents.enabled
     && Boolean(existing?.targets.length || readyChildAgentTargets(input.settings.childAgents, input.readiness).length);
+  // A thread opened while its real prompt is still registering adopts that
+  // registration before caching anything of its own, but only when it asks
+  // for an allowed authority. Otherwise it waits for the prompt's start and
+  // is re-evaluated, so a switch turned off since still revokes it below.
+  const promptInFlight = !input.promoteStagedEdits && input.threadId
+    ? promptRegistrationForThread(input.threadId, persistedStored?.sessionId)
+    : undefined;
+  if (promptInFlight) {
+    const allowed = allowedAuthorities(delegationEnabled);
+    if (!allowed.includes(promptInFlight[1].authority)) return deferToPrompt(promptInFlight[1]);
+    const adopted = await adoptRegistration(promptInFlight[0], promptInFlight[1], allowed);
+    return { policy: adopted.owner.policy, launch: adopted.launch, captured: false };
+  }
   if (!delegationEnabled) {
     if (!input.settingsProposalsEnabled && !input.projectPath) {
       if (existing) await releaseChildAgentSession(existing.sessionId);
@@ -398,7 +651,7 @@ export async function ensureChildAgentBridge(
       targets: [],
     };
     cacheChildAgentPolicy(policy);
-    const cached = await cachedLaunch(policy);
+    const cached = cachedLaunch(policy);
     cacheChildAgentPolicy(policy);
     if (cached && !cached.toolNames.includes("spawn_mythra_agent")
       && (input.settings.subagentEngine === "native" || cached.toolNames.includes("propose_agent_settings"))) {
@@ -407,12 +660,14 @@ export async function ensureChildAgentBridge(
     if (cached || existing) await revokeChildAgentSession(policy.sessionId, lifetime);
     assertLifetime(policy.sessionId);
     cacheChildAgentPolicy(policy);
-    const launch = await startSession(policy, []);
+    const started = await startSession(policy, []);
+    const borrowed = promptOwnedResult(policy, started);
+    if (borrowed) return borrowed;
     // The emptied roster serves only this session's bridge. Persisting it over
     // a stored policy would erase the frozen destinations (and any approved
     // recapture) that switching delegation back on is documented to restore,
     // so the policy is captured only when the thread never had one.
-    return { policy, launch, captured: !stored };
+    return { policy, launch: started.launch, captured: !stored };
   }
 
   // An existing thread with no policy has never run with a cross-provider
@@ -448,9 +703,13 @@ export async function ensureChildAgentBridge(
   // remember to invalidate the launch cache.
   if (recapture) launches.delete(policy.sessionId);
 
-  const cached = await cachedLaunch(policy);
+  const cached = cachedLaunch(policy);
   cacheChildAgentPolicy(policy);
   if (cached?.toolNames.includes("spawn_mythra_agent")) {
+    // Reusing the launch is this prompt's successful registration for the turn.
+    if (input.promoteStagedEdits) {
+      committedRegistrations.set(policy.sessionId, { guidance: committedRegistrations.get(policy.sessionId)?.guidance ?? null, promptPolicy: policy });
+    }
     return { policy, launch: cached, captured: false, ...(policyUpdated ? { policyUpdated: true } : {}) };
   }
   // A launch cached while delegation was off carries only the settings
@@ -470,10 +729,12 @@ export async function ensureChildAgentBridge(
     .filter((link) => policy.rootThreadId && link.rootThreadId === policy.rootThreadId)
     .map((link) => link.childThreadId);
   const finishedChildren = Object.values(input.links).filter((link) => link.rootThreadId === policy.rootThreadId && link.terminalStatus).map((link) => link.childThreadId);
-  const launch = await startSession(policy, knownChildren, finishedChildren);
+  const started = await startSession(policy, knownChildren, finishedChildren);
+  const borrowed = promptOwnedResult(policy, started);
+  if (borrowed) return borrowed;
   return {
     policy,
-    launch,
+    launch: started.launch,
     captured: !stored || Boolean(recapture),
     ...(policyUpdated ? { policyUpdated: true } : {}),
   };
@@ -536,6 +797,8 @@ async function revokeChildAgentSession(sessionId: string, preservedLifetime?: ob
   activePolicies.delete(sessionId);
   launchContexts.delete(sessionId);
   terminalScopes.delete(sessionId);
+  pendingRegistrations.delete(sessionId);
+  committedRegistrations.delete(sessionId);
   for (const [threadId, childSession] of childProjectSessions) {
     if (childSession === sessionId) childProjectSessions.delete(threadId);
   }
