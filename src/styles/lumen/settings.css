@@ -19,10 +19,11 @@
   background: var(--panel);
   box-shadow: 0 1px 0 var(--lm-island-highlight) inset, 0 50px 120px -30px rgba(0, 0, 0, .75), 0 0 0 1px rgba(0, 0, 0, .2);
 }
-/* Fit the complete sidebar in the standard sheet, centered by its existing
-   backdrop. Keep Usage/Pricing's dashboard and short-window clamping intact. */
+/* Fit all 15 sidebar entries, group labels, search and footer in the standard
+   sheet without shrinking navigation targets. Keep Usage/Pricing's dashboard
+   and short-window clamping intact. */
 .app-shell[data-theme][data-color-scheme] .settings-modal:not(.settings-modal-wide) {
-  height: min(800px, 100%);
+  height: min(900px, 100%);
 }
 .app-shell[data-theme][data-color-scheme="light"] .settings-modal { box-shadow: 0 1px 0 #fff inset, 0 50px 110px -34px rgba(25, 35, 55, .4), 0 0 0 1px rgba(25, 35, 55, .06); }
 .app-shell[data-theme][data-color-scheme] .settings-layout { --settings-nav-width: 248px; grid-template-columns: var(--settings-nav-width) minmax(0, 1fr); }
