@@ -70,7 +70,7 @@ import type { LocalSkill } from "../lib/skills";
 import type { InstructionFileDescriptor } from "../lib/instructionFiles";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
 import { SubagentPolicyEditor } from "./SubagentPolicyEditor";
-import { SubagentModelGuidanceEditor } from "./SubagentModelGuidanceEditor";
+import { SubagentModelGuidanceEditor, subagentModelGuidanceDraftChanged, type SubagentModelGuidanceDraft } from "./SubagentModelGuidanceEditor";
 import { HarnessSettings } from "./HarnessSettings";
 import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
 import { LanguageToolsSettings } from "./LanguageToolsSettings";
@@ -726,6 +726,10 @@ export function SettingsModal({
   const [creatingPreset, setCreatingPreset] = useState(false);
   const [presetDraftName, setPresetDraftName] = useState("");
   const [policyNotice, setPolicyNotice] = useState("");
+  // The open model guidance entry, kept here so leaving the Sub-agents pane
+  // does not drop it. Only its Save writes `local`.
+  const [guidanceDraft, setGuidanceDraft] = useState<SubagentModelGuidanceDraft | null>(null);
+  const guidanceDraftChanged = subagentModelGuidanceDraftChanged(guidanceDraft);
   // Minutes as typed. null mirrors the draft setting; while disabled it keeps
   // the last limit so switching back on restores it.
   const [terminalTimeoutText, setTerminalTimeoutText] = useState<string | null>(null);
@@ -839,7 +843,7 @@ export function SettingsModal({
   // Invalid text never reaches the draft, so it blocks Save instead of being
   // silently replaced by the previous limit or read as "disabled".
   const terminalTimeoutInvalid = terminalTimeoutTyped === null;
-  const dirty = useMemo(() => open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || JSON.stringify(localProfiles) !== JSON.stringify(profiles) || terminalTimeoutTyped !== terminalTimeoutMinutes), [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes]);
+  const dirty = useMemo(() => open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || JSON.stringify(localProfiles) !== JSON.stringify(profiles) || terminalTimeoutTyped !== terminalTimeoutMinutes || guidanceDraftChanged), [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged]);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
@@ -878,6 +882,7 @@ export function SettingsModal({
       setCreatingPreset(false);
       setPresetDraftName("");
       setPolicyNotice("");
+      setGuidanceDraft(null);
       setTerminalTimeoutText(null);
       const activeDefaults = projects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
       onThemePreview(initialDraft?.appearance ? seeded.theme : activeDefaults?.theme ?? seeded.theme);
@@ -1304,8 +1309,9 @@ export function SettingsModal({
     if (JSON.stringify(localProjects) !== JSON.stringify(projects)) panes.add("projects");
     if (JSON.stringify(localProfiles) !== JSON.stringify(profiles)) panes.add("prompts");
     if (terminalTimeoutTyped !== terminalTimeoutMinutes) panes.add("system");
+    if (guidanceDraftChanged) panes.add("agents");
     return panes;
-  }, [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes]);
+  }, [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged]);
   // A search result names a row; once its pane renders, bring that row into
   // view and mark it briefly. Lazy panes can take a few frames to mount.
   useEffect(() => {
@@ -1385,8 +1391,16 @@ export function SettingsModal({
       ? <button type="button" className="secondary-button" disabled={updatesBusy} onClick={() => void Promise.all([appUpdater.checkForUpdates(), developerRuntimeUpdater.checkForUpdates()])}>{updatesChecking ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Check all</button>
       : null;
 
-  const saveSettings = () => {
+  const saveSettings = async () => {
     if (!projectDefaultsComplete || terminalTimeoutInvalid) return;
+    // Only an entry's own Save stages it; Save settings never applies an
+    // open editor implicitly, and never drops it without asking.
+    if (guidanceDraftChanged && !await confirmDialog("Save settings without your unsaved model guidance entry?", { confirmLabel: "Save without it", cancelLabel: "Keep editing" })) {
+      const guidanceRow = SETTINGS_ROWS.find((row) => row.pane === "agents" && row.label === "Model guidance");
+      if (guidanceRow) goToRow(guidanceRow);
+      else setSettingsSection("agents");
+      return;
+    }
     if (onBeforeSave?.(local) === false) return;
     const nextProjects = sanitizeProjectDefaultOverrides(sanitizeProjectSubagentOverrides(localProjects));
     const normalizedSubagents = projectSubagentSettingsFromApp(local);
@@ -2099,6 +2113,8 @@ export function SettingsModal({
               <p>Tell parent agents when and how to use a model in Mythra Code-managed sub-agent crews. A parent sees notes only for models already in its approved crew, once per model, starting with its next message. Notes are preferences: they never add sub-agents, turn them on, or affect native Claude Code and Codex sub-agents.</p>
               <SubagentModelGuidanceEditor
                 value={local.subagentModelGuidance ?? []}
+                draft={guidanceDraft}
+                onDraftChange={setGuidanceDraft}
                 modelCatalogs={subAgentModelCatalogs}
                 modelFavorites={modelFavorites}
                 onToggleModelFavorite={onToggleModelFavorite}
@@ -2466,7 +2482,7 @@ export function SettingsModal({
             <div className="modal-footer">
               {dirty && <span className="unsaved-hint"><span>{dirtyPanes.size ? `Unsaved changes in ${[...dirtyPanes].map((pane) => SETTINGS_PANES.get(pane)?.label ?? pane).join(", ")}` : "Unsaved changes"}</span>{terminalTimeoutInvalid && <span role="status">· Fix the terminal timeout in Runtime to save</span>}</span>}
               <button className="secondary-button" onClick={requestClose}>Cancel</button>
-              <button className="primary-button" onClick={saveSettings} disabled={!projectDefaultsComplete || terminalTimeoutInvalid}>Save settings</button>
+              <button className="primary-button" onClick={() => void saveSettings()} disabled={!projectDefaultsComplete || terminalTimeoutInvalid}>Save settings</button>
             </div>
           </div>
         </div>
