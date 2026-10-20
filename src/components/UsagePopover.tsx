@@ -28,6 +28,8 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
   const id = useId();
   const open = mode !== "closed";
   const { ref: panelRef, present } = usePopoverFade(open);
+  const apiBilling = usage.label === "OpenAI API key" || usage.label === "Anthropic API key";
+  const heading = apiBilling ? usage.label : `${provider === "claude" ? "Claude Code" : "Codex"} usage`;
   const windows = usage.windows ?? [];
   const selected = selectedUsageWindow(windows, selectedLabel);
   const [now, setNow] = useState(Date.now);
@@ -131,9 +133,9 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
       >
         <Gauge size={13} aria-hidden="true" /><span>{header.text}</span><ChevronDown size={12} aria-hidden="true" />
       </button>
-      {present && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={`${provider === "claude" ? "Claude" : "Codex"} usage details`}>
+      {present && <div ref={panelRef} id={id} className="usage-popover" style={{ opacity: 0 }} role="dialog" aria-hidden={!open || undefined} inert={!open || undefined} aria-label={apiBilling ? `${usage.label} billing details` : `${provider === "claude" ? "Claude" : "Codex"} usage details`}>
         <div className="usage-popover-heading">
-          <div><strong>{provider === "claude" ? "Claude Code" : "Codex"} usage</strong><small>{usage.planLabel || "Subscription limits"}</small></div>
+          <div><strong>{heading}</strong><small>{apiBilling ? "API billing · pay per token" : usage.planLabel || "Subscription limits"}</small></div>
           <button type="button" className="icon-button" aria-label="Close usage details" onClick={() => close(true)}><X size={15} /></button>
         </div>
         {windows.length ? <fieldset className="usage-popover-windows">
@@ -153,7 +155,9 @@ export function UsagePopover({ provider, usage, header, selectedLabel, onSelect,
         {displayedReadStatus && <p className="usage-popover-note" role="status">{displayedReadStatus}</p>}
         {freshness && <p className="usage-popover-note">{freshness}</p>}
         {provider === "claude" && freshness && <p className="usage-popover-note">Claude Code may return a cached reading.</p>}
-        <p className="usage-popover-note">Provider-reported limits, shared across devices.</p>
+        <p className="usage-popover-note">{apiBilling
+          ? `Remaining API credits are unavailable in Mythra Code. Check ${provider === "claude" ? "the Claude Console" : "the OpenAI dashboard"} for billing details.`
+          : "Provider-reported limits, shared across devices."}</p>
         <button type="button" className="usage-popover-details" onClick={() => { close(); if (header.needsConnection) onConnect(); else onDetails(); }}>
           {header.needsConnection ? "Models & accounts" : "More usage details"}
         </button>
