@@ -8127,8 +8127,6 @@ export default function App() {
       } catch (reason) {
         // A timeout can follow a saved commit; keep the native recovery note.
         setGitOutput(formatGitError(reason));
-      } finally {
-        setGitCommitBusy(false);
       }
       return;
     }
@@ -8257,7 +8255,8 @@ export default function App() {
     if (!activeProject) return;
     if (action === "fetch") { await gitWorkspace.fetch(); return; }
     if (["status", "diff", "comments", "ci"].includes(action)) { await runGitActionUnlocked(action, commitMessageInput); return; }
-    const paths = [...new Set([activeProject.path, activeExecutionPath || activeProject.path].map(normalizedProjectPath))];
+    const commandPath = activeExecutionPath || activeProject.path;
+    const paths = [...new Set([activeProject.path, commandPath].map(normalizedProjectPath))];
     if (worktreeBusy || checkpointBusyId || gitWorkspace.busy || githubRepositoryBusy) { setGitOutput("Wait for the current workspace operation to finish."); return; }
     if (paths.some(projectHasActiveTask)) { setGitOutput("Wait for agents in this folder to finish before changing Git."); return; }
     const leases: string[] = [];
@@ -8270,13 +8269,19 @@ export default function App() {
     setGitOperationBusy(true);
     try { await runGitActionUnlocked(action, commitMessageInput); }
     finally {
-      leases.forEach(releasePullRequestMutation);
-      setGitOperationBusy(false);
-      autoPublish.refresh();
-      if (gitWorkspaceScopeRef.current === scope) {
-        void gitWorkspace.refresh();
-        void refreshDiff();
-        threadPullRequest.onRefresh();
+      try {
+        if (gitWorkspaceScopeRef.current === scope) {
+          // Keep progress and repository ownership until the post-operation
+          // snapshot arrives. Otherwise the old Commit/Push actions briefly
+          // reappear between completion and the background status refresh.
+          await Promise.all([gitWorkspace.refresh(), refreshGitHubRepo(commandPath)]);
+          void refreshDiff();
+          threadPullRequest.onRefresh();
+        }
+      } finally {
+        leases.forEach(releasePullRequestMutation);
+        setGitOperations((current) => ({ ...current, [scope]: { committing: false, busy: false } }));
+        autoPublish.refresh();
       }
     }
   };

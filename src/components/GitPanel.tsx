@@ -238,6 +238,7 @@ function GitPanelInner(props: GitPanelProps) {
     : outsideRepositoryRoot ? rootRequiredReason : "Initialize Git for this project before changing it.";
 
   const workflowBusy = !!workflow?.busy;
+  const commitProgress = props.gitCommitBusy || !!props.gitOperationBusy;
   const mutationBusy = workflowBusy || props.gitCommitBusy || !!props.gitOperationBusy || !!props.githubBusy || props.gitInitializing;
   const mutationDisabled = localDisabled || mutationBusy;
   const mutationDisabledReason = localDisabled ? localDisabledReason : "Wait for the current Git operation to finish.";
@@ -512,7 +513,7 @@ function GitPanelInner(props: GitPanelProps) {
   const commitCard = (
     <form
       className="git-commit-card"
-      aria-busy={props.gitCommitBusy}
+      aria-busy={commitProgress}
       onSubmit={(event) => {
         event.preventDefault();
         // Enter in the message field must not attempt an empty commit.
@@ -538,11 +539,16 @@ function GitPanelInner(props: GitPanelProps) {
         </div>
       )}
       <label className="dock-field"><span>Commit message <em>Optional</em></span><input value={commitMessage} onChange={(event) => updateDraft({ commitMessage: event.target.value })} placeholder="Update project files" data-git-focus="commit" /></label>
-      {hasStaged ? (
+      {commitProgress ? (
+        <button className="git-commit-button" type="button" disabled>
+          <LoaderCircle className="spin" size={16} />
+          {props.gitCommitBusy ? "Committing…" : "Working…"}
+        </button>
+      ) : hasStaged ? (
         <>
           <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={mutationDisabled ? mutationDisabledReason : `Commit the ${fileCount(staged)} you staged`}>
-            {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
-            {props.gitCommitBusy ? "Committing…" : `Commit staged (${staged})`}
+            <GitCommitHorizontal size={16} />
+            {`Commit staged (${staged})`}
           </button>
           <button
             type="button"
@@ -554,16 +560,16 @@ function GitPanelInner(props: GitPanelProps) {
         </>
       ) : nothingToCommit ? (
         <button className="git-commit-button git-commit-empty" type="submit" disabled title={mutationDisabled ? mutationDisabledReason : "Nothing to commit: no staged, unstaged or new files."}>
-          {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
-          {props.gitCommitBusy ? "Committing…" : "Nothing to commit"}
+          <GitCommitHorizontal size={16} />
+          Nothing to commit
         </button>
       ) : (
         <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={mutationDisabled ? mutationDisabledReason : "Stage and commit every current change to the local repository"}>
-          {props.gitCommitBusy ? <LoaderCircle className="spin" size={16} /> : <GitCommitHorizontal size={16} />}
-          {props.gitCommitBusy ? "Committing…" : "Commit all changes locally"}
+          <GitCommitHorizontal size={16} />
+          Commit all changes locally
         </button>
       )}
-      {repository && nothingToCommit && (
+      {repository && !commitProgress && nothingToCommit && (
         readiness === "synced" ? (
           <button
             type="button"
@@ -588,7 +594,7 @@ function GitPanelInner(props: GitPanelProps) {
           ><Upload size={13} /> Push</button>
         )
       )}
-      {repository && !nothingToCommit && (
+      {repository && !commitProgress && !nothingToCommit && (
         <button
           type="button"
           className="github-secondary-button git-commit-secondary"
@@ -603,7 +609,7 @@ function GitPanelInner(props: GitPanelProps) {
               : `Commit${hasStaged ? " the staged files" : " every current change"} and push it to ${repository}`}
         ><Upload size={13} /> Commit &amp; push</button>
       )}
-      {!nothingToCommit && <CommitIncludes plan={plan} />}
+      {!commitProgress && !nothingToCommit && <CommitIncludes plan={plan} />}
     </form>
   );
 
