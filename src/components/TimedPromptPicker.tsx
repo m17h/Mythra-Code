@@ -110,7 +110,14 @@ export function TimedPromptPicker({
   }, [position, parsed.ok, submitError]);
 
   useEffect(() => {
+    // Focus once on opening, not whenever the parent supplies a new onClose
+    // callback (for example after a background Git refresh). Refocusing a
+    // native date input steals the hour/minute selection back to the month.
     const frame = requestAnimationFrame(() => dateRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
@@ -125,7 +132,6 @@ export function TimedPromptPicker({
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
-      cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown, true);
     };

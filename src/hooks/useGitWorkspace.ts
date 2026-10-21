@@ -45,7 +45,7 @@ export function useGitWorkspace(options: Options) {
   const readSequence = useRef(0);
   const successfulReads = useRef(0);
   const successfulReadViewer = useRef(-1);
-  const readsPending = useRef(new Map<string, { request: number; rerun: boolean; invalidated: boolean }>());
+  const readsPending = useRef(new Map<string, { request: number; rerun: boolean; invalidated: boolean; promise: Promise<void> }>());
   const mutationsPending = useRef(new Set<string>());
   const update = useCallback((cwd: string, value: Partial<State>) => {
     if (!mounted.current || optionsRef.current.cwd !== cwd) return;
@@ -70,10 +70,10 @@ export function useGitWorkspace(options: Options) {
     update(cwd, { snapshot, branchNotice, readError: "", ...value, readRevision: successfulReads.current });
   }, [update]);
 
-  const refresh = useCallback(async (invalidate = true) => {
+  const refresh = useCallback((invalidate = true): Promise<void> => {
     const { cwd, enabled } = optionsRef.current;
     const scope = cwd ? normalizedProjectPath(cwd) : "";
-    if (!mounted.current || !cwd || !enabled || mutationsPending.current.has(scope)) return;
+    if (!mounted.current || !cwd || !enabled || mutationsPending.current.has(scope)) return Promise.resolve();
     const pending = readsPending.current.get(scope);
     if (pending) {
       // App mutations also call refresh when they settle. A read started before
@@ -84,31 +84,38 @@ export function useGitWorkspace(options: Options) {
         pending.invalidated = true;
         generation.current += 1;
       }
-      return;
+      return pending.promise;
     }
-    const revision = generation.current;
     const request = readSequence.current += 1;
-    const entry = { request, rerun: false, invalidated: false };
+    const entry = { request, rerun: false, invalidated: false, promise: Promise.resolve() };
     readsPending.current.set(scope, entry);
-    try {
-      const snapshot = await getGitWorkspace(cwd);
-      if (revision === generation.current) accept(cwd, snapshot, { error: "" });
-    } catch (error) {
-      if (revision === generation.current) update(cwd, { readError: formatGitError(error) });
-    } finally {
-      if (readsPending.current.get(scope) === entry) {
-        readsPending.current.delete(scope);
-        if (entry.rerun || revision !== generation.current) {
-          window.setTimeout(() => {
-            // Navigation or another refresh can supersede this scheduled read.
-            // Never retry an old checkout or invalidate a newer pending read.
-            if (mounted.current && optionsRef.current.enabled && optionsRef.current.cwd
-              && normalizedProjectPath(optionsRef.current.cwd) === scope
-              && !readsPending.current.has(scope)) void refresh(false);
-          }, 0);
+    // A mutation's caller must await the fresh read, not merely an older
+    // in-flight read or a timer that schedules its replacement. Keep one promise
+    // for the whole coalesced read so progress ends only after status settles.
+    entry.promise = (async () => {
+      try {
+        while (true) {
+          entry.rerun = false;
+          entry.invalidated = false;
+          const revision = generation.current;
+          try {
+            const snapshot = await getGitWorkspace(cwd);
+            if (revision === generation.current) accept(cwd, snapshot, { error: "" });
+          } catch (error) {
+            if (revision === generation.current) update(cwd, { readError: formatGitError(error) });
+          }
+          // Navigation or a native mutation can supersede this read. Never
+          // retry an old checkout or poll through an owned mutation.
+          if (!(entry.rerun || revision !== generation.current)
+            || !mounted.current || !optionsRef.current.enabled || !optionsRef.current.cwd
+            || normalizedProjectPath(optionsRef.current.cwd) !== scope
+            || mutationsPending.current.has(scope)) break;
         }
+      } finally {
+        if (readsPending.current.get(scope) === entry) readsPending.current.delete(scope);
       }
-    }
+    })();
+    return entry.promise;
   }, [accept, update]);
 
   // A newly opened consumer needs current rows, but a read already in progress
