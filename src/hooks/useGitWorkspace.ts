@@ -76,13 +76,17 @@ export function useGitWorkspace(options: Options) {
     if (!mounted.current || !cwd || !enabled || mutationsPending.current.has(scope)) return Promise.resolve();
     const pending = readsPending.current.get(scope);
     if (pending) {
-      // App mutations also call refresh when they settle. A read started before
-      // that operation must not overwrite its result with pre-operation state.
-      // Coalesce further requests until the pending read finishes.
-      pending.rerun = true;
-      if (invalidate && !pending.invalidated) {
-        pending.invalidated = true;
-        generation.current += 1;
+      // Background polls and focus events reuse the active read. Queuing a
+      // replacement on every poll would keep this promise pending forever when
+      // reads take longer than the polling interval (including read timeouts).
+      // Only an explicit invalidation, such as mutation completion, requires a
+      // newer read so pre-operation state cannot become the settled result.
+      if (invalidate) {
+        pending.rerun = true;
+        if (!pending.invalidated) {
+          pending.invalidated = true;
+          generation.current += 1;
+        }
       }
       return pending.promise;
     }
