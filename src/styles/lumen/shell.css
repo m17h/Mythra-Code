@@ -25,6 +25,13 @@
   outline: 2px solid var(--green);
   outline-offset: 2px;
 }
+/* Outrank this theme's general focus rule only for mouse/touch-focused work
+   history surfaces. Keyboard focus and every other control keep their rings. */
+html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .activity-status-pill:focus,
+html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .activity-details-scroll:focus {
+  outline: none;
+  box-shadow: none;
+}
 
 /* ---- Islands ---- */
 .app-shell[data-theme][data-color-scheme] .sidebar,
