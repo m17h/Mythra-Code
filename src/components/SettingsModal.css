@@ -236,3 +236,8 @@
 .settings-pane-tabs > button:hover { color: var(--text); }
 .settings-pane-tabs > button.selected { color: var(--text); background: var(--panel-3); box-shadow: var(--elev-1); }
 .settings-pane-tabs > button:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+
+/* A switch that sits level with its title instead of the row's centre, so
+   text that wraps or appears below cannot move it. */
+.set-row.set-row-top { align-items: start; }
+.set-row.set-row-top > .set-control { padding-top: 1px; }

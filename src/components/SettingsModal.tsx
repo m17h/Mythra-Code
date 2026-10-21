@@ -2046,13 +2046,12 @@ export function SettingsModal({
             <div className="set-group">
               <h4>Sub-agent workflow</h4>
               <div className="set-card">
-                <div className="set-row">
+                {/* The switch stays level with the title, and nothing here appears
+                    or disappears when it is flipped, so the row never moves. */}
+                <div className="set-row set-row-top">
                   <div className="set-copy">
                     <strong className="subagent-preview-heading">Mythra Code sub-agents V2 <span className="subagent-preview-badge">Preview</span></strong>
-                    <small id={`${managedSubagentV2Id}-help`}>Off: sub-agents run an assignment once and return their result. On: parents and sub-agents can ask questions, continue conversations, and steer work, with parent review before automatic archiving.</small>
-                    <small id={`${managedSubagentV2Id}-scope`}>Only affects the Mythra Code sub-agent system. Native Claude Code and Codex sub-agents, their models, limits, and settings are unchanged.</small>
-                    <small>Applies across all projects using Mythra Code-managed sub-agents. Existing V2 crews keep their workflow until their assignments are reviewed and accepted.</small>
-                    {local.managedSubagentV2 === true && <small role="status">V2 preview selected for Mythra Code only. Your native sub-agent setup stays unchanged.</small>}
+                    <small id={`${managedSubagentV2Id}-help`}>Lets parents and sub-agents message each other while work continues. Native Claude Code and Codex sub-agents aren&rsquo;t affected.</small>
                     {managedSubagentV2LockedReason && <p className="subagent-preview-lock" id={`${managedSubagentV2Id}-lock`} role="status"><Info size={13} aria-hidden="true" /><span>{managedSubagentV2LockedReason}</span></p>}
                     {managedSubagentV2DraftLocked && <>
                       <small id={`${managedSubagentV2Id}-draft`}>The switch shows your unsaved draft. V2 is still {settings.managedSubagentV2 === true ? "on" : "off"}. Keep the current workflow to save your other settings while this change is waiting.</small>
@@ -2064,7 +2063,7 @@ export function SettingsModal({
                       type="button"
                       role="switch"
                       aria-label="Mythra Code sub-agents V2"
-                      aria-describedby={`${managedSubagentV2Id}-help ${managedSubagentV2Id}-scope${managedSubagentV2LockedReason ? ` ${managedSubagentV2Id}-lock` : ""}${managedSubagentV2DraftLocked ? ` ${managedSubagentV2Id}-draft` : ""}`}
+                      aria-describedby={`${managedSubagentV2Id}-help${managedSubagentV2LockedReason ? ` ${managedSubagentV2Id}-lock` : ""}${managedSubagentV2DraftLocked ? ` ${managedSubagentV2Id}-draft` : ""}`}
                       aria-checked={local.managedSubagentV2 === true}
                       disabled={Boolean(managedSubagentV2LockedReason)}
                       className={`toggle-switch subagent-preview-toggle ${local.managedSubagentV2 === true ? "on" : ""}`}
@@ -2110,17 +2109,26 @@ export function SettingsModal({
                 <h4>Model guidance</h4>
                 <span className="set-group-note">{(local.subagentModelGuidance ?? []).length} of {MAX_SUBAGENT_MODEL_GUIDANCE}</span>
               </div>
-              <p>Tell parent agents when and how to use a model in Mythra Code-managed sub-agent crews. A parent sees notes only for models already in its approved crew, once per model, starting with its next message. Notes are preferences: they never add sub-agents, turn them on, or affect native Claude Code and Codex sub-agents.</p>
-              <SubagentModelGuidanceEditor
-                value={local.subagentModelGuidance ?? []}
-                draft={guidanceDraft}
-                onDraftChange={setGuidanceDraft}
-                modelCatalogs={subAgentModelCatalogs}
-                modelFavorites={modelFavorites}
-                onToggleModelFavorite={onToggleModelFavorite}
-                onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
-                onChange={(subagentModelGuidance) => setLocal((current) => ({ ...current, subagentModelGuidance }))}
-              />
+              <div className="set-card">
+                <div className="set-row">
+                  <div className="set-copy">
+                    <strong>Notes for parent agents</strong>
+                    <small>Tell parent agents when to use each model in their crew. Notes are suggestions only; they never add sub-agents or affect native Claude Code and Codex sub-agents.</small>
+                  </div>
+                </div>
+                <div className="set-body model-guidance-body">
+                  <SubagentModelGuidanceEditor
+                    value={local.subagentModelGuidance ?? []}
+                    draft={guidanceDraft}
+                    onDraftChange={setGuidanceDraft}
+                    modelCatalogs={subAgentModelCatalogs}
+                    modelFavorites={modelFavorites}
+                    onToggleModelFavorite={onToggleModelFavorite}
+                    onDiscoverOpenRouterModels={onDiscoverOpenRouterModels}
+                    onChange={(subagentModelGuidance) => setLocal((current) => ({ ...current, subagentModelGuidance }))}
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="set-group">
