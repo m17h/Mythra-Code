@@ -90,6 +90,7 @@
   padding: 16px 22px 28px;
 }
 .activity-details-scroll:focus-visible { outline: none; box-shadow: inset var(--ring); }
+html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: none; box-shadow: none; }
 
 /* One rail runs through the step nodes. */
 .activity-details-steps { position: relative; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }

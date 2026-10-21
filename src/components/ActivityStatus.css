@@ -38,6 +38,8 @@
 }
 .activity-status-pill:hover { border-color: var(--line-strong); color: var(--ink-2); background: color-mix(in srgb, var(--panel) 82%, transparent); }
 .activity-status-pill:focus-visible { outline: none; box-shadow: var(--ring); }
+/* Preserve the return focus target without a sticky mouse-click highlight. */
+html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none; box-shadow: none; }
 .activity-status-pill[aria-expanded="true"] { border-color: color-mix(in srgb, var(--activity-tone) 34%, var(--line)); }
 .activity-status.live .activity-status-pill { color: var(--ink-2); }
 

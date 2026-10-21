@@ -7,6 +7,7 @@ import { clipboardImages, createAttachmentPreparationTracker, imageBase64 } from
 import { forgetQuestionRecords, hasUnansweredQuestionRequests } from "./lib/agentQuestionRecords";
 import { AgentQuestionDelivery } from "./lib/agentQuestionContext";
 import { useTranscriptSaves } from "./hooks/useTranscriptSaves";
+import { useInputModality } from "./hooks/useInputModality";
 import { flushBeforeClose, useFlushOnClose } from "./hooks/useFlushOnClose";
 import { useGitWorkspace } from "./hooks/useGitWorkspace";
 import { useGitAutoPublish } from "./hooks/useGitAutoPublish";
@@ -695,6 +696,7 @@ const ConversationTimeline = memo(function ConversationTimeline({ Timeline, thre
 });
 
 export default function App() {
+  useInputModality();
   const voiceSession = useVoiceInputLock((state) => state.session);
   // Capture covers all React surfaces, including existing dialogs and portals.
   // The voice dialog alone owns controls until it releases the synchronous lock.
