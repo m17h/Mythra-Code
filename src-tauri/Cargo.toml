@@ -63,6 +63,6 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSSpellChecker"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSDictionary", "NSObject", "NSRange", "NSString", "NSUserDefaults", "NSValue"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSSpellChecker", "NSTextCheckingClient"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSDictionary", "NSObject", "NSProcessInfo", "NSRange", "NSString", "NSUserDefaults", "NSUUID", "NSValue"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKPreferences", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }

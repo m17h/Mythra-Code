@@ -551,6 +551,13 @@ pub(crate) fn configure_context(context: &mut tauri::Context<tauri::Wry>) {
     .expect("absolute QA asset paths");
 }
 
+// Keep native pre-creation configuration on the same isolated store as the
+// builder; Wry ignores builder store options when a configuration is supplied.
+#[cfg(target_os = "macos")]
+pub(crate) fn webview_store_identifier() -> Option<[u8; 16]> {
+    PROFILE.get().map(|profile| *profile.store_id.as_bytes())
+}
+
 pub(crate) fn configure_window<'a>(
     mut builder: tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
 ) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {

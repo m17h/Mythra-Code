@@ -47,6 +47,8 @@ mod language_framing;
 mod language_queries;
 mod language_recipes;
 mod language_tools;
+#[cfg(target_os = "macos")]
+mod macos_text;
 mod normal_chat;
 mod official_skills;
 mod openrouter_usage;
@@ -9713,6 +9715,19 @@ pub fn run() {
                         }
                     };
                 let builder = release_qa::configure_window(builder);
+                #[cfg(target_os = "macos")]
+                let builder = {
+                    let Some(mtm) = objc2::MainThreadMarker::new() else {
+                        startup_guard::setup_failed(app.handle(), "window-main-thread");
+                        return Ok(());
+                    };
+                    builder.with_webview_configuration(macos_text::configuration(
+                        mtm,
+                        !release_qa::active() && window_config.incognito,
+                        release_qa::webview_store_identifier()
+                            .or(window_config.data_store_identifier),
+                    ))
+                };
                 let prepared = (window_config.label == "main")
                     .then(|| startup_guard::prepare(app.handle(), &window_config.label))
                     .flatten();
