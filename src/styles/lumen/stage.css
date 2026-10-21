@@ -96,6 +96,14 @@
   box-shadow: 0 6px 16px -6px var(--lm-accent-glow);
 }
 .app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active kbd { color: inherit; border-color: transparent; background: rgba(0, 0, 0, .14); }
+/* Hovering the open toggle keeps its accent fill, like the send button,
+   instead of the plain hover ground that left dark text on a dark chip. */
+.app-shell[data-theme][data-color-scheme] .workspace-tools-trigger.active:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--lm-fill) var(--lm-grad);
+  filter: brightness(1.08);
+  box-shadow: 0 8px 20px -6px var(--lm-accent-glow);
+}
 
 /* Left-side chips: every one is a rounded chip with a tinted ground. */
 .app-shell[data-theme][data-color-scheme] .isolation-chip,
