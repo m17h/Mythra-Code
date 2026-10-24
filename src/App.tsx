@@ -21,7 +21,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
-import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
+import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging } from "./lib/providerAuth";
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
@@ -223,6 +223,7 @@ import { cancelQueuedForChild, forgetChildMailbox, getChildMailbox, summarizeChi
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { boundedNativeText, canOwnNativeThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
 import { autoArchiveSubagentCandidates, nativeArchiveActivity } from "./lib/subAgentArchive";
+import { nativeRuntimeRestartBlocker } from "./lib/runtimeRestartActivity";
 import { collectSubAgentWorkers, createClaudeCommandWorkerReconciler, isActiveAgentRecord, isSubAgentWorkerActive, workerStatusFromAgentRecord, workerStatusFromLifecycle, type SubAgentWorker } from "./lib/subAgentActivity";
 import { childReviewToken, ensureManagedChildTranscriptHydrated, managedChildCursorSessionId, useChildAgents, type ProjectRunOutcome } from "./hooks/useChildAgents";
 import { reorderProjects, sortProjectsByPin, toggleProjectPinned, type ProjectDropPosition } from "./lib/projectOrdering";
@@ -4603,23 +4604,20 @@ export default function App() {
             || terminal.running
             || terminal.runningElsewhere.length > 0
             || workflowRuns.some((run) => run.status === "running");
-          const nativeRoots = new Set(Object.values(nativeAgentLinksRef.current)
-            .filter((link) => link.runtime !== "claude" && link.provider !== "claude" && link.provider !== "cursor")
-            .map((link) => link.rootThreadId));
-          const unresolvedNativeWork = [...nativeRoots].some((rootId) => {
-            const activity = nativeArchiveActivity({ threadId: rootId, nativeLinks: nativeAgentLinksRef.current,
-              statuses: taskState.statuses, agentRecordsByThread: Object.fromEntries(Object.entries(taskState.tasks).map(([id, task]) => [id, task.agents])) });
-            return activity.activeSelf || activity.activeDescendants;
-          }) || Object.values(taskState.tasks).some((task) => task.agents.some((agent) => agent.runtime !== "claude" && agent.provider !== "claude" && agent.provider !== "cursor" && isActiveAgentRecord(agent.status)))
-            || Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
-          if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand || unresolvedNativeWork) {
+          // Ownership-only history must not synthesize an active worker.
+          // Retain explicit unresolved lifecycle evidence alongside the native
+          // reservation, including across renderer reloads.
+          const unresolvedNativeWork = nativeRuntimeRestartBlocker({ nativeLinks: nativeAgentLinksRef.current, managedLinks: childAgentLinksRef.current,
+            statuses: taskState.statuses, tasks: taskState.tasks, observedNativeThreadIds: new Set(reservation.observedNativeThreadIds) });
+          const unresolvedManagedWork = Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
+          if (hasActiveRuntimeTask || hasPendingRuntimeApproval || hasActiveTerminalCommand || unresolvedNativeWork || unresolvedManagedWork) {
             throw new Error("A different Codex runtime is installed, but an AI task, terminal command, workflow, or approval is still using the current runtime. Finish active work and respond to pending approvals, then refresh the model catalog again.");
           }
-          await deliberateRestartRuntime(() => restartRuntimeReserved(reservation));
+          await deliberateRestartRuntime(() => restartRuntimeReserved(reservation.token));
         } finally {
           // The native restart command also releases via RAII. This idempotent
           // fallback handles renderer-side preflight errors and cancellation.
-          await releaseRuntimeRestart(reservation).catch(() => undefined);
+          await releaseRuntimeRestart(reservation.token).catch(() => undefined);
         }
       }
       return listRuntimeModels();
@@ -4629,7 +4627,7 @@ export default function App() {
     (error) => { runtimeModelRefreshRef.current.error = error; setRuntimeModelsError(error); },
     "OpenAI returned an empty model catalog.",
     false,
-  ), "manual"), [deliberateRestartRuntime, nativeAgentLinksRef, terminal.running, terminal.runningElsewhere, workflowRuns]);
+  ), "manual"), [childAgentLinksRef, deliberateRestartRuntime, nativeAgentLinksRef, terminal.running, terminal.runningElsewhere, workflowRuns]);
 
   const refreshAvailableModels = useCallback(async (manual = true) => {
     const reads: Array<{ provider: string; read: () => Promise<unknown[]>; stillCurrent: () => boolean; error: () => string | undefined }> = [];
@@ -4667,29 +4665,42 @@ export default function App() {
     return null;
   }, [childAgentLinksRef, nativeAgentLinksRef]);
   const restartRuntimeForCapabilities = useCallback(async (threadId: string, allowOwnStarting = false) => {
-    const assertRuntimeIdle = () => {
+    const assertRuntimeIdle = (observedNativeThreadIds?: ReadonlySet<string>) => {
       const state = useTaskStore.getState();
       const anotherCodexRun = Object.entries(state.statuses).some(([candidateId, candidateStatus]) => (candidateStatus === "running" || (candidateStatus === "starting" && !(candidateId === threadId && allowOwnStarting))) && !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]));
       const activeCodexWorkflow = Object.keys(state.workflowOwners).some((candidateId) => !isLocalSubscriptionThread(knownThreadsRef.current?.[candidateId]));
       const pendingApproval = Object.values(state.tasks).some((task) => !isLocalSubscriptionThread(knownThreadsRef.current?.[task.threadId]) && task.approvals.some((approval) => !approval.method.startsWith("claude/") && !approval.method.startsWith("cursor/") && !approval.method.startsWith("openkiwi/")));
-      const nativeRootIds = new Set(Object.values(nativeAgentLinksRef.current).filter((link) => link.runtime !== "claude" && link.provider !== "claude" && link.provider !== "cursor").map((link) => link.rootThreadId));
-      const nativeBusy = [...nativeRootIds].some((rootId) => {
-        const activity = nativeArchiveActivity({ threadId: rootId, nativeLinks: nativeAgentLinksRef.current, statuses: state.statuses, agentRecordsByThread: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, task.agents])) });
-        return activity.activeSelf || activity.activeDescendants;
-      });
+      // Archive safety conservatively treats missing outcomes as unknown.
+      // Runtime refresh instead needs actual lifecycle evidence; plain
+      // historical ownership cannot establish that the runtime is occupied.
+      const nativeBusy = nativeRuntimeRestartBlocker({ nativeLinks: nativeAgentLinksRef.current, managedLinks: childAgentLinksRef.current,
+        statuses: state.statuses, tasks: state.tasks, observedNativeThreadIds });
       const managedBusy = Object.values(childAgentLinksRef.current).some((link) => link.provider !== "claude" && link.provider !== "cursor" && !link.terminalStatus);
-      if (anotherCodexRun || activeCodexWorkflow || pendingApproval || nativeBusy || managedBusy || terminal.running || terminal.runningElsewhere.length > 0 || workflowRuns.some((run) => run.status === "running")) {
-        throw new RuntimeCapabilityBusyError("Sub-agent settings are ready, but another runtime task, unresolved sub-agent, terminal command, workflow, or approval is still active. Your message was not sent; finish or stop that work before Mythra Code safely refreshes the runtime.");
+      const reason = anotherCodexRun ? "another thread is starting or running"
+        : activeCodexWorkflow ? "a thread workflow is active"
+        : pendingApproval ? "a runtime approval is waiting for a response"
+        : nativeBusy ? "a native sub-agent has running or unresolved work"
+        : managedBusy ? "a Mythra Code sub-agent has running or unresolved work"
+        : terminal.running || terminal.runningElsewhere.length > 0 ? "a terminal command is running"
+        : workflowRuns.some((run) => run.status === "running") ? "a workflow is running" : null;
+      if (reason) {
+        throw new RuntimeCapabilityBusyError(`This thread needs a runtime refresh, but ${reason}. Your message was not sent. Finish or stop that work before trying again.`);
       }
     };
     assertRuntimeIdle();
-    const reservation = await reserveRuntimeRestart();
+    const rethrowBusy = (reason: unknown): never => {
+      if (reason instanceof RuntimeRestartBusyError) {
+        throw new RuntimeCapabilityBusyError("The runtime is busy with another turn, command, sub-agent, request, or refresh. Wait for it to finish, then try again. Your message was not sent.");
+      }
+      throw reason;
+    };
+    const reservation = await reserveRuntimeRestart().catch(rethrowBusy);
     try {
-      assertRuntimeIdle();
-      await deliberateRestartRuntime(() => restartRuntimeReserved(reservation));
+      assertRuntimeIdle(new Set(reservation.observedNativeThreadIds));
+      await deliberateRestartRuntime(() => restartRuntimeReserved(reservation.token)).catch(rethrowBusy);
       return runtimeInstanceId();
     } finally {
-      await releaseRuntimeRestart(reservation).catch(() => undefined);
+      await releaseRuntimeRestart(reservation.token).catch(() => undefined);
     }
   }, [childAgentLinksRef, deliberateRestartRuntime, nativeAgentLinksRef, terminal.running, terminal.runningElsewhere.length, workflowRuns]);
   useEffect(() => {
