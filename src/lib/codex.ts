@@ -137,9 +137,30 @@ export async function restartRuntime(): Promise<void> {
   await invoke("restart_runtime");
 }
 
-/** Reserve an idle app-server for the explicit model-catalog refresh. */
-export async function reserveRuntimeRestart(): Promise<string> {
-  return invoke<string>("reserve_runtime_restart");
+/** Busy admission is distinct from a failed runtime replacement/startup. */
+export class RuntimeRestartBusyError extends Error {}
+
+export interface RuntimeRestartReservation {
+  token: string;
+  instance: string | null;
+  /** Native children actually observed by this process, not imported history. */
+  observedNativeThreadIds: string[];
+}
+
+/** Reserve an idle app-server for a capability or model-catalog refresh. */
+export async function reserveRuntimeRestart(): Promise<RuntimeRestartReservation> {
+  try {
+    return await invoke<RuntimeRestartReservation>("reserve_runtime_restart");
+  } catch (reason) {
+    // Match only the native reservation's busy refusals. IPC failures and
+    // replacement/cutoff failures must not be hidden as deferred refreshes.
+    const message = typeof reason === "string" ? reason : reason instanceof Error ? reason.message : null;
+    if (message === "A Codex runtime refresh is already in progress."
+      || message === "A Codex turn or command is still active. Finish active work before refreshing the model catalog.") {
+      throw new RuntimeRestartBusyError(message);
+    }
+    throw reason;
+  }
 }
 
 /** Release a reservation if the renderer's final safety checks abort. */
@@ -149,7 +170,18 @@ export async function releaseRuntimeRestart(token: string): Promise<void> {
 
 /** Replace the server only while holding the matching idle-refresh reservation. */
 export async function restartRuntimeReserved(token: string): Promise<void> {
-  await invoke("restart_runtime_reserved", { token });
+  try {
+    await invoke("restart_runtime_reserved", { token });
+  } catch (reason) {
+    const message = typeof reason === "string" ? reason : reason instanceof Error ? reason.message : null;
+    // A retryable read can enter after reservation but before replacement.
+    // This exact refusal comes from validate_restart, before any shutdown.
+    // Actual replacement, cutoff and startup failures remain ordinary errors.
+    if (message === "A Codex request is still finishing. Try the model catalog refresh again.") {
+      throw new RuntimeRestartBusyError(message);
+    }
+    throw reason;
+  }
 }
 
 /**

@@ -350,6 +350,14 @@ struct RuntimeRestartReservationState {
     auth_switch: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeRestartReservation {
+    token: String,
+    instance: Option<String>,
+    observed_native_thread_ids: Vec<String>,
+}
+
 struct RuntimeActivityGuard {
     lifecycle: Arc<RuntimeLifecycle>,
     instance: String,
@@ -730,7 +738,7 @@ impl RuntimeLifecycle {
         }
     }
 
-    fn reserve_restart(&self) -> Result<String, String> {
+    fn reserve_restart(&self) -> Result<RuntimeRestartReservation, String> {
         let mut state = self.lock();
         Self::clear_expired_reservation(&mut state);
         if state.restart_reservation.is_some() {
@@ -756,7 +764,19 @@ impl RuntimeLifecycle {
             restarting: false,
             auth_switch: false,
         });
-        Ok(token)
+        // Ownership-only history is unresolved only if this exact process has
+        // witnessed that child. Keep observations after activity settles, and
+        // take the snapshot under the same lock that admits the reservation.
+        let observed_native_thread_ids: HashSet<String> = state.native_agent_operations.keys()
+            .chain(state.settled_native_agents.iter())
+            .chain(state.active_native_agents.iter())
+            .cloned()
+            .collect();
+        Ok(RuntimeRestartReservation {
+            token,
+            instance: state.instance.clone(),
+            observed_native_thread_ids: observed_native_thread_ids.into_iter().collect(),
+        })
     }
 
     fn release_restart(&self, token: &str) {
@@ -9531,7 +9551,7 @@ async fn restart_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Resu
 }
 
 #[tauri::command]
-fn reserve_runtime_restart(state: State<'_, RuntimeState>) -> Result<String, String> {
+fn reserve_runtime_restart(state: State<'_, RuntimeState>) -> Result<RuntimeRestartReservation, String> {
     state.lifecycle.reserve_restart()
 }
 
