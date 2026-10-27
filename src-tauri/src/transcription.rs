@@ -3,10 +3,10 @@
 //! Transcription keys are separate OS credential entries, never the chat
 //! accounts: saving or removing one restarts no runtime and touches no other
 //! credential. A pasted key arrives once, to be saved; no command returns a
-//! stored key, and keys are never logged or kept in app settings. Each
-//! recording is one WAV upload to the selected provider's fixed HTTPS
-//! endpoint. Nothing is retried, because a repeated upload after an uncertain
-//! response could be billed twice. Provider error text is never relayed.
+//! stored key, and keys are never logged or kept in app settings. Recorded
+//! models use one WAV upload; live models use the native streaming module.
+//! Nothing is retried, because resending uncertain audio could be billed
+//! twice. Provider error text is never relayed.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError};
@@ -64,13 +64,14 @@ const MODEL_HEADER: &str = "mythra-transcription-model";
 
 const CANCELED: &str = "Transcription canceled.";
 
-/// Models the OpenAI upload endpoint accepts for plain dictation, with their
-/// labels. `/v1/models` carries no modality metadata, so the live list is
-/// this allowlist intersected with what the key can see. Realtime-only
-/// transcribers and the diarization model (which needs extra parameters) are
-/// deliberately absent.
-const OPENAI_MODELS: [(&str, &str, &str); 4] = [
+/// OpenAI dictation models and labels. `/v1/models` carries no modality
+/// metadata, so the fetched catalog intersects this allowlist with what the
+/// key can see. `gpt-live-transcribe` uses the dedicated realtime path and is
+/// rejected by upload admission below. Diarization needs extra parameters and
+/// is deliberately absent.
+const OPENAI_MODELS: [(&str, &str, &str); 5] = [
     ("gpt-transcribe", "GPT Transcribe", "Recommended for dictation"),
+    ("gpt-live-transcribe", "GPT Live Transcribe", "Streams audio while you speak"),
     ("gpt-4o-transcribe", "GPT-4o Transcribe", "Earlier high-accuracy model"),
     ("gpt-4o-mini-transcribe", "GPT-4o mini Transcribe", "Lower cost"),
     ("whisper-1", "Whisper", "The original Whisper model"),
@@ -234,6 +235,7 @@ struct CachedUploadResult {
 #[derive(Default)]
 struct ActiveUploads {
     current: Option<RunningUpload>,
+    live_id: Option<String>,
     /// Native-issued IDs are monotonic within a random process namespace.
     /// IDs below the high-water mark can never dispatch another paid request,
     /// even after their cached result has expired or been evicted.
@@ -275,7 +277,33 @@ pub(crate) struct TranscriptionState {
     catalogs: [Mutex<Option<CachedCatalog>>; 2],
     uploads: Arc<StdMutex<ActiveUploads>>,
     request_namespace: OnceLock<String>,
+    pub(super) live: crate::live_transcription::LiveTranscriptionState,
 }
+
+pub(super) struct LiveTranscriptionLease {
+    uploads: Arc<StdMutex<ActiveUploads>>,
+    id: String,
+}
+
+impl Drop for LiveTranscriptionLease {
+    fn drop(&mut self) {
+        let mut uploads = self.uploads.lock().unwrap_or_else(PoisonError::into_inner);
+        if uploads.live_id.as_deref() == Some(self.id.as_str()) { uploads.live_id = None; }
+    }
+}
+
+pub(super) async fn live_openai_key() -> Result<(String, u64), String> {
+    let generation = key_generation(TranscriptionProvider::Openai);
+    let key = match read_key(TranscriptionProvider::Openai).await {
+        KeyRead::Saved(key) => key,
+        KeyRead::Missing => return Err("No OpenAI transcription key is saved. Add one in Settings › Voice input.".into()),
+        KeyRead::Unavailable => return Err("The transcription key could not be read from the OS credential store.".into()),
+    };
+    if live_openai_key_generation() != generation { return Err("The transcription key changed. Start dictation again.".into()); }
+    Ok((key, generation))
+}
+
+pub(super) fn live_openai_key_generation() -> u64 { key_generation(TranscriptionProvider::Openai) }
 
 struct UploadGuard<'a> {
     state: &'a TranscriptionState,
@@ -308,6 +336,15 @@ impl Drop for UploadGuard<'_> {
 }
 
 impl TranscriptionState {
+    pub(super) fn reserve_live(&self, id: &str) -> Result<LiveTranscriptionLease, String> {
+        let mut uploads = self.uploads.lock().unwrap_or_else(PoisonError::into_inner);
+        let sequence = self.request_sequence(&uploads, id).ok_or("The dictation request ID is invalid. Start again.")?;
+        if sequence <= uploads.consumed_sequence { return Err("This dictation session already ended or was canceled. Start a new recording.".into()); }
+        if uploads.current.is_some() || uploads.live_id.is_some() { return Err("Another voice input session is still finishing.".into()); }
+        uploads.consumed_sequence = sequence;
+        uploads.live_id = Some(id.to_owned());
+        Ok(LiveTranscriptionLease { uploads: self.uploads.clone(), id: id.to_owned() })
+    }
     fn request_sequence(&self, uploads: &ActiveUploads, id: &str) -> Option<u64> {
         let prefix = self.request_namespace.get()?;
         let suffix = id.strip_prefix(prefix.as_str())?.strip_prefix('-')?;
@@ -341,7 +378,7 @@ impl TranscriptionState {
         if sequence <= uploads.consumed_sequence {
             return Err("This recording was already processed or canceled. Its result is no longer available; it was not uploaded again.".into());
         }
-        if uploads.current.is_some() {
+        if uploads.current.is_some() || uploads.live_id.is_some() {
             return Err("Another recording is still being transcribed.".into());
         }
         let (sender, receiver) = oneshot::channel();
@@ -1049,7 +1086,7 @@ pub(crate) async fn transcription_transcribe(
     let model = header(MODEL_HEADER)
         .filter(|model| valid_model_id(model))
         .ok_or_else(|| "Choose a transcription model in Settings › Voice input.".to_string())?;
-    if provider == TranscriptionProvider::Openai && !openai_model_supported(&model) {
+    if provider == TranscriptionProvider::Openai && (!openai_model_supported(&model) || model == "gpt-live-transcribe") {
         return Err("This model can't transcribe uploaded audio. Choose another in Settings › Voice input.".into());
     }
     let audio = match request.body() {
@@ -1132,6 +1169,7 @@ pub(crate) async fn transcription_transcribe(
 #[tauri::command]
 pub(crate) fn transcription_cancel(state: State<'_, TranscriptionState>, id: String) {
     if id.len() <= 64 {
+        state.live.cancel(&id);
         state.cancel_upload(&id);
     }
 }

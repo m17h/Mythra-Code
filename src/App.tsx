@@ -61,7 +61,6 @@ import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
 import { sanitizeTranscriptionSettings, transcriptionModelFor } from "./lib/transcription";
 import type { VoiceInputConfig } from "./hooks/useVoiceInput";
-import { VoiceInputLockModal } from "./components/VoiceInput";
 import { isVoiceInputLocked, useVoiceInputLock, voiceInputLockGeneration } from "./lib/voiceInputLock";
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
@@ -701,7 +700,7 @@ export default function App() {
   useInputModality();
   const voiceSession = useVoiceInputLock((state) => state.session);
   // Capture covers all React surfaces, including existing dialogs and portals.
-  // The voice dialog alone owns controls until it releases the synchronous lock.
+  // The inline recorder alone owns controls until it releases the synchronous lock.
   const guardVoiceInteraction = (event: { target: EventTarget | null; preventDefault: () => void; stopPropagation: () => void }) => {
     if (!isVoiceInputLocked()) return;
     if (event.target instanceof Element && event.target.closest("[data-voice-input-lock]")) return;
@@ -727,8 +726,8 @@ export default function App() {
         voiceEscapeHeld = true;
         event.preventDefault();
         event.stopImmediatePropagation();
-        // Finishing still only flushes local audio, so Escape can discard it.
-        // Once audio is submitted, require the explicit Cancel button instead.
+        // Escape cancels capture or its local flush. While awaiting a final
+        // result, require the explicit Cancel control to discard the text.
         if (session.view.phase !== "transcribing") session.onCancel();
         return;
       }
@@ -738,7 +737,7 @@ export default function App() {
         // those dialogs' document listeners regardless of mount order.
         event.preventDefault();
         event.stopImmediatePropagation();
-        const dialog = document.querySelector<HTMLElement>("[data-voice-input-lock] [role='dialog']");
+        const dialog = document.querySelector<HTMLElement>("[data-voice-input-lock='panel']");
         const controls = dialog ? Array.from(dialog.querySelectorAll<HTMLElement>(
           "button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]",
         )).filter((element) => element.tabIndex >= 0 && !element.matches(":disabled")
@@ -764,8 +763,8 @@ export default function App() {
       if (!isVoiceInputLocked() || (event.target instanceof Element && event.target.closest("[data-voice-input-lock]"))) return;
       // Other overlays can finish asynchronous work and request focus. Keep
       // their programmatic focus changes behind the voice controls too.
-      (document.querySelector<HTMLElement>("[data-voice-input-lock] button.primary:not([disabled])")
-        ?? document.querySelector<HTMLElement>("[data-voice-input-lock] button:not([disabled])"))?.focus();
+      (document.querySelector<HTMLElement>("[data-voice-input-lock='panel'] button.primary:not([disabled])")
+        ?? document.querySelector<HTMLElement>("[data-voice-input-lock='panel'] button:not([disabled])"))?.focus();
     };
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
@@ -9335,7 +9334,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main inert={voiceSession || settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
+      <main inert={settingsOpen || onboardingOpen ? true : undefined} className="main-panel">
         <header className="topbar">
           <div className="topbar-left">
             {!sidebarOpen && (
@@ -10250,12 +10249,14 @@ export default function App() {
 
       {workflowLaunch && <ErrorBoundary label="workflow" retryable={false} overlay onDismiss={closeWorkflowLaunch}><Suspense fallback={null}><WorkflowRunDialog workflow={workflowLaunch.workflow} projects={projects} initialProjectId={workflowLaunch.projectId} userPrompt={workflowLaunch.prompt} onClose={closeWorkflowLaunch} onRun={launchReviewedWorkflow} /></Suspense></ErrorBoundary>}
 
-      <RuntimeSetupModal open={runtimeSetupOpen} checking={runtimeChecking} onClose={() => setRuntimeSetupOpen(false)} onRetry={() => void retryRuntime()} />
+      {/* Background work may request a dialog during dictation. Keep its
+          pending state, but leave the inline recorder visible and reachable. */}
+      <RuntimeSetupModal open={runtimeSetupOpen && !voiceSession} checking={runtimeChecking} onClose={() => setRuntimeSetupOpen(false)} onRetry={() => void retryRuntime()} />
 
-      <AuthRequiredModal open={authRequiredOpen} busy={loginStarting} apiKeyBilling={openAiBilling === "apiKey"} onClose={() => setAuthRequiredOpen(false)} onSignIn={() => void beginChatGptLogin()}
+      <AuthRequiredModal open={authRequiredOpen && !voiceSession} busy={loginStarting} apiKeyBilling={openAiBilling === "apiKey"} onClose={() => setAuthRequiredOpen(false)} onSignIn={() => void beginChatGptLogin()}
         onUseApiKey={() => { setAuthRequiredOpen(false); openSettings("models"); }} />
 
-      {pendingApproval && (
+      {pendingApproval && !voiceSession && (
         <ApprovalCenter
           key={`${pendingApproval.threadId}:${pendingApproval.id}:${pendingApproval.receivedAt}`}
           approval={pendingApproval}
@@ -10289,9 +10290,8 @@ export default function App() {
         onGitRoute={openGitRoute}
       />
       </Suspense></ErrorBoundary>}
-      <ConfirmDialogModal />
+      {!voiceSession && <ConfirmDialogModal />}
       <SpellingMenu scope={JSON.stringify([attachmentKey, settingsOpen, confirmationOpen, Boolean(pendingApproval), voiceSession?.id])} />
-      <VoiceInputLockModal session={voiceSession} />
       </FeedbackProvider>
       </MaxReasoningWarningContext.Provider>
     </div>

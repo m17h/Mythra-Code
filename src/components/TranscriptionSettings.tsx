@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, ExternalLink, Info, KeyRound, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
+import { AudioLines, Check, ExternalLink, Info, KeyRound, LoaderCircle, RotateCcw, Trash2, Voicemail } from "lucide-react";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import { OpenAILogo, OpenRouterLogo } from "./BrandLogos";
 import { safeErrorText } from "../lib/errors";
@@ -11,6 +11,7 @@ import {
   removeTranscriptionKey,
   sanitizeTranscriptionSettings,
   saveTranscriptionKey,
+  transcriptionModeFor,
   transcriptionModelFor,
   TRANSCRIPTION_LINKS,
   TRANSCRIPTION_PROVIDER_LABELS,
@@ -18,6 +19,7 @@ import {
   useTranscriptionKeys,
   type TranscriptionCatalog,
   type TranscriptionKeyState,
+  type TranscriptionMode,
 } from "../lib/transcription";
 import { MAX_RECORDING_SECONDS } from "../lib/voiceRecorder";
 import type { TranscriptionProvider, TranscriptionSettings as TranscriptionSettingsValue } from "../types";
@@ -33,6 +35,16 @@ function openExternal(url: string): void {
 
 function ExternalButton({ url, children }: { url: string; children: string }) {
   return <button type="button" className="transcription-link" onClick={() => openExternal(url)}>{children} <ExternalLink size={11} aria-hidden="true" /></button>;
+}
+
+const MODE_LABELS: Record<TranscriptionMode, string> = { live: "Live dictation", recorded: "After recording" };
+
+function ModeIcon({ mode }: { mode: TranscriptionMode }) {
+  return (
+    <span className={`transcription-mode-icon ${mode}`} aria-hidden="true">
+      {mode === "live" ? <AudioLines size={13} /> : <Voicemail size={13} />}
+    </span>
+  );
 }
 
 function keyStatusLabel(state: TranscriptionKeyState, checking: boolean): string {
@@ -95,15 +107,27 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
   const catalogState = catalogs[provider];
   const models = useMemo(() => catalogState.catalog?.models ?? [], [catalogState.catalog]);
   const selectedModel = transcriptionModelFor(settings, provider);
-  const modelOptions = useMemo<AppSelectOption[]>(() => models.map((model) => ({
-    value: model.id,
-    label: model.name,
-    detail: [model.id !== model.name ? model.id : "", model.recommended ? "Recommended" : model.description ?? ""].filter(Boolean).join(" · "),
-    keywords: `${model.id} ${model.description ?? ""}`,
-  })), [models]);
+  // Live or after-recording comes from the app's own list of streaming
+  // models, never from a catalog description that mentions streaming.
+  const modelOptions = useMemo<AppSelectOption[]>(() => models.map((model) => {
+    const mode = transcriptionModeFor(provider, model.id);
+    return {
+      value: model.id,
+      label: model.name,
+      icon: <ModeIcon mode={mode} />,
+      detail: [MODE_LABELS[mode], model.id !== model.name ? model.id : "", model.recommended ? "Recommended" : model.description ?? ""].filter(Boolean).join(" · "),
+      keywords: `${model.id} ${MODE_LABELS[mode]} ${model.description ?? ""}`,
+    };
+  }), [models, provider]);
+  const selectedMode = transcriptionModeFor(provider, selectedModel);
   const selectedDisplay = selectedModel && !models.some((model) => model.id === selectedModel)
-    ? { label: selectedModel, detail: catalogState.status === "loading" || catalogState.status === "idle" ? "Checking the model list…" : "Not in the current model list" }
+    ? {
+      label: selectedModel,
+      icon: <ModeIcon mode={selectedMode} />,
+      detail: catalogState.status === "loading" || catalogState.status === "idle" ? "Checking the model list…" : "Not in the current model list",
+    }
     : undefined;
+  const providerLabel = TRANSCRIPTION_PROVIDER_LABELS[provider];
   const catalogNote = catalogState.status === "loading"
     ? "Loading models…"
     : catalogState.status === "error"
@@ -121,7 +145,7 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
     <section className="settings-section transcription-settings">
       <div className="set-group">
         <h4>Transcription provider</h4>
-        <p>The microphone in the message box records you. When you stop, the recording is uploaded to the provider chosen here, and the text it returns is added to your draft so you can edit it. Your message isn't sent until you send it.</p>
+        <p>Press the microphone in the message box and speak. With a live dictation model your words appear in the draft as you talk; with other models the recording is transcribed when you press Done. The text stays in your draft to edit. Voice input never sends your message automatically.</p>
         <div className="provider-cards transcription-provider-cards">
           {TRANSCRIPTION_PROVIDERS.map((id) => (
             <button key={id} type="button" className={`provider-card ${provider === id ? "selected" : ""}`} aria-pressed={provider === id} onClick={() => chooseProvider(id)}>
@@ -132,7 +156,7 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
             </button>
           ))}
         </div>
-        <small className="set-control-help">Only the selected provider receives your recordings. Both keys stay saved when you switch.</small>
+        <small className="set-control-help">Only the selected provider receives your audio. Both keys stay saved when you switch.</small>
       </div>
 
       <div className="set-group">
@@ -166,6 +190,16 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
               {catalogState.status === "loading" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}
             </button>
           </div>
+          {selectedModel && (
+            <div className={`transcription-mode-note ${selectedMode}`}>
+              <span className="transcription-mode-pill"><ModeIcon mode={selectedMode} /> {MODE_LABELS[selectedMode]}</span>
+              <small>
+                {selectedMode === "live"
+                  ? `Words appear in your draft while you speak. Audio streams to ${providerLabel} as you talk, so Cancel removes this dictation's text but can't recall audio already sent.`
+                  : `Text appears when you press Done; the recording is uploaded to ${providerLabel} then. Cancel before that discards it.`}
+              </small>
+            </div>
+          )}
           <small className={`set-control-help${catalogState.status === "error" ? " transcription-error-text" : ""}`} role={catalogState.status === "error" ? "alert" : undefined}>{catalogNote}</small>
           <div className="transcription-links">
             {provider === "openai" ? <>
@@ -178,7 +212,7 @@ export function TranscriptionSettings({ visible, value, onChange, accountOpenRou
 
       <p className="settings-footnote" role="note">
         <Info size={13} aria-hidden="true" />
-        <span><strong>Billing and privacy.</strong> {TRANSCRIPTION_PROVIDER_LABELS[provider]} bills transcription to the API key you add here. ChatGPT, Claude, and Cursor subscriptions don't cover it. Recordings stop after {MAX_RECORDING_SECONDS / 60} minutes. Mythra Code keeps a recording in memory only until the text arrives and never saves it to disk; {TRANSCRIPTION_PROVIDER_LABELS[provider]} processes and retains it under its own policies.</span>
+        <span><strong>Billing and privacy.</strong> {TRANSCRIPTION_PROVIDER_LABELS[provider]} bills transcription to the API key you add here. ChatGPT, Claude, and Cursor subscriptions don't cover it. Voice input stops after {MAX_RECORDING_SECONDS / 60} minutes. Mythra Code processes audio in memory and never saves it to disk; {TRANSCRIPTION_PROVIDER_LABELS[provider]} processes and retains it under its own policies.</span>
       </p>
     </section>
   );

@@ -27,6 +27,7 @@ import { ScheduledPrompts, type TimedPromptActions } from "./ScheduledPrompts";
 import { TimedPromptPicker } from "./TimedPromptPicker";
 import { useVoiceInput, type VoiceInputConfig } from "../hooks/useVoiceInput";
 import { VoiceInputButton, VoiceInputStatus } from "./VoiceInput";
+import { isVoiceInputLocked } from "../lib/voiceInputLock";
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
@@ -350,7 +351,45 @@ export const Composer = forwardRef<ComposerHandle, {
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     });
   }, []);
-  const voice = useVoiceInput({ threadKey: props.threadKey, config: props.voiceInput, onTranscript: appendTranscript });
+  const liveDraftRef = useRef<{ key: string; sessionId: string; base: string; text: string } | null>(null);
+  const previewTranscript = useCallback((key: string, sessionId: string, text: string, _provisional: boolean): boolean => {
+    if (threadKeyRef.current !== key) return false;
+    let owned = liveDraftRef.current;
+    if (!owned) {
+      owned = { key, sessionId, base: draftFor(key), text: "" };
+      liveDraftRef.current = owned;
+    }
+    if (owned.key !== key || owned.sessionId !== sessionId || draftFor(key) !== owned.base) return false;
+    owned.text = text;
+    const next = !owned.base ? text : !text ? owned.base : /\s$/.test(owned.base) ? `${owned.base}${text}` : `${owned.base} ${text}`;
+    // Partial words stay in memory. Persist once on Done or a recoverable
+    // failure; Cancel leaves the user's original persisted draft untouched.
+    setDraftState(next);
+    return true;
+  }, []);
+  const endTranscriptPreview = useCallback((key: string, sessionId: string, keep: boolean) => {
+    const owned = liveDraftRef.current;
+    if (!owned || owned.key !== key || owned.sessionId !== sessionId) return;
+    if (keep && draftFor(key) === owned.base) {
+      const next = !owned.base ? owned.text : !owned.text ? owned.base : /\s$/.test(owned.base) ? `${owned.base}${owned.text}` : `${owned.base} ${owned.text}`;
+      persistDraft(key, next);
+    }
+    liveDraftRef.current = null;
+    if (threadKeyRef.current === key) {
+      setDraftState(draftFor(key));
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea || threadKeyRef.current !== key || isVoiceInputLocked()) return;
+        const focused = document.activeElement;
+        if (focused && focused !== document.body && !textarea.closest(".composer")?.contains(focused)) return;
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        textarea.scrollTop = textarea.scrollHeight;
+        syncComposerHighlight(textarea, highlightRef.current);
+      });
+    }
+  }, []);
+  const voice = useVoiceInput({ threadKey: props.threadKey, config: props.voiceInput, onTranscript: appendTranscript, onPreview: previewTranscript, onPreviewEnd: endTranscriptPreview });
   const cancelVoice = voice.cancel;
 
   useImperativeHandle(ref, () => ({
@@ -493,7 +532,7 @@ export const Composer = forwardRef<ComposerHandle, {
   const inspector = useSkillReferenceInspector({
     textareaRef, highlightRef, ranges: skillRanges, report: dependencyPreview.report, error: dependencyPreview.error,
     pending: Boolean(props.onAnalyzeSkillDependencies) && !dependencyPreview.report && !dependencyPreview.error,
-    channel: "user", suppressed: mentions.open || workflowMenu.open,
+    channel: "user", suppressed: mentions.open || workflowMenu.open || voice.view !== null,
   });
   const { flaggedNames, activeStart } = inspector;
   const { highlightedDraft, hasSkillMentions } = useMemo(() => {
@@ -517,7 +556,14 @@ export const Composer = forwardRef<ComposerHandle, {
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
-    if (textarea) resizeComposerTextarea(textarea, highlightRef.current);
+    if (!textarea) return;
+    resizeComposerTextarea(textarea, highlightRef.current);
+    // Focus stays on the recorder controls. Follow incoming words explicitly
+    // once the draft is taller than the text area's bounded height.
+    if (liveDraftRef.current?.key === props.threadKey) {
+      textarea.scrollTop = textarea.scrollHeight;
+      syncComposerHighlight(textarea, highlightRef.current);
+    }
   }, [draft, hasSkillMentions, props.chatFont, props.threadKey]);
 
   const canLaunchWorkflow = Boolean(selectedWorkflow && workflowAvailable
@@ -638,7 +684,7 @@ export const Composer = forwardRef<ComposerHandle, {
   }, [cancelVoice, closeMentions, closeWorkflows, draft, props, setDraft]);
 
   return (
-    <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""}`}>
+    <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""} ${voice.view ? "voice-active" : ""}`}>
       {eligibleTurns.length > 0 && (
         <div className="queued-turns">
           <div className="queued-turns-heading">
@@ -736,6 +782,9 @@ export const Composer = forwardRef<ComposerHandle, {
           {workflowBlockers && <small className="composer-workflow-hint">Recipe paused by {workflowBlockers}. Remove the recipe chip to use Send, or clear those items to run it.</small>}
         </div>
       )}
+      {props.voiceInput && (
+        <VoiceInputStatus view={voice.view} message={voice.message} onStop={() => void voice.stop()} onCancel={() => voice.cancel()} onDismiss={voice.dismissMessage} onOpenSettings={props.voiceInput.onOpenSettings} />
+      )}
       <div className="composer-input-wrap">
         {workflowMenu.open && (
           <div className="mention-menu" id={`${mentionMenuId}-workflow`} role="listbox" aria-label="Workflow suggestions">
@@ -802,6 +851,7 @@ export const Composer = forwardRef<ComposerHandle, {
           data-skill-inspector-open={inspector.open || undefined}
           value={draft}
           disabled={workflowSubmitting}
+          readOnly={voice.view !== null}
           onSelect={(event) => inspector.handlers.onSelect(event.currentTarget)}
           onFocus={(event) => inspector.handlers.onFocus(event.currentTarget)}
           onPointerMove={inspector.handlers.onPointerMove}
@@ -884,16 +934,6 @@ export const Composer = forwardRef<ComposerHandle, {
       </div>
       <SkillDependencyNotice report={dependencyPreview.report} error={dependencyPreview.error} />
       {dependencyPreview.report && hasBlockedSkillDependencies(dependencyPreview.report) && <SkillDependencyDetails report={dependencyPreview.report} />}
-      {props.voiceInput && (
-        <VoiceInputStatus
-          view={voice.view}
-          message={voice.message}
-          onStop={() => void voice.stop()}
-          onCancel={() => voice.cancel()}
-          onDismiss={voice.dismissMessage}
-          onOpenSettings={props.voiceInput.onOpenSettings}
-        />
-      )}
       {props.modelControls}
       <div className="composer-toolbar">
         <div className="composer-controls">{props.controls}</div>
