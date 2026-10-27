@@ -67,6 +67,7 @@ mod spelling;
 mod instruction_files;
 mod startup_guard;
 mod transcription;
+mod live_transcription;
 mod workspace_folder;
 use agents::{
     child_agent_bridge_config_allows_spawning, child_agent_bridge_config_registered,
@@ -9687,6 +9688,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<transcription::TranscriptionState>() {
+                    state.live.cancel_window(window.label());
+                }
+            }
+        })
         .setup(move |app| {
             // Never propagate these returned failures to Tauri's setup panic.
             // The asynchronous native dialog owns explicit acknowledgment.
@@ -9964,7 +9972,10 @@ pub fn run() {
                     transcription::transcription_models,
                     transcription::transcription_request_id,
                     transcription::transcription_transcribe,
-                    transcription::transcription_cancel
+                    transcription::transcription_cancel,
+                    live_transcription::transcription_live_start,
+                    live_transcription::transcription_live_append,
+                    live_transcription::transcription_live_finish
                 ]);
             move |invoke: tauri::ipc::Invoke| {
                 if release_qa::active() {

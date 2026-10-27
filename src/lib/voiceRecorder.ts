@@ -1,10 +1,9 @@
 import { isMacPlatform, isWindowsPlatform } from "./platform";
 
 /**
- * Microphone capture for voice input. Records mono 16-bit PCM WAV, the one
- * format every transcription provider accepts, at 16 kHz (or the device rate
- * when it is lower). Memory is bounded by the duration limit: ten minutes is
- * about 19 MB, under the providers' 25 MB upload limit.
+ * Microphone capture for voice input. Recorded mode retains mono PCM for a
+ * bounded 16 kHz WAV upload. Live mode emits 24 kHz PCM packets immediately
+ * without retaining a second recording in memory.
  */
 
 const WORKLET_URL = "/voice-capture-worklet.js";
@@ -39,6 +38,12 @@ export interface VoiceRecorderEvents {
   onInterrupted: () => void;
 }
 
+export interface VoiceRecorderOptions {
+  sampleRate?: number;
+  /** Stream raw little-endian PCM16 as it arrives, without retaining the clip. */
+  onPcm?: (bytes: Uint8Array, seconds: number, speaking: boolean) => void;
+}
+
 type AudioContextConstructor = typeof AudioContext;
 
 function audioContextConstructor(): AudioContextConstructor | null {
@@ -55,10 +60,10 @@ export function voiceCaptureSupported(): boolean {
  * that started recording, so engines that require a user gesture for audio
  * allow it. Creating a context does not open the microphone.
  */
-export function createVoiceAudioContext(): AudioContext {
+export function createVoiceAudioContext(sampleRate?: number): AudioContext {
   const Context = audioContextConstructor();
   if (!Context) throw new VoiceCaptureError("unsupported", "Voice input isn't supported in this window.");
-  const context = new Context({ latencyHint: "interactive" });
+  const context = new Context({ latencyHint: "interactive", ...(sampleRate ? { sampleRate } : {}) });
   void context.resume().catch(() => undefined);
   return context;
 }
@@ -165,7 +170,7 @@ export class VoiceRecorder {
   level = 0;
   sampleRate = TARGET_SAMPLE_RATE;
 
-  constructor(private readonly context: AudioContext, private readonly events: VoiceRecorderEvents) {}
+  constructor(private readonly context: AudioContext, private readonly events: VoiceRecorderEvents, private readonly options: VoiceRecorderOptions = {}) {}
 
   private readonly onContextStateChange = () => {
     if (this.context.state !== "running") this.interrupt();
@@ -205,7 +210,9 @@ export class VoiceRecorder {
       track.addEventListener("ended", () => this.interrupt(), { once: true });
       if (track.readyState !== "live") throw new VoiceCaptureError("no-device", "The microphone was disconnected. Connect it and try again.");
       const rate = this.context.sampleRate;
-      this.sampleRate = Math.min(TARGET_SAMPLE_RATE, Math.round(rate));
+      const target = this.options.sampleRate ?? TARGET_SAMPLE_RATE;
+      if (this.options.onPcm && rate < target) throw new VoiceCaptureError("unsupported", "This audio device cannot provide the sample rate for live dictation. Choose an After recording model.");
+      this.sampleRate = Math.min(target, Math.round(rate));
       this.maxSamples = this.sampleRate * MAX_RECORDING_SECONDS;
       this.downsampler = new Downsampler(rate / this.sampleRate);
       this.source = this.context.createMediaStreamSource(stream);
@@ -298,7 +305,12 @@ export class VoiceRecorder {
     if (peak > this.peak) this.peak = peak;
     const chunk = this.downsampler.push(input, room);
     if (chunk.length) {
-      this.chunks.push(chunk);
+      if (this.options.onPcm) {
+        const bytes = new Uint8Array(chunk.length * 2);
+        const view = new DataView(bytes.buffer);
+        for (let i = 0; i < chunk.length; i += 1) view.setInt16(i * 2, chunk[i], true);
+        this.options.onPcm(bytes, chunk.length / this.sampleRate, peak > SILENCE_PEAK);
+      } else this.chunks.push(chunk);
       this.samples += chunk.length;
     }
     if (this.samples >= this.maxSamples) this.reportLimit();
@@ -347,7 +359,7 @@ export class VoiceRecorder {
     this.chunks = [];
     this.release();
     if (!samples) return null;
-    return { wav: encodeWav(chunks, samples, sampleRate), seconds: samples / sampleRate, silent };
+    return { wav: this.options.onPcm ? new Uint8Array(0) : encodeWav(chunks, samples, sampleRate), seconds: samples / sampleRate, silent };
   }
 
   /** Discards everything recorded and releases the microphone immediately. */

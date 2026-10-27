@@ -10,7 +10,10 @@ import {
   refreshTranscriptionKeys,
   transcribeRecording,
   TRANSCRIPTION_PROVIDER_LABELS,
+  transcriptionModeFor,
+  type TranscriptionMode,
 } from "../lib/transcription";
+import { appendLiveAudio, finishLiveTranscription, startLiveTranscription } from "../lib/liveTranscription";
 import { clearVoiceInputSession, isVoiceInputLocked, publishVoiceInputSession } from "../lib/voiceInputLock";
 import {
   createVoiceAudioContext,
@@ -38,6 +41,7 @@ export interface VoiceInputView {
   model: string;
   startedAt: number;
   recorder: VoiceRecorder | null;
+  mode: TranscriptionMode;
 }
 
 export interface VoiceInputMessage {
@@ -60,6 +64,17 @@ interface Session {
   canceled: boolean;
   /** Aborts a setup dialog still open for this session. */
   controller: AbortController;
+  mode: TranscriptionMode;
+  liveStarted: boolean;
+  liveText: string;
+  provisional: boolean;
+  previewTimer?: number;
+  audioQueue: Promise<void>;
+  queuedBytes: number;
+  sequence: number;
+  segmentSeconds: number;
+  silenceSeconds: number;
+  segmentSpeech: boolean;
 }
 
 /** Key check plus microphone start, including an OS permission prompt. */
@@ -89,10 +104,12 @@ function newSessionId(): string {
  *   request cancels either phase before the close guard finishes saving.
  * - The transcript is added to the draft and never sent.
  */
-export function useVoiceInput({ threadKey, config, onTranscript }: {
+export function useVoiceInput({ threadKey, config, onTranscript, onPreview, onPreviewEnd }: {
   threadKey: string;
   config: VoiceInputConfig | undefined;
   onTranscript: (threadKey: string, text: string) => void;
+  onPreview: (threadKey: string, sessionId: string, text: string, provisional: boolean) => boolean;
+  onPreviewEnd: (threadKey: string, sessionId: string, keep: boolean) => void;
 }) {
   const sessionRef = useRef<Session | null>(null);
   const [view, setView] = useState<VoiceInputView | null>(null);
@@ -101,6 +118,8 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   configRef.current = config;
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
+  const previewCallbacks = useRef({ onPreview, onPreviewEnd });
+  previewCallbacks.current = { onPreview, onPreviewEnd };
   const threadKeyRef = useRef(threadKey);
   threadKeyRef.current = threadKey;
   const controlsRef = useRef({ onStop: () => {}, onCancel: () => {} });
@@ -113,6 +132,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       model: session.model,
       startedAt: session.startedAt,
       recorder: session.recorder,
+      mode: session.mode,
     } : null;
     setView(next);
     if (session && next) publishVoiceInputSession({
@@ -132,8 +152,13 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     && session.model === configRef.current?.model.trim();
 
   /** Releases the microphone, the audio graph and any setup dialog. Idempotent. */
-  const release = useCallback((session: Session) => {
+  const release = useCallback((session: Session, keepLiveText = false) => {
+    if (session.canceled) return;
+    // Invalidate callbacks before releasing capture or updating the draft.
+    // A pending permission/socket completion can no longer regain ownership.
     session.canceled = true;
+    if (session.previewTimer !== undefined) window.clearTimeout(session.previewTimer);
+    session.previewTimer = undefined;
     session.controller.abort();
     clearVoiceInputSession(session.id);
     if (session.recorder) session.recorder.cancel();
@@ -142,14 +167,20 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       sessionRef.current = null;
       publish(null);
     }
+    if (session.mode === "live") {
+      // An empty final result must also replace a pending provisional preview.
+      // If the draft no longer accepts our preview, do not commit stale text.
+      const keep = keepLiveText && previewCallbacks.current.onPreview(session.threadKey, session.id, session.liveText, session.provisional);
+      previewCallbacks.current.onPreviewEnd(session.threadKey, session.id, keep);
+    }
   }, [publish]);
 
   /** Ends any session, aborting a native upload too. A no-op when idle. */
-  const cancel = useCallback((notice?: string) => {
+  const cancel = useCallback((notice?: string, keepLiveText = false) => {
     const session = sessionRef.current;
     if (!session) return;
-    if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
-    release(session);
+    if ((session.phase === "transcribing" || session.liveStarted) && session.requestId) cancelTranscription(session.requestId);
+    release(session, keepLiveText);
     setMessage(notice ? { text: notice, tone: "info" } : null);
   }, [release]);
 
@@ -158,14 +189,16 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   // microphone or submitting audio; an existing upload may still finish.
   const cancelIfHidden = useCallback((session: Session) => {
     if (document.visibilityState !== "hidden" || session.phase === "transcribing") return false;
-    if (sessionRef.current === session) cancel(HIDDEN_NOTICE);
+    if (sessionRef.current === session) cancel(session.mode === "live"
+      ? "Live dictation stopped because Mythra Code was hidden. Text already received has been kept."
+      : HIDDEN_NOTICE, session.mode === "live");
     return true;
   }, [cancel]);
 
   const fail = useCallback((session: Session, text: string, settings = false) => {
     if (!active(session)) return;
-    if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
-    release(session);
+    if ((session.phase === "transcribing" || session.liveStarted) && session.requestId) cancelTranscription(session.requestId);
+    release(session, session.mode === "live");
     setMessage({ text, tone: "error", settings });
   }, [release]);
 
@@ -178,11 +211,13 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     try {
       const recording = await session.recorder.stop();
       if (!active(session) || cancelIfHidden(session)) return;
-      if (!recording || recording.seconds < MIN_RECORDING_SECONDS) {
+      // Live audio has already been submitted. Always finalize it, even for
+      // a quick or quiet utterance; the provider owns its recognition result.
+      if (session.mode === "recorded" && (!recording || recording.seconds < MIN_RECORDING_SECONDS)) {
         fail(session, "That recording was too short to transcribe. Nothing was uploaded.");
         return;
       }
-      if (recording.silent) {
+      if (session.mode === "recorded" && recording?.silent) {
         fail(session, "No sound reached the microphone, so nothing was uploaded. Check your input device and try again.");
         return;
       }
@@ -190,6 +225,18 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       publish(session);
       if (!active(session)) return;
       if (!session.requestId) throw new Error("Could not prepare the transcription request. Start a new recording.");
+      if (session.mode === "live") {
+        await session.audioQueue;
+        if (!active(session)) return;
+        const text = await finishLiveTranscription(session.requestId);
+        if (!active(session)) return;
+        session.liveText = text;
+        session.provisional = false;
+        release(session, true);
+        if (!text.trim()) setMessage({ text: "No speech was recognized. Your original draft has been kept.", tone: "info" });
+        return;
+      }
+      if (!recording) throw new Error("The recording couldn't be prepared for upload. Nothing was uploaded.");
       const text = await transcribeRecording(session.requestId, session.provider, session.model, recording.wav);
       if (!active(session)) return;
       release(session);
@@ -200,7 +247,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
         const text = safeErrorText(reason, "Transcription failed.");
         fail(session, text, /Settings › Voice input/.test(text));
       } else {
-        fail(session, "The recording couldn't be prepared for upload. Nothing was uploaded.");
+        fail(session, session.mode === "live" ? "Live dictation stopped. Text already received has been kept." : "The recording couldn't be prepared for upload. Nothing was uploaded.");
       }
     }
   }, [cancelIfHidden, fail, publish, release]);
@@ -234,7 +281,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
     // Before any await: engines that gate audio on a user gesture see the click.
     let context: AudioContext;
     try {
-      context = createVoiceAudioContext();
+      context = createVoiceAudioContext(transcriptionModeFor(current.provider, current.model) === "live" ? 24000 : undefined);
     } catch (reason) {
       setMessage({ text: reason instanceof VoiceCaptureError ? reason.message : "The microphone couldn't be started.", tone: "error" });
       return;
@@ -251,6 +298,16 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       recorder: null,
       canceled: false,
       controller: new AbortController(),
+      mode: transcriptionModeFor(current.provider, current.model),
+      liveStarted: false,
+      liveText: "",
+      provisional: true,
+      audioQueue: Promise.resolve(),
+      queuedBytes: 0,
+      sequence: 0,
+      segmentSeconds: 0,
+      silenceSeconds: 0,
+      segmentSpeech: false,
     };
     sessionRef.current = session;
     publish(session);
@@ -284,10 +341,43 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
         return;
       }
       if (cancelIfHidden(session)) return;
+      if (session.mode === "live") {
+        session.liveStarted = true;
+        await startLiveTranscription(requestId, session.provider, session.model, (event) => {
+          if (!active(session) || event.id !== session.requestId) return;
+          if (event.type === "error") { fail(session, event.message, /Settings › Voice input/.test(event.message)); return; }
+          session.liveText = event.text;
+          session.provisional = event.provisional;
+          if (session.previewTimer !== undefined) return;
+          session.previewTimer = window.setTimeout(() => {
+            session.previewTimer = undefined;
+            if (active(session) && !previewCallbacks.current.onPreview(session.threadKey, session.id, session.liveText, session.provisional)) {
+              fail(session, "Dictation stopped because the destination draft changed. Your existing draft has been kept.");
+            }
+          }, 60);
+        }, session.controller.signal);
+        if (!active(session) || cancelIfHidden(session)) return;
+      }
       const recorder = new VoiceRecorder(context, {
         onLimit: () => void stop(),
-        onInterrupted: () => fail(session, "Recording stopped because the microphone was disconnected or access was turned off. Nothing was uploaded."),
-      });
+        onInterrupted: () => fail(session, session.mode === "live"
+          ? "The microphone stopped. Text already received has been kept."
+          : "Recording stopped because the microphone was disconnected or access was turned off. Nothing was uploaded."),
+      }, session.mode === "live" ? { sampleRate: 24000, onPcm: (bytes, seconds, speaking) => {
+        if (!active(session) || !session.requestId) return;
+        session.queuedBytes += bytes.length;
+        if (session.queuedBytes > 192_000) { fail(session, "Live dictation could not keep up with the audio. Text already received has been kept."); return; }
+        session.segmentSeconds += seconds;
+        if (speaking) { session.silenceSeconds = 0; session.segmentSpeech = true; }
+        else session.silenceSeconds += seconds;
+        const commit = (session.segmentSpeech && session.silenceSeconds >= 0.7 && session.segmentSeconds >= 1.2) || session.segmentSeconds >= 25;
+        if (commit) { session.segmentSeconds = 0; session.silenceSeconds = 0; session.segmentSpeech = false; }
+        const sequence = session.sequence++;
+        session.audioQueue = session.audioQueue.then(async () => {
+          if (active(session) && session.requestId) await appendLiveAudio(session.requestId, sequence, bytes, commit);
+        }).catch((reason) => { fail(session, safeErrorText(reason, "Live dictation stopped. Text already received has been kept.")); })
+          .finally(() => { session.queuedBytes -= bytes.length; });
+      } } : undefined);
       session.recorder = recorder;
       await recorder.start();
       if (!active(session) || cancelIfHidden(session)) return;
@@ -296,6 +386,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
       publish(session);
     } catch (reason) {
       fail(session, reason instanceof VoiceCaptureError ? reason.message
+        : session.mode === "live" ? safeErrorText(reason, "Live dictation could not start. Check your connection and selected model.")
         : session.recorder ? "The microphone couldn't be started."
           : "Voice input couldn't be prepared. Nothing was recorded.");
     } finally {
@@ -362,7 +453,7 @@ export function useVoiceInput({ threadKey, config, onTranscript }: {
   useEffect(() => () => {
     const session = sessionRef.current;
     if (!session) return;
-    if (session.phase === "transcribing" && session.requestId) cancelTranscription(session.requestId);
+    if ((session.phase === "transcribing" || session.liveStarted) && session.requestId) cancelTranscription(session.requestId);
     release(session);
   }, [release]);
 

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { FileDiff, ListChecks, MessageSquareText, TriangleAlert } from "lucide-react";
 import { usePopoverFade } from "../hooks/usePopoverFade";
+import { useVoiceInputLock } from "../lib/voiceInputLock";
 import { MAX_FEEDBACK_COMMENT_CHARS, type FeedbackAnchor } from "../lib/reviewFeedback";
 import "./Feedback.css";
 
@@ -72,6 +73,9 @@ export function FeedbackFloat({ open, rect, placement, align, className = "", ro
   label?: string;
   children: ReactNode;
 }) {
+  // Temporarily remove top-layer floats without clearing an unsaved comment.
+  // The inline recorder must remain visible while it owns interaction.
+  const suspended = useVoiceInputLock((state) => state.session !== null);
   const { ref, present } = usePopoverFade(open);
   const topLayer = supportsTopLayer();
   const visible = present && Boolean(rect);
@@ -98,9 +102,9 @@ export function FeedbackFloat({ open, rect, placement, align, className = "", ro
       popover={topLayer ? "manual" : undefined}
       role={role}
       aria-label={label}
-      aria-hidden={!open || undefined}
-      inert={!open || undefined}
-      style={{ opacity: 0 }}
+      aria-hidden={!open || suspended || undefined}
+      inert={!open || suspended || undefined}
+      style={{ opacity: 0, visibility: suspended ? "hidden" : undefined }}
     >
       {children}
     </div>

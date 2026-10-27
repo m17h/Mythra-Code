@@ -13,6 +13,11 @@ import type { TranscriptionProvider, TranscriptionSettings } from "../types";
 
 export const TRANSCRIPTION_PROVIDERS: readonly TranscriptionProvider[] = ["openai", "openrouter"];
 export const TRANSCRIPTION_PROVIDER_LABELS: Record<TranscriptionProvider, string> = { openai: "OpenAI", openrouter: "OpenRouter" };
+export type TranscriptionMode = "live" | "recorded";
+/** Only enable transports verified for this exact provider/model pair. */
+export function transcriptionModeFor(provider: TranscriptionProvider, model: string): TranscriptionMode {
+  return provider === "openai" && model.trim() === "gpt-live-transcribe" ? "live" : "recorded";
+}
 export const DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "gpt-transcribe";
 export const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettings = {
   provider: "openai",
