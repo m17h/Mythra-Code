@@ -39,6 +39,7 @@ import { FileBrowser } from "./FileBrowser";
 import { DiffFileSections, DiffText } from "./DiffView";
 import { AppActionMenu, type AppActionMenuItem } from "./AppActionMenu";
 import { GitPanel, type GitPanelAction, type GitPanelDraft, type GitRepositoryState } from "./GitPanel";
+import { commitMessageScope, useCommitMessageStore } from "../lib/commitMessages";
 import type { GitWorkflowControls } from "../lib/gitWorkspace";
 import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../lib/projectGit";
 import type { TerminalPanelProps } from "./TerminalPanel";
@@ -271,6 +272,8 @@ export function StudioDock(props: {
   onCompact: () => void;
   onRefreshTools: () => void;
   onGitAction: (action: GitPanelAction, commitMessage?: string) => void;
+  onRegenerateCommitMessage?: () => void;
+  commitSuggestionBusy?: boolean;
   onInitializeGit: () => void;
   onGitHubAttach: (url: string) => void;
   onGitHubCreate: (name: string, visibility: "private" | "public") => void;
@@ -345,6 +348,25 @@ export function StudioDock(props: {
   const gitDraft = gitDrafts[gitDraftScope] ?? {
     commitMessage: "", remoteInput: "", repositoryName: props.defaultRepositoryName, visibility: "private" as const,
   };
+  const suggestion = useCommitMessageStore((state) => state.suggestions[commitMessageScope(gitDraftScope)]);
+  const snapshot = props.gitWorkflow?.snapshot;
+  const commitSuggestion = suggestion && snapshot && suggestion.context.headOid === snapshot.headOid
+    && suggestion.context.branch === snapshot.branch ? suggestion : undefined;
+  const stagedDraft = (snapshot?.stagedFiles ?? 0) > 0 && gitDraft.commitScope !== "all";
+  useEffect(() => {
+    setGitDrafts((current) => {
+      const draft = current[gitDraftScope] ?? { commitMessage: "", remoteInput: "", repositoryName: props.defaultRepositoryName, visibility: "private" as const };
+      if (draft.commitMessageEdited || draft.commitMessage && !draft.commitMessageSuggestionId) return current;
+      const message = commitSuggestion ? (stagedDraft ? commitSuggestion.stagedMessage : commitSuggestion.message) : undefined;
+      const token = commitSuggestion ? (stagedDraft ? commitSuggestion.context.stagedToken : commitSuggestion.context.changesToken) : undefined;
+      if (!message) {
+        if (!draft.commitMessageSuggestionId) return current;
+        return { ...current, [gitDraftScope]: { ...draft, commitMessage: "", commitMessageSuggestionId: undefined, commitMessageToken: undefined, commitScope: undefined } };
+      }
+      if (draft.commitMessageSuggestionId === commitSuggestion!.id && draft.commitMessageToken === token) return current;
+      return { ...current, [gitDraftScope]: { ...draft, commitMessage: message, commitMessageSuggestionId: commitSuggestion!.id, commitMessageToken: token } };
+    });
+  }, [commitSuggestion, stagedDraft, gitDraftScope, props.defaultRepositoryName]);
   const submittedGitMessages = useRef(new Map<string, { message: string; success: string; revision?: number }>());
   useEffect(() => {
     if (!props.gitCommitSuccess || props.gitCommitBusy) return;
@@ -354,7 +376,7 @@ export function StudioDock(props: {
       : props.gitCommitSuccess === submitted.success)) return;
     submittedGitMessages.current.delete(gitDraftScope);
     setGitDrafts((current) => current[gitDraftScope]?.commitMessage === submitted.message
-      ? { ...current, [gitDraftScope]: { ...current[gitDraftScope], commitMessage: "" } }
+      ? { ...current, [gitDraftScope]: { ...current[gitDraftScope], commitMessage: "", commitMessageEdited: false, commitMessageSuggestionId: undefined, commitMessageToken: undefined, commitScope: undefined } }
       : current);
   }, [gitDraftScope, props.gitCommitSuccess, props.gitCommitSuccessRevision, props.gitCommitBusy]);
   const contextPercent = contextUsagePercent(props.usage);
@@ -788,6 +810,9 @@ export function StudioDock(props: {
             readOnly={props.gitActionsReadOnly}
             defaultRepositoryName={props.defaultRepositoryName}
             draft={gitDraft}
+            commitSuggestion={commitSuggestion}
+            onRegenerateCommitMessage={props.onRegenerateCommitMessage}
+            commitSuggestionBusy={props.commitSuggestionBusy}
             onDraftChange={(draft) => setGitDrafts((current) => ({ ...current, [gitDraftScope]: draft }))}
             onAction={(action, message) => {
               if (["commit", "commitStaged", "commitPush", "commitStagedPush"].includes(action)) submittedGitMessages.current.set(gitDraftScope, { message: message ?? "", success: props.gitCommitSuccess, revision: props.gitCommitSuccessRevision });

@@ -125,7 +125,7 @@ fn checked(
     }
 }
 
-fn repository(read: &GitReadOperation, cwd: &str) -> Result<PathBuf, String> {
+pub(super) fn repository(read: &GitReadOperation, cwd: &str) -> Result<PathBuf, String> {
     let selected = Path::new(cwd)
         .canonicalize()
         .map_err(|error| format!("Could not open the project folder: {error}"))?;

@@ -28,6 +28,7 @@ import {
   type ChildAgentPolicy,
 } from "../lib/childAgents";
 import { childAgentPolicyForSession, childAgentRegistrationForSession, childThreadForBridgeSession, projectTerminalScopeForSession, revokeRootChildAgentRegistration } from "../lib/childAgentSessions";
+import { getCommitMessageContext, queueCommitMessageSuggestion } from "../lib/commitMessages";
 import { ChildAgentStartUncertainError, continueChildAgentTurn, definitelyNotDispatched, startChildAgentTurn } from "../lib/childRun";
 import {
   cancelQueuedForChild,
@@ -3309,6 +3310,39 @@ export function useChildAgents(context: ChildAgentContext): {
     return { saved: true, command: next?.command ?? null, note: "Saved for this project. Nothing was executed." };
   }, []);
 
+  const commitMessageRequest = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
+    const ctx = contextRef.current;
+    const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
+    const scope = projectTerminalScopeForSession(request.sessionId);
+    if (!policy?.rootThreadId || !scope || request.terminalScope !== scope
+      || ctx.links[policy.rootThreadId] || ctx.nativeLinks?.[policy.rootThreadId]) {
+      throw new Error("Commit drafts are available only to the root conversation in its captured project checkout.");
+    }
+    const threadId = policy.rootThreadId;
+    const turnId = useTaskStore.getState().tasks[threadId]?.activeTurnId;
+    const context = await getCommitMessageContext(scope);
+    if (!await isChildAgentRequestActive(request)
+      || projectTerminalScopeForSession(request.sessionId) !== scope
+      || useTaskStore.getState().tasks[threadId]?.activeTurnId !== turnId) {
+      throw new Error("This commit draft request belongs to an older project or model turn.");
+    }
+    if (request.tool === "get_commit_message_context") {
+      // The model passes back only `token`; the panel's scope tokens stay internal.
+      const { stagedToken: _staged, changesToken: _changes, ...visible } = context;
+      return visible;
+    }
+    if (!context.hasChanges) throw new Error("There are no changes to describe. Nothing was saved.");
+    if (request.arguments.token !== context.token) throw new Error("The changes have moved on. Read get_commit_message_context again before suggesting a message.");
+    const message = typeof request.arguments.message === "string" ? request.arguments.message.trim() : "";
+    const stagedMessage = typeof request.arguments.stagedMessage === "string" ? request.arguments.stagedMessage.trim() : undefined;
+    if (!message || message.length > 8000 || message.includes("\0")
+      || context.hasStaged && !stagedMessage || stagedMessage !== undefined && (!stagedMessage || stagedMessage.length > 8000 || stagedMessage.includes("\0"))) {
+      throw new Error("Supply a nonempty message of at most 8000 characters, and a separate stagedMessage when changes are staged.");
+    }
+    queueCommitMessageSuggestion(scope, threadId, { id: request.requestId, context, message, stagedMessage });
+    return { queued: true, note: "The draft will be offered after this turn completes if the changes still match. User edits are preserved; nothing was staged, committed or pushed." };
+  }, []);
+
   const readTerminal = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
     const ctx = contextRef.current;
     const policy = childAgentPolicyForSession(ctx.policies, request.sessionId);
@@ -3373,6 +3407,7 @@ export function useChildAgents(context: ChildAgentContext): {
       else if (request.tool === "propose_agent_settings") result = await proposeSettings(request);
       else if (request.tool === "set_project_run_command") result = await setRunCommand(request);
       else if (request.tool === "set_project_check_command") result = await setCheckCommand(request);
+      else if (request.tool === "get_commit_message_context" || request.tool === "set_commit_message") result = await commitMessageRequest(request);
       else if (request.tool === "read_project_terminal") result = await readTerminal(request);
       else throw new Error(`\`${request.tool}\` is not a sub-agent tool.`);
       await respondToChildAgentRequest(request.requestId, result);
@@ -3397,7 +3432,7 @@ export function useChildAgents(context: ChildAgentContext): {
         schedulePumpRef.current(request.sessionId);
       }
     }
-  }, [acceptFromBridge, cancelChild, childRequestIdentity, collectChild, messageParent, proposeSettings, readParentMessages, readTerminal, reportStatus, sendToChild, setCheckCommand, setRunCommand, spawnChild, updateLink]);
+  }, [acceptFromBridge, cancelChild, childRequestIdentity, collectChild, commitMessageRequest, messageParent, proposeSettings, readParentMessages, readTerminal, reportStatus, sendToChild, setCheckCommand, setRunCommand, spawnChild, updateLink]);
 
   // Tauri events are fire-and-forget. Re-subscribing this listener whenever a
   // child changes state creates a small window with no receiver at all; a tool

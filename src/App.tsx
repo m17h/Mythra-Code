@@ -138,6 +138,7 @@ import { useAppUpdater } from "./lib/appUpdater";
 import { UpdateNotice, useUpdateNoticePreview } from "./components/UpdateNotice";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
 import { forgetQueuedDeliveries, useTurnRunner } from "./hooks/useTurnRunner";
+import { clearCommitMessageSuggestion } from "./lib/commitMessages";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
 import { useThreadHealth } from "./hooks/useThreadHealth";
@@ -8110,9 +8111,10 @@ export default function App() {
         // Staging and committing belong to one native repository transaction.
         // Generic shell commands release ownership between these two steps.
         const commit = await commitGitWorkspace(commandPath, commitMessage, stagedOnly, gitWorkspace.snapshot);
+        clearCommitMessageSuggestion(commandPath);
         const stageOutput = stagedOnly ? "Using the existing staged changes." : `$ ${stageCommand.join(" ")}\n[exit 0]`;
         const commitResultIsVisible = isCurrentProject();
-        setGitCommitSuccess(`“${commitMessage}” was saved to this repository.`);
+        setGitCommitSuccess(`“${commitMessage.split("\n")[0]}” was saved to this repository.`);
         if (!pushAfter) {
           setGitOutput(`${stageOutput}\n\n$ ${commitCommand.join(" ")}\n${commit.stdout}${commit.stderr}\n[exit 0]`);
           if (commitResultIsVisible) { showSuccessToast("Changes committed locally"); void refreshGitHubRepo(commandPath); }
@@ -10011,6 +10013,11 @@ export default function App() {
             onCompact={() => void compactThread()}
             onRefreshTools={() => void refreshTools(activeProject)}
             onGitAction={(action, commitMessage) => void runGitAction(action, commitMessage)}
+            commitSuggestionBusy={running || Boolean(activeProject && projectHasActiveTask(activeExecutionPath || activeProject.path))}
+            onRegenerateCommitMessage={activeThreadId && activeProject && !activeWorkspace?.isChat && !activeThreadIsChild && effectiveSettings.permission !== "read-only" ? () => {
+              if (projectHasActiveTask(activeExecutionPath || activeProject.path)) return;
+              void sendMessage("Refresh the commit-message suggestion for this checkout using get_commit_message_context and set_commit_message. Describe all accumulated uncommitted changes, including earlier work. Include a separate stagedMessage if there are staged changes. Inspect the changes as needed, but do not modify files, stage, commit or push. Finish with a brief confirmation.", { useComposerAttachments: false, resolveSkillMentions: false });
+            } : undefined}
             onInitializeGit={() => void initializeActiveProjectGit()}
             onGitHubAttach={(url) => void attachActiveGitHubRemote(url)}
             onGitHubCreate={(name, visibility) => void createActiveGitHubRepository(name, visibility)}

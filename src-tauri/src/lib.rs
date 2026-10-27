@@ -39,6 +39,7 @@ mod close_guard;
 mod cursor;
 mod file_preview;
 mod git_inspection;
+mod commit_message;
 mod git_publish;
 mod git_workspace;
 mod github;
@@ -9817,6 +9818,7 @@ pub fn run() {
                     git_workspace_snapshot,
                     git_project_changes,
                     git_project_diff,
+                    commit_message::git_commit_message_context,
                     git_project_file_diff,
                     git_project_history,
                     git_workspace_stage,

@@ -10,7 +10,7 @@ import type { PermissionMode, Provider, SubagentModelGuidance } from "../types";
  * launch descriptor is only an executable path plus a session-file path.
  */
 
-export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "send_agent_message" | "accept_agent" | "message_parent" | "read_parent_messages" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "read_project_terminal" | "language_tools_status" | "install_language_tool" | "language_tool_query";
+export type ChildAgentTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent" | "send_agent_message" | "accept_agent" | "message_parent" | "read_parent_messages" | "propose_agent_settings" | "set_project_run_command" | "set_project_check_command" | "read_project_terminal" | "get_commit_message_context" | "set_commit_message" | "language_tools_status" | "install_language_tool" | "language_tool_query";
 
 export interface ProjectBridgeContext {
   projectPath?: string;

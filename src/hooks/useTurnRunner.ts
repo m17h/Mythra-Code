@@ -1158,6 +1158,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // its current command) only when this thread's bridge can change it.
       const runButton = {
         toolAvailable: Boolean(childBridge?.launch.toolNames.includes(RUN_COMMAND_TOOL)),
+        commitMessageToolAvailable: Boolean(childBridge?.launch.toolNames.includes("set_commit_message")),
         run: activeProject?.overrides?.run ?? null,
       };
       const checkButton = {
