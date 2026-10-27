@@ -25,6 +25,15 @@
 
 .git-inspect-row { align-items: center; }
 .git-commit-secondary { width: 100%; }
+.git-commit-message { display: block; box-sizing: border-box; width: 100%; min-height: 54px; max-height: 220px; overflow-y: auto; resize: none; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: var(--fs-meta)/1.55 var(--font-mono); }
+.git-commit-message:focus { border-color: var(--green-line); }
+.git-commit-message::placeholder { color: var(--muted-2); }
+.git-commit-draft-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.git-commit-draft-actions > button { font-size: var(--fs-meta); }
+.git-commit-scope { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); }
+.git-commit-scope > button { flex: 1; min-width: 0; padding: 6px; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.git-commit-scope > button[aria-pressed="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); }
+.git-commit-scope > button:disabled { opacity: .5; cursor: default; }
 /* Nothing to commit or push is a settled state, not a blocked action: neutral
    gray at full legibility instead of the faded action color. */
 .git-commit-button.git-commit-empty:disabled,

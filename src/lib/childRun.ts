@@ -622,7 +622,7 @@ export async function continueChildAgentTurn(prompt: string, context: ChildFollo
   assertCanStart();
   const launch = bridge?.launch;
   if (!launch?.toolNames.includes("message_parent") || !launch.toolNames.includes("read_parent_messages")
-    || launch.toolNames.some((name) => ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent", "send_agent_message", "accept_agent", "propose_agent_settings", "set_project_run_command", "set_project_check_command", "read_project_terminal"].includes(name))) {
+    || launch.toolNames.some((name) => ["spawn_mythra_agent", "agent_status", "collect_agent", "cancel_agent", "send_agent_message", "accept_agent", "propose_agent_settings", "set_project_run_command", "set_project_check_command", "read_project_terminal", "get_commit_message_context", "set_commit_message"].includes(name))) {
     throw new Error("This sub-agent's parent messaging bridge is unavailable or has the wrong authority.");
   }
   const messaging = Boolean(launch?.toolNames.includes("message_parent"));

@@ -94,6 +94,7 @@ export interface ThreadStartOptions {
 function runButtonContext(options: Pick<ThreadStartOptions, "childAgentBridge" | "projectRunCommand">): RunButtonPromptContext {
   return {
     toolAvailable: Boolean(options.childAgentBridge?.toolNames.includes(RUN_COMMAND_TOOL)),
+    commitMessageToolAvailable: Boolean(options.childAgentBridge?.toolNames.includes("set_commit_message")),
     run: options.projectRunCommand ?? null,
   };
 }

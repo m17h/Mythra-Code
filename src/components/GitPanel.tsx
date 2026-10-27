@@ -1,6 +1,6 @@
 import "./git-workflow.css";
 import "./thread-pull-requests.css";
-import { lazy, memo, Suspense, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   CheckCircle2,
@@ -37,6 +37,7 @@ import type { StudioTab } from "../lib/studioTabs";
 import { commitPlan, fileCount, relativeAge, type CommitPlan } from "../lib/gitChanges";
 import { useProjectGitChanges } from "../hooks/useProjectGitChanges";
 import { useProjectGitHistory } from "../hooks/useProjectGitHistory";
+import { getCommitMessageContext, type CommitMessageSuggestion } from "../lib/commitMessages";
 
 // Pull requests load their own code the first time the view opens.
 const ProjectPullRequestsView = lazy(() => import("./ProjectPullRequestsView"));
@@ -57,6 +58,10 @@ export type GitPanelAction =
 
 export interface GitPanelDraft {
   commitMessage: string;
+  commitMessageEdited?: boolean;
+  commitMessageSuggestionId?: string;
+  commitMessageToken?: string;
+  commitScope?: "staged" | "all";
   remoteInput: string;
   repositoryName: string;
   visibility: "private" | "public";
@@ -82,6 +87,9 @@ export interface GitPanelProps {
   /** The dock can retain per-checkout drafts when this tab closes. */
   draft?: GitPanelDraft;
   onDraftChange?: (draft: GitPanelDraft) => void;
+  commitSuggestion?: CommitMessageSuggestion;
+  onRegenerateCommitMessage?: () => void;
+  commitSuggestionBusy?: boolean;
   /**
    * True when the app supplies a pull request workflow. Only "Draft PR" and
    * "CI checks" retire then; "Review comments" stays, because nothing else in
@@ -191,12 +199,44 @@ function GitPanelInner(props: GitPanelProps) {
     onDraftChange?.(next);
   }, [onDraftChange]);
   const updateDraft = (patch: Partial<GitPanelDraft>) => setDraft({ ...draft, ...patch });
+  const messageRef = useRef<HTMLTextAreaElement>(null);
+  const [preparingCommit, setPreparingCommit] = useState(false);
+  const preparingCommitRef = useRef(false);
+  const [commitDraftNotice, setCommitDraftNotice] = useState("");
+  const currentCommitContext = { folder: props.selectedFolder, draft, branch: props.workflow?.snapshot?.branch, head: props.workflow?.snapshot?.headOid,
+    blocked: props.readOnly || props.gitCommitBusy || props.gitOperationBusy || props.githubBusy || props.gitInitializing || props.workflow?.busy };
+  const commitContextRef = useRef(currentCommitContext);
+  commitContextRef.current = currentCommitContext;
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const [localView, setLocalView] = useState<GitView>("changes");
+  const view = props.view ?? localView;
+  // Grow with the message up to the CSS cap, then scroll. Width changes only
+  // matter for wrapping, so the observer ignores the height this sets.
+  const resizeMessage = useCallback(() => {
+    const node = messageRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(220, Math.max(54, node.scrollHeight + node.offsetHeight - node.clientHeight))}px`;
+  }, []);
+  useLayoutEffect(resizeMessage, [commitMessage, resizeMessage]);
+  useLayoutEffect(() => {
+    const node = messageRef.current;
+    if (!node) return;
+    let width = node.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      resizeMessage();
+    });
+    observer.observe(node);
+    resizeMessage();
+    return () => observer.disconnect();
+  }, [view, props.repositoryState, resizeMessage]);
   const [branchDraft, setBranchDraft] = useState("");
   const [creatingBranch, setCreatingBranch] = useState(false);
   const [showGitHub, setShowGitHub] = useState(false);
   const [publishAction, setPublishAction] = useState<"attach" | "create" | null>(null);
-  const [localView, setLocalView] = useState<GitView>("changes");
-  const view = props.view ?? localView;
   const setView = (next: GitView) => { setLocalView(next); props.onViewChange?.(next); };
   const submittedMessage = useRef<{ message: string; previousSuccess: string; previousRevision?: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -219,7 +259,7 @@ function GitPanelInner(props: GitPanelProps) {
       : props.gitCommitSuccessRevision > (submitted.previousRevision ?? 0);
     if (props.gitCommitBusy || !confirmed) return;
     submittedMessage.current = null;
-    if (draft.commitMessage === submitted.message) setDraft({ ...draft, commitMessage: "" });
+    if (draft.commitMessage === submitted.message) setDraft({ ...draft, commitMessage: "", commitMessageEdited: false, commitMessageSuggestionId: undefined, commitMessageToken: undefined, commitScope: undefined });
   }, [success, props.gitCommitSuccessRevision, props.gitCommitBusy, draft, setDraft]);
 
   const absent = props.repositoryState === "absent";
@@ -238,8 +278,8 @@ function GitPanelInner(props: GitPanelProps) {
     : outsideRepositoryRoot ? rootRequiredReason : "Initialize Git for this project before changing it.";
 
   const workflowBusy = !!workflow?.busy;
-  const commitProgress = props.gitCommitBusy || !!props.gitOperationBusy;
-  const mutationBusy = workflowBusy || props.gitCommitBusy || !!props.gitOperationBusy || !!props.githubBusy || props.gitInitializing;
+  const commitProgress = preparingCommit || props.gitCommitBusy || !!props.gitOperationBusy;
+  const mutationBusy = preparingCommit || workflowBusy || props.gitCommitBusy || !!props.gitOperationBusy || !!props.githubBusy || props.gitInitializing;
   const mutationDisabled = localDisabled || mutationBusy;
   const mutationDisabledReason = localDisabled ? localDisabledReason : "Wait for the current Git operation to finish.";
   const repository = props.githubRepoStatus?.repository;
@@ -275,6 +315,8 @@ function GitPanelInner(props: GitPanelProps) {
   const nothingToCommit = readiness !== "dirty";
   // A settled clean snapshot outranks staged rows the older list still shows.
   const hasStaged = !nothingToCommit && staged > 0;
+  const commitStaged = hasStaged && draft.commitScope !== "all";
+  const suggestedMessage = commitStaged ? props.commitSuggestion?.stagedMessage : props.commitSuggestion?.message;
   const nothingToPush = !!snapshot && !workflow?.readError && (!snapshot.headOid || (!!upstream && upstreamRemote === "origin" && ahead === 0));
 
   // Route requests move focus only. A palette entry named "Push" lands on the
@@ -365,10 +407,48 @@ function GitPanelInner(props: GitPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusRequest?.nonce]);
 
-  const commit = (action: "commit" | "commitStaged" | "commitPush" | "commitStagedPush") => {
-    if (mutationDisabled) return;
-    submittedMessage.current = { message: commitMessage, previousSuccess: props.gitCommitSuccess, previousRevision: props.gitCommitSuccessRevision };
-    props.onAction(action, commitMessage);
+  const commit = async (action: "commit" | "commitStaged" | "commitPush" | "commitStagedPush") => {
+    if (mutationDisabled || preparingCommitRef.current) return;
+    const stagedOnly = action === "commitStaged" || action === "commitStagedPush";
+    const captured = commitContextRef.current;
+    const suggestion = props.commitSuggestion;
+    let message = commitMessage;
+    if (!draft.commitMessageEdited && draft.commitMessageSuggestionId) {
+      if (!suggestion || !props.selectedFolder) return;
+      preparingCommitRef.current = true;
+      setPreparingCommit(true);
+      setCommitDraftNotice("");
+      try {
+        const context = await getCommitMessageContext(props.selectedFolder);
+        const latest = commitContextRef.current;
+        if (!mountedRef.current || latest.blocked || latest.folder !== captured.folder || latest.branch !== captured.branch
+          || latest.head !== captured.head || latest.draft !== captured.draft) return;
+        const expected = stagedOnly ? suggestion.context.stagedToken : suggestion.context.changesToken;
+        if ((stagedOnly ? context.stagedToken : context.changesToken) !== expected) {
+          setCommitDraftNotice("The changes have moved on since this suggestion. Regenerate it or edit the message before committing.");
+          return;
+        }
+        // Commit exactly the draft the user reviewed, even while a newer
+        // suggestion is waiting for React to apply it to the field.
+        const expectedMessage = stagedOnly ? suggestion.stagedMessage ?? "" : suggestion.message;
+        if (message !== expectedMessage || draft.commitMessageToken !== expected) {
+          setCommitDraftNotice("The suggestion is updating. Review the message and try again.");
+          return;
+        }
+        if (!message) {
+          setCommitDraftNotice("There is no suggestion for these staged changes. Regenerate it or write a message.");
+          return;
+        }
+      } catch {
+        setCommitDraftNotice("Could not confirm the changes for this suggestion. Try again or edit the message yourself.");
+        return;
+      } finally {
+        preparingCommitRef.current = false;
+        setPreparingCommit(false);
+      }
+    }
+    submittedMessage.current = { message, previousSuccess: props.gitCommitSuccess, previousRevision: props.gitCommitSuccessRevision };
+    props.onAction(action, message);
   };
 
   const changeBranch = async (name: string, create: boolean) => {
@@ -518,7 +598,7 @@ function GitPanelInner(props: GitPanelProps) {
         event.preventDefault();
         // Enter in the message field must not attempt an empty commit.
         if (nothingToCommit) return;
-        commit(hasStaged ? "commitStaged" : "commit");
+        void commit(commitStaged ? "commitStaged" : "commit");
       }}
     >
       <div className="git-commit-heading">
@@ -527,7 +607,7 @@ function GitPanelInner(props: GitPanelProps) {
           <strong>Commit changes locally</strong>
           <small>{nothingToCommit
             ? `The working folder matches the last commit.${repository && (readiness === "push" || readiness === "push-unknown") ? " Saved commits can still be pushed." : ""}`
-            : hasStaged
+            : commitStaged
               ? `${fileCount(staged)} staged${plan.heldBack ? `; newer edits to ${plan.heldBack} of them stay out` : ""}. ${autoPublish?.enabled ? "Saved locally, then pushed by automatic publishing." : "Saved to this repository only — nothing is pushed."}`
               : `Stages all current changes and saves them to this repository. ${autoPublish?.enabled ? "Automatic publishing will push the commit." : "Nothing is pushed."}`}</small>
         </div>
@@ -538,26 +618,39 @@ function GitPanelInner(props: GitPanelProps) {
           <div><strong>Committed successfully</strong><small>{props.gitCommitSuccess}</small></div>
         </div>
       )}
-      <label className="dock-field"><span>Commit message <em>Optional</em></span><input value={commitMessage} onChange={(event) => updateDraft({ commitMessage: event.target.value })} placeholder="Update project files" data-git-focus="commit" /></label>
+      {hasStaged && <div className="git-commit-scope" role="group" aria-label="Changes to commit">
+        <button type="button" aria-pressed={commitStaged} disabled={mutationBusy} onClick={() => updateDraft({ commitScope: "staged" })}>Staged changes ({staged})</button>
+        <button type="button" aria-pressed={!commitStaged} disabled={mutationBusy} onClick={() => updateDraft({ commitScope: "all" })}>All changes{changed ? ` (${changed})` : ""}</button>
+      </div>}
+      <label className="dock-field"><span>Commit message <em>{draft.commitMessageSuggestionId && !draft.commitMessageEdited ? "Suggested" : "Optional"}</em></span><textarea ref={messageRef} className="git-commit-message" rows={2} maxLength={8000} value={commitMessage} readOnly={commitProgress} onChange={(event) => {
+        setCommitDraftNotice("");
+        updateDraft({ commitMessage: event.target.value, commitMessageEdited: true });
+      }} onKeyDown={(event) => {
+        // Enter adds a body line; the modifier keeps the old keyboard commit.
+        if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        event.currentTarget.form?.requestSubmit();
+      }} placeholder={"Summarize these changes\n\nAdd details if needed"} data-git-focus="commit" /></label>
+      {(suggestedMessage || props.onRegenerateCommitMessage) && !nothingToCommit && <div className="git-commit-draft-actions">
+        {props.onRegenerateCommitMessage && <button type="button" className="github-secondary-button" disabled={mutationBusy || props.commitSuggestionBusy} onClick={props.onRegenerateCommitMessage}><RefreshCw size={12} /> Regenerate</button>}
+        {suggestedMessage && draft.commitMessageEdited && <button type="button" className="github-secondary-button" disabled={mutationBusy} onClick={() => {
+          const suggestion = props.commitSuggestion!;
+          updateDraft({ commitMessage: suggestedMessage, commitMessageEdited: false, commitMessageSuggestionId: suggestion.id, commitMessageToken: commitStaged ? suggestion.context.stagedToken : suggestion.context.changesToken });
+          setCommitDraftNotice("");
+        }}>Use suggestion</button>}
+      </div>}
+      {props.commitSuggestionBusy && !nothingToCommit && <p className="git-fineprint">The agent can refresh the suggestion when it finishes.</p>}
+      {commitDraftNotice && <p className="git-local-note bad" role="status">{commitDraftNotice}</p>}
       {commitProgress ? (
         <button className="git-commit-button" type="button" disabled>
           <LoaderCircle className="spin" size={16} />
           {props.gitCommitBusy ? "Committing…" : "Working…"}
         </button>
-      ) : hasStaged ? (
-        <>
+      ) : commitStaged ? (
           <button className="git-commit-button" type="submit" disabled={mutationDisabled} title={mutationDisabled ? mutationDisabledReason : `Commit the ${fileCount(staged)} you staged`}>
             <GitCommitHorizontal size={16} />
             {`Commit staged (${staged})`}
           </button>
-          <button
-            type="button"
-            className="github-secondary-button git-commit-secondary"
-            onClick={() => commit("commit")}
-            disabled={mutationDisabled}
-            title={mutationDisabled ? mutationDisabledReason : "Stage and commit every current change"}
-          ><GitCommitHorizontal size={13} /> Commit all changes{changed ? ` (${changed})` : ""}</button>
-        </>
       ) : nothingToCommit ? (
         <button className="git-commit-button git-commit-empty" type="submit" disabled title={mutationDisabled ? mutationDisabledReason : "Nothing to commit: no staged, unstaged or new files."}>
           <GitCommitHorizontal size={16} />
@@ -600,13 +693,13 @@ function GitPanelInner(props: GitPanelProps) {
           className="github-secondary-button git-commit-secondary"
           // The same message the person is looking at: the button once
           // committed under a default message while their text sat above it.
-          onClick={() => commit(hasStaged ? "commitStagedPush" : "commitPush")}
+          onClick={() => void commit(commitStaged ? "commitStagedPush" : "commitPush")}
           disabled={mutationDisabled || !branch}
           title={mutationDisabled
             ? mutationDisabledReason
             : !branch
               ? "Check out a named branch before pushing"
-              : `Commit${hasStaged ? " the staged files" : " every current change"} and push it to ${repository}`}
+              : `Commit${commitStaged ? " the staged files" : " every current change"} and push it to ${repository}`}
         ><Upload size={13} /> Commit &amp; push</button>
       )}
       {!commitProgress && !nothingToCommit && <CommitIncludes plan={plan} />}

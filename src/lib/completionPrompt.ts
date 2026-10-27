@@ -77,6 +77,7 @@ export const MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS = [
 export interface RunButtonPromptContext {
   toolAvailable: boolean;
   run: ProjectRunCommand | null | undefined;
+  commitMessageToolAvailable?: boolean;
 }
 
 export interface CheckButtonPromptContext {
@@ -92,6 +93,7 @@ export function mythraCodeDeveloperInstructions(delegationEnabled = false, setti
     if (collaborationV2) sections.push(MYTHRA_CODE_COLLABORATION_INSTRUCTIONS);
   } else if (settingsProposalsEnabled) sections.push(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
+  if (runButton?.commitMessageToolAvailable) sections.push("After finishing file changes in this local Git project, call get_commit_message_context, inspect all accumulated changes (including earlier uncommitted work, staged changes and relevant new files), then call set_commit_message before your final response. Supply a concise imperative title with an optional blank line and body. Include stagedMessage for only the staged diff when hasStaged is true. Never stage, commit or push just to draft text. Skip if nothing changed or there is no Git repository, and never let a draft failure prevent your final response.");
   if (checkButton?.toolAvailable) sections.push(checkButtonInstructions(checkButton.check));
   return sections.join("\n\n");
 }
