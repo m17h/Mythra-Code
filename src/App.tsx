@@ -685,15 +685,18 @@ function ThreadRenameInput({ initial, onCommit, onCancel }: { initial: string; o
 // Memoized: the app shell re-renders for many unrelated reasons (usage,
 // Git status, sidebar input); the transcript re-renders only for its own
 // props and store slices.
-const ConversationTimeline = memo(function ConversationTimeline({ Timeline, threadId, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: ChatTimelineView; threadId: string; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
-  const messages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
+const ConversationTimeline = memo(function ConversationTimeline({ Timeline, threadId, pendingMessage, running, thinkingLabel, approval, provider, searchQuery, searchActiveMatch, onSearchMatches, onEditMessage, onApprovalRespond, onLoadEarlier, skills, onOpenSkill }: { Timeline: ChatTimelineView; threadId: string; pendingMessage?: ChatMessage; running: boolean; thinkingLabel: string; approval: PendingApproval | null; provider: AppSettings["provider"]; searchQuery?: string; searchActiveMatch?: number; onSearchMatches?: (count: number) => void; onEditMessage: (text: string) => void; onApprovalRespond: (approval: PendingApproval, result: JsonObject) => void | Promise<void>; onLoadEarlier: () => void; skills: LocalSkill[]; onOpenSkill: (path: string) => void }) {
+  const storedMessages = useTaskStore((state) => state.tasks[threadId]?.messages ?? EMPTY_MESSAGES);
+  const preview = pendingMessage && !storedMessages.some((message) => message.id === pendingMessage.id || message.clientMessageId === pendingMessage.id)
+    ? pendingMessage : undefined;
+  const messages = useMemo(() => preview ? [...storedMessages, preview] : storedMessages, [storedMessages, preview]);
   const activities = useTaskStore((state) => state.tasks[threadId]?.activities ?? EMPTY_ACTIVITIES);
   const history = useTaskStore((state) => state.tasks[threadId]?.history);
   const activeTurnId = useTaskStore((state) => state.tasks[threadId]?.activeTurnId);
   useLayoutEffect(() => { chatTimelineCommitted = true; }, []);
   // A thread change must create a fresh virtual scroller so its initial
   // position is applied to the newly selected conversation.
-  return <Timeline key={threadId} messages={messages} activities={activities} running={running} activeTurnId={activeTurnId} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
+  return <Timeline key={threadId} messages={messages} activities={activities} submittedPromptId={pendingMessage?.id} running={running} activeTurnId={preview && !preview.turnId ? undefined : activeTurnId} thinkingLabel={thinkingLabel} approval={approval} provider={provider} history={history} onLoadEarlier={onLoadEarlier} searchQuery={searchQuery} searchActiveMatch={searchActiveMatch} onSearchMatches={onSearchMatches} onEditMessage={onEditMessage} onApprovalRespond={onApprovalRespond} skills={skills} onOpenSkill={onOpenSkill} />;
 });
 
 export default function App() {
@@ -6026,7 +6029,7 @@ export default function App() {
     },
   });
   const {
-    pendingFirstPrompts, beginFirstPrompt, finishFirstPrompt, getSubagentPreparationLockedReason,
+    pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt, getSubagentPreparationLockedReason,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
@@ -6124,6 +6127,8 @@ export default function App() {
       assertCanStart();
     },
     isThreadArchiving: (id) => archivingThreadIdsRef.current.has(id),
+    isThreadUnavailable: (id) => deletedThreadIdsRef.current.has(id)
+      || archivedThreadsRef.current.some((record) => record.id === id),
     onThreadCreated: handleThreadCreated,
     prepareNewThreadGit,
     persistThreadModel,
@@ -6171,6 +6176,13 @@ export default function App() {
   }, [persistSettings]);
 
   const visiblePendingFirstPrompt = pendingFirstPromptForView(pendingFirstPrompts, activeThreadId, activeWorkspace?.path, selectedFirstPrompt?.id);
+  const visiblePendingThreadPrompt = activeThreadId ? pendingThreadPrompts[activeThreadId] : undefined;
+  const visibleStartingPrompt = visiblePendingFirstPrompt ?? (visiblePendingThreadPrompt ? {
+    id: visiblePendingThreadPrompt.id, threadId: activeThreadId ?? undefined,
+    workspacePath: activeWorkspace?.path ?? "", text: visiblePendingThreadPrompt.text,
+    provider: activeProvider, model: effectiveSettings.model, isolated: Boolean(activeThreadWorktree),
+    attachmentNames: visiblePendingThreadPrompt.attachments?.map((attachment) => attachment.name), status: "starting" as const,
+  } : undefined);
   const workspacePendingFirstPrompts = pendingFirstPrompts.filter((prompt) => !prompt.threadId
     && prompt.workspacePath === activeWorkspacePathRef.current);
   // An empty search matches everything; skip lowercasing every draft and note.
@@ -6222,7 +6234,7 @@ export default function App() {
   });
   // A cold timeline chunk can outlive turn/start. Keep the accepted message
   // visible during that load even after the transient send owner has settled.
-  const firstPromptLoadingFallback = visiblePendingFirstPrompt ?? (loadingFirstUserMessage ? {
+  const firstPromptLoadingFallback = visibleStartingPrompt ?? (loadingFirstUserMessage ? {
     id: loadingFirstUserMessage.id, workspacePath: activeWorkspace?.path ?? "", threadId: activeThreadId ?? undefined,
     text: loadingFirstUserMessage.text, status: "starting" as const,
     provider: activeProvider, model: effectiveSettings.model, isolated: Boolean(activeThreadWorktree),
@@ -7817,26 +7829,49 @@ export default function App() {
     // this source separately through the durable queue and provider resolver.
     const skillInvocationText = notes.length ? feedbackSkillInvocationText(text, notes) : undefined;
     const firstPromptAttemptId = mode === "sendMessage" ? beginFirstPrompt(prompt) : undefined;
+    const prepareAttachments = async (ownedByRunner = false) => {
+      await attachmentPreparations.wait(attachmentKey);
+      // A first send owns its captured draft through navigation, as does a
+      // turn the runner already acknowledged and bound to its thread. Other
+      // deliveries read the live context, so they reject a changed selection.
+      const selectionChanged = attachmentKeyRef.current !== attachmentKey;
+      if (!firstPromptAttemptId && (ownedByRunner
+        ? !selectionChanged && feedbackScopeRef.current !== feedbackScope
+        : selectionChanged || feedbackScopeRef.current !== feedbackScope)) return null;
+      return attachmentsFor(attachmentsByKeyRef.current, attachmentKey);
+    };
     try {
+      const state = useTaskStore.getState();
+      const task = activeThreadId ? state.tasks[activeThreadId] : undefined;
+      const startsTurn = mode === "sendMessage" && (Boolean(firstPromptAttemptId) || (activeThreadId && !running
+        && task?.status !== "starting" && task?.status !== "running" && !state.workflowOwners[activeThreadId]
+        && !hasEligibleQueuedTurns(task?.queuedTurns ?? [])));
+      if (startsTurn) {
+        // The runner shows the prompt and registers Stop before image copies
+        // finish. It still waits for those copies before dispatching anything.
+        const accepted = await attachmentDeliveryRef.current.sendMessage(prompt, {
+          skillInvocationText, firstPromptAttemptId, prepareAttachments: () => prepareAttachments(true),
+        });
+        if (accepted) feedback.removeNotes(notes);
+        return accepted;
+      }
+      let prepared: AttachmentRecord[] | null;
       try {
-        await attachmentPreparations.wait(attachmentKey);
+        prepared = await prepareAttachments();
       } catch (reason) {
         setError(friendlyError(reason));
         return false;
       }
-      // First sends keep their captured draft and settings through navigation;
-      // use its completed attachment copies without reading the new draft.
-      // Existing-thread sends retain their selection check.
-      if (!firstPromptAttemptId && (attachmentKeyRef.current !== attachmentKey || feedbackScopeRef.current !== feedbackScope)) return false;
-      const accepted = await attachmentDeliveryRef.current[mode](prompt, { skillInvocationText, firstPromptAttemptId,
-        ...(firstPromptAttemptId ? { attachments: attachmentsFor(attachmentsByKeyRef.current, attachmentKey) } : {}),
-      });
+      if (!prepared) return false;
+      const accepted = mode === "sendMessage"
+        ? await attachmentDeliveryRef.current.sendMessage(prompt, { skillInvocationText, firstPromptAttemptId, attachments: prepared })
+        : await attachmentDeliveryRef.current.steerMessage(prompt, { skillInvocationText });
       if (accepted) feedback.removeNotes(notes);
       return accepted;
     } finally {
       finishFirstPrompt(firstPromptAttemptId);
     }
-  }, [attachmentKey, attachmentPreparations, beginFirstPrompt, feedback, feedbackScope, finishFirstPrompt]);
+  }, [activeThreadId, attachmentKey, attachmentPreparations, beginFirstPrompt, feedback, feedbackScope, finishFirstPrompt, running]);
 
   // Scheduling persists the prompt and its attachments now, so it waits for
   // durable attachment copies exactly like Send does.
@@ -9557,8 +9592,8 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {visiblePendingFirstPrompt && timelineEmpty ? (
-                <PendingFirstPrompt prompt={visiblePendingFirstPrompt} />
+              {visibleStartingPrompt && timelineEmpty ? (
+                <PendingFirstPrompt prompt={visibleStartingPrompt} />
               ) : timelineEmpty || !activeThreadId ? (
                 <div className="thread-empty-state">
                   {pendingHandoffForWorkspace && (
@@ -9657,14 +9692,14 @@ export default function App() {
                   <Suspense
                     fallback={
                       firstPromptLoadingFallback
-                        ? <PendingFirstPrompt prompt={firstPromptLoadingFallback} accepted={!visiblePendingFirstPrompt} activityStatus={visiblePendingFirstPrompt?.status ?? (taskStatus === "starting" ? "starting" : taskStatus === "running" ? "working" : null)} /> :
+                        ? <PendingFirstPrompt prompt={firstPromptLoadingFallback} accepted={!visibleStartingPrompt} activityStatus={visiblePendingFirstPrompt?.status ?? (taskStatus === "starting" ? "starting" : taskStatus === "running" ? "working" : null)} /> :
                       <div className="timeline-loading">
                         <LoaderCircle className="spin" size={15} /> Loading conversation…
                       </div>
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} historyWorkers={historicalSubAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker} onAccept={acceptSubAgentWorker}>
-                    <AgentQuestionDelivery value={agentQuestionDelivery}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
+                    <AgentQuestionDelivery value={agentQuestionDelivery}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} pendingMessage={visiblePendingThreadPrompt} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>

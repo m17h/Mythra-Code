@@ -1443,6 +1443,8 @@ function FlowTimeline({
   provider,
   reveal,
   searchQuery,
+  searchActiveMatch,
+  submittedPromptId,
 }: {
   activeEntryIndex: number;
   activity: ActivityRowControls;
@@ -1457,6 +1459,8 @@ function FlowTimeline({
   onEditMessage?: (text: string) => void;
   provider: Provider;
   searchQuery?: string;
+  searchActiveMatch?: number;
+  submittedPromptId?: string;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const revealPendingRef = useRef<string | null>(null);
@@ -1464,6 +1468,7 @@ function FlowTimeline({
   const contentRef = useRef<HTMLDivElement>(null);
   const followingEndRef = useRef(true);
   const searchWasActiveRef = useRef(false);
+  const submittedSearchRef = useRef<{ query: string; match: number } | null>(null);
   const smoothScrollPendingRef = useRef(false);
   const pointerNavigationPendingRef = useRef(false);
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
@@ -1477,8 +1482,8 @@ function FlowTimeline({
   const [windowAnnouncement, setWindowAnnouncement] = useState("");
   // A completed answer arrives below a reader who may be following the live
   // status. Completion pauses following exactly where they are ("pinned"):
-  // nothing they can see moves, and only their own navigation or Latest
-  // resumes following.
+  // nothing they can see moves. Their next send, navigation or Latest resumes
+  // following; background queued turns never force them away from reading.
   const handledArrivalsRef = useRef(arrivals);
   const committedHiddenPrefixRef = useRef<number | null>(null);
   const completionPinnedRef = useRef(false);
@@ -1586,6 +1591,30 @@ function FlowTimeline({
     }
     if (followingEndRef.current && !smoothScrollPendingRef.current) scrollToLatest();
   }, [arrivals, completing, entries, firstEntryKey, hiddenPrefixCount, history?.loading, scrollToLatest]);
+
+  const revealedSubmissionRef = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!submittedPromptId || revealedSubmissionRef.current === submittedPromptId) return;
+    revealedSubmissionRef.current = submittedPromptId;
+    // Explicit Send is a new reading destination, even if the previous answer
+    // paused following or an older-history request is still settling.
+    prependAnchorRef.current = null;
+    restoringPrependScrollRef.current = false;
+    restoredPrependScrollPendingRef.current = false;
+    restoredPrependScrollTopRef.current = null;
+    restoredPrependScrollUserIntentRef.current = false;
+    revealPendingRef.current = null;
+    revealFocusRef.current?.();
+    // Keep the current search highlighted, but its older destination must not
+    // reclaim the viewport as the new run changes row indices. The next
+    // explicit query or result navigation can reveal it again.
+    submittedSearchRef.current = { query: searchQuery?.trim() ?? "", match: searchActiveMatch ?? 0 };
+    smoothScrollPendingRef.current = false;
+    releaseCompletion();
+    setAnchoring(false);
+    setHiddenPrefixOverride(null);
+    scrollToLatest();
+  }, [submittedPromptId, releaseCompletion, scrollToLatest, searchActiveMatch, searchQuery]);
 
   const revealEarlier = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1747,6 +1776,10 @@ function FlowTimeline({
   }, []);
 
   useEffect(() => {
+    const submittedSearch = submittedSearchRef.current;
+    if (submittedSearch && submittedSearch.query === (searchQuery?.trim() ?? "")
+      && submittedSearch.match === (searchActiveMatch ?? 0)) return;
+    submittedSearchRef.current = null;
     if (activeEntryIndex >= 0) {
       searchWasActiveRef.current = true;
       releaseCompletion();
@@ -1765,7 +1798,7 @@ function FlowTimeline({
       setHiddenPrefixOverride(null);
       setShowScrollToLatest(false);
     }
-  }, [activeEntryIndex, releaseCompletion]);
+  }, [activeEntryIndex, releaseCompletion, searchActiveMatch, searchQuery]);
 
   return (
     <div className="timeline-shell" data-scroll-mode={followingEndRef.current ? "following-end" : "free-scrolling"}>
@@ -1963,6 +1996,7 @@ export function ChatTimeline({
   onApprovalRespond,
   skills = NO_SKILLS,
   onOpenSkill,
+  submittedPromptId,
 }: {
   messages: ChatMessage[];
   activities: Activity[];
@@ -1982,6 +2016,8 @@ export function ChatTimeline({
   onApprovalRespond?: (approval: PendingApproval, result: JsonObject) => void | Promise<void>;
   skills?: LocalSkill[];
   onOpenSkill?: (path: string) => void;
+  /** A foreground send, never a restored history row or queued delivery. */
+  submittedPromptId?: string;
 }) {
   const skillNavigation = useMemo(() => ({ skills, onOpenSkill }), [skills, onOpenSkill]);
   const storeAwaiting = useTaskStore((state) => {
@@ -2205,6 +2241,7 @@ export function ChatTimeline({
       activity={activityControls}
       entries={entries}
       arrivals={arrivals}
+      submittedPromptId={submittedPromptId}
       reveal={reveal}
       liveSubAgentSummary={liveSubAgentSummary}
       history={history}
@@ -2213,6 +2250,7 @@ export function ChatTimeline({
       onEditMessage={onEditMessage}
       provider={provider}
       searchQuery={searchQuery}
+      searchActiveMatch={searchActiveMatch}
     />
     {selection && details && <>
       <span ref={anchorRef} hidden />
