@@ -38,8 +38,8 @@ function namedModelArtwork(id: string) {
   if (known) return known;
   // Runtime model IDs carry the family after a numeric GPT version. Match
   // complete IDs, including future variants, without borrowing artwork for
-  // unrelated names that happen to contain "sol" or "luna".
-  const family = /^gpt-\d+(?:\.\d+)*-(sol|luna)(?:-[a-z0-9]+)*$/.exec(id)?.[1];
+  // unrelated names that happen to contain a family name.
+  const family = /^gpt-\d+(?:\.\d+)*-(sol|terra|luna)(?:-[a-z0-9]+)*$/.exec(id)?.[1];
   return family ? OPENAI_MODELS.find((entry) => entry.kind === family) : undefined;
 }
 
