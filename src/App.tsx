@@ -22,7 +22,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
-import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
+import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging } from "./lib/providerAuth";
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
@@ -69,7 +69,8 @@ import { TransitionInput } from "./components/TransitionInput";
 import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
 import { configureTrayStatus, updateTrayStatus, useTrayStatusEnabled } from "./lib/trayStatus";
 import { forgetTurnContext } from "./lib/turnContextReceipts";
-import { SubAgentCommandCenter, type SubAgentModelOption, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
+import { SubAgentCommandCenter, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
+import type { ChildAgentModelCatalogs } from "./components/subAgentModelOptions";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
@@ -1430,7 +1431,8 @@ export default function App() {
   // Must stay the same catalog the Settings roster builds: a destination the
   // user configured in one picker has to be the same provider/model pair in
   // the other, and both are the pair readiness and the spawn path receive.
-  const subAgentModelCatalogs = useMemo<Partial<Record<Provider, SubAgentModelOption[]>>>(() => ({
+  const subAgentModelCatalogs = useMemo<ChildAgentModelCatalogs>(() => ({
+    hiddenClaudeModelIds: claudeModels.filter((entry) => isClaudeDefaultModel(entry.id, entry.displayName)).map((entry) => entry.id),
     ...(runtimeModels.length ? {
       openai: openAiModelOptions(runtimeModels).map((entry) => ({
         id: entry.id,
@@ -1469,10 +1471,12 @@ export default function App() {
     })),
   }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
 
-  const nativeModelCatalogs = useMemo<Partial<Record<Provider, SubAgentModelOption[]>>>(() => ({
+  const nativeModelCatalogs = useMemo<ChildAgentModelCatalogs>(() => ({
+    // Keep alias identity: a Default row can resolve to a selectable named model.
+    hiddenClaudeModelIds: subAgentModelCatalogs.hiddenClaudeModelIds,
     openai: subAgentModelCatalogs.openai,
     claude: visibleClaudeModels(claudeModels).filter((entry) => !entry.disabled).map((entry) => ({ id: entry.resolvedModel || entry.id, label: entry.displayName, detail: entry.description || entry.resolvedModel })),
-  }), [subAgentModelCatalogs.openai, claudeModels]);
+  }), [subAgentModelCatalogs.openai, subAgentModelCatalogs.hiddenClaudeModelIds, claudeModels]);
 
   const runDiscoveryCatalogs = useMemo(() => ({
     openai: subAgentModelCatalogs.openai?.map((entry) => ({ ...entry, efforts: runtimeModels.find((model) => (model.model || model.id) === entry.id)?.supportedReasoningEfforts.map((option) => option.reasoningEffort) })),

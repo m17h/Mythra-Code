@@ -41,7 +41,7 @@ import {
   Cpu,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
-import { cancelClaudeLogin, isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
+import { cancelClaudeLogin, isClaudeDefaultModel, isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
 import { claudeUsesApiKey, codexAccountReady } from "../lib/providerAuth";
 import { ClaudeBillingPanel, OpenAiApiKeyPanel, useProviderAuthOperation } from "./ProviderApiKeyPanel";
 import type { CursorModel, CursorRuntimeStatus } from "../lib/cursor";
@@ -113,7 +113,7 @@ import "./SettingsModal.css";
 import { CLAUDE_FALLBACK_MODELS } from "./ClaudeModelControl";
 import { openAiModelOptions, type RuntimeModel } from "./ModelPowerControl";
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
-import type { ChildAgentModelOption } from "./ChildAgentRoster";
+import type { ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import type { ClaudeModel } from "../lib/claude";
 import type { OpenRouterModel } from "./OpenRouterModelControl";
 import { sanitizeProjectDefaultOverrides } from "../lib/projectDefaults";
@@ -322,7 +322,10 @@ type ModelCatalogs = {
   lmStudioModels: LMStudioModel[];
 };
 
-function supersededClaudeDisplay(provider: Provider, selectedModel: string, catalogs: ModelCatalogs): Omit<AppSelectOption, "value"> | undefined {
+function savedClaudeModelDisplay(provider: Provider, selectedModel: string, catalogs: ModelCatalogs): Omit<AppSelectOption, "value"> | undefined {
+  if (provider === "claude" && isClaudeDefaultModel(selectedModel, catalogs.claudeModels.find((entry) => entry.id === selectedModel)?.displayName)) {
+    return { label: "Provider default (saved)", detail: "Choose a named Claude model", icon: <ProviderLogo provider="claude" size={15} /> };
+  }
   if (provider !== "claude" || !isClaudeModelSuperseded(catalogs.claudeModels, selectedModel)) return undefined;
   return {
     label: "Superseded Claude model",
@@ -361,9 +364,10 @@ function modelOptionsForProvider(provider: Provider, selectedModel: string, cata
       keywords: entry.description,
     }));
   }
-  const selectedClaudeModelWasSuperseded = provider === "claude"
-    && isClaudeModelSuperseded(catalogs.claudeModels, selectedModel);
-  if (selectedModel && !selectedClaudeModelWasSuperseded && !options.some((entry) => entry.value === selectedModel)) {
+  const selectedClaudeModelIsHidden = provider === "claude"
+    && (isClaudeDefaultModel(selectedModel, catalogs.claudeModels.find((entry) => entry.id === selectedModel)?.displayName)
+      || isClaudeModelSuperseded(catalogs.claudeModels, selectedModel));
+  if (selectedModel && !selectedClaudeModelIsHidden && !options.some((entry) => entry.value === selectedModel)) {
     const savedClaudeModel = provider === "claude"
       ? catalogs.claudeModels.find((entry) => entry.id === selectedModel)
       : undefined;
@@ -780,9 +784,10 @@ export function SettingsModal({
     () => modelOptionsForProvider(local.provider, local.model, modelCatalogs),
     [local.model, local.provider, modelCatalogs],
   );
-  const defaultModelSelectedDisplay = supersededClaudeDisplay(local.provider, local.model, modelCatalogs);
+  const defaultModelSelectedDisplay = savedClaudeModelDisplay(local.provider, local.model, modelCatalogs);
 
-  const subAgentModelCatalogs = useMemo<Partial<Record<Provider, ChildAgentModelOption[]>>>(() => ({
+  const subAgentModelCatalogs = useMemo<ChildAgentModelCatalogs>(() => ({
+    hiddenClaudeModelIds: claudeModels.filter((entry) => isClaudeDefaultModel(entry.id, entry.displayName)).map((entry) => entry.id),
     openai: openAiModelOptions(runtimeModels).map((entry) => ({
       id: entry.id,
       label: entry.name,
@@ -2786,7 +2791,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
       {!projects.length ? null : configured.length ? <div className="project-default-list">{configured.map((project) => {
         const defaults = project.overrides!.defaults!;
         const modelOptions = modelOptionsForProvider(defaults.provider, defaults.model, catalogs);
-        const selectedDisplay = supersededClaudeDisplay(defaults.provider, defaults.model, catalogs);
+        const selectedDisplay = savedClaudeModelDisplay(defaults.provider, defaults.model, catalogs);
         const setProvider = (provider: Provider) => {
           const options = modelOptionsForProvider(provider, "", catalogs);
           const model = provider === defaults.provider

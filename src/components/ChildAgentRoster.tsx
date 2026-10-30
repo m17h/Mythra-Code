@@ -183,6 +183,7 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                         ariaLabel={`Model for ${target.id}`}
                         value={selectedModel}
                         options={modelOptions}
+                        selectedDisplay={{ label: selectedModel, detail: "Previously configured model" }}
                         favorites={favoriteModels(modelFavorites, target.provider)}
                         {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(target.provider, model) } : {})}
                         {...(target.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})}

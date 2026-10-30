@@ -137,8 +137,14 @@ function compareNumericVersions(left: number[], right: number[]): number {
   return 0;
 }
 
+/** The floating provider choice, regardless of which concrete model it resolves to. */
+export function isClaudeDefaultModel(modelId: string, displayName = ""): boolean {
+  return /^(?:claude[-_ ])?default$/i.test(modelId.trim())
+    || /^(?:(?:claude|provider)\s+)?default\b/i.test(displayName.trim());
+}
+
 function modelFamilyVersion(model: ClaudeModel): { family: string; version: number[] } | null {
-  if (model.id === "default" || /^default\b/i.test(model.displayName)) return null;
+  if (isClaudeDefaultModel(model.id, model.displayName)) return null;
   // IDs are the only surviving description for a saved model that disappeared
   // from a refreshed catalog. Treat separators as word boundaries so
   // `claude-fable-5[1m]` can still be compared with a live `Fable 5.1` row.
@@ -177,13 +183,15 @@ export function isClaudeModelSuperseded(catalog: ClaudeModel[], modelId: string)
 }
 
 /**
- * Keeps only the newest catalog entry in each named family. The newer row may
+ * Omits the floating Default choice and keeps only the newest catalog entry
+ * in each named family. The newer row may
  * be selectable or may carry update guidance; either way, an older duplicate
  * must not reappear after the CLI update makes its successor available.
  */
 export function visibleClaudeModels(catalog: ClaudeModel[]): ClaudeModel[] {
   const latest = latestClaudeFamilyVersions(catalog);
   return catalog.filter((model) => {
+    if (isClaudeDefaultModel(model.id, model.displayName)) return false;
     const current = modelFamilyVersion(model);
     if (!current) return true;
     const newest = latest.get(current.family);
