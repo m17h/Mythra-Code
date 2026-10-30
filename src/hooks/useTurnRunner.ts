@@ -154,6 +154,9 @@ function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, att
     running: false,
     deferredDelivery: true,
     attachments: attachments.map((attachment) => ({ ...attachment })),
+    // Durable entries already own their finished copies. Never retain a
+    // foreground draft's one-shot preparation callback in a queued context.
+    prepareAttachments: undefined,
     skillInvocationText,
     ...(resolveSkillMentions === false ? {
       resolveSkillMentions: false as const,
@@ -274,6 +277,8 @@ export interface TurnRunnerContext {
   onFirstPromptStarted?: (prompt: PendingFirstPrompt) => void;
   onFirstPromptFinished?: (id: string) => void;
   attachments: AttachmentRecord[];
+  /** Foreground sends acknowledge before waiting for durable image copies. */
+  prepareAttachments?: () => Promise<AttachmentRecord[] | null>;
   effectiveSettings: AppSettings;
   subscriptionSystemPrompts: Record<"openai" | "claude", string> & Partial<Record<Provider, string>>;
   customAgents: CustomAgentProfile[];
@@ -325,7 +330,7 @@ export interface TurnRunnerContext {
   /** `deferred` marks a scheduled first prompt, which must not consume the
    * visible draft's pending handoff; `subagentsEnabled` is its snapshot. */
   onThreadCreated: (threadId: string, options?: { deferred?: boolean; subagentsEnabled?: boolean; subagentEngine?: SubagentEngine; nativeSubagentMax?: number; nativeSubagentOptions?: NativeSubagentOptions; autoCompactTokens?: number }) => void;
-  /** Runs only for a new project root, after its optimistic prompt is visible. */
+  /** Runs only for a new project root, while its transient prompt is visible. */
   prepareNewThreadGit?: (threadId: string, workspace: Project, enabled: boolean) => Promise<boolean>;
   onThreadTitlePending?: (threadId: string, prompt: string) => void;
   onThreadTitleCancelled?: (threadId: string) => void;
@@ -335,6 +340,8 @@ export interface TurnRunnerContext {
   /** Live archive ownership. Existing threads must not start provider work
    * while their archive operation is awaiting cleanup or persistence. */
   isThreadArchiving?: (threadId: string) => boolean;
+  /** Durable removal state, including completed archive/delete operations. */
+  isThreadUnavailable?: (threadId: string) => boolean;
   persistThreadModel: (threadId: string, model: string) => void;
   persistThreadReasoning: (threadId: string, reasoning: ThreadReasoning) => void;
   persistThreadWorktrees: SetPersisted<Record<string, ThreadWorktreeRecord>>;
@@ -371,6 +378,7 @@ interface SendMessageOptions {
   firstPromptAttemptId?: string;
   /** Durable attachments from the sending draft, even after navigation. */
   attachments?: AttachmentRecord[];
+  prepareAttachments?: () => Promise<AttachmentRecord[] | null>;
 }
 
 /**
@@ -382,6 +390,8 @@ interface SendMessageOptions {
  */
 export function useTurnRunner(context: TurnRunnerContext): {
   pendingFirstPrompts: readonly PendingFirstPrompt[];
+  /** Presentation only; preparation must not write undelivered history. */
+  pendingThreadPrompts: Readonly<Record<string, ChatMessage>>;
   beginFirstPrompt: (text: string) => string | undefined;
   finishFirstPrompt: (id: string | undefined) => void;
   sendMessage: (text: string, options?: SendMessageOptions) => Promise<boolean>;
@@ -414,6 +424,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     setSubagentPreparationLockRevision((revision) => revision + 1);
   }, []);
   const [pendingFirstPrompts, setPendingFirstPrompts] = useState<PendingFirstPrompt[]>([]);
+  const [pendingThreadPrompts, setPendingThreadPrompts] = useState<Record<string, ChatMessage>>({});
   const firstPromptAttemptsRef = useRef(new Map<string, PendingFirstPrompt>());
   const firstPromptContextsRef = useRef(new Map<string, TurnRunnerContext>());
   const deliveringFirstPromptIdsRef = useRef(new Set<string>());
@@ -480,6 +491,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
 
   const archiveOwnsThread = useCallback((threadId: string): boolean => {
     const current = contextRef.current;
+    if (current.isThreadUnavailable?.(threadId)) {
+      current.setError("This conversation is unavailable. Open an active conversation before sending another message.");
+      return true;
+    }
     if (!current.isThreadArchiving?.(threadId)) return false;
     current.setError("This thread is being archived. Wait for archiving to finish before sending another message.");
     return true;
@@ -495,6 +510,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
     onResolutionFailure?: (reason: unknown) => void,
   ): Promise<boolean> => {
     if (ctx.deliveryGuard && !ctx.deliveryGuard()) return false;
+    const submissionMessageId = `local-${crypto.randomUUID()}`;
+    const showPendingPrompt = (threadId: string, turnId?: string) => {
+      setPendingThreadPrompts((current) => ({ ...current, [threadId]: {
+        id: submissionMessageId, role: "user", text,
+        attachments: messageImageAttachments(ctx.attachments),
+        ...(turnId ? { turnId, steerStatus: "sending" as const } : {}),
+      } }));
+    };
     const explicitThreadId = mode === "turn" ? ctx.activeThread?.id : undefined;
     const explicitAttemptId = explicitThreadId ? crypto.randomUUID() : undefined;
     let explicitDispatched = false;
@@ -657,6 +680,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const receiptGeneration = turnContextRecordingGeneration();
     let contextReceipt: TurnContextReceipt | null = null;
     let receiptAttempt: ReturnType<typeof beginTurnContextReceipt> | undefined;
+    if (activeThread && !deferredDelivery) {
+      // Acknowledge the authored prompt before skill scans, checkpoints,
+      // transcript saves or provider startup. This row is never persisted.
+      showPendingPrompt(activeThread.id, mode === "steer"
+        ? useTaskStore.getState().tasks[activeThread.id]?.activeTurnId : undefined);
+    }
     if (mode === "steer" && running && activeThread) {
       const steerOwner = useTaskStore.getState().tasks[activeThread.id];
       const expectedSteerTurnId = steerOwner?.activeTurnId;
@@ -681,6 +710,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (ctx.deliveryGuard && !ctx.deliveryGuard()) return false;
       const currentSteerOwner = useTaskStore.getState().tasks[activeThread.id];
       if (contextRef.current.isThreadArchiving?.(activeThread.id)
+        || contextRef.current.isThreadUnavailable?.(activeThread.id)
         || !expectedSteerTurnId
         || currentSteerOwner?.status !== "running"
         || currentSteerOwner.activeTurnId !== expectedSteerTurnId
@@ -689,7 +719,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         return false;
       }
       setError(null);
-      const steerMessageId = `local-${crypto.randomUUID()}`;
+      const steerMessageId = submissionMessageId;
       useTaskStore.getState().appendUserMessage(activeThread.id, {
         id: steerMessageId,
         role: "user",
@@ -773,25 +803,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
         return Boolean(executionPath && normalizedProjectPath(executionPath) === sharedPath);
       });
     };
-    if (willUseSharedFolder) {
-      if (anotherSharedRun()) {
-        // A queued follow-up starts on its own schedule, possibly while the
-        // user is reading another conversation. A modal there would block the
-        // whole window with no context, but silently allowing two models to
-        // edit one shared folder is unsafe. Hold the queue at this entry and
-        // let the user retry it once the other run is finished.
-        if (deferredDelivery) {
-          if (activeThread) useTaskStore.getState().upsertActivity(activeThread.id, {
-            id: `shared-folder-overlap-${activeThread.id}-${Date.now()}`,
-            kind: "warning",
-            title: "Another thread is working in this project folder",
-            detail: sharedFolderOverlapMessage,
-          });
-          throw new Error(sharedFolderOverlapMessage);
-        } else if (!await confirmDialog(
-          "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
-        )) return false;
-      }
+    const needsSharedFolderConfirmation = willUseSharedFolder && anotherSharedRun();
+    if (needsSharedFolderConfirmation && deferredDelivery) {
+      // A queued follow-up starts on its own schedule, possibly while the
+      // user is reading another conversation. A modal there would block the
+      // whole window with no context, but silently allowing two models to
+      // edit one shared folder is unsafe. Hold the queue at this entry and
+      // let the user retry it once the other run is finished.
+      if (activeThread) useTaskStore.getState().upsertActivity(activeThread.id, {
+        id: `shared-folder-overlap-${activeThread.id}-${Date.now()}`,
+        kind: "warning",
+        title: "Another thread is working in this project folder",
+        detail: sharedFolderOverlapMessage,
+      });
+      throw new Error(sharedFolderOverlapMessage);
     }
 
     setError(null);
@@ -846,13 +871,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let provisionalWorktree: CreatedWorktree | undefined;
     let provisionalPersisted = false;
     let childBridge: ChildAgentBridgeResult | null = null;
-    const sentAttachments = [...attachments];
+    let sentAttachments = [...attachments];
     let preparedExecutionPath: string | undefined;
     let ownedCheckpointId: string | undefined;
     const assertCanStart = () => {
       const ownedThreadId = startedThreadId ?? startingThreadId;
-      if (ownedThreadId && contextRef.current.isThreadArchiving?.(ownedThreadId)) {
-        throw new CancelledTurnStart("The thread is being archived before the model turn could start");
+      if (ownedThreadId && (contextRef.current.isThreadArchiving?.(ownedThreadId)
+        || contextRef.current.isThreadUnavailable?.(ownedThreadId))) {
+        throw new CancelledTurnStart("The thread became unavailable before the model turn could start");
       }
       if (!explicitAttemptCurrent()) throw new CancelledTurnStart("A newer explicit child turn superseded this preparation");
       if (startingThreadId && guardedRunStartedAt !== undefined
@@ -970,6 +996,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
+      if (!activeThread && !deferredDelivery) showPendingPrompt(thread.id);
       if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       // Persist the owned thread/prior history before dispatch, not the new
@@ -979,7 +1006,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       assertCanStart();
       await strategy.prepareTurn(thread, updatedThread);
       assertCanStart();
-      sentMessageId = `local-${crypto.randomUUID()}`;
+      if (initializeNewThreadGit) {
+        await ctx.prepareNewThreadGit?.(thread.id, activeWorkspace, true);
+        assertCanStart();
+        ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        assertCanStart();
+      }
+      // Only the transient acknowledgement exists while preparation awaits.
+      // Install provenance with the real row at the dispatch boundary.
+      sentMessageId = submissionMessageId;
       receiptAttempt = beginTurnContextReceipt(thread.id, receiptGeneration);
       useTaskStore.getState().appendUserMessage(thread.id, {
         id: sentMessageId,
@@ -988,12 +1023,6 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
-      if (initializeNewThreadGit) {
-        await ctx.prepareNewThreadGit?.(thread.id, activeWorkspace, true);
-        assertCanStart();
-        ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
-        assertCanStart();
-      }
       const taskBeforeDispatch = useTaskStore.getState().tasks[thread.id];
       activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
       completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
@@ -1054,6 +1083,21 @@ export function useTurnRunner(context: TurnRunnerContext): {
         // exists; the reservation bridges that identity gap.
         pendingSharedDraftStarts.set(sharedDraftStart, sendWorkspacePath);
         if (!deferredDelivery) ordinarySharedDraftStartsRef.current.set(sharedDraftStart, ctx.firstPromptAttemptId);
+      }
+      if (needsSharedFolderConfirmation) {
+        // Claim this start before the modal yields. A second send must queue
+        // behind this owner, and Stop must apply to this exact preparation.
+        const confirmed = await confirmDialog(
+          "Another thread is already working in this shared project folder.\n\nBoth models can edit the same files at the same time. Continue anyway, or cancel and start this as an isolated worktree instead?",
+        );
+        assertCanStart();
+        if (!confirmed) throw new CancelledTurnStart("Cancelled the shared-folder turn start");
+      }
+      if (ctx.prepareAttachments) {
+        const prepared = await ctx.prepareAttachments();
+        assertCanStart();
+        if (!prepared) throw new CancelledTurnStart("The thread's execution folder changed while attachments were prepared");
+        sentAttachments = prepared;
       }
       // Skill scans can wait on disk or startup preparation. They are part of
       // starting a turn, so expose Stop before awaiting them and honor it
@@ -1342,9 +1386,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
+      if (!activeThread && !deferredDelivery) showPendingPrompt(threadId);
       if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
-      sentMessageId = `local-${crypto.randomUUID()}`;
+      if (initializeNewThreadGit) {
+        await ctx.prepareNewThreadGit?.(threadId, activeWorkspace, true);
+        assertCanStart();
+        ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        assertCanStart();
+      }
+      // The real message and its skill provenance enter the task only once
+      // every asynchronous preparation step has completed.
+      sentMessageId = submissionMessageId;
       receiptAttempt = beginTurnContextReceipt(threadId, receiptGeneration);
       useTaskStore.getState().appendUserMessage(threadId, {
         id: sentMessageId,
@@ -1353,14 +1406,6 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
-
-      if (initializeNewThreadGit) {
-        await ctx.prepareNewThreadGit?.(threadId, activeWorkspace, true);
-        assertCanStart();
-        ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
-        assertCanStart();
-      }
-
       ctx.onCodexRuntimeOwned?.(threadId, runtimeInstance);
       const params = { ...turnStartParams(runtimeSettings, threadId, executionPath, input, additionalWorkspaceRoots, true, {
         systemPrompt: resolvedSystemPrompt,
@@ -1507,6 +1552,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
     }
     } finally {
+      setPendingThreadPrompts((current) => {
+        // A late failure must never remove a newer send's acknowledgement.
+        const entry = Object.entries(current).find(([, message]) => message.id === submissionMessageId);
+        if (!entry) return current;
+        const next = { ...current };
+        delete next[entry[0]];
+        return next;
+      });
       finishProviderPreparation?.();
       if (subagentPreparation) {
         subagentPreparationsRef.current.delete(subagentPreparation);
@@ -1874,12 +1927,49 @@ export function useTurnRunner(context: TurnRunnerContext): {
       ...(options?.useComposerAttachments === false ? { attachments: [], setAttachments: () => undefined } : {}),
       ...(options?.resolveSkillMentions === false ? { resolveSkillMentions: false as const, resolveSkillPrompt: async (message: string) => message } : {}),
       ...(options?.skillInvocationText !== undefined ? { skillInvocationText: options.skillInvocationText } : {}),
+      ...(options?.prepareAttachments ? { prepareAttachments: options.prepareAttachments } : {}),
     };
     if (!text || !ctx.activeWorkspace) return false;
     const workspacePath = normalizedProjectPath(ctx.activeWorkspace.path);
-    if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueFollowUp(ctx, text);
+    // A caller that expected an immediate turn may still land in the queue.
+    // The durable entry must hold the finished image copies, not the draft.
+    const queueAfterAttachments = async (): Promise<boolean> => {
+      if (!ctx.prepareAttachments) return queueFollowUp(ctx, text);
+      const threadId = ctx.activeThread?.id;
+      if (!threadId || archiveOwnsThread(threadId)) return false;
+      const hadTask = Boolean(useTaskStore.getState().tasks[threadId]);
+      const originalBinding = ctx.threadProjectBindingsRef.current?.[threadId];
+      const binding = originalBinding === undefined ? undefined : normalizedProjectPath(originalBinding);
+      const executionPath = normalizedProjectPath(ctx.executionPathFor(threadId, ctx.activeWorkspace!.path));
+      try {
+        const prepared = await ctx.prepareAttachments();
+        if (!prepared || (ctx.deliveryGuard && !ctx.deliveryGuard())) return false;
+        if (archiveOwnsThread(threadId)) return false;
+        const liveBinding = ctx.threadProjectBindingsRef.current?.[threadId];
+        const isolation = ctx.threadWorktreesRef.current[threadId];
+        // Navigation is allowed: this entry belongs to the captured thread.
+        // Removal or execution-folder changes cannot retarget that ownership.
+        if ((ctx.currentThread && !ctx.currentThread(threadId))
+          || (hadTask && !useTaskStore.getState().tasks[threadId])
+          || binding !== (liveBinding === undefined ? undefined : normalizedProjectPath(liveBinding))
+          || executionPath !== normalizedProjectPath(ctx.executionPathFor(threadId, ctx.activeWorkspace!.path))
+          || isolation?.status === "missing" || isolation?.status === "removed") {
+          ctx.setError("The conversation or its execution folder changed while attachments were prepared. Open it again before sending this message.");
+          return false;
+        }
+        return queueFollowUp({ ...ctx, attachments: prepared, prepareAttachments: undefined }, text);
+      } catch (reason) {
+        ctx.setError(friendlyError(reason));
+        return false;
+      }
+    };
+    if (ctx.activeThread && useTaskStore.getState().workflowOwners[ctx.activeThread.id]) return queueAfterAttachments();
     if (ctx.running && !ctx.activeThread && !acknowledgedAttempt) return false;
-    if (ctx.activeThread && (ctx.running || hasEligibleQueuedTurns(useTaskStore.getState().tasks[ctx.activeThread.id]?.queuedTurns))) return queueFollowUp(ctx, text);
+    const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
+    // Starting is registered synchronously, before attachment preparation can
+    // yield. A second send must observe that owner even before React renders.
+    if (ctx.activeThread && (ctx.running || task?.status === "starting" || task?.status === "running"
+      || hasEligibleQueuedTurns(task?.queuedTurns))) return queueAfterAttachments();
     if (ctx.activeThread || ctx.deferredDelivery) return deliverMessage(ctx, text, "turn");
     const id = acknowledgedAttempt?.id ?? beginFirstPrompt(text);
     if (!id) return false;
@@ -1901,7 +1991,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       deliveringFirstPromptIdsRef.current.delete(id);
       finishFirstPrompt(id);
     }
-  }, [beginFirstPrompt, deliverMessage, finishFirstPrompt, queueFollowUp]);
+  }, [archiveOwnsThread, beginFirstPrompt, deliverMessage, finishFirstPrompt, queueFollowUp]);
 
   const steerMessage = useCallback(async (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string; expectedThreadId?: string; expectedTurnId?: string; expectedRunStartedAt?: number; deliveryGuard?: () => boolean }): Promise<boolean> => {
     const current = contextRef.current;
@@ -2238,7 +2328,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   }, []);
 
   return {
-    pendingFirstPrompts, beginFirstPrompt, finishFirstPrompt,
+    pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
