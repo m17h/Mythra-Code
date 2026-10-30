@@ -1,4 +1,4 @@
-import { modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelOption as SubAgentModelOption } from "./subAgentModelOptions";
+import { modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, Check, Info, LoaderCircle, Lock, MessageCircleQuestion, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
@@ -33,7 +33,7 @@ import {
 } from "../lib/subAgentActivity";
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
 import { autoCompactTokensError, nativeSubagentVersionAtLeast } from "../lib/threadSubagentSettings";
-import { claudeCompactionModelKey, claudeNativeCompactionConflict } from "../lib/claude";
+import { claudeCompactionModelKey, claudeNativeCompactionConflict, isClaudeDefaultModel } from "../lib/claude";
 import { frontierPricingSnapshot, type FrontierPricingEntry } from "../lib/frontierPricing";
 import { compactionPriceBoundary, compactionPricingEntry, describeCompactionPriceBoundary, modelCompactionWindows } from "../lib/modelCompactionPricing";
 import { subscribeUsage } from "../lib/usageLedger";
@@ -99,7 +99,7 @@ export interface SubAgentCommandCenterProps {
   onOpenAccounts?: () => void;
   onUnavailable?: (message: string) => void;
   /** Live provider catalogs used by the app's own model pickers. */
-  modelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
+  modelCatalogs?: ChildAgentModelCatalogs;
   /** Starred models, shared with the composer and Settings pickers. */
   modelFavorites?: ModelFavorites;
   onToggleModelFavorite?: (provider: Provider, model: string) => void;
@@ -143,7 +143,7 @@ export interface SubAgentCommandCenterProps {
   /** Installed Claude Code version, which gates newer child models. */
   claudeVersion?: string | null;
   /** Model ids the native runtimes accept directly; falls back to {@link modelCatalogs}. */
-  nativeModelCatalogs?: Partial<Record<Provider, SubAgentModelOption[]>>;
+  nativeModelCatalogs?: ChildAgentModelCatalogs;
   /** Reasoning levels each Codex model reports; missing or empty means unknown. */
   nativeReasoningEfforts?: Partial<Record<string, ReasoningEffort[]>>;
   /** The parent's model, which Codex children use when no default model is set. */
@@ -270,7 +270,12 @@ function nativeModelOptions(
       icon: <ProviderLogo provider="claude" size={11} />,
     });
   }
-  if (saved && !options.some((option) => option.value === saved)) {
+  // The native catalog uses concrete model IDs. Only hide the raw Default
+  // aliases, never the named model a Default alias happens to resolve to.
+  const hiddenDefault = provider === "claude"
+    && (catalogs?.hiddenClaudeModelIds?.includes(saved)
+      || isClaudeDefaultModel(saved, catalogs?.claude?.find((entry) => entry.id === saved)?.label));
+  if (saved && !hiddenDefault && !options.some((option) => option.value === saved)) {
     options.unshift({
       value: saved,
       label: saved,
@@ -1334,6 +1339,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                           ariaLabel={nativeProvider === "openai" ? "Default child model" : "Child model"}
                           value={savedNativeModel}
                           options={nativeModelChoices}
+                          selectedDisplay={{ label: savedNativeModel, detail: "Previously configured model" }}
                           searchable={nativeModelChoices.length > 8}
                           emptyMessage="No models are available for this provider."
                           onDisabledSelect={(model) => { if (isHaiku55(model)) onUnavailable?.(HAIKU_5_5_UPDATE); }}
@@ -1686,6 +1692,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                               ariaLabel={`Model for ${target.id}`}
                               value={selectedModel}
                               options={modelOptions}
+                              selectedDisplay={{ label: selectedModel, detail: "Previously configured model" }}
                               favorites={favoriteModels(props.modelFavorites ?? {}, target.provider)}
                               {...(props.onToggleModelFavorite
                                 ? { onToggleFavorite: (model: string) => props.onToggleModelFavorite?.(target.provider, model) }

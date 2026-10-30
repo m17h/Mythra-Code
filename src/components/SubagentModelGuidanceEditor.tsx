@@ -252,6 +252,7 @@ export function SubagentModelGuidanceEditor({ value, draft, onDraftChange, model
               portal
               value={model}
               options={modelOptions}
+              selectedDisplay={{ label: model, detail: "Previously configured model" }}
               favorites={favoriteModels(modelFavorites, entry.provider)}
               {...(onToggleModelFavorite ? { onToggleFavorite: (favorite: string) => onToggleModelFavorite(entry.provider, favorite) } : {})}
               {...(entry.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})}

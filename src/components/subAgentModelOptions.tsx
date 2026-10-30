@@ -2,6 +2,7 @@ import { ProviderLogo } from "./BrandLogos";
 import type { AppSelectOption } from "./AppSelectMenu";
 import type { Provider } from "../types";
 import { CHILD_AGENT_REASONING_EFFORTS } from "../lib/childAgents";
+import { isClaudeDefaultModel } from "../lib/claude";
 
 export interface ChildAgentModelOption {
   id: string;
@@ -11,6 +12,11 @@ export interface ChildAgentModelOption {
   /** Concrete identity reported by the runtime, especially for floating aliases. */
   resolvedModel?: string;
 }
+export type ChildAgentModelCatalogs = Partial<Record<Provider, ChildAgentModelOption[]>> & {
+  /** Raw CLI aliases omitted from provider arrays, retained to recognize saved defaults. */
+  hiddenClaudeModelIds?: string[];
+};
+
 const BUILTIN_MODEL_CATALOGS: Record<Provider, ChildAgentModelOption[]> = {
   openai: [
     { id: "gpt-6-astra", label: "Astra", detail: "gpt-6-astra · frontier intelligence" },
@@ -45,19 +51,24 @@ export const REASONING_OPTIONS: AppSelectOption[] = CHILD_AGENT_REASONING_EFFORT
 
 export function modelOptionsFor(
   provider: Provider,
-  catalogs: Partial<Record<Provider, ChildAgentModelOption[]>> | undefined,
+  catalogs: ChildAgentModelCatalogs | undefined,
   selectedModel?: string,
 ): AppSelectOption[] {
   const supplied = catalogs?.[provider];
   const catalog = supplied?.length ? supplied : BUILTIN_MODEL_CATALOGS[provider];
-  const options: AppSelectOption[] = catalog.map((entry) => ({
-    value: entry.id,
-    label: entry.label,
-    detail: entry.detail ?? entry.id,
-    keywords: entry.keywords,
-    icon: <ProviderLogo provider={provider} size={11} />,
-  }));
-  if (selectedModel && !options.some((option) => option.value === selectedModel)) {
+  const options: AppSelectOption[] = catalog
+    .filter((entry) => provider !== "claude" || !isClaudeDefaultModel(entry.id, entry.label))
+    .map((entry) => ({
+      value: entry.id,
+      label: entry.label,
+      detail: entry.detail ?? entry.id,
+      keywords: entry.keywords,
+      icon: <ProviderLogo provider={provider} size={11} />,
+    }));
+  const hiddenDefault = provider === "claude" && selectedModel !== undefined
+    && (catalogs?.hiddenClaudeModelIds?.includes(selectedModel)
+      || isClaudeDefaultModel(selectedModel, catalog.find((entry) => entry.id === selectedModel)?.label));
+  if (selectedModel && !hiddenDefault && !options.some((option) => option.value === selectedModel)) {
     options.unshift({
       value: selectedModel,
       label: selectedModel,

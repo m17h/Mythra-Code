@@ -6,18 +6,19 @@ import { localScheduleTimeZone, nextScheduledRunAt, normalizedDailyTimes, schedu
 import { scheduleRunSnapshot } from "../lib/turnConfig";
 import { providerDisplayName } from "../lib/childAgents";
 import { DEFAULT_OPENAI_MODEL } from "../lib/appConfig";
+import { isClaudeDefaultModel } from "../lib/claude";
 import { confirmDialog } from "../lib/confirmDialog";
 import { friendlyError } from "../lib/errors";
 import { workflowFromSchedule, type WorkflowDefinition } from "../lib/workflows";
 import { ProviderLogo } from "./BrandLogos";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
-import type { ChildAgentModelOption } from "./ChildAgentRoster";
+import type { ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import "./ScheduledTasksSettings.css";
 
 const PROVIDERS: Provider[] = ["openai", "openrouter", "lmstudio"];
 const CHATS = "__mythra_normal_chats__";
 type ScheduleUpdate = ScheduledTask[] | ((current: ScheduledTask[]) => ScheduledTask[]);
-type Catalogs = Partial<Record<Provider, ChildAgentModelOption[]>>;
+type Catalogs = ChildAgentModelCatalogs;
 interface TaskDraft {
   id?: string;
   name: string;
@@ -184,8 +185,14 @@ function ScheduleEditor({ initial, settings, projects, modelCatalogs, onDiscover
   const dailyTimes = normalizedDailyTimes(draft.dailyTimes);
   const validDailyTimes = dailyTimes.length > 0 && dailyTimes.length === draft.dailyTimes.length;
   const valid = Boolean(draft.name.trim() && draft.prompt.trim() && draft.run.model.trim() && !projectMissing && !providerUnsupported && (draft.scheduleMode === "daily" ? validDailyTimes : validInterval));
-  const models: AppSelectOption[] = (modelCatalogs?.[draft.run.provider] ?? []).map((model) => ({ value: model.id, label: model.label, detail: model.detail, keywords: model.keywords, icon: <ProviderLogo provider={draft.run.provider} size={14} /> }));
-  if (draft.run.model && !models.some((model) => model.value === draft.run.model)) models.unshift({ value: draft.run.model, label: draft.run.model, detail: "Current selection" });
+  const catalog = modelCatalogs?.[draft.run.provider] ?? [];
+  const hiddenDefault = draft.run.provider === "claude"
+    && (modelCatalogs?.hiddenClaudeModelIds?.includes(draft.run.model)
+      || isClaudeDefaultModel(draft.run.model, catalog.find((entry) => entry.id === draft.run.model)?.label));
+  const models: AppSelectOption[] = catalog
+    .filter((model) => draft.run.provider !== "claude" || !isClaudeDefaultModel(model.id, model.label))
+    .map((model) => ({ value: model.id, label: model.label, detail: model.detail, keywords: model.keywords, icon: <ProviderLogo provider={draft.run.provider} size={14} /> }));
+  if (draft.run.model && !hiddenDefault && !models.some((model) => model.value === draft.run.model)) models.unshift({ value: draft.run.model, label: draft.run.model, detail: "Current selection" });
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!valid || closing) return;
@@ -213,7 +220,7 @@ function ScheduleEditor({ initial, settings, projects, modelCatalogs, onDiscover
             try { setDraft({ ...draft, run: captureRun(settings, provider as Provider, modelCatalogs) }); setError(""); }
             catch (reason) { setError(friendlyError(reason)); }
           }} /></div>
-          <div className="schedule-field"><span>Model</span><AppSelectMenu ariaLabel="Task model" value={draft.run.model} options={models} placeholder="Choose a model…" searchable={draft.run.provider === "openrouter" || models.length > 8} emptyMessage={draft.run.provider === "lmstudio" ? "No LM Studio models available" : "No models available"} onSearch={draft.run.provider === "openrouter" ? onDiscoverOpenRouterModels : undefined} portal onChange={(model) => setDraft({ ...draft, run: { ...draft.run, model } })} /></div>
+          <div className="schedule-field"><span>Model</span><AppSelectMenu ariaLabel="Task model" value={draft.run.model} options={models} selectedDisplay={{ label: draft.run.model, detail: "Current selection" }} placeholder="Choose a model…" searchable={draft.run.provider === "openrouter" || models.length > 8} emptyMessage={draft.run.provider === "lmstudio" ? "No LM Studio models available" : "No models available"} onSearch={draft.run.provider === "openrouter" ? onDiscoverOpenRouterModels : undefined} portal onChange={(model) => setDraft({ ...draft, run: { ...draft.run, model } })} /></div>
           <div className="schedule-field scheduled-task-wide"><span>Each run</span><AppSelectMenu ariaLabel="Task thread behavior" value={draft.threadMode} options={[{ value: "new", label: "New thread each time" }, { value: "reuse", label: "Continue the same thread" }]} portal onChange={(threadMode) => setDraft({ ...draft, threadMode: threadMode as ScheduleThreadMode })} /></div>
         </div>
         <label className="schedule-prompt-control"><span>Prompt</span><textarea required spellCheck aria-label="Task prompt" value={draft.prompt} placeholder="What should the model do?" rows={5} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} /></label>
