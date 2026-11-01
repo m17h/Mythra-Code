@@ -4,6 +4,7 @@ import type { Activity } from "../types";
 import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { consumeProviderStopIntent } from "./providerStopIntent";
+import { reportThreadContextUsage } from "./usageLedger";
 import { cursorTurnCanSettle, cursorTurnWasSettled, finishCursorTurnOwner, latestCursorUsageSnapshotTurn, markCursorUsageSnapshotTurn, observeCursorTurnOwner, resetCursorTurnOwnershipForTests } from "./cursorTurnOwnership";
 
 const activeAssistantSegments = new Map<string, string>();
@@ -115,11 +116,6 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function number(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 function contentText(value: unknown): string {
   const content = object(value);
   return content.type === "text" ? text(content.text) : "";
@@ -148,25 +144,52 @@ function detailFor(value: unknown): string | undefined {
   }
 }
 
+function reportedCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function contextView(usage: JsonObject): Pick<TokenUsageView,
+  "contextTokens" | "contextInputTokens" | "contextOutputTokens" | "contextCachedInputTokens" | "contextReasoningOutputTokens" | "contextWindow" | "contextSnapshotReported"
+> {
+  const hasContextSnapshot = [
+    "contextTokens", "context_tokens", "contextInputTokens", "context_input_tokens",
+    "contextOutputTokens", "context_output_tokens", "contextCachedInputTokens", "context_cached_input_tokens",
+    "contextReasoningOutputTokens", "context_reasoning_output_tokens", "contextWindow", "context_window",
+  ].some((key) => key in usage);
+  const window = reportedCount(usage.contextWindow ?? usage.context_window);
+  return {
+    // Only explicit context fields describe occupancy. Billing counters can
+    // include the same conversation prefix across many model requests.
+    contextTokens: reportedCount(usage.contextTokens ?? usage.context_tokens),
+    contextInputTokens: reportedCount(usage.contextInputTokens ?? usage.context_input_tokens),
+    contextOutputTokens: reportedCount(usage.contextOutputTokens ?? usage.context_output_tokens),
+    contextCachedInputTokens: reportedCount(usage.contextCachedInputTokens ?? usage.context_cached_input_tokens),
+    contextReasoningOutputTokens: reportedCount(usage.contextReasoningOutputTokens ?? usage.context_reasoning_output_tokens),
+    contextWindow: window !== undefined && window > 0 ? window : null,
+    contextSnapshotReported: hasContextSnapshot || undefined,
+  };
+}
+
 function usageView(value: unknown): TokenUsageView | null {
   const usage = object(value);
-  const inputTokens = number(usage.inputTokens ?? usage.input_tokens);
-  const outputTokens = number(usage.outputTokens ?? usage.output_tokens);
-  if (!inputTokens && !outputTokens) return null;
+  const inputCount = reportedCount(usage.inputTokens ?? usage.input_tokens);
+  const outputCount = reportedCount(usage.outputTokens ?? usage.output_tokens);
+  const totalCount = reportedCount(usage.totalTokens ?? usage.total_tokens);
+  if (inputCount === undefined && outputCount === undefined && totalCount === undefined) return null;
+  const inputTokens = inputCount ?? 0;
+  const outputTokens = outputCount ?? 0;
   return {
-    totalTokens: number(usage.totalTokens ?? usage.total_tokens) || inputTokens + outputTokens,
-    contextTokens: typeof (usage.contextTokens ?? usage.context_tokens) === "number"
-      ? number(usage.contextTokens ?? usage.context_tokens)
-      : undefined,
+    totalTokens: totalCount ?? inputTokens + outputTokens,
+    ...contextView(usage),
     inputTokens,
-    cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),
+    cachedInputTokens: reportedCount(usage.cachedInputTokens ?? usage.cached_input_tokens) ?? 0,
     cacheWriteInputTokens: 0,
-    cacheReadReported: Number.isSafeInteger(usage.cachedInputTokens ?? usage.cached_input_tokens) && Number(usage.cachedInputTokens ?? usage.cached_input_tokens) >= 0,
+    cacheReadReported: reportedCount(usage.cachedInputTokens ?? usage.cached_input_tokens) !== undefined,
     cacheWriteReported: false,
-    tokenAvailability: Number.isSafeInteger(usage.inputTokens ?? usage.input_tokens) && Number.isSafeInteger(usage.outputTokens ?? usage.output_tokens) ? "reported" : "partial",
+    tokenAvailability: inputCount !== undefined && outputCount !== undefined ? "reported" : "partial",
     outputTokens,
-    reasoningOutputTokens: number(usage.reasoningOutputTokens ?? usage.reasoning_output_tokens),
-    contextWindow: number(usage.contextWindow ?? usage.context_window) || null,
+    outputTokensReported: outputCount !== undefined,
+    reasoningOutputTokens: reportedCount(usage.reasoningOutputTokens ?? usage.reasoning_output_tokens) ?? 0,
   };
 }
 
@@ -185,7 +208,13 @@ function recordResultUsage(threadId: string, turnId: string, message: JsonObject
   const multiple = Array.isArray(message.promptResults) && message.promptResults.length > 0;
   settledPromptResults(message).forEach((result, index) => {
     const usage = usageView(result.usage);
-    if (usage) useTaskStore.getState().addUsage(threadId, usage,
+    const task = useTaskStore.getState().tasks[threadId];
+    const currentTurnId = task?.activeTurnId ?? task?.lastCompletedTurnId;
+    // A delayed terminal result can still contribute billing usage, while
+    // its context belongs to the retired process rather than the successor.
+    const preserveContext = Boolean(currentTurnId && currentTurnId !== turnId);
+    if (usage) useTaskStore.getState().addUsage(threadId,
+      preserveContext ? { ...usage, ...contextView({}) } : usage,
       multiple ? `cursor-result:${turnId}:${index}` : `cursor-result:${turnId}`, turnId);
   });
 }
@@ -424,17 +453,36 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
         });
       }
     } else if (kind === "usage_update") {
-      const usage = usageView(update.usage ?? update);
-      if (usage && !turnAlreadyCompleted) {
+      const rawUsage = object(update.usage ?? update);
+      const usage = usageView(rawUsage);
+      const context = contextView(rawUsage);
+      if ((usage || context.contextSnapshotReported) && !turnAlreadyCompleted) {
         // Session snapshots share one cumulative baseline. Once the accepted
         // successor has reported its snapshot, an older process's delayed
         // snapshot cannot reset that baseline and recount the next increment.
         // Its result is still covered by the cumulative-snapshot contract.
         const latestSnapshotTurn = latestCursorUsageSnapshotTurn(threadId);
         const successorHasSnapshot = !mayActivateTurn && latestSnapshotTurn && latestSnapshotTurn !== turnId;
-        if (!successorHasSnapshot) store.setUsage(threadId, usage, turnId);
-        if (mayActivateTurn) markCursorUsageSnapshotTurn(threadId, turnId);
-        turnsWithUsageSnapshots.add(turnKey(threadId, turnId));
+        if (!successorHasSnapshot) {
+          if (usage) {
+            // A predecessor's billing baseline may still be needed before
+            // the successor reports billing. Preserve the successor's own
+            // context, which can already have advanced independently.
+            store.setUsage(threadId, mayActivateTurn ? usage : {
+              ...usage, ...contextView(object(useTaskStore.getState().tasks[threadId]?.usage)),
+            }, turnId);
+          } else if (mayActivateTurn) {
+            // A context-only observation must not install zero cumulative
+            // billing counters or suppress the final result's usage.
+            const persisted = reportThreadContextUsage(threadId, context);
+            useTaskStore.setState((state) => {
+              const task = state.tasks[threadId];
+              return task ? { tasks: { ...state.tasks, [threadId]: { ...task, usage: persisted } } } : state;
+            });
+          }
+        }
+        if (usage && mayActivateTurn) markCursorUsageSnapshotTurn(threadId, turnId);
+        if (usage) turnsWithUsageSnapshots.add(turnKey(threadId, turnId));
       }
     }
     // A late update for a turn that already delivered its result may still

@@ -118,7 +118,7 @@ import {
   updateCursorModelNames,
   updateOpenRouterPricing,
 } from "./lib/usageLedger";
-import { costTotals, formatCost, recordThreadCost } from "./lib/costLedger";
+import { recordThreadCost } from "./lib/costLedger";
 import {
   attachGitHubRemote,
   cloneGitHubRepository,
@@ -1067,7 +1067,8 @@ export default function App() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [studioTab, setStudioTab] = usePersistedState<StudioTab>("kiwi.studioTab", "review", {
     init: (load) => {
-      const stored = load();
+      const stored: unknown = load();
+      if (stored === "context") return "files";
       return isStudioTab(stored) ? stored : "review";
     },
   });
@@ -1533,6 +1534,27 @@ export default function App() {
   const agentRecords = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.agents ?? EMPTY_AGENTS) : EMPTY_AGENTS));
   const agentRunStartedAt = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.agentRunStartedAt : undefined));
   const tokenUsage = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.usage ?? null) : null));
+  const visibleThreadHistory = useTaskStore((state) => studioOpen && studioTab === "usage" && activeThreadId
+    ? state.tasks[activeThreadId]?.history : undefined);
+  const visibleThreadMessageCount = useTaskStore((state) => studioOpen && studioTab === "usage" && activeThreadId
+    ? state.tasks[activeThreadId]?.messages.length ?? 0 : 0);
+  const visibleThreadAttachments = useMemo(() => {
+    const counts = { images: 0, documents: 0, files: 0 };
+    if (!activeThreadId || !studioOpen || studioTab !== "usage") return counts;
+    const seen = new Set<string>();
+    for (const message of useTaskStore.getState().tasks[activeThreadId]?.messages ?? []) {
+      if (message.role !== "user") continue;
+      for (const attachment of message.attachments ?? []) {
+        const key = `${attachment.kind}:${attachment.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (attachment.kind === "image") counts.images += 1;
+        else if (/\.(?:pdf|docx?|odt|rtf|txt|md|csv|xlsx?|pptx?)$/i.test(attachment.name)) counts.documents += 1;
+        else counts.files += 1;
+      }
+    }
+    return counts;
+  }, [activeThreadId, studioOpen, studioTab, visibleThreadHistory, visibleThreadMessageCount]);
   const contextPercent = contextUsagePercent(tokenUsage);
   const queuedTurns = useTaskStore((state) => (activeThreadId ? (state.tasks[activeThreadId]?.queuedTurns ?? EMPTY_QUEUED_TURNS) : EMPTY_QUEUED_TURNS));
   const taskStatus = useTaskStore((state) => (activeThreadId ? (state.statuses[activeThreadId] ?? "idle") : "idle"));
@@ -1540,6 +1562,8 @@ export default function App() {
   // settings, recipes, or make the next send queue behind them.
   const hasQueuedWork = hasEligibleQueuedTurns(queuedTurns);
   const activeTurnId = useTaskStore((state) => (activeThreadId ? state.tasks[activeThreadId]?.activeTurnId : undefined));
+  const usageContextTurnId = useTaskStore((state) => activeThreadId
+    ? state.tasks[activeThreadId]?.activeTurnId ?? state.tasks[activeThreadId]?.lastCompletedTurnId : undefined);
   // Scoped to the workspace, not to the draft view: after a normal first send
   // (or on reopen inside an existing thread) these must remain reachable.
   const scheduledNewPrompts = useNewThreadTimedPrompts((state) => state.prompts);
@@ -1864,13 +1888,16 @@ export default function App() {
 
   useEffect(() => {
     if (!activeThreadId) return;
+    // Native worker identity comes from runtime evidence, not the model
+    // currently displayed in a project/composer settings fallback.
+    if (nativeAgentLinks[activeThreadId]) return;
     annotateThreadUsage(activeThreadId, {
       provider: effectiveSettings.provider,
       model: pricingModel(effectiveSettings.provider, effectiveSettings.model),
       projectPath: activeWorkspace ? normalizedProjectPath(activeWorkspace.path) : undefined,
       pricing: activeOpenRouterPricing ?? pricingForModel(effectiveSettings.provider, pricingModel(effectiveSettings.provider, effectiveSettings.model)),
     });
-  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, pricingCatalogRevision, pricingModel, tokenUsage]);
+  }, [activeOpenRouterPricing, activeThreadId, activeWorkspace, effectiveSettings.model, effectiveSettings.provider, nativeAgentLinks, pricingCatalogRevision, pricingModel, tokenUsage]);
 
   const activeUsageRecord = activeThreadId ? usageForThread(activeThreadId) : null;
   const activeUsageCost = activeUsageRecord?.estimatedCost
@@ -1889,13 +1916,6 @@ export default function App() {
     : activeUsageCost === null || activeUsageIsUnpriced
       ? "Cost estimate unavailable"
       : `≈ ${formatEstimatedCost(activeUsageCost)} ${activeUsageRecord?.pricing?.source === "OpenRouter" ? "estimated spend" : "API-equivalent"}${activeUsageRecord?.unpricedTokens ? " · partial estimate" : ""}`;
-  const costTotalsView = (() => {
-    const totals = costTotals(activeProject ? normalizedProjectPath(activeProject.path) : undefined);
-    if (!totals.today && !totals.project) return "";
-    return activeProject
-      ? `${formatCost(totals.project)} in this project · ${formatCost(totals.today)} today`
-      : `${formatCost(totals.today)} today`;
-  })();
 
   const activeSubscriptionSnapshot = effectiveSettings.provider === "openai"
     ? openAiUsageSnapshot
@@ -4084,6 +4104,15 @@ export default function App() {
     // Claude's IDs identify work within the root process. They are durable
     // activity records, never resumable app sessions or sidebar conversations.
     if (details.runtime === "claude") return true;
+    const provider = providerFromThread(rootThread, "openai");
+    // Reactivation may deliberately clear the model until execution evidence
+    // arrives. Clear its pricing too rather than billing new work at old rates.
+    const model = pricingModel(provider, nativeAgentLinksRef.current[childThreadId]?.model?.trim() ?? "");
+    annotateThreadUsage(childThreadId, {
+      provider, model,
+      projectPath: logicalPath ? normalizedProjectPath(logicalPath) : undefined,
+      pricing: model ? pricingForModel(provider, model) : undefined,
+    });
     // Native Codex workers inherit the parent's startup compaction policy.
     // Capture it once so opening the worker after a runtime refresh does not
     // replace its original window with provider default or a later parent edit.
@@ -4258,8 +4287,10 @@ export default function App() {
       const projectPath = threadProjectBindingsRef.current?.[threadId];
       const completedThread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
       const completedProvider = providerFromThread(completedThread, "openai");
-      const completedModel = threadModels[threadId]
-        ?? (activeThreadId === threadId ? effectiveSettings.model : modelForProvider(completedProvider, ""));
+      const nativeUsageLink = nativeAgentLinksRef.current[threadId];
+      const completedModel = nativeUsageLink ? nativeUsageLink.model?.trim() || ""
+        : threadModels[threadId]?.trim() || completedThread?.model?.trim()
+          || (activeThreadId === threadId ? effectiveSettings.model : modelForProvider(completedProvider, ""));
       annotateThreadUsage(threadId, {
         provider: completedProvider,
         model: pricingModel(completedProvider, completedModel),
@@ -9484,7 +9515,7 @@ export default function App() {
                 selectedLabel={headerUsageWindows[effectiveSettings.provider]}
                 onSelect={(label) => setHeaderUsageWindows((current) => ({ ...current, [effectiveSettings.provider]: label }))}
                 onConnect={() => openSettings("models")}
-                onDetails={() => activeProject ? openStudio("usage") : openSettings("usage")}
+                onDetails={() => openSettings("usage")}
                 onOpen={requestUsageRefresh}
                 readStatus={usageRefreshEnabled ? usageReadStatus : ""}
               />
@@ -9497,8 +9528,6 @@ export default function App() {
                 onClick={() => {
                   if (headerUsageView.needsConnection) {
                     openSettings("models");
-                  } else if (activeProject) {
-                    openStudio("usage");
                   } else {
                     openSettings("usage");
                   }
@@ -9508,9 +9537,9 @@ export default function App() {
                 <span>{headerUsageView.text}</span>
               </button>
             ))}
-            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} project workspace tools (${workspaceShortcutLabel()})` : "Workspace tools are available inside projects"} aria-label={studioOpen ? "Close workspace tools" : "Open workspace tools"} aria-expanded={studioOpen} disabled={!activeProject}>
+            <button className={`workspace-tools-trigger studio-toggle ${studioOpen ? "active" : ""}`} onClick={() => (studioOpen ? setStudioOpen(false) : openStudio(studioTab))} title={activeProject ? `${studioOpen ? "Close" : "Open"} thread tools (${workspaceShortcutLabel()})` : "Thread tools are available inside projects"} aria-label={studioOpen ? "Close thread tools" : "Open thread tools"} aria-expanded={studioOpen} disabled={!activeProject}>
               <PanelRight size={17} />
-              <span>Workspace</span>
+              <span>Thread tools</span>
               <kbd>{workspaceShortcutLabel()}</kbd>
             </button>
           </div>
@@ -9904,7 +9933,7 @@ export default function App() {
         )}
       </main>
 
-      <ErrorBoundary label="workspace tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
+      <ErrorBoundary label="thread tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
         <Suspense fallback={null}>
           <StudioDockView
             open={studioOpen && Boolean(activeProject)}
@@ -9952,11 +9981,13 @@ export default function App() {
             worktree={activeThreadWorktree}
             worktreeStatus={worktreeStatus}
             worktreeBusy={worktreeBusy}
-            attachments={attachments}
             usage={tokenUsage}
-            costEstimate={costEstimate}
-            costTotals={costTotalsView}
-            accountUsage={accountUsageView}
+            nativeAgentLinks={nativeAgentLinks}
+            managedAgentLinks={childAgentLinks}
+            usageProvider={(activeThreadId && nativeAgentLinks[activeThreadId]?.provider) || effectiveSettings.provider}
+            contextTurnId={usageContextTurnId}
+            threadTitle={activeThread?.name || activeThread?.preview}
+            visibleAttachments={visibleThreadAttachments}
             skills={skills}
             mcpServers={mcpServers}
             gitOutput={gitOutput}
@@ -10036,17 +10067,8 @@ export default function App() {
             onWorktreeRecreate={() => void recreateActiveWorktree()}
             onWorktreeReturnShared={() => void removeActiveWorktree(true)}
             onWorktreeContinueShared={continueThreadInSharedProject}
-            onAddAttachment={() => void addAttachment()}
-            onRemoveAttachment={(path) => setAttachments((current) => current.filter((item) => item.path !== path))}
             onRefreshUsage={() => {
-              if (effectiveSettings.provider === "claude") void refreshClaudeCatalog();
-              else if (effectiveSettings.provider === "cursor") void refreshCursorStatus();
-              else if (effectiveSettings.provider === "openrouter") void Promise.all([
-                hasOpenRouterKey().then(setOpenRouterReady).catch(() => setOpenRouterReady(false)),
-                refreshOpenRouterCredits(),
-              ]);
-              else if (effectiveSettings.provider === "lmstudio") void refreshLMStudioModels(settings.lmStudioBaseUrl);
-              else void refreshUsage();
+              void refreshModelPricingCatalog().catch((reason) => setError(friendlyError(reason)));
             }}
             onCompact={() => void compactThread()}
             onRefreshTools={() => void refreshTools(activeProject)}

@@ -230,7 +230,7 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "agents", label: "Sub-agent presets", keywords: "preset crew setup" },
   { pane: "agents", label: "Custom agents", keywords: "specialist instructions" },
   { pane: "tools", label: "MCP servers", keywords: "mcp server stdio" },
-  { pane: "tools", label: "Live tool controls", keywords: "workspace tools" },
+  { pane: "tools", label: "Live tool controls", keywords: "thread tools" },
   { pane: "workflows", label: "Quick project actions", keywords: "action command button" },
   { pane: "usage", label: "Provider quota display", keywords: "remaining consumed percentage" },
   { pane: "system", label: "Guided setup", keywords: "onboarding tour getting started" },
@@ -1767,7 +1767,7 @@ export function SettingsModal({
                 <small>{workspaceToolsAvailable ? "Inspect skills, finish MCP sign-in, connect configured servers, and run project actions in the active workspace." : "Open a project first to inspect its live skills, MCP servers, and project actions."}</small>
               </div>
               <div className="set-control">
-                <button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open workspace tools</button>
+                <button className="secondary-button" onClick={onWorkspaceTools} disabled={!workspaceToolsAvailable}><PanelRight size={13} /> Open Thread tools</button>
               </div>
             </div></div>
           </div>}
@@ -1876,7 +1876,7 @@ export function SettingsModal({
                 <div className="set-row">
                   <div className="set-copy">
                     <strong>Record last-turn instructions</strong>
-                    <small>Keep the last confirmed turn for up to 24 threads, with the first 32,000 instruction characters each. View them in the workspace panel&rsquo;s Usage &amp; audit tab. Turning this off stops new records; existing records remain until deleted.</small>
+                    <small>Keep the last confirmed turn for up to 24 threads, with the first 32,000 instruction characters each. View them in Thread tools → Usage → Request details. Turning this off stops new records; existing records remain until deleted.</small>
                   </div>
                   <div className="set-control">
                     <button type="button" role="switch" aria-label="Record last-turn instructions" aria-checked={instructionRecording} disabled={instructionRecordBusy} className={`toggle-switch ${instructionRecording ? "on" : ""}`} onClick={() => {

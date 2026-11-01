@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, Command, FileCode2, FileDiff, Folder, Gauge, GitBranch, GitCommitHorizontal, GitFork, GitPullRequest, History, MessageSquare, Paperclip, Plus, RefreshCw, Search, SearchCode, Settings, TerminalSquare, Upload, UsersRound, Workflow as WorkflowIcon, Wrench, X } from "lucide-react";
+import { ArrowDownToLine, Command, FileCode2, FileDiff, Folder, Gauge, GitBranch, GitCommitHorizontal, GitFork, GitPullRequest, History, MessageSquare, Plus, RefreshCw, Search, SearchCode, Settings, TerminalSquare, Upload, UsersRound, Workflow as WorkflowIcon, Wrench, X } from "lucide-react";
 import type { WorkflowDefinition } from "../lib/workflows";
 import type { Project, Thread } from "../types";
 import type { StudioTab } from "../lib/studioTabs";
@@ -21,8 +21,7 @@ const TOOL_ACTIONS: Array<[StudioTab, string, string, typeof Command]> = [
   ["agents", "Open agent control", "Watch and manage delegated work", UsersRound],
   ["checkpoints", "Open checkpoints", "Restore, reapply, accept, and preview saved project states", History],
   ["worktrees", "Open worktrees", "Review, apply, merge, recover, and clean up isolated branches", GitFork],
-  ["context", "Open context attachments", "Files and images sent with the next message", Paperclip],
-  ["usage", "Open usage & audit", "Thread tokens, context pressure, plan limits, and request fields", Gauge],
+  ["usage", "Open thread usage", "Conversation cost estimates, tokens, current context, and request details", Gauge],
   ["git", "Open Git workspace", "Changes, commits, branches, pull requests, and history", GitBranch],
   ["tools", "Open tools & skills", "Project actions, skills, and MCP servers", Wrench],
 ];

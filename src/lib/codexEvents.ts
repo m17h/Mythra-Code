@@ -429,6 +429,10 @@ export function handleThreadItem(
   }
 }
 
+function reportedContextCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void {
   if (event.stream === "stderr") {
     const line = event.line?.toLowerCase() ?? "";
@@ -526,12 +530,24 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
       modelContextWindow?: number | null;
     } | undefined;
     if (usage?.total) {
+      const task = useTaskStore.getState().tasks[eventThreadId];
+      const eventTurnId = typeof params.turnId === "string" && params.turnId ? params.turnId : undefined;
+      const currentTurnId = task?.activeTurnId ?? task?.lastCompletedTurnId;
+      const preserveContext = Boolean(eventTurnId && currentTurnId && eventTurnId !== currentTurnId);
+      // Delayed cumulative billing can still be recorded, but its last model
+      // request must not replace a newer turn's independently captured context.
+      const context = preserveContext ? task?.usage : undefined;
       useTaskStore.getState().setUsage(eventThreadId, {
         totalTokens: Number(usage.total.totalTokens ?? 0),
         // `total` is cumulative billing usage and repeatedly counts the same
         // conversation prefix. `last` is the latest model request and is the
         // runtime's current-context signal.
-        contextTokens: usage.last ? Number(usage.last.totalTokens ?? 0) : undefined,
+        contextTokens: preserveContext ? context?.contextTokens : reportedContextCount(usage.last?.totalTokens),
+        contextInputTokens: preserveContext ? context?.contextInputTokens : reportedContextCount(usage.last?.inputTokens),
+        contextOutputTokens: preserveContext ? context?.contextOutputTokens : reportedContextCount(usage.last?.outputTokens),
+        contextCachedInputTokens: preserveContext ? context?.contextCachedInputTokens : reportedContextCount(usage.last?.cachedInputTokens),
+        contextReasoningOutputTokens: preserveContext ? context?.contextReasoningOutputTokens : reportedContextCount(usage.last?.reasoningOutputTokens),
+        contextSnapshotReported: true,
         inputTokens: Number(usage.total.inputTokens ?? 0),
         cachedInputTokens: Number(usage.total.cachedInputTokens ?? 0),
         cacheWriteInputTokens: Number(usage.total.cacheWriteInputTokens ?? 0),
@@ -543,8 +559,8 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
           && Number(usage.total.inputTokens) >= 0 && Number(usage.total.outputTokens) >= 0 ? "reported" : "partial",
         outputTokens: Number(usage.total.outputTokens ?? 0),
         reasoningOutputTokens: Number(usage.total.reasoningOutputTokens ?? 0),
-        contextWindow: usage.modelContextWindow,
-      }, typeof params.turnId === "string" && params.turnId ? params.turnId : undefined);
+        contextWindow: preserveContext ? context?.contextWindow : reportedContextCount(usage.modelContextWindow),
+      }, eventTurnId);
     }
     return;
   }

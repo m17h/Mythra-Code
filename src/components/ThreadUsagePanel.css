@@ -1,0 +1,100 @@
+.thread-usage { container-type: inline-size; min-width: 0; display: grid; gap: var(--s-3); font-size: var(--fs-ui); animation: thread-usage-enter var(--t-mid) var(--ease) both; }
+.thread-usage :is(h3, p, dl, dd) { margin: 0; }
+.thread-usage :is(strong, b, dd) { font-variant-numeric: tabular-nums; }
+.thread-usage-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); min-width: 0; }
+.thread-usage-scope { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-meta); }
+.thread-usage-scope-dot { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
+.thread-usage-scope-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.thread-usage-actions { display: flex; flex: 0 0 auto; gap: var(--s-1); }
+.thread-usage-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 28px; min-height: 28px; padding: 0 7px; border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--muted); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, background var(--t-fast) ease, border-color var(--t-fast) ease; }
+.thread-usage-actions button:hover:not(:disabled) { color: var(--text); background: var(--surface-quiet); border-color: var(--line-strong); }
+.thread-usage-actions button:disabled { opacity: 0.5; cursor: default; }
+.thread-usage-card { min-width: 0; padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--field); }
+.thread-usage-section-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px var(--s-2); }
+.thread-usage h3 { color: var(--text); font-size: var(--fs-ui); font-weight: 600; letter-spacing: var(--track-tight); }
+.thread-usage-section-head h3 { display: inline-flex; align-items: center; gap: 6px; }
+.thread-usage-section-head h3 > svg { color: var(--muted); }
+.thread-usage-eyebrow, .thread-usage-badge { font-size: var(--fs-micro); color: var(--muted); }
+.thread-usage-badge { display: inline-flex; align-items: center; min-height: 21px; padding: 1px 7px; border-radius: var(--r-pill); background: var(--surface-selected); color: var(--ink-2); white-space: nowrap; }
+.thread-usage-badge.partial { color: var(--orange); background: color-mix(in srgb, var(--orange) 9%, transparent); }
+.thread-usage-cost { border-color: color-mix(in srgb, var(--green) 15%, var(--line)); }
+.thread-usage-cost-value { display: block; margin: var(--s-3) 0 var(--s-2); color: var(--text); font-size: 30px; font-weight: 560; letter-spacing: var(--track-display); line-height: 1.15; overflow-wrap: anywhere; }
+.thread-usage-cost-value.unavailable { font-size: var(--fs-title); letter-spacing: var(--track-tight); color: var(--muted); }
+.thread-usage .thread-usage-note { color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
+.thread-usage-cost-scope { margin-top: var(--s-3); border-top: 1px solid var(--line); }
+.thread-usage-amount-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--s-2); padding-top: var(--s-2); color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.45; }
+.thread-usage-amount-row > div { text-align: right; }
+.thread-usage-amount-row strong { display: block; font-weight: 550; color: var(--text); }
+.thread-usage-amount-row small { display: block; font-size: var(--fs-micro); color: var(--muted); }
+.thread-usage-coverage { display: grid; grid-template-columns: 13px minmax(0, 1fr); gap: 6px; margin-top: var(--s-3); padding-top: var(--s-2); border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
+.thread-usage-coverage > svg { margin-top: 2px; }
+.thread-usage-coverage p + p { margin-top: var(--s-1); }
+.thread-usage-token-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px var(--s-2); margin: var(--s-3) 0; }
+.thread-usage-token-total > strong { font-size: 23px; font-weight: 560; line-height: 1.2; letter-spacing: var(--track-display); overflow-wrap: anywhere; }
+.thread-usage-token-total > strong.unavailable { font-size: var(--fs-lede); color: var(--muted); letter-spacing: var(--track-tight); }
+.thread-usage-token-total > span { color: var(--muted); font-size: var(--fs-meta); }
+.thread-usage-token-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-quiet); }
+.thread-usage-token-grid > div { display: grid; gap: 5px; padding: var(--s-2); min-width: 0; }
+.thread-usage-token-grid > div + div { border-left: 1px solid var(--line); }
+.thread-usage-token-grid span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
+.thread-usage-token-grid strong { color: var(--text); font-size: var(--fs-ui); font-weight: 550; overflow-wrap: anywhere; }
+.thread-usage-details { margin-top: var(--s-3); padding-top: var(--s-2); border-top: 1px solid var(--line); font-size: var(--fs-meta); }
+.thread-usage-details > summary { display: flex; align-items: center; gap: 4px; width: fit-content; min-height: 23px; border-radius: var(--r-xs); color: var(--muted); cursor: pointer; list-style: none; transition: color var(--t-fast) ease; }
+.thread-usage-details > summary::-webkit-details-marker { display: none; }
+.thread-usage-details > summary:hover { color: var(--text); }
+.thread-usage-details > summary > svg { transition: transform var(--t-mid) var(--ease); }
+.thread-usage-details[open] > summary > svg { transform: rotate(90deg); }
+.thread-usage-details[open] > dl { animation: thread-usage-enter var(--t-mid) var(--ease) both; }
+.thread-usage-details dl { margin-top: var(--s-1); }
+.thread-usage-details dl > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--s-2); padding-top: 6px; line-height: 1.45; }
+.thread-usage-details dt { color: var(--ink-2); }
+.thread-usage-details dt > small { display: block; color: var(--muted); font-size: var(--fs-micro); }
+.thread-usage-details dd { text-align: right; color: var(--muted); overflow-wrap: anywhere; }
+.thread-usage-context-reading { display: flex; align-items: end; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); }
+.thread-usage-context-reading > div { display: grid; min-width: 0; gap: 3px; }
+.thread-usage-context-reading strong { color: var(--text); font-size: 23px; line-height: 1.2; font-weight: 560; letter-spacing: var(--track-display); overflow-wrap: anywhere; }
+.thread-usage-context-reading strong.unavailable { font-size: var(--fs-lede); letter-spacing: var(--track-tight); }
+.thread-usage-context-reading span { color: var(--muted); font-size: var(--fs-meta); }
+.thread-usage-context-reading > b { flex: 0 0 auto; color: var(--green); font-size: 24px; font-weight: 500; letter-spacing: var(--track-display); line-height: 1.2; }
+.thread-usage-context-reading > b > small { font-size: var(--fs-ui); margin-left: 1px; }
+.thread-usage-context-track { height: 5px; overflow: hidden; margin: var(--s-3) 0 var(--s-2); border-radius: var(--r-pill); background: var(--panel-3); }
+.thread-usage-context-track > span { display: block; height: 100%; max-width: 100%; background: var(--green); border-radius: inherit; transition: width 320ms var(--ease), background var(--t-mid) ease; }
+.thread-usage-context-track.unavailable { background: repeating-linear-gradient(115deg, var(--line-strong) 0 3px, var(--line-quiet) 3px 6px); }
+.thread-usage-context.high .thread-usage-context-reading > b { color: var(--orange); }
+.thread-usage-context.high .thread-usage-context-track > span { background: var(--orange); }
+.thread-usage-context-freshness { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-2); color: var(--muted); font-size: var(--fs-micro); }
+.thread-usage .thread-usage-provider-categories { display: grid; gap: var(--s-2); margin: var(--s-3) 0; padding-top: var(--s-3); border-top: 1px solid var(--line); }
+.thread-usage-provider-categories > div, .thread-usage-native-attachments dl > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(70px, max-content); align-items: baseline; gap: var(--s-2); font-size: var(--fs-meta); line-height: 1.5; }
+.thread-usage-provider-categories dt { color: var(--ink-2); overflow-wrap: anywhere; }
+.thread-usage-provider-categories dt > small { margin-left: 6px; color: var(--muted); font-size: var(--fs-micro); }
+.thread-usage-provider-categories dd, .thread-usage-native-attachments dd { text-align: right; color: var(--text); }
+.thread-usage-native-attachments { margin: var(--s-3) 0; padding-top: var(--s-2); border-top: 1px solid var(--line); }
+.thread-usage-native-attachments > h4 { margin: 0 0 var(--s-2); font-size: var(--fs-meta); font-weight: 550; color: var(--ink-2); }
+.thread-usage-native-attachments dl { display: grid; gap: var(--s-1); color: var(--muted); }
+.thread-usage .thread-usage-breakdown-note { margin-top: var(--s-2); }
+.thread-usage .thread-usage-context-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3) var(--s-2); margin: var(--s-3) 0; padding-top: var(--s-3); border-top: 1px solid var(--line); }
+.thread-usage-context-grid > div { display: grid; min-width: 0; gap: 5px; }
+.thread-usage-context-grid dt { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: var(--fs-meta); }
+.thread-usage-context-grid dt > svg { flex: 0 0 auto; }
+.thread-usage-context-grid dd { color: var(--text); font-size: var(--fs-ui); font-weight: 550; overflow-wrap: anywhere; }
+.thread-usage .unavailable { color: var(--muted); font-weight: 400; }
+.thread-usage .thread-usage-context-warning { margin-top: var(--s-3); padding: var(--s-2); border-radius: var(--r-sm); background: color-mix(in srgb, var(--orange) 8%, transparent); color: var(--orange); font-size: var(--fs-meta); line-height: 1.5; }
+.thread-usage-attachments { padding: var(--s-1) 2px; }
+.thread-usage-attachments > h3 { font-size: var(--fs-meta); font-weight: 550; }
+.thread-usage-attachments > div { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-3); margin: var(--s-2) 0; }
+.thread-usage-attachments > div > span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--fs-meta); }
+.thread-usage-attachments strong { color: var(--ink-2); font-weight: 550; }
+.thread-usage-footnote { display: flex; align-items: start; gap: 6px; padding: 0 2px; color: var(--muted); font-size: var(--fs-meta); line-height: 1.55; }
+.thread-usage-footnote > svg { flex: 0 0 auto; margin-top: 2px; }
+.thread-usage-empty { justify-items: center; gap: var(--s-2); padding: var(--s-8) var(--s-4); text-align: center; color: var(--muted); }
+.thread-usage-empty strong { color: var(--text); font-size: var(--fs-ui); font-weight: 550; }
+.thread-usage-empty p { max-width: 28ch; font-size: var(--fs-meta); line-height: 1.55; }
+@container (min-width: 460px) {
+  .thread-usage-card { padding: var(--s-4); }
+  .thread-usage .thread-usage-context-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .thread-usage-cost-value { font-size: 34px; }
+}
+@keyframes thread-usage-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .thread-usage, .thread-usage *, .thread-usage-details[open] > dl { animation: none; transition: none; }
+}

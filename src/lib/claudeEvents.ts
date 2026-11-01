@@ -7,7 +7,7 @@ import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { compactionActivity, compactionState, compactionTitle } from "./contextCompaction";
 import { consumeProviderStopIntent } from "./providerStopIntent";
-import { annotateThreadUsage, claudeCanonicalModel } from "./usageLedger";
+import { annotateThreadUsage, claudeCanonicalModel, recordClaudeNativeRequest, reconcileClaudeNativeUsage, reportThreadContextUsage } from "./usageLedger";
 import { mergedUsageEvidence } from "./usageEvidence";
 import { claudeWrapUpLimitReachedText, parseClaudeContinuation, useClaudeContinuationStore } from "./claudeContinuation";
 import { CLAUDE_USAGE_LIMIT_EXPLANATION, claudeResultError } from "./claudeUsageLimit";
@@ -43,6 +43,23 @@ interface ClaudePartialUsage {
   messageIds: Set<string>;
 }
 const partialUsage = new Map<string, ClaudePartialUsage>();
+interface ClaudeUsageMessage {
+  threadId: string;
+  turnId: string;
+  parentToolId: string;
+  messageId: string;
+  model: string;
+  usage: JsonObject;
+  streamed: boolean;
+  finished: boolean;
+  actualOutputTokens?: number;
+  childThreadId?: string;
+  projectPath?: string;
+}
+const usageMessages = new Map<string, ClaudeUsageMessage>();
+const activeUsageMessages = new Map<string, string>();
+/** Shared across raw launch-tool aliases for the same provider message. */
+const acceptedUsageMessages = new Map<string, { threadId: string; turnId: string; inputRecorded: boolean; recordedOutputTokens: number }>();
 const UNATTRIBUTED_MODEL = "unattributed";
 
 function object(value: unknown): JsonObject {
@@ -144,7 +161,22 @@ function aggregatedAssistantText(threadId: string, turnId: string, rowId: string
   return texts.join("");
 }
 
+function clearUsageMessageState(threadId: string, turnId?: string): void {
+  for (const [key, message] of usageMessages) {
+    if (message.threadId !== threadId || (turnId && message.turnId !== turnId)) continue;
+    flushNativeUsageMessage(message);
+    usageMessages.delete(key);
+  }
+  for (const [key, accepted] of acceptedUsageMessages) {
+    if (accepted.threadId === threadId && (!turnId || accepted.turnId === turnId)) acceptedUsageMessages.delete(key);
+  }
+  for (const [key, messageKey] of activeUsageMessages) {
+    if (!usageMessages.has(messageKey)) activeUsageMessages.delete(key);
+  }
+}
+
 function clearAssistantTurnState(threadId: string): void {
+  clearUsageMessageState(threadId);
   streams.delete(threadId);
   assistantRowIds.delete(threadId);
   assistantTexts.delete(threadId);
@@ -219,6 +251,107 @@ function addUsage(left: TokenUsageView, right: TokenUsageView): TokenUsageView {
   };
 }
 
+function usageChannelKey(threadId: string, turnId: string, parentToolId: string): string {
+  return JSON.stringify([threadId, turnId, parentToolId]);
+}
+
+function observeUsageMessage(threadId: string, turnId: string, parentToolId: string, assistant: JsonObject, projectPath?: string, streamed = false): ClaudeUsageMessage | undefined {
+  const messageId = text(assistant.id);
+  if (!messageId) return undefined;
+  const channel = usageChannelKey(threadId, turnId, parentToolId);
+  const key = JSON.stringify([threadId, turnId, parentToolId, messageId]);
+  let message = usageMessages.get(key);
+  const alreadyObserved = Boolean(message);
+  if (!message) {
+    message = { threadId, turnId, parentToolId, messageId, model: text(assistant.model), usage: object(assistant.usage), streamed, finished: false, projectPath };
+    usageMessages.set(key, message);
+  } else {
+    message.usage = { ...message.usage, ...object(assistant.usage) };
+    message.model = text(assistant.model) || message.model;
+    message.streamed ||= streamed;
+  }
+  const previousKey = activeUsageMessages.get(channel);
+  const previous = previousKey ? usageMessages.get(previousKey) : undefined;
+  if (!previous || previousKey === key || (!alreadyObserved && (streamed || previous.finished || !previous.streamed))) {
+    if (previous && previousKey !== key) flushNativeUsageMessage(previous);
+    activeUsageMessages.set(channel, key);
+  }
+  return message;
+}
+
+function requestContext(rawUsage: JsonObject, actualOutputTokens?: number): Pick<TokenUsageView,
+  "contextTokens" | "contextInputTokens" | "contextOutputTokens" | "contextCachedInputTokens" | "contextReasoningOutputTokens" | "contextWindow"
+> {
+  const usage = usageView({ ...rawUsage, output_tokens: actualOutputTokens ?? 0 });
+  const completeInput = Number.isSafeInteger(rawUsage.input_tokens) && Number(rawUsage.input_tokens) >= 0
+    && usage?.cacheReadReported === true && usage.cacheWriteReported === true;
+  return {
+    contextTokens: completeInput && actualOutputTokens !== undefined ? usage!.inputTokens + actualOutputTokens : undefined,
+    contextInputTokens: completeInput ? usage!.inputTokens : undefined,
+    contextOutputTokens: actualOutputTokens,
+    contextCachedInputTokens: usage?.cacheReadReported ? usage.cachedInputTokens : undefined,
+    contextReasoningOutputTokens: undefined,
+    contextWindow: null,
+  };
+}
+
+function publishRootRequestContext(message: ClaudeUsageMessage): void {
+  if (message.parentToolId || message.model === "<synthetic>"
+    || activeUsageMessages.get(usageChannelKey(message.threadId, message.turnId, ""))
+      !== JSON.stringify([message.threadId, message.turnId, "", message.messageId])) return;
+  const usage = reportThreadContextUsage(message.threadId, requestContext(message.usage, message.actualOutputTokens));
+  useTaskStore.setState((state) => {
+    const task = state.tasks[message.threadId];
+    if (!task) return state;
+    return { tasks: { ...state.tasks, [message.threadId]: { ...task, usage } } };
+  });
+}
+
+function flushNativeUsageMessage(message: ClaudeUsageMessage): void {
+  if (!message.childThreadId || message.model === "<synthetic>") return;
+  const acceptedKey = JSON.stringify([message.threadId, message.turnId, message.messageId]);
+  const previous = acceptedUsageMessages.get(acceptedKey);
+  // A cutoff can arrive after valid cumulative output telemetry but before
+  // message_stop. Keep those observed tokens as a lower bound; the missing
+  // completion still makes the request partial.
+  const actualOutputTokens = message.actualOutputTokens;
+  if (previous?.inputRecorded && (actualOutputTokens === undefined || actualOutputTokens <= previous.recordedOutputTokens)) return;
+  const inputUsage = usageView({ ...message.usage, output_tokens: 0 });
+  if (!inputUsage) return;
+  const accepted = recordClaudeNativeRequest({
+    parentThreadId: message.threadId, childThreadId: message.childThreadId,
+    model: message.model ? claudeCanonicalModel(message.model) : UNATTRIBUTED_MODEL,
+    projectPath: message.projectPath, inputUsage,
+    actualOutputTokens,
+    outputComplete: message.finished,
+    inputAlreadyRecorded: previous?.inputRecorded,
+    previousOutputTokens: previous?.recordedOutputTokens,
+    messageId: message.messageId, turnId: message.turnId,
+  });
+  acceptedUsageMessages.set(acceptedKey, { ...accepted, threadId: message.threadId, turnId: message.turnId });
+}
+
+function observeUsageDelta(threadId: string, turnId: string, parentToolId: string, stream: JsonObject): void {
+  const key = activeUsageMessages.get(usageChannelKey(threadId, turnId, parentToolId));
+  const message = key ? usageMessages.get(key) : undefined;
+  if (!message) return;
+  if (stream.type === "message_delta") {
+    const outputTokens = object(stream.usage).output_tokens;
+    // Anthropic's streamed message_delta usage is cumulative for this exact
+    // request. Assistant envelopes instead contain message_start placeholders.
+    if (typeof outputTokens === "number" && Number.isSafeInteger(outputTokens) && outputTokens >= 0) {
+      message.actualOutputTokens = Math.max(message.actualOutputTokens ?? 0, outputTokens);
+      if (text(object(stream.delta).stop_reason)) message.finished = true;
+      if (message.finished) flushNativeUsageMessage(message);
+      publishRootRequestContext(message);
+    }
+  } else if (stream.type === "message_stop") {
+    message.finished = true;
+    flushNativeUsageMessage(message);
+    publishRootRequestContext(message);
+  }
+}
+
 function remainingUsage(total: TokenUsageView, recorded: TokenUsageView): TokenUsageView {
   const inputTokens = Math.max(0, total.inputTokens - recorded.inputTokens);
   const outputTokens = Math.max(0, total.outputTokens - recorded.outputTokens);
@@ -245,7 +378,21 @@ function recordAssistantUsage(threadId: string, turnId: string, messageId: strin
   if (current?.messageIds.has(messageId)) return;
   const resolvedModel = model ? claudeCanonicalModel(model) : UNATTRIBUTED_MODEL;
   annotateThreadUsage(threadId, { provider: "claude", model: resolvedModel, projectPath });
-  useTaskStore.getState().addUsage(threadId, usage, `claude-assistant:${messageId}`, turnId);
+  const observed = usageMessages.get(JSON.stringify([threadId, turnId, "", messageId]));
+  // The root assistant message is one model request. Its prompt includes
+  // uncached input plus cache reads/writes; the result remainder below is
+  // aggregate billing data and must never replace this context snapshot.
+  // Parent-linked native children return before reaching this recorder.
+  const isLatestRequest = activeUsageMessages.get(usageChannelKey(threadId, turnId, ""))
+    === JSON.stringify([threadId, turnId, "", messageId]);
+  const contextSnapshot = model === "<synthetic>" || !isLatestRequest ? {} : {
+    contextSnapshotReported: true,
+    ...requestContext(object(value), observed?.actualOutputTokens),
+  };
+  useTaskStore.getState().addUsage(threadId, {
+    ...usage,
+    ...contextSnapshot,
+  }, `claude-assistant:${messageId}`, turnId);
   const byModel = new Map(current?.byModel);
   byModel.set(resolvedModel, byModel.has(resolvedModel) ? addUsage(byModel.get(resolvedModel)!, usage) : usage);
   partialUsage.set(key, {
@@ -380,6 +527,10 @@ function recordResultUsage(threadId: string, turnId: string, value: unknown, mod
 }
 
 export function resetClaudeEventUsageState(): void {
+  for (const message of usageMessages.values()) flushNativeUsageMessage(message);
+  usageMessages.clear();
+  activeUsageMessages.clear();
+  acceptedUsageMessages.clear();
   partialUsage.clear();
   claudeTaskTools.clear();
   claudeNativeToolAliases.clear();
@@ -580,6 +731,10 @@ function reconcileClaudeNativeIdentity(threadId: string, turnId: string, previou
   }, ctx)) return false;
   // Account for the canonical durable link before retiring its proven alias.
   if (ctx.onNativeAgentReidentified?.(threadId, previousId, canonicalId, turnId) === false) return false;
+  reconcileClaudeNativeUsage(threadId, previousId, canonicalId);
+  for (const message of usageMessages.values()) {
+    if (message.threadId === threadId && message.turnId === turnId && message.childThreadId === previousId) message.childThreadId = canonicalId;
+  }
   useTaskStore.setState((state) => {
     const current = state.tasks[threadId];
     if (!current) return state;
@@ -865,7 +1020,10 @@ export function routeClaudeEvent(
   const terminalEvent = type === "result" || type === "openkiwi_exit";
   if (isRetiredClaudeTurn(threadId, turnId)) {
     // Already settled (by its receipt, Stop or recovery): nothing to keep.
-    if (terminalEvent) void acknowledgeClaudeTerminalReceipt(threadId, turnId).catch(() => {});
+    if (terminalEvent) {
+      clearUsageMessageState(threadId, turnId);
+      void acknowledgeClaudeTerminalReceipt(threadId, turnId).catch(() => {});
+    }
     return;
   }
 
@@ -896,14 +1054,34 @@ export function routeClaudeEvent(
       : entry.type === "tool_use" ? `Tool: ${text(entry.name)}`
         : entry.type === "tool_result" ? (Array.isArray(entry.content) ? entry.content.map(object).map((block) => text(block.text)).filter(Boolean).join("\n") : text(entry.content)) : "").filter(Boolean).join("\n\n");
     const nativeToolId = bindClaudeNativeTask(threadId, turnId, text(message.agent_id), parentToolId, ctx);
-    recordClaudeNativeAgent(threadId, nativeToolId, { model: type === "assistant" ? text(childMessage.model) || undefined : undefined, progress: boundedNativeText(progress, "progress"), status: "inProgress", rootTurnId: turnId }, ctx);
+    const accepted = recordClaudeNativeAgent(threadId, nativeToolId, { model: type === "assistant" ? text(childMessage.model) || undefined : undefined, progress: boundedNativeText(progress, "progress"), status: "inProgress", rootTurnId: turnId }, ctx);
+    if (accepted && type === "assistant") {
+      const usageMessage = observeUsageMessage(threadId, turnId, parentToolId, childMessage, ctx.bindingFor(threadId));
+      if (usageMessage) {
+        usageMessage.childThreadId = claudeNativeId(threadId, nativeToolId);
+        if (usageMessage.finished) flushNativeUsageMessage(usageMessage);
+      }
+    }
     ctx.onTranscriptChanged(threadId);
+    return;
+  }
+  if (parentToolId && type === "stream_event") {
+    if (claudeNativeToolFromPreviousTurn(threadId, turnId, parentToolId, ctx)) return;
+    const stream = object(message.event);
+    if (stream.type === "message_start") {
+      const assistant = object(stream.message);
+      const nativeToolId = bindClaudeNativeTask(threadId, turnId, text(message.agent_id), parentToolId, ctx);
+      if (recordClaudeNativeAgent(threadId, nativeToolId, { model: text(assistant.model) || undefined, status: "inProgress", rootTurnId: turnId }, ctx)) {
+        const usageMessage = observeUsageMessage(threadId, turnId, parentToolId, assistant, ctx.bindingFor(threadId), true);
+        if (usageMessage) usageMessage.childThreadId = claudeNativeId(threadId, nativeToolId);
+      }
+    } else observeUsageDelta(threadId, turnId, parentToolId, stream);
     return;
   }
   // Child partial streams, lifecycle and telemetry are not root events.
   // In particular, a child message_start must not replace the root's active
-  // assistant or pending tool blocks. Only complete child messages above
-  // establish worker evidence; generic parent-linked progress creates none.
+  // assistant or pending tool blocks. Their usage is routed separately above;
+  // generic parent-linked progress creates no root transcript content.
   // Permission controls still belong to the shared root CLI channel.
   if (parentToolId && type !== "control_request" && type !== "control_cancel_request") return;
   if (type === "system" && ["task_started", "task_progress", "task_notification"].includes(text(message.subtype))) {
@@ -913,6 +1091,12 @@ export function routeClaudeEvent(
     const summary = text(message.summary);
     if (!recordClaudeNativeAgent(threadId, toolId, { prompt: text(message.description) || undefined, status, rootTurnId: turnId,
       ...(message.subtype === "task_notification" ? { result: boundedNativeText(summary, "result") } : { progress: boundedNativeText(summary || text(message.last_tool_name), "progress") }) }, ctx)) return;
+    if (message.subtype === "task_notification" && !isActiveAgentRecord(status)) {
+      const childThreadId = claudeNativeId(threadId, toolId);
+      for (const pending of usageMessages.values()) {
+        if (pending.threadId === threadId && pending.turnId === turnId && pending.childThreadId === childThreadId) flushNativeUsageMessage(pending);
+      }
+    }
     const latestTask = useTaskStore.getState().tasks[threadId];
     const nativeAgent = latestTask?.agents.find((agent) => agent.id === claudeNativeId(threadId, toolId));
     for (const activity of latestTask?.activities ?? []) {
@@ -993,11 +1177,17 @@ export function routeClaudeEvent(
       blocks.delete(threadId);
       clearClaudeNativeTaskBindings(threadId, turnId, true);
       const assistant = object(stream.message);
+      const usageMessage = observeUsageMessage(threadId, turnId, "", assistant, ctx.bindingFor(threadId), true);
+      if (usageMessage) publishRootRequestContext(usageMessage);
       const providerId = text(assistant.id);
       streams.set(threadId, { id: providerId || `claude-${turnId}-${crypto.randomUUID()}`, turnId, generated: !providerId });
       store.setActiveTurn(threadId, turnId);
       store.setTaskStatus(threadId, "running");
       foregroundStatus(ctx, threadId, "Working");
+      return;
+    }
+    if (streamType === "message_delta" || streamType === "message_stop") {
+      observeUsageDelta(threadId, turnId, "", stream);
       return;
     }
     if (streamType === "content_block_start") {
@@ -1052,6 +1242,7 @@ export function routeClaudeEvent(
 
   if (type === "assistant") {
     const assistant = object(message.message);
+    observeUsageMessage(threadId, turnId, "", assistant, ctx.bindingFor(threadId));
     const stream = streams.get(threadId);
     const providerId = text(assistant.id);
     const id = providerId || (stream?.turnId === turnId ? stream.id : `claude-${turnId}`);
@@ -1126,7 +1317,11 @@ export function routeClaudeEvent(
           usage.source === "claude-skill-tool" ? { ...usage, status: result.is_error ? "failed" as const : "loaded" as const } : usage) } : {}),
       });
       if (existing.agent?.provider === "claude" && existing.agent.threadIds?.length === 1) {
-        recordClaudeNativeAgent(threadId, existing.agent.threadIds[0].slice(`claude-native:${threadId}:`.length), { status: result.is_error ? "failed" : "completed", result: boundedNativeText(resultContent, "result"), rootTurnId: turnId }, ctx);
+        const childThreadId = existing.agent.threadIds[0];
+        recordClaudeNativeAgent(threadId, childThreadId.slice(`claude-native:${threadId}:`.length), { status: result.is_error ? "failed" : "completed", result: boundedNativeText(resultContent, "result"), rootTurnId: turnId }, ctx);
+        for (const pending of usageMessages.values()) {
+          if (pending.threadId === threadId && pending.turnId === turnId && pending.childThreadId === childThreadId) flushNativeUsageMessage(pending);
+        }
       }
     }
     ctx.onTranscriptChanged(threadId);
