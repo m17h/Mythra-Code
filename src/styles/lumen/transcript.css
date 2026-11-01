@@ -28,7 +28,7 @@
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-cursor { color: #26251e; background: #edecec; box-shadow: inset 0 0 0 1px var(--line); }
 .app-shell[data-theme][data-color-scheme] .message-avatar.provider-lmstudio { background: transparent; box-shadow: none; }
 
-.app-shell[data-theme][data-color-scheme] .message-body { color: var(--text); font-size: var(--fs-body); line-height: 1.65; }
+.app-shell[data-theme][data-color-scheme] .message-body { color: var(--lm-reading-ink, var(--text)); font-size: var(--fs-body); line-height: 1.65; }
 /* The hover toolbar starts 30px above a reply. Reserve 8px of clearance
    using the previous row's padding (messages: 28px, disclosures: 12px,
    activities: 6px). Keep it reserved while streaming so completion is stable. */

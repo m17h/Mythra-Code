@@ -98,24 +98,30 @@
   --t-fast: var(--lm-d-1);
   --t-mid: var(--lm-d-2);
 
-  /* Palette (neutral graphite; overridden per theme below) */
-  --lm-canvas: #1d1e21;
+  /* Palette (neutral graphite; overridden per theme below).
+     Morgan (2026-11-01, after 1.31.1): the dark themes felt too contrasty,
+     too dark behind and too bright in front, especially on Windows. The
+     graphite surfaces are lifted a few steps and the brightest ink is eased
+     off pure white. Chat prose reads in the softer --lm-reading-ink, as it
+     did before the Pro redesign (which had moved it to full --text). */
+  --lm-canvas: #212226;
   --lm-aurora-1: rgba(0, 0, 0, 0);
   --lm-aurora-2: rgba(0, 0, 0, 0);
   --lm-aurora-3: rgba(0, 0, 0, 0);
-  --bg: #1d1e21;
-  --sidebar: #232427;
-  --panel: #27282c;
-  --panel-2: #2e2f34;
-  --panel-3: #38393f;
-  --field: #242528;
-  --menu-surface: #2b2c30;
-  --topbar: rgba(29, 30, 33, .9);
+  --bg: #212226;
+  --sidebar: #26272b;
+  --panel: #2a2b30;
+  --panel-2: #313237;
+  --panel-3: #3b3c42;
+  --field: #27282c;
+  --menu-surface: #2e2f34;
+  --topbar: rgba(33, 34, 38, .9);
   --line: rgba(255, 255, 255, .08);
   --line-strong: rgba(255, 255, 255, .13);
   --line-quiet: rgba(255, 255, 255, .05);
-  --text: #ececed;
-  --ink-2: #c8c8cc;
+  --text: #e4e4e7;
+  --ink-2: #c6c7cb;
+  --lm-reading-ink: #d2d3d7;
   --muted: #9a9aa0;
   --muted-2: #8e8e94;
   --green: #64ddf2;
@@ -136,7 +142,7 @@
   --lm-island-shadow: none;
   /* Popovers, menus and sheets: a hairline edge plus a soft, short shadow. */
   --lm-pop-shadow: 0 0 0 1px rgba(0, 0, 0, .5), 0 14px 34px -8px rgba(0, 0, 0, .5), 0 4px 10px -4px rgba(0, 0, 0, .35);
-  --lm-code-bg: #18191c;
+  --lm-code-bg: #1b1c1f;
   --lm-code-ink: #d0d0d4;
   --lm-scrim: rgba(0, 0, 0, .42);
   --lm-hover: rgba(255, 255, 255, .055);
@@ -196,8 +202,22 @@
   --orange: #ffb45f; --red: #ff7582; --info: #8be1ff;
 }
 
+/* ---- Windows: dark text renders heavier there ----
+   macOS draws light-on-dark text with thin grayscale antialiasing
+   (-webkit-font-smoothing), which Windows ignores. ClearType/DirectWrite
+   draws the same white text bolder and brighter, so on Windows the dark
+   themes ease their ink down one more step. html[data-platform] is set at
+   startup (startApplication.tsx). Light themes are unchanged. */
+html[data-platform="windows"] .app-shell[data-theme][data-color-scheme="dark"] {
+  --text: #dadadd;
+  --ink-2: #bebfc3;
+  --lm-reading-ink: #c9cace;
+  --muted: #94959b;
+}
+
 /* ---- Shared light treatment ---- */
 .app-shell[data-theme][data-color-scheme="light"] {
+  --lm-reading-ink: var(--text);
   --lm-island-highlight: rgba(255, 255, 255, .9);
   --lm-island-shadow: none;
   --lm-pop-shadow: 0 0 0 1px rgba(0, 0, 0, .08), 0 14px 34px -10px rgba(0, 0, 0, .22), 0 3px 8px -3px rgba(0, 0, 0, .1);

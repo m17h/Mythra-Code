@@ -6,6 +6,7 @@ import { hydrateNativeStorage } from "./storage";
 import { installContextMenuBlocker } from "./contextMenu";
 import { installGlobalErrorCapture } from "./errorLog";
 import { failStartup, hasStartupFailed, markStartupReady, registerStartupNotifier, setStartupStage } from "./startup";
+import { isMacPlatform, isWindowsPlatform } from "./platform";
 import "../styles.css";
 // The Lumen redesign must follow styles.css: same-named @keyframes and any
 // equal-specificity rules resolve to whichever sheet comes last.
@@ -32,6 +33,9 @@ export async function startApplication(): Promise<void> {
   if (hasStartupFailed()) return;
   installContextMenuBlocker();
   installGlobalErrorCapture();
+  // Platform-specific tuning in CSS (for example Windows' heavier text
+  // rendering on dark themes, see lumen/tokens.css) keys off this marker.
+  document.documentElement.setAttribute("data-platform", isWindowsPlatform() ? "windows" : isMacPlatform() ? "mac" : "other");
 
   setStartupStage("hydration");
   await hydrateNativeStorage();
