@@ -727,6 +727,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         text,
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
+        turnId: expectedSteerTurnId,
         steerStatus: "sending",
       });
       try {
@@ -739,7 +740,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           );
           // Claude reads steering between steps. Its lifecycle events then
           // move this message from "queued" to "read" (claudeEvents.ts).
-          useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, claudeSteerReadState(steerRuntimeId) ?? "queued", steerRuntimeId);
+          useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, claudeSteerReadState(activeThread.id, expectedSteerTurnId, steerRuntimeId) ?? "queued", steerRuntimeId);
           scheduleClaudeThreadSave(activeThread.id);
         } else if (isCursorThread(activeThread)) {
           await steerCursorTurn(
@@ -761,7 +762,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         if (!isClaudeThread(activeThread)) useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
         recordAuthoredPrompt(activeThread.id, steerMessageId);
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
-        setTransientStatus("Steer accepted by the active turn");
+        setTransientStatus(isClaudeThread(activeThread) ? "Steer sent to Claude" : "Steer accepted by the active turn");
         return true;
       } catch (reason) {
         if (deliveryIsUncertain(reason)) {

@@ -817,47 +817,70 @@ export function AssistantMessageMarkdown({ text, streaming, presentation, reveal
 /**
  * A Claude steer the CLI has queued but not read yet. Claude reads steering
  * between steps, so while its sub-agents run in the foreground the steer
- * waits for them. "Stop sub-agents and send now" interrupts that step; the
- * turn stays open and Claude answers the steer right away.
+ * can wait for them. "Send now" requests a targeted interruption of that
+ * step; only the message lifecycle confirms that Claude read the steer.
  */
 function QueuedSteerStatus({ message }: { message: ChatMessage }) {
-  const threadId = useTaskStore((state) => state.activeThreadId);
-  const running = useTaskStore((state) => (threadId ? state.tasks[threadId]?.status === "running" : false));
-  const turnId = useTaskStore((state) => (threadId ? state.tasks[threadId]?.activeTurnId : undefined));
+  const matchesMessage = (candidate: ChatMessage) => candidate.role === "user"
+    && candidate.turnId === message.turnId && candidate.steerRuntimeId === message.steerRuntimeId
+    && (candidate.id === message.id || candidate.clientMessageId === message.id
+      || (Boolean(message.clientMessageId) && (candidate.id === message.clientMessageId || candidate.clientMessageId === message.clientMessageId)));
+  // A history row must never acquire the selected conversation's current
+  // turn merely because navigation or a new turn changed global selection.
+  const threadId = useTaskStore((state) => {
+    const selected = state.activeThreadId;
+    return selected && state.tasks[selected]?.messages.some(matchesMessage) ? selected : undefined;
+  });
+  const running = useTaskStore((state) => Boolean(threadId && message.turnId
+    && state.tasks[threadId]?.status === "running" && state.tasks[threadId]?.activeTurnId === message.turnId));
   const agentsWorking = useTaskStore((state) => Boolean(threadId && state.tasks[threadId]?.agents?.some((agent) =>
-    agent.runtime === "claude" && isActiveAgentRecord(agent.status))));
+    agent.runtime === "claude" && agent.rootTurnId === message.turnId && isActiveAgentRecord(agent.status))));
+  const deliveringRef = useRef(false);
   const [delivering, setDelivering] = useState(false);
+  const [requested, setRequested] = useState(false);
   const [failure, setFailure] = useState("");
   if (!running) {
     return (
-      <div className="message-steer-status unconfirmed" role="status" title="Claude finished or was stopped before it read this message. Send it again if it still applies.">
+      <div className="message-steer-status unconfirmed" role="status" title="Claude has not confirmed reading this message in its original turn. Inspect the conversation before sending it again.">
         <AlertTriangle size={11} aria-hidden="true" />
-        Not read before the turn ended
+        Steer reading unconfirmed
       </div>
     );
   }
   const deliverNow = async () => {
-    if (!threadId || !turnId || delivering) return;
+    if (!threadId || !message.turnId || !message.steerRuntimeId || deliveringRef.current || requested) return;
+    const state = useTaskStore.getState();
+    const task = state.tasks[threadId];
+    if (state.activeThreadId !== threadId || task?.status !== "running" || task.activeTurnId !== message.turnId
+      || !task.messages.some((candidate) => matchesMessage(candidate) && candidate.steerStatus === "queued")) return;
+    deliveringRef.current = true;
     setDelivering(true);
     setFailure("");
     try {
-      await deliverClaudeSteerNow(threadId, turnId);
+      await deliverClaudeSteerNow(threadId, message.turnId, message.steerRuntimeId);
+      setRequested(true);
     } catch (reason) {
       setFailure(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      deliveringRef.current = false;
       setDelivering(false);
     }
   };
   return (
-    <div className="message-steer-status queued" role="status" title={failure || (agentsWorking
-      ? "Claude reads new messages between steps. It is waiting on its sub-agents, so it will read this when they finish."
-      : "Claude reads new messages between steps. It will read this after its current step.")}>
+    <div className="message-steer-status queued" role="status" title={agentsWorking
+      ? "Claude reads new messages between steps. Its sub-agents are still working."
+      : "Claude reads new messages between steps. This message is queued for a later step."}>
       <Clock size={11} aria-hidden="true" />
-      {delivering ? "Stopping sub-agents…" : agentsWorking ? "Waiting for Claude's sub-agents to finish" : "Waiting for Claude's next step"}
-      {agentsWorking && !delivering && (
-        <button type="button" className="message-steer-now" onClick={() => void deliverNow()}>
-          Stop sub-agents and send now
+      {delivering ? "Requesting delivery…" : requested ? "Delivery requested; waiting for Claude to read"
+        : agentsWorking ? "Queued while Claude's sub-agents work" : "Waiting for Claude's next step"}
+      {message.steerRuntimeId && !requested && (
+        <button type="button" className="message-steer-now" disabled={delivering} aria-busy={delivering}
+          title="Interrupt Claude's current step so it can read this message. Sub-agents may continue in the background."
+          onClick={() => void deliverNow()}>
+          {failure ? "Retry send now" : "Send now"}
         </button>
       )}
+      {failure && <span className="message-steer-error" role="alert">Could not request delivery: {failure}</span>}
     </div>
   );
 }
@@ -903,16 +926,18 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit, 
       )}
     </div>
   );
+  const claudeReadUnconfirmed = message.steerStatus === "unconfirmed" && Boolean(message.steerRuntimeId);
   const steerStatus = message.role === "user" && message.steerStatus && (
     message.steerStatus === "queued"
-      ? <QueuedSteerStatus message={message} />
+      ? <QueuedSteerStatus key={`${message.turnId}:${message.steerRuntimeId ?? message.id}`} message={message} />
       : <div className={`message-steer-status ${message.steerStatus}`} role="status" title={message.steerStatus === "unconfirmed"
-        ? "The runtime did not confirm delivery. This guidance may have reached the active turn."
+        ? claudeReadUnconfirmed ? "Claude received this message but did not confirm reading it. Inspect the conversation before sending it again."
+          : "The runtime did not confirm delivery. This guidance may have reached the active turn."
         : message.steerStatus === "accepted" ? "Runtime input delivery confirmed."
-          : message.steerStatus === "read" ? "Claude has started acting on this message." : undefined}>
+          : message.steerStatus === "read" ? "Claude confirmed reading this message." : undefined}>
         {message.steerStatus === "unconfirmed" ? <AlertTriangle size={11} aria-hidden="true" />
           : message.steerStatus === "accepted" || message.steerStatus === "read" ? <Check size={11} aria-hidden="true" /> : <CornerUpRight size={11} aria-hidden="true" />}
-        {message.steerStatus === "unconfirmed" ? "Steer delivery unconfirmed"
+        {message.steerStatus === "unconfirmed" ? claudeReadUnconfirmed ? "Claude reading unconfirmed" : "Steer delivery unconfirmed"
           : message.steerStatus === "accepted" ? "Steer delivered to runtime input"
             : message.steerStatus === "read" ? "Read by Claude" : "Sending steer…"}
       </div>

@@ -87,8 +87,7 @@
 }
 
 .app-shell[data-theme][data-color-scheme] .message-steer-status { font-family: var(--font-sans); font-size: 11px; }
-/* A steer Claude has not read yet (queued behind its current step), with the
-   option to stop foreground sub-agents so it is read now. Neutral, no accent. */
+/* A steer Claude has not read yet, with a targeted delivery request. */
 .app-shell[data-theme][data-color-scheme] .message-steer-status.queued { flex-wrap: wrap; color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .message-steer-status.read { color: var(--muted); }
 .app-shell[data-theme][data-color-scheme] .message-steer-now {
@@ -102,7 +101,9 @@
   font: inherit;
   cursor: pointer;
 }
-.app-shell[data-theme][data-color-scheme] .message-steer-now:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .message-steer-now:hover:not(:disabled) { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .message-steer-now:disabled { cursor: wait; opacity: .65; }
+.app-shell[data-theme][data-color-scheme] .message-steer-error { flex-basis: 100%; color: var(--text); overflow-wrap: anywhere; }
 .app-shell[data-theme][data-color-scheme] .stream-caret { width: 7px; height: 15px; border-radius: 2px; background: var(--lm-fill); box-shadow: none; }
 
 /* ---- Markdown ---- */

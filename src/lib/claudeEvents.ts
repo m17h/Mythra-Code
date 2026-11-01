@@ -7,7 +7,7 @@ import type { TokenUsageView } from "../components/StudioDock";
 import { useTaskStore } from "./taskStore";
 import { compactionActivity, compactionState, compactionTitle } from "./contextCompaction";
 import { consumeProviderStopIntent } from "./providerStopIntent";
-import { annotateThreadUsage, claudeCanonicalModel, recordClaudeNativeRequest, reconcileClaudeNativeUsage, reportThreadContextUsage } from "./usageLedger";
+import { annotateThreadUsage, claudeCanonicalModel, recordClaudeNativeRequest, reconcileClaudeNativeUsage, reportThreadContextUsage, usageForThread } from "./usageLedger";
 import { mergedUsageEvidence } from "./usageEvidence";
 import { claudeWrapUpLimitReachedText, parseClaudeContinuation, useClaudeContinuationStore } from "./claudeContinuation";
 import { CLAUDE_USAGE_LIMIT_EXPLANATION, claudeResultError } from "./claudeUsageLimit";
@@ -43,6 +43,10 @@ interface ClaudePartialUsage {
   messageIds: Set<string>;
 }
 const partialUsage = new Map<string, ClaudePartialUsage>();
+/** One app turn can contain several Claude queries while steering/background
+ * work resumes it. A held query result is also replayed as its terminal result
+ * when nothing resumes, so consume each exact provider receipt only once. */
+const resultUsageReceipts = new Map<string, { receipts: Set<string>; assistantIds: Set<string> }>();
 interface ClaudeUsageMessage {
   threadId: string;
   turnId: string;
@@ -172,6 +176,9 @@ function clearUsageMessageState(threadId: string, turnId?: string): void {
   }
   for (const [key, messageKey] of activeUsageMessages) {
     if (!usageMessages.has(messageKey)) activeUsageMessages.delete(key);
+  }
+  for (const key of resultUsageReceipts.keys()) {
+    if (turnId ? key === `${threadId}\0${turnId}` : key.startsWith(`${threadId}\0`)) resultUsageReceipts.delete(key);
   }
 }
 
@@ -375,7 +382,7 @@ function recordAssistantUsage(threadId: string, turnId: string, messageId: strin
   if (!usage || usage.totalTokens <= 0) return;
   const key = `${threadId}\0${turnId}`;
   const current = partialUsage.get(key);
-  if (current?.messageIds.has(messageId)) return;
+  if (current?.messageIds.has(messageId) || resultUsageReceipts.get(key)?.assistantIds.has(messageId)) return;
   const resolvedModel = model ? claudeCanonicalModel(model) : UNATTRIBUTED_MODEL;
   annotateThreadUsage(threadId, { provider: "claude", model: resolvedModel, projectPath });
   const observed = usageMessages.get(JSON.stringify([threadId, turnId, "", messageId]));
@@ -505,25 +512,34 @@ function reconciledModelRemainder(value: unknown, total: TokenUsageView, partial
     && sum.cacheWrite1hInputTokens === expected.cacheWrite1hInputTokens ? remainder : null;
 }
 
-function recordResultUsage(threadId: string, turnId: string, value: unknown, modelUsage: unknown, projectPath?: string): void {
+function recordResultUsage(threadId: string, turnId: string, receiptId: string, value: unknown, modelUsage: unknown, projectPath?: string): void {
   const key = `${threadId}\0${turnId}`;
+  const receiptEventId = `claude-query-receipt:${turnId}:${receiptId}`;
+  const receipts = resultUsageReceipts.get(key) ?? { receipts: new Set<string>(), assistantIds: new Set<string>() };
+  if (receipts.receipts.has(receiptId) || usageForThread(threadId)?.eventIds?.includes(receiptEventId)) return;
+  receipts.receipts.add(receiptId);
+  resultUsageReceipts.set(key, receipts);
   const partial = partialUsage.get(key);
+  for (const messageId of partial?.messageIds ?? []) receipts.assistantIds.add(messageId);
   partialUsage.delete(key);
   const total = usageView(value);
   if (!total) return;
   const usage = partial ? remainingUsage(total, partial.usage) : total;
-  if (usage.totalTokens <= 0) return;
   const byModel = reconciledModelRemainder(modelUsage, total, partial);
   if (byModel) {
     for (const [model, delta] of byModel) {
       if (delta.totalTokens <= 0) continue;
       annotateThreadUsage(threadId, { provider: "claude", model, projectPath });
-      useTaskStore.getState().addUsage(threadId, delta, `claude-result:${turnId}:${model}`, turnId);
+      useTaskStore.getState().addUsage(threadId, delta, `claude-result:${turnId}:${receiptId}:${model}`, turnId);
     }
-  } else {
+  } else if (usage.totalTokens > 0) {
     annotateThreadUsage(threadId, { provider: "claude", model: UNATTRIBUTED_MODEL, projectPath });
-    useTaskStore.getState().addUsage(threadId, usage, `claude-result:${turnId}:unattributed`, turnId);
+    useTaskStore.getState().addUsage(threadId, usage, `claude-result:${turnId}:${receiptId}:unattributed`, turnId);
   }
+  // Even a zero remainder consumed a receipt: after reopening, replaying that
+  // held result must not count its already-recorded assistant tokens again.
+  useTaskStore.getState().addUsage(threadId, { ...total, totalTokens: 0, inputTokens: 0, outputTokens: 0,
+    cachedInputTokens: 0, cacheWriteInputTokens: 0, cacheWrite1hInputTokens: 0, reasoningOutputTokens: 0 }, receiptEventId, turnId);
 }
 
 export function resetClaudeEventUsageState(): void {
@@ -532,6 +548,8 @@ export function resetClaudeEventUsageState(): void {
   activeUsageMessages.clear();
   acceptedUsageMessages.clear();
   partialUsage.clear();
+  resultUsageReceipts.clear();
+  steerLifecycle.clear();
   claudeTaskTools.clear();
   claudeNativeToolAliases.clear();
   claudeTaskRuns.clear();
@@ -1015,23 +1033,32 @@ function foregroundError(ctx: ClaudeEventContext, threadId: string, message: str
  * reads the steer. A lifecycle can arrive before the steer invoke resolves,
  * so the latest state per UUID is remembered briefly (claudeSteerReadState).
  */
-const steerLifecycle = new Map<string, "queued" | "read">();
+type ClaudeSteerState = "queued" | "read" | "unconfirmed";
+// Keep a bounded receipt cache through completion: an invoke can return its
+// UUID after the terminal event. Exact owners prevent a retired turn's receipt
+// from being reused by another conversation or activation.
+const steerLifecycle = new Map<string, ClaudeSteerState>();
 
-export function claudeSteerReadState(steerRuntimeId: string): "queued" | "read" | undefined {
-  return steerLifecycle.get(steerRuntimeId);
+export function claudeSteerReadState(threadId: string, turnId: string, steerRuntimeId: string): ClaudeSteerState | undefined {
+  return steerLifecycle.get(JSON.stringify([threadId, turnId, steerRuntimeId]));
 }
 
-function applyClaudeSteerLifecycle(threadId: string, commandId: string, state: string): void {
-  if (!commandId) return;
-  const status = state === "queued" ? "queued" : state === "started" || state === "completed" ? "read" : undefined;
-  if (!status) return;
-  if (steerLifecycle.get(commandId) === "read" && status === "queued") return;
-  steerLifecycle.set(commandId, status);
+function applyClaudeSteerLifecycle(threadId: string, turnId: string, commandId: string, state: string): boolean {
+  if (!commandId) return false;
+  const incoming = state === "queued" ? "queued" : state === "started" || state === "completed" ? "read"
+    : ["cancelled", "discarded", "refused"].includes(state) ? "unconfirmed" : undefined;
+  if (!incoming) return false;
+  const key = JSON.stringify([threadId, turnId, commandId]);
+  const previous = steerLifecycle.get(key);
+  const status = previous === "read" || (previous === "unconfirmed" && incoming === "queued") ? previous : incoming;
+  steerLifecycle.set(key, status);
   if (steerLifecycle.size > 200) steerLifecycle.delete(steerLifecycle.keys().next().value as string);
   const store = useTaskStore.getState();
-  const message = store.tasks[threadId]?.messages.find((entry) => entry.steerRuntimeId === commandId);
-  if (!message || (message.steerStatus === "read" && status === "queued")) return;
+  const message = store.tasks[threadId]?.messages.find((entry) => entry.role === "user"
+    && entry.turnId === turnId && entry.steerRuntimeId === commandId);
+  if (!message || message.steerStatus === status || message.steerStatus === "read") return false;
   store.setMessageSteerStatus(threadId, message.id, status);
+  return true;
 }
 
 export function routeClaudeEvent(
@@ -1054,7 +1081,7 @@ export function routeClaudeEvent(
   }
 
   if (type === "command_lifecycle") {
-    applyClaudeSteerLifecycle(threadId, text(message.command_uuid), text(message.state));
+    if (applyClaudeSteerLifecycle(threadId, turnId, text(message.command_uuid), text(message.state))) ctx.onTranscriptChanged(threadId);
     return;
   }
 
@@ -1115,6 +1142,14 @@ export function routeClaudeEvent(
   // generic parent-linked progress creates no root transcript content.
   // Permission controls still belong to the shared root CLI channel.
   if (parentToolId && type !== "control_request" && type !== "control_cancel_request") return;
+  if (type === "openkiwi_intermediate_result") {
+    // The backend holds this result while work can resume. Its query usage is
+    // still real; no timeline, completion, Stop or final-answer logic runs.
+    // A missing identity cannot safely distinguish a replay from a new query.
+    const receiptId = text(message.uuid);
+    if (receiptId) recordResultUsage(threadId, turnId, receiptId, message.usage, message.modelUsage, ctx.bindingFor(threadId));
+    return;
+  }
   if (type === "system" && ["task_started", "task_progress", "task_notification"].includes(text(message.subtype))) {
     const toolId = claudeNativeTaskTool(threadId, turnId, message, ctx);
     if (!toolId) return;
@@ -1362,7 +1397,7 @@ export function routeClaudeEvent(
   if (type === "result") {
     useClaudeContinuationStore.getState().clear(threadId, turnId);
     store.flushDeltas();
-    recordResultUsage(threadId, turnId, message.usage, message.modelUsage, ctx.bindingFor(threadId));
+    recordResultUsage(threadId, turnId, text(message.uuid) || "legacy-terminal", message.usage, message.modelUsage, ctx.bindingFor(threadId));
     const subtype = text(message.subtype);
     const stopRequested = consumeProviderStopIntent(threadId, turnId);
     const task = useTaskStore.getState().tasks[threadId];
