@@ -238,6 +238,7 @@ export function EffortSlider({
         max={count - 1}
         step={1}
         value={index}
+        style={{ position: "absolute", opacity: 0 }}
         disabled={disabled}
         onKeyDown={onKeyDown}
         // Pointer input never reaches the native control (the rail handles
@@ -250,6 +251,19 @@ export function EffortSlider({
           <i key={tick} className={`${tick <= visual + 0.001 ? "reached" : ""}${Math.round(visual) === tick ? " current" : ""}`} />
         ))}
       </div>
+      {/* Keep the visible native thumb on the continuous position. The
+          keyboard/AT input above exposes only the committed integer level. */}
+      <input
+        aria-hidden="true"
+        tabIndex={-1}
+        type="range"
+        min={0}
+        max={count - 1}
+        step="any"
+        value={visual}
+        disabled={disabled}
+        readOnly
+      />
       {interactedRef.current && <EffortSparks key={index} fill={effortHeat(index, count) * 100} />}
     </div>
   );
