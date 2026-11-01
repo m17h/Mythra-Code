@@ -120,7 +120,7 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     if (!existing) return message;
     matchedIds.add(existing.id);
     return { ...message, ...(existing.id === message.id ? existing : {}), timelineOrder: message.timelineOrder ?? existing.timelineOrder, text: existing.text, attachments: existing.attachments ?? message.attachments,
-      clientMessageId: existing.clientMessageId ?? (existing.id !== message.id ? existing.id : undefined), steerStatus: existing.steerStatus,
+      clientMessageId: existing.clientMessageId ?? (existing.id !== message.id ? existing.id : undefined), steerStatus: existing.steerStatus, steerRuntimeId: existing.steerRuntimeId,
       skillReferences: existing.skillReferences ?? message.skillReferences, skillsFolder: existing.skillsFolder ?? message.skillsFolder,
       skillDependencies: existing.skillDependencies ?? message.skillDependencies,
       skillUsage: existing.skillUsage ?? message.skillUsage };

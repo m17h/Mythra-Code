@@ -257,7 +257,7 @@ interface TaskStoreState {
   appendUserMessage: (threadId: string, message: ChatMessage) => void;
   /** Attach a late provider identity without reopening a settled or newer turn. */
   bindUserMessageTurn: (threadId: string, messageId: string, turnId: string) => void;
-  setMessageSteerStatus: (threadId: string, messageId: string, status: ChatMessage["steerStatus"]) => void;
+  setMessageSteerStatus: (threadId: string, messageId: string, status: ChatMessage["steerStatus"], steerRuntimeId?: string) => void;
   removeMessage: (threadId: string, messageId: string) => void;
   startAssistantMessage: (threadId: string, message: ChatMessage) => void;
   queueAssistantDelta: (threadId: string, itemId: string, delta: string, turnId?: string) => void;
@@ -521,6 +521,7 @@ function estimateMessageBytes(message: ChatMessage): number {
     + stringBytes(message.turnStatus)
     + stringBytes(message.phase)
     + stringBytes(message.steerStatus)
+    + stringBytes(message.steerRuntimeId)
     + stringBytes(message.skillsFolder)
     + estimateSkillDependencyBytes(message.skillDependencies)
     + estimateSkillUsageBytes(message.skillUsage)
@@ -1102,14 +1103,15 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       updatedAt: Date.now(),
     } } };
   }),
-  setMessageSteerStatus: (threadId, messageId, status) => set((state) => {
+  setMessageSteerStatus: (threadId, messageId, status, steerRuntimeId) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
     const index = task.messages.findIndex((message) => message.id === messageId || message.clientMessageId === messageId);
-    if (index < 0 || task.messages[index].steerStatus === status) return state;
+    if (index < 0 || (task.messages[index].steerStatus === status
+      && (steerRuntimeId === undefined || task.messages[index].steerRuntimeId === steerRuntimeId))) return state;
     const messages = [...task.messages];
     const previous = messages[index];
-    messages[index] = { ...previous, steerStatus: status };
+    messages[index] = { ...previous, steerStatus: status, ...(steerRuntimeId !== undefined ? { steerRuntimeId } : {}) };
     return { tasks: { ...state.tasks, [threadId]: {
       ...task,
       messages,
@@ -1353,7 +1355,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         : pendingStartUserEchoIndex(task, incoming);
     const original = task.messages[existingIndex];
     const display = original && message.role === "user" && (original.clientMessageId || original.id !== message.id)
-      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus,
+      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus, steerRuntimeId: original.steerRuntimeId,
         skillReferences: original.skillReferences ?? normalized.skillReferences, skillsFolder: original.skillsFolder ?? normalized.skillsFolder,
         skillDependencies: original.skillDependencies ?? normalized.skillDependencies,
         skillUsage: original.skillUsage ?? normalized.skillUsage }

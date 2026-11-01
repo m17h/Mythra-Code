@@ -250,7 +250,13 @@ export interface ChatMessage {
   /** Wall-clock duration copied onto completed turn entries for timeline summaries. */
   turnDurationMs?: number;
   /** Local delivery feedback for guidance inserted into an already-active turn. */
-  steerStatus?: "sending" | "accepted" | "unconfirmed";
+  /** "queued": the provider has the steer but has not read it yet (Claude
+   * reads steering between steps, so a waiting sub-agent delays it).
+   * "read": the provider started acting on it. */
+  steerStatus?: "sending" | "accepted" | "queued" | "read" | "unconfirmed";
+  /** The provider-side id of a steered message (Claude: the stream-json
+   * message UUID), matched to its queued/started/completed lifecycle. */
+  steerRuntimeId?: string;
 }
 
 export interface Activity {
