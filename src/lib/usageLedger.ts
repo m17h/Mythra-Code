@@ -1048,13 +1048,17 @@ export function recordCumulativeUsage(threadId: string, usage: TokenUsageView, t
       ...acceptDelta(record, delta, turnId),
       usage: {
         ...addUsage(record.usage, delta, nextSnapshot.contextWindow),
-        contextTokens: nextSnapshot.contextTokens,
-        contextInputTokens: nextSnapshot.contextInputTokens,
-        contextOutputTokens: nextSnapshot.contextOutputTokens,
-        contextCachedInputTokens: nextSnapshot.contextCachedInputTokens,
-        contextReasoningOutputTokens: nextSnapshot.contextReasoningOutputTokens,
-        contextSnapshotReported: nextSnapshot.contextSnapshotReported,
-        contextWindow: nextSnapshot.contextWindow,
+        // Billing-only snapshots do not replace the latest context reading.
+        // An explicit snapshot still clears fields the provider did not report.
+        ...(nextSnapshot.contextSnapshotReported ? {
+          contextTokens: nextSnapshot.contextTokens,
+          contextInputTokens: nextSnapshot.contextInputTokens,
+          contextOutputTokens: nextSnapshot.contextOutputTokens,
+          contextCachedInputTokens: nextSnapshot.contextCachedInputTokens,
+          contextReasoningOutputTokens: nextSnapshot.contextReasoningOutputTokens,
+          contextSnapshotReported: nextSnapshot.contextSnapshotReported,
+          contextWindow: nextSnapshot.contextWindow,
+        } : {}),
       },
       cumulativeSnapshot: nextSnapshot,
       updatedAt: Date.now(),
