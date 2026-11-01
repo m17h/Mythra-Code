@@ -5,17 +5,29 @@
    grouped inset lists (a --panel card with hairline-separated rows: copy on
    the left, the control on the right) under small sentence-case headings.
    Choice cards (themes, typefaces, providers) are neutral; the selected one
-   takes a 1px accent edge and a small check. See docs/design/pro-ui.md.
+   takes a firmer grey edge, a faint fill and a small text-coloured check.
+   The app behind the sheet is dimmed and softly blurred.
+   See docs/design/pro-ui.md.
    Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
    The short- and narrow-window ladders in responsive.css stay authoritative.
    ========================================================================== */
 
 /* ---- Scrim and sheet ----
-   The scrim matches the other dialogs in overlays.css: a plain dim, no blur. */
+   Morgan (2026-11-01): the app behind Settings is softly blurred as well as
+   dimmed, so the sheet reads as the only thing in focus. The blur sits on the
+   backdrop, so it fades in and out with the backdrop's opacity animation
+   (motion.css). Other dialogs keep the plain dim from overlays.css. Anyone
+   who asks the system to reduce transparency gets the plain dim here too. */
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop {
   background: var(--lm-scrim);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 .app-shell[data-theme][data-color-scheme] .settings-modal {
   border: 0;
@@ -402,8 +414,8 @@
 .app-shell[data-theme][data-color-scheme] .prompts-tabs.compact { margin: 0 0 8px; }
 
 /* ---- Choice cards: themes, typefaces, effort sliders, providers ----
-   Neutral cards; the selected one takes a 1px accent edge (doubled by a
-   ring) and a small accent check. No tinted fill, lift or glow. */
+   Neutral cards; the selected one takes a firmer grey edge, a faint fill
+   and a small text-coloured check badge. No accent colour, lift or glow. */
 .app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .slider-style-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .chat-font-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 8px; }
@@ -438,10 +450,10 @@
 .app-shell[data-theme][data-color-scheme] .usage-display-options > button.selected,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options > button.selected {
   color: var(--text);
-  border-color: var(--green);
-  background: var(--panel);
+  border-color: var(--muted-2);
+  background: var(--lm-hover);
   background-image: none;
-  box-shadow: 0 0 0 1px var(--green);
+  box-shadow: 0 0 0 .5px var(--muted-2);
 }
 .app-shell[data-theme][data-color-scheme] .theme-card strong,
 .app-shell[data-theme][data-color-scheme] .provider-card strong,
@@ -456,7 +468,10 @@
 .app-shell[data-theme][data-color-scheme] .chat-font-card small,
 .app-shell[data-theme][data-color-scheme] .provider-logo-options small,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options small { color: var(--muted); font-size: var(--fs-meta); }
-/* The check: a small accent glyph, no filled disc. */
+/* The check: a small neutral badge, the text colour with the card colour
+   cut out for the tick. Morgan (2026-11-01): the accent edge and check on
+   every selected card were too much, so selection is neutral: a firmer grey
+   edge, a faint fill and this badge. */
 .app-shell[data-theme][data-color-scheme] .theme-card > svg,
 .app-shell[data-theme][data-color-scheme] .slider-style-card > svg,
 .app-shell[data-theme][data-color-scheme] .chat-font-card > svg,
@@ -464,12 +479,14 @@
 .app-shell[data-theme][data-color-scheme] .provider-logo-options > button > svg,
 .app-shell[data-theme][data-color-scheme] .usage-display-options > button > svg,
 .app-shell[data-theme][data-color-scheme] .provider-billing-options > button > svg {
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border-radius: 0;
-  color: var(--green);
-  background: transparent;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  padding: 3px;
+  border-radius: 50%;
+  color: var(--panel);
+  background: var(--text);
+  stroke-width: 3.25;
 }
 .app-shell[data-theme][data-color-scheme] .theme-card {
   position: relative;
