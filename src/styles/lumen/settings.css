@@ -16,15 +16,16 @@
    Morgan (2026-11-01): the app behind Settings is softly blurred as well as
    dimmed, so the sheet reads as the only thing in focus. The blur sits on the
    backdrop, so it fades in and out with the backdrop's opacity animation
-   (motion.css). Other dialogs keep the plain dim from overlays.css. Anyone
-   who asks the system to reduce transparency gets the plain dim here too. */
+   (motion.css). Other dialogs keep the plain dim from overlays.css. Windows
+   keeps this blur even when OS Transparency effects are off, as requested;
+   other platforms still honor their reduced-transparency preference. */
 .app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop {
   background: var(--lm-scrim);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
 @media (prefers-reduced-transparency: reduce) {
-  .app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop {
+  .app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop:not([data-settings-blur="always"]) {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
