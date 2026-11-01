@@ -218,6 +218,7 @@ export function EffortSlider({
     <div
       ref={railRef}
       className={`${railClass} ${fill <= 0 ? "empty" : ""} ${dragging ? "dragging" : ""} ${disabled ? "disabled" : ""}`}
+      title={`${ariaLabel}: ${valueText}`}
       style={{ "--reasoning-fill": `${fill}%`, "--effort-heat": String(heat), "--effort-color": paletteColorAt(EFFORT_COLORS, heat) } as CSSProperties}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -241,7 +242,7 @@ export function EffortSlider({
       />
       <div className={ticksClass} aria-hidden="true">
         {Array.from({ length: count }, (_, tick) => (
-          <i key={tick} className={tick <= visual + 0.001 ? "reached" : ""} />
+          <i key={tick} className={`${tick <= visual + 0.001 ? "reached" : ""}${Math.round(visual) === tick ? " current" : ""}`} />
         ))}
       </div>
       {interactedRef.current && <EffortSparks key={index} fill={effortHeat(index, count) * 100} />}

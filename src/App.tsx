@@ -164,7 +164,7 @@ import { isEstablishedMythraCodeInstall, ONBOARDING_EXIT_MS, ONBOARDING_VERSION 
 import { scheduleIdlePreload, scheduleSettingsPreload } from "./lib/settingsPreload";
 import { analyzeSkillPrompts as analyzeSelectedSkillPrompts, createLocalSkill, deleteLocalSkill, importLocalSkills, installOfficialSkill, normalizeSkillName, readLocalSkill, resolveLocalSkills, resolveSkillPrompt as resolveSelectedSkillPrompt, resolveSkillPrompts as resolveSelectedSkillPrompts, scanLocalSkills, skillMentionNames, skillRuntimeSignature, syncLocalSkills, updateLocalSkill, type LocalSkill, type LocalSkillFile } from "./lib/skills";
 import { compactWorkflowRun, normalizeWorkflows, recoverWorkflowRuns, type WorkflowDefinition, type WorkflowRunRecord } from "./lib/workflows";
-import { isClaudeThread, isCursorThread, isLocalSubscriptionThread, modelForProvider, providerFromThread } from "./lib/threadProvider";
+import { draftModelForProvider, isClaudeThread, isCursorThread, isLocalSubscriptionThread, latestSolModel, modelForProvider, providerFromThread } from "./lib/threadProvider";
 import { listLMStudioModels, type LMStudioModel } from "./lib/lmStudio";
 import { EMPTY_MODEL_FAVORITES, MODEL_FAVORITES_KEY, favoriteModels, sanitizeModelFavorites, toggleFavoriteModel, type ModelFavorites } from "./lib/modelFavorites";
 import { fetchOpenRouterCatalog, mergeOpenRouterModels, resolveOpenRouterSlug } from "./lib/openRouterCatalog";
@@ -1149,6 +1149,9 @@ export default function App() {
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeModelsError, setRuntimeModelsError] = useState("");
+  // The newest Sol the signed-in OpenAI account offers; new OpenAI threads
+  // that have not picked a model start on it (see effectiveSettings).
+  const latestOpenAiSol = useMemo(() => latestSolModel(runtimeModels), [runtimeModels]);
   const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModel[]>([]);
   const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false);
   const [openRouterModelsError, setOpenRouterModelsError] = useState("");
@@ -1308,13 +1311,21 @@ export default function App() {
   const effectiveSettings = useMemo<AppSettings>(() => {
     const threadModel = activeThreadId ? threadModels[activeThreadId] : (selectedFirstPrompt?.model ?? draftThreadModel);
     const rememberedReasoning = activeThreadId ? threadReasoning[activeThreadId] : undefined;
+    // A new OpenAI draft with no model chosen yet ("" after switching
+    // provider, or the untouched built-in default from Settings) starts on
+    // the newest Sol in the live catalog. Existing threads keep the model
+    // they were created with, and an explicit pick is always respected.
+    const followsLatestSol = activeProvider === "openai" && !activeThreadId && (
+      threadModel === ""
+      || (threadModel == null && (!projectSettings.model || projectSettings.model === DEFAULT_OPENAI_MODEL))
+    );
     const providerPrompt = activeProvider === "openai" || activeProvider === "claude"
       ? subscriptionSystemPrompts[activeProvider]
       : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
     const resolved = {
       ...settingsForThreadSubagents(projectSettings, activeThreadId, threadSubagentSettings, draftSubagentSettings),
       provider: activeProvider,
-      model: modelForProvider(activeProvider, threadModel ?? projectSettings.model),
+      model: followsLatestSol ? latestOpenAiSol : modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
       ...(rememberedReasoning ?? {}),
       reasoningEffort: sanitizeComposerReasoningEffort(rememberedReasoning?.reasoningEffort ?? projectSettings.reasoningEffort),
@@ -1323,7 +1334,7 @@ export default function App() {
     return activeThread && isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, latestOpenAiSol, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
   // Destructive Git confirmations recheck the permission visible when they finish.
   const gitPermissionRef = useRef(effectiveSettings.permission);
   gitPermissionRef.current = effectiveSettings.permission;
@@ -1345,7 +1356,7 @@ export default function App() {
     // an app restart. Keeping only the text could otherwise send a handoff
     // through the default provider and lose its provenance.
     setDraftThreadProvider(pendingHandoff.targetProvider === projectDefaultProvider ? null : pendingHandoff.targetProvider);
-    setDraftThreadModel(pendingHandoff.targetProvider === projectDefaultProvider ? null : modelForProvider(pendingHandoff.targetProvider, ""));
+    setDraftThreadModel(pendingHandoff.targetProvider === projectDefaultProvider ? null : draftModelForProvider(pendingHandoff.targetProvider));
     setDraftThreadIsolated(false);
   }, [activeThread, activeWorkspace, pendingHandoff, projectDefaultProvider, setPendingHandoff, workspaceDraftKeys]);
 
@@ -4564,7 +4575,7 @@ export default function App() {
     useTaskStore.getState().setActiveThread(null);
     setDraftSubagentSettings(DEFAULT_THREAD_SUBAGENT_SETTINGS);
     setDraftThreadProvider(pendingHandoffForWorkspace?.targetProvider === projectDefaultProvider ? null : pendingHandoffForWorkspace?.targetProvider ?? null);
-    setDraftThreadModel(pendingHandoffForWorkspace ? modelForProvider(pendingHandoffForWorkspace.targetProvider, "") : null);
+    setDraftThreadModel(pendingHandoffForWorkspace ? draftModelForProvider(pendingHandoffForWorkspace.targetProvider) : null);
     // Attachments are keyed by draft identity, so a workspace switch simply
     // selects a different draft. Clearing here would throw away files chosen
     // for a thread the user is about to come back to.
@@ -5957,7 +5968,7 @@ export default function App() {
       setActiveThread(null);
       useTaskStore.getState().setActiveThread(null);
       setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
-      setDraftThreadModel(provider === projectDefaultProvider ? null : modelForProvider(provider, ""));
+      setDraftThreadModel(provider === projectDefaultProvider ? null : draftModelForProvider(provider));
       setDraftThreadIsolated(false);
       setError(null);
       requestAnimationFrame(() => {
@@ -5971,7 +5982,7 @@ export default function App() {
     setActiveThread(null);
     useTaskStore.getState().setActiveThread(null);
     setDraftThreadProvider(provider === projectDefaultProvider ? null : provider);
-    setDraftThreadModel(provider === projectDefaultProvider ? null : modelForProvider(provider, ""));
+    setDraftThreadModel(provider === projectDefaultProvider ? null : draftModelForProvider(provider));
     setDraftThreadIsolated(false);
     setError(null);
     requestAnimationFrame(() => composerRef.current?.focus());
@@ -6959,9 +6970,8 @@ export default function App() {
       if (confirmArchive) setError(initialBlock);
       return false;
     }
-    if (archivingThreadIdsRef.current.has(thread.id)) return false;
-    if (confirmArchive && !await confirmDialog(`Archive “${label}”?\n\nIt moves to the Archived list in the sidebar, where you can restore or permanently delete it.`)) return false;
-    // Another archive may have completed confirmation while this dialog was open.
+    // Archiving is reversible from the Archived list, so it runs without a
+    // confirmation dialog. Only permanent deletion asks first.
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
     archivingThreadIdsRef.current.add(thread.id);
     invalidatePendingThreadSelection(thread.id);

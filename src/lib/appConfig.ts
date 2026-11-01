@@ -54,6 +54,7 @@ export function themeColorScheme(theme: ThemeName): "light" | "dark" {
 }
 
 export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; description: string }> = [
+  { id: "studio", name: "Studio", description: "Simple dots in your theme's accent" },
   { id: "aurora", name: "Aurora", description: "A slow drift of northern-light pastels" },
   { id: "astra", name: "Astra", description: "A living nebula with gentle starlight" },
   { id: "spectrum", name: "Spectrum", description: "Heat colors per level, sparks, and a burning Max" },
@@ -98,7 +99,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ultra: false,
   serviceTier: null,
   theme: "mythra",
-  effortSlider: "aurora",
+  effortSlider: "studio",
   chatFont: "system",
   escapeStopsRun: false,
   warnOnMaxReasoning: true,
