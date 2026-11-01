@@ -108,6 +108,7 @@ import type {
   UsageDisplayMode,
 } from "../types";
 import { usagePercentLabel } from "../lib/providerUsage";
+import { isWindowsPlatform } from "../lib/platform";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
 import { ProjectProfiles } from "./ProjectProfiles";
 import "./SettingsModal.css";
@@ -1640,7 +1641,7 @@ export function SettingsModal({
             );
 
   return (
-    <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
+    <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} data-settings-blur={isWindowsPlatform() ? "always" : undefined} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
       <div ref={dialogRef} className={`settings-modal${wideSheet ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings categories">
