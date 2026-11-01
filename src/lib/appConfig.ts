@@ -32,14 +32,14 @@ export const DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234/v1";
 export const RELEASE_NOTES_URL = "https://github.com/m17h/Mythra-Code/releases/latest";
 
 export const THEMES: Array<{ id: ThemeName; name: string; description: string; swatches: [string, string, string] }> = [
-  // Swatches are display-only previews ([canvas, island panel, accent]) and
-  // track the Lumen palettes in src/styles/lumen/tokens.css.
-  { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#16181b", "#292d32", "#64ddf2"] },
-  { id: "light-mythra", name: "Light Mythra", description: "Paper white with clear sky-cyan accents", swatches: ["#e3e7ea", "#ffffff", "#0068b5"] },
-  { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#16181b", "#292d32", "#a6df72"] },
-  { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#e4e6e0", "#ffffff", "#3a861d"] },
-  { id: "synthwave", name: "Synthwave", description: "Deep graphite with hot neon pink", swatches: ["#16181b", "#292d32", "#ff6ac1"] },
-  { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#ddd0b6", "#f7efdf", "#8e3b32"] },
+  // Swatches are display-only previews ([window, surface, accent]) and track
+  // the Pro palettes in src/styles/lumen/tokens.css.
+  { id: "mythra", name: "Mythra", description: "Deep graphite with luminous cyan", swatches: ["#1d1e21", "#2e2f34", "#64ddf2"] },
+  { id: "light-mythra", name: "Light Mythra", description: "Paper white with clear sky-cyan accents", swatches: ["#e7e8eb", "#ffffff", "#0a95d4"] },
+  { id: "kiwi", name: "Kiwi", description: "Deep graphite with electric green", swatches: ["#1d1e21", "#2e2f34", "#a6df72"] },
+  { id: "daylight", name: "Light Kiwi", description: "Paper white with a deep leaf green", swatches: ["#e5e9e1", "#ffffff", "#3a861d"] },
+  { id: "synthwave", name: "Synthwave", description: "Deep graphite with hot neon pink", swatches: ["#1d1e21", "#2e2f34", "#ff6ac1"] },
+  { id: "atari", name: "Atari", description: "Warm tan with deep brick-red accents", swatches: ["#e2d3b7", "#fbf5e9", "#8e3b32"] },
 ];
 
 /** Stored theme ids may outlive a palette. Retired (Ember, Terminal, Midnight,

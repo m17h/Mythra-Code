@@ -12,7 +12,7 @@
 .skill-prompt-suggestions strong, .skill-prompt-suggestions small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--fs-meta, 12px); }
 .skill-prompt-suggestions strong { font-weight: 560; }
 .skill-prompt-suggestions small { color: var(--muted-2); font-size: var(--fs-micro, 11px); }
-.skill-prompt-suggestions em { color: var(--muted-2); font-style: normal; font-size: 9px; text-transform: uppercase; }
+.skill-prompt-suggestions em { color: var(--muted-2); font-style: normal; font-size: 10px; }
 @media (forced-colors: active) {
   .skill-prompt-suggestions > button[aria-selected="true"] { outline: 1px solid Highlight; }
 }

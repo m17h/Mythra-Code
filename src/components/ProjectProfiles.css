@@ -4,7 +4,7 @@
 .project-profile-row .set-copy { min-width: 0; }
 .project-profile-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .project-profile-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.project-profile-chip { padding: 1px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-micro, 11px); line-height: 1.6; }
+.project-profile-chip { padding: 1px 7px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--muted); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-micro, 11px); line-height: 1.6; }
 .project-profile-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .project-profile-review { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 12px; }
 .project-profile-review:has(.app-select.open) { z-index: 31; }

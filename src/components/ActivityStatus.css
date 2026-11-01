@@ -28,22 +28,22 @@
   gap: 7px;
   padding: 0 8px 0 4px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-control, 6px);
   color: var(--muted);
-  background: color-mix(in srgb, var(--panel) 46%, transparent);
-  font: 500 11.5px/1.3 var(--font-sans);
-  letter-spacing: -.003em;
+  background: transparent;
+  font: 500 12px/1.3 var(--font-sans);
+  letter-spacing: 0;
   cursor: pointer;
   transition: border-color var(--t-fast) ease, background-color var(--t-fast) ease, color var(--t-fast) ease;
 }
-.activity-status-pill:hover { border-color: var(--line-strong); color: var(--ink-2); background: color-mix(in srgb, var(--panel) 82%, transparent); }
+.activity-status-pill:hover { border-color: var(--line-strong); color: var(--ink-2); background: var(--lm-hover, color-mix(in srgb, var(--panel) 82%, transparent)); }
 .activity-status-pill:focus-visible { outline: none; box-shadow: var(--ring); }
 /* Preserve the return focus target without a sticky mouse-click highlight. */
 html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none; box-shadow: none; }
-.activity-status-pill[aria-expanded="true"] { border-color: color-mix(in srgb, var(--activity-tone) 34%, var(--line)); }
+.activity-status-pill[aria-expanded="true"] { border-color: var(--line-strong); background: var(--lm-press, transparent); }
 .activity-status.live .activity-status-pill { color: var(--ink-2); }
 
-/* A small squircle carrying a static semantic glyph (waiting or settled).
+/* A small rounded square carrying a static semantic glyph (waiting or settled).
    A working run shows the bare dot-matrix mark in the same footprint. */
 .activity-status-mark {
   position: relative;
@@ -52,9 +52,9 @@ html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none;
   height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: var(--r-chip, 4px);
   color: color-mix(in srgb, var(--activity-tone) 82%, var(--ink-2));
-  background: color-mix(in srgb, var(--activity-tone) 11%, transparent);
+  background: color-mix(in srgb, var(--activity-tone) 12%, transparent);
 }
 .activity-status.state-unknown .activity-status-mark { color: var(--muted); background: var(--line-quiet); }
 /* Neutral foreground, like terminal text: readable on light and dark. */
@@ -73,8 +73,8 @@ html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none;
   gap: 6px;
   overflow: hidden;
   color: var(--muted-2);
-  font-size: var(--fs-micro);
-  font-weight: 450;
+  font-size: var(--fs-meta);
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -82,23 +82,16 @@ html[data-input-modality="pointer"] .activity-status-pill:focus { outline: none;
 .activity-status-meta::before { content: "·"; color: var(--muted-2); }
 .activity-status-meta > b { color: var(--orange); font-weight: 600; }
 .activity-status-chevron { flex: 0 0 auto; margin-left: -2px; color: var(--muted-2); transition: transform var(--t-mid) var(--ease), color var(--t-fast) ease; }
-.activity-status-pill:hover .activity-status-chevron { color: var(--muted); transform: translateX(1px); }
+.activity-status-pill:hover .activity-status-chevron { color: var(--muted); }
 
 /* Matches the app's search highlight language (orange), not live accents. */
 .activity-status.search-hit .activity-status-pill { border-color: color-mix(in srgb, var(--orange) 45%, var(--line)); }
 
-/* Progressive squircles: same footprint, smoother corners where supported. */
-@supports (corner-shape: squircle) {
-  .activity-status-pill { border-radius: 14px; corner-shape: squircle; }
-  .activity-status-mark { border-radius: 8px; corner-shape: squircle; }
-}
-
-.app-shell[data-color-scheme="light"] .activity-status-pill { background: color-mix(in srgb, var(--panel) 70%, transparent); }
 
 /* Lumen themes hang their activity column 4px further in. */
 .app-shell[data-theme][data-color-scheme] .flow-timeline .activity-status { margin-left: 42px; }
-.app-shell[data-theme][data-color-scheme] .activity-status-pill { border-radius: var(--r-control, 10px); background: var(--panel); }
-.app-shell[data-theme][data-color-scheme] .activity-status-pill:hover { background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .activity-status-pill { border-radius: var(--r-control); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .activity-status-pill:hover { background: var(--lm-hover); }
 
 @keyframes activity-status-label-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 

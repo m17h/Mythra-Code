@@ -1,7 +1,7 @@
 /* Timed prompts: a quiet info accent separates "later" from "next". */
 .scheduled-prompts { --timed-accent: var(--info); }
 .scheduled-prompts + .queued-turns { border-top: 0; }
-.scheduled-prompt-badge { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 50%; color: var(--timed-accent); background: color-mix(in srgb, var(--timed-accent) 11%, transparent); }
+.scheduled-prompt-badge { width: 20px; height: 20px; display: grid; place-items: center; border-radius: var(--r-chip, 4px); color: var(--timed-accent); background: color-mix(in srgb, var(--timed-accent) 11%, transparent); }
 .queued-turn.scheduled-prompt { border-color: color-mix(in srgb, var(--timed-accent) 18%, var(--line)); }
 .queued-turn.scheduled-prompt.is-missed { border-color: color-mix(in srgb, var(--orange, var(--red)) 32%, var(--line)); }
 .queued-turn.scheduled-prompt.is-missed .queued-turn-copy small { color: var(--orange, var(--muted)); }
@@ -34,7 +34,7 @@
 /* Two scheduled scopes can stack; the second sits flush under the first. */
 .scheduled-prompts + .scheduled-prompts { border-top: 0; padding-top: 2px; }
 .scheduled-prompts[data-collapsed] { padding-bottom: 6px; }
-.scheduled-prompts-toggle { width: 100%; gap: 6px; padding-block: 0; border: 0; border-radius: var(--r-xs); background: transparent; font-family: inherit; text-align: left; cursor: pointer; flex-wrap: wrap; }
+.scheduled-prompts-toggle { width: 100%; gap: 6px; padding-block: 0; border: 0; border-radius: var(--r-sm, 6px); background: transparent; font-family: inherit; text-align: left; cursor: pointer; flex-wrap: wrap; }
 .scheduled-prompts-toggle > span { min-width: 0; }
 .scheduled-prompts-toggle > small { margin-left: auto; }
 .scheduled-prompts-toggle > .scheduled-prompts-attention { color: var(--orange, var(--red)); }
@@ -51,30 +51,34 @@
 .schedule-button:disabled { color: var(--muted-2); cursor: default; opacity: .6; }
 
 /* [popover] carries UA chrome; every visual property is set explicitly. */
-.timed-prompt-picker { z-index: 160; box-sizing: border-box; max-width: calc(100vw - 16px); overflow: visible; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--lm-pop-shadow, var(--shadow)); font-size: var(--fs-meta); animation: timed-prompt-pop 160ms var(--ease, ease-out) both; }
-.timed-prompt-picker form { display: grid; gap: 10px; margin: 0; }
+.timed-prompt-picker { z-index: 160; box-sizing: border-box; max-width: calc(100vw - 16px); overflow: visible; padding: 14px; border: 0; border-radius: var(--r-xl, 12px); color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--lm-pop-shadow, var(--shadow)); font-size: var(--fs-meta); animation: timed-prompt-pop 160ms var(--ease, ease-out) both; }
+.timed-prompt-picker form { display: grid; gap: 12px; margin: 0; }
 .timed-prompt-picker header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.timed-prompt-picker header > span { display: flex; align-items: center; gap: 6px; color: var(--ink-2, var(--text)); font-size: var(--fs-ui); font-weight: 600; }
+.timed-prompt-picker header > span { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--fs-ui); font-weight: 600; }
 .timed-prompt-picker header svg { color: var(--info); }
-.timed-prompt-close { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; cursor: pointer; }
-.timed-prompt-close:hover { color: var(--text); background: var(--hover, rgba(255,255,255,.06)); }
-.timed-prompt-context { margin: -4px 0 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.45; }
+.timed-prompt-close { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm, 6px); color: var(--muted-2); background: transparent; cursor: pointer; }
+.timed-prompt-close:hover { color: var(--text); background: var(--lm-press, rgba(255,255,255,.06)); }
+.timed-prompt-context { margin: -6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .timed-prompt-fields { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; }
 .timed-prompt-fields label { display: grid; gap: 4px; min-width: 0; }
-.timed-prompt-fields label > span { color: var(--muted); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: var(--track-caps); }
-.timed-prompt-fields input { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: var(--field); color-scheme: inherit; font: inherit; font-variant-numeric: tabular-nums; }
-.timed-prompt-fields input:focus-visible { outline: 1px solid var(--info); outline-offset: 1px; border-color: color-mix(in srgb, var(--info) 45%, var(--line)); }
+.timed-prompt-fields label > span { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.timed-prompt-fields input { box-sizing: border-box; width: 100%; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--text); background: var(--field); color-scheme: inherit; font: inherit; font-size: var(--fs-ui); font-variant-numeric: tabular-nums; }
+.timed-prompt-fields input:focus-visible { outline: none; border-color: var(--green-line); box-shadow: var(--ring, 0 0 0 3px var(--green-soft)); }
 .timed-prompt-quick { display: flex; flex-wrap: wrap; gap: 6px; }
-.timed-prompt-quick button { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-control, var(--r-sm)); color: var(--muted); background: transparent; font: inherit; font-size: var(--fs-micro); cursor: pointer; }
-.timed-prompt-quick button:hover { color: var(--text); border-color: var(--line-strong); }
-.timed-prompt-summary { margin: 0; color: var(--ink-2, var(--text)); font-size: var(--fs-micro); line-height: 1.45; overflow-wrap: anywhere; }
+.timed-prompt-quick button { height: 26px; padding: 0 10px; border: 0; border-radius: var(--r-control, var(--r-sm)); color: var(--ink-2, var(--text)); background: var(--lm-press, transparent); font: inherit; font-size: 12px; cursor: pointer; }
+.timed-prompt-quick button:hover { color: var(--text); background: var(--lm-press, transparent); filter: brightness(1.12); }
+.timed-prompt-summary { margin: 0; color: var(--ink-2, var(--text)); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .timed-prompt-summary.is-error { color: var(--red); }
-.timed-prompt-disclosure { display: flex; gap: 6px; margin: 0; padding: 8px; border-radius: var(--r-sm); color: var(--muted); background: color-mix(in srgb, var(--info) 6%, transparent); font-size: var(--fs-micro); line-height: 1.5; }
+.timed-prompt-disclosure { display: flex; gap: 7px; margin: 0; padding: 8px 10px; border-radius: var(--r-md, 8px); color: var(--muted); background: var(--lm-hover, color-mix(in srgb, var(--info) 6%, transparent)); font-size: var(--fs-meta); line-height: 1.5; }
 .timed-prompt-disclosure svg { flex: 0 0 auto; margin-top: 2px; color: var(--info); }
-.timed-prompt-picker footer { display: flex; justify-content: flex-end; gap: 6px; }
-.timed-prompt-picker footer button { height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text); background: transparent; font: inherit; font-size: var(--fs-meta); cursor: pointer; }
-.timed-prompt-picker footer button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--hover, rgba(255,255,255,.05)); }
-.timed-prompt-picker footer .timed-prompt-submit { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); color: var(--info); background: color-mix(in srgb, var(--info) 9%, transparent); font-weight: 600; }
+.timed-prompt-picker footer { display: flex; justify-content: flex-end; gap: 8px; }
+.timed-prompt-picker footer button { height: 30px; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--text); background: var(--lm-press, transparent); font: inherit; font-size: var(--fs-ui); font-weight: 500; cursor: pointer; }
+.timed-prompt-picker footer button:hover:not(:disabled) { border-color: var(--line-strong); }
+.app-shell[data-color-scheme="light"] .timed-prompt-picker footer button { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+/* Schedule is the primary push button: flat accent, accent ink. */
+.timed-prompt-picker footer .timed-prompt-submit,
+.app-shell[data-color-scheme="light"] .timed-prompt-picker footer .timed-prompt-submit { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--info)); box-shadow: none; font-weight: 600; }
+.timed-prompt-picker footer .timed-prompt-submit:hover:not(:disabled) { border-color: transparent; filter: brightness(1.06); }
 .timed-prompt-picker footer button:disabled { opacity: .45; cursor: default; }
 @keyframes timed-prompt-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 

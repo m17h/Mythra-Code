@@ -17,7 +17,7 @@
 .sri-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 8px 10px 1px; }
 .sri-head > svg { flex: 0 0 auto; color: var(--info); }
 .sri-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--info); font-weight: 650; }
-.sri-state { flex: 0 0 auto; margin-left: auto; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font-size: var(--fs-micro, 10px); font-weight: 600; letter-spacing: 0.04em; line-height: 16px; text-transform: uppercase; }
+.sri-state { flex: 0 0 auto; margin-left: auto; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--r-chip, 4px); color: var(--muted); font-size: var(--fs-micro, 10px); font-weight: 600; letter-spacing: 0; line-height: 16px; }
 .skill-reference-inspector.is-blocked .sri-head > svg, .skill-reference-inspector.is-blocked .sri-head strong,
 .skill-reference-inspector.is-incomplete .sri-head > svg, .skill-reference-inspector.is-incomplete .sri-head strong { color: var(--red); }
 .skill-reference-inspector.is-blocked .sri-state, .skill-reference-inspector.is-incomplete .sri-state {
@@ -57,7 +57,7 @@
 
 .sri-issues { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line); }
 .sri-issues:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.sri-issues h4 { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-micro, 10px); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.sri-issues h4 { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-meta, 11px); font-weight: 600; letter-spacing: 0; }
 .sri-issues ul { margin: 0; padding: 0; list-style: none; }
 .sri-issues li { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; color: var(--red); overflow-wrap: anywhere; }
 .sri-issues small { color: var(--muted-2); font-size: var(--fs-micro, 10px); }

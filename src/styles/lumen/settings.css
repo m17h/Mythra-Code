@@ -1,296 +1,822 @@
 /* ============================================================================
-   Lumen settings
-   A large sheet over a dimmed canvas. The navigation column is lit like the
-   navigator, with rounded-square rows and icon chips; each pane opens with a display
-   title, and its groups deal in as rounded cards. Usage becomes a dashboard
-   of lit stat tiles.
+   Lumen settings (Pro)
+   A System Settings sheet: a source list of categories on --sidebar beside a
+   content pane on --bg. Each page opens with a 20px title; its settings sit in
+   grouped inset lists (a --panel card with hairline-separated rows: copy on
+   the left, the control on the right) under small sentence-case headings.
+   Choice cards (themes, typefaces, providers) are neutral; the selected one
+   takes a 1px accent edge and a small check. See docs/design/pro-ui.md.
    Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
+   The short- and narrow-window ladders in responsive.css stay authoritative.
    ========================================================================== */
 
-/* ---- Backdrop and sheet ---- */
-.app-shell[data-theme][data-color-scheme] .modal-backdrop {
+/* ---- Scrim and sheet ----
+   The scrim matches the other dialogs in overlays.css: a plain dim, no blur. */
+.app-shell[data-theme][data-color-scheme] .modal-backdrop.settings-backdrop {
   background: var(--lm-scrim);
-  -webkit-backdrop-filter: blur(6px) saturate(120%);
-  backdrop-filter: blur(6px) saturate(120%);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .app-shell[data-theme][data-color-scheme] .settings-modal {
-  border: 1px solid var(--lm-island-edge);
-  border-radius: 28px;
-  background: var(--panel);
-  box-shadow: 0 1px 0 var(--lm-island-highlight) inset, 0 50px 120px -30px rgba(0, 0, 0, .75), 0 0 0 1px rgba(0, 0, 0, .2);
+  border: 0;
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: var(--lm-pop-shadow);
+  filter: none;
 }
-/* Fit all 15 sidebar entries, group labels, search and footer in the standard
-   sheet without shrinking navigation targets. Keep Usage/Pricing's dashboard
-   and short-window clamping intact. */
-.app-shell[data-theme][data-color-scheme] .settings-modal:not(.settings-modal-wide) {
-  height: min(900px, 100%);
-}
-.app-shell[data-theme][data-color-scheme="light"] .settings-modal { box-shadow: 0 1px 0 #fff inset, 0 50px 110px -34px rgba(25, 35, 55, .4), 0 0 0 1px rgba(25, 35, 55, .06); }
-.app-shell[data-theme][data-color-scheme] .settings-layout { --settings-nav-width: 248px; grid-template-columns: var(--settings-nav-width) minmax(0, 1fr); }
+.app-shell[data-theme][data-color-scheme] .settings-layout { --settings-nav-width: 220px; grid-template-columns: var(--settings-nav-width) minmax(0, 1fr); }
 
-/* ---- Navigation column ---- */
+/* ---- Navigation: a source list ---- */
 .app-shell[data-theme][data-color-scheme] .settings-nav {
-  border-right: 1px solid var(--line-quiet);
-  background-color: var(--sidebar);
-  background-image: radial-gradient(120% 40% at 0% 0%, var(--lm-wash), transparent 70%);
+  border-right: 1px solid var(--line);
+  background: var(--sidebar);
 }
-.app-shell[data-theme][data-color-scheme] .settings-nav-head { gap: 14px; padding: 22px 14px 14px; }
+.app-shell[data-theme][data-color-scheme] .settings-nav-head { gap: 10px; padding: 18px 10px 12px; }
 .app-shell[data-theme][data-color-scheme] .settings-nav-head h2 {
   padding: 0 6px;
   color: var(--text);
-  font-family: var(--font-display);
-  font-size: 24px;
-  font-weight: 780;
-  letter-spacing: -.04em;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -.005em;
 }
+/* The search field reads like the navigator's thread search. */
 .app-shell[data-theme][data-color-scheme] .settings-search {
-  height: 36px;
+  height: 28px;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  border: 1px solid transparent;
   border-radius: var(--r-control);
-  background: var(--field);
+  background: var(--lm-hover);
 }
-.app-shell[data-theme][data-color-scheme] .settings-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
-.app-shell[data-theme][data-color-scheme] .settings-search-clear { border-radius: var(--r-chip); }
-/* Fit the full category list in the standard sheet without shrinking its
-   36px navigation targets. Short and narrow windows retain their overrides. */
-.app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 8px; padding: 0 12px 12px; }
-.app-shell[data-theme][data-color-scheme] .settings-nav-group { gap: 2px; }
-.app-shell[data-theme][data-color-scheme] .settings-nav-label { padding: 0 10px 6px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .settings-search input { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .settings-search:focus-within { border-color: var(--green-line); background: var(--field); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .settings-search-clear { width: 20px; height: 20px; border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .settings-search-clear:hover { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .settings-nav-scroll { gap: 12px; padding: 0 10px 14px; }
+.app-shell[data-theme][data-color-scheme] .settings-nav-group { gap: 1px; }
+.app-shell[data-theme][data-color-scheme] .settings-nav-label { padding: 0 8px 4px; color: var(--muted-2); }
+/* Compact rows with small line icons. The icon box is 22px (a 14px glyph
+   plus padding) so it matches the short- and narrow-window ladders. */
 .app-shell[data-theme][data-color-scheme] .settings-nav button {
-  min-height: 36px;
-  grid-template-columns: 26px minmax(0, 1fr);
-  gap: 10px;
-  padding: 0 10px 0 5px;
-  border-radius: var(--r-control);
-  color: var(--muted);
-  font-weight: 560;
+  min-height: 28px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  padding: 0 8px 0 4px;
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--fs-ui);
+  font-weight: 450;
 }
 .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child {
-  width: 26px;
-  height: 26px;
-  padding: 6px;
-  border-radius: var(--r-xs);
-  color: var(--muted-2);
-  background: var(--lm-hover);
+  width: 22px;
+  height: 22px;
+  padding: 4px;
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
 }
 .app-shell[data-theme][data-color-scheme] .settings-nav button:hover { color: var(--text); background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .settings-nav button.active {
   color: var(--text);
-  font-weight: 660;
-  background: var(--panel-2);
-  background-image: var(--lm-grad-soft);
-  box-shadow: inset 0 0 0 1px var(--green-line), 0 8px 18px -12px var(--lm-accent-glow);
+  font-weight: 550;
+  background: var(--lm-press);
+  background-image: none;
+  box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .settings-nav button.active > svg:first-child { color: var(--green); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .settings-update-dot { background: var(--green); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .settings-row-result > small { font-size: var(--fs-meta); }
+.app-shell[data-theme][data-color-scheme] .settings-nav-empty { padding: 0 8px; }
 
 /* ---- Pane ---- */
+.app-shell[data-theme][data-color-scheme] .settings-pane { background: var(--bg); }
 .app-shell[data-theme][data-color-scheme] .settings-pane-heading {
-  gap: 14px;
-  padding: 26px 22px 18px 32px;
+  gap: 12px;
+  padding: 22px 18px 14px 28px;
   border-bottom: 0;
-  background: linear-gradient(180deg, var(--lm-wash), transparent);
+  background: none;
 }
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading > div,
+.app-shell[data-theme][data-color-scheme] .settings-heading-copy { gap: 4px; }
 .app-shell[data-theme][data-color-scheme] .settings-pane-heading h3 {
   color: var(--text);
-  font-family: var(--font-display);
-  font-size: 26px;
-  font-weight: 780;
-  line-height: 1.1;
-  letter-spacing: -.04em;
+  font-family: var(--font-sans);
+  font-size: var(--fs-title);
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -.01em;
 }
-.app-shell[data-theme][data-color-scheme] .settings-pane-heading small { font-size: 12.5px; }
-.app-shell[data-theme][data-color-scheme] .settings-close { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--panel-2); }
-.app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 32px; padding: 8px 32px var(--settings-content-end); }
-.app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, transparent, var(--panel)); }
-.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer {
-  padding: 14px 32px;
-  border-top: 1px solid var(--line-quiet);
-  background: var(--panel);
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .settings-pane-heading > .secondary-button { min-height: 28px; margin-top: 0; }
+/* Close: a borderless toolbar button. */
+.app-shell[data-theme][data-color-scheme] .settings-close {
+  width: 28px;
+  height: 28px;
+  margin-top: -2px;
+  border: 0;
+  border-radius: var(--r-control);
+  color: var(--muted);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .settings-close:hover { color: var(--text); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .settings-close:active { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .settings-content { --settings-content-end: 28px; padding: 6px 28px var(--settings-content-end); }
+.app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, rgba(0, 0, 0, 0), var(--bg)); }
+@supports (color: color-mix(in srgb, red, blue)) {
+  .app-shell[data-theme][data-color-scheme] .settings-content::after { background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 0%, transparent), var(--bg)); }
 }
 
-/* ---- The two primitives: groups and rows ---- */
-.app-shell[data-theme][data-color-scheme] .set-group { gap: 10px; }
-.app-shell[data-theme][data-color-scheme] .set-group + .set-group { margin-top: 26px; }
-.app-shell[data-theme][data-color-scheme] .set-group > h4,
-.app-shell[data-theme][data-color-scheme] .set-group-head > h4 { align-items: center; color: var(--muted-2); }
-.app-shell[data-theme][data-color-scheme] .set-group > h4::before,
-.app-shell[data-theme][data-color-scheme] .set-group-head > h4::before {
-  content: "";
-  width: 14px;
-  height: 2px;
-  border-radius: var(--r-pill);
-  background: var(--lm-fill) var(--lm-grad);
+/* Footer: a hairline, then Cancel and Save as 30px push buttons. */
+.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer {
+  gap: 8px;
+  padding: 12px 28px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
 }
+.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer .primary-button,
+.app-shell[data-theme][data-color-scheme] .settings-modal .modal-footer .secondary-button { min-height: 30px; padding: 0 14px; font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .unsaved-hint { font-size: 12px; }
+
+/* Push buttons inside the pane share one compact size. */
+.app-shell[data-theme][data-color-scheme] .settings-content .primary-button,
+.app-shell[data-theme][data-color-scheme] .settings-content .secondary-button {
+  min-height: 28px;
+  gap: 6px;
+  padding: 0 11px;
+  border-radius: var(--r-control);
+  font-size: 12.5px;
+}
+
+/* ---- Grouped inset lists ---- */
+.app-shell[data-theme][data-color-scheme] .set-group { gap: 6px; }
+/* `~`, not `+`: some panes render empty wrappers between their groups, and
+   the agents/tools harness wraps its groups in a div of its own. */
+.app-shell[data-theme][data-color-scheme] .set-group ~ .set-group,
+.app-shell[data-theme][data-color-scheme] .settings-content > div:not([hidden]) + .set-group { margin-top: 24px; }
+/* Section headings: 11px semibold sentence case (shell.css sets the face).
+   The accent dash before them is retired. */
+.app-shell[data-theme][data-color-scheme] .set-group > h4,
+.app-shell[data-theme][data-color-scheme] .set-group-head > h4 { align-items: baseline; padding: 0 2px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .set-group > h4::before,
+.app-shell[data-theme][data-color-scheme] .set-group-head > h4::before { content: none; display: none; }
+.app-shell[data-theme][data-color-scheme] .set-group-head { align-items: center; min-height: 24px; }
+.app-shell[data-theme][data-color-scheme] .set-group-head > button ~ button,
+.app-shell[data-theme][data-color-scheme] .set-group-head > button ~ .secondary-button { margin-left: 0; }
+.app-shell[data-theme][data-color-scheme] .set-group-note { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 400; }
+.app-shell[data-theme][data-color-scheme] .set-group > h4 + p,
+.app-shell[data-theme][data-color-scheme] .set-group > .set-group-head + p { margin: 0 2px 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .app-shell[data-theme][data-color-scheme] .set-card {
   border: 1px solid var(--line);
-  border-radius: 20px;
-  background: var(--panel-2);
-  box-shadow: 0 14px 30px -26px rgba(0, 0, 0, .7);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: none;
 }
-.app-shell[data-theme][data-color-scheme] .set-card > * + * { border-top-color: var(--line-quiet); }
-/* A bare card is only a wrapper for a grid of tiles that carry their own
-   radius. Without its own surface it has nothing to clip, and the 20px
-   radius above would otherwise cut the corners (and selection rings) of
-   the tiles in its outer rows and columns. */
+.app-shell[data-theme][data-color-scheme] .set-card > * + * { border-top: 1px solid var(--line); }
+.app-shell[data-theme][data-color-scheme] .set-card > .prompts-tabs + * { border-top: 0; }
+.app-shell[data-theme][data-color-scheme] .prompts-layer-name { font-weight: 500; }
+/* A bare card only wraps a grid of tiles that carry their own radius. With
+   no surface it has nothing to clip, so it must not cut the corners (and
+   selection rings) of the tiles in its outer rows and columns. */
 .app-shell[data-theme][data-color-scheme] .set-card.bare { overflow: visible; border: 0; border-radius: 0; background: none; box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .set-row { padding: 15px 18px; }
-.app-shell[data-theme][data-color-scheme] .set-copy > strong { color: var(--text); font-size: 13px; font-weight: 640; }
+.app-shell[data-theme][data-color-scheme] .set-row { min-height: 44px; gap: 8px 20px; padding: 10px 14px; }
+.app-shell[data-theme][data-color-scheme] .set-row > .set-copy { gap: 2px; }
+.app-shell[data-theme][data-color-scheme] .set-copy > strong { color: var(--text); font-size: var(--fs-ui); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .set-copy > small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.app-shell[data-theme][data-color-scheme] .set-control-help { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .set-body { padding: 12px 14px; }
+.app-shell[data-theme][data-color-scheme] .set-card.bare > .set-body { padding: 0; }
 .app-shell[data-theme][data-color-scheme] .set-group > .manager-list,
 .app-shell[data-theme][data-color-scheme] .set-group > .inline-create,
 .app-shell[data-theme][data-color-scheme] .set-group > .stacked-create,
 .app-shell[data-theme][data-color-scheme] .set-group > .schedule-create,
 .app-shell[data-theme][data-color-scheme] .set-group > .compact-note,
-.app-shell[data-theme][data-color-scheme] .set-group > .github-clone-grid { border-radius: 20px; background: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .set-group > .github-clone-grid {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+/* Memory nests its rows in fieldsets; give them the same hairlines. */
+.app-shell[data-theme][data-color-scheme] .preference-learning-controls > * + * { border-top: 1px solid var(--line); }
+.app-shell[data-theme][data-color-scheme] .preference-learning-disclosure { padding: 12px 14px; }
+.app-shell[data-theme][data-color-scheme] .preference-learning-unavailable { margin: 0; padding: 10px 14px; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .settings-section + .settings-section { border-top-color: var(--line); }
+.app-shell[data-theme][data-color-scheme] .settings-subgroup { border-top-color: var(--line); }
+.app-shell[data-theme][data-color-scheme] .settings-subgroup-label {
+  color: var(--muted-2);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.app-shell[data-theme][data-color-scheme] .field-label { gap: 6px; color: var(--ink-2); font-size: 12px; font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .field-label small { color: var(--muted); font-size: var(--fs-meta); }
+.app-shell[data-theme][data-color-scheme] .settings-footnote { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .settings-notice { border-radius: var(--r-md); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .compact-note { color: var(--muted); font-size: 12px; }
 
-/* ---- Controls inside settings ---- */
-.app-shell[data-theme][data-color-scheme] .toggle-switch { width: 40px; height: 22px; padding: 3px; background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.app-shell[data-theme][data-color-scheme] .toggle-switch span { width: 16px; height: 16px; background: var(--muted); box-shadow: 0 1px 3px rgba(0, 0, 0, .3); }
-.app-shell[data-theme][data-color-scheme] .toggle-switch.on { background: var(--lm-fill) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
-/* Every active switch shares one track: the theme accent (gradient-lit where
-   supported) with an on-accent thumb, which keeps at least 3:1 against it. */
-.app-shell[data-theme][data-color-scheme] .toggle-switch.on span { background: var(--on-accent); transform: translateX(18px); }
+/* ---- Switches ----
+   An accent track when on, with an --on-accent knob that keeps at least 3:1
+   against it. Off: a recessed neutral track with a light knob. */
+.app-shell[data-theme][data-color-scheme] .toggle-switch {
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  background: var(--panel-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.app-shell[data-theme][data-color-scheme] .toggle-switch span { width: 16px; height: 16px; background: #e6e6e9; box-shadow: 0 1px 2px rgba(0, 0, 0, .3); }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.on { background: var(--lm-fill); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .toggle-switch.on span { background: var(--on-accent); transform: translateX(14px); }
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch { background: rgba(0, 0, 0, .1); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch span { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .22), 0 0 0 .5px rgba(0, 0, 0, .06); }
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch.on { background: var(--lm-fill); }
+/* Every light accent fill keeps at least 3:1 against white, so light themes
+   use the native white knob. */
+.app-shell[data-theme][data-color-scheme="light"] .toggle-switch.on span { background: #fff; }
+.app-shell[data-theme][data-color-scheme] .mini-toggle,
+.app-shell[data-theme][data-color-scheme] .sa-tile-switch { background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .mini-toggle span,
+.app-shell[data-theme][data-color-scheme] .sa-tile-switch span { background: #e6e6e9; }
+.app-shell[data-theme][data-color-scheme="light"] .mini-toggle,
+.app-shell[data-theme][data-color-scheme="light"] .sa-tile-switch { background: rgba(0, 0, 0, .1); }
+.app-shell[data-theme][data-color-scheme="light"] .mini-toggle span,
+.app-shell[data-theme][data-color-scheme="light"] .sa-tile-switch span { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .22); }
 .app-shell[data-theme][data-color-scheme] .mini-toggle.on,
 .app-shell[data-theme][data-color-scheme] .sa-tile-switch.on,
-.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--lm-fill) var(--lm-grad); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch { background: var(--lm-fill); box-shadow: none; }
 .app-shell[data-theme][data-color-scheme] .mini-toggle.on span,
 .app-shell[data-theme][data-color-scheme] .sa-tile-switch.on span,
 .app-shell[data-theme][data-color-scheme] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: var(--on-accent); }
+.app-shell[data-theme][data-color-scheme="light"] .mini-toggle.on span,
+.app-shell[data-theme][data-color-scheme="light"] .sa-tile-switch.on span,
+.app-shell[data-theme][data-color-scheme="light"] .project-prompt-layer-toggle.enabled .project-prompt-switch i { background: #fff; }
+
+/* ---- Fields and pop-up buttons ---- */
 .app-shell[data-theme][data-color-scheme] .app-select-trigger {
-  min-height: 34px;
-  padding: 4px 10px 4px 12px;
+  min-height: 30px;
+  padding: 3px 8px 3px 10px;
+  border: 1px solid var(--line);
   border-radius: var(--r-control);
   background: var(--field);
 }
-.app-shell[data-theme][data-color-scheme] .app-select-trigger:hover,
-.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { border-color: var(--green-line); background: var(--field); }
-.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { box-shadow: var(--ring); }
-.app-shell[data-theme][data-color-scheme] .number-stepper { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .app-select-trigger:hover { border-color: var(--line-strong); background: var(--field); }
+.app-shell[data-theme][data-color-scheme] .app-select.open .app-select-trigger { border-color: var(--green-line); background: var(--field); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme="light"] .app-select-trigger { border-color: var(--line-strong); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme] .number-stepper { height: 28px; border-color: var(--line); border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .number-stepper button:hover:not(:disabled) { background: var(--lm-hover); }
 .app-shell[data-theme][data-color-scheme] .provider-status,
 .app-shell[data-theme][data-color-scheme] .skill-off-tag,
 .app-shell[data-theme][data-color-scheme] .sri-state,
 .app-shell[data-theme][data-color-scheme] .workflow-run-chip { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .settings-modal input[type="text"],
-.app-shell[data-theme][data-color-scheme] .settings-modal input[type="url"],
-.app-shell[data-theme][data-color-scheme] .settings-modal input[type="password"],
-.app-shell[data-theme][data-color-scheme] .settings-modal input[type="number"] { border-radius: var(--r-sm); }
-.app-shell[data-theme][data-color-scheme] .settings-modal textarea { border-radius: var(--r-md); }
 
-/* ---- Theme gallery: tall tiles with a large live miniature ---- */
-/* Size chooser columns from the pane itself: UI zoom can make a wide window's
-   settings body narrower than the viewport media-query breakpoints imply.
-   Keep enough room beside each preview for its label and selection check. */
-.app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 10px; }
-.app-shell[data-theme][data-color-scheme] .slider-style-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
-.app-shell[data-theme][data-color-scheme] .chat-font-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+/* Text fields: 30px, --field with a hairline edge and the focus ring. */
+.app-shell[data-theme][data-color-scheme] .field-label input,
+.app-shell[data-theme][data-color-scheme] .key-input-row input,
+.app-shell[data-theme][data-color-scheme] .inline-create input,
+.app-shell[data-theme][data-color-scheme] .inline-create select,
+.app-shell[data-theme][data-color-scheme] .stacked-create input,
+.app-shell[data-theme][data-color-scheme] .schedule-create input,
+.app-shell[data-theme][data-color-scheme] .schedule-create select,
+.app-shell[data-theme][data-color-scheme] .worker-add input,
+.app-shell[data-theme][data-color-scheme] .worker-field input,
+.app-shell[data-theme][data-color-scheme] .preset-create-card input,
+.app-shell[data-theme][data-color-scheme] .workflow-editor-grid input,
+.app-shell[data-theme][data-color-scheme] .workflow-editor-grid select,
+.app-shell[data-theme][data-color-scheme] .terminal-timeout-detail > input,
+.app-shell[data-theme][data-color-scheme] .usage-range-custom input {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: var(--field);
+  font-size: 12.5px;
+}
+.app-shell[data-theme][data-color-scheme="light"] .field-label input,
+.app-shell[data-theme][data-color-scheme="light"] .key-input-row input,
+.app-shell[data-theme][data-color-scheme="light"] .inline-create input,
+.app-shell[data-theme][data-color-scheme="light"] .stacked-create input,
+.app-shell[data-theme][data-color-scheme="light"] .schedule-create input,
+.app-shell[data-theme][data-color-scheme="light"] .worker-add input,
+.app-shell[data-theme][data-color-scheme="light"] .preset-create-card input,
+.app-shell[data-theme][data-color-scheme="light"] .workflow-editor-grid input,
+.app-shell[data-theme][data-color-scheme="light"] .terminal-timeout-detail > input { border-color: var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .field-label input:focus,
+.app-shell[data-theme][data-color-scheme] .key-input-row input:focus,
+.app-shell[data-theme][data-color-scheme] .inline-create input:focus,
+.app-shell[data-theme][data-color-scheme] .stacked-create input:focus,
+.app-shell[data-theme][data-color-scheme] .stacked-create textarea:focus,
+.app-shell[data-theme][data-color-scheme] .schedule-create input:focus,
+.app-shell[data-theme][data-color-scheme] .schedule-create textarea:focus,
+.app-shell[data-theme][data-color-scheme] .worker-add input:focus,
+.app-shell[data-theme][data-color-scheme] .worker-field input:focus,
+.app-shell[data-theme][data-color-scheme] .preset-create-card input:focus,
+.app-shell[data-theme][data-color-scheme] .workflow-editor-grid input:focus,
+.app-shell[data-theme][data-color-scheme] .workflow-step input:focus,
+.app-shell[data-theme][data-color-scheme] .workflow-step textarea:focus,
+.app-shell[data-theme][data-color-scheme] .terminal-timeout-detail > input:focus,
+.app-shell[data-theme][data-color-scheme] .skill-field input:focus,
+.app-shell[data-theme][data-color-scheme] .skill-field textarea:focus,
+.app-shell[data-theme][data-color-scheme] .model-guidance-note textarea:focus { border-color: var(--green-line); box-shadow: var(--ring); outline: none; }
+.app-shell[data-theme][data-color-scheme] .settings-modal textarea { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .key-input-row { gap: 6px; }
+/* Add buttons beside inline fields: neutral push buttons, not accent ink. */
+.app-shell[data-theme][data-color-scheme] .inline-create button,
+.app-shell[data-theme][data-color-scheme] .stacked-create button,
+.app-shell[data-theme][data-color-scheme] .schedule-create > button,
+.app-shell[data-theme][data-color-scheme] .worker-add > button,
+.app-shell[data-theme][data-color-scheme] .project-default-add > button {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text);
+  background: var(--lm-press);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.app-shell[data-theme][data-color-scheme="light"] .inline-create button,
+.app-shell[data-theme][data-color-scheme="light"] .stacked-create button,
+.app-shell[data-theme][data-color-scheme="light"] .schedule-create > button,
+.app-shell[data-theme][data-color-scheme="light"] .worker-add > button,
+.app-shell[data-theme][data-color-scheme="light"] .project-default-add > button { border-color: var(--line-strong); background: var(--panel); box-shadow: 0 1px 1px rgba(0, 0, 0, .04); }
+.app-shell[data-theme][data-color-scheme] .inline-create button:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .stacked-create button:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .schedule-create > button:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .worker-add > button:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .project-default-add > button:hover:not(:disabled) { border-color: var(--line-strong); }
+
+/* ---- Segmented controls ----
+   A recessed track with a raised selected segment, as in the navigator. */
+.app-shell[data-theme][data-color-scheme] .settings-pane-tabs,
+.app-shell[data-theme][data-color-scheme] .prompts-tabs,
+.app-shell[data-theme][data-color-scheme] .usage-segmented,
+.app-shell[data-theme][data-color-scheme] .usage-tabs,
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-filter {
+  gap: 0;
+  padding: 2px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--lm-press);
+}
+.app-shell[data-theme][data-color-scheme] .settings-pane-tabs > button,
+.app-shell[data-theme][data-color-scheme] .prompts-tabs > button,
+.app-shell[data-theme][data-color-scheme] .usage-segmented > button,
+.app-shell[data-theme][data-color-scheme] .usage-tabs > button,
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-filter > button {
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 500;
+}
+.app-shell[data-theme][data-color-scheme] .settings-pane-tabs > button:hover,
+.app-shell[data-theme][data-color-scheme] .prompts-tabs > button:hover,
+.app-shell[data-theme][data-color-scheme] .usage-segmented > button:hover,
+.app-shell[data-theme][data-color-scheme] .usage-tabs > button:hover,
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-filter > button:hover { color: var(--text); }
+.app-shell[data-theme][data-color-scheme] .settings-pane-tabs > button.selected,
+.app-shell[data-theme][data-color-scheme] .prompts-tabs > button.selected,
+.app-shell[data-theme][data-color-scheme] .usage-segmented > button.selected,
+.app-shell[data-theme][data-color-scheme] .usage-tabs > button.selected,
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-filter > button.active {
+  color: var(--text);
+  background: var(--panel-3);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 .5px rgba(0, 0, 0, .2);
+}
+.app-shell[data-theme][data-color-scheme="light"] .settings-pane-tabs > button.selected,
+.app-shell[data-theme][data-color-scheme="light"] .prompts-tabs > button.selected,
+.app-shell[data-theme][data-color-scheme="light"] .usage-segmented > button.selected,
+.app-shell[data-theme][data-color-scheme="light"] .usage-tabs > button.selected,
+.app-shell[data-theme][data-color-scheme="light"] .frontier-pricing-filter > button.active { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 0 0 .5px rgba(0, 0, 0, .08); }
+.app-shell[data-theme][data-color-scheme] .settings-pane-tabs { margin-bottom: 18px; }
+.app-shell[data-theme][data-color-scheme] .prompts-tabs { margin: 12px 14px 0; }
+.app-shell[data-theme][data-color-scheme] .prompts-tabs.compact { margin: 0 0 8px; }
+
+/* ---- Choice cards: themes, typefaces, effort sliders, providers ----
+   Neutral cards; the selected one takes a 1px accent edge (doubled by a
+   ring) and a small accent check. No tinted fill, lift or glow. */
+.app-shell[data-theme][data-color-scheme] .theme-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .slider-style-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
+.app-shell[data-theme][data-color-scheme] .chat-font-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 8px; }
 .app-shell[data-theme][data-color-scheme] .provider-mark-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
+.app-shell[data-theme][data-color-scheme] .provider-cards { gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .theme-card,
+.app-shell[data-theme][data-color-scheme] .slider-style-card,
+.app-shell[data-theme][data-color-scheme] .chat-font-card,
+.app-shell[data-theme][data-color-scheme] .provider-card,
+.app-shell[data-theme][data-color-scheme] .provider-logo-options > button,
+.app-shell[data-theme][data-color-scheme] .usage-display-options > button,
+.app-shell[data-theme][data-color-scheme] .provider-billing-options > button {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  color: var(--ink-2);
+  background: var(--panel);
+  background-image: none;
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .theme-card:hover,
+.app-shell[data-theme][data-color-scheme] .slider-style-card:hover,
+.app-shell[data-theme][data-color-scheme] .chat-font-card:hover,
+.app-shell[data-theme][data-color-scheme] .provider-card:hover,
+.app-shell[data-theme][data-color-scheme] .provider-logo-options > button:hover,
+.app-shell[data-theme][data-color-scheme] .usage-display-options > button:hover,
+.app-shell[data-theme][data-color-scheme] .provider-billing-options > button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .theme-card.selected,
+.app-shell[data-theme][data-color-scheme] .slider-style-card.selected,
+.app-shell[data-theme][data-color-scheme] .chat-font-card.selected,
+.app-shell[data-theme][data-color-scheme] .provider-card.selected,
+.app-shell[data-theme][data-color-scheme] .provider-logo-options > button.selected,
+.app-shell[data-theme][data-color-scheme] .usage-display-options > button.selected,
+.app-shell[data-theme][data-color-scheme] .provider-billing-options > button.selected {
+  color: var(--text);
+  border-color: var(--green);
+  background: var(--panel);
+  background-image: none;
+  box-shadow: 0 0 0 1px var(--green);
+}
+.app-shell[data-theme][data-color-scheme] .theme-card strong,
+.app-shell[data-theme][data-color-scheme] .provider-card strong,
+.app-shell[data-theme][data-color-scheme] .provider-logo-options strong,
+.app-shell[data-theme][data-color-scheme] .usage-display-options strong,
+.app-shell[data-theme][data-color-scheme] .provider-billing-options strong { color: var(--text); font-family: var(--font-sans); font-size: var(--fs-ui); font-weight: 550; letter-spacing: 0; }
+.app-shell[data-theme][data-color-scheme] .slider-style-card strong,
+.app-shell[data-theme][data-color-scheme] .chat-font-card strong { color: var(--text); font-size: 12.5px; font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .theme-card small,
+.app-shell[data-theme][data-color-scheme] .provider-card small,
+.app-shell[data-theme][data-color-scheme] .slider-style-card small,
+.app-shell[data-theme][data-color-scheme] .chat-font-card small,
+.app-shell[data-theme][data-color-scheme] .provider-logo-options small,
+.app-shell[data-theme][data-color-scheme] .provider-billing-options small { color: var(--muted); font-size: var(--fs-meta); }
+/* The check: a small accent glyph, no filled disc. */
+.app-shell[data-theme][data-color-scheme] .theme-card > svg,
+.app-shell[data-theme][data-color-scheme] .slider-style-card > svg,
+.app-shell[data-theme][data-color-scheme] .chat-font-card > svg,
+.app-shell[data-theme][data-color-scheme] .provider-card > svg,
+.app-shell[data-theme][data-color-scheme] .provider-logo-options > button > svg,
+.app-shell[data-theme][data-color-scheme] .usage-display-options > button > svg,
+.app-shell[data-theme][data-color-scheme] .provider-billing-options > button > svg {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 0;
+  color: var(--green);
+  background: transparent;
+}
 .app-shell[data-theme][data-color-scheme] .theme-card {
   position: relative;
-  min-height: 78px;
-  grid-template-columns: 64px minmax(0, 1fr) 18px;
-  gap: 14px;
-  padding: 10px 14px 10px 10px;
+  min-height: 62px;
+  grid-template-columns: 60px minmax(0, 1fr) 16px;
+  gap: 12px;
+  padding: 9px 12px 9px 9px;
+}
+/* The miniature: a window with a sidebar, a content surface and two accent
+   marks, in the theme's own palette (swatches in appConfig.ts). */
+.app-shell[data-theme][data-color-scheme] .theme-preview {
+  width: 60px;
+  height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .theme-preview-rail { inset: 0 auto 0 0; width: 16px; box-shadow: 1px 0 0 rgba(0, 0, 0, .14); }
+.app-shell[data-theme][data-color-scheme] .theme-preview-body { inset: 6px 6px 6px 22px; border-radius: 3px; box-shadow: 0 0 0 .5px rgba(0, 0, 0, .12); }
+.app-shell[data-theme][data-color-scheme] .theme-preview-active { left: 4px; top: 7px; width: 8px; height: 3px; border-radius: 1px; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .theme-preview-accent { left: 27px; bottom: 11px; width: 14px; height: 3px; border-radius: 1px; opacity: 1; }
+.app-shell[data-theme][data-color-scheme] .slider-style-card,
+.app-shell[data-theme][data-color-scheme] .chat-font-card { min-height: 56px; padding: 8px 10px 8px 8px; }
+.app-shell[data-theme][data-color-scheme] .slider-style-preview,
+.app-shell[data-theme][data-color-scheme] .chat-font-preview { border-radius: var(--r-sm); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .chat-font-preview { color: var(--ink-2); }
+.app-shell[data-theme][data-color-scheme] .provider-mark-group > span { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; text-transform: none; }
+
+/* Provider rows on Models & accounts and Voice input. */
+.app-shell[data-theme][data-color-scheme] .provider-card { min-height: 52px; padding: 8px 12px 8px 10px; }
+.app-shell[data-theme][data-color-scheme] .provider-logo { width: 30px; height: 30px; border-radius: var(--r-md); }
+/* The OpenAI mark ships white, so its tile stays dark in light themes too. */
+.app-shell[data-theme][data-color-scheme] .provider-logo.openai { color: #fff; background: #1a1d18; }
+.app-shell[data-theme][data-color-scheme] .provider-logo-preview { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .provider-status {
+  padding: 2px 6px;
+  border: 0;
+  color: var(--muted);
+  background: var(--lm-hover);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+}
+.app-shell[data-theme][data-color-scheme] .provider-status.on { color: var(--green); border: 0; background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .provider-card.selected .provider-status:not(.on) { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .connected-badge { padding: 2px 7px; color: var(--green); background: var(--green-soft); font-size: var(--fs-meta); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .connected-badge.unverified { color: var(--muted); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .subagent-preview-badge { border: 0; color: var(--muted); background: var(--lm-hover); font-size: var(--fs-meta); }
+.app-shell[data-theme][data-color-scheme] .credential-panel {
+  margin-top: 8px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--panel-2);
+  border-radius: var(--r-lg);
+  background: var(--panel);
 }
-.app-shell[data-theme][data-color-scheme] .theme-card:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-3); }
-.app-shell[data-theme][data-color-scheme] .theme-card.selected {
-  color: var(--text);
-  border-color: var(--green-line);
-  background-image: var(--lm-grad-soft);
-  box-shadow: 0 0 0 3px var(--green-soft), 0 14px 30px -18px var(--lm-accent-glow);
-}
-.app-shell[data-theme][data-color-scheme] .theme-card > svg { width: 18px; height: 18px; padding: 3px; border-radius: 50%; color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
-.app-shell[data-theme][data-color-scheme] .theme-preview { width: 64px; height: 50px; border-radius: 12px; box-shadow: 0 8px 18px -10px rgba(0, 0, 0, .6); }
-.app-shell[data-theme][data-color-scheme] .theme-card strong { font-family: var(--font-display); font-size: 13.5px; font-weight: 700; letter-spacing: -.015em; }
+.app-shell[data-theme][data-color-scheme] .credential-panel strong { font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .credential-panel small { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .credential-panel .icon-button { border: 1px solid var(--line); background: var(--lm-press); }
 
-/* Provider and profile cards across Models & accounts. */
-.app-shell[data-theme][data-color-scheme] .provider-card,
+/* ---- Lists and cards on the other pages ----
+   One card language: --panel, a --line edge, 10px corners, no shadow. */
+.app-shell[data-theme][data-color-scheme] .manager-list { gap: 4px; }
+.app-shell[data-theme][data-color-scheme] .workflow-card,
+.app-shell[data-theme][data-color-scheme] .skill-card,
+.app-shell[data-theme][data-color-scheme] .skill-folder-card,
+.app-shell[data-theme][data-color-scheme] .skill-create-card,
+.app-shell[data-theme][data-color-scheme] .skill-notes,
+.app-shell[data-theme][data-color-scheme] .custom-agent-summary,
+.app-shell[data-theme][data-color-scheme] .preset-card,
+.app-shell[data-theme][data-color-scheme] .preset-create-card,
+.app-shell[data-theme][data-color-scheme] .worker-card,
+.app-shell[data-theme][data-color-scheme] .project-default-card,
 .app-shell[data-theme][data-color-scheme] .profile-card,
-.app-shell[data-theme][data-color-scheme] .workflow-card { border-radius: 18px; }
-.app-shell[data-theme][data-color-scheme] .provider-card:hover,
+.app-shell[data-theme][data-color-scheme] .instruction-file-card,
+.app-shell[data-theme][data-color-scheme] .prompt-file-row,
+.app-shell[data-theme][data-color-scheme] .scheduled-task-card,
+.app-shell[data-theme][data-color-scheme] .update-card,
+.app-shell[data-theme][data-color-scheme] .update-trust-row,
+.app-shell[data-theme][data-color-scheme] .workflow-safety-note,
+.app-shell[data-theme][data-color-scheme] .workflow-step,
+.app-shell[data-theme][data-color-scheme] .workflow-run-inspector {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  background-image: none;
+  box-shadow: none;
+}
+/* A list inside a group card is an inset list: hairline-separated rows, not
+   cards within the card. */
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list { gap: 0; padding: 0; overflow: hidden; }
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list > div {
+  min-height: 44px;
+  padding: 7px 10px 7px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list > div + div { border-top: 1px solid var(--line); }
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list > div:hover { border-color: var(--line); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .manager-delete { border-radius: var(--r-control); }
+/* A list and its add row join into one card (legacy squares the seam). */
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list + .inline-create,
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list + .stacked-create,
+.app-shell[data-theme][data-color-scheme] .set-group > .manager-list + .schedule-create { margin-top: -7px; }
+.app-shell[data-theme][data-color-scheme] .set-group.mcp-server-settings > .manager-list + .inline-create { margin-top: 2px; }
+.app-shell[data-theme][data-color-scheme] .workflow-card:hover,
+.app-shell[data-theme][data-color-scheme] .skill-card:hover,
+.app-shell[data-theme][data-color-scheme] .worker-card:hover,
 .app-shell[data-theme][data-color-scheme] .profile-card:hover,
-.app-shell[data-theme][data-color-scheme] .workflow-card:hover { background: var(--panel-3); }
-.app-shell[data-theme][data-color-scheme] .provider-logo { border-radius: 12px; }
-.app-shell[data-theme][data-color-scheme] .manager-list > div { border-radius: var(--r-md); }
-.app-shell[data-theme][data-color-scheme] .manager-list > div:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .custom-agent-summary:hover { border-color: var(--line-strong); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .skill-card.enabled { border-color: var(--line); }
+.app-shell[data-theme][data-color-scheme] .skill-card:focus-within { border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .skill-folder-card.selected,
+.app-shell[data-theme][data-color-scheme] .instruction-file-card.selected,
+.app-shell[data-theme][data-color-scheme] .prompt-file-row.selected { border-color: var(--line); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .worker-card.expanded,
+.app-shell[data-theme][data-color-scheme] .preset-card.expanded { border-color: var(--line-strong); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .preset-card-body.open .preset-card-editor { background: transparent; }
+.app-shell[data-theme][data-color-scheme] .workflow-step.agent,
+.app-shell[data-theme][data-color-scheme] .workflow-step.command { border-left-width: 1px; border-left-color: var(--line); }
+.app-shell[data-theme][data-color-scheme] .workflow-step-index,
+.app-shell[data-theme][data-color-scheme] .workflow-run-step > span { font-family: var(--font-sans); font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .skill-folder-icon,
+.app-shell[data-theme][data-color-scheme] .skill-create-icon,
+.app-shell[data-theme][data-color-scheme] .workflow-card-icon {
+  border-radius: var(--r-md);
+  color: var(--muted);
+  background: var(--lm-press);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .skill-add-button { min-height: 34px; border-radius: var(--r-lg); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .skill-search,
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-search {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--field);
+}
+.app-shell[data-theme][data-color-scheme] .skill-search:focus-within,
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-search:focus-within { border-color: var(--green-line); box-shadow: var(--ring); }
+.app-shell[data-theme][data-color-scheme] .skill-library-meta b { font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .workflow-card-actions button:first-child { color: var(--text); border-color: var(--line); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .workflow-card-actions button,
+.app-shell[data-theme][data-color-scheme] .workflow-steps-heading button,
+.app-shell[data-theme][data-color-scheme] .workflow-step-title button,
+.app-shell[data-theme][data-color-scheme] .workflow-runtime-summary button { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .update-card.available { border-color: var(--line); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .update-version-row { padding: 12px 14px; }
+.app-shell[data-theme][data-color-scheme] .update-version-row strong { font-size: var(--fs-ui); font-weight: 600; font-variant-numeric: tabular-nums; }
+.app-shell[data-theme][data-color-scheme] .update-status-row { font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .update-actions button { font-size: 12.5px; }
+.app-shell[data-theme][data-color-scheme] .update-progress { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .update-progress > span { background: var(--lm-fill); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .update-notes { border-radius: var(--r-md); background: var(--bg); }
+.app-shell[data-theme][data-color-scheme] .recent-errors-list { border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .project-default-empty,
+.app-shell[data-theme][data-color-scheme] .worker-empty,
+.app-shell[data-theme][data-color-scheme] .preset-empty,
+.app-shell[data-theme][data-color-scheme] .skill-empty-state,
+.app-shell[data-theme][data-color-scheme] .scheduled-task-empty { border-radius: var(--r-lg); background: transparent; }
+.app-shell[data-theme][data-color-scheme] .scheduled-task-status { border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .prompts-chip { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .prompts-chip.on { border-color: var(--line-strong); background: var(--lm-press); }
 
-/* ---- Usage dashboard ---- */
+/* ---- Usage dashboard ----
+   Flat stat tiles with sentence-case labels and tabular figures; charts in
+   the theme accent with a neutral second series. */
+.app-shell[data-theme][data-color-scheme] .usage-dashboard { --usage-series-1: var(--green); --usage-series-2: var(--muted-2); }
 .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats {
-  gap: 10px;
+  gap: 8px;
   overflow: visible;
   border: 0;
+  border-radius: 0;
   background: none;
 }
-.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div {
-  padding: 16px 16px 14px;
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div,
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div + div {
+  gap: 2px;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--panel-2);
-  background-image: linear-gradient(160deg, var(--lm-wash), transparent 65%);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  background-image: none;
 }
-.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div + div { border-left: 1px solid var(--line); }
-.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats strong { font-family: var(--font-display); font-weight: 760; letter-spacing: -.035em; }
-.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats span { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats strong {
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums;
+}
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats span {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-stats small { color: var(--muted); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .app-shell[data-theme][data-color-scheme] .usage-dashboard-card,
-.app-shell[data-theme][data-color-scheme] .usage-dashboard-empty { padding: 18px; border-radius: 20px; background: var(--panel-2); }
-.app-shell[data-theme][data-color-scheme] .usage-segmented,
-.app-shell[data-theme][data-color-scheme] .usage-tabs { padding: 3px; border-radius: var(--r-md); background: var(--field); }
-.app-shell[data-theme][data-color-scheme] .usage-segmented > button,
-.app-shell[data-theme][data-color-scheme] .usage-tabs > button { border-radius: var(--r-control); }
-.app-shell[data-theme][data-color-scheme] .usage-segmented > button.selected,
-.app-shell[data-theme][data-color-scheme] .usage-tabs > button.selected { color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); box-shadow: 0 4px 12px -4px var(--lm-accent-glow); }
-.app-shell[data-theme][data-color-scheme] .usage-pricing-details > summary { border-radius: var(--r-control); }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-empty {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .usage-dashboard h5 { font-size: var(--fs-ui); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard h6 { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-head > div:first-child > p,
+.app-shell[data-theme][data-color-scheme] .usage-dashboard-caption,
+.app-shell[data-theme][data-color-scheme] .usage-card-note { color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .usage-pricing-details > summary {
+  min-height: 28px;
+  border-color: var(--line);
+  border-radius: var(--r-control);
+  background: var(--field);
+}
 .app-shell[data-theme][data-color-scheme] .usage-pricing-panel,
-.app-shell[data-theme][data-color-scheme] .usage-evidence-body { border-radius: 16px; }
-.app-shell[data-theme][data-color-scheme] .usage-coverage { border-left: 3px solid var(--green); border-radius: 0 var(--r-md) var(--r-md) 0; }
-.app-shell[data-theme][data-color-scheme] .usage-chart-bar { border-radius: 4px 4px 1px 1px; }
-/* The floating day card keeps a tight corner: at 125–150% UI scale a larger
+.app-shell[data-theme][data-color-scheme] .usage-evidence-body { border-radius: var(--r-md); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .usage-model-detail { border-radius: var(--r-md); background: var(--bg); }
+.app-shell[data-theme][data-color-scheme] .usage-coverage {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  background: var(--surface-quiet);
+}
+.app-shell[data-theme][data-color-scheme] .usage-dashboard thead,
+.app-shell[data-theme][data-color-scheme] .usage-dashboard thead th { color: var(--muted-2); font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .usage-chart-bar { border-radius: 2px 2px 0 0; }
+.app-shell[data-theme][data-color-scheme] .usage-chart-slot.hovered { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .usage-swatch { border-radius: 2px; }
+.app-shell[data-theme][data-color-scheme] .usage-share { background: var(--lm-press); }
+/* The floating day card keeps a tight corner: at 125-150% UI scale a larger
    radius would round its hit area away from the pointer at the corners. */
-.app-shell[data-theme][data-color-scheme] .usage-heat-card { border-radius: 10px; box-shadow: var(--lm-pop-shadow); }
+.app-shell[data-theme][data-color-scheme] .usage-heat-card { border: 0; border-radius: var(--r-lg); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
+/* Model pricing reference table. */
+.app-shell[data-theme][data-color-scheme] .frontier-pricing-badge { border-radius: var(--r-chip); }
 
-/* ---- Motion ---- */
+/* ---- Motion ----
+   The sheet's entrance frames live in motion.css (legacy owns the names).
+   A switched page fades in once, with no stagger, lift or icon pop. */
 @media (prefers-reduced-motion: no-preference) {
-  /* Legacy owns the sheet's enter/exit animations (names are pinned by
-     tests); Lumen re-choreographs their frames in motion.css and only gives
-     the entrance a softer spring here. */
-  .app-shell[data-theme][data-color-scheme] .settings-backdrop.open .settings-modal { animation-duration: 420ms; animation-timing-function: var(--lm-spring-soft); }
-  .app-shell[data-theme][data-color-scheme] .settings-nav button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), scale var(--lm-d-2) var(--lm-spring); }
-  .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { transition: color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-spring); }
-  .app-shell[data-theme][data-color-scheme] .settings-nav button:hover > svg:first-child { transform: scale(1.08); }
-  .app-shell[data-theme][data-color-scheme] .settings-nav button.active > svg:first-child { animation: lm-dot-in var(--lm-d-3) var(--lm-spring); }
-  .app-shell[data-theme][data-color-scheme] .settings-nav-group { animation: lm-slide-right var(--lm-d-3) var(--lm-ease-out) backwards; }
-  .app-shell[data-theme][data-color-scheme] .settings-nav-group:nth-child(2) { animation-delay: 50ms; }
-  .app-shell[data-theme][data-color-scheme] .settings-nav-group:nth-child(3) { animation-delay: 100ms; }
-  .app-shell[data-theme][data-color-scheme] .settings-nav-group:nth-child(n+4) { animation-delay: 150ms; }
-
-  /* Switching section mounts a new pane body; its groups rise in turn. */
-  .app-shell[data-theme][data-color-scheme] .settings-content > *,
-  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > * { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
-  .app-shell[data-theme][data-color-scheme] .settings-content > :nth-child(2),
-  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > :nth-child(2) { animation-delay: 50ms; }
-  .app-shell[data-theme][data-color-scheme] .settings-content > :nth-child(3),
-  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > :nth-child(3) { animation-delay: 100ms; }
-  .app-shell[data-theme][data-color-scheme] .settings-content > :nth-child(n+4),
-  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section > :nth-child(n+4) { animation-delay: 150ms; }
-  .app-shell[data-theme][data-color-scheme] .settings-content > .settings-section { animation: none; }
-  .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div { animation: lm-rise-sm var(--lm-d-3) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .settings-backdrop.open .settings-modal { animation-duration: 240ms; animation-timing-function: var(--lm-ease-out); }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .settings-nav button > svg:first-child { transition: color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .settings-content > * { animation: lm-fade var(--lm-d-2) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-heading > div { animation: lm-fade var(--lm-d-2) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .settings-search { transition: border-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease, background-color var(--lm-d-2) ease; }
 
   .app-shell[data-theme][data-color-scheme] .toggle-switch,
   .app-shell[data-theme][data-color-scheme] .mini-toggle,
-  .app-shell[data-theme][data-color-scheme] .sa-tile-switch { transition: background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) ease; }
+  .app-shell[data-theme][data-color-scheme] .sa-tile-switch { transition: background-color var(--lm-d-2) ease; }
   .app-shell[data-theme][data-color-scheme] .toggle-switch span,
   .app-shell[data-theme][data-color-scheme] .mini-toggle span,
-  .app-shell[data-theme][data-color-scheme] .sa-tile-switch span { transition: transform var(--lm-d-3) var(--lm-spring), background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .sa-tile-switch span { transition: transform var(--lm-d-2) var(--lm-ease-out), background-color var(--lm-d-2) ease; }
   .app-shell[data-theme][data-color-scheme] .theme-card,
-  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div { transition: border-color var(--lm-d-2) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), transform var(--lm-d-3) var(--lm-spring); }
-  .app-shell[data-theme][data-color-scheme] .theme-card:hover,
-  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:hover { transform: translateY(-2px); }
-  .app-shell[data-theme][data-color-scheme] .theme-card.selected > svg { animation: lm-dot-in var(--lm-d-3) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .slider-style-card,
+  .app-shell[data-theme][data-color-scheme] .chat-font-card,
+  .app-shell[data-theme][data-color-scheme] .provider-card { transition: color var(--lm-d-1) ease, border-color var(--lm-d-1) ease, box-shadow var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .settings-pane-tabs > button,
+  .app-shell[data-theme][data-color-scheme] .prompts-tabs > button,
   .app-shell[data-theme][data-color-scheme] .usage-segmented > button,
-  .app-shell[data-theme][data-color-scheme] .usage-tabs > button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }
-  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div { animation: lm-pop var(--lm-d-3) var(--lm-spring-soft) backwards; }
-  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:nth-child(2) { animation-delay: 50ms; }
-  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:nth-child(3) { animation-delay: 100ms; }
-  .app-shell[data-theme][data-color-scheme] .usage-dashboard-stats > div:nth-child(4) { animation-delay: 150ms; }
+  .app-shell[data-theme][data-color-scheme] .usage-tabs > button,
+  .app-shell[data-theme][data-color-scheme] .frontier-pricing-filter > button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease; }
+}
+
+/* ---- Accounts & connections: one grouped list, like Internet Accounts ----
+   Each provider is a compact row: mark, name with the signed-in account (or a
+   short hint), status, and, when not connected, its sign-in action right on
+   the row. Clicking a row opens that provider's full controls inline, directly
+   under it, instead of in a panel at the bottom of the page. */
+.app-shell[data-theme][data-color-scheme] .account-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.app-shell[data-theme][data-color-scheme] .account-row + .account-row { border-top: 1px solid var(--line-quiet); }
+.app-shell[data-theme][data-color-scheme] .account-row-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 12px 0 0;
+}
+.app-shell[data-theme][data-color-scheme] .account-row-head:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .account-row.expanded .account-row-head { background: var(--lm-hover); }
+/* The row button fills the whole row (a stretched hit area), so clicking
+   anywhere but the action toggles the row. */
+.app-shell[data-theme][data-color-scheme] .account-row-toggle {
+  position: static;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 0 10px 12px;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme] .account-row-toggle::after { content: ""; position: absolute; inset: 0; }
+.app-shell[data-theme][data-color-scheme] .account-row-toggle:focus-visible { outline: none; }
+.app-shell[data-theme][data-color-scheme] .account-row-toggle:focus-visible::after { border-radius: var(--r-md); box-shadow: inset 0 0 0 2px var(--green); }
+.app-shell[data-theme][data-color-scheme] .account-row-toggle .provider-logo { flex: 0 0 auto; width: 30px; height: 30px; }
+.app-shell[data-theme][data-color-scheme] .account-row-copy { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .account-row-copy strong { color: var(--text); font-size: var(--fs-ui); font-weight: 550; }
+.app-shell[data-theme][data-color-scheme] .account-row-copy small { overflow: hidden; color: var(--muted); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.app-shell[data-theme][data-color-scheme] .account-row-toggle .provider-status { flex: 0 0 auto; }
+.app-shell[data-theme][data-color-scheme] .account-row-action { position: relative; z-index: 1; display: flex; flex: 0 0 auto; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .account-row-action button { min-height: 26px; padding: 0 11px; font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .account-row-action button svg { margin-right: 2px; }
+.app-shell[data-theme][data-color-scheme] .account-row-chevron { flex: 0 0 auto; color: var(--muted-2); pointer-events: none; }
+.app-shell[data-theme][data-color-scheme] .account-row.expanded .account-row-chevron { transform: rotate(90deg); }
+
+/* Inline details: the provider's existing panels, flattened into the row. */
+.app-shell[data-theme][data-color-scheme] .account-row-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 14px 14px 52px;
+  background: var(--lm-hover);
+}
+.app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel {
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line-quiet);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+/* Lead with the account itself (who is signed in, Sign out), then billing. */
+.app-shell[data-theme][data-color-scheme] .account-row-detail > .provider-api-key { order: 1; }
+.app-shell[data-theme][data-color-scheme] .account-row-detail > .settings-notice { order: 2; }
+/* The row already shows the provider's mark. */
+.app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel > .provider-logo { display: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .account-row-chevron { transition: transform var(--lm-d-2) var(--lm-ease-out); }
+  .app-shell[data-theme][data-color-scheme] .account-row-head { transition: background-color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .account-row-detail { animation: lm-fade var(--lm-d-2) ease backwards; }
 }

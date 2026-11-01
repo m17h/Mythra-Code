@@ -19,7 +19,7 @@
   --thread-title-fog-strength: 30%;
   --thread-title-fog: color-mix(in srgb, currentColor var(--thread-title-fog-strength), transparent);
   --thread-title-fog-thin: color-mix(in srgb, currentColor calc(var(--thread-title-fog-strength) * .45), transparent);
-  --thread-title-fog-tint: color-mix(in srgb, var(--green, #64ddf2) 22%, transparent);
+  --thread-title-fog-tint: color-mix(in srgb, var(--green, #64ddf2) 12%, transparent);
   position: relative;
   display: inline-block;
   min-width: 0;
@@ -31,7 +31,7 @@
 
 .app-shell[data-color-scheme="light"] .thread-title {
   --thread-title-fog-strength: 22%;
-  --thread-title-fog-tint: color-mix(in srgb, var(--green) 16%, transparent);
+  --thread-title-fog-tint: color-mix(in srgb, var(--green) 10%, transparent);
 }
 
 .thread-title-text {

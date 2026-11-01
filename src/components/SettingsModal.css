@@ -71,7 +71,7 @@
 /* Provider marks: one compact radiogroup per subscription, side by side. */
 .provider-mark-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); }
 .provider-mark-group { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.provider-mark-group > span { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 600; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.provider-mark-group > span { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
 .provider-mark-group .provider-logo-options { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 /* The preview well is sized to its own column so the label never sits on it. */
 .provider-mark-group .provider-logo-options > button { min-height: 46px; grid-template-columns: 32px minmax(0, 1fr) 14px; gap: 10px; padding: 6px 8px 6px 7px; }
