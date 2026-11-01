@@ -168,15 +168,21 @@
 }
 /* This lazy sheet loads after styles.css, so it must stop its own streaks. */
 @media (prefers-reduced-motion: reduce) { .slider-style-preview.comet .slider-style-rail::after { animation: none; } }
-/* Coil: the cord itself, wound tight, with its hex collar. */
+/* Coil: the cord itself, wound tight, with its hex collar. It twists on the
+   same coil-twist loop as the real slider (styles.css), at the gauge and
+   speed the real cord has at this setting: 11px turns, about 1.4s per turn. */
 .slider-style-preview.coil .slider-style-rail {
+  --coil-gauge: 11px;
   height: 16px; border-radius: 0;
   background: linear-gradient(90deg, #6a4fe0, #ab48e0 60%, #f43fae) no-repeat left center / 64% 100%;
   -webkit-mask-image: var(--coil-turn); mask-image: var(--coil-turn);
-  -webkit-mask-size: 11px 100%; mask-size: 11px 100%;
+  -webkit-mask-size: var(--coil-gauge) 100%; mask-size: var(--coil-gauge) 100%;
   -webkit-mask-repeat: repeat-x; mask-repeat: repeat-x;
   -webkit-mask-position: 0 center; mask-position: 0 center;
+  animation: coil-twist 1.4s linear infinite;
 }
+/* This lazy sheet loads after styles.css, so it must stop its own cord. */
+@media (prefers-reduced-motion: reduce) { .slider-style-preview.coil .slider-style-rail { animation: none; } }
 .slider-style-preview.coil .slider-style-thumb {
   left: 64%; width: 12px; height: 17px; border: 0; border-radius: 0;
   clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);

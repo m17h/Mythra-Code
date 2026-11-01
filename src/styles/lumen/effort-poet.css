@@ -1,0 +1,335 @@
+/* ==========================================================================
+   Poet effort control (a tribute to Claude Code)
+   Morgan (2026-11-01): "one new animated slider in honor of Claude", after
+   the look of Claude Code in the terminal: pixel art and deliberately
+   un-smooth, frame-by-frame animation. Everything here moves in steps().
+   Nothing eases or glides. Named "Poet" after Claude's model names, which
+   come from creative forms (Haiku, Sonnet, Opus, Fable).
+
+     ⏱ Reasoning
+     ▮▮▮▮▮▮▮▮▮▮▮▮ ✻ ▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯
+       ·      ·    ·      ·         ·
+                 High▌
+
+   - The track is a row of terminal blocks: Claude's clay orange up to the
+     chosen level, dim slots after it. The filled part snaps to whole blocks,
+     and one bright block marches through it a block at a time.
+   - The knob is a pixel spark that steps through spinner frames
+     (· ✢ ✳ ✻ ✳ ✢), the way Claude Code's thinking spinner does. A grown
+     copy of each frame in the panel colour gives it a one-pixel outline.
+   - Small pixel pips mark each level under the track.
+   - Only the chosen level's name shows, in the monospace font, with a
+     blinking block cursor after it.
+   - The harder it thinks, the faster the march and the spin
+     (--effort-heat). Change sparks are square pixels that jump in steps.
+   - With reduced motion, everything holds still on the full star.
+   The native range input stays, invisible, for keyboard and assistive tech.
+   EffortSlider handles click, drag and keyboard, sets --reasoning-fill, and
+   marks ticks .reached / .current. The 8px ticks inset matches its pointer
+   maths. Lumen contract: no :is()/:where()/:has(), no :focus-visible in a
+   selector list.
+   ========================================================================== */
+
+.app-shell[data-theme][data-color-scheme] {
+  --cc-spark-sheet: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='54' height='9' viewBox='0 0 54 9' shape-rendering='crispEdges' fill='%23000'%3E%3Crect x='3' y='4' width='1' height='1'/%3E%3Crect x='4' y='3' width='1' height='1'/%3E%3Crect x='4' y='4' width='1' height='1'/%3E%3Crect x='4' y='5' width='1' height='1'/%3E%3Crect x='5' y='4' width='1' height='1'/%3E%3Crect x='11' y='4' width='1' height='1'/%3E%3Crect x='12' y='4' width='1' height='1'/%3E%3Crect x='13' y='2' width='1' height='1'/%3E%3Crect x='13' y='3' width='1' height='1'/%3E%3Crect x='13' y='4' width='1' height='1'/%3E%3Crect x='13' y='5' width='1' height='1'/%3E%3Crect x='13' y='6' width='1' height='1'/%3E%3Crect x='14' y='4' width='1' height='1'/%3E%3Crect x='15' y='4' width='1' height='1'/%3E%3Crect x='20' y='2' width='1' height='1'/%3E%3Crect x='20' y='4' width='1' height='1'/%3E%3Crect x='20' y='6' width='1' height='1'/%3E%3Crect x='21' y='3' width='1' height='1'/%3E%3Crect x='21' y='4' width='1' height='1'/%3E%3Crect x='21' y='5' width='1' height='1'/%3E%3Crect x='22' y='2' width='1' height='1'/%3E%3Crect x='22' y='3' width='1' height='1'/%3E%3Crect x='22' y='4' width='1' height='1'/%3E%3Crect x='22' y='5' width='1' height='1'/%3E%3Crect x='22' y='6' width='1' height='1'/%3E%3Crect x='23' y='3' width='1' height='1'/%3E%3Crect x='23' y='4' width='1' height='1'/%3E%3Crect x='23' y='5' width='1' height='1'/%3E%3Crect x='24' y='2' width='1' height='1'/%3E%3Crect x='24' y='4' width='1' height='1'/%3E%3Crect x='24' y='6' width='1' height='1'/%3E%3Crect x='28' y='1' width='1' height='1'/%3E%3Crect x='28' y='4' width='1' height='1'/%3E%3Crect x='28' y='7' width='1' height='1'/%3E%3Crect x='29' y='2' width='1' height='1'/%3E%3Crect x='29' y='4' width='1' height='1'/%3E%3Crect x='29' y='6' width='1' height='1'/%3E%3Crect x='30' y='3' width='1' height='1'/%3E%3Crect x='30' y='4' width='1' height='1'/%3E%3Crect x='30' y='5' width='1' height='1'/%3E%3Crect x='31' y='1' width='1' height='1'/%3E%3Crect x='31' y='2' width='1' height='1'/%3E%3Crect x='31' y='3' width='1' height='1'/%3E%3Crect x='31' y='4' width='1' height='1'/%3E%3Crect x='31' y='5' width='1' height='1'/%3E%3Crect x='31' y='6' width='1' height='1'/%3E%3Crect x='31' y='7' width='1' height='1'/%3E%3Crect x='32' y='3' width='1' height='1'/%3E%3Crect x='32' y='4' width='1' height='1'/%3E%3Crect x='32' y='5' width='1' height='1'/%3E%3Crect x='33' y='2' width='1' height='1'/%3E%3Crect x='33' y='4' width='1' height='1'/%3E%3Crect x='33' y='6' width='1' height='1'/%3E%3Crect x='34' y='1' width='1' height='1'/%3E%3Crect x='34' y='4' width='1' height='1'/%3E%3Crect x='34' y='7' width='1' height='1'/%3E%3Crect x='38' y='2' width='1' height='1'/%3E%3Crect x='38' y='4' width='1' height='1'/%3E%3Crect x='38' y='6' width='1' height='1'/%3E%3Crect x='39' y='3' width='1' height='1'/%3E%3Crect x='39' y='4' width='1' height='1'/%3E%3Crect x='39' y='5' width='1' height='1'/%3E%3Crect x='40' y='2' width='1' height='1'/%3E%3Crect x='40' y='3' width='1' height='1'/%3E%3Crect x='40' y='4' width='1' height='1'/%3E%3Crect x='40' y='5' width='1' height='1'/%3E%3Crect x='40' y='6' width='1' height='1'/%3E%3Crect x='41' y='3' width='1' height='1'/%3E%3Crect x='41' y='4' width='1' height='1'/%3E%3Crect x='41' y='5' width='1' height='1'/%3E%3Crect x='42' y='2' width='1' height='1'/%3E%3Crect x='42' y='4' width='1' height='1'/%3E%3Crect x='42' y='6' width='1' height='1'/%3E%3Crect x='47' y='4' width='1' height='1'/%3E%3Crect x='48' y='4' width='1' height='1'/%3E%3Crect x='49' y='2' width='1' height='1'/%3E%3Crect x='49' y='3' width='1' height='1'/%3E%3Crect x='49' y='4' width='1' height='1'/%3E%3Crect x='49' y='5' width='1' height='1'/%3E%3Crect x='49' y='6' width='1' height='1'/%3E%3Crect x='50' y='4' width='1' height='1'/%3E%3Crect x='51' y='4' width='1' height='1'/%3E%3C/svg%3E");
+  --cc-spark-edge: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='54' height='9' viewBox='0 0 54 9' shape-rendering='crispEdges' fill='%23000'%3E%3Crect x='2' y='3' width='1' height='1'/%3E%3Crect x='2' y='4' width='1' height='1'/%3E%3Crect x='2' y='5' width='1' height='1'/%3E%3Crect x='3' y='2' width='1' height='1'/%3E%3Crect x='3' y='3' width='1' height='1'/%3E%3Crect x='3' y='4' width='1' height='1'/%3E%3Crect x='3' y='5' width='1' height='1'/%3E%3Crect x='3' y='6' width='1' height='1'/%3E%3Crect x='4' y='2' width='1' height='1'/%3E%3Crect x='4' y='3' width='1' height='1'/%3E%3Crect x='4' y='4' width='1' height='1'/%3E%3Crect x='4' y='5' width='1' height='1'/%3E%3Crect x='4' y='6' width='1' height='1'/%3E%3Crect x='5' y='2' width='1' height='1'/%3E%3Crect x='5' y='3' width='1' height='1'/%3E%3Crect x='5' y='4' width='1' height='1'/%3E%3Crect x='5' y='5' width='1' height='1'/%3E%3Crect x='5' y='6' width='1' height='1'/%3E%3Crect x='6' y='3' width='1' height='1'/%3E%3Crect x='6' y='4' width='1' height='1'/%3E%3Crect x='6' y='5' width='1' height='1'/%3E%3Crect x='10' y='3' width='1' height='1'/%3E%3Crect x='10' y='4' width='1' height='1'/%3E%3Crect x='10' y='5' width='1' height='1'/%3E%3Crect x='11' y='3' width='1' height='1'/%3E%3Crect x='11' y='4' width='1' height='1'/%3E%3Crect x='11' y='5' width='1' height='1'/%3E%3Crect x='12' y='1' width='1' height='1'/%3E%3Crect x='12' y='2' width='1' height='1'/%3E%3Crect x='12' y='3' width='1' height='1'/%3E%3Crect x='12' y='4' width='1' height='1'/%3E%3Crect x='12' y='5' width='1' height='1'/%3E%3Crect x='12' y='6' width='1' height='1'/%3E%3Crect x='12' y='7' width='1' height='1'/%3E%3Crect x='13' y='1' width='1' height='1'/%3E%3Crect x='13' y='2' width='1' height='1'/%3E%3Crect x='13' y='3' width='1' height='1'/%3E%3Crect x='13' y='4' width='1' height='1'/%3E%3Crect x='13' y='5' width='1' height='1'/%3E%3Crect x='13' y='6' width='1' height='1'/%3E%3Crect x='13' y='7' width='1' height='1'/%3E%3Crect x='14' y='1' width='1' height='1'/%3E%3Crect x='14' y='2' width='1' height='1'/%3E%3Crect x='14' y='3' width='1' height='1'/%3E%3Crect x='14' y='4' width='1' height='1'/%3E%3Crect x='14' y='5' width='1' height='1'/%3E%3Crect x='14' y='6' width='1' height='1'/%3E%3Crect x='14' y='7' width='1' height='1'/%3E%3Crect x='15' y='3' width='1' height='1'/%3E%3Crect x='15' y='4' width='1' height='1'/%3E%3Crect x='15' y='5' width='1' height='1'/%3E%3Crect x='16' y='3' width='1' height='1'/%3E%3Crect x='16' y='4' width='1' height='1'/%3E%3Crect x='16' y='5' width='1' height='1'/%3E%3Crect x='19' y='1' width='1' height='1'/%3E%3Crect x='19' y='2' width='1' height='1'/%3E%3Crect x='19' y='3' width='1' height='1'/%3E%3Crect x='19' y='4' width='1' height='1'/%3E%3Crect x='19' y='5' width='1' height='1'/%3E%3Crect x='19' y='6' width='1' height='1'/%3E%3Crect x='19' y='7' width='1' height='1'/%3E%3Crect x='20' y='1' width='1' height='1'/%3E%3Crect x='20' y='2' width='1' height='1'/%3E%3Crect x='20' y='3' width='1' height='1'/%3E%3Crect x='20' y='4' width='1' height='1'/%3E%3Crect x='20' y='5' width='1' height='1'/%3E%3Crect x='20' y='6' width='1' height='1'/%3E%3Crect x='20' y='7' width='1' height='1'/%3E%3Crect x='21' y='1' width='1' height='1'/%3E%3Crect x='21' y='2' width='1' height='1'/%3E%3Crect x='21' y='3' width='1' height='1'/%3E%3Crect x='21' y='4' width='1' height='1'/%3E%3Crect x='21' y='5' width='1' height='1'/%3E%3Crect x='21' y='6' width='1' height='1'/%3E%3Crect x='21' y='7' width='1' height='1'/%3E%3Crect x='22' y='1' width='1' height='1'/%3E%3Crect x='22' y='2' width='1' height='1'/%3E%3Crect x='22' y='3' width='1' height='1'/%3E%3Crect x='22' y='4' width='1' height='1'/%3E%3Crect x='22' y='5' width='1' height='1'/%3E%3Crect x='22' y='6' width='1' height='1'/%3E%3Crect x='22' y='7' width='1' height='1'/%3E%3Crect x='23' y='1' width='1' height='1'/%3E%3Crect x='23' y='2' width='1' height='1'/%3E%3Crect x='23' y='3' width='1' height='1'/%3E%3Crect x='23' y='4' width='1' height='1'/%3E%3Crect x='23' y='5' width='1' height='1'/%3E%3Crect x='23' y='6' width='1' height='1'/%3E%3Crect x='23' y='7' width='1' height='1'/%3E%3Crect x='24' y='1' width='1' height='1'/%3E%3Crect x='24' y='2' width='1' height='1'/%3E%3Crect x='24' y='3' width='1' height='1'/%3E%3Crect x='24' y='4' width='1' height='1'/%3E%3Crect x='24' y='5' width='1' height='1'/%3E%3Crect x='24' y='6' width='1' height='1'/%3E%3Crect x='24' y='7' width='1' height='1'/%3E%3Crect x='25' y='1' width='1' height='1'/%3E%3Crect x='25' y='2' width='1' height='1'/%3E%3Crect x='25' y='3' width='1' height='1'/%3E%3Crect x='25' y='4' width='1' height='1'/%3E%3Crect x='25' y='5' width='1' height='1'/%3E%3Crect x='25' y='6' width='1' height='1'/%3E%3Crect x='25' y='7' width='1' height='1'/%3E%3Crect x='27' y='0' width='1' height='1'/%3E%3Crect x='27' y='1' width='1' height='1'/%3E%3Crect x='27' y='2' width='1' height='1'/%3E%3Crect x='27' y='3' width='1' height='1'/%3E%3Crect x='27' y='4' width='1' height='1'/%3E%3Crect x='27' y='5' width='1' height='1'/%3E%3Crect x='27' y='6' width='1' height='1'/%3E%3Crect x='27' y='7' width='1' height='1'/%3E%3Crect x='27' y='8' width='1' height='1'/%3E%3Crect x='28' y='0' width='1' height='1'/%3E%3Crect x='28' y='1' width='1' height='1'/%3E%3Crect x='28' y='2' width='1' height='1'/%3E%3Crect x='28' y='3' width='1' height='1'/%3E%3Crect x='28' y='4' width='1' height='1'/%3E%3Crect x='28' y='5' width='1' height='1'/%3E%3Crect x='28' y='6' width='1' height='1'/%3E%3Crect x='28' y='7' width='1' height='1'/%3E%3Crect x='28' y='8' width='1' height='1'/%3E%3Crect x='29' y='0' width='1' height='1'/%3E%3Crect x='29' y='1' width='1' height='1'/%3E%3Crect x='29' y='2' width='1' height='1'/%3E%3Crect x='29' y='3' width='1' height='1'/%3E%3Crect x='29' y='4' width='1' height='1'/%3E%3Crect x='29' y='5' width='1' height='1'/%3E%3Crect x='29' y='6' width='1' height='1'/%3E%3Crect x='29' y='7' width='1' height='1'/%3E%3Crect x='29' y='8' width='1' height='1'/%3E%3Crect x='30' y='0' width='1' height='1'/%3E%3Crect x='30' y='1' width='1' height='1'/%3E%3Crect x='30' y='2' width='1' height='1'/%3E%3Crect x='30' y='3' width='1' height='1'/%3E%3Crect x='30' y='4' width='1' height='1'/%3E%3Crect x='30' y='5' width='1' height='1'/%3E%3Crect x='30' y='6' width='1' height='1'/%3E%3Crect x='30' y='7' width='1' height='1'/%3E%3Crect x='30' y='8' width='1' height='1'/%3E%3Crect x='31' y='0' width='1' height='1'/%3E%3Crect x='31' y='1' width='1' height='1'/%3E%3Crect x='31' y='2' width='1' height='1'/%3E%3Crect x='31' y='3' width='1' height='1'/%3E%3Crect x='31' y='4' width='1' height='1'/%3E%3Crect x='31' y='5' width='1' height='1'/%3E%3Crect x='31' y='6' width='1' height='1'/%3E%3Crect x='31' y='7' width='1' height='1'/%3E%3Crect x='31' y='8' width='1' height='1'/%3E%3Crect x='32' y='0' width='1' height='1'/%3E%3Crect x='32' y='1' width='1' height='1'/%3E%3Crect x='32' y='2' width='1' height='1'/%3E%3Crect x='32' y='3' width='1' height='1'/%3E%3Crect x='32' y='4' width='1' height='1'/%3E%3Crect x='32' y='5' width='1' height='1'/%3E%3Crect x='32' y='6' width='1' height='1'/%3E%3Crect x='32' y='7' width='1' height='1'/%3E%3Crect x='32' y='8' width='1' height='1'/%3E%3Crect x='33' y='0' width='1' height='1'/%3E%3Crect x='33' y='1' width='1' height='1'/%3E%3Crect x='33' y='2' width='1' height='1'/%3E%3Crect x='33' y='3' width='1' height='1'/%3E%3Crect x='33' y='4' width='1' height='1'/%3E%3Crect x='33' y='5' width='1' height='1'/%3E%3Crect x='33' y='6' width='1' height='1'/%3E%3Crect x='33' y='7' width='1' height='1'/%3E%3Crect x='33' y='8' width='1' height='1'/%3E%3Crect x='34' y='0' width='1' height='1'/%3E%3Crect x='34' y='1' width='1' height='1'/%3E%3Crect x='34' y='2' width='1' height='1'/%3E%3Crect x='34' y='3' width='1' height='1'/%3E%3Crect x='34' y='4' width='1' height='1'/%3E%3Crect x='34' y='5' width='1' height='1'/%3E%3Crect x='34' y='6' width='1' height='1'/%3E%3Crect x='34' y='7' width='1' height='1'/%3E%3Crect x='34' y='8' width='1' height='1'/%3E%3Crect x='35' y='0' width='1' height='1'/%3E%3Crect x='35' y='1' width='1' height='1'/%3E%3Crect x='35' y='2' width='1' height='1'/%3E%3Crect x='35' y='3' width='1' height='1'/%3E%3Crect x='35' y='4' width='1' height='1'/%3E%3Crect x='35' y='5' width='1' height='1'/%3E%3Crect x='35' y='6' width='1' height='1'/%3E%3Crect x='35' y='7' width='1' height='1'/%3E%3Crect x='35' y='8' width='1' height='1'/%3E%3Crect x='37' y='1' width='1' height='1'/%3E%3Crect x='37' y='2' width='1' height='1'/%3E%3Crect x='37' y='3' width='1' height='1'/%3E%3Crect x='37' y='4' width='1' height='1'/%3E%3Crect x='37' y='5' width='1' height='1'/%3E%3Crect x='37' y='6' width='1' height='1'/%3E%3Crect x='37' y='7' width='1' height='1'/%3E%3Crect x='38' y='1' width='1' height='1'/%3E%3Crect x='38' y='2' width='1' height='1'/%3E%3Crect x='38' y='3' width='1' height='1'/%3E%3Crect x='38' y='4' width='1' height='1'/%3E%3Crect x='38' y='5' width='1' height='1'/%3E%3Crect x='38' y='6' width='1' height='1'/%3E%3Crect x='38' y='7' width='1' height='1'/%3E%3Crect x='39' y='1' width='1' height='1'/%3E%3Crect x='39' y='2' width='1' height='1'/%3E%3Crect x='39' y='3' width='1' height='1'/%3E%3Crect x='39' y='4' width='1' height='1'/%3E%3Crect x='39' y='5' width='1' height='1'/%3E%3Crect x='39' y='6' width='1' height='1'/%3E%3Crect x='39' y='7' width='1' height='1'/%3E%3Crect x='40' y='1' width='1' height='1'/%3E%3Crect x='40' y='2' width='1' height='1'/%3E%3Crect x='40' y='3' width='1' height='1'/%3E%3Crect x='40' y='4' width='1' height='1'/%3E%3Crect x='40' y='5' width='1' height='1'/%3E%3Crect x='40' y='6' width='1' height='1'/%3E%3Crect x='40' y='7' width='1' height='1'/%3E%3Crect x='41' y='1' width='1' height='1'/%3E%3Crect x='41' y='2' width='1' height='1'/%3E%3Crect x='41' y='3' width='1' height='1'/%3E%3Crect x='41' y='4' width='1' height='1'/%3E%3Crect x='41' y='5' width='1' height='1'/%3E%3Crect x='41' y='6' width='1' height='1'/%3E%3Crect x='41' y='7' width='1' height='1'/%3E%3Crect x='42' y='1' width='1' height='1'/%3E%3Crect x='42' y='2' width='1' height='1'/%3E%3Crect x='42' y='3' width='1' height='1'/%3E%3Crect x='42' y='4' width='1' height='1'/%3E%3Crect x='42' y='5' width='1' height='1'/%3E%3Crect x='42' y='6' width='1' height='1'/%3E%3Crect x='42' y='7' width='1' height='1'/%3E%3Crect x='43' y='1' width='1' height='1'/%3E%3Crect x='43' y='2' width='1' height='1'/%3E%3Crect x='43' y='3' width='1' height='1'/%3E%3Crect x='43' y='4' width='1' height='1'/%3E%3Crect x='43' y='5' width='1' height='1'/%3E%3Crect x='43' y='6' width='1' height='1'/%3E%3Crect x='43' y='7' width='1' height='1'/%3E%3Crect x='46' y='3' width='1' height='1'/%3E%3Crect x='46' y='4' width='1' height='1'/%3E%3Crect x='46' y='5' width='1' height='1'/%3E%3Crect x='47' y='3' width='1' height='1'/%3E%3Crect x='47' y='4' width='1' height='1'/%3E%3Crect x='47' y='5' width='1' height='1'/%3E%3Crect x='48' y='1' width='1' height='1'/%3E%3Crect x='48' y='2' width='1' height='1'/%3E%3Crect x='48' y='3' width='1' height='1'/%3E%3Crect x='48' y='4' width='1' height='1'/%3E%3Crect x='48' y='5' width='1' height='1'/%3E%3Crect x='48' y='6' width='1' height='1'/%3E%3Crect x='48' y='7' width='1' height='1'/%3E%3Crect x='49' y='1' width='1' height='1'/%3E%3Crect x='49' y='2' width='1' height='1'/%3E%3Crect x='49' y='3' width='1' height='1'/%3E%3Crect x='49' y='4' width='1' height='1'/%3E%3Crect x='49' y='5' width='1' height='1'/%3E%3Crect x='49' y='6' width='1' height='1'/%3E%3Crect x='49' y='7' width='1' height='1'/%3E%3Crect x='50' y='1' width='1' height='1'/%3E%3Crect x='50' y='2' width='1' height='1'/%3E%3Crect x='50' y='3' width='1' height='1'/%3E%3Crect x='50' y='4' width='1' height='1'/%3E%3Crect x='50' y='5' width='1' height='1'/%3E%3Crect x='50' y='6' width='1' height='1'/%3E%3Crect x='50' y='7' width='1' height='1'/%3E%3Crect x='51' y='3' width='1' height='1'/%3E%3Crect x='51' y='4' width='1' height='1'/%3E%3Crect x='51' y='5' width='1' height='1'/%3E%3Crect x='52' y='3' width='1' height='1'/%3E%3Crect x='52' y='4' width='1' height='1'/%3E%3Crect x='52' y='5' width='1' height='1'/%3E%3C/svg%3E");
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"],
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"],
+.app-shell[data-theme][data-color-scheme] .slider-style-preview.poet {
+  --cc-clay: #d97757;
+  --cc-glint: #f2b393;
+  --cc-slot: rgba(255, 255, 255, .1);
+  --cc-pip: rgba(255, 255, 255, .22);
+}
+.app-shell[data-theme][data-color-scheme="light"][data-effort-slider="poet"],
+.app-shell[data-theme][data-color-scheme="light"] .ob-effort-shell[data-effort-slider="poet"],
+.app-shell[data-theme][data-color-scheme="light"] .slider-style-preview.poet {
+  --cc-clay: #c4613f;
+  --cc-glint: #e89a76;
+  --cc-slot: rgba(0, 0, 0, .09);
+  --cc-pip: rgba(0, 0, 0, .22);
+}
+
+/* ---- Heading: the gauge takes the clay colour; the level shows below ---- */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-heading > svg:first-child,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-heading > svg:first-child,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-heading > svg:first-child,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-heading > svg:first-child {
+  color: var(--cc-clay);
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-heading strong,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-heading strong,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-heading strong,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-heading strong {
+  display: none;
+}
+
+/* ---- Rail: the blocks are drawn on the ticks box, the input is invisible ---- */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail {
+  --cc-step: calc(1.15s - var(--effort-heat, 0) * .75s);
+  position: relative;
+  display: block;
+  height: 20px;
+  cursor: pointer;
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail.disabled,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail.disabled { cursor: default; opacity: .5; }
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail input[type="range"],
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail input[type="range"],
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail input[type="range"],
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail input[type="range"] {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  background: none;
+  box-shadow: none;
+}
+/* Dim slots across the whole track. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks {
+  position: absolute;
+  inset: 0 8px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: repeating-linear-gradient(90deg, var(--cc-slot) 0 6px, transparent 6px 8px) 0 50% / 100% 8px no-repeat;
+  pointer-events: none;
+}
+/* Lit blocks up to the chosen level, snapped to whole blocks, with one
+   bright block marching through them. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks::before,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: calc(50% - 4px);
+  width: var(--reasoning-fill, 0%);
+  width: round(down, calc(var(--reasoning-fill, 0%) - 6px), 8px);
+  height: 8px;
+  background: linear-gradient(90deg, transparent 0 40px, var(--cc-glint) 40px 48px) 0 0 / 48px 100% repeat-x, var(--cc-clay);
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 6px, transparent 6px 8px);
+  mask-image: repeating-linear-gradient(90deg, #000 0 6px, transparent 6px 8px);
+}
+
+/* Each tick is a zero-size anchor at its stop. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i.reached,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i.reached,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i.reached,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i.reached {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  transform: none;
+  animation: none;
+}
+/* A 2px pixel pip under the track at every level. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i::after,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 6px;
+  width: 2px;
+  height: 2px;
+  background: var(--cc-pip);
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i.reached::after,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i.reached::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i.reached::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i.reached::after { background: var(--cc-clay); }
+/* The chosen level: the pixel spark, with a one-pixel outline in the panel
+   colour (a second, grown copy of each frame) so it reads over the blocks. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i.current::before,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i.current::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i.current::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i.current::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  left: -9px;
+  top: -9px;
+  width: 18px;
+  height: 18px;
+  background: var(--cc-clay);
+  -webkit-mask: var(--cc-spark-sheet) -54px 0 / 108px 18px no-repeat;
+  mask: var(--cc-spark-sheet) -54px 0 / 108px 18px no-repeat;
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i.current::after,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i.current::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i.current::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i.current::after {
+  z-index: 1;
+  left: -9px;
+  top: -9px;
+  width: 18px;
+  height: 18px;
+  background: var(--panel);
+  -webkit-mask: var(--cc-spark-edge) -54px 0 / 108px 18px no-repeat;
+  mask: var(--cc-spark-edge) -54px 0 / 108px 18px no-repeat;
+}
+/* Keyboard focus: a square pixel frame around the spark. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail input[type="range"]:focus-visible + .reasoning-ticks i.current {
+  outline: 2px solid var(--cc-clay);
+  outline-offset: 11px;
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail input[type="range"]:focus-visible + .openrouter-reasoning-ticks i.current {
+  outline: 2px solid var(--cc-clay);
+  outline-offset: 11px;
+}
+
+/* ---- Only the chosen level's name, in mono, with a blinking cursor ---- */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-labels,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-labels,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-labels,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-labels {
+  display: flex;
+  justify-content: space-between;
+  margin: 2px 8px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-labels span,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-labels span,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-labels span,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-labels span {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 0;
+  overflow: visible;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-shadow: none;
+  visibility: hidden;
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-labels span.active,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-labels span.active,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-labels span.active,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-labels span.active {
+  color: var(--text);
+  text-shadow: none;
+  visibility: visible;
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-labels span.active::after,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-labels span.active::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-labels span.active::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-labels span.active::after {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 11px;
+  margin-left: 2px;
+  background: var(--cc-clay);
+}
+
+/* ---- Change sparks: square pixels that jump instead of glide ---- */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .effort-sparks i,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .effort-sparks i {
+  left: -1.5px;
+  top: -1.5px;
+  width: 3px;
+  height: 3px;
+  border-radius: 0;
+  background: var(--cc-clay);
+  box-shadow: none;
+  animation-timing-function: steps(4, end);
+}
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail::before,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail::before,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail::after,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail::after,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail::after {
+  content: none;
+  display: none;
+}
+
+/* ---- Motion: frame by frame, never eased ---- */
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks::before,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks::before,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks::before,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks::before {
+    animation: cc-march var(--cc-step, 1s) steps(6, end) infinite;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i.current::before,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i.current::before,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i.current::before,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i.current::before,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks i.current::after,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks i.current::after,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks i.current::after,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks i.current::after {
+    animation: cc-spin calc(var(--cc-step, 1s) * .8) steps(6, end) infinite;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-labels span.active::after,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-labels span.active::after,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-labels span.active::after,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-labels span.active::after {
+    animation: cc-blink 1.06s steps(1, end) infinite;
+  }
+}
+@keyframes cc-march { to { background-position: 48px 0, 0 0; } }
+@keyframes cc-spin {
+  from { -webkit-mask-position: 0 0; mask-position: 0 0; }
+  to { -webkit-mask-position: -108px 0; mask-position: -108px 0; }
+}
+@keyframes cc-blink { 50% { opacity: 0; } }
+
+/* ---- Settings card preview: the same blocks, spark and march ---- */
+.app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-rail {
+  height: 8px;
+  border-radius: 0;
+  /* Three lit blocks, a gap for the spark, then slots. The glint is one
+     block-sized layer that hops across the three lit blocks. */
+  background:
+    linear-gradient(var(--cc-glint), var(--cc-glint)) 0 0 / 6px 100% no-repeat,
+    linear-gradient(90deg, var(--cc-clay) 0 24px, transparent 24px 40px, var(--cc-slot) 40px 100%);
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 6px, transparent 6px 8px);
+  mask-image: repeating-linear-gradient(90deg, #000 0 6px, transparent 6px 8px);
+}
+.app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-thumb {
+  left: calc(6px + 32px);
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 0;
+  background: var(--cc-clay);
+  -webkit-mask: var(--cc-spark-sheet) -54px 0 / 108px 18px no-repeat;
+  mask: var(--cc-spark-sheet) -54px 0 / 108px 18px no-repeat;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-rail { animation: cc-preview-march .66s steps(3, end) infinite; }
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-thumb { animation: cc-spin .72s steps(6, end) infinite; }
+}
+@keyframes cc-preview-march { to { background-position: 24px 0, 0 0; } }

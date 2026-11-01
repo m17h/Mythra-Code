@@ -65,6 +65,7 @@ export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; 
   { id: "reactor", name: "Reactor", description: "Pulsing energy cells and a glowing reactor core" },
   { id: "comet", name: "Comet", description: "A soft ice-blue trail that streams toward the thumb" },
   { id: "coil", name: "Coil", description: "A twisted cord that winds tighter the harder it works" },
+  { id: "poet", name: "Poet", description: "Pixel art in honor of Claude Code" },
 ];
 
 /** Settings written before the font selector have no value at all; anything
