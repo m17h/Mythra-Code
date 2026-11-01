@@ -9,7 +9,7 @@ export interface AppShortcutContext {
   running: boolean;
   /** Off unless explicitly enabled, including callers without a saved value. */
   escapeStopsRun?: boolean;
-  /** Whether the Workspace dock is currently open and can be toggled. */
+  /** Whether the Thread tools dock is currently open and can be toggled. */
   workspaceOpen: boolean;
   workspaceAvailable: boolean;
   toggleCommandPalette: () => void;
@@ -21,7 +21,7 @@ export interface AppShortcutContext {
   stopTurn: () => void;
 }
 
-/** Shown next to the Workspace control so the shortcut is discoverable. */
+/** Shown next to the Thread tools control so the shortcut is discoverable. */
 export function workspaceShortcutLabel(platform?: string): string {
   return `${primaryModifierLabel(platform)}+B`;
 }
@@ -84,7 +84,7 @@ export function useAppShortcuts(context: AppShortcutContext): void {
         return;
       }
       if (event.key === "Escape" && !isEditableShortcutTarget(event.target)) {
-        // When enabled, stopping takes priority over dismissing the Workspace.
+        // When enabled, stopping takes priority over dismissing Thread tools.
         // Disabling this shortcut leaves Escape available to transient surfaces.
         if (current.running && current.escapeStopsRun === true) {
           event.preventDefault();

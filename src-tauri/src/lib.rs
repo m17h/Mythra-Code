@@ -1301,6 +1301,7 @@ pub(crate) async fn await_native_start_settlement(attempt: Option<Arc<NativeStar
 #[derive(Default)]
 struct ClaudeState {
     turns: Arc<Mutex<HashMap<String, Arc<ClaudeTurn>>>>,
+    context_reports: StdMutex<ClaudeContextReports>,
     /// Terminal events keyed by exact (thread, turn), recorded before that
     /// turn releases its slot. Emitting is not renderer delivery: health
     /// reconciliation consumes an exact-turn receipt through the normal event
@@ -1319,6 +1320,47 @@ struct ClaudeState {
     usage_lock: Mutex<()>,
     usage_probes: StdMutex<ClaudeUsageProbes>,
     prompt_snapshot_support: Mutex<Option<ClaudePromptSnapshotSupport>>,
+}
+
+/// Read-only snapshots are deliberately bounded and keyed by exact turn. An
+/// idle thread can show its last captured snapshot without resuming a writer.
+#[derive(Default)]
+struct ClaudeContextReports {
+    entries: std::collections::VecDeque<ClaudeThreadContextUsage>,
+    bytes: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeThreadContextUsage {
+    status: String,
+    thread_id: String,
+    turn_id: String,
+    sampled_at: Option<u64>,
+    reason: Option<String>,
+    report: Option<Value>,
+}
+
+impl ClaudeContextReports {
+    fn get(&self, thread_id: &str, turn_id: &str) -> Option<ClaudeThreadContextUsage> {
+        self.entries.iter().find(|entry| entry.thread_id == thread_id && entry.turn_id == turn_id).cloned()
+    }
+
+    fn record(&mut self, snapshot: ClaudeThreadContextUsage) {
+        let bytes = &mut self.bytes;
+        self.entries.retain(|entry| {
+            let keep = entry.thread_id != snapshot.thread_id || entry.turn_id != snapshot.turn_id;
+            if !keep { *bytes = bytes.saturating_sub(entry.report.as_ref().map_or(0, |report| report.to_string().len())); }
+            keep
+        });
+        self.bytes += snapshot.report.as_ref().map_or(0, |report| report.to_string().len());
+        self.entries.push_back(snapshot);
+        while self.entries.len() > 32 || self.bytes > 2 * 1024 * 1024 {
+            if let Some(entry) = self.entries.pop_front() {
+                self.bytes = self.bytes.saturating_sub(entry.report.as_ref().map_or(0, |report| report.to_string().len()));
+            }
+        }
+    }
 }
 
 /// Receipts normally live only until the renderer acknowledges handling that
@@ -1475,6 +1517,12 @@ struct ClaudeTurn {
     /// That keeps duplicate renderer replies out while allowing the stdout
     /// reader to register or cancel requests if Claude stops reading stdin.
     control_response: Mutex<()>,
+    /// Only this process's system/init version may authorize summary reads.
+    /// An earlier executable probe can race an updater replacing the binary;
+    /// older CLIs may ignore `detail` and count via the API.
+    context_summary_supported: AtomicBool,
+    context_probe: Mutex<()>,
+    context_pending: StdMutex<Option<(String, oneshot::Sender<Result<Value, String>>)>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1573,6 +1621,69 @@ struct ClaudeTurnStarted {
 }
 
 impl ClaudeTurn {
+    #[cfg(unix)]
+    async fn write_context_request(&self, request: &Value) -> Result<(), String> {
+        // An optional context read never queues behind prompt/approval input.
+        let mut input = self.stdin.try_lock().map_err(|_| "Claude input is busy; context summary is unavailable.".to_string())?;
+        if !self.alive.load(Ordering::Acquire) {
+            return Err("This Claude turn has finished.".into());
+        }
+        let stdin = input.as_mut().ok_or("This Claude turn is finishing.")?;
+        let line = format!("{request}\n");
+        // POSIX guarantees an all-or-nothing nonblocking pipe write up to
+        // PIPE_BUF, whose portable minimum is 512 bytes. Tokio's Unix child
+        // pipe uses that nonblocking write directly. A cancelled `write`
+        // therefore leaves no partial frame for later prompt/control input.
+        if line.len() > 512 {
+            return Err("Claude context summary request is too large.".into());
+        }
+        timeout(Duration::from_millis(250), async {
+            let written = stdin.write(line.as_bytes()).await
+                .map_err(|_| "Claude context summary could not be requested.".to_string())?;
+            if written != line.len() {
+                return Err("Claude input has closed.".into());
+            }
+            stdin.flush().await
+                .map_err(|_| "Claude context summary could not be requested.".to_string())
+        }).await.map_err(|_| "Claude input is busy; context summary is unavailable.".to_string())?
+    }
+
+    #[cfg(not(unix))]
+    async fn write_context_request(&self, _request: &Value) -> Result<(), String> {
+        // Windows ChildStdin buffers writes in a blocking worker: a flush
+        // timeout cannot cancel the underlying pipe write. Optional reads
+        // must never hold up input or leave a partial frame in that pipe.
+        Err("Claude context summaries are unavailable on this platform; the latest runtime reading is shown instead.".into())
+    }
+
+    /// Consume only the reply to our own read request. Permission responses
+    /// and other control traffic retain their existing route.
+    fn accept_context_response(&self, message: &Value) -> bool {
+        if message.get("type").and_then(Value::as_str) != Some("control_response") { return false; }
+        let Some(response) = message.get("response") else { return false; };
+        let Some(request_id) = response.get("request_id").and_then(Value::as_str) else { return false; };
+        let mut pending = self.context_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !pending.as_ref().is_some_and(|(id, _)| id == request_id) { return false; }
+        if let Some((_, sender)) = pending.take() {
+            let result = if response.get("subtype").and_then(Value::as_str) == Some("success") {
+                response.get("response").filter(|report| {
+                    report.get("categories").is_some_and(Value::is_array)
+                        && report.get("totalTokens").and_then(Value::as_f64).is_some_and(|value| value.is_finite() && value >= 0.0)
+                        && report.to_string().len() <= 256 * 1024
+                }).cloned().ok_or_else(|| "Claude Code returned an unavailable context summary.".to_string())
+            } else {
+                // Do not surface arbitrary CLI control errors as thread errors.
+                Err("This Claude Code version could not provide a context summary.".into())
+            };
+            let _ = sender.send(result);
+        }
+        true
+    }
+
+    fn finish_context_request(&self) {
+        self.context_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    }
+
     async fn write(&self, message: &Value) -> Result<(), String> {
         if !self.alive.load(Ordering::Acquire) {
             return Err("This Claude turn is no longer running".into());
@@ -6861,6 +6972,9 @@ async fn claude_turn_start(
         cutoff_error: StdMutex::new(None),
         control_requests: Mutex::new(HashSet::new()),
         control_response: Mutex::new(()),
+        context_summary_supported: AtomicBool::new(false),
+        context_probe: Mutex::new(()),
+        context_pending: StdMutex::new(None),
     });
     if !claim_turn_slot(&state.turns, &options.thread_id, &turn, |existing| {
         existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
@@ -7065,6 +7179,23 @@ async fn claude_turn_start(
                 .await;
                 continue;
             };
+            if message.get("type").and_then(Value::as_str) == Some("system")
+                && message.get("subtype").and_then(Value::as_str) == Some("init")
+            {
+                // SDKSystemMessage.claude_code_version identifies the process
+                // actually running this turn, not whichever executable was on
+                // disk during the earlier startup probe. Unknown stays closed.
+                // SDK 0.3.257 / CLI 2.1.257 first support summary-only reads:
+                // https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md#03257
+                let supported = message.get("claude_code_version")
+                    .and_then(Value::as_str)
+                    .and_then(|version| semver::Version::parse(version).ok())
+                    .is_some_and(|version| version >= semver::Version::new(2, 1, 257));
+                stdout_runtime.context_summary_supported.store(supported, Ordering::Release);
+            }
+            if stdout_runtime.accept_context_response(&message) {
+                continue;
+            }
             if message.get("type").and_then(Value::as_str) == Some("stream_event") {
                 if claude_reopens_turn(&message) {
                     terminal_assistant = None;
@@ -7112,6 +7243,7 @@ async fn claude_turn_start(
                 // Result delivery is not a transcript flush acknowledgement.
                 // Keep the slot until EOF lets the CLI save and exit, then
                 // publish completion so a queued resume cannot race that save.
+                stdout_runtime.finish_context_request();
                 stdout_runtime.close_input().await;
                 terminal_result = Some(message);
                 break;
@@ -7159,6 +7291,7 @@ async fn claude_turn_start(
             }
             emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, message).await;
         }
+        stdout_runtime.finish_context_request();
         flush_deltas(&mut delta_buffer, &stdout_app);
         let saw_result = terminal_result.is_some();
         let exit_result = if let Some(exit) = observed_exit {
@@ -7391,6 +7524,90 @@ async fn claude_turn_active(
         .await
         .get(&thread_id)
         .is_some_and(|turn| turn.alive.load(Ordering::Acquire) || turn.cutoff_uncertain.load(Ordering::Acquire)))
+}
+
+fn cached_claude_context(
+    state: &ClaudeState,
+    thread_id: &str,
+    turn_id: &str,
+    reason: &str,
+) -> ClaudeThreadContextUsage {
+    let cached = state.context_reports.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(thread_id, turn_id);
+    if let Some(mut cached) = cached {
+        cached.status = "cached".into();
+        cached.reason = Some(reason.into());
+        cached
+    } else {
+        ClaudeThreadContextUsage {
+            status: "unavailable".into(), thread_id: thread_id.into(), turn_id: turn_id.into(),
+            sampled_at: None, reason: Some(reason.into()), report: None,
+        }
+    }
+}
+
+/// Uses the existing, authenticated process only. No `/context` prompt, idle
+/// resume, token-count API request, or second transcript writer is created.
+#[tauri::command]
+async fn claude_thread_context_usage(
+    state: State<'_, ClaudeState>,
+    thread_id: String,
+    turn_id: String,
+) -> Result<ClaudeThreadContextUsage, String> {
+    Ok(read_claude_thread_context(&state, thread_id, turn_id).await)
+}
+
+async fn read_claude_thread_context(
+    state: &ClaudeState,
+    thread_id: String,
+    turn_id: String,
+) -> ClaudeThreadContextUsage {
+    let turn = state.turns.lock().await.get(&thread_id).cloned()
+        .filter(|turn| turn.turn_id == turn_id && turn.alive.load(Ordering::Acquire));
+    let Some(turn) = turn else {
+        return cached_claude_context(&state, &thread_id, &turn_id, "The Claude process has finished; this is the last captured summary, when available.");
+    };
+    if !turn.context_summary_supported.load(Ordering::Acquire) {
+        return cached_claude_context(&state, &thread_id, &turn_id, "Context summaries require the running Claude process to report version 2.1.257 or newer.");
+    }
+    if !turn.input_ready.load(Ordering::Acquire) {
+        return cached_claude_context(&state, &thread_id, &turn_id, "Claude is still starting; a context summary is not available yet.");
+    }
+    let Ok(_probe) = turn.context_probe.try_lock() else {
+        return cached_claude_context(&state, &thread_id, &turn_id, "A context summary is already being read.");
+    };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let cached = state.context_reports.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&thread_id, &turn_id);
+    if let Some(mut cached) = cached.filter(|cached| cached.sampled_at.is_some_and(|sample| now.saturating_sub(sample) < 1500)) {
+        cached.status = "cached".into();
+        cached.reason = Some("The latest captured summary is less than two seconds old.".into());
+        return cached;
+    }
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (sender, receiver) = oneshot::channel();
+    *turn.context_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((request_id.clone(), sender));
+    let request = json!({
+        "type": "control_request", "request_id": request_id,
+        "request": { "subtype": "get_context_usage", "detail": "summary" },
+    });
+    if let Err(reason) = turn.write_context_request(&request).await {
+        turn.finish_context_request();
+        return cached_claude_context(&state, &thread_id, &turn_id, &reason);
+    }
+    let response = timeout(Duration::from_secs(2), receiver).await;
+    turn.finish_context_request();
+    let report = match response {
+        Ok(Ok(Ok(report))) => report,
+        Ok(Ok(Err(reason))) => return cached_claude_context(&state, &thread_id, &turn_id, &reason),
+        Ok(Err(_)) => return cached_claude_context(&state, &thread_id, &turn_id, "Claude finished before the context summary arrived."),
+        Err(_) => return cached_claude_context(&state, &thread_id, &turn_id, "Claude did not provide a context summary in time."),
+    };
+    let snapshot = ClaudeThreadContextUsage {
+        status: "live".into(), thread_id, turn_id,
+        sampled_at: Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64),
+        reason: None, report: Some(report),
+    };
+    state.context_reports.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(snapshot.clone());
+    snapshot
 }
 
 /// The exact turn's recorded terminal event, if its process already ended.
@@ -9855,6 +10072,7 @@ pub fn run() {
                     claude_turn_interrupt,
                     claude_turn_kill,
                     claude_turn_active,
+                    claude_thread_context_usage,
                     claude_turn_terminal_receipt,
                     claude_turn_terminal_receipt_ack,
                     claude_permission_respond,

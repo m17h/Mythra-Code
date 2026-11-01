@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
-import type { UsageEvidence } from "../types";
-import type { NativeAgentReadout } from "../lib/nativeAgentLinks";
+import type { Provider, UsageEvidence } from "../types";
+import type { NativeAgentLink, NativeAgentReadout, OwnershipLinks } from "../lib/nativeAgentLinks";
 import {
   Bot,
   Boxes,
@@ -18,14 +18,12 @@ import {
   GitFork,
   Gauge,
   History,
-  Paperclip,
   Play,
   Plus,
   RefreshCw,
   RotateCcw,
   RotateCw,
   SearchCode,
-  Shrink,
   ShieldCheck,
   TerminalSquare,
   Trash2,
@@ -50,7 +48,7 @@ import type { ProjectAction } from "../types";
 import { PANE_BOUNDS } from "../hooks/usePaneResize";
 import type { RunningTerminalCommand, TerminalOutputStore } from "../hooks/useTerminal";
 import type { WorkflowDefinition, WorkflowRunRecord } from "../lib/workflows";
-import { contextUsagePercent } from "../lib/contextUsage";
+import { ThreadUsagePanel } from "./ThreadUsagePanel";
 import { parseDiffSections, type ReviewDiff } from "../lib/gitDiff";
 import type { StudioTab } from "../lib/studioTabs";
 import { mcpServerConnected, mcpStatusLabel, worktreeStatusLabel } from "../lib/statusLabels";
@@ -64,7 +62,6 @@ import {
 } from "../lib/checkpoints";
 import type { ThreadWorktreeRecord, WorktreeStatus } from "../lib/worktrees";
 import type { GitHubRepoStatus } from "../lib/github";
-import type { AccountUsageView } from "../lib/providerUsage";
 
 export type { StudioTab } from "../lib/studioTabs";
 
@@ -94,19 +91,23 @@ export interface TokenUsageView extends UsageEvidence {
   /** Tokens currently occupying runtime context. This can shrink after
    * compaction or when a resumed runtime rebaselines its counters. */
   contextTokens?: number;
+  /** Latest request components, separate from lifetime billed counters. */
+  contextInputTokens?: number;
+  contextOutputTokens?: number;
+  contextCachedInputTokens?: number;
+  contextReasoningOutputTokens?: number;
+  /** This update carries a fresh context snapshot, including unknown fields. */
+  contextSnapshotReported?: boolean;
   inputTokens: number;
   cachedInputTokens: number;
   cacheWriteInputTokens?: number;
   /** Part of `cacheWriteInputTokens` written to Claude's 1-hour cache. */
   cacheWrite1hInputTokens?: number;
   outputTokens: number;
+  /** False means a stored zero is unknown, not a reported output count. */
+  outputTokensReported?: boolean;
   reasoningOutputTokens: number;
   contextWindow?: number | null;
-}
-
-function cacheMetric(count: number, reported: boolean | undefined, unknown: number | undefined): string {
-  if (reported === true && !unknown) return count.toLocaleString();
-  return count > 0 ? `${count.toLocaleString()} reported (partial)` : "unknown";
 }
 
 export interface SkillView { name: string; description?: string; path: string; enabled?: boolean }
@@ -121,7 +122,6 @@ const TABS: Array<{ id: StudioTab; label: string; icon: typeof CodeXml }> = [
   { id: "terminal", label: "Terminal", icon: TerminalSquare },
   { id: "checkpoints", label: "Checkpoints", icon: History },
   { id: "worktrees", label: "Worktrees", icon: GitFork },
-  { id: "context", label: "Context", icon: Paperclip },
   { id: "usage", label: "Usage", icon: Gauge },
   { id: "tools", label: "Tools", icon: Wrench },
   { id: "git", label: "Git", icon: GitBranch },
@@ -167,7 +167,7 @@ function TerminalPanelHost(props: TerminalPanelProps) {
 }
 
 function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof CodeXml; title: string; subtitle: string; onClose: () => void }) {
-  return <div className="studio-header"><span className="studio-header-icon"><Icon size={16} /></span><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close workspace tools"><X size={16} /></button></div>;
+  return <div className="studio-header"><span className="studio-header-icon"><Icon size={16} /></span><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close Thread tools"><X size={16} /></button></div>;
 }
 
 /** What the Review panel is actually showing, stated in the panel itself. */
@@ -192,7 +192,7 @@ export function StudioDock(props: {
   projectName?: string;
   projectPath?: string;
   activeThread: boolean;
-  /** For the last turn's instruction receipt in Usage & audit. */
+  /** For the last turn's instruction receipt in Thread usage. */
   activeThreadId?: string | null;
   reviewDiff: ReviewDiff;
   /** Set when AI review cannot run for this thread's provider. */
@@ -212,11 +212,13 @@ export function StudioDock(props: {
   worktree?: ThreadWorktreeRecord;
   worktreeStatus?: WorktreeStatus | null;
   worktreeBusy?: boolean;
-  attachments: AttachmentRecord[];
   usage: TokenUsageView | null;
-  costEstimate?: string;
-  costTotals?: string;
-  accountUsage: AccountUsageView;
+  nativeAgentLinks: Record<string, NativeAgentLink>;
+  managedAgentLinks: OwnershipLinks;
+  usageProvider: Provider;
+  contextTurnId?: string;
+  threadTitle?: string;
+  visibleAttachments: { images: number; documents: number; files: number };
   skills: SkillView[];
   mcpServers: McpView[];
   gitOutput: string;
@@ -266,8 +268,6 @@ export function StudioDock(props: {
   onWorktreeContinueShared: () => void;
   /** Open the explicit cleanup confirmation before returning to the shared folder. */
   onWorktreeReturnShared?: () => void;
-  onAddAttachment: () => void;
-  onRemoveAttachment: (path: string) => void;
   onRefreshUsage: () => void;
   onCompact: () => void;
   onRefreshTools: () => void;
@@ -379,7 +379,6 @@ export function StudioDock(props: {
       ? { ...current, [gitDraftScope]: { ...current[gitDraftScope], commitMessage: "", commitMessageEdited: false, commitMessageSuggestionId: undefined, commitMessageToken: undefined, commitScope: undefined } }
       : current);
   }, [gitDraftScope, props.gitCommitSuccess, props.gitCommitSuccessRevision, props.gitCommitBusy]);
-  const contextPercent = contextUsagePercent(props.usage);
   const tabsRef = useRef<HTMLDivElement>(null);
   const idPrefix = useId();
   const tabId = (tab: StudioTab) => `${idPrefix}-tab-${tab}`;
@@ -415,13 +414,13 @@ export function StudioDock(props: {
   // When the dock is closed, skip all panel work (diff parsing, xterm,
   // file browser) — it re-rendered fully even while hidden.
   if (!renderContent) {
-    return <aside ref={props.rootRef} className="studio-dock closed" aria-label="Project workspace tools" aria-hidden inert />;
+    return <aside ref={props.rootRef} className="studio-dock closed" aria-label="Thread tools" aria-hidden inert />;
   }
   const projectLabel = props.projectName || "this project";
   const outsideRepositoryRoot = props.gitWorkflow?.snapshot?.isRoot === false;
   const repositoryRootReason = `Open the repository root (${props.gitWorkflow?.snapshot?.rootPath}) as your project before changing Git. This selected folder is inside that repository.`;
   return (
-    <aside ref={props.rootRef} className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Project workspace tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
+    <aside ref={props.rootRef} className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Thread tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
       {props.onResizeStart && (
         <div
           className="pane-resize dock-resize"
@@ -429,7 +428,7 @@ export function StudioDock(props: {
           onKeyDown={props.onResizeKeyDown}
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize workspace tools"
+          aria-label="Resize Thread tools"
           aria-valuemin={PANE_BOUNDS.dock.min}
           aria-valuemax={PANE_BOUNDS.dock.max}
           aria-valuenow={props.resizeValue === undefined ? undefined : Math.round(props.resizeValue)}
@@ -440,7 +439,7 @@ export function StudioDock(props: {
         className="studio-tabs"
         role="tablist"
         aria-orientation="vertical"
-        aria-label="Workspace tools"
+        aria-label="Thread tools"
         ref={tabsRef}
         // Drives the sliding selection indicator below; presentation only.
         style={{ "--studio-tab-index": Math.max(0, TABS.findIndex((entry) => entry.id === props.tab)) } as CSSProperties}
@@ -460,7 +459,7 @@ export function StudioDock(props: {
             className={props.tab === id ? "active" : ""}
             onClick={() => props.onTab(id)}
             title={label}
-            aria-label={`${label} workspace tool`}
+            aria-label={`${label} thread tool`}
             aria-selected={props.tab === id}
             aria-controls={panelId}
             tabIndex={props.tab === id ? 0 : -1}
@@ -706,72 +705,27 @@ export function StudioDock(props: {
           <div className="history-warning"><ShieldCheck size={13} /> Worktrees and their branches stay local unless you push them or enable automatic publishing.</div>
         </>}
 
-        {props.tab === "context" && <>
-          <PanelHeader icon={Paperclip} title="Context" subtitle="Files, images, and task references" onClose={props.onClose} />
-          <button className="attachment-drop" onClick={props.onAddAttachment}><FilePlus2 size={21} /><strong>Add files or images</strong><small>Images are sent natively; file paths become explicit task context.</small></button>
-          {props.attachments.length ? (
-            <div className="studio-list">{props.attachments.map((item) => <div className="studio-list-row" key={item.path}><Paperclip size={14} /><div><strong>{item.name}</strong><small>{item.kind === "image" ? "Image" : "File"} · {item.path}</small></div><button onClick={() => props.onRemoveAttachment(item.path)} aria-label={`Remove ${item.name}`}><X size={13} /></button></div>)}</div>
-          ) : (
-            <Empty icon={Paperclip} title="Nothing attached yet" text="Files and images added here are sent with this conversation's next message only." />
-          )}
-        </>}
-
         {props.tab === "usage" && <>
-          <PanelHeader icon={Gauge} title="Usage & audit" subtitle="Cumulative thread totals, context pressure, and visible request fields" onClose={props.onClose} />
-          <div className="studio-actions"><button onClick={props.onRefreshUsage}><RefreshCw size={13} /> Refresh</button><button onClick={props.onCompact} disabled={!props.activeThread} title="Summarize older turns to free context in this thread"><Shrink size={13} /> Compact context</button></div>
-          {contextPercent !== null && contextPercent >= 70 ? (
-            <div className="history-warning"><ShieldCheck size={13} /> This thread has used {Math.round(contextPercent)}% of its context window. Compact before the limit if responses begin losing older detail.</div>
-          ) : null}
-          <div className="usage-hero">
-            <span>Thread tokens</span>
-            <strong>{props.usage?.totalTokens.toLocaleString() ?? "—"}</strong>
-            <small>
-              Cumulative in this thread
-              {contextPercent !== null ? ` · ${Math.round(contextPercent)}% of context` : ""}
-              {props.costEstimate ? ` · ${props.costEstimate}` : ""}
-            </small>
-            {contextPercent !== null ? <i style={{ width: `${contextPercent}%` }} /> : null}
-          </div>
-          <div className="metric-grid usage-token-metrics"><div><strong>{props.usage?.inputTokens.toLocaleString() ?? "—"}</strong><span>Input</span></div><div><strong>{props.usage?.outputTokens.toLocaleString() ?? "—"}</strong><span>Output</span></div><div className="usage-reasoning-metric"><strong>{props.usage?.reasoningOutputTokens.toLocaleString() ?? "—"}</strong><span>Reasoning</span></div></div>
-          {props.usage ? (
-            <div className="usage-cache-note">
-              Prompt caching: {cacheMetric(props.usage.cachedInputTokens, props.usage.cacheReadReported, props.usage.cacheReadUnknownTokens)} read · {cacheMetric(props.usage.cacheWriteInputTokens ?? 0, props.usage.cacheWriteReported, props.usage.cacheWriteUnknownTokens)} written
-            </div>
-          ) : null}
-          {props.accountUsage.windows?.length ? (
-            <section className="provider-quota-card" aria-label={props.accountUsage.label}>
-              <header className="provider-quota-header">
-                <span>{props.accountUsage.label}</span>
-                {props.accountUsage.planLabel ? <small>{props.accountUsage.planLabel}</small> : null}
-              </header>
-              <div className="provider-quota-windows">
-                {props.accountUsage.windows.map((window, index) => (
-                  <div className="provider-quota-window" key={`${window.label}-${index}`}>
-                    <div className="provider-quota-window-heading">
-                      <strong>{window.label}</strong>
-                      <b>{window.percentLabel}</b>
-                    </div>
-                    <div
-                      className="provider-quota-track"
-                      role="progressbar"
-                      aria-label={`${window.label} ${window.percentLabel}`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={window.percent}
-                    >
-                      <i style={{ width: `${window.percent}%` }} />
-                    </div>
-                    {window.resetLabel ? <small><Clock3 size={12} /> Resets {window.resetLabel}</small> : null}
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : (
-            <div className="rate-card"><span>{props.accountUsage.label}</span><strong>{props.accountUsage.summary}</strong></div>
-          )}
-          {props.costTotals && <div className="rate-card"><span>OpenRouter history</span><strong>{props.costTotals}</strong></div>}
-          <h3 className="panel-label">Request audit</h3><div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
-          <LastTurnInstructions threadId={props.activeThreadId ?? null} />
+          <PanelHeader icon={Gauge} title="Thread usage" subtitle="API estimates and context for this conversation" onClose={props.onClose} />
+          <ThreadUsagePanel
+            key={JSON.stringify([props.activeThreadId, props.contextTurnId, props.usageProvider])}
+            activeThread={props.activeThread}
+            threadId={props.activeThreadId ?? undefined}
+            turnId={props.contextTurnId}
+            provider={props.usageProvider}
+            threadTitle={props.threadTitle}
+            nativeLinks={props.nativeAgentLinks}
+            managedLinks={props.managedAgentLinks}
+            context={props.usage}
+            visibleAttachments={props.visibleAttachments}
+            onRefresh={props.onRefreshUsage}
+            onCompact={props.onCompact}
+          />
+          {props.activeThread && <details className="thread-usage-request-details">
+            <summary className="panel-label">Request details</summary>
+            <div className="audit-table">{props.promptAudit.map((row) => <div key={row.label}><span>{row.label}</span><code>{row.value}</code></div>)}</div>
+            <LastTurnInstructions threadId={props.activeThreadId ?? null} />
+          </details>}
         </>}
 
         {props.tab === "tools" && <>

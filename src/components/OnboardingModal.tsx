@@ -309,7 +309,7 @@ function ProjectsPage({ headingRef, onSettings }: { headingRef: HeadingRef; onSe
     <div className="ob-place ob-plinth">
       <span className="ob-place-icon" aria-hidden="true">{place === "project" ? <FolderOpen size={22} /> : <MessageSquare size={22} />}</span>
       <p key={place} aria-live="polite">{place === "project"
-        ? "Threads run in a real folder on this computer: files, commands, Git, and the workspace panel. Edits follow the permission you choose."
+        ? "Threads run in a real folder on this computer: files, commands, Git, and Thread tools. Edits follow the permission you choose."
         : "Saved under Normal chats with no folder attached. Good for questions and planning."}</p>
     </div>
     <Disclosure summary="Optional: Git, worktrees, and GitHub" hint="Local first">
@@ -581,7 +581,7 @@ function ReadyPage({ headingRef, readiness, skillsFolder, projectPending, projec
     <Disclosure summary="Useful once you’re working" className="ob-tools-disclosure">
       <ul className="ob-tools">
         <li><span className="ob-perm-icon" aria-hidden="true"><Play size={13} /></span><span><strong>Run</strong><small>Find run command investigates the project and proposes a dev command for you to review and save. Nothing launches until you press Run.</small></span><em className="ob-scope">Top bar</em></li>
-        <li><span className="ob-perm-icon" aria-hidden="true"><Sparkles size={13} /></span><span><strong>Review</strong><small>Inspect a thread’s changes. Inline AI review is available for supported providers.</small></span><em className="ob-scope">Workspace panel</em></li>
+        <li><span className="ob-perm-icon" aria-hidden="true"><Sparkles size={13} /></span><span><strong>Review</strong><small>Inspect a thread’s changes. Inline AI review is available for supported providers.</small></span><em className="ob-scope">Thread tools</em></li>
         <li><span className="ob-perm-icon" aria-hidden="true"><Undo2 size={13} /></span><span><strong>Checkpoints</strong><small>When a run records a checkpoint, you can restore its file changes.</small></span></li>
         <li><span className="ob-perm-icon" aria-hidden="true"><Boxes size={13} /></span><span><strong>Skills</strong><small>{skillsFolder ? `Markdown playbooks from ${skillsFolder}.` : "Markdown playbooks from one local folder, called by name."} <button type="button" className="ob-link" onClick={(event) => onSettings("skills", event.currentTarget)}>Settings → Skills</button></small></span><button type="button" className="secondary-button" onClick={onChooseSkillsFolder}>{skillsFolder ? "Change folder" : "Choose folder"}</button></li>
         <li><span className="ob-perm-icon" aria-hidden="true"><Workflow size={13} /></span><span><strong>Automation</strong><small>Workflows and scheduled tasks.</small></span><em className="ob-scope">Settings</em></li>

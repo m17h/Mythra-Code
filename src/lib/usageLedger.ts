@@ -68,6 +68,8 @@ export interface ThreadUsageRecord {
   provider?: Provider;
   model?: string;
   projectPath?: string;
+  /** Native Claude work shares its parent's CLI, never a resumable app chat. */
+  nativeParentThreadId?: string;
   requestedServiceTier?: string;
   reportedServiceTier?: string;
   purpose?: string;
@@ -183,6 +185,10 @@ function tokenCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
 }
 
+function optionalTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function emptyUsage(): TokenUsageView {
   return {
     totalTokens: 0,
@@ -218,6 +224,12 @@ function cleanUsage(usage: TokenUsageView, stored = false): TokenUsageView {
     contextTokens: usage.contextTokens === undefined
       ? undefined
       : tokenCount(usage.contextTokens),
+    contextInputTokens: optionalTokenCount(usage.contextInputTokens),
+    contextOutputTokens: optionalTokenCount(usage.contextOutputTokens),
+    contextCachedInputTokens: optionalTokenCount(usage.contextCachedInputTokens),
+    contextReasoningOutputTokens: optionalTokenCount(usage.contextReasoningOutputTokens),
+    contextSnapshotReported: usage.contextSnapshotReported === true ? true : undefined,
+    outputTokensReported: typeof usage.outputTokensReported === "boolean" ? usage.outputTokensReported : undefined,
     inputTokens,
     cachedInputTokens,
     cacheWriteInputTokens,
@@ -617,7 +629,7 @@ export function compactUsageRecords(records: ThreadUsageRecord[], now = Date.now
       estimatedCost: archivedAmounts.estimatedCost + (cost ?? 0),
       pricedTokens: archivedAmounts.pricedTokens + (record.pricedTokens ?? (cost === null ? 0 : tokensIn(record.usage))),
       unpricedTokens: archivedAmounts.unpricedTokens + (record.unpricedTokens ?? (cost === null ? tokensIn(record.usage) : 0)),
-      archivedThreads: (archive.archivedThreads ?? 0) + (alreadyCounted ? 0 : 1),
+      archivedThreads: (archive.archivedThreads ?? 0) + (alreadyCounted || record.nativeParentThreadId ? 0 : 1),
       archivedThreadIds: [...archivedThreadIds],
       archivedSnapshots,
       updatedAt: Math.max(archive.updatedAt, record.updatedAt),
@@ -905,16 +917,24 @@ function addUsage(
   contextWindow = delta.contextWindow,
   contextTokens = previous.contextTokens,
 ): TokenUsageView {
+  const contextSnapshot = delta.contextSnapshotReported ? delta : previous;
   return cleanUsage({
     totalTokens: previous.totalTokens + delta.totalTokens,
-    contextTokens,
+    contextTokens: delta.contextSnapshotReported ? delta.contextTokens : contextTokens,
+    contextInputTokens: contextSnapshot.contextInputTokens,
+    contextOutputTokens: contextSnapshot.contextOutputTokens,
+    contextCachedInputTokens: contextSnapshot.contextCachedInputTokens,
+    contextReasoningOutputTokens: contextSnapshot.contextReasoningOutputTokens,
+    contextSnapshotReported: contextSnapshot.contextSnapshotReported,
     inputTokens: previous.inputTokens + delta.inputTokens,
     cachedInputTokens: previous.cachedInputTokens + delta.cachedInputTokens,
     cacheWriteInputTokens: (previous.cacheWriteInputTokens ?? 0) + (delta.cacheWriteInputTokens ?? 0),
     cacheWrite1hInputTokens: (previous.cacheWrite1hInputTokens ?? 0) + (delta.cacheWrite1hInputTokens ?? 0),
     outputTokens: previous.outputTokens + delta.outputTokens,
     reasoningOutputTokens: previous.reasoningOutputTokens + delta.reasoningOutputTokens,
-    contextWindow: contextWindow ?? previous.contextWindow,
+    outputTokensReported: previous.outputTokensReported === false || delta.outputTokensReported === false
+      ? false : delta.outputTokensReported ?? previous.outputTokensReported,
+    contextWindow: delta.contextSnapshotReported ? delta.contextWindow ?? null : contextWindow ?? previous.contextWindow,
     ...mergedUsageEvidence(previous, delta),
   });
 }
@@ -1026,7 +1046,16 @@ export function recordCumulativeUsage(threadId: string, usage: TokenUsageView, t
     return {
       ...record,
       ...acceptDelta(record, delta, turnId),
-      usage: addUsage(record.usage, delta, nextSnapshot.contextWindow, nextSnapshot.contextTokens),
+      usage: {
+        ...addUsage(record.usage, delta, nextSnapshot.contextWindow),
+        contextTokens: nextSnapshot.contextTokens,
+        contextInputTokens: nextSnapshot.contextInputTokens,
+        contextOutputTokens: nextSnapshot.contextOutputTokens,
+        contextCachedInputTokens: nextSnapshot.contextCachedInputTokens,
+        contextReasoningOutputTokens: nextSnapshot.contextReasoningOutputTokens,
+        contextSnapshotReported: nextSnapshot.contextSnapshotReported,
+        contextWindow: nextSnapshot.contextWindow,
+      },
       cumulativeSnapshot: nextSnapshot,
       updatedAt: Date.now(),
     };
@@ -1063,6 +1092,7 @@ export function annotateThreadUsage(
     provider: Provider;
     model: string;
     projectPath?: string;
+    nativeParentThreadId?: string;
     pricing?: ModelPricing;
     requestedServiceTier?: string;
     reportedServiceTier?: string;
@@ -1075,13 +1105,17 @@ export function annotateThreadUsage(
       ?? pricingForModel(metadata.provider, metadata.model)
       ?? (sameModel ? record.pricing : undefined);
     const pricing = samePricing(proposedPricing, record.pricing) ? record.pricing : proposedPricing;
+    const requestedServiceTier = normalizedServiceTier(metadata.requestedServiceTier ?? (sameModel ? record.requestedServiceTier : undefined));
+    const reportedServiceTier = "requestedServiceTier" in metadata ? undefined
+      : normalizedServiceTier(metadata.reportedServiceTier ?? (sameModel ? record.reportedServiceTier : undefined));
     const unchanged = record.provider === metadata.provider
       && record.model === metadata.model
       && record.projectPath === metadata.projectPath
+      && record.nativeParentThreadId === metadata.nativeParentThreadId
       && record.pricing === pricing
       && (!("requestedServiceTier" in metadata) || record.reportedServiceTier === undefined)
-      && record.requestedServiceTier === normalizedServiceTier(metadata.requestedServiceTier ?? record.requestedServiceTier)
-      && record.reportedServiceTier === normalizedServiceTier(metadata.reportedServiceTier ?? record.reportedServiceTier);
+      && record.requestedServiceTier === requestedServiceTier
+      && record.reportedServiceTier === reportedServiceTier;
     if (unchanged) return record;
     // Records written before per-delta cost accumulation carry no frozen total,
     // so usageTotals recomputes them from whatever rate is on the record. Seal
@@ -1092,8 +1126,8 @@ export function annotateThreadUsage(
     return {
       ...record,
       ...metadata,
-      requestedServiceTier: normalizedServiceTier(metadata.requestedServiceTier ?? record.requestedServiceTier),
-      reportedServiceTier: "requestedServiceTier" in metadata ? undefined : normalizedServiceTier(metadata.reportedServiceTier ?? record.reportedServiceTier),
+      requestedServiceTier,
+      reportedServiceTier,
       // Seal the outgoing provider before replacing its label. A first known
       // label can still attribute legacy records written before metadata arrived.
       providerUsage: record.provider && record.provider !== metadata.provider ? providerParts(record) : record.providerUsage,
@@ -1203,6 +1237,121 @@ export function pricingForServiceTier(provider: Provider, model: string, tier: s
 
 export function usageForThread(threadId: string): ThreadUsageRecord | null {
   return ledger().find((record) => record.threadId === threadId) ?? null;
+}
+
+/** One retained-ledger scan for a conversation and its owned descendants. */
+export function usageForThreads(threadIds: Iterable<string>, includeNativeChildren = false): ThreadUsageRecord[] {
+  const ids = new Set(threadIds);
+  return ledger().filter((record) => ids.has(record.threadId)
+    || Boolean(includeNativeChildren && record.nativeParentThreadId && ids.has(record.nativeParentThreadId)));
+}
+
+/** Child assistant usage is separate from Claude's root-only result.usage.
+ * Deduplicate across proven aliases as well as repeats on one child record. */
+export function recordClaudeNativeUsage(input: {
+  parentThreadId: string;
+  childThreadId: string;
+  model: string;
+  projectPath?: string;
+  usage: TokenUsageView;
+  messageId: string;
+  turnId: string;
+}): boolean {
+  const eventId = `claude-assistant:${input.messageId}`;
+  if (ledger().some((record) => record.nativeParentThreadId === input.parentThreadId && record.eventIds?.includes(eventId))) return false;
+  annotateThreadUsage(input.childThreadId, {
+    provider: "claude", model: input.model, projectPath: input.projectPath,
+    nativeParentThreadId: input.parentThreadId,
+  });
+  recordUsageDelta(input.childThreadId, input.usage, eventId, input.turnId);
+  return true;
+}
+
+/** An actual streamed output counter is cumulative within one message.
+ * Input has its own durable receipt; retries/aliases cannot bill it again.
+ * Assistant-envelope output is deliberately not accepted here. */
+export function recordClaudeNativeRequest(input: {
+  parentThreadId: string;
+  childThreadId: string;
+  model: string;
+  projectPath?: string;
+  inputUsage: TokenUsageView;
+  actualOutputTokens?: number;
+  outputComplete?: boolean;
+  inputAlreadyRecorded?: boolean;
+  previousOutputTokens?: number;
+  messageId: string;
+  turnId: string;
+}): { inputRecorded: boolean; recordedOutputTokens: number } {
+  const actualOutput = optionalTokenCount(input.actualOutputTokens);
+  const outputReported = actualOutput !== undefined && input.outputComplete !== false;
+  const inputOnly = { ...input.inputUsage, outputTokens: 0, reasoningOutputTokens: 0,
+    totalTokens: input.inputUsage.inputTokens,
+    outputTokensReported: outputReported,
+    tokenAvailability: outputReported ? input.inputUsage.tokenAvailability : "partial" as const };
+  if (!input.inputAlreadyRecorded) recordClaudeNativeUsage({ ...input, usage: inputOnly, messageId: `${input.messageId}:input` });
+  if (actualOutput === undefined) return { inputRecorded: true, recordedOutputTokens: optionalTokenCount(input.previousOutputTokens) ?? 0 };
+  const outputPrefix = `claude-assistant:${input.messageId}:output:`;
+  let recordedOutput = optionalTokenCount(input.previousOutputTokens) ?? 0;
+  for (const record of ledger()) {
+    if (record.nativeParentThreadId !== input.parentThreadId) continue;
+    for (const id of record.eventIds ?? []) {
+      if (!id.startsWith(outputPrefix)) continue;
+      const count = Number(id.slice(outputPrefix.length));
+      if (Number.isSafeInteger(count) && count >= 0) recordedOutput = Math.max(recordedOutput, count);
+    }
+  }
+  if (actualOutput <= recordedOutput) return { inputRecorded: true, recordedOutputTokens: recordedOutput };
+  const outputTokens = actualOutput - recordedOutput;
+  const accepted = recordClaudeNativeUsage({ ...input, messageId: `${input.messageId}:output:${actualOutput}`, usage: {
+    ...emptyUsage(), totalTokens: outputTokens, outputTokens,
+    tokenAvailability: outputReported && input.inputUsage.tokenAvailability === "reported"
+      && input.inputUsage.cacheReadReported === true && input.inputUsage.cacheWriteReported === true ? "reported" : "partial",
+    outputTokensReported: outputReported,
+  } });
+  return { inputRecorded: true, recordedOutputTokens: accepted ? actualOutput : recordedOutput };
+}
+
+/** Latest-request context can advance without a billing delta (Claude's final
+ * streamed output arrives separately from its assistant usage envelope). */
+export function reportThreadContextUsage(threadId: string, context: Pick<TokenUsageView,
+  "contextTokens" | "contextInputTokens" | "contextOutputTokens" | "contextCachedInputTokens" | "contextReasoningOutputTokens" | "contextWindow"
+>): TokenUsageView {
+  return upsert(threadId, (record) => ({
+    ...record,
+    usage: cleanUsage({ ...record.usage, ...context, contextSnapshotReported: true }),
+    updatedAt: Date.now(),
+  })).usage;
+}
+
+/** Called only after the provider proves that two native identities are the
+ * same worker. Move retained usage with its identity without billing it again. */
+export function reconcileClaudeNativeUsage(parentThreadId: string, previousId: string, canonicalId: string): void {
+  if (previousId === canonicalId) return;
+  const records = ledger();
+  const source = records.find((record) => record.threadId === previousId);
+  const target = records.find((record) => record.threadId === canonicalId);
+  if (!source || source.nativeParentThreadId !== parentThreadId
+    || (target && target.nativeParentThreadId !== parentThreadId)) return;
+  const left = target ? amountsFor(target) : null;
+  const right = amountsFor(source);
+  const merged: ThreadUsageRecord = target ? {
+    ...target,
+    usage: addUsage(target.usage, source.usage),
+    estimatedCost: left!.estimatedCost + right.estimatedCost,
+    pricedTokens: left!.pricedTokens + right.pricedTokens,
+    unpricedTokens: left!.unpricedTokens + right.unpricedTokens,
+    countedInArchive: source.countedInArchive || target.countedInArchive || undefined,
+    eventIds: [...new Set([...(target.eventIds ?? []), ...(source.eventIds ?? [])])].slice(-MAX_EVENT_IDS),
+    updatedAt: Math.max(target.updatedAt, source.updatedAt),
+  } : { ...source, threadId: canonicalId };
+  save([...records.filter((record) => record.threadId !== previousId && record.threadId !== canonicalId), merged]);
+}
+
+/** The same frozen cost and coverage used by all-time totals, scoped to one
+ * retained thread record. Missing rows must never fall back to global totals. */
+export function usageAmountsForThread(record: ThreadUsageRecord): UsageAmounts {
+  return amountsFor(record);
 }
 
 /**
@@ -1387,7 +1536,7 @@ export function usageTotals(): UsageTotals {
     totals.outputTokens += usage.outputTokens;
     totals.reasoningOutputTokens += usage.reasoningOutputTokens;
     totals.totalTokens += usage.totalTokens;
-    totals.threads += record.kind === "auxiliary" ? 0 : record.threadId === USAGE_ARCHIVE_THREAD_ID
+    totals.threads += record.kind === "auxiliary" || record.nativeParentThreadId ? 0 : record.threadId === USAGE_ARCHIVE_THREAD_ID
       ? (record.archivedThreads ?? 1)
       : (record.countedInArchive ? 0 : 1);
     const coverage = amountsFor(record);
