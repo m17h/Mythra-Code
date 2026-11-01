@@ -44,7 +44,7 @@
 .voice-rec.phase-recording .voice-rec-orb::after { content: ""; position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--panel, var(--panel-2)); }
 
 .voice-rec-copy { grid-area: copy; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.voice-rec-titleline { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.voice-rec-titleline { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; min-width: 0; }
 .voice-rec-titleline strong { color: var(--text); font-size: var(--fs-ui, 13px); font-weight: 600; letter-spacing: 0; }
 .voice-rec-copy small { overflow: hidden; color: var(--muted); font-size: var(--fs-meta, 11px); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .voice-rec-badge { padding: 0 6px; border: 0; border-radius: var(--r-chip, 4px); color: var(--green); background: var(--green-soft, color-mix(in srgb, var(--green) 10%, transparent)); font-size: var(--fs-meta, 11px); font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }

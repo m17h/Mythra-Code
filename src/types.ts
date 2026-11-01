@@ -516,6 +516,8 @@ export interface AppSettings {
   claudeLogo: ClaudeLogoStyle;
   cursorLogo: CursorLogoStyle;
   model: string;
+  /** True preserves a chosen global model; legacy/implicit defaults may follow the latest model. */
+  defaultModelExplicit?: boolean;
   /** OpenAI-compatible Responses endpoint exposed by LM Studio. */
   lmStudioBaseUrl: string;
   permission: PermissionMode;

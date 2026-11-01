@@ -74,13 +74,14 @@
    :focus-visible stays in a rule of its own (see tokens.css). */
 .app-shell[data-theme][data-color-scheme] .row-menu-list button:focus-visible { outline: none; background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .app-action-list > button:focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .app-select-options > button:focus-visible { outline: none; color: var(--text); background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:focus-visible { outline: none; color: var(--text); background: var(--lm-press); }
 /* The chosen value is marked by its accent check, not by a filled row. */
 .app-shell[data-theme][data-color-scheme] .app-select-options > button.selected,
 .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star).selected { color: var(--text); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .app-select-options > button.selected:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star).selected:hover:not(:disabled) { background: var(--lm-press); }
+/* Focus must also mark the selected value reached by arrow-key navigation. */
+.app-shell[data-theme][data-color-scheme] .app-select-options > button:focus-visible { outline: none; color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):focus-visible { outline: none; color: var(--text); background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .app-select-options > button > svg,
 .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star) > svg { color: var(--green); }
 
@@ -179,9 +180,6 @@
 .app-shell[data-theme][data-color-scheme] .model-menu-option:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button:hover,
 .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):hover { color: var(--text); background: var(--lm-press); box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .model-menu-option:focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .openrouter-options > button:focus-visible { outline: none; background: var(--lm-press); }
-.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:focus-visible { outline: none; background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .model-menu-option.selected,
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button.selected,
 .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star).selected { color: var(--text); background: transparent; box-shadow: none; }
@@ -192,6 +190,11 @@
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button > svg,
 .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star) > svg { color: var(--green); }
 .app-shell[data-theme][data-color-scheme] .openrouter-options > button.custom-model-option { color: var(--text); background: transparent; }
+/* Keep keyboard focus above both selected rows and the custom-model action. */
+.app-shell[data-theme][data-color-scheme] .model-menu-option:focus-visible { outline: none; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options > button:focus-visible { outline: none; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options > button.custom-model-option:focus-visible { outline: none; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):focus-visible { outline: none; background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .openrouter-catalog-warning { border-radius: var(--r-md); color: var(--orange); background: rgba(232, 171, 104, .1); font-size: var(--fs-meta); }
 .app-shell[data-theme][data-color-scheme] .openrouter-empty strong { color: var(--ink-2); font-size: var(--fs-ui); }
 
@@ -549,6 +552,36 @@
 /* ---- Empty and loading states ---- */
 .app-shell[data-theme][data-color-scheme] .tool-empty-line { color: var(--muted-2); font-family: var(--font-sans); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .spin { color: var(--green); }
+
+/* Forced colors suppress shadows and custom fills. Preserve the floating
+   boundaries and keyboard position with system-color outlines. */
+@media (forced-colors: active) {
+  .app-shell[data-theme][data-color-scheme] .row-menu-list,
+  .app-shell[data-theme][data-color-scheme] .app-select-menu,
+  .app-shell[data-theme][data-color-scheme] .app-action-list,
+  .app-shell[data-theme][data-color-scheme] .model-menu,
+  .app-shell[data-theme][data-color-scheme] .openrouter-menu,
+  .app-shell[data-theme][data-color-scheme] .project-prompt-popover,
+  .app-shell[data-theme][data-color-scheme] .spelling-menu-panel,
+  .app-shell[data-theme][data-color-scheme] .command-palette,
+  .app-shell[data-theme][data-color-scheme] .confirm-dialog,
+  .app-shell[data-theme][data-color-scheme] .approval-modal,
+  .app-shell[data-theme][data-color-scheme] .runtime-setup-modal,
+  .app-shell[data-theme][data-color-scheme] .workflow-run-dialog { outline: 1px solid CanvasText; }
+  .app-shell[data-theme][data-color-scheme] .row-menu-list button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .app-action-list > button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .app-select-options > button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .app-select-options .model-row > button:not(.model-star):focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .model-menu-option:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .openrouter-options > button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .openrouter-options > button.custom-model-option:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .openrouter-options .model-row > button:not(.model-star):focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .palette-results > button.active,
+  .app-shell[data-theme][data-color-scheme] .palette-group > button.active { outline: 2px solid Highlight; outline-offset: -2px; }
+  .app-shell[data-theme][data-color-scheme] .spelling-menu button[data-highlighted] { outline: 2px solid Highlight; outline-offset: -2px; }
+  /* Outrank the legacy doubled-class focus reset on spelling-menu buttons. */
+  .app-shell[data-theme][data-color-scheme] .spelling-menu.spelling-menu .spelling-menu-panel button:focus { outline: 2px solid Highlight; outline-offset: -2px; }
+}
 
 /* ---- Motion: short fades and a 3px settle; nothing scales or bounces ----
    Popovers driven by JS fades (project prompt, usage, app select) already

@@ -120,12 +120,12 @@
 }
 
 /* ---- Code blocks ----
-   A plain neutral block. The copy button (hidden until hover or focus, by
-   legacy) floats over the top-right corner instead of owning a header strip. */
+   A plain neutral block. Reserve room above the code for the copy button,
+   which is revealed on hover/focus and stays visible on touch screens. */
 .app-shell[data-theme][data-color-scheme] .code-block { margin: 12px 0; border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .code-block::before { content: none; }
 .app-shell[data-theme][data-color-scheme] .code-block pre {
-  padding: 13px 16px;
+  padding: 36px 16px 13px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   color: var(--lm-code-ink);

@@ -3378,6 +3378,15 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 /* Pointer input is handled by the rail so the thumb can track the pointer
    continuously and glide on click; the input stays for keyboard and AT. */
 .reasoning-rail input[type="range"], .openrouter-reasoning-rail input[type="range"] { pointer-events: none; }
+/* The committed keyboard/AT range is transparent; outline its rail so focus
+   stays visible while the separate decorative thumb follows the pointer. */
+.reasoning-rail:focus-within, .openrouter-reasoning-rail:focus-within {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+@media (forced-colors: active) {
+  .reasoning-rail:focus-within, .openrouter-reasoning-rail:focus-within { outline-color: Highlight; }
+}
 .dragging input[type="range"]::-webkit-slider-thumb {
   transform: scale(calc(1.18 + var(--effort-heat, 0) * .4));
   box-shadow:

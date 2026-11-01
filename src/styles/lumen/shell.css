@@ -20,7 +20,17 @@
 @supports (color: color-mix(in srgb, red, blue)) {
   .app-shell[data-theme][data-color-scheme] ::selection { background: color-mix(in srgb, var(--green) 28%, transparent); }
 }
-.app-shell[data-theme][data-color-scheme] button:focus-visible,
+/* Keyboard focus also works on the supported WebKit versions that predate
+   :focus-visible. Keep the enhancement selectors separate for Safari 13. */
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] button:focus,
+html[data-input-modality="keyboard"] .app-shell[data-theme][data-color-scheme] [tabindex]:focus {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+.app-shell[data-theme][data-color-scheme] button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
 .app-shell[data-theme][data-color-scheme] [tabindex]:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 1px;
@@ -302,6 +312,9 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
 /* Provider marks: small, untiled glyphs (Claude keeps its brand tile). */
 .app-shell[data-theme][data-color-scheme] .thread-card-provider { width: 16px; height: 16px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; }
 .app-shell[data-theme][data-color-scheme] .thread-card-provider.claude { width: 16px; height: 16px; border: 0; color: #fff; background: #d97757; }
+/* Preserve the saved Anthropic logo treatment; the generic Claude rule above
+   otherwise outranks the original preference selector in styles.css. */
+.app-shell[data-theme][data-color-scheme][data-claude-logo="anthropic"] .thread-card-provider.claude { color: #171714; background: #f1f0eb; }
 .app-shell[data-theme][data-color-scheme] .thread-card-provider.subagent-group-provider { width: 14px; height: 14px; border-radius: 4px; }
 /* The OpenAI mark ships white for dark tiles; untiled, it takes the ink. */
 .app-shell[data-theme][data-color-scheme] .thread-card-provider.openai { color: var(--muted); background: transparent; }
@@ -429,4 +442,20 @@ html[data-input-modality="pointer"] .app-shell[data-theme][data-color-scheme] .a
   }
   .app-shell[data-theme][data-color-scheme] .row-menu-trigger { transition: color var(--lm-d-1) ease, background var(--lm-d-1) ease, opacity var(--lm-d-1) ease; }
   .app-shell[data-theme][data-color-scheme] .pane-resize::after { transition: opacity var(--lm-d-2) ease; }
+}
+/* Legacy transitions remain in the cascade even when Lumen's motion block is
+   inactive. Disable them on these shell surfaces for reduced motion too. */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-theme][data-color-scheme],
+  .app-shell[data-theme][data-color-scheme] .sidebar,
+  .app-shell[data-theme][data-color-scheme] .new-thread-button,
+  .app-shell[data-theme][data-color-scheme] .workspace-row,
+  .app-shell[data-theme][data-color-scheme] .workspace-row-wrap,
+  .app-shell[data-theme][data-color-scheme] .workspace-icon,
+  .app-shell[data-theme][data-color-scheme] .thread-kind-switch button,
+  .app-shell[data-theme][data-color-scheme] .thread-search,
+  .app-shell[data-theme][data-color-scheme] .thread-card,
+  .app-shell[data-theme][data-color-scheme] .row-menu-trigger,
+  .app-shell[data-theme][data-color-scheme] .sidebar-section-resize::after,
+  .app-shell[data-theme][data-color-scheme] .pane-resize::after { transition: none; }
 }

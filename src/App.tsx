@@ -561,7 +561,7 @@ const initialOnboardingVersion = loadStored<number>("kiwi.onboardingVersion", 0)
 const establishedInstall = isEstablishedMythraCodeInstall({ projects: initialProjects.length, knownThreads: Object.keys(initialKnownThreads).length, hasStoredSettings: readStoredRaw("kiwi.settings") !== null, hasSkillsFolder: Boolean(loadStored<string>("kiwi.skillsFolder", "")) });
 const initialOnboardingOpen = initialOnboardingVersion < ONBOARDING_VERSION && !establishedInstall;
 const rawStoredSettings = loadStored<Partial<AppSettings>>("kiwi.settings", {});
-const storedSettings = { ...rawStoredSettings, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true, transcription: sanitizeTranscriptionSettings(rawStoredSettings.transcription) };
+const storedSettings = { ...rawStoredSettings, defaultModelExplicit: rawStoredSettings.defaultModelExplicit === true, warnOnMaxReasoning: rawStoredSettings.warnOnMaxReasoning !== false, managedSubagentV2: rawStoredSettings.managedSubagentV2 === true, automaticGitInitialization: rawStoredSettings.automaticGitInitialization === true, transcription: sanitizeTranscriptionSettings(rawStoredSettings.transcription) };
 const initialChildAgents = sanitizeChildAgentSettings(storedSettings.childAgents);
 const initialSettings: AppSettings = { ...DEFAULT_SETTINGS, ...storedSettings, projectInstructionsEnabled: storedSettings.projectInstructionsEnabled === true, projectClaudeInstructionsEnabled: storedSettings.projectClaudeInstructionsEnabled === true, escapeStopsRun: sanitizeEscapeStopsRun(storedSettings.escapeStopsRun), terminalTimeoutMinutes: sanitizeTerminalTimeoutMinutes(storedSettings.terminalTimeoutMinutes), automaticThreadTitles: storedSettings.automaticThreadTitles === true, threadTitleProvider: ["openai", "claude", "cursor", "openrouter", "lmstudio"].includes(storedSettings.threadTitleProvider ?? "") ? storedSettings.threadTitleProvider! : "openai", threadTitleModel: typeof storedSettings.threadTitleModel === "string" ? storedSettings.threadTitleModel.slice(0, 160) : "", openAiLogo: storedSettings.openAiLogo === "codex" ? "codex" : "openai", claudeLogo: storedSettings.claudeLogo === "anthropic" ? "anthropic" : "claude", cursorLogo: storedSettings.cursorLogo === "app-dark" ? "app-dark" : "cube", subagentMax: crewSafeConcurrency(Number(storedSettings.subagentMax) || DEFAULT_SETTINGS.subagentMax, initialChildAgents), autoArchiveSubagentThreads: sanitizeAutoArchiveSubagentThreads(storedSettings.autoArchiveSubagentThreads), childAgents: initialChildAgents, childAgentPresets: sanitizeChildAgentPresets(storedSettings.childAgentPresets), subagentModelGuidance: sanitizeSubagentModelGuidance(storedSettings.subagentModelGuidance), model: modelForProvider(storedSettings.provider ?? DEFAULT_SETTINGS.provider, storedSettings.model ?? DEFAULT_SETTINGS.model), reasoningEffort: sanitizeComposerReasoningEffort(storedSettings.reasoningEffort), ultra: false, lmStudioBaseUrl: storedSettings.lmStudioBaseUrl?.trim() || DEFAULT_LM_STUDIO_BASE_URL, theme: sanitizeTheme(storedSettings.theme), effortSlider: sanitizeEffortSlider(storedSettings.effortSlider), chatFont: sanitizeChatFont(storedSettings.chatFont), uiScale: Math.min(150, Math.max(80, Number(storedSettings.uiScale) || DEFAULT_SETTINGS.uiScale)), usageDisplay: sanitizeUsageDisplay(storedSettings.usageDisplay) };
 
@@ -1317,7 +1317,9 @@ export default function App() {
     // they were created with, and an explicit pick is always respected.
     const followsLatestSol = activeProvider === "openai" && !activeThreadId && (
       threadModel === ""
-      || (threadModel == null && (!projectSettings.model || projectSettings.model === DEFAULT_OPENAI_MODEL))
+      || (threadModel == null && !activeProject?.overrides?.defaults
+        && !projectSettings.defaultModelExplicit
+        && (!projectSettings.model || projectSettings.model === DEFAULT_OPENAI_MODEL))
     );
     const providerPrompt = activeProvider === "openai" || activeProvider === "claude"
       ? subscriptionSystemPrompts[activeProvider]
@@ -2169,7 +2171,11 @@ export default function App() {
       } else if (draftThreadProvider !== null || activeProject?.overrides?.defaults) {
         setDraftThreadModel(model);
       } else {
-        persistSettings({ ...settings, model });
+        // A composer selection is explicit even when it equals the built-in
+        // fallback. Keep it on this draft so latest-Sol resolution cannot
+        // immediately replace the model the user just selected.
+        setDraftThreadModel(model);
+        persistSettings({ ...settings, model, defaultModelExplicit: true });
       }
     },
     [activeProject, activeThreadId, draftThreadProvider, persistSettings, persistThreadModel, settings],

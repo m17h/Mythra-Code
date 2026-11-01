@@ -126,7 +126,9 @@
   --orange: #e8ab68;
   --red: #f08884;
   --info: #86c6f7;
-  --amber: #e8ab68;
+  /* Warning copy and running indicators use the same readable status ink in
+     every palette, including the darker oranges of the light themes. */
+  --amber: var(--orange);
   /* Ink on a solid --red fill: dark on the light reds of dark themes. */
   --lm-on-danger: #1c0707;
   --lm-island-edge: rgba(255, 255, 255, .08);

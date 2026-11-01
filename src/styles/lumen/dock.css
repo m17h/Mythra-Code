@@ -474,6 +474,9 @@
 .app-shell[data-theme][data-color-scheme] .thread-pr-field input:focus,
 .app-shell[data-theme][data-color-scheme] .thread-pr-field textarea:focus,
 .app-shell[data-theme][data-color-scheme] .git-commit-message:focus { border-color: var(--green-line); box-shadow: var(--ring); }
+/* Keep invalid reference/base fields distinct from ordinary and focused
+   fields; the shell-scoped border above outranks the lazy panel's state. */
+.app-shell[data-theme][data-color-scheme] .thread-pr-field input[aria-invalid="true"] { border-color: var(--red); }
 .app-shell[data-theme][data-color-scheme] .dock-field em,
 .app-shell[data-theme][data-color-scheme] .git-commit-card .dock-field em,
 .app-shell[data-theme][data-color-scheme] .thread-pr-field em {
@@ -1020,7 +1023,7 @@
 }
 .app-shell[data-theme][data-color-scheme] .thread-pr-plan b,
 .app-shell[data-theme][data-color-scheme] .thread-pr-fineprint.local-effect b { font-weight: 500; }
-.app-shell[data-theme][data-color-scheme] .thread-pr-fineprint { color: var(--muted-2); font-size: 11.5px; }
+.app-shell[data-theme][data-color-scheme] .thread-pr-fineprint { font-size: 11.5px; }
 .app-shell[data-theme][data-color-scheme] .thread-pr-empty,
 .app-shell[data-theme][data-color-scheme] .git-pr-empty { gap: 6px; border: 1px solid var(--line-quiet); border-radius: var(--r-lg); }
 .app-shell[data-theme][data-color-scheme] .thread-pr-empty strong,

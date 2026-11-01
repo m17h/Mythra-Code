@@ -41,6 +41,10 @@
 .message-image-dialog-content > img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; object-fit: contain; }
 .message-image-dialog-content > p { color: var(--muted); text-align: center; }
 
+@media (forced-colors: active) {
+  .message-image-dialog { outline: 1px solid CanvasText; }
+}
+
 @media (max-width: 600px) {
   .message-image-dialog { width: calc((100vw - 16px) / var(--ui-scale, 1)); height: calc((100vh - 16px) / var(--ui-scale, 1)); height: calc((100dvh - 16px) / var(--ui-scale, 1)); padding: 8px; }
 }

@@ -180,6 +180,12 @@
 .feedback-chip:hover .feedback-chip-remove, .feedback-chip-remove:focus-visible { opacity: 1; }
 .feedback-chip-remove:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 
+@media (forced-colors: active) {
+  .feedback-card,
+  .feedback-selection-button { outline: 1px solid CanvasText; }
+  .feedback-selection-button:focus-visible { outline: 2px solid Highlight; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .feedback-float, .feedback-float[data-open], .feedback-chip, .feedback-tray, .feedback-tray[data-open] { animation: none; transition: none; transform: none; }
   .feedback-chip.leaving { transform: none; }
