@@ -39,3 +39,8 @@
    backdrop, so inner scrolling and clipping cannot cut it off. */
 .info-popover-panel[hidden] { display: none; }
 
+@media (forced-colors: active) {
+  .info-popover-panel { outline: 1px solid CanvasText; }
+  .info-popover-panel:focus-visible { outline: 2px solid Highlight; }
+}
+

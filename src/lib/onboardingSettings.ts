@@ -14,7 +14,7 @@ export function settingsWithDefaultProvider(settings: AppSettings, provider: Pro
       : provider === "cursor" ? (sameProvider ? settings.model : DEFAULT_CURSOR_MODEL)
         : provider === "lmstudio" ? (sameProvider ? settings.model : firstLmStudioModel)
           : (sameProvider ? settings.model : "");
-  return { ...settings, provider, model, ultra: false };
+  return { ...settings, provider, model, defaultModelExplicit: sameProvider ? settings.defaultModelExplicit : false, ultra: false };
 }
 
 export function settingsWithOnboardingDraft(settings: AppSettings, draft: OnboardingSettingsDraft | undefined, firstLmStudioModel = ""): AppSettings {

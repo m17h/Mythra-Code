@@ -276,3 +276,8 @@
 @media (prefers-reduced-motion: reduce) {
   .onboarding-backdrop, .onboarding-backdrop *, .onboarding-backdrop *::before, .onboarding-backdrop *::after { animation: none !important; transition: none !important; }
 }
+
+@media (forced-colors: active) {
+  .onboarding-modal { outline: 1px solid CanvasText; }
+  .ob-tile.checked { border-color: Highlight; }
+}

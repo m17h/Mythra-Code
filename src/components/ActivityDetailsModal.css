@@ -249,6 +249,12 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 /* Pro: plain rounded squares everywhere (no squircle corner shapes). */
 .app-shell[data-theme][data-color-scheme] .activity-details-dialog { border: 0; border-radius: 14px; }
 
+@media (forced-colors: active) {
+  .activity-details-dialog,
+  .activity-details-latest { outline: 1px solid CanvasText; }
+  .activity-details-latest:focus-visible { outline: 2px solid Highlight; }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .activity-details-dialog[open], .activity-details-dialog-fallback { animation: activity-details-in 200ms cubic-bezier(.2, .8, .2, 1) both; }
   .activity-details-dialog[open]::backdrop { animation: activity-details-backdrop-in 160ms ease both; }

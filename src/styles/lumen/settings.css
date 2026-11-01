@@ -818,6 +818,9 @@
   padding: 4px 14px 14px 52px;
   background: var(--lm-hover);
 }
+/* Author display rules override the browser's default [hidden] rule. Keep
+   collapsed panels out of layout and keyboard navigation while mounted. */
+.app-shell[data-theme][data-color-scheme] .account-row-detail[hidden] { display: none; }
 .app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel {
   min-height: 0;
   margin: 0;
@@ -825,7 +828,13 @@
   border: 1px solid var(--line-quiet);
   border-radius: var(--r-md);
   background: var(--panel);
+  flex-wrap: wrap;
 }
+.app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel > div { min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .account-row-detail .credential-panel small { overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .account-row-detail .credential-actions { flex-wrap: wrap; }
+.app-shell[data-theme][data-color-scheme] .account-row-detail .key-input-row { flex-wrap: wrap; }
+.app-shell[data-theme][data-color-scheme] .account-row-detail .key-input-row input { min-width: 0; flex-basis: 140px; }
 /* Lead with the account itself (who is signed in, Sign out), then billing. */
 .app-shell[data-theme][data-color-scheme] .account-row-detail > .provider-api-key { order: 1; }
 .app-shell[data-theme][data-color-scheme] .account-row-detail > .settings-notice { order: 2; }

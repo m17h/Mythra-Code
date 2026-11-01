@@ -31,3 +31,7 @@
 .usage-popover-windows + .usage-popover-note { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-quiet, var(--line)); }
 .usage-popover-details { margin: 8px 4px 0; padding: 2px 0; border: 0; color: var(--green); background: none; font-size: 12px; font-weight: 500; cursor: pointer; }
 .usage-popover-details:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+@media (forced-colors: active) {
+  .usage-popover { outline: 1px solid CanvasText; }
+}

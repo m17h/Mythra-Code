@@ -148,9 +148,12 @@
     transition: width var(--lm-d-1) var(--lm-ease-out), height var(--lm-d-1) var(--lm-ease-out), left var(--lm-d-1) var(--lm-ease-out), top var(--lm-d-1) var(--lm-ease-out), background-color var(--lm-d-1) ease;
   }
 }
-/* Keyboard focus rings the chosen dot. */
-.app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-rail input[type="range"]:focus-visible + .reasoning-ticks i.current::before,
-.app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-rail input[type="range"]:focus-visible + .openrouter-reasoning-ticks i.current::before {
+/* The input is invisible, so draw focus on its chosen dot. Use :focus so
+   keyboard focus stays visible on the older WebKit supported by Lumen. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-rail input[type="range"]:focus + .reasoning-ticks i.current::before,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-rail input[type="range"]:focus + .openrouter-reasoning-ticks i.current::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .reasoning-rail input[type="range"]:focus + .reasoning-ticks i.current::before,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .openrouter-reasoning-rail input[type="range"]:focus + .openrouter-reasoning-ticks i.current::before {
   box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--green);
 }
 
@@ -226,4 +229,49 @@
   border: 0;
   background: var(--lm-fill, var(--green));
   box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+/* System high-contrast palettes remove our gradient and shadow geometry.
+   Restore the native range, retaining the shared rail's pointer handling. */
+@media (forced-colors: active) {
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-rail input[type="range"],
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-rail input[type="range"],
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .reasoning-rail input[type="range"],
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .openrouter-reasoning-rail input[type="range"] {
+    all: revert;
+    -webkit-appearance: auto;
+    appearance: auto;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    opacity: 1;
+    pointer-events: none;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer input[type="range"]::-webkit-slider-thumb,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] input[type="range"]::-webkit-slider-thumb {
+    all: revert;
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer input[type="range"]:focus,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] input[type="range"]:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .openrouter-reasoning-ticks { display: none; }
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.studio .slider-style-rail {
+    height: 0;
+    border-top: 2px solid CanvasText;
+    background: none;
+  }
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.studio .slider-style-thumb {
+    border: 2px solid CanvasText;
+    background: Highlight;
+    box-shadow: none;
+  }
 }

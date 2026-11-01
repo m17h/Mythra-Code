@@ -102,7 +102,12 @@
 }
 .app-shell[data-theme][data-color-scheme] .voice-input-button:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .schedule-button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.busy { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.busy:hover:not(:disabled) { color: var(--green); }
 .app-shell[data-theme][data-color-scheme] .voice-input-button.recording { color: var(--red); background: rgba(240, 136, 132, .14); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.recording:hover:not(:disabled) { color: var(--red); background: rgba(240, 136, 132, .18); }
+.app-shell[data-theme][data-color-scheme] .schedule-button[aria-expanded="true"] { color: var(--info); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .schedule-button[aria-expanded="true"]:hover:not(:disabled) { color: var(--info); background: var(--lm-press); }
 
 /* ---- Queue ---- */
 .app-shell[data-theme][data-color-scheme] .queued-turns {
@@ -354,11 +359,26 @@
 }
 .app-shell[data-theme][data-color-scheme] .reasoning-ticks i.reached,
 .app-shell[data-theme][data-color-scheme] .openrouter-reasoning-ticks i.reached { box-shadow: none; }
+/* Above the stacked layout, alternate-provider catalogs still open from the
+   second 181px track. Reserve that offset and the composer insets instead of
+   sizing against the full window, which may also contain a workbench. */
+@container chat-main (max-width: 900px) {
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-picker > .openrouter-menu { width: min(570px, calc(100cqw - 264px)); }
+}
 /* Narrow chat column: provider and model share the first row, reasoning
-   takes the second, without the divider. Mirrors the legacy 680px step. */
+   takes the second, without the divider. Keep both picker wrappers across
+   the entire row: catalogs align to those wrappers, so an empty third track
+   would pull the right-aligned OpenAI menu beyond the chat's left edge. */
 @container chat-main (max-width: 680px) {
   .app-shell[data-theme][data-color-scheme] .composer .model-power-control,
-  .app-shell[data-theme][data-color-scheme] .composer .openrouter-control { grid-template-columns: minmax(0, 181px) minmax(0, 181px) 1fr; }
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shell[data-theme][data-color-scheme] .composer .provider-pill,
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger,
+  .app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger { max-width: 181px; margin-inline: auto; }
+  /* Every alternate provider uses this shared menu class, including Cursor
+     and LM Studio. Anchor to the wrapper's right edge and use the chat width
+     rather than the window width when the workbench narrows the column. */
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-picker > .openrouter-menu { left: auto; right: 0; width: min(570px, calc(100cqw - 44px)); transform-origin: bottom right; }
   .app-shell[data-theme][data-color-scheme] .composer .reasoning-control,
   .app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning { grid-column: 1 / -1; justify-self: stretch; margin: 2px 0 0; padding: 0 6px; border-left: 0; }
 }

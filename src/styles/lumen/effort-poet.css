@@ -192,12 +192,12 @@
   -webkit-mask: var(--cc-spark-edge) -54px 0 / 108px 18px no-repeat;
   mask: var(--cc-spark-edge) -54px 0 / 108px 18px no-repeat;
 }
-/* Keyboard focus: a square pixel frame around the spark. */
-.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail input[type="range"]:focus-visible + .reasoning-ticks i.current {
-  outline: 2px solid var(--cc-clay);
-  outline-offset: 11px;
-}
-.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail input[type="range"]:focus-visible + .openrouter-reasoning-ticks i.current {
+/* The input is invisible: put its focus frame around the spark, including
+   in onboarding. :focus also supports the older WebKit covered by Lumen. */
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail input[type="range"]:focus + .reasoning-ticks i.current,
+.app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail input[type="range"]:focus + .openrouter-reasoning-ticks i.current,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail input[type="range"]:focus + .reasoning-ticks i.current,
+.app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail input[type="range"]:focus + .openrouter-reasoning-ticks i.current {
   outline: 2px solid var(--cc-clay);
   outline-offset: 11px;
 }
@@ -333,3 +333,55 @@
   .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-thumb { animation: cc-spin .72s steps(6, end) infinite; }
 }
 @keyframes cc-preview-march { to { background-position: 24px 0, 0 0; } }
+
+/* The native range provides system-colour geometry when high contrast
+   removes the custom blocks, masks and shadows. */
+@media (forced-colors: active) {
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-rail input[type="range"],
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail input[type="range"],
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail input[type="range"],
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail input[type="range"] {
+    all: revert;
+    -webkit-appearance: auto;
+    appearance: auto;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 20px;
+    margin: 0;
+    opacity: 1;
+    pointer-events: none;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer input[type="range"]::-webkit-slider-thumb,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] input[type="range"]::-webkit-slider-thumb {
+    all: revert;
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer input[type="range"]:focus,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] input[type="range"]:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-ticks,
+  .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .effort-sparks,
+  .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .effort-sparks { display: none; }
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-rail {
+    height: 0;
+    border-top: 2px solid CanvasText;
+    background: none;
+    -webkit-mask: none;
+    mask: none;
+    animation: none;
+  }
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-thumb {
+    border: 2px solid CanvasText;
+    background: Highlight;
+    -webkit-mask: none;
+    mask: none;
+    animation: none;
+  }
+}
