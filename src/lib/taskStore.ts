@@ -736,6 +736,10 @@ function terminalStatusForTurn(task: ThreadTaskState | undefined, turnId?: strin
   return undefined;
 }
 
+function settledSteerStatus(status: ChatMessage["steerStatus"], terminal: boolean): ChatMessage["steerStatus"] {
+  return terminal && (status === "sending" || status === "queued") ? "unconfirmed" : status;
+}
+
 /** A late new row stays inside its recorded turn, before the next prompt.
  * Existing rows retain their original position in upsertActivity. */
 function historicalActivityOrder(task: ThreadTaskState, turnId?: string): number | undefined {
@@ -863,6 +867,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .filter((entry) => !("role" in entry && entry.role === "user")
         && (entry.turnStatus === "completed" || entry.turnStatus === "failed"))
       .flatMap((entry) => entry.turnId ? [entry.turnId] : []));
+    const incomingSettledTurnIds = new Set([...messages, ...activities]
+      .filter((entry) => !("role" in entry && entry.role === "user")
+        && entry.turnStatus && entry.turnStatus !== "inProgress")
+      .flatMap((entry) => entry.turnId ? [entry.turnId] : []));
     const supersededStoppedEntry = (entry: ChatMessage | Activity) => entry.turnStatus === "interrupted"
       && Boolean(entry.turnId && authoritativeTerminalTurnIds.has(entry.turnId));
     // A new read can omit partially streamed items even after Stop sealed them.
@@ -883,6 +891,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         ...message,
         ...(stopped && previous?.turnId === message.turnId ? { ...previous, id: message.id, timelineOrder: message.timelineOrder } : {}),
         ...(stopped ? { turnStatus: "interrupted" as const, streaming: false } : {}),
+        // A reopened disk snapshot is not fresh evidence that its old input
+        // is still waiting in a live process. Retain it as uncertain until an
+        // exact-owner lifecycle event confirms delivery again.
+        steerStatus: settledSteerStatus(message.steerStatus, stopped
+          || (local && (!message.turnId || currentExisting?.activeTurnId !== message.turnId))
+          || Boolean(message.turnId && (incomingSettledTurnIds.has(message.turnId) || terminalStatusForTurn(existing, message.turnId)))),
         // Same-ID user reconciliation retains local presentation metadata.
         // Once non-user history proves a terminal result, its durable prompt
         // status must also supersede the local Stop snapshot.
@@ -1023,7 +1037,10 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     const nextActivities: Activity[] = [];
     uniqueIncoming.forEach(({ kind, entry }, index) => {
       const timelineOrder = oldestOrder - uniqueIncoming.length + index;
-      if (kind === "message") nextMessages.push({ ...entry, timelineOrder });
+      if (kind === "message") nextMessages.push({ ...entry, timelineOrder,
+        steerStatus: settledSteerStatus(entry.steerStatus, Boolean(terminalStatusForTurn(task, entry.turnId))
+          || (localTranscriptThreads.has(threadId) && (!entry.turnId || task.activeTurnId !== entry.turnId))),
+      });
       else nextActivities.push({ ...restoreHistoryActivity(entry as Activity), timelineOrder });
     });
     if (!nextMessages.length && !nextActivities.length && Object.keys(patch).length === 0) return state;
@@ -1064,6 +1081,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const previous = task.messages[echoedIndex];
       const messages = [...task.messages];
       messages[echoedIndex] = { ...previous, text: candidate.text, attachments: candidate.attachments, clientMessageId: candidate.id,
+        steerStatus: previous.steerStatus === "read" ? "read" : candidate.steerStatus ?? previous.steerStatus,
+        steerRuntimeId: candidate.steerRuntimeId ?? previous.steerRuntimeId,
         skillReferences: candidate.skillReferences ?? previous.skillReferences, skillsFolder: candidate.skillsFolder ?? previous.skillsFolder,
         skillDependencies: candidate.skillDependencies ?? previous.skillDependencies,
         skillUsage: candidate.skillUsage ?? previous.skillUsage };
@@ -1106,11 +1125,16 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   setMessageSteerStatus: (threadId, messageId, status, steerRuntimeId) => set((state) => {
     const task = state.tasks[threadId];
     if (!task) return state;
-    const index = task.messages.findIndex((message) => message.id === messageId || message.clientMessageId === messageId);
+    const index = task.messages.findIndex((message) => message.role === "user" && (message.id === messageId || message.clientMessageId === messageId));
+    const previous = task.messages[index];
+    if (!previous || (steerRuntimeId !== undefined && previous.steerRuntimeId && previous.steerRuntimeId !== steerRuntimeId)) return state;
+    // An invoke may resolve after lifecycle delivery or turn completion. Keep
+    // the stronger read evidence, and never revive a finished turn's spinner.
+    status = previous.steerStatus === "read" ? "read"
+      : settledSteerStatus(status, Boolean(terminalStatusForTurn(task, previous.turnId)));
     if (index < 0 || (task.messages[index].steerStatus === status
       && (steerRuntimeId === undefined || task.messages[index].steerRuntimeId === steerRuntimeId))) return state;
     const messages = [...task.messages];
-    const previous = messages[index];
     messages[index] = { ...previous, steerStatus: status, ...(steerRuntimeId !== undefined ? { steerRuntimeId } : {}) };
     return { tasks: { ...state.tasks, [threadId]: {
       ...task,
@@ -1355,7 +1379,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
         : pendingStartUserEchoIndex(task, incoming);
     const original = task.messages[existingIndex];
     const display = original && message.role === "user" && (original.clientMessageId || original.id !== message.id)
-      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id, steerStatus: original.steerStatus, steerRuntimeId: original.steerRuntimeId,
+      ? { text: original.text, attachments: original.attachments ?? message.attachments, clientMessageId: original.clientMessageId ?? original.id,
+        steerStatus: original.steerStatus === "read" || normalized.steerStatus === "read" ? "read" as const : original.steerStatus ?? normalized.steerStatus,
+        steerRuntimeId: original.steerRuntimeId ?? normalized.steerRuntimeId,
         skillReferences: original.skillReferences ?? normalized.skillReferences, skillsFolder: original.skillsFolder ?? normalized.skillsFolder,
         skillDependencies: original.skillDependencies ?? normalized.skillDependencies,
         skillUsage: original.skillUsage ?? normalized.skillUsage }
@@ -1560,6 +1586,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
             // collapse the preceding work reliably after crash recovery.
             streaming: false,
             turnStatus,
+            steerStatus: settledSteerStatus(message.steerStatus, turnStatus !== "inProgress"),
             turnDurationMs: turnDurationMs ?? message.turnDurationMs,
           }
         : message)

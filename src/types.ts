@@ -249,10 +249,11 @@ export interface ChatMessage {
   turnStatus?: Turn["status"];
   /** Wall-clock duration copied onto completed turn entries for timeline summaries. */
   turnDurationMs?: number;
-  /** Local delivery feedback for guidance inserted into an already-active turn. */
-  /** "queued": the provider has the steer but has not read it yet (Claude
+  /** Local delivery feedback for guidance inserted into an already-active turn.
+   * "queued": the provider has the steer but has not read it yet (Claude
    * reads steering between steps, so a waiting sub-agent delays it).
-   * "read": the provider started acting on it. */
+   * "read": the provider started acting on it.
+   * "unconfirmed": receipt was uncertain, or the turn ended before a read. */
   steerStatus?: "sending" | "accepted" | "queued" | "read" | "unconfirmed";
   /** The provider-side id of a steered message (Claude: the stream-json
    * message UUID), matched to its queued/started/completed lifecycle. */

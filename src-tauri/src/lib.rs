@@ -1466,6 +1466,7 @@ struct ClaudePromptSnapshotSupport {
     identity: ExecutableIdentity,
     supported: Option<bool>,
     native_supported: Option<bool>,
+    native_background_supported: Option<bool>,
     haiku55_supported: Option<bool>,
     model_compaction_supported: Option<bool>,
     checked_at: Instant,
@@ -1548,12 +1549,17 @@ struct ClaudeTurn {
 /// turn too, so an unexpected CLI path can never leave the thread running.
 #[derive(Default)]
 struct ClaudeTurnProgress {
-    /// Steered message UUIDs written to stdin and not yet completed.
-    steers: HashSet<String>,
-    /// Outstanding background tasks (sub-agents or shell) reported by the CLI.
+    /// Steered message UUIDs written to stdin and not yet retired. False
+    /// means queued (or awaiting acknowledgement); true means already read.
+    steers: HashMap<String, bool>,
+    last_steer_written: Option<Instant>,
+    delivery_requested: HashSet<String>,
+    /// Outstanding native background agents that can resume the parent.
     background_tasks: usize,
-    /// The CLI reports message lifecycles, so steer tracking is trustworthy.
-    lifecycle_supported: bool,
+    background_changed_at: Option<Instant>,
+    native_background_enabled: bool,
+    /// Older CLIs treat send_now as a plain interrupt, so fail closed.
+    send_now_supported: bool,
     /// The user pressed Stop: end at the next result, whatever is pending.
     stop_requested: bool,
 }
@@ -1561,34 +1567,55 @@ struct ClaudeTurnProgress {
 impl ClaudeTurnProgress {
     fn holds_result(&self) -> bool {
         !self.stop_requested
-            && (self.background_tasks > 0 || (self.lifecycle_supported && !self.steers.is_empty()))
+            && (self.background_tasks > 0 || !self.steers.is_empty())
     }
 
     fn observe(&mut self, message: &Value) {
         match message.get("type").and_then(Value::as_str) {
             Some("command_lifecycle") => {
-                self.lifecycle_supported = true;
-                if message.get("state").and_then(Value::as_str) == Some("completed") {
-                    if let Some(id) = message.get("command_uuid").and_then(Value::as_str) {
-                        self.steers.remove(id);
+                if let Some(id) = message.get("command_uuid").and_then(Value::as_str) {
+                    match message.get("state").and_then(Value::as_str) {
+                        Some("started") => {
+                            if let Some(started) = self.steers.get_mut(id) { *started = true; }
+                            self.delivery_requested.remove(id);
+                        }
+                        Some("completed" | "cancelled" | "discarded" | "refused") => {
+                            self.steers.remove(id);
+                            self.delivery_requested.remove(id);
+                        }
+                        _ => {}
                     }
                 }
             }
+            Some("system") if message.get("subtype").and_then(Value::as_str) == Some("init") => {
+                self.send_now_supported = message.get("capabilities")
+                    .and_then(Value::as_array)
+                    .is_some_and(|capabilities| capabilities.iter().any(|value| value.as_str() == Some("interrupt_send_now_v1")));
+            }
             Some("system") if message.get("subtype").and_then(Value::as_str) == Some("background_tasks_changed") => {
-                self.background_tasks = message
+                let background_tasks = if self.native_background_enabled { message
                     .get("tasks")
                     .and_then(Value::as_array)
                     .map(|tasks| tasks.iter().filter(|task| claude_background_task_running(task)).count())
-                    .unwrap_or(0);
+                    .unwrap_or(0) } else { 0 };
+                if self.background_tasks != background_tasks {
+                    self.background_changed_at = Some(Instant::now());
+                    self.background_tasks = background_tasks;
+                }
             }
             _ => {}
         }
     }
 }
 
-/// A listed background task counts unless the CLI marks it finished.
+/// Only native agents can hold their parent's answer. Servers, shell tasks,
+/// and ambient watchers may intentionally outlive it. Awaited agents report
+/// through a foreground tool result and cannot start a later parent query.
 fn claude_background_task_running(task: &Value) -> bool {
-    !matches!(
+    task.get("task_type").and_then(Value::as_str) == Some("local_agent")
+        && task.get("ambient").and_then(Value::as_bool) != Some(true)
+        && task.get("awaited").and_then(Value::as_bool) != Some(true)
+        && !matches!(
         task.get("status").and_then(Value::as_str),
         Some("completed" | "failed" | "killed" | "stopped" | "cancelled" | "error")
     )
@@ -1606,6 +1633,8 @@ fn claude_held_result_expired(turn: &ClaudeTurn, quiet: Duration) -> bool {
     if progress.background_tasks > 0 {
         return false;
     }
+    let quiet = progress.last_steer_written.map_or(quiet, |written| quiet.min(written.elapsed()));
+    let quiet = progress.background_changed_at.map_or(quiet, |changed| quiet.min(changed.elapsed()));
     let grace = if progress.steers.is_empty() { Duration::from_secs(5) } else { CLAUDE_STEER_HOLD_GRACE };
     quiet >= grace
 }
@@ -1818,18 +1847,90 @@ impl ClaudeTurn {
         result
     }
 
-    async fn close_input(&self) {
-        // Dropping the pipe guarantees EOF; shutdown alone can leave its
-        // handle alive while stream-input mode waits for another prompt.
-        self.stdin.lock().await.take();
-    }
-
     fn observe_progress(&self, message: &Value) {
         self.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).observe(message);
     }
 
-    fn holds_result(&self) -> bool {
-        self.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).holds_result()
+    /// Serialize terminal input closure with steer admission. A steer either
+    /// reserves the open turn before its result or sees a closed pipe.
+    async fn close_input_unless_held(&self) -> bool {
+        // Keep draining stdout while another input frame is backpressured.
+        let Ok(mut input) = self.stdin.try_lock() else { return false; };
+        if self.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).holds_result() {
+            return false;
+        }
+        input.take();
+        true
+    }
+
+    async fn close_held_input_if_expired(&self, quiet: Duration) -> bool {
+        let Ok(mut input) = self.stdin.try_lock() else { return false; };
+        if !claude_held_result_expired(self, quiet) { return false; }
+        input.take();
+        true
+    }
+
+    async fn write_steer(&self, message: &Value, steer_id: &str) -> Result<(), String> {
+        let mut input = self.stdin.lock().await;
+        if !self.alive.load(Ordering::Acquire) || input.is_none() {
+            return Err("MYTHRA_NOT_DISPATCHED: This Claude turn is finishing.".into());
+        }
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if progress.stop_requested {
+                return Err("MYTHRA_NOT_DISPATCHED: This Claude turn is stopping.".into());
+            }
+            progress.steers.insert(steer_id.to_string(), false);
+            progress.last_steer_written = Some(Instant::now());
+        }
+        let stdin = input.as_mut().unwrap();
+        let written = async {
+            stdin.write_all(format!("{message}\n").as_bytes()).await
+                .map_err(|error| format!("MYTHRA_DELIVERY_UNCERTAIN: Could not confirm Claude Code input write: {error}"))?;
+            stdin.flush().await
+                .map_err(|error| format!("MYTHRA_DELIVERY_UNCERTAIN: Could not confirm Claude Code input flush: {error}"))
+        }.await;
+        if written.is_err() {
+            self.update_progress(|progress| { progress.steers.remove(steer_id); });
+        }
+        written
+    }
+
+    async fn deliver_steer_now(&self, steer_id: &str) -> Result<(), String> {
+        let mut input = self.stdin.lock().await;
+        if !self.alive.load(Ordering::Acquire) {
+            return Err("This Claude turn has finished.".into());
+        }
+        let stdin = input.as_mut().ok_or("This Claude turn is finishing.")?;
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if progress.stop_requested { return Err("This Claude turn is stopping.".into()); }
+            if !progress.send_now_supported {
+                return Err("This Claude Code version does not support Send now safely. Update Claude Code or wait for the queued message.".into());
+            }
+            if progress.steers.get(steer_id) != Some(&false) {
+                return Err("Claude has already read this message, or it is no longer queued.".into());
+            }
+            if !progress.delivery_requested.insert(steer_id.to_string()) {
+                return Err("Delivery has already been requested for this message.".into());
+            }
+        }
+        // The CLI rechecks the named message when it handles this frame, so
+        // a lifecycle event racing this write cannot interrupt its answer.
+        let request = json!({
+            "type": "control_request",
+            "request_id": uuid::Uuid::new_v4().to_string(),
+            "request": { "subtype": "interrupt", "send_now": true, "message_uuid": steer_id },
+        });
+        let written = async {
+            stdin.write_all(format!("{request}\n").as_bytes()).await
+                .map_err(|error| format!("Could not request Claude message delivery: {error}"))?;
+            stdin.flush().await.map_err(|error| format!("Could not confirm Claude message delivery request: {error}"))
+        }.await;
+        if written.is_err() {
+            self.update_progress(|progress| { progress.delivery_requested.remove(steer_id); });
+        }
+        written
     }
 
     fn update_progress(&self, update: impl FnOnce(&mut ClaudeTurnProgress)) {
@@ -2323,6 +2424,27 @@ fn claude_reopens_turn(message: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+/// A held root result ceases to be terminal as soon as the parent starts
+/// another query. Child output alone does not reopen the parent boundary.
+fn claude_resumes_after_result(message: &Value) -> bool {
+    if message.get("type").and_then(Value::as_str) == Some("command_lifecycle") {
+        return message.get("state").and_then(Value::as_str) == Some("started");
+    }
+    if message.get("parent_tool_use_id").is_some_and(|id| !id.is_null()) {
+        return false;
+    }
+    // Synthetic background notifications need not have a client UUID or
+    // lifecycle. This status precedes their API request's first byte, which
+    // can legitimately arrive after the held-result grace period.
+    if message.get("type").and_then(Value::as_str) == Some("system")
+        && message.get("subtype").and_then(Value::as_str) == Some("status")
+        && matches!(message.get("status").and_then(Value::as_str), Some("requesting" | "compacting"))
+    {
+        return true;
+    }
+    claude_root_assistant(message) || claude_reopens_turn(message)
 }
 
 fn claude_can_recover_at_exit(
@@ -5121,6 +5243,14 @@ fn claude_native_subagent_version_support(version: Option<&str>) -> Option<bool>
     Some(version >= semver::Version::new(2, 1, 267))
 }
 
+fn claude_native_background_version_support(version: Option<&str>) -> Option<bool> {
+    let token = version?.split_whitespace().next()?;
+    let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
+    // Conservative floor verified from installed protocol schemas, rather
+    // than a claim about when background metadata was first introduced.
+    Some(version >= semver::Version::new(2, 1, 312))
+}
+
 fn claude_haiku55_version_support(version: Option<&str>) -> Option<bool> {
     let token = version?.split_whitespace().next()?;
     let version = semver::Version::parse(token.strip_prefix('v').unwrap_or(token)).ok()?;
@@ -5227,6 +5357,10 @@ where
     let version = probe().await;
     let supported = claude_prompt_snapshot_version_support(version.as_deref());
     let native_supported = claude_native_subagent_version_support(version.as_deref());
+    // The installed 2.1.312, .314 and .316 protocol schemas were inspected
+    // for the full background level signal, including ambient/awaited fields.
+    // This is a conservative verified floor, not its introduction version.
+    let native_background_supported = claude_native_background_version_support(version.as_deref());
     let haiku55_supported = claude_haiku55_version_support(version.as_deref());
     let model_compaction_supported = claude_model_compaction_version_support(version.as_deref());
     // An updater can replace the CLI during a probe. Never attribute the old
@@ -5239,6 +5373,7 @@ where
         identity,
         supported,
         native_supported,
+        native_background_supported,
         haiku55_supported,
         model_compaction_supported,
         checked_at: Instant::now(),
@@ -5278,6 +5413,17 @@ async fn cached_claude_haiku55_support(
     cache.lock().await.as_ref()
         .filter(|runtime| runtime.reusable(&identity, Instant::now()))
         .and_then(|runtime| runtime.haiku55_supported)
+        .unwrap_or(false)
+}
+
+async fn cached_claude_native_background_support(
+    cache: &Mutex<Option<ClaudePromptSnapshotSupport>>,
+    path: &Path,
+) -> bool {
+    let identity = executable_identity(path).await;
+    cache.lock().await.as_ref()
+        .filter(|runtime| runtime.reusable(&identity, Instant::now()))
+        .and_then(|runtime| runtime.native_background_supported)
         .unwrap_or(false)
 }
 
@@ -6697,6 +6843,7 @@ fn configure_claude_native_agents(
     command: &mut Command,
     maximum: Option<usize>,
     model: Option<&str>,
+    background_supported: bool,
 ) {
     // Sub-agents may run in the background so the parent stays free to read
     // the user's steering. The turn reader keeps this per-turn process open
@@ -6706,7 +6853,6 @@ fn configure_claude_native_agents(
         // Complete child messages carry the actual model and parent tool id.
         // The frontend routes these into native activity, never root answers.
         .arg("--forward-subagent-text")
-        .env_remove("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
         .env("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "1")
         .env(
             "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
@@ -6724,6 +6870,13 @@ fn configure_claude_native_agents(
         // Forks inherit the parent's context and model, bypassing this
         // thread's chosen sub-agent model, so they stay off.
         .env("CLAUDE_CODE_FORK_SUBAGENT", "0");
+    if background_supported {
+        command.env_remove("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS");
+    } else {
+        // Keep older native runtimes in the existing foreground mode: they
+        // cannot safely retain a result without verified background metadata.
+        command.env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1");
+    }
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
         command.env("CLAUDE_CODE_SUBAGENT_MODEL", model)
             .env("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "1");
@@ -6880,17 +7033,6 @@ async fn claude_turn_start(
     if normal_chat::contains(&app, &options.cwd)? {
         options.system_prompt = normal_chat::instructions(&options.system_prompt);
     }
-    if options.native_subagents {
-        // Claude reads the user's steering only between its own steps, so a
-        // foreground sub-agent makes new messages wait until it finishes.
-        // Background sub-agents keep it free; this process stays open until
-        // they report back (ClaudeTurnProgress).
-        options.system_prompt = format!(
-            "{}\n\n{}",
-            options.system_prompt.trim_end(),
-            CLAUDE_BACKGROUND_SUBAGENT_INSTRUCTIONS,
-        ).trim_start().to_string();
-    }
     validate_cli_value(&options.thread_id, "The thread identity")?;
     validate_cli_value(&options.model, "The model identity")?;
     if state
@@ -6942,6 +7084,13 @@ async fn claude_turn_start(
     #[cfg(unix)]
     command.process_group(0);
     let snapshot_supported = claude_prompt_snapshot_supported(&state, &binary).await;
+    let native_background_enabled = options.native_subagents
+        && cached_claude_native_background_support(&state.prompt_snapshot_support, &binary).await;
+    if native_background_enabled {
+        options.system_prompt = format!(
+            "{}\n\n{}", options.system_prompt.trim_end(), CLAUDE_BACKGROUND_SUBAGENT_INSTRUCTIONS,
+        ).trim_start().to_string();
+    }
     let compaction_settings = claude_compaction_settings(
         &options.model, options.auto_compact_tokens,
         options.native_subagents.then_some(options.native_subagent_model.as_deref()).flatten(),
@@ -6969,6 +7118,7 @@ async fn claude_turn_start(
         configure_claude_native_agents(
             &mut command, options.native_subagent_max,
             options.native_subagent_model.as_deref(),
+            native_background_enabled,
         );
     } else {
         configure_claude_agents_disabled(&mut command);
@@ -7084,7 +7234,7 @@ async fn claude_turn_start(
         context_summary_supported: AtomicBool::new(false),
         context_probe: Mutex::new(()),
         context_pending: StdMutex::new(None),
-        progress: StdMutex::new(ClaudeTurnProgress::default()),
+        progress: StdMutex::new(ClaudeTurnProgress { native_background_enabled, ..ClaudeTurnProgress::default() }),
     });
     if !claim_turn_slot(&state.turns, &options.thread_id, &turn, |existing| {
         existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
@@ -7208,10 +7358,13 @@ async fn claude_turn_start(
         // carried.
         let mut delta_buffer = ProviderDeltaBatch::default();
         let mut observed_exit = None;
+        let mut reader_failed = false;
         // A root result held back while steers or background tasks are still
-        // outstanding (ClaudeTurnProgress), and when output last arrived.
+        // outstanding (ClaudeTurnProgress). Metadata cannot extend this
+        // deadline; actual parent activity withdraws the candidate instead.
         let mut held_result: Option<Value> = None;
-        let mut last_output = Instant::now();
+        let mut held_since = Instant::now();
+        let mut provisional_result = false;
         let flush_deltas = |buffer: &mut ProviderDeltaBatch, app: &AppHandle| {
             if let Some(batch) = buffer.take() {
                 let _ = app.emit("claude-events", batch);
@@ -7219,6 +7372,26 @@ async fn claude_turn_start(
         };
 
         'reader: loop {
+            if held_result.is_some() && stdout_runtime.close_held_input_if_expired(held_since.elapsed()).await {
+                stdout_runtime.finish_context_request();
+                let (stopped, pending) = {
+                    let progress = stdout_runtime.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    (progress.stop_requested, !progress.steers.is_empty())
+                };
+                if stopped || pending {
+                    held_result = None;
+                    terminal_assistant = None;
+                    stderr_lines.lock().await.push_line(if stopped {
+                        "Claude was stopped before its pending work completed."
+                    } else {
+                        "Claude Code did not confirm completion of the pending message before its delivery deadline."
+                    });
+                } else {
+                    terminal_result = held_result.take();
+                    provisional_result = true;
+                }
+                break 'reader;
+            }
             // `Lines::next_line` is cancellation safe, so racing it against
             // the flush deadline cannot drop partial lines. Output read while
             // startup input was being written comes first, in order.
@@ -7236,12 +7409,6 @@ async fn claude_turn_start(
                 match timeout(Duration::from_secs(1), lines.next_line()).await {
                     Ok(next) => next,
                     Err(_) => {
-                        if held_result.is_some() && claude_held_result_expired(&stdout_runtime, last_output.elapsed()) {
-                            stdout_runtime.finish_context_request();
-                            stdout_runtime.close_input().await;
-                            terminal_result = held_result.take();
-                            break 'reader;
-                        }
                         // A grandchild can inherit stdout and keep the pipe
                         // open after the direct Claude process has exited.
                         // Poll the direct child while output is idle so that
@@ -7254,6 +7421,7 @@ async fn claude_turn_start(
                             }
                             Ok(None) => continue,
                             Err(error) => {
+                                reader_failed = true;
                                 stderr_lines.lock().await.push_line(&format!(
                                     "Could not inspect Claude Code after output stopped: {error}"
                                 ));
@@ -7267,6 +7435,7 @@ async fn claude_turn_start(
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(error) => {
+                    reader_failed = true;
                     flush_deltas(&mut delta_buffer, &stdout_app);
                     emit_claude_event(
                         &stdout_app,
@@ -7281,7 +7450,7 @@ async fn claude_turn_start(
                     break;
                 }
             };
-            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
                 flush_deltas(&mut delta_buffer, &stdout_app);
                 stderr_lines
                     .lock()
@@ -7313,8 +7482,11 @@ async fn claude_turn_start(
                     .is_some_and(|version| version >= semver::Version::new(2, 1, 257));
                 stdout_runtime.context_summary_supported.store(supported, Ordering::Release);
             }
-            last_output = Instant::now();
             stdout_runtime.observe_progress(&message);
+            if claude_resumes_after_result(&message) {
+                held_result = None;
+                terminal_assistant = None;
+            }
             if stdout_runtime.accept_context_response(&message) {
                 continue;
             }
@@ -7361,12 +7533,19 @@ async fn claude_turn_start(
             } else if claude_reopens_turn(&message) {
                 terminal_assistant = None;
             }
-            if ends_turn && stdout_runtime.holds_result() {
+            if ends_turn && !stdout_runtime.close_input_unless_held().await {
                 // A steer is still queued, or background sub-agents are still
                 // working and will resume the parent when they report back.
                 // Keep the process and the turn open; the latest root result
                 // stands in if nothing else ends it (see the idle check).
+                if message.get("uuid").and_then(Value::as_str).is_none_or(str::is_empty) {
+                    message["uuid"] = Value::String(uuid::Uuid::new_v4().to_string());
+                }
+                let mut intermediate = message.clone();
+                intermediate["type"] = Value::String("openkiwi_intermediate_result".into());
+                emit_claude_event(&stdout_app, &stdout_thread, &stdout_turn, intermediate).await;
                 held_result = Some(message);
+                held_since = Instant::now();
                 continue;
             }
             if ends_turn {
@@ -7374,7 +7553,6 @@ async fn claude_turn_start(
                 // Keep the slot until EOF lets the CLI save and exit, then
                 // publish completion so a queued resume cannot race that save.
                 stdout_runtime.finish_context_request();
-                stdout_runtime.close_input().await;
                 terminal_result = Some(message);
                 break;
             }
@@ -7423,11 +7601,6 @@ async fn claude_turn_start(
         }
         stdout_runtime.finish_context_request();
         flush_deltas(&mut delta_buffer, &stdout_app);
-        if terminal_result.is_none() {
-            // The CLI exited while a result was held: that result still ends
-            // the turn normally.
-            terminal_result = held_result.take();
-        }
         let saw_result = terminal_result.is_some();
         let exit_result = if let Some(exit) = observed_exit {
             Ok(exit)
@@ -7452,7 +7625,24 @@ async fn claude_turn_start(
                 return;
             }
         };
-        let recovered = claude_can_recover_at_exit(terminal_assistant.is_some(), exit.as_ref());
+        if provisional_result && !exit.as_ref().is_some_and(std::process::ExitStatus::success) {
+            terminal_result = None;
+            terminal_assistant = None;
+        }
+        // A provisional result cannot hide a crash or interrupted pending
+        // work. Only a clean exit at the still-standing boundary can use it.
+        if terminal_result.is_none() && !reader_failed && exit.as_ref().is_some_and(std::process::ExitStatus::success) {
+            let progress = stdout_runtime.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !progress.stop_requested && !progress.holds_result() {
+                terminal_result = held_result.take();
+            }
+        }
+        let saw_result = terminal_result.is_some();
+        let recovery_allowed = {
+            let progress = stdout_runtime.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            !reader_failed && !progress.stop_requested && !progress.holds_result()
+        };
+        let recovered = recovery_allowed && claude_can_recover_at_exit(terminal_assistant.is_some(), exit.as_ref());
         let (terminal_assistant_id, terminal_assistant_text) = terminal_assistant.unwrap_or_default();
         // Each terminal event is recorded as this turn's receipt BEFORE the
         // slot is released, so a health probe that finds the process inactive
@@ -7573,28 +7763,23 @@ async fn claude_turn_steer(
         return Err("MYTHRA_NOT_DISPATCHED: Claude is still confirming its billing method and sending the original message. Try this input again when startup finishes.".into());
     }
     let message = claude_user_message(&thread_id, &prompt, &attachments).await?;
-    // Track the steer before Claude Code can acknowledge it, so the turn is
-    // not closed while it is still queued behind the parent's current step.
+    // Reserve input under the same lock used to close a completed turn, so
+    // a successful write can never fall between result admission and EOF.
     let steer_id = message["uuid"].as_str().unwrap_or_default().to_string();
-    turn.update_progress(|progress| { progress.steers.insert(steer_id.clone()); });
-    if let Err(error) = turn.write(&message).await {
-        turn.update_progress(|progress| { progress.steers.remove(&steer_id); });
-        return Err(error);
-    }
+    turn.write_steer(&message, &steer_id).await?;
     // The renderer matches Claude Code's command_lifecycle events (queued,
     // started, completed) to this id to show when the steer was read.
     Ok(steer_id)
 }
 
-/// "Stop sub-agents and send now": interrupt the parent's current step (and
-/// the foreground sub-agents it is waiting on) so a queued steer is read at
-/// once. Unlike Stop, the turn stays open: the interrupted step's result is
-/// held while the steer is outstanding, then Claude answers it.
+/// Request delivery of one queued steer. The CLI may background foreground
+/// work or interrupt its step; it rechecks the exact message before acting.
 #[tauri::command]
 async fn claude_turn_deliver_steer_now(
     state: State<'_, ClaudeState>,
     thread_id: String,
     expected_turn_id: String,
+    expected_steer_id: String,
 ) -> Result<(), String> {
     let turn = state
         .turns
@@ -7606,15 +7791,7 @@ async fn claude_turn_deliver_steer_now(
     if expected_turn_id != turn.turn_id {
         return Err("Claude has already moved on to a different turn.".into());
     }
-    let pending = turn.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).steers.len();
-    if pending == 0 {
-        return Err("Claude has already read your message.".into());
-    }
-    turn.write(&json!({
-        "type": "control_request",
-        "request_id": uuid::Uuid::new_v4().to_string(),
-        "request": { "subtype": "interrupt" },
-    })).await
+    turn.deliver_steer_now(&expected_steer_id).await
 }
 
 #[tauri::command]
@@ -7632,6 +7809,19 @@ async fn claude_turn_interrupt(
     // Stop ends the turn at the next result, even with steers or background
     // sub-agents still outstanding (they are cut off with the process).
     turn.update_progress(|progress| progress.stop_requested = true);
+    // Start the deadline before waiting on stdin: a backpressured prompt
+    // write must not prevent Stop from ever reaching its escalation path.
+    let turns = state.turns.clone();
+    let deadline_turn = turn.clone();
+    let deadline_thread = thread_id.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(CLAUDE_INTERRUPT_GRACE).await;
+        if deadline_turn.alive.load(Ordering::Acquire) {
+            if deadline_turn.shutdown().await.is_ok() {
+                remove_claude_turn_if_current(&turns, &deadline_thread, &deadline_turn).await;
+            }
+        }
+    });
     let interrupt = json!({
         "type": "control_request",
         "request_id": uuid::Uuid::new_v4().to_string(),
@@ -7647,18 +7837,6 @@ async fn claude_turn_interrupt(
         remove_claude_turn_if_current(&state.turns, &thread_id, &turn).await;
         return Err(error);
     }
-    // Escalate if the CLI ignores the interrupt. A healthy process emits a
-    // `result` well within the grace period (whose reader reaps the process);
-    // a wedged one would otherwise hold the per-thread slot until app restart.
-    let turns = state.turns.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(CLAUDE_INTERRUPT_GRACE).await;
-        if turn.alive.load(Ordering::Acquire) {
-            if turn.shutdown().await.is_ok() {
-                remove_claude_turn_if_current(&turns, &thread_id, &turn).await;
-            }
-        }
-    });
     Ok(())
 }
 

@@ -493,7 +493,10 @@ export function childReviewToken(link: ChildAgentLink): string | undefined {
  */
 async function steerChild(link: ChildAgentLink, text: string): Promise<void> {
   const threadId = link.childThreadId;
-  if (link.provider === "claude") return steerClaudeTurn(threadId, text, []);
+  if (link.provider === "claude") {
+    await steerClaudeTurn(threadId, text, []);
+    return;
+  }
   if (link.provider === "cursor") return steerCursorTurn(threadId, text, []);
   const expectedTurnId = useTaskStore.getState().tasks[threadId]?.activeTurnId;
   if (!expectedTurnId) throw new Error("The sub-agent's active turn is still starting");

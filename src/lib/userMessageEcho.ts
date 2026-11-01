@@ -88,6 +88,8 @@ function collapseRepeatedUserIds(messages: ChatMessage[]): ChatMessage[] {
         skillsFolder: message.skillsFolder ?? previous.skillsFolder,
         skillDependencies: message.skillDependencies ?? previous.skillDependencies,
         skillUsage: message.skillUsage ?? previous.skillUsage,
+        steerStatus: message.steerStatus === "read" || previous.steerStatus === "read" ? "read" : message.steerStatus ?? previous.steerStatus,
+        steerRuntimeId: message.steerRuntimeId ?? previous.steerRuntimeId,
       });
     }
   }
@@ -120,7 +122,9 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     if (!existing) return message;
     matchedIds.add(existing.id);
     return { ...message, ...(existing.id === message.id ? existing : {}), timelineOrder: message.timelineOrder ?? existing.timelineOrder, text: existing.text, attachments: existing.attachments ?? message.attachments,
-      clientMessageId: existing.clientMessageId ?? (existing.id !== message.id ? existing.id : undefined), steerStatus: existing.steerStatus, steerRuntimeId: existing.steerRuntimeId,
+      clientMessageId: existing.clientMessageId ?? (existing.id !== message.id ? existing.id : undefined),
+      steerStatus: existing.steerStatus === "read" || message.steerStatus === "read" ? "read" as const : existing.steerStatus ?? message.steerStatus,
+      steerRuntimeId: existing.steerRuntimeId ?? message.steerRuntimeId,
       skillReferences: existing.skillReferences ?? message.skillReferences, skillsFolder: existing.skillsFolder ?? message.skillsFolder,
       skillDependencies: existing.skillDependencies ?? message.skillDependencies,
       skillUsage: existing.skillUsage ?? message.skillUsage };

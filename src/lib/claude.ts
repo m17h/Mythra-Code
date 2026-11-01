@@ -365,12 +365,12 @@ export async function steerClaudeTurn(
 }
 
 /**
- * Interrupt Claude's current step, including foreground sub-agents it is
- * waiting on, so a queued steer is read now. The turn stays open and Claude
- * answers the steer; use interruptClaudeTurn to stop the turn instead.
+ * Ask Claude to read one exact queued steer at its next step, moving
+ * foreground sub-agent work to the background if needed. This acknowledges
+ * the request write; the message lifecycle confirms when it is read.
  */
-export async function deliverClaudeSteerNow(threadId: string, expectedTurnId: string): Promise<void> {
-  await invoke("claude_turn_deliver_steer_now", { threadId, expectedTurnId });
+export async function deliverClaudeSteerNow(threadId: string, expectedTurnId: string, expectedSteerId: string): Promise<void> {
+  await invoke("claude_turn_deliver_steer_now", { threadId, expectedTurnId, expectedSteerId });
 }
 
 export async function interruptClaudeTurn(threadId: string): Promise<void> {
