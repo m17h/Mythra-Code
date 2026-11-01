@@ -20,10 +20,11 @@
   max-width: none;
   max-height: none;
   margin: auto;
-  padding: 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
-  background: var(--panel, #181a1c);
+  padding: 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--menu-surface, var(--panel, #181a1c));
+  box-shadow: var(--lm-pop-shadow, none);
   color: var(--text);
   line-height: 1.4;
 }
@@ -33,8 +34,9 @@
 .message-image-fallback { position: fixed; top: 0; left: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .75); touch-action: none; }
 .message-image-dialog-fallback { position: relative; top: auto; right: auto; bottom: auto; left: auto; margin: 0; display: flex; flex-direction: column; gap: 12px; }
 .message-image-dialog-header { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.message-image-dialog-header > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); }
-.message-image-dialog-header > button { display: grid; place-items: center; flex: 0 0 auto; width: 36px; height: 36px; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--r-xs); background: var(--field); color: var(--text); cursor: pointer; }
+.message-image-dialog-header > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-ui); font-weight: 600; }
+.message-image-dialog-header > button { display: grid; place-items: center; flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--r-control, 6px); background: transparent; color: var(--muted); cursor: pointer; }
+.message-image-dialog-header > button:hover { color: var(--text); background: var(--lm-press, var(--field)); }
 .message-image-dialog-content { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 0; min-width: 0; }
 .message-image-dialog-content > img { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; object-fit: contain; }
 .message-image-dialog-content > p { color: var(--muted); text-align: center; }

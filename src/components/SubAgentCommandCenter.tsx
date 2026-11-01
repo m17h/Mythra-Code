@@ -1178,7 +1178,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                     aria-describedby={nativeSelectionBlocked ? nativeReasonId : undefined}
                     onChange={() => { if (!nativeSelectionBlocked) props.onEngineChange?.("native"); }}
                   />
-                  <span className="sa-engine-mark" aria-hidden="true">
+                  <span className={`sa-engine-mark ${nativeProvider ?? ""}`} aria-hidden="true">
                     {nativeProvider ? <ProviderLogo provider={nativeProvider} size={13} /> : <UsersRound size={13} />}
                   </span>
                   <span className="sa-engine-copy">

@@ -32,16 +32,16 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 3px 11px 3px 8px;
-  border: 1px solid color-mix(in srgb, var(--compaction-accent) 24%, var(--line-quiet));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--compaction-accent) 7%, transparent);
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control, 6px);
+  background: transparent;
 }
 
 .context-compaction-glyph { display: grid; flex-shrink: 0; color: var(--compaction-accent); }
 .context-compaction.active .context-compaction-glyph { animation: compaction-fold 1.7s ease-in-out infinite; }
-.context-compaction-pill strong { min-width: 0; color: var(--ink-2); font-size: var(--fs-meta); overflow-wrap: anywhere; }
-.context-compaction-pill small { min-width: 0; overflow: hidden; padding-left: 8px; border-left: 1px solid var(--line-quiet); color: var(--muted-2); font-size: var(--fs-micro); white-space: nowrap; text-overflow: ellipsis; }
+.context-compaction-pill strong { min-width: 0; color: var(--ink-2); font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.context-compaction-pill small { min-width: 0; overflow: hidden; padding-left: 8px; border-left: 1px solid var(--line); color: var(--muted-2); font-size: var(--fs-meta); white-space: nowrap; text-overflow: ellipsis; }
 .flow-timeline .context-compaction { margin-left: 38px; }
 
 @keyframes compaction-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }

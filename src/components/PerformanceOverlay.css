@@ -32,7 +32,7 @@
   height: 18px;
   padding: 0;
   border: 1px solid var(--line-strong, rgba(255, 255, 255, .18));
-  border-radius: 50%;
+  border-radius: 4px;
   color: var(--muted, #9aa3ab);
   background: var(--panel, #1c1f23);
   cursor: pointer;

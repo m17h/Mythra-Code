@@ -41,11 +41,11 @@
   overflow-y: auto;
   padding: var(--s-3);
   border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
-  background: var(--panel-2);
-  box-shadow: var(--shadow);
+  border-radius: var(--r-xl, 12px);
+  background: var(--menu-surface, var(--panel-2));
+  box-shadow: var(--lm-pop-shadow, var(--shadow));
 }
-.checks-popover .project-prompt-actions { position: sticky; bottom: 0; z-index: 1; background: var(--panel-2); }
+.checks-popover .project-prompt-actions { position: sticky; bottom: 0; z-index: 1; background: var(--menu-surface, var(--panel-2)); }
 .checks-editor label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: var(--fs-meta); }
 .checks-editor input { width: 100%; height: 34px; min-width: 0; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; color: var(--text); background: var(--field); font: var(--fs-meta)/1 var(--font-mono); }
 .checks-editor input:focus { border-color: color-mix(in srgb, var(--green) 42%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
@@ -77,7 +77,7 @@
 .studio-actions .checks-card-actions .checks-output-toggle[aria-expanded="true"] > svg { transform: none; }
 .studio-actions .checks-card-actions .checks-fix { color: var(--ink-2); border-color: color-mix(in srgb, var(--green) 34%, var(--line)); }
 .studio-actions .checks-card-actions .checks-fix.staged:disabled { opacity: 1; color: var(--green); border-color: var(--green-line); background: var(--surface-selected); }
-.checks-output { max-height: 220px; overflow: auto; margin-bottom: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: #aeb5b0; background: #202327; font: 10.5px/1.5 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.checks-output { max-height: 220px; overflow: auto; margin-bottom: 0; padding: 8px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--lm-code-ink, #aeb5b0); background: var(--lm-code-bg, #202327); font: 10.5px/1.5 var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
 .checks-output-note { color: var(--muted-2); font-style: italic; }
 
 @media (prefers-reduced-motion: reduce) {

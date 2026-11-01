@@ -27,30 +27,28 @@
   --voice-level: 0;
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "orb copy wave actions"; align-items: center; column-gap: 12px; row-gap: 8px;
   min-height: 46px; padding: 7px 7px 7px 8px;
-  border: 1px solid color-mix(in srgb, var(--rec-tone) 24%, var(--line));
-  border-radius: calc(var(--r-md) + 2px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg, 10px);
   color: var(--ink-2, var(--text));
-  background:
-    radial-gradient(120% 160% at 0% 50%, color-mix(in srgb, var(--rec-tone) 9%, transparent), transparent 62%),
-    color-mix(in srgb, var(--panel-2) 74%, var(--panel, transparent));
+  background: var(--lm-hover, color-mix(in srgb, var(--panel-2) 74%, var(--panel, transparent)));
   font-size: var(--fs-meta);
   transition: opacity 240ms ease, transform var(--lm-d-3, 320ms) var(--lm-ease-out, ease-out), border-color var(--lm-d-3, 320ms) ease, --rec-tone var(--lm-d-3, 320ms) ease;
 }
-.voice-rec.is-closed .voice-rec-card { opacity: 0; transform: translateY(6px) scale(.985); }
+.voice-rec.is-closed .voice-rec-card { opacity: 0; transform: translateY(4px); }
 .voice-rec.is-exiting .voice-rec-card { transition-duration: 200ms, 260ms, 200ms, 200ms; transition-timing-function: ease, var(--lm-ease-in, ease-in), ease, ease; }
-.voice-rec.is-exiting.is-closed .voice-rec-card { transform: translateY(4px) scale(.985); }
+.voice-rec.is-exiting.is-closed .voice-rec-card { transform: translateY(3px); }
 
-.voice-rec-orb { grid-area: orb; position: relative; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--rec-tone); border: 1px solid color-mix(in srgb, var(--rec-tone) 30%, transparent); background: color-mix(in srgb, var(--rec-tone) 13%, var(--panel, transparent)); }
+.voice-rec-orb { grid-area: orb; position: relative; width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-md, 8px); color: var(--rec-tone); border: 0; background: color-mix(in srgb, var(--rec-tone) 12%, transparent); }
 .voice-rec-orb > svg { position: relative; }
 .voice-rec-halo { position: absolute; inset: -1px; border-radius: inherit; background: color-mix(in srgb, var(--rec-tone) 22%, transparent); opacity: calc(var(--voice-level) * .9); transform: scale(calc(1 + var(--voice-level) * .5)); transition: transform 140ms linear, opacity 140ms linear; }
-.voice-rec.phase-recording .voice-rec-orb::after { content: ""; position: absolute; top: -1px; right: -1px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--panel-2); }
+.voice-rec.phase-recording .voice-rec-orb::after { content: ""; position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--panel, var(--panel-2)); }
 
 .voice-rec-copy { grid-area: copy; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .voice-rec-titleline { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.voice-rec-titleline strong { color: var(--text); font-size: 12.5px; font-weight: 600; letter-spacing: -.005em; }
-.voice-rec-copy small { overflow: hidden; color: var(--muted); font-size: var(--fs-micro, 10px); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.voice-rec-badge { padding: 1px 6px; border: 1px solid var(--green-line, color-mix(in srgb, var(--green) 30%, transparent)); border-radius: 999px; color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; line-height: 14px; text-transform: uppercase; }
-.voice-rec-clock { color: var(--ink-2, var(--muted)); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.voice-rec-titleline strong { color: var(--text); font-size: var(--fs-ui, 13px); font-weight: 600; letter-spacing: 0; }
+.voice-rec-copy small { overflow: hidden; color: var(--muted); font-size: var(--fs-meta, 11px); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.voice-rec-badge { padding: 0 6px; border: 0; border-radius: var(--r-chip, 4px); color: var(--green); background: var(--green-soft, color-mix(in srgb, var(--green) 10%, transparent)); font-size: var(--fs-meta, 11px); font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+.voice-rec-clock { color: var(--ink-2, var(--muted)); font-size: 12px; font-variant-numeric: tabular-nums; }
 .voice-rec-clock.placeholder { opacity: .45; }
 .voice-rec-message { color: var(--text); line-height: 1.4; overflow-wrap: anywhere; }
 .voice-rec.message.error .voice-rec-message { color: color-mix(in srgb, var(--red) 70%, var(--text)); }
@@ -62,13 +60,14 @@
 .voice-rec.phase-preparing .voice-rec-wave i { opacity: .4; }
 
 .voice-rec-actions { grid-area: actions; display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
-.voice-rec-button { height: 30px; display: inline-flex; align-items: center; gap: 5px; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2, var(--text)); background: color-mix(in srgb, var(--panel) 50%, transparent); font: inherit; font-size: var(--fs-meta); cursor: pointer; white-space: nowrap; transition: background var(--t-fast) ease, border-color var(--t-fast) ease, color var(--t-fast) ease; }
-.voice-rec-button:hover { border-color: var(--line-strong); color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
-.voice-rec-button.primary { padding: 0 13px 0 11px; border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); color: var(--green); background: color-mix(in srgb, var(--green) 13%, var(--panel, transparent)); font-weight: 600; }
-.voice-rec-button.primary:hover { border-color: color-mix(in srgb, var(--green) 62%, var(--line-strong)); background: color-mix(in srgb, var(--green) 20%, var(--panel, transparent)); }
+.voice-rec-button { height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 0 11px; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--text); background: var(--lm-press, transparent); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background var(--t-fast) ease, border-color var(--t-fast) ease, color var(--t-fast) ease, filter var(--t-fast) ease; }
+.voice-rec-button:hover { border-color: var(--line-strong); color: var(--text); }
+/* Done: the primary push button, flat accent with accent ink. */
+.voice-rec-button.primary { padding: 0 12px 0 10px; border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); font-weight: 600; }
+.voice-rec-button.primary:hover { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); filter: brightness(1.06); }
 .voice-rec-button:focus-visible, .voice-rec-dismiss:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
 .voice-rec-dismiss { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; cursor: pointer; }
-.voice-rec-dismiss:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.voice-rec-dismiss:hover { color: var(--text); background: var(--lm-press, color-mix(in srgb, var(--text) 6%, transparent)); }
 
 /* Messages have no waveform. */
 .voice-rec.message .voice-rec-card { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "orb copy actions"; }
@@ -92,14 +91,14 @@
   @keyframes voice-rec-idle { 0%, 100% { transform: scaleY(.1); opacity: .35; } 50% { transform: scaleY(.3); opacity: .8; } }
   @keyframes voice-rec-working { 0%, 100% { transform: scaleY(.12); } 50% { transform: scaleY(.55); } }
   @keyframes voice-rec-tally { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-  @keyframes voice-input-ring { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 38%, transparent); } to { box-shadow: 0 0 0 7px transparent; } }
   /* Content that changes with the phase eases in rather than snapping. */
   .voice-rec:not(.is-exiting) :is(.voice-rec-titleline strong, .voice-rec-copy > small, .voice-rec-actions > *, .voice-rec-message) { animation: voice-rec-swap 220ms var(--lm-ease-out, ease-out) backwards; }
   .voice-rec:not(.is-exiting).phase-preparing .voice-rec-wave i { animation: voice-rec-idle 1.6s ease-in-out infinite; animation-delay: calc(var(--voice-i) * 45ms); }
   .voice-rec:not(.is-exiting).phase-transcribing .voice-rec-wave i { animation: voice-rec-working 1.2s ease-in-out infinite; animation-delay: calc(var(--voice-i) * 40ms); }
   /* Live indicators only exist while the microphone is open. */
   .voice-rec:not(.is-exiting).phase-recording .voice-rec-orb::after { animation: voice-rec-tally 1.4s ease-in-out infinite; }
-  .voice-input-button.recording { animation: voice-input-ring 1.4s ease-out infinite; }
+  /* Pro: the mic button rests red while recording; the orb's tally dot is the
+     one live blink, so the button no longer pulses a glow ring. */
 }
 
 /* Reduced motion: fade only; the row collapses after the fade, not during it. */

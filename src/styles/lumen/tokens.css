@@ -1,6 +1,19 @@
 /* ============================================================================
-   Lumen tokens
+   Lumen tokens: the "Pro" design language
    ----------------------------------------------------------------------------
+   DESIGN (Morgan, 2026-11-01: "a cleaner UI that feels like a pro Apple app").
+   See docs/design/pro-ui.md for the full rules. In short:
+   - One continuous window. The navigator, the stage and the workbench sit
+     flush, divided by hairlines; no floating islands, gutters or canvas glow.
+   - Apple type: SF Pro (system UI font), 13px interface text, 11px semibold
+     sentence-case section headings. Monospace is for code and paths only.
+   - Rounded squares (never ovals): 6px controls, 8-10px cards, 12px
+     popovers and sheets.
+   - Neutral graphite (dark) or white and cool gray (light) surfaces. Each
+     theme keeps its own accent, used flat on primary actions, selection,
+     focus and small status details. No gradients, glows or tinted washes.
+   - Quiet motion: short fades and small slides; no bounce, lift or overshoot.
+
    COMPATIBILITY CONTRACT (applies to every file in src/styles/lumen):
    - No cascade layers. Production targets Safari 13 / Chrome 105, and WebKit
      only gained @layer in 15.4. Legacy styles stay unwrapped and authoritative
@@ -20,308 +33,229 @@
      color-mix(), individual transform properties and :has(). Those are
      enhancements only.
 
-   Theme map (ids unchanged; palettes redesigned):
-     mythra        neutral graphite canvas, restrained light-blue accents
-     light-mythra  mist canvas, white islands, sky-cyan fills, deep sky-blue text
-     kiwi          moss-black canvas, lime → teal
-     daylight      sage canvas, paper islands, leaf → jade
-     synthwave     Mythra's neutral graphite surfaces, hot pink accents
-     atari         sand canvas, parchment islands, brick accents, orange-red mark
+   Theme map (ids unchanged):
+     mythra        neutral graphite, light-blue accent
+     light-mythra  white and cool gray, sky-blue accent
+     kiwi          neutral graphite, leaf-green accent
+     daylight      white and sage gray, deep leaf-green accent
+     synthwave     neutral graphite, hot pink accent
+     atari         warm parchment, brick accent
    Midnight and Monochrome are retired; saved selections migrate to Mythra
    (sanitizeTheme / sanitizeProjectDefaults) before reaching the shell.
    ========================================================================== */
 
 /* Motion and type tokens are also published on :root so portalled fallbacks
-   (rendered on <body> when the top layer is unavailable) can read them. */
+   (rendered on <body> when the top layer is unavailable) can read them.
+   The easing set is deliberately overshoot-free: --lm-spring and
+   --lm-spring-soft keep their names (dozens of rules use them) but are now
+   calm decelerating curves, so nothing bounces. */
 :root {
-  --lm-d-1: 120ms;
-  --lm-d-2: 200ms;
-  --lm-d-3: 320ms;
-  --lm-d-4: 520ms;
-  --lm-ease-out: cubic-bezier(.16, 1, .3, 1);
-  --lm-ease-in: cubic-bezier(.7, 0, .84, 0);
-  --lm-spring: cubic-bezier(.34, 1.56, .64, 1);
-  --lm-spring-soft: cubic-bezier(.22, 1.25, .36, 1);
-  --lm-stagger: 40ms;
+  --lm-d-1: 100ms;
+  --lm-d-2: 160ms;
+  --lm-d-3: 240ms;
+  --lm-d-4: 360ms;
+  --lm-ease-out: cubic-bezier(.2, .8, .2, 1);
+  --lm-ease-in: cubic-bezier(.4, 0, 1, 1);
+  --lm-spring: cubic-bezier(.2, .8, .2, 1);
+  --lm-spring-soft: cubic-bezier(.25, .8, .25, 1);
+  --lm-stagger: 24ms;
   --font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Inter Display", "Inter", "Segoe UI Variable Display", "Segoe UI", sans-serif;
 }
 
-/* ---- Mythra (default) and the shared geometry ---- */
+/* ---- Shared geometry, type and the default (Mythra) palette ---- */
 .app-shell[data-theme][data-color-scheme] {
-  /* Type */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  /* Type. SF applies its own optical tracking, so interface text carries no
+     extra letter-spacing. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
   --fs-micro: 10px;
-  --fs-meta: 11.5px;
-  --fs-ui: 12.75px;
+  --fs-meta: 11px;
+  --fs-ui: 13px;
   --fs-body: 14px;
-  --fs-lede: 16px;
-  --fs-title: 22px;
-  --fs-display: 36px;
-  --track-tight: -.011em;
-  --track-display: -.034em;
-  --track-caps: .12em;
+  --fs-lede: 15px;
+  --fs-title: 20px;
+  --fs-display: 28px;
+  --track-tight: 0;
+  --track-display: -.018em;
+  --track-caps: .02em;
 
-  /* Geometry */
-  --r-xs: 7px;
-  --r-sm: 10px;
-  --r-md: 13px;
-  --r-lg: 17px;
-  --r-xl: 24px;
+  /* Geometry. Morgan: rounded squares, not ovals. Controls, fields, chips and
+     segmented groups use --r-control; small tags, badges and kbd use --r-chip.
+     --r-pill is kept for hairline bars, rails and tracks, which stay capsules. */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 12px;
   --r-pill: 999px;
-  /* Morgan: rounded squares, not ovals. Controls, fields, chips and segmented
-     groups use --r-control; small tags, badges and kbd use --r-chip. --r-pill
-     is kept for hairline bars, rails and tracks, which stay capsules. */
-  --r-control: 10px;
-  --r-chip: 6px;
-  --lm-gutter: 8px;
-  --lm-island-r: 20px;
-  --topbar-h: 58px;
-  --measure: 780px;
+  --r-control: 6px;
+  --r-chip: 4px;
+  --lm-gutter: 0px;
+  --lm-island-r: 0px;
+  --topbar-h: 52px;
+  --measure: 760px;
   --ease: var(--lm-ease-out);
   --t-fast: var(--lm-d-1);
   --t-mid: var(--lm-d-2);
 
-  /* Palette */
-  --lm-canvas: #05070b;
-  --lm-aurora-1: rgba(64, 214, 255, .16);
-  --lm-aurora-2: rgba(122, 104, 255, .15);
-  --lm-aurora-3: rgba(40, 90, 200, .10);
-  --bg: #0c1018;
-  --sidebar: #0a0e15;
-  --panel: #121823;
-  --panel-2: #171e2b;
-  --panel-3: #212a3a;
-  --field: #080b12;
-  --menu-surface: #141b27;
-  --topbar: rgba(12, 16, 24, .72);
-  --line: rgba(168, 196, 255, .085);
-  --line-strong: rgba(168, 196, 255, .155);
-  --line-quiet: rgba(168, 196, 255, .05);
-  --text: #eef2fa;
-  --ink-2: #c6cedd;
-  --muted: #8e99ad;
-  --muted-2: #8b96aa;
-  --green: #5ee3ff;
-  --accent-2: #8f7cff;
-  --on-accent: #04121a;
-  --green-soft: rgba(94, 227, 255, .12);
-  --green-line: rgba(94, 227, 255, .32);
-  --orange: #f2b46a;
-  --red: #ff8b8b;
-  --info: #8fc8ff;
-  --amber: #f2b46a;
+  /* Palette (neutral graphite; overridden per theme below) */
+  --lm-canvas: #1d1e21;
+  --lm-aurora-1: rgba(0, 0, 0, 0);
+  --lm-aurora-2: rgba(0, 0, 0, 0);
+  --lm-aurora-3: rgba(0, 0, 0, 0);
+  --bg: #1d1e21;
+  --sidebar: #232427;
+  --panel: #27282c;
+  --panel-2: #2e2f34;
+  --panel-3: #38393f;
+  --field: #242528;
+  --menu-surface: #2b2c30;
+  --topbar: rgba(29, 30, 33, .9);
+  --line: rgba(255, 255, 255, .08);
+  --line-strong: rgba(255, 255, 255, .13);
+  --line-quiet: rgba(255, 255, 255, .05);
+  --text: #ececed;
+  --ink-2: #c8c8cc;
+  --muted: #9a9aa0;
+  --muted-2: #8e8e94;
+  --green: #64ddf2;
+  --accent-2: #4fcbe8;
+  --on-accent: #062029;
+  --green-soft: rgba(100, 221, 242, .12);
+  --green-line: rgba(100, 221, 242, .34);
+  --orange: #e8ab68;
+  --red: #f08884;
+  --info: #86c6f7;
+  --amber: #e8ab68;
   /* Ink on a solid --red fill: dark on the light reds of dark themes. */
   --lm-on-danger: #1c0707;
-  --lm-island-edge: rgba(190, 215, 255, .11);
-  --lm-island-highlight: rgba(255, 255, 255, .06);
-  --lm-island-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 24px 60px -24px rgba(0, 0, 0, .7), 0 2px 10px rgba(0, 0, 0, .35);
-  --lm-pop-shadow: 0 28px 70px -18px rgba(0, 0, 0, .75), 0 8px 24px -8px rgba(0, 0, 0, .5), 0 0 0 1px rgba(190, 215, 255, .06);
-  --lm-code-bg: #070a10;
-  --lm-code-ink: #cdd6e4;
-  --lm-scrim: rgba(3, 5, 9, .64);
-  --lm-hover: rgba(200, 220, 255, .06);
-  --lm-press: rgba(200, 220, 255, .09);
-  --elev-1: 0 1px 2px rgba(0, 0, 0, .35);
-  --elev-2: 0 10px 28px -10px rgba(0, 0, 0, .6);
-  --elev-3: 0 24px 56px -18px rgba(0, 0, 0, .7);
+  --lm-island-edge: rgba(255, 255, 255, .08);
+  --lm-island-highlight: rgba(255, 255, 255, .04);
+  --lm-island-shadow: none;
+  /* Popovers, menus and sheets: a hairline edge plus a soft, short shadow. */
+  --lm-pop-shadow: 0 0 0 1px rgba(0, 0, 0, .5), 0 14px 34px -8px rgba(0, 0, 0, .5), 0 4px 10px -4px rgba(0, 0, 0, .35);
+  --lm-code-bg: #18191c;
+  --lm-code-ink: #d0d0d4;
+  --lm-scrim: rgba(0, 0, 0, .42);
+  --lm-hover: rgba(255, 255, 255, .055);
+  --lm-press: rgba(255, 255, 255, .09);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .3);
+  --elev-2: 0 6px 18px -8px rgba(0, 0, 0, .5);
+  --elev-3: 0 16px 40px -14px rgba(0, 0, 0, .6);
   --shadow: var(--lm-pop-shadow);
 
   /* Derived. These baseline values use only plain var() colour stops, so they
      resolve on every supported engine (Safari 13 has no color-mix(), and a
      declaration whose var() resolves to an unknown function becomes `unset`
      rather than falling back). Richer color-mix() versions follow behind
-     @supports. */
-  /* Calm by default (Morgan: themes must not distract from work). Every theme's
-     accent-2 is a tonal shade of its own accent, so this "gradient" reads as a
-     nearly flat accent fill. Headings and the wordmark are solid text.
-     Solid accent fills (primary actions, switches, badges) paint --lm-fill
-     under --lm-grad, with --on-accent ink. Both default to the text accent; a
-     theme may light its fills separately from --green, which stays the
-     readable accent for text, links and focus. */
+     @supports.
+     Accent fills are flat: --lm-grad is a single-colour "gradient" so every
+     rule that paints `var(--lm-fill) var(--lm-grad)` gets a solid fill.
+     --green stays the readable accent for text, links and focus; a theme may
+     light its fills (--lm-fill) separately. */
   --lm-fill: var(--green);
-  --lm-fill-2: var(--accent-2);
-  --lm-grad: linear-gradient(135deg, var(--lm-fill) 0%, var(--lm-fill-2) 100%);
+  --lm-fill-2: var(--lm-fill);
+  --lm-grad: linear-gradient(var(--lm-fill), var(--lm-fill));
   --lm-grad-text: linear-gradient(var(--text), var(--text));
-  --lm-grad-soft: linear-gradient(135deg, var(--green-soft), rgba(0, 0, 0, 0) 85%);
-  --lm-glow: 0 6px 16px -8px rgba(0, 0, 0, .4);
+  --lm-grad-soft: linear-gradient(var(--green-soft), var(--green-soft));
+  --lm-glow: none;
   --lm-tint: var(--green-soft);
   --lm-tint-strong: var(--green-soft);
-  /* Container washes and accent-coloured shadows are separate tokens so the
-     accent stays on actions, selection and focus. Both are neutral by default:
-     no tinted surfaces and no coloured glows. */
+  /* Container washes and accent-coloured shadows are retired: both tokens are
+     transparent so the accent stays on actions, selection and focus. */
   --lm-wash: rgba(0, 0, 0, 0);
-  --lm-accent-glow: rgba(0, 0, 0, .3);
-  --lm-bubble-edge: var(--line-strong);
+  --lm-accent-glow: rgba(0, 0, 0, 0);
+  --lm-bubble-edge: var(--line);
   --ring: 0 0 0 3px var(--green-soft);
   --surface-quiet: var(--lm-hover);
-  --surface-selected: var(--green-soft);
-  --toggle-active-track: var(--lm-fill) var(--lm-grad);
+  --surface-selected: var(--lm-press);
+  --toggle-active-track: var(--lm-fill);
 }
 @supports (color: color-mix(in srgb, red, blue)) {
   .app-shell[data-theme][data-color-scheme] {
-    --lm-grad-soft: linear-gradient(135deg, color-mix(in srgb, var(--green) 10%, transparent), color-mix(in srgb, var(--green) 4%, transparent));
     --lm-tint-strong: color-mix(in srgb, var(--green) 18%, transparent);
-    --ring: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+    --ring: 0 0 0 3px color-mix(in srgb, var(--green) 32%, transparent);
     --surface-quiet: color-mix(in srgb, var(--text) 3%, transparent);
-    --surface-selected: color-mix(in srgb, var(--green) 10%, color-mix(in srgb, var(--text) 4%, transparent));
   }
 }
 
-/* ---- Mythra ----
-   Morgan: "I want the Mythra theme to feel like it has with the dark gray and
-   the light blue accents." Surfaces return to the legacy styles.css Mythra
-   palette (neutral graphite, no navy), the canvas is a darker neutral gray,
-   and light blue (#64ddf2) is a restrained accent for primary actions,
-   selection, focus and small details. There is no indigo second accent, no
-   gradient text, no container washes and only faint accent glows. Declared
-   after the @supports block above so these values win at equal specificity. */
+/* ---- Dark themes share the graphite surfaces; only the accent changes ---- */
 .app-shell[data-theme="mythra"][data-color-scheme] {
-  --lm-canvas: #16181b;
-  --lm-aurora-1: rgba(255, 255, 255, .025);
-  --lm-aurora-2: rgba(100, 221, 242, .03);
-  --lm-aurora-3: rgba(255, 255, 255, .012);
-  --bg: #1e2024; --sidebar: #22252a; --panel: #292d32; --panel-2: #30353b; --panel-3: #393f46;
-  --field: #262a2f; --menu-surface: #30353b; --topbar: rgba(30, 32, 36, .88);
-  --line: rgba(255, 255, 255, .068); --line-strong: rgba(255, 255, 255, .115); --line-quiet: rgba(255, 255, 255, .038);
-  --text: #eceeeb; --ink-2: #c3c7c4; --muted: #8d9299; --muted-2: #8f959e;
-  --green: #64ddf2; --accent-2: #4fcbe8; --on-accent: #082028;
-  --green-soft: rgba(100, 221, 242, .11); --green-line: rgba(100, 221, 242, .28);
-  --orange: #e2a869; --red: #ef8a87; --info: #86cdf7; --amber: #e2a869;
-  --lm-island-edge: rgba(255, 255, 255, .07);
-  --lm-island-highlight: rgba(255, 255, 255, .05);
-  --lm-hover: rgba(255, 255, 255, .05);
-  --lm-press: rgba(255, 255, 255, .08);
-  --lm-code-bg: #1a1c20;
-  --lm-code-ink: #c4cbc5;
-  --lm-wash: rgba(255, 255, 255, 0);
-  --lm-accent-glow: rgba(100, 221, 242, .3);
-  --lm-bubble-edge: var(--line-strong);
-  --lm-grad-text: linear-gradient(var(--text), var(--text));
-  --lm-grad-soft: linear-gradient(135deg, rgba(100, 221, 242, .1), rgba(100, 221, 242, .035));
-  --lm-glow: 0 10px 26px -12px rgba(100, 221, 242, .4);
+  --green: #64ddf2; --accent-2: #4fcbe8; --on-accent: #062029;
+  --green-soft: rgba(100, 221, 242, .12); --green-line: rgba(100, 221, 242, .34);
 }
-
-/* ---- Calm palette recalibration (Morgan: themes must not distract) ----
-   Surfaces are anchored on the official styles.css palettes: neutral or
-   low-chroma graphite, with each theme's identity carried by its accent in
-   small, purposeful places. Auroras are near-invisible, and accent-2 is a
-   tonal shade of the accent (never a second hue). */
-
-/* ---- Kiwi: the official graphite, with the leaf-green accent ---- */
 .app-shell[data-theme="kiwi"][data-color-scheme] {
-  --lm-canvas: #16181b;
-  --lm-aurora-1: rgba(255, 255, 255, .02);
-  --lm-aurora-2: rgba(166, 223, 114, .025);
-  --lm-aurora-3: rgba(255, 255, 255, .01);
-  --bg: #1e2024; --sidebar: #22252a; --panel: #292d32; --panel-2: #30353b; --panel-3: #393f46;
-  --field: #262a2f; --menu-surface: #30353b; --topbar: rgba(30, 32, 36, .88);
-  --line: rgba(255, 255, 255, .068); --line-strong: rgba(255, 255, 255, .115); --line-quiet: rgba(255, 255, 255, .038);
-  --text: #eceeeb; --ink-2: #c3c7c4; --muted: #8d9299; --muted-2: #8f959e;
-  --green: #a6df72; --accent-2: #93cf5e; --on-accent: #142008;
-  --green-soft: rgba(166, 223, 114, .11); --green-line: rgba(166, 223, 114, .26);
-  --info: #86cdf7;
-  --lm-island-edge: rgba(255, 255, 255, .07);
-  --lm-island-highlight: rgba(255, 255, 255, .05);
-  --lm-hover: rgba(255, 255, 255, .05); --lm-press: rgba(255, 255, 255, .08);
-  --lm-code-bg: #1a1c20; --lm-code-ink: #c4cbc5;
+  --green: #a6df72; --accent-2: #93cf5e; --on-accent: #132008;
+  --green-soft: rgba(166, 223, 114, .12); --green-line: rgba(166, 223, 114, .32);
 }
-
-/* ---- Synthwave: Mythra's neutral graphite, hot pink accent ----
-   Morgan: the same dark-gray surfaces as Mythra, with no plum or violet
-   washes. Every surface value below is Mythra's; the canvas light is
-   neutral. Pink stays on actions, selection, focus and the mark. */
 .app-shell[data-theme="synthwave"][data-color-scheme] {
-  --lm-canvas: #16181b;
-  --lm-aurora-1: rgba(255, 255, 255, .025);
-  --lm-aurora-2: rgba(255, 255, 255, .02);
-  --lm-aurora-3: rgba(255, 255, 255, .012);
-  --bg: #1e2024; --sidebar: #22252a; --panel: #292d32; --panel-2: #30353b; --panel-3: #393f46;
-  --field: #262a2f; --menu-surface: #30353b; --topbar: rgba(30, 32, 36, .88);
-  --line: rgba(255, 255, 255, .068); --line-strong: rgba(255, 255, 255, .115); --line-quiet: rgba(255, 255, 255, .038);
-  --text: #eceeeb; --ink-2: #c3c7c4; --muted: #8d9299; --muted-2: #8f959e;
   --green: #ff6ac1; --accent-2: #ef58b1; --on-accent: #2a0a1c;
-  --green-soft: rgba(255, 106, 193, .11); --green-line: rgba(255, 106, 193, .28);
+  --green-soft: rgba(255, 106, 193, .12); --green-line: rgba(255, 106, 193, .34);
   --orange: #ffb45f; --red: #ff7582; --info: #8be1ff;
-  --lm-island-edge: rgba(255, 255, 255, .07);
-  --lm-island-highlight: rgba(255, 255, 255, .05);
-  --lm-hover: rgba(255, 255, 255, .05); --lm-press: rgba(255, 255, 255, .08);
-  --lm-code-bg: #1a1c20; --lm-code-ink: #c4cbc5;
 }
 
 /* ---- Shared light treatment ---- */
 .app-shell[data-theme][data-color-scheme="light"] {
   --lm-island-highlight: rgba(255, 255, 255, .9);
-  --lm-island-shadow: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 22px 50px -26px rgba(30, 40, 60, .28), 0 1px 3px rgba(30, 40, 60, .08);
-  --lm-pop-shadow: 0 28px 60px -20px rgba(25, 35, 55, .3), 0 6px 18px -8px rgba(25, 35, 55, .18), 0 0 0 1px rgba(25, 35, 55, .06);
-  --lm-scrim: rgba(30, 38, 52, .34);
+  --lm-island-shadow: none;
+  --lm-pop-shadow: 0 0 0 1px rgba(0, 0, 0, .08), 0 14px 34px -10px rgba(0, 0, 0, .22), 0 3px 8px -3px rgba(0, 0, 0, .1);
+  --lm-scrim: rgba(0, 0, 0, .22);
   --lm-on-danger: #ffffff;
-  --lm-hover: rgba(20, 30, 40, .05);
-  --lm-press: rgba(20, 30, 40, .08);
-  --elev-1: 0 1px 2px rgba(30, 40, 60, .08);
-  --elev-2: 0 10px 24px -12px rgba(30, 40, 60, .2);
-  --elev-3: 0 22px 48px -20px rgba(30, 40, 60, .26);
+  --lm-hover: rgba(0, 0, 0, .045);
+  --lm-press: rgba(0, 0, 0, .075);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .06);
+  --elev-2: 0 6px 16px -8px rgba(0, 0, 0, .16);
+  --elev-3: 0 16px 36px -14px rgba(0, 0, 0, .22);
   --shadow: var(--lm-pop-shadow);
 }
 
 /* ---- Light Mythra ----
    Morgan: cyan / light blue, not teal. Solid fills are a clear sky cyan
-   (#0a95d4, at least 3:1 on primary control surfaces so the control edge
-   still reads) with dark ink (5.3:1); --green is the related deeper sky blue
-   (#0068b5, 5.8:1 on white) for text accents, links, markers and focus rings.
-   Selection tints use the cyan. */
+   (#0a95d4) with dark ink; --green is the related deeper sky blue (#0068b5,
+   5.8:1 on white) for text accents, links, markers and focus rings. */
 .app-shell[data-theme="light-mythra"][data-color-scheme] {
-  --lm-canvas: #e3e7ea;
-  --lm-aurora-1: rgba(255, 255, 255, .35);
-  --lm-aurora-2: rgba(10, 149, 212, .03);
-  --lm-aurora-3: rgba(255, 255, 255, .25);
-  --bg: #fbfdfe; --sidebar: #f3f7f9; --panel: #ffffff; --panel-2: #f2f6f8; --panel-3: #e3ebef;
-  --field: #f7fafb; --menu-surface: #ffffff; --topbar: rgba(251, 253, 254, .78);
-  --line: rgba(20, 50, 70, .1); --line-strong: rgba(20, 50, 70, .18); --line-quiet: rgba(20, 50, 70, .055);
-  --text: #0f1d26; --ink-2: #33454f; --muted: #4f626c; --muted-2: #55676f;
+  --lm-canvas: #f3f4f6;
+  --bg: #ffffff; --sidebar: #f3f4f6; --panel: #ffffff; --panel-2: #f3f4f6; --panel-3: #e7e8eb;
+  --field: #ffffff; --menu-surface: #ffffff; --topbar: rgba(255, 255, 255, .9);
+  --line: rgba(0, 0, 0, .09); --line-strong: rgba(0, 0, 0, .15); --line-quiet: rgba(0, 0, 0, .055);
+  --text: #1d1d1f; --ink-2: #3a3a3e; --muted: #6a6a70; --muted-2: #6e6e74;
   --green: #0068b5; --accent-2: #005d9f;
-  --lm-fill: #0a95d4; --lm-fill-2: #0b8fcf; --on-accent: #021a24;
-  --green-soft: rgba(10, 149, 212, .12); --green-line: rgba(0, 104, 181, .3);
-  --orange: #a35f12; --red: #bf3b3b; --info: #1767a0;
-  --lm-island-edge: rgba(20, 50, 70, .09);
-  --lm-code-bg: #f3f7f9; --lm-code-ink: #26404c;
+  --lm-fill: #0a95d4; --on-accent: #021a24;
+  --green-soft: rgba(10, 149, 212, .12); --green-line: rgba(0, 104, 181, .32);
+  --orange: #a35f12; --red: #c23a36; --info: #1767a0;
+  --lm-island-edge: rgba(0, 0, 0, .09);
+  --lm-code-bg: #f5f6f8; --lm-code-ink: #26323a;
 }
 
 /* ---- Light Kiwi ---- */
 .app-shell[data-theme="daylight"][data-color-scheme] {
-  --lm-canvas: #e4e6e0;
-  --lm-aurora-1: rgba(255, 255, 255, .35);
-  --lm-aurora-2: rgba(58, 134, 29, .03);
-  --lm-aurora-3: rgba(255, 255, 255, .25);
-  --bg: #fcfdfa; --sidebar: #f4f6f0; --panel: #ffffff; --panel-2: #f2f4ee; --panel-3: #e3e8dc;
-  --field: #f8faf5; --menu-surface: #ffffff; --topbar: rgba(252, 253, 250, .78);
-  --line: rgba(30, 50, 20, .1); --line-strong: rgba(30, 50, 20, .18); --line-quiet: rgba(30, 50, 20, .055);
-  --text: #18200f; --ink-2: #39452f; --muted: #535f4a; --muted-2: #58644e;
+  --lm-canvas: #f2f4f0;
+  --bg: #ffffff; --sidebar: #f2f4f0; --panel: #ffffff; --panel-2: #f2f4f0; --panel-3: #e5e9e1;
+  --field: #ffffff; --menu-surface: #ffffff; --topbar: rgba(255, 255, 255, .9);
+  --line: rgba(20, 35, 10, .1); --line-strong: rgba(20, 35, 10, .16); --line-quiet: rgba(20, 35, 10, .055);
+  --text: #1a1f15; --ink-2: #384232; --muted: #5d6656; --muted-2: #616a5a;
   --green: #3a861d; --accent-2: #317719; --on-accent: #ffffff;
-  --green-soft: rgba(58, 134, 29, .1); --green-line: rgba(58, 134, 29, .3);
+  --green-soft: rgba(58, 134, 29, .11); --green-line: rgba(58, 134, 29, .32);
   --orange: #a35f12; --red: #bc3f3a; --info: #14639f;
-  --lm-island-edge: rgba(30, 50, 20, .09);
-  --lm-code-bg: #f4f6f0; --lm-code-ink: #2f3d26;
+  --lm-island-edge: rgba(20, 35, 10, .1);
+  --lm-code-bg: #f5f7f3; --lm-code-ink: #2f3d26;
 }
 
 /* ---- Atari ----
-   Parchment islands and the menu surface keep their established values; the
-   canvas, the accent pair and the geometry are Lumen's. */
+   Warm parchment surfaces with a brick accent; the same flat, flush
+   structure as every other theme. */
 .app-shell[data-theme="atari"][data-color-scheme] {
-  --lm-canvas: #ddd0b6;
-  --lm-aurora-1: rgba(255, 248, 230, .3);
-  --lm-aurora-2: rgba(142, 59, 50, .035);
-  --lm-aurora-3: rgba(255, 248, 230, .2);
-  --bg: #f2e8d4; --sidebar: #ece0c6; --panel: #f7efdf; --panel-2: #eee1cc; --panel-3: #e0ceb1;
-  --field: #fff8ec; --menu-surface: #fff7e9; --topbar: rgba(242, 232, 212, .8);
-  --line: rgba(76, 52, 31, .13); --line-strong: rgba(76, 52, 31, .23); --line-quiet: rgba(76, 52, 31, .07);
+  --lm-canvas: #ebe0c9;
+  --bg: #f6eedd; --sidebar: #ebe0c9; --panel: #fbf5e9; --panel-2: #efe4cf; --panel-3: #e2d3b7;
+  --field: #fffaf0; --menu-surface: #fffaf0; --topbar: rgba(246, 238, 221, .92);
+  --line: rgba(76, 52, 31, .13); --line-strong: rgba(76, 52, 31, .22); --line-quiet: rgba(76, 52, 31, .07);
   --text: #2f251b; --ink-2: #54432f; --muted: #5d4734; --muted-2: #604936;
   --green: #8e3b32; --accent-2: #7c322a; --on-accent: #fff8ec;
-  --green-soft: rgba(142, 59, 50, .09); --green-line: rgba(142, 59, 50, .3);
+  --green-soft: rgba(142, 59, 50, .1); --green-line: rgba(142, 59, 50, .32);
   --info: #864039; --orange: #885813; --red: #a02e29;
-  --lm-island-edge: rgba(76, 52, 31, .12);
-  --lm-hover: rgba(76, 52, 31, .06); --lm-press: rgba(76, 52, 31, .09);
-  --lm-code-bg: #fff8ec; --lm-code-ink: #4a3a28;
+  --lm-island-edge: rgba(76, 52, 31, .13);
+  --lm-hover: rgba(76, 52, 31, .06); --lm-press: rgba(76, 52, 31, .1);
+  --lm-code-bg: #fffaf0; --lm-code-ink: #4a3a28;
 }
 
 /* ---- Mythra mark palettes ----
@@ -379,4 +313,4 @@
    shell-scoped values above would otherwise mask. */
 @media (max-width: 1180px) { .app-shell[data-theme][data-color-scheme] { --measure: 720px; } }
 @media (max-width: 1000px) { .app-shell[data-theme][data-color-scheme] { --measure: 680px; } }
-@media (max-width: 860px) { .app-shell[data-theme][data-color-scheme] { --topbar-h: 54px; } }
+@media (max-width: 860px) { .app-shell[data-theme][data-color-scheme] { --topbar-h: 50px; } }

@@ -40,13 +40,13 @@
 .frontier-pricing-table :is(th, td) { padding: 7px 10px; text-align: right; vertical-align: top; font-weight: 400; }
 .frontier-pricing-table :is(th, td):first-child { width: 34%; padding-left: var(--s-4); text-align: left; }
 .frontier-pricing-table :is(th, td):last-child { padding-right: var(--s-4); }
-.frontier-pricing-table thead th { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; border-bottom: 1px solid var(--line); }
+.frontier-pricing-table thead th { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; border-bottom: 1px solid var(--line); }
 .frontier-pricing-model + .frontier-pricing-model { border-top: 1px solid var(--line); }
 .frontier-pricing-name { display: block; color: var(--ink-2); font-weight: 600; overflow-wrap: anywhere; }
 .frontier-pricing-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; }
 .frontier-pricing-meta:empty { display: none; }
 .frontier-pricing-meta code { color: var(--muted-2); font-family: var(--font-mono); font-size: var(--fs-micro); overflow-wrap: anywhere; }
-.frontier-pricing-badge { padding: 0 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: var(--fs-micro); line-height: 16px; white-space: nowrap; }
+.frontier-pricing-badge { padding: 0 5px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--muted); font-size: var(--fs-micro); line-height: 16px; white-space: nowrap; }
 .frontier-pricing-tier { display: block; margin-top: 2px; color: var(--muted-2); font-size: var(--fs-micro); }
 .frontier-pricing-rate { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .frontier-pricing-missing { color: var(--muted-2); font-size: var(--fs-micro); font-style: italic; white-space: nowrap; }

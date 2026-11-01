@@ -1,5 +1,5 @@
 import "./SettingsModal.legacy.css";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
@@ -717,6 +717,8 @@ export function SettingsModal({
   const [local, setLocal] = useState(settings);
   // Browsing credentials is not an edit to the defaults for new threads.
   const [accountProvider, setAccountProvider] = useState<Provider>(settings.provider);
+  // Accounts list: one provider row is expanded inline at a time; rows start collapsed.
+  const [accountExpanded, setAccountExpanded] = useState(false);
   const [openAiBilling, setOpenAiBilling] = useState<"subscription" | "apiKey" | null>(null);
   const openAiAuthOperation = useProviderAuthOperation();
   const claudeAuthOperation = useProviderAuthOperation();
@@ -880,6 +882,7 @@ export function SettingsModal({
       const seeded = settingsWithOnboardingDraft(settings, initialDraft, lmStudioModels[0]?.id);
       setLocal(seeded);
       setAccountProvider(seeded.provider);
+      setAccountExpanded(false);
       setLocalProjects(projects);
       setLocalProfiles(profiles);
       setExpandedPresetId(null);
@@ -1300,7 +1303,10 @@ export function SettingsModal({
   const [rowFocus, setRowFocus] = useState<(SettingsRow & { nonce: number }) | null>(null);
   const goToRow = (row: SettingsRow) => {
     // Reveal the account panel without editing the default provider/model.
-    if (row.accountProvider) setAccountProvider(row.accountProvider);
+    if (row.accountProvider) {
+      setAccountProvider(row.accountProvider);
+      setAccountExpanded(true);
+    }
     setSettingsSection(row.pane);
     setRowFocus((current) => ({ ...row, nonce: (current?.nonce ?? 0) + 1 }));
   };
@@ -1437,6 +1443,181 @@ export function SettingsModal({
     if (minutes !== null) setLocal({ ...local, terminalTimeoutMinutes: minutes });
   };
 
+  // ---- Accounts & connections: a compact list; sign-in lives on each row ----
+  const toggleAccount = (provider: Provider) => {
+    if (provider === accountProvider) setAccountExpanded((current) => !current);
+    else { setAccountProvider(provider); setAccountExpanded(true); }
+  };
+  const expandAccount = (provider: Provider) => { setAccountProvider(provider); setAccountExpanded(true); };
+  const openAiConnected = codexAccountReady(account);
+  const cursorConnected = Boolean(cursorStatus?.loggedIn) && cursorStatus?.authVerified !== false;
+  const accountRows: Array<{ id: Provider; name: string; detail: string; logo: ReactNode; status: ReactNode; action: ReactNode }> = [
+    {
+      id: "openai",
+      name: "OpenAI",
+      detail: account?.type === "chatgpt" && account.email ? account.email : account?.type === "apiKey" ? "API key" : "ChatGPT plan or API key",
+      logo: <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>,
+      status: <span className={`provider-status ${openAiConnected && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (openAiConnected ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, openAiConnected, Boolean(runtimeStatus?.available), "Codex CLI needed", account?.type === "apiKey" ? "API key" : "Signed in")}</span>,
+      action: openAiConnected ? null : openAiBilling !== "apiKey" || !runtimeStatus?.available ? (
+        <button type="button" className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
+          {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={13} /> : !runtimeStatus?.available ? <Download size={13} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
+        </button>
+      ) : <button type="button" className="secondary-button" onClick={() => expandAccount("openai")}>Add key</button>,
+    },
+    {
+      id: "claude",
+      name: "Anthropic",
+      detail: claudeStatus?.loggedIn && claudeStatus.email ? claudeStatus.email : claudeUsesApiKey(claudeStatus) ? "API key" : "Claude plan or API key",
+      logo: <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={18} />}</span>,
+      status: <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{claudeUsesApiKey(claudeStatus) && !claudeStatus?.loggedIn && !accountChecks.claude ? "Key needed" : accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available), "Claude Code needed", claudeUsesApiKey(claudeStatus) ? "API key" : "Connected")}</span>,
+      action: claudeStatus?.loggedIn ? null : claudeUsesApiKey(claudeStatus) && claudeStatus?.available
+        ? <button type="button" className="secondary-button" onClick={() => expandAccount("claude")}>Add key</button>
+        : claudeLoginStarting
+          ? <button type="button" className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel"><LoaderCircle className="spin" size={13} /> Cancel</button>
+          : <button type="button" className="secondary-button" onClick={() => void signInClaude()} disabled={Boolean(claudeAuthOperation.busy)}>{!claudeStatus?.available ? <Download size={13} /> : null}{claudeStatus?.available ? "Sign in" : "Install"}</button>,
+    },
+    {
+      id: "cursor",
+      name: "Cursor",
+      detail: cursorStatus?.loggedIn && cursorStatus.email ? cursorStatus.email : "Cursor subscription",
+      logo: <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>,
+      status: <span className={`provider-status ${cursorStatus?.loggedIn && !cursorAccountCheck ? "on" : ""}`} title={cursorAccountCheck} aria-live="polite">{cursorAccountCheck === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(cursorAccountCheck, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available), "Cursor Agent needed")}</span>,
+      action: cursorConnected ? null : (
+        <button type="button" className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
+          {cursorLoginStarting ? <LoaderCircle className="spin" size={13} /> : !cursorStatus?.available ? <Download size={13} /> : null}
+          {cursorLoginStarting ? "Signing in…" : cursorStatus?.available ? "Sign in" : "Install"}
+        </button>
+      ),
+    },
+    {
+      id: "openrouter",
+      name: "OpenRouter",
+      detail: "Pay-as-you-go API key",
+      logo: <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>,
+      status: <span className={`provider-status ${openRouterReady ? "on" : ""}`}>{openRouterReady ? "Key saved" : "No key yet"}</span>,
+      action: openRouterReady ? null : <button type="button" className="secondary-button" onClick={() => expandAccount("openrouter")}>Add key</button>,
+    },
+    {
+      id: "lmstudio",
+      name: "LM Studio",
+      detail: lmStudioReady ? `${lmStudioModels.length} local model${lmStudioModels.length === 1 ? "" : "s"}` : "Local models on this computer",
+      logo: <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>,
+      status: <span className={`provider-status ${lmStudioReady ? "on" : ""}`}>{lmStudioReady ? "Connected" : "Not connected"}</span>,
+      action: lmStudioReady ? null : <button type="button" className="secondary-button" onClick={() => expandAccount("lmstudio")}>Set up</button>,
+    },
+  ];
+  // The selected provider's full account controls, shown inline under its row.
+  const accountDetail: ReactNode = accountProvider === "openai" ? (
+              <>
+              <OpenAiApiKeyPanel visible={open} account={account} runtimeAvailable={Boolean(runtimeStatus?.available)} operation={openAiAuthOperation} disabled={openAiLoginStarting || busy} onChanged={onOpenAiBillingChanged} onBillingRead={setOpenAiBilling} />
+              <div className="credential-panel">
+                <div>
+                  <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : openAiBilling === "apiKey" ? "OpenAI API connection" : "OpenAI connection"}</strong>
+                  <small>{accountChecks.openai === "Checking connection…" ? accountChecks.openai : openAiBilling === "apiKey" && !account ? "Save or connect an API key above" : accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan · signed in to Codex` : account?.type === "apiKey" ? "Billed per token to your OpenAI API account · signed in to Codex" : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
+                </div>
+                {codexAccountReady(account) ? (
+                  <div className="credential-actions">
+                    <span className={`connected-badge${accountChecks.openai ? " unverified" : ""}`} title={accountChecks.openai ? undefined : OPENAI_SIGNED_IN_NOTE} aria-live="polite">{accountChecks.openai === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.openai ? <Check size={12} /> : null} {accountChecks.openai === "Checking connection…" ? "Checking…" : accountChecks.openai ? "Unverified" : "Signed in"}</span>
+                    <button className="secondary-button" onClick={() => void signOut()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>Sign out</button>
+                  </div>
+                ) : openAiBilling !== "apiKey" || !runtimeStatus?.available ? (
+                  <button className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
+                    {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
+                  </button>
+                ) : null}
+                {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh OpenAI connection" aria-label="Refresh OpenAI connection" aria-busy={openAiRefreshing > 0} disabled={openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
+              </div>
+              </>
+            ) : accountProvider === "openrouter" ? (
+              <div className="credential-panel stacked" data-settings-row="openrouter-key">
+                <div className="credential-status">
+                  <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Stored securely on this device" : "No key stored"}</small></div>
+                  {openRouterReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
+                </div>
+                <div className="key-input-row">
+                  <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-or-v1-…" />
+                  <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
+                </div>
+              </div>
+            ) : accountProvider === "lmstudio" ? (
+              <div className="credential-panel stacked" data-settings-row="lmstudio-server">
+                <div className="credential-status">
+                  <div>
+                    <strong>LM Studio local server</strong>
+                    <small>{lmStudioReady ? `${lmStudioModels.length} model${lmStudioModels.length === 1 ? "" : "s"} available` : lmStudioModelsError || "Start the server from LM Studio’s Developer tab"}</small>
+                  </div>
+                  {lmStudioReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
+                </div>
+                <label className="field-label">
+                  <span>Server URL</span>
+                  <input value={local.lmStudioBaseUrl} onChange={(event) => setLocal({ ...local, lmStudioBaseUrl: event.target.value })} placeholder={DEFAULT_LM_STUDIO_BASE_URL} spellCheck={false} />
+                  <small>Mythra Code uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this computer.</small>
+                </label>
+                <div className="key-input-row">
+                  <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in the OS credential store" : "Optional API token"} />
+                  <button className="secondary-button" onClick={() => void storeLmStudioToken()} disabled={!lmStudioToken.trim() || busy}>Save token</button>
+                  {lmStudioTokenStored && <button className="secondary-button" onClick={() => void storeLmStudioToken(true)} disabled={busy}>Remove</button>}
+                </div>
+                <div className="credential-status">
+                  <small>{lmStudioConnectionMessage || "Authentication is optional for the default localhost server. Use a token for authenticated or network-accessible servers."}</small>
+                  <button className="secondary-button" onClick={() => void testLmStudioConnection()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Test connection</button>
+                </div>
+              </div>
+            ) : accountProvider === "claude" ? (
+              <>
+              <ClaudeBillingPanel visible={open} claudeStatus={claudeStatus} operation={claudeAuthOperation} disabled={claudeLoginStarting} onChanged={onClaudeBillingChanged ?? onClaudeRefresh} />
+              <div className="credential-panel">
+                <div>
+                  <strong>{claudeUsesApiKey(claudeStatus) ? "Anthropic API key" : claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
+                  <small>{accountChecks.claude || (claudeUsesApiKey(claudeStatus)
+                    ? claudeStatus?.loggedIn ? `Billed per token through ${claudeStatus.version || "Claude Code"}` : claudeStatus?.warning || "Add an Anthropic API key above"
+                    : claudeStatus?.loggedIn
+                    ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
+                    : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"))}</small>
+                </div>
+                {claudeStatus?.loggedIn ? (
+                  <span className={`connected-badge${accountChecks.claude ? " unverified" : ""}`} aria-live="polite">{accountChecks.claude === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.claude ? <Check size={12} /> : null} {accountChecks.claude === "Checking connection…" ? "Checking…" : accountChecks.claude ? "Unverified" : "Connected"}</span>
+                ) : claudeUsesApiKey(claudeStatus) && claudeStatus?.available ? null : (
+                  claudeLoginStarting ? (
+                    <button className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel">
+                      <LoaderCircle className="spin" size={14} /> Cancel sign-in
+                    </button>
+                  ) : (
+                    <button className="secondary-button" onClick={() => void signInClaude()} disabled={Boolean(claudeAuthOperation.busy)}>
+                      {!claudeStatus?.available ? <Download size={14} /> : null}
+                      {claudeStatus?.available ? "Sign in" : "Install Claude Code"}
+                    </button>
+                  )
+                )}
+                <button className="icon-button" onClick={() => void refreshClaude()} title="Refresh Claude status" aria-label="Refresh Claude status" disabled={claudeLoginStarting || Boolean(claudeAuthOperation.busy)} aria-busy={claudeAuthOperation.busy === "refreshing"}>{claudeAuthOperation.busy === "refreshing" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>
+              </div>
+              {claudeStatus?.loggedIn && claudeStatus.warning && <div className="settings-notice" role="status">
+                <Info size={13} /><span>{claudeStatus.warning}</span>
+                <button type="button" className="secondary-button" onClick={() => setSettingsSection("updates")}>Open Updates</button>
+              </div>}
+              </>
+            ) : (
+              <div className="credential-panel">
+                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
+                <div>
+                  <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
+                  <small>{cursorAccountCheck || (cursorStatus?.loggedIn
+                    ? "Signed in to Cursor Agent on this device"
+                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
+                </div>
+                {cursorStatus?.loggedIn && (
+                  <span className={`connected-badge${cursorAccountCheck ? " unverified" : ""}`} aria-live="polite">{cursorAccountCheck === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !cursorAccountCheck ? <Check size={12} /> : null} {cursorAccountCheck === "Checking connection…" ? "Checking…" : cursorAccountCheck === "Waiting for sign-in…" ? "Signing in…" : cursorAccountCheck ? "Unverified" : "Connected"}</span>
+                )}
+                {(!cursorStatus?.loggedIn || cursorStatus.authVerified === false) && (
+                  <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
+                    {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}
+                    {cursorLoginStarting ? "Signing in…" : cursorStatus?.available ? "Sign in" : "Install Cursor Agent"}
+                  </button>
+                )}
+                <button className="icon-button" onClick={() => void onCursorRefresh()} title="Refresh Cursor status" aria-label="Refresh Cursor status"><RotateCcw size={14} /></button>
+              </div>
+            );
+
   return (
     <div className={`modal-backdrop settings-backdrop ${open ? "open" : "closed"}`} onMouseDown={requestClose} aria-hidden={!open} inert={!open ? true : undefined}>
       <div ref={dialogRef} className={`settings-modal${wideSheet ? " settings-modal-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -1515,6 +1696,7 @@ export function SettingsModal({
             accountOpenRouterKeySaved={openRouterReady}
             onOpenAccounts={() => {
               setAccountProvider("openrouter");
+              setAccountExpanded(true);
               setSettingsSection("models");
             }}
           />}
@@ -2305,149 +2487,26 @@ export function SettingsModal({
             <div className="set-group">
               <h4>Accounts & connections</h4>
               <p>Select a provider to connect or manage its account. This does not change your defaults.</p>
-            <div className="provider-cards">
-              <button className={`provider-card ${accountProvider === "openai" ? "selected" : ""}`} aria-pressed={accountProvider === "openai"} onClick={() => setAccountProvider("openai")}>
-                <span className="provider-logo openai">{local.openAiLogo === "codex" ? <CodexLogo size={18} /> : <OpenAILogo size={17} />}</span>
-                <span><strong>OpenAI</strong><small>ChatGPT plan or API key</small></span>
-                <span className={`provider-status ${codexAccountReady(account) && !accountChecks.openai ? "on" : ""}`} title={accountChecks.openai || (codexAccountReady(account) ? OPENAI_SIGNED_IN_NOTE : undefined)} aria-live="polite">{accountChecks.openai === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(accountChecks.openai, codexAccountReady(account), Boolean(runtimeStatus?.available), "Codex CLI needed", account?.type === "apiKey" ? "API key" : "Signed in")}</span>
-                {accountProvider === "openai" && <Check size={16} />}
-              </button>
-              <button className={`provider-card ${accountProvider === "claude" ? "selected" : ""}`} aria-pressed={accountProvider === "claude"} onClick={() => setAccountProvider("claude")}>
-                <span className={`provider-logo claude${local.claudeLogo === "anthropic" ? " anthropic-mark" : ""}`}>{local.claudeLogo === "anthropic" ? <AnthropicLogo size={17} /> : <ClaudeLogo size={18} />}</span>
-                <span><strong>Anthropic</strong><small>Claude plan or API key</small></span>
-                <span className={`provider-status ${claudeStatus?.loggedIn && !accountChecks.claude ? "on" : ""}`} title={accountChecks.claude} aria-live="polite">{accountChecks.claude === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{claudeUsesApiKey(claudeStatus) && !claudeStatus?.loggedIn && !accountChecks.claude ? "Key needed" : accountConnectionLabel(accountChecks.claude, Boolean(claudeStatus?.loggedIn), Boolean(claudeStatus?.available), "Claude Code needed", claudeUsesApiKey(claudeStatus) ? "API key" : "Connected")}</span>
-                {accountProvider === "claude" && <Check size={16} />}
-              </button>
-              <button className={`provider-card ${accountProvider === "cursor" ? "selected" : ""}`} aria-pressed={accountProvider === "cursor"} onClick={() => setAccountProvider("cursor")}>
-                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
-                <span><strong>Cursor</strong><small>Cursor subscription</small></span>
-                <span className={`provider-status ${cursorStatus?.loggedIn && !cursorAccountCheck ? "on" : ""}`} title={cursorAccountCheck} aria-live="polite">{cursorAccountCheck === "Checking connection…" && <LoaderCircle className="spin" size={12} aria-hidden="true" />}{accountConnectionLabel(cursorAccountCheck, Boolean(cursorStatus?.loggedIn), Boolean(cursorStatus?.available), "Cursor Agent needed")}</span>
-                {accountProvider === "cursor" && <Check size={16} />}
-              </button>
-              <button className={`provider-card ${accountProvider === "openrouter" ? "selected" : ""}`} aria-pressed={accountProvider === "openrouter"} onClick={() => setAccountProvider("openrouter")}>
-                <span className="provider-logo openrouter"><OpenRouterLogo size={18} /></span>
-                <span><strong>OpenRouter</strong><small>Pay-as-you-go API key</small></span>
-                <span className={`provider-status ${openRouterReady ? "on" : ""}`}>{openRouterReady ? "Key saved" : "No key yet"}</span>
-                {accountProvider === "openrouter" && <Check size={16} />}
-              </button>
-              <button className={`provider-card ${accountProvider === "lmstudio" ? "selected" : ""}`} aria-pressed={accountProvider === "lmstudio"} onClick={() => setAccountProvider("lmstudio")}>
-                <span className="provider-logo lmstudio"><LmStudioLogo size={18} /></span>
-                <span><strong>LM Studio</strong><small>Local models on this computer</small></span>
-                <span className={`provider-status ${lmStudioReady ? "on" : ""}`}>{lmStudioReady ? "Connected" : "Not connected"}</span>
-                {accountProvider === "lmstudio" && <Check size={16} />}
-              </button>
+            <div className="account-list" role="list">
+              {accountRows.map((row) => {
+                const expanded = accountExpanded && accountProvider === row.id;
+                return (
+                  <div key={row.id} className={`account-row${expanded ? " expanded" : ""}`} role="listitem">
+                    <div className="account-row-head">
+                      <button type="button" className="account-row-toggle" aria-expanded={expanded} aria-controls={`account-detail-${row.id}`} onClick={() => toggleAccount(row.id)}>
+                        {row.logo}
+                        <span className="account-row-copy"><strong>{row.name}</strong><small>{row.detail}</small></span>
+                        {/* A row offering its own action needs no "not connected" tag. */}
+                        {(expanded || !row.action) && row.status}
+                      </button>
+                      {!expanded && row.action && <div className="account-row-action">{row.action}</div>}
+                      <ChevronRight className="account-row-chevron" size={14} aria-hidden="true" />
+                    </div>
+                    {expanded && <div className="account-row-detail" id={`account-detail-${row.id}`}>{accountDetail}</div>}
+                  </div>
+                );
+              })}
             </div>
-
-            {accountProvider === "openai" ? (
-              <>
-              <OpenAiApiKeyPanel visible={open} account={account} runtimeAvailable={Boolean(runtimeStatus?.available)} operation={openAiAuthOperation} disabled={openAiLoginStarting || busy} onChanged={onOpenAiBillingChanged} onBillingRead={setOpenAiBilling} />
-              <div className="credential-panel">
-                <div>
-                  <strong>{account?.type === "chatgpt" ? account.email || "ChatGPT account" : openAiBilling === "apiKey" ? "OpenAI API connection" : "OpenAI connection"}</strong>
-                  <small>{accountChecks.openai === "Checking connection…" ? accountChecks.openai : openAiBilling === "apiKey" && !account ? "Save or connect an API key above" : accountChecks.openai || (account?.type === "chatgpt" ? `${account.planType ?? "ChatGPT"} plan · signed in to Codex` : account?.type === "apiKey" ? "Billed per token to your OpenAI API account · signed in to Codex" : runtimeStatus?.available ? `Official browser sign-in · ${runtimeStatus.source} detected` : "Codex CLI required")}</small>
-                </div>
-                {codexAccountReady(account) ? (
-                  <div className="credential-actions">
-                    <span className={`connected-badge${accountChecks.openai ? " unverified" : ""}`} title={accountChecks.openai ? undefined : OPENAI_SIGNED_IN_NOTE} aria-live="polite">{accountChecks.openai === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.openai ? <Check size={12} /> : null} {accountChecks.openai === "Checking connection…" ? "Checking…" : accountChecks.openai ? "Unverified" : "Signed in"}</span>
-                    <button className="secondary-button" onClick={() => void signOut()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>Sign out</button>
-                  </div>
-                ) : openAiBilling !== "apiKey" || !runtimeStatus?.available ? (
-                  <button className="secondary-button" onClick={() => void signIn()} disabled={busy || openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>
-                    {busy || openAiLoginStarting ? <LoaderCircle className="spin" size={14} /> : !runtimeStatus?.available ? <Download size={14} /> : null} {runtimeStatus?.available ? "Sign in" : "Set up Codex"}
-                  </button>
-                ) : null}
-                {runtimeStatus?.available && <button className="icon-button" onClick={refreshOpenAi} title="Refresh OpenAI connection" aria-label="Refresh OpenAI connection" aria-busy={openAiRefreshing > 0} disabled={openAiLoginStarting || Boolean(openAiAuthOperation.busy)}>{openAiRefreshing ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>}
-              </div>
-              </>
-            ) : accountProvider === "openrouter" ? (
-              <div className="credential-panel stacked" data-settings-row="openrouter-key">
-                <div className="credential-status">
-                  <div><strong>OpenRouter API key</strong><small>{openRouterReady ? "Stored securely on this device" : "No key stored"}</small></div>
-                  {openRouterReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
-                </div>
-                <div className="key-input-row">
-                  <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="sk-or-v1-…" />
-                  <button className="secondary-button" onClick={() => void storeKey()} disabled={!apiKey.trim() || busy}>Save key</button>
-                </div>
-              </div>
-            ) : accountProvider === "lmstudio" ? (
-              <div className="credential-panel stacked" data-settings-row="lmstudio-server">
-                <div className="credential-status">
-                  <div>
-                    <strong>LM Studio local server</strong>
-                    <small>{lmStudioReady ? `${lmStudioModels.length} model${lmStudioModels.length === 1 ? "" : "s"} available` : lmStudioModelsError || "Start the server from LM Studio’s Developer tab"}</small>
-                  </div>
-                  {lmStudioReady && <span className="connected-badge"><Check size={12} /> Connected</span>}
-                </div>
-                <label className="field-label">
-                  <span>Server URL</span>
-                  <input value={local.lmStudioBaseUrl} onChange={(event) => setLocal({ ...local, lmStudioBaseUrl: event.target.value })} placeholder={DEFAULT_LM_STUDIO_BASE_URL} spellCheck={false} />
-                  <small>Mythra Code uses LM Studio’s OpenAI-compatible Responses API. Keep the default for a server on this computer.</small>
-                </label>
-                <div className="key-input-row">
-                  <input type="password" value={lmStudioToken} onChange={(event) => setLmStudioToken(event.target.value)} placeholder={lmStudioTokenStored ? "Token stored in the OS credential store" : "Optional API token"} />
-                  <button className="secondary-button" onClick={() => void storeLmStudioToken()} disabled={!lmStudioToken.trim() || busy}>Save token</button>
-                  {lmStudioTokenStored && <button className="secondary-button" onClick={() => void storeLmStudioToken(true)} disabled={busy}>Remove</button>}
-                </div>
-                <div className="credential-status">
-                  <small>{lmStudioConnectionMessage || "Authentication is optional for the default localhost server. Use a token for authenticated or network-accessible servers."}</small>
-                  <button className="secondary-button" onClick={() => void testLmStudioConnection()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Test connection</button>
-                </div>
-              </div>
-            ) : accountProvider === "claude" ? (
-              <>
-              <ClaudeBillingPanel visible={open} claudeStatus={claudeStatus} operation={claudeAuthOperation} disabled={claudeLoginStarting} onChanged={onClaudeBillingChanged ?? onClaudeRefresh} />
-              <div className="credential-panel">
-                <div>
-                  <strong>{claudeUsesApiKey(claudeStatus) ? "Anthropic API key" : claudeStatus?.loggedIn ? claudeStatus.email || "Claude subscription" : "Claude Code subscription"}</strong>
-                  <small>{accountChecks.claude || (claudeUsesApiKey(claudeStatus)
-                    ? claudeStatus?.loggedIn ? `Billed per token through ${claudeStatus.version || "Claude Code"}` : claudeStatus?.warning || "Add an Anthropic API key above"
-                    : claudeStatus?.loggedIn
-                    ? `${claudeStatus.subscriptionType || claudeStatus.authMethod || "Claude"} plan connected · ${claudeStatus.version || "Claude Code"}`
-                    : claudeStatus?.warning || (claudeStatus?.available ? "Claude Code detected · sign in to continue" : "Claude Code must be installed first"))}</small>
-                </div>
-                {claudeStatus?.loggedIn ? (
-                  <span className={`connected-badge${accountChecks.claude ? " unverified" : ""}`} aria-live="polite">{accountChecks.claude === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !accountChecks.claude ? <Check size={12} /> : null} {accountChecks.claude === "Checking connection…" ? "Checking…" : accountChecks.claude ? "Unverified" : "Connected"}</span>
-                ) : claudeUsesApiKey(claudeStatus) && claudeStatus?.available ? null : (
-                  claudeLoginStarting ? (
-                    <button className="secondary-button" onClick={() => void cancelClaudeLogin().catch(() => undefined)} title="Finish signing in in your browser, or cancel">
-                      <LoaderCircle className="spin" size={14} /> Cancel sign-in
-                    </button>
-                  ) : (
-                    <button className="secondary-button" onClick={() => void signInClaude()} disabled={Boolean(claudeAuthOperation.busy)}>
-                      {!claudeStatus?.available ? <Download size={14} /> : null}
-                      {claudeStatus?.available ? "Sign in" : "Install Claude Code"}
-                    </button>
-                  )
-                )}
-                <button className="icon-button" onClick={() => void refreshClaude()} title="Refresh Claude status" aria-label="Refresh Claude status" disabled={claudeLoginStarting || Boolean(claudeAuthOperation.busy)} aria-busy={claudeAuthOperation.busy === "refreshing"}>{claudeAuthOperation.busy === "refreshing" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}</button>
-              </div>
-              {claudeStatus?.loggedIn && claudeStatus.warning && <div className="settings-notice" role="status">
-                <Info size={13} /><span>{claudeStatus.warning}</span>
-                <button type="button" className="secondary-button" onClick={() => setSettingsSection("updates")}>Open Updates</button>
-              </div>}
-              </>
-            ) : (
-              <div className="credential-panel">
-                <span className={`provider-logo cursor${local.cursorLogo === "app-dark" ? " app-dark" : ""}`}>{local.cursorLogo === "app-dark" ? <CursorDarkAppIcon size={23} /> : <CursorLogo size={17} />}</span>
-                <div>
-                  <strong>{cursorStatus?.loggedIn ? cursorStatus.email || "Cursor subscription" : "Cursor Agent subscription"}</strong>
-                  <small>{cursorAccountCheck || (cursorStatus?.loggedIn
-                    ? "Signed in to Cursor Agent on this device"
-                    : cursorStatus?.warning || (cursorStatus?.available ? "Cursor Agent detected · sign in to continue" : "Cursor Agent CLI must be installed first"))}</small>
-                </div>
-                {cursorStatus?.loggedIn && (
-                  <span className={`connected-badge${cursorAccountCheck ? " unverified" : ""}`} aria-live="polite">{cursorAccountCheck === "Checking connection…" ? <LoaderCircle className="spin" size={12} aria-hidden="true" /> : !cursorAccountCheck ? <Check size={12} /> : null} {cursorAccountCheck === "Checking connection…" ? "Checking…" : cursorAccountCheck === "Waiting for sign-in…" ? "Signing in…" : cursorAccountCheck ? "Unverified" : "Connected"}</span>
-                )}
-                {(!cursorStatus?.loggedIn || cursorStatus.authVerified === false) && (
-                  <button className="secondary-button" onClick={() => void (cursorStatus?.available ? onCursorSignIn() : openUrl("https://cursor.com/docs/cli/installation"))} disabled={cursorLoginStarting}>
-                    {cursorLoginStarting ? <LoaderCircle className="spin" size={14} /> : !cursorStatus?.available ? <Download size={14} /> : null}
-                    {cursorLoginStarting ? "Signing in…" : cursorStatus?.available ? "Sign in" : "Install Cursor Agent"}
-                  </button>
-                )}
-                <button className="icon-button" onClick={() => void onCursorRefresh()} title="Refresh Cursor status" aria-label="Refresh Cursor status"><RotateCcw size={14} /></button>
-              </div>
-            )}
 
             <p className="settings-footnote" role="note" aria-label="Antigravity and Gemini account support">
               <Info size={14} aria-hidden="true" />

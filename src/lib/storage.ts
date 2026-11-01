@@ -68,7 +68,7 @@ export const DURABLE_STORAGE_KEYS = [
  * migrateStorage. Old installs then upgrade their data instead of loading
  * garbage into the new code.
  */
-export const STORAGE_SCHEMA_VERSION = 30;
+export const STORAGE_SCHEMA_VERSION = 31;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 type NativeStateRevision = { operation: () => Promise<unknown> };
 // A settled promise is not a persistence receipt. Keep the latest immutable
@@ -361,6 +361,13 @@ export function migrateStorage(readRaw: (key: string) => string | null = readSto
   // Learned preferences live in their separately versioned native registry.
   // Version 30 adds optional daily wall-clock times to scheduled tasks. Missing
   // scheduleMode retains the original interval behavior without rewriting tasks.
+  // Version 31 makes Studio the default effort slider. Installs still on the
+  // previous default (Aurora) move to Studio once; any other chosen style, and
+  // per-project slider overrides, are left alone. Aurora stays selectable.
+  if (stored < 31) {
+    const settings = loadMigrationStored<Record<string, unknown>>("kiwi.settings", {});
+    if (settings.effortSlider === "aurora") storeValue("kiwi.settings", { ...settings, effortSlider: "studio" });
+  }
   storeValue("kiwi.schemaVersion", STORAGE_SCHEMA_VERSION);
 }
 

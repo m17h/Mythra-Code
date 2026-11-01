@@ -1,26 +1,33 @@
 .usage-popover-anchor { flex: 0 0 auto; min-width: 0; }
 .usage-popover[aria-hidden="true"] { pointer-events: none; }
 /* Anchor to the toolbar, not the narrow chip: stay inside even beside an open dock. */
-.usage-popover { position: absolute; z-index: 130; top: calc(100% + 8px); right: 12px; width: 360px; max-width: calc(100% - 24px); max-height: min(480px, calc(100vh / var(--ui-scale, 1) - var(--topbar-h) - 70px)); overflow-y: auto; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); color: var(--text); background: var(--panel-2); box-shadow: var(--shadow); }
-.usage-popover-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+/* The Pro popover recipe: menu surface, 12px radius, the pop shadow (its
+   hairline edge included). Windows are radio rows, not cards: the chosen
+   one gets the neutral selection fill and an accent radio. */
+.usage-popover { position: absolute; z-index: 130; top: calc(100% + 8px); right: 12px; width: 340px; max-width: calc(100% - 24px); max-height: min(480px, calc(100vh / var(--ui-scale, 1) - var(--topbar-h) - 70px)); overflow-y: auto; padding: 12px; border: 0; border-radius: var(--r-xl, 12px); color: var(--text); background: var(--menu-surface, var(--panel-2)); box-shadow: var(--lm-pop-shadow, var(--shadow)); }
+.usage-popover-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding-left: 4px; }
+.usage-popover-heading .icon-button { width: 24px; height: 24px; border-radius: var(--r-sm, 6px); color: var(--muted-2); }
+.usage-popover-heading .icon-button:hover { color: var(--text); background: var(--lm-press, rgba(255,255,255,.05)); }
 .usage-popover-heading > div { display: grid; gap: 3px; min-width: 0; }
-.usage-popover-heading strong { font-size: var(--fs-ui); }
-.usage-popover-heading small { color: var(--muted); font-size: var(--fs-meta); }
-.usage-popover-windows { display: grid; gap: 7px; margin: 0; padding: 0; min-width: 0; border: 0; }
-.usage-popover-windows legend { padding: 0 0 8px; color: var(--muted); font-size: var(--fs-meta); }
-.usage-popover-window { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 9px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--field); cursor: pointer; }
-.usage-popover-window:hover { border-color: var(--line-strong); }
-.usage-popover-window.selected { border-color: var(--line-strong); border-color: color-mix(in srgb, var(--green) 55%, var(--line-strong)); }
+.usage-popover-heading strong { font-size: var(--fs-ui); font-weight: 600; }
+.usage-popover-heading small { color: var(--muted-2); font-size: 12px; }
+.usage-popover-windows { display: grid; gap: 2px; margin: 0; padding: 0; min-width: 0; border: 0; }
+.usage-popover-windows legend { padding: 0 4px 6px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; }
+.usage-popover-window { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 9px; align-items: start; padding: 8px; border: 0; border-radius: var(--r-md, 8px); background: transparent; cursor: pointer; }
+.usage-popover-window:hover { background: var(--lm-hover, rgba(255,255,255,.04)); }
+.usage-popover-window.selected { background: var(--lm-press, rgba(255,255,255,.07)); }
 .usage-popover-window input:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
 .usage-popover-window input { width: 14px; height: 14px; margin: 2px 0 0; accent-color: var(--green); }
 .usage-popover-window-body { min-width: 0; display: grid; gap: 8px; }
-.usage-popover-window-heading { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: space-between; font-size: var(--fs-meta); }
-.usage-popover-window-heading strong { overflow-wrap: anywhere; }
+.usage-popover-window-heading { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: space-between; font-size: var(--fs-ui); }
+.usage-popover-window-heading strong { font-weight: 500; overflow-wrap: anywhere; }
 .usage-popover-window-heading b { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
-.usage-popover-track { display: block; height: 5px; overflow: hidden; border-radius: 4px; background: var(--line-strong); }
-.usage-popover-track > span { display: block; height: 100%; background: var(--green); background: color-mix(in srgb, var(--green) 65%, var(--muted)); border-radius: inherit; }
-.usage-popover-window-body > small { display: flex; align-items: flex-start; gap: 5px; color: var(--muted); font-size: var(--fs-micro); line-height: 1.5; overflow-wrap: anywhere; }
+.usage-popover-track { display: block; height: 4px; overflow: hidden; border-radius: var(--r-pill, 999px); background: var(--line-strong); }
+.usage-popover-track > span { display: block; height: 100%; background: var(--green); border-radius: inherit; }
+.usage-popover-window-body > small { display: flex; align-items: flex-start; gap: 5px; color: var(--muted-2); font-size: var(--fs-meta); line-height: 1.45; overflow-wrap: anywhere; }
 .usage-popover-window-body > small > svg { flex: 0 0 auto; margin-top: 2px; }
-.usage-popover-note, .usage-popover-empty { color: var(--muted); font-size: var(--fs-meta); line-height: 1.5; overflow-wrap: anywhere; }
-.usage-popover-note { margin: 12px 0 8px; font-size: var(--fs-micro); }
-.usage-popover-details { padding: 5px 0; border: 0; color: var(--green); background: none; font-size: var(--fs-meta); cursor: pointer; }
+.usage-popover-note, .usage-popover-empty { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.usage-popover-note { margin: 4px 4px 0; color: var(--muted-2); font-size: var(--fs-meta); }
+.usage-popover-windows + .usage-popover-note { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-quiet, var(--line)); }
+.usage-popover-details { margin: 8px 4px 0; padding: 2px 0; border: 0; color: var(--green); background: none; font-size: 12px; font-weight: 500; cursor: pointer; }
+.usage-popover-details:hover { text-decoration: underline; text-underline-offset: 3px; }

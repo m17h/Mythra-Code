@@ -67,7 +67,7 @@
 .official-skill-requirements-trigger:hover,
 .official-skill-requirements-trigger[aria-expanded="true"] { color: var(--ink-2); border-color: var(--line-strong); background: var(--lm-hover, var(--line-quiet)); }
 .official-skill-requirements-trigger:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.official-skill-requirements-title { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.official-skill-requirements-title { margin: 0 0 4px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
 .official-skill-requirements-text { margin: 0; color: var(--text); }
 .official-skill-requirements-kinds { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); }
 .official-skill-requirements-kinds > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
@@ -108,7 +108,7 @@
 /* ---- Read-only source viewer ---- */
 .skill-source-details { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: flex-start; min-width: 0; max-height: 22%; overflow: auto; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--line-quiet); font-size: var(--fs-meta); }
 .skill-source-details > div { min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 3px; }
-.skill-source-details dt { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-caps); text-transform: uppercase; }
+.skill-source-details dt { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
 .skill-source-details dd { min-width: 0; margin: 0; color: var(--ink-2); line-height: 18px; overflow-wrap: anywhere; }
 .skill-source-details button { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 0; border: 0; border-radius: var(--r-chip, 6px); color: var(--info); background: transparent; text-align: left; cursor: pointer; font: inherit; font-family: var(--font-mono); }
 .skill-source-details button > span { min-width: 0; overflow-wrap: anywhere; }

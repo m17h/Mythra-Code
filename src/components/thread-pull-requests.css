@@ -36,7 +36,7 @@
 /* ---- Context facts ---- */
 
 .thread-pr-context { display: flex; flex-wrap: wrap; gap: var(--s-1); }
-.thread-pr-fact { max-width: 100%; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-micro); letter-spacing: var(--track-tight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-pr-fact { max-width: 100%; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3%, transparent); font-size: var(--fs-micro); letter-spacing: var(--track-tight); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .thread-pr-fact svg { flex: 0 0 auto; color: var(--muted-2); }
 .thread-pr-fact.quiet { color: var(--muted-2); }
 .thread-pr-fact.isolated { color: var(--info); border-color: color-mix(in srgb, var(--info) 28%, var(--line)); background: color-mix(in srgb, var(--info) 8%, transparent); }
@@ -69,7 +69,7 @@
 .thread-pr-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
 .thread-pr-number { color: var(--muted-2); font: 600 var(--fs-meta) var(--font-mono); }
 
-.thread-pr-state { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-tight); white-space: nowrap; }
+.thread-pr-state { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r-chip, 4px); color: var(--muted); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: var(--fs-micro); font-weight: 650; letter-spacing: var(--track-tight); white-space: nowrap; }
 .thread-pr-state.open { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 4%, transparent); }
 .thread-pr-state.draft { color: var(--muted-2); }
 .thread-pr-state.merged { color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, var(--line)); background: color-mix(in srgb, var(--info) 9%, transparent); }
@@ -105,16 +105,16 @@
 
 .thread-pr-actions { display: flex; flex-wrap: wrap; gap: var(--s-1); margin-top: 2px; }
 .thread-pr-actions.end { justify-content: flex-end; }
-.thread-pr-actions button { min-height: var(--ctl-sm); display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); white-space: nowrap; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, transform var(--t-fast) var(--ease); }
+.thread-pr-actions button { min-height: var(--ctl-sm); display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--muted); background: transparent; font-size: var(--fs-meta); letter-spacing: var(--track-tight); white-space: nowrap; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .thread-pr-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
-.thread-pr-actions button:active:not(:disabled) { transform: translateY(1px); }
+.thread-pr-actions button:active:not(:disabled) { transform: none; }
 .thread-pr-actions button:disabled { opacity: .38; cursor: default; }
 .thread-pr-actions button.primary { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .thread-pr-actions button.primary:hover:not(:disabled) { color: var(--green); border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
 
-.thread-pr-wide-button { width: 100%; min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3.5%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, transform var(--t-fast) var(--ease); }
+.thread-pr-wide-button { width: 100%; min-height: var(--ctl-md); display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-2); background: color-mix(in srgb, var(--text) 3.5%, transparent); font-size: var(--fs-meta); cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .thread-pr-wide-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 7%, transparent); }
-.thread-pr-wide-button:active:not(:disabled) { transform: translateY(1px); }
+.thread-pr-wide-button:active:not(:disabled) { transform: none; }
 .thread-pr-wide-button:disabled { opacity: .4; cursor: default; }
 .thread-pr-wide-button.primary { color: var(--green); border-color: var(--green-line); background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 600; }
 .thread-pr-wide-button.primary:hover:not(:disabled) { color: var(--green); border-color: color-mix(in srgb, var(--green) 44%, var(--line-strong)); background: color-mix(in srgb, var(--text) 9%, transparent); }
@@ -133,7 +133,7 @@
 
 .thread-pr-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: var(--muted); font-size: var(--fs-meta); }
 .thread-pr-field > span { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
-.thread-pr-field em { padding: 2px 5px; border-radius: var(--r-xs); color: var(--muted-2); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 9px; font-style: normal; font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-field em { padding: 2px 5px; border-radius: var(--r-xs); color: var(--muted-2); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 10.5px; font-style: normal; font-weight: 500; }
 .thread-pr-field input, .thread-pr-field textarea { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); outline: 0; color: var(--text); background: var(--field); font: var(--fs-meta)/1.5 var(--font-mono); transition: border-color var(--t-fast) ease; }
 .thread-pr-field input { height: 32px; padding-block: 0; }
 .thread-pr-field textarea { resize: vertical; font-family: var(--font-sans); font-size: var(--fs-ui); }
@@ -156,7 +156,7 @@
 .thread-pr-confirm-line b { font-weight: 650; }
 
 .thread-pr-methods { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); margin: 0; padding: 0; border: 0; }
-.thread-pr-methods legend { padding: 0 0 var(--s-1); color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-methods legend { padding: 0 0 var(--s-1); color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
 .thread-pr-methods input { accent-color: var(--green); }
 
 /* ---- A merge method and the question people have about it ----
@@ -171,7 +171,7 @@
 
 /* Quiet until wanted. A help button that competes with the option it explains
    is a help button people press by mistake. */
-.thread-pr-help-button { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.thread-pr-help-button { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: var(--r-control, 6px); color: var(--muted-2); background: transparent; cursor: pointer; transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease; }
 .thread-pr-help-button:hover, .thread-pr-help-button.open { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 8%, transparent); }
 
 /* Indented to the label's own text column, so it reads as part of that option
@@ -188,7 +188,7 @@
 .thread-pr-blockers.soft svg { color: var(--orange); }
 
 .thread-pr-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 2.5%, transparent); }
-.thread-pr-plan strong { color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-plan strong { color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
 .thread-pr-plan ol { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0; padding-left: 17px; color: var(--ink-2); font-size: var(--fs-meta); line-height: 1.5; }
 .thread-pr-plan b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
 
@@ -219,7 +219,7 @@
 .thread-pr-review-toggle[aria-expanded="true"] > svg { transform: rotate(90deg); }
 .thread-pr-review-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-2); animation: thread-pr-expand var(--t-mid) var(--ease) both; }
 .thread-pr-review-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; justify-items: start; }
-.thread-pr-review-label { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted-2); font-size: var(--fs-micro); font-weight: 650; text-transform: uppercase; letter-spacing: var(--track-caps); }
+.thread-pr-review-label { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; }
 .thread-pr-review-label b { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .thread-pr-review-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; width: 100%; margin: 0; padding: 0; list-style: none; }
 .thread-pr-review-list li { min-width: 0; overflow: hidden; color: var(--ink-2); font: var(--fs-micro)/1.6 var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }

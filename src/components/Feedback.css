@@ -25,15 +25,15 @@
   color: var(--text);
   background: transparent;
   transform-origin: top right;
-  transform: translateY(3px) scale(.975);
+  transform: translateY(3px);
   transition: transform 180ms var(--ease);
 }
-.feedback-float[data-side="above"] { transform-origin: bottom left; transform: translateY(-3px) scale(.975); }
-.feedback-float[data-open] { transform: none; animation: feedback-float-in 220ms cubic-bezier(.22, 1, .36, 1); }
+.feedback-float[data-side="above"] { transform-origin: bottom left; transform: translateY(-3px); }
+.feedback-float[data-open] { transform: none; animation: feedback-float-in 180ms cubic-bezier(.2, .8, .2, 1); }
 .feedback-float[data-side="above"][data-open] { animation-name: feedback-float-in-above; }
 .feedback-float:not([data-open]) { pointer-events: none; }
-@keyframes feedback-float-in { from { transform: translateY(4px) scale(.965); } }
-@keyframes feedback-float-in-above { from { transform: translateY(-4px) scale(.965); } }
+@keyframes feedback-float-in { from { transform: translateY(3px); } }
+@keyframes feedback-float-in-above { from { transform: translateY(-3px); } }
 
 .feedback-selection-button {
   height: 28px;
@@ -41,20 +41,20 @@
   align-items: center;
   gap: 6px;
   padding: 0 11px 0 9px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-pill);
-  color: var(--ink-2);
+  border: 0;
+  border-radius: var(--r-control, 6px);
+  color: var(--text);
   background: var(--menu-surface, var(--panel-2));
-  box-shadow: var(--shadow);
-  font-size: var(--fs-meta);
-  font-weight: 560;
+  box-shadow: var(--lm-pop-shadow, var(--shadow));
+  font-size: 12px;
+  font-weight: 500;
   letter-spacing: var(--track-tight);
   cursor: pointer;
   transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease;
 }
 .feedback-selection-button > svg { color: var(--green); }
-.feedback-selection-button:hover, .feedback-selection-button:focus-visible { color: var(--text); border-color: color-mix(in srgb, var(--green) 42%, var(--line-strong)); }
-.feedback-selection-button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--green-soft), var(--shadow); }
+.feedback-selection-button:hover, .feedback-selection-button:focus-visible { color: var(--text); background-image: linear-gradient(var(--lm-hover, transparent), var(--lm-hover, transparent)); }
+.feedback-selection-button:focus-visible { outline: none; box-shadow: var(--ring, 0 0 0 3px var(--green-soft)), var(--lm-pop-shadow, var(--shadow)); }
 
 /* ---- Note card ---- */
 .feedback-card {
@@ -63,15 +63,15 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
+  padding: 12px;
+  border: 0;
+  border-radius: var(--r-xl, 12px);
   background: var(--menu-surface, var(--panel-2));
-  box-shadow: var(--shadow);
+  box-shadow: var(--lm-pop-shadow, var(--shadow));
 }
 .feedback-card-head { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-meta); }
 .feedback-card-head > svg { flex: 0 0 auto; color: var(--ink-2); }
-.feedback-card-head strong { min-width: 0; overflow: hidden; color: var(--ink-2); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.feedback-card-head strong { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--fs-ui); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
 .feedback-card-head small { flex: 0 0 auto; color: var(--muted-2); font-size: var(--fs-micro); }
 .feedback-card-quote {
   display: -webkit-box;
@@ -81,10 +81,10 @@
   overflow: hidden;
   margin: 0;
   padding: 5px 9px;
-  border-left: 2px solid var(--green-line);
+  border-left: 2px solid var(--line-strong);
   border-radius: 0 var(--r-xs) var(--r-xs) 0;
   color: var(--muted);
-  background: color-mix(in srgb, var(--text) 3.5%, transparent);
+  background: var(--lm-hover, color-mix(in srgb, var(--text) 3.5%, transparent));
   font-size: var(--fs-meta);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -101,32 +101,35 @@
   resize: none;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-control, 6px);
   outline: none;
   color: var(--text);
   background: var(--field);
   font: var(--fs-ui)/1.5 var(--font-sans);
   transition: border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
 }
-.feedback-card textarea:focus { border-color: color-mix(in srgb, var(--green) 42%, var(--line-strong)); box-shadow: 0 0 0 3px var(--green-soft); }
+.feedback-card textarea:focus { border-color: var(--green-line); box-shadow: var(--ring, 0 0 0 3px var(--green-soft)); }
 .feedback-card-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .feedback-card-actions button {
-  height: 26px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  color: var(--muted);
-  background: transparent;
-  font-size: var(--fs-meta);
+  border-radius: var(--r-control, 6px);
+  color: var(--text);
+  background: var(--lm-press, transparent);
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
   transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease, opacity var(--t-fast) ease;
 }
-.feedback-card-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5%, transparent); }
-.feedback-card-actions .feedback-card-cancel { border-color: transparent; }
-.feedback-card-actions .feedback-card-submit { color: var(--ink-2); border-color: color-mix(in srgb, var(--green) 38%, var(--line-strong)); }
-.feedback-card-actions .feedback-card-submit:hover:not(:disabled) { color: var(--text); background: var(--green-soft); }
-.feedback-card-actions .feedback-card-remove { margin-right: auto; border-color: transparent; color: color-mix(in srgb, var(--red) 78%, var(--muted)); }
-.feedback-card-actions .feedback-card-remove:hover:not(:disabled) { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.feedback-card-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.feedback-card-actions .feedback-card-cancel { border-color: transparent; color: var(--muted); background: transparent; }
+.feedback-card-actions .feedback-card-cancel:hover:not(:disabled) { border-color: transparent; background: var(--lm-hover, transparent); }
+/* Submit is the sheet's primary push button: flat accent, no glow. */
+.feedback-card-actions .feedback-card-submit { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); font-weight: 600; }
+.feedback-card-actions .feedback-card-submit:hover:not(:disabled) { border-color: transparent; color: var(--on-accent, var(--bg)); background: var(--lm-fill, var(--green)); filter: brightness(1.06); }
+.feedback-card-actions .feedback-card-remove { margin-right: auto; border-color: transparent; color: var(--red); background: transparent; }
+.feedback-card-actions .feedback-card-remove:hover:not(:disabled) { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--line)); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .feedback-card-actions button:disabled { opacity: .42; cursor: default; }
 
 /* ---- Composer tray ---- */
@@ -140,11 +143,11 @@
 @starting-style { .feedback-tray[data-open] { grid-template-rows: 0fr; opacity: 0; } }
 .feedback-tray-clip { min-height: 0; overflow: hidden; }
 .feedback-tray-inner { display: flex; flex-direction: column; gap: 6px; padding: 9px var(--s-4) 1px; }
-.feedback-tray-heading { min-height: 18px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 0 1px; color: var(--muted); font-size: var(--fs-micro); letter-spacing: var(--track-caps); text-transform: uppercase; }
+.feedback-tray-heading { min-height: 18px; display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 0 1px; color: var(--muted-2); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0; text-transform: none; }
 .feedback-tray-heading > span { display: flex; align-items: center; gap: 5px; }
 .feedback-tray-heading > span > svg { color: var(--green); }
-.feedback-tray-heading em { min-width: 16px; height: 16px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: var(--r-pill); color: var(--ink-2); background: color-mix(in srgb, var(--text) 7%, transparent); font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: 0; }
-.feedback-tray-heading small { overflow: hidden; color: var(--muted-2); font-size: inherit; letter-spacing: 0; text-transform: none; white-space: nowrap; text-overflow: ellipsis; }
+.feedback-tray-heading em { min-width: 16px; height: 16px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: var(--r-chip, 4px); color: var(--ink-2); background: var(--lm-press, color-mix(in srgb, var(--text) 7%, transparent)); font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.feedback-tray-heading small { overflow: hidden; color: var(--muted-2); font-size: inherit; font-weight: 400; letter-spacing: 0; text-transform: none; white-space: nowrap; text-overflow: ellipsis; }
 .feedback-tray-list { max-height: 62px; display: flex; flex-wrap: wrap; gap: 4px; overflow-y: auto; padding: 1px; scrollbar-width: thin; }
 
 .feedback-chip {
@@ -154,18 +157,18 @@
   align-items: center;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-control, 6px);
   color: var(--muted);
-  background: color-mix(in srgb, var(--text) 3%, transparent);
+  background: var(--lm-hover, color-mix(in srgb, var(--text) 3%, transparent));
   font-size: var(--fs-meta);
-  animation: feedback-chip-in 240ms cubic-bezier(.22, 1, .36, 1);
+  animation: feedback-chip-in 180ms cubic-bezier(.2, .8, .2, 1);
   transition: color var(--t-fast) ease, border-color var(--t-fast) ease, background var(--t-fast) ease,
     opacity 160ms ease, transform 200ms var(--ease), max-width 220ms var(--ease), border-width 0s linear 220ms;
 }
-.feedback-chip:hover, .feedback-chip.editing { color: var(--ink-2); border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 5.5%, transparent); }
+.feedback-chip:hover, .feedback-chip.editing { color: var(--ink-2); border-color: var(--line-strong); background: var(--lm-press, color-mix(in srgb, var(--text) 5.5%, transparent)); }
 .feedback-chip.stale { border-color: color-mix(in srgb, var(--amber) 34%, var(--line)); }
-.feedback-chip.leaving { max-width: 0; opacity: 0; transform: scale(.92); border-width: 0; pointer-events: none; }
-@keyframes feedback-chip-in { from { opacity: 0; transform: translateY(3px) scale(.96); } }
+.feedback-chip.leaving { max-width: 0; opacity: 0; transform: none; border-width: 0; pointer-events: none; }
+@keyframes feedback-chip-in { from { opacity: 0; transform: translateY(3px); } }
 .feedback-chip-main { min-width: 0; height: 100%; display: flex; align-items: center; gap: 5px; padding: 0 4px 0 8px; border: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .feedback-chip-main:disabled { cursor: default; }
 .feedback-chip-main:focus-visible { outline: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 50%, transparent); border-radius: var(--r-xs); }

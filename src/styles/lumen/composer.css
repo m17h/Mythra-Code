@@ -1,190 +1,244 @@
 /* ============================================================================
-   Lumen composer
-   An elevated capsule floating at the foot of the stage. Focus lights a
-   gradient halo; send is a lit circle; every control is a chip.
+   Lumen composer (Pro)
+   One quiet rounded card at the foot of the stage. Its controls are
+   borderless pop-up buttons; send is a small accent square.
    Scope: .app-shell[data-theme][data-color-scheme] (see tokens.css).
    ========================================================================== */
 
 .app-shell[data-theme][data-color-scheme] .composer-zone {
-  padding: 6px 22px 14px;
-  background: linear-gradient(to top, var(--bg) 55%, rgba(0, 0, 0, 0));
+  padding: 6px 22px 12px;
+  background: linear-gradient(to top, var(--bg) 60%, rgba(0, 0, 0, 0));
 }
-.app-shell[data-theme][data-color-scheme] .composer-zone::before { bottom: -30px; height: 150px; opacity: .55; }
+/* No ambient provider glow behind the composer. */
+.app-shell[data-theme][data-color-scheme] .composer-zone::before { content: none; display: none; }
 .app-shell[data-theme][data-color-scheme] .composer,
 .app-shell[data-theme][data-color-scheme] .composer-zone > .error-banner,
-.app-shell[data-theme][data-color-scheme] .composer-caption { width: min(calc(var(--measure) + 72px), 100%); }
+.app-shell[data-theme][data-color-scheme] .composer-caption { width: min(calc(var(--measure) + 64px), 100%); }
 
 .app-shell[data-theme][data-color-scheme] .composer {
   border: 1px solid var(--line-strong);
-  border-radius: 26px;
+  border-radius: var(--r-xl);
   background: var(--panel);
-  box-shadow: 0 1px 0 var(--lm-island-highlight) inset, 0 28px 60px -26px rgba(0, 0, 0, .7), 0 6px 18px -10px rgba(0, 0, 0, .4);
+  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18);
 }
-.app-shell[data-theme][data-color-scheme="light"] .composer { box-shadow: 0 1px 0 #fff inset, 0 26px 50px -26px rgba(30, 40, 60, .35), 0 4px 14px -8px rgba(30, 40, 60, .16); }
+.app-shell[data-theme][data-color-scheme="light"] .composer { box-shadow: 0 8px 22px -14px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .06); }
+/* Focus: the edge takes a soft accent; no outer ring on so large a field. */
 .app-shell[data-theme][data-color-scheme] .composer:focus-within {
   border-color: var(--green-line);
-  box-shadow: 0 0 0 4px var(--green-soft), 0 28px 64px -24px rgba(0, 0, 0, .6);
+  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18);
 }
-.app-shell[data-theme][data-color-scheme] .composer.drop-target { border-style: dashed; border-color: var(--green); background-image: var(--lm-grad-soft); }
-.app-shell[data-theme][data-color-scheme] .composer-input-wrap { --composer-input-padding-block-start: 18px; --composer-input-padding-inline: 20px; }
-.app-shell[data-theme][data-color-scheme] .composer textarea { color: var(--text); }
+.app-shell[data-theme][data-color-scheme="light"] .composer:focus-within { box-shadow: 0 8px 22px -14px rgba(0, 0, 0, .2), 0 1px 2px rgba(0, 0, 0, .06); }
+/* A running provider does not tint or glow the composer. */
+.app-shell[data-theme][data-color-scheme] .composer-zone.ambiance-live .composer { border-color: var(--line-strong); box-shadow: 0 8px 24px -14px rgba(0, 0, 0, .55), 0 1px 3px rgba(0, 0, 0, .18); }
+.app-shell[data-theme][data-color-scheme] .composer-zone.ambiance-live .composer:focus-within { border-color: var(--green-line); }
+.app-shell[data-theme][data-color-scheme] .composer.drop-target { border-style: dashed; border-color: var(--green); background-image: none; background-color: var(--panel-2); }
+.app-shell[data-theme][data-color-scheme] .composer-input-wrap { --composer-input-padding-block-start: 14px; --composer-input-padding-inline: 16px; }
+.app-shell[data-theme][data-color-scheme] .composer textarea { color: var(--text); font-size: var(--fs-body); }
 .app-shell[data-theme][data-color-scheme] .composer textarea::placeholder { color: var(--muted-2); }
 
-.app-shell[data-theme][data-color-scheme] .composer-toolbar { min-height: 50px; padding: 0 10px 10px 12px; }
-.app-shell[data-theme][data-color-scheme] .composer-controls { gap: 4px; }
+.app-shell[data-theme][data-color-scheme] .composer-toolbar { min-height: 44px; padding: 0 8px 8px 8px; }
+.app-shell[data-theme][data-color-scheme] .composer-controls { gap: 2px; }
 .app-shell[data-theme][data-color-scheme] .toolbar-button {
-  height: 30px;
-  padding: 0 11px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-control);
-  color: var(--ink-2);
-  background: var(--panel-2);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-.app-shell[data-theme][data-color-scheme] .toolbar-button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); background: var(--panel-3); }
-.app-shell[data-theme][data-color-scheme] .toolbar-button[aria-expanded="true"] { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments { color: var(--on-accent); border-color: transparent; background: var(--lm-fill) var(--lm-grad); }
-.app-shell[data-theme][data-color-scheme] .agents-button.enabled,
-.app-shell[data-theme][data-color-scheme] .agents-button.live { color: var(--text); border-color: var(--green-line); background: var(--green-soft); }
-
-.app-shell[data-theme][data-color-scheme] .send-button {
-  width: 38px;
-  height: 38px;
+  height: 28px;
+  padding: 0 9px;
   border: 0;
   border-radius: var(--r-control);
-  color: var(--on-accent);
-  background: var(--lm-fill) var(--lm-grad);
-  box-shadow: 0 8px 20px -6px var(--lm-accent-glow);
+  color: var(--ink-2);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
 }
-.app-shell[data-theme][data-color-scheme] .send-button:hover:not(:disabled) { border-color: transparent; background: var(--lm-fill) var(--lm-grad); filter: brightness(1.1); box-shadow: 0 12px 26px -6px var(--lm-accent-glow); }
-.app-shell[data-theme][data-color-scheme] .send-button:active:not(:disabled) { background: var(--lm-fill) var(--lm-grad); }
-.app-shell[data-theme][data-color-scheme] .send-button:disabled { color: var(--muted-2); background: var(--panel-3); box-shadow: none; }
-.app-shell[data-theme][data-color-scheme] .send-button.queue-button { width: auto; height: 34px; padding: 0 14px; border-radius: var(--r-control); }
-.app-shell[data-theme][data-color-scheme] .stop-button {
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--red);
-  border-radius: var(--r-control);
-  color: var(--red);
-  background: var(--panel-2);
-  box-shadow: 0 0 0 4px rgba(255, 120, 120, .1);
-}
-.app-shell[data-theme][data-color-scheme] .stop-button:hover { background: var(--panel-3); }
-.app-shell[data-theme][data-color-scheme] .steer-button { height: 34px; padding: 0 13px; border-radius: var(--r-control); font-weight: 600; }
+.app-shell[data-theme][data-color-scheme] .toolbar-button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .toolbar-button[aria-expanded="true"] { color: var(--text); border-color: transparent; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments { color: var(--text); border-color: transparent; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .toolbar-button.has-attachments > svg { color: var(--green); }
+.app-shell[data-theme][data-color-scheme] .agents-button.enabled,
+.app-shell[data-theme][data-color-scheme] .agents-button.live { color: var(--text); border-color: transparent; background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .agents-button.enabled > svg,
+.app-shell[data-theme][data-color-scheme] .agents-button.live > svg { color: var(--green); }
 
-.app-shell[data-theme][data-color-scheme] .composer-caption { margin-top: 8px; color: var(--muted-2); font-size: 10.5px; text-align: center; }
-.app-shell[data-theme][data-color-scheme] .context-meter { font-family: var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .send-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-md);
+  color: var(--on-accent);
+  background: var(--lm-fill);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .send-button:hover:not(:disabled) { border-color: transparent; background: var(--lm-fill); filter: brightness(1.07); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .send-button:active:not(:disabled) { background: var(--lm-fill); filter: brightness(.94); }
+.app-shell[data-theme][data-color-scheme] .send-button:disabled { color: var(--muted-2); background: var(--lm-press); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .send-button.queue-button { width: auto; height: 30px; padding: 0 12px; border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .stop-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-md);
+  color: var(--text);
+  background: var(--panel-3);
+  box-shadow: none;
+}
+.app-shell[data-theme][data-color-scheme] .stop-button:hover { color: var(--red); background: var(--panel-3); }
+.app-shell[data-theme][data-color-scheme] .steer-button { height: 30px; padding: 0 12px; border-radius: var(--r-md); font-weight: 500; }
+
+.app-shell[data-theme][data-color-scheme] .composer-caption { margin-top: 7px; color: var(--muted-2); font-size: 11px; text-align: center; }
+.app-shell[data-theme][data-color-scheme] .context-meter { font-family: var(--font-sans); font-variant-numeric: tabular-nums; }
 .app-shell[data-theme][data-color-scheme] .context-meter.warn { color: var(--orange); }
-.app-shell[data-theme][data-color-scheme] .composer-reasoning-notice { font-family: var(--font-mono); }
+/* Odometer text renders one span per character inside an inline-flex row,
+   where a lone space collapses ("Costestimateunavailable"). Keep spaces. */
+.app-shell[data-theme][data-color-scheme] .odometer-static { white-space: pre; }
+.app-shell[data-theme][data-color-scheme] .composer-reasoning-notice { font-family: var(--font-sans); }
+
+/* Voice and schedule: borderless square icon buttons beside send. */
+.app-shell[data-theme][data-color-scheme] .voice-input-button,
+.app-shell[data-theme][data-color-scheme] .schedule-button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-md);
+  color: var(--muted);
+  background: transparent;
+}
+.app-shell[data-theme][data-color-scheme] .voice-input-button:hover:not(:disabled),
+.app-shell[data-theme][data-color-scheme] .schedule-button:hover:not(:disabled) { color: var(--text); border-color: transparent; background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .voice-input-button.recording { color: var(--red); background: rgba(240, 136, 132, .14); }
 
 /* ---- Queue ---- */
 .app-shell[data-theme][data-color-scheme] .queued-turns {
-  gap: 6px;
-  padding: 12px 12px 8px;
+  gap: 4px;
+  padding: 10px 10px 8px;
   border-bottom: 1px solid var(--line-quiet);
   border-radius: 0;
-  background: var(--panel-2);
-  background-image: var(--lm-grad-soft);
+  background: var(--lm-hover);
+  background-image: none;
 }
 /* Queue and schedule groups form one card. Only its outer top edge curves. */
-.app-shell[data-theme][data-color-scheme] .composer > .queued-turns:first-child { border-radius: 26px 26px 0 0; }
-.app-shell[data-theme][data-color-scheme] .queued-turn { min-height: 42px; padding: 5px 6px; border-color: var(--line); border-radius: var(--r-md); background: var(--panel); }
-.app-shell[data-theme][data-color-scheme] .queued-turn.failed { border-color: var(--red); }
+.app-shell[data-theme][data-color-scheme] .composer > .queued-turns:first-child { border-radius: var(--r-xl) var(--r-xl) 0 0; }
+.app-shell[data-theme][data-color-scheme] .queued-turn { min-height: 38px; padding: 4px 6px; border-color: var(--line); border-radius: var(--r-md); background: var(--panel); }
+.app-shell[data-theme][data-color-scheme] .queued-turn.failed { border-color: rgba(240, 136, 132, .45); }
 .app-shell[data-theme][data-color-scheme] .queued-turn.sending { border-color: var(--green-line); }
 .app-shell[data-theme][data-color-scheme] .queued-turn-index {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: var(--r-chip);
-  color: var(--on-accent);
-  background: var(--lm-fill) var(--lm-grad);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
+  color: var(--ink-2);
+  background: var(--lm-press);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
-.app-shell[data-theme][data-color-scheme] .queued-turn-actions button { border-radius: var(--r-xs); }
+.app-shell[data-theme][data-color-scheme] .queued-turn-actions button { border-radius: var(--r-sm); }
 
 /* ---- Attachments and workflow chips ---- */
-.app-shell[data-theme][data-color-scheme] .composer-attachments { gap: 6px; padding: 14px 18px 0; }
-.app-shell[data-theme][data-color-scheme] .composer-attachments > span { height: 28px; padding: 0 4px 0 10px; border-radius: var(--r-control); background: var(--panel-2); }
-.app-shell[data-theme][data-color-scheme] .composer-attachments button { width: 20px; height: 20px; border-radius: var(--r-chip); }
+.app-shell[data-theme][data-color-scheme] .composer-attachments { gap: 6px; padding: 12px 14px 0; }
+.app-shell[data-theme][data-color-scheme] .composer-attachments > span { height: 26px; padding: 0 4px 0 9px; border-radius: var(--r-control); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .composer-attachments button { width: 18px; height: 18px; border-radius: var(--r-xs); }
 .app-shell[data-theme][data-color-scheme] .composer-workflow-chip { border-radius: var(--r-control); }
 
 /* ---- Mention and workflow suggestions ---- */
-.app-shell[data-theme][data-color-scheme] .mention-menu { padding: 6px; border-radius: var(--r-lg); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
-.app-shell[data-theme][data-color-scheme] .mention-menu button { min-height: 34px; padding: 0 10px; border-radius: var(--r-sm); }
+.app-shell[data-theme][data-color-scheme] .mention-menu { padding: 5px; border-radius: var(--r-xl); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
+.app-shell[data-theme][data-color-scheme] .mention-menu button { min-height: 30px; padding: 0 8px; border-radius: var(--r-sm); }
 .app-shell[data-theme][data-color-scheme] .mention-menu button.active,
-.app-shell[data-theme][data-color-scheme] .mention-menu button:hover { color: var(--text); background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .mention-menu button > em { font-family: var(--font-mono); }
+.app-shell[data-theme][data-color-scheme] .mention-menu button:hover { color: var(--text); background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .mention-menu button > em { font-family: var(--font-sans); }
 
 /* ---- Permission menu ---- */
 .app-shell[data-theme][data-color-scheme] .permission-menu {
-  bottom: calc(100% + 10px);
-  width: 310px;
-  padding: 6px;
-  border-radius: var(--r-lg);
+  bottom: calc(100% + 8px);
+  width: 300px;
+  padding: 5px;
+  border-radius: var(--r-xl);
   background: var(--menu-surface);
   box-shadow: var(--lm-pop-shadow);
 }
-.app-shell[data-theme][data-color-scheme] .permission-menu button { grid-template-columns: 30px minmax(0, 1fr) 16px; min-height: 56px; border-radius: var(--r-md); }
+.app-shell[data-theme][data-color-scheme] .permission-menu button { grid-template-columns: 28px minmax(0, 1fr) 16px; min-height: 50px; border-radius: var(--r-md); }
 .app-shell[data-theme][data-color-scheme] .permission-menu button:hover { color: var(--text); background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .permission-menu button.selected { color: var(--text); background: var(--green-soft); box-shadow: inset 0 0 0 1px var(--green-line); }
-.app-shell[data-theme][data-color-scheme] .permission-menu button > svg:first-child { width: 30px; height: 30px; padding: 6px; border-radius: 10px; background: var(--lm-hover); }
-.app-shell[data-theme][data-color-scheme] .permission-menu button.selected > svg:first-child { color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .permission-menu button.selected { color: var(--text); background: var(--lm-press); box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .permission-menu button > svg:first-child { width: 28px; height: 28px; padding: 6px; border-radius: var(--r-md); background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .permission-menu button.selected > svg:first-child { color: var(--green); background: var(--green-soft); }
 
-/* ---- Model rails (every provider) ---- */
-.app-shell[data-theme][data-color-scheme] .model-power-control,
-.app-shell[data-theme][data-color-scheme] .openrouter-control {
-  margin: 0 12px 6px;
-  border-color: var(--line-quiet);
-  border-radius: 20px;
-  background: var(--field);
+/* ---- Model rails (every provider) ----
+   Morgan (2026-11-01): the middle of the composer should fit the pro design.
+   The rail is no longer a grey well of 46px two-line fields. It is one quiet
+   row under a hairline, like an inspector's pop-up buttons:
+     [  logo OpenAI  v]  [  art Terra  v]  | Reasoning  o----O----o----o
+   - Provider and model triggers are equal-width, single-line 30px pop-up
+     buttons with a hover fill. Their "Provider" / "Model" captions are visually hidden but
+     stay in the accessible name.
+   - Reasoning sits right after the pickers, behind a hairline divider, and
+     fills the rest of the row, so there is no dead space on either side.
+     The default Studio control (effort-studio.css) is a full-width row of
+     dots under the usual "Reasoning" heading. The older slider styles keep
+     their own heading, readout and level names.
+   Scoped to .composer so onboarding's preview slider keeps its own layout. */
+.app-shell[data-theme][data-color-scheme] .composer .model-power-control,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-control {
+  /* Morgan (2026-11-01): the provider and model pickers are the same fixed
+     width (181px), with logo and name centred. Sized so that, in a normal
+     window, the slider is 20% shorter than when the pickers were 127px and
+     the freed space is split equally between the two pickers.
+     The slider takes the rest, so it is the same length for every provider.
+     A long model name ends in an ellipsis. The tracks can still shrink if
+     the row is ever too narrow. */
+  grid-template-columns: minmax(0, 181px) minmax(0, 181px) minmax(0, 1fr);
+  gap: 4px 4px;
+  align-items: center;
+  margin: 0 10px 2px;
+  padding: 6px 0;
+  border: 0;
+  border-top: 1px solid var(--line-quiet);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
-/* Provider and model triggers: ONE field-control recipe.
-   Morgan: the provider button outline looked wrong next to the model button.
-   Diagnosis: the provider trigger carries `provider-pill openrouter-trigger`.
-   Legacy let the later .openrouter-trigger rule win (46px rounded rectangle,
-   same as every model trigger), but an earlier Lumen pass gave .provider-pill
-   a 30px pill, so the provider sat as a short capsule beside 46px rectangles.
-   Every implementation now shares geometry, border, fill and height:
-   - provider (ThreadProviderControl);
+/* Provider and model triggers: one pop-up button recipe for every provider:
+   - provider (ThreadProviderControl, `provider-pill openrouter-trigger`);
    - OpenAI (.model-picker-trigger);
    - Claude, OpenRouter, Cursor and LM Studio (.openrouter-trigger).
-   Hierarchy comes from the small caption over the label. The expanded state
-   gets an accent edge and ring, keyboard focus the shared outline. Provider
-   logos keep their own branding. */
+   Provider logos and model art keep their own branding. */
 .app-shell[data-theme][data-color-scheme] .composer .provider-pill,
 .app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger,
 .app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger {
-  height: 46px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  /* Logo and name are centred together and the chevron sits at the right
+     edge: the two auto margins (logo, chevron) share any free space. At
+     these widths there is little to spare, so the padding stays small and
+     even. */
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 30px;
+  gap: 6px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
   color: var(--text);
-  background: var(--panel);
+  background: transparent;
   box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .composer .provider-pill:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger:hover:not(:disabled),
 .app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger:hover:not(:disabled) {
-  border-color: var(--line-strong);
-  background: var(--panel-2);
+  border-color: transparent;
+  background: var(--lm-hover);
   box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .composer .thread-provider-control.open .provider-pill,
 .app-shell[data-theme][data-color-scheme] .composer .openrouter-picker.open .openrouter-trigger,
 .app-shell[data-theme][data-color-scheme] .composer .menu-open .model-picker-trigger {
-  border-color: var(--green-line);
-  background: var(--panel-2);
-  box-shadow: 0 0 0 3px var(--green-soft);
+  border-color: transparent;
+  background: var(--lm-press);
+  box-shadow: none;
 }
 .app-shell[data-theme][data-color-scheme] .composer .provider-pill:focus-visible,
 .app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger:focus-visible,
 .app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger:focus-visible {
   outline: 2px solid var(--green);
-  outline-offset: 2px;
-  border-radius: var(--r-md);
+  outline-offset: 1px;
+  border-radius: var(--r-control);
 }
 .app-shell[data-theme][data-color-scheme] .composer .provider-pill:disabled,
 .app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger:disabled,
@@ -195,34 +249,176 @@
 .app-shell[data-theme][data-color-scheme] .composer .model-picker.unavailable .model-picker-trigger {
   border-style: dashed;
   border-color: var(--line-strong);
-  background: var(--panel);
+  background: transparent;
 }
-.app-shell[data-theme][data-color-scheme] .composer .provider-pill > .provider-mark { border-radius: 7px; }.app-shell[data-theme][data-color-scheme] .thread-provider-menu { padding: 6px; border-radius: var(--r-lg); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
-.app-shell[data-theme][data-color-scheme] .thread-provider-menu > button { border-radius: var(--r-md); }
-.app-shell[data-theme][data-color-scheme] .thread-provider-menu > button.selected { background: var(--green-soft); }
-.app-shell[data-theme][data-color-scheme] .provider-mark { border-radius: 7px; }
+/* Logos and model art at pop-up size. */
+.app-shell[data-theme][data-color-scheme] .composer .provider-pill > .provider-mark,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger > .openrouter-logo,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger .model-orb {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger .model-orb.named-model-art img { width: 19px; height: 19px; }
+.app-shell[data-theme][data-color-scheme] .composer .provider-pill > :first-child,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger > :first-child,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-trigger > :first-child { flex: none; margin-left: auto; }
+/* Just the name, on one line, ending in an ellipsis if too long. At 181px
+   the muted tagline ("Everyday power") never fits beside a centred name and
+   only showed as a stub, so it is hidden here; the model menu still shows it. */
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger-copy,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-copy {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: baseline;
+  min-width: 0;
+}
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger-copy strong,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-copy strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger-copy em,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-copy em { display: none; }
+/* Captions stay for screen readers ("Provider OpenAI", "Model Terra"). */
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger-copy small,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-copy small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.app-shell[data-theme][data-color-scheme] .composer .provider-pill > svg:last-child,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-trigger > svg:last-child,
+.app-shell[data-theme][data-color-scheme] .composer .model-picker-chevron { flex: none; width: 13px; height: 13px; margin-left: auto; color: var(--muted-2); }
+/* Field captions elsewhere (onboarding preview): sentence case, quiet. */
+.app-shell[data-theme][data-color-scheme] .openrouter-trigger-copy small,
+.app-shell[data-theme][data-color-scheme] .model-picker-copy small {
+  color: var(--muted-2);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+/* Reasoning: fills the rest of the row after a hairline divider. */
+.app-shell[data-theme][data-color-scheme] .composer .reasoning-control,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning {
+  min-width: 220px;
+  align-self: center;
+  justify-self: stretch;
+  margin-left: 8px;
+  padding: 1px 4px 0 12px;
+  border-left: 1px solid var(--line-quiet);
+}
+.app-shell[data-theme][data-color-scheme] .composer .reasoning-heading,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning-heading {
+  height: 16px;
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.app-shell[data-theme][data-color-scheme] .composer .reasoning-labels,
+.app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning-labels { margin-top: 3px; font-size: 10.5px; line-height: 1.2; }
+.app-shell[data-theme][data-color-scheme] .composer .fast-tier {
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-chip);
+  font-size: 10.5px;
+}
+.app-shell[data-theme][data-color-scheme] .reasoning-heading strong,
+.app-shell[data-theme][data-color-scheme] .openrouter-reasoning-heading strong { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; text-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .reasoning-labels span.active,
+.app-shell[data-theme][data-color-scheme] .openrouter-reasoning-labels span.active { text-shadow: none; }
+/* The effort slider keeps its level colours, its chosen style and its change
+   effects, but rests without a glow: a slim track and a plain thumb. */
+.app-shell[data-theme][data-color-scheme] .reasoning-control input[type="range"],
+.app-shell[data-theme][data-color-scheme] .openrouter-reasoning input[type="range"] { height: 4px; box-shadow: none; }
+.app-shell[data-theme][data-color-scheme] .reasoning-control input[type="range"]::-webkit-slider-thumb,
+.app-shell[data-theme][data-color-scheme] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  transform: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+}
+.app-shell[data-theme][data-color-scheme] .reasoning-ticks i.reached,
+.app-shell[data-theme][data-color-scheme] .openrouter-reasoning-ticks i.reached { box-shadow: none; }
+/* Narrow chat column: provider and model share the first row, reasoning
+   takes the second, without the divider. Mirrors the legacy 680px step. */
+@container chat-main (max-width: 680px) {
+  .app-shell[data-theme][data-color-scheme] .composer .model-power-control,
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-control { grid-template-columns: minmax(0, 181px) minmax(0, 181px) 1fr; }
+  .app-shell[data-theme][data-color-scheme] .composer .reasoning-control,
+  .app-shell[data-theme][data-color-scheme] .composer .openrouter-reasoning { grid-column: 1 / -1; justify-self: stretch; margin: 2px 0 0; padding: 0 6px; border-left: 0; }
+}
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu { padding: 5px; border-radius: var(--r-xl); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu > button { border-radius: var(--r-sm); }
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu > button:hover { background: var(--lm-hover); }
+.app-shell[data-theme][data-color-scheme] .thread-provider-menu > button.selected { background: var(--lm-press); }
+.app-shell[data-theme][data-color-scheme] .provider-mark { border-radius: var(--r-sm); }
 
 /* ---- Sub-agent command center ---- */
-.app-shell[data-theme][data-color-scheme] .subagent-panel { padding: 10px; border-radius: 20px; background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel { padding: 8px; border-radius: var(--r-xl); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
 .app-shell[data-theme][data-color-scheme] .sa-row,
 .app-shell[data-theme][data-color-scheme] .sa-preset-row,
 .app-shell[data-theme][data-color-scheme] .sa-tile { border-radius: var(--r-md); }
-.app-shell[data-theme][data-color-scheme] .sa-row.on { background: var(--green-soft); }
+.app-shell[data-theme][data-color-scheme] .sa-row.on { background: var(--lm-press); }
 .app-shell[data-theme][data-color-scheme] .sa-readout { border-radius: var(--r-chip); }
-.app-shell[data-theme][data-color-scheme] .sa-header-mark { border-radius: var(--r-sm); color: var(--on-accent); background: var(--lm-fill) var(--lm-grad); }
+.app-shell[data-theme][data-color-scheme] .sa-header-mark { border-radius: var(--r-md); color: var(--green); background: var(--green-soft); }
+/* Sub-agent system picker (Mythra Code or the provider's native agents).
+   Morgan (2026-11-01): it was hard to tell which system was selected, and
+   accent colour is off the table (the app already leans on it too much).
+   The choice now reads in three neutral ways:
+   - each option ends in a radio circle: the selected one is a filled ring
+     with a centre dot in the text colour, the other an empty grey ring;
+   - the selected segment is raised with a hairline edge;
+   - the other option's icon and name step back to the muted greys. */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option { grid-template-columns: 22px minmax(0, 1fr) 14px; padding: 5px 9px 5px 7px; color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option::after {
+  content: "";
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option.selected::after {
+  border-color: var(--text);
+  background: radial-gradient(circle, var(--text) 0 3px, transparent 3.5px);
+}
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option.selected { color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .18), 0 0 0 1px var(--line-strong); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:hover:not(.selected) { color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:not(.selected) .sa-engine-mark { opacity: .5; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:not(.selected) .sa-engine-copy strong { font-weight: 500; }
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option:hover:not(.selected)::after { border-color: var(--muted); }
+/* Claude's mark is a white glyph, so give it its orange tile here too. */
+.app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-mark.claude { color: #fff; background: #d97757; }
+@container (max-width: 280px) {
+  .app-shell[data-theme][data-color-scheme] .subagent-panel .sa-engine-option { grid-template-columns: minmax(0, 1fr) 14px; }
+}
 
 /* ---- Motion ---- */
 @media (prefers-reduced-motion: no-preference) {
-  .app-shell[data-theme][data-color-scheme] .composer { transition: border-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), background-color var(--lm-d-3) ease; }
-  .app-shell[data-theme][data-color-scheme] .send-button { transition: background-color var(--lm-d-2) ease, box-shadow var(--lm-d-3) var(--lm-ease-out), filter var(--lm-d-2) ease, transform var(--lm-d-3) var(--lm-spring), scale var(--lm-d-2) var(--lm-spring), color var(--lm-d-2) ease; }
-  .app-shell[data-theme][data-color-scheme] .send-button:hover:not(:disabled) { transform: scale(1.07); }
-  .app-shell[data-theme][data-color-scheme] .send-button > svg { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
-  .app-shell[data-theme][data-color-scheme] .stop-button { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
-  .app-shell[data-theme][data-color-scheme] .steer-button { animation: lm-slide-left var(--lm-d-3) var(--lm-ease-out) backwards; }
-  .app-shell[data-theme][data-color-scheme] .queued-turn { animation: lm-rise-sm var(--lm-d-3) var(--lm-spring-soft) backwards; }
-  .app-shell[data-theme][data-color-scheme] .composer-attachments > span { animation: lm-pop var(--lm-d-3) var(--lm-spring) backwards; }
+  .app-shell[data-theme][data-color-scheme] .composer { transition: border-color var(--lm-d-2) ease, box-shadow var(--lm-d-2) ease, background-color var(--lm-d-2) ease; }
+  .app-shell[data-theme][data-color-scheme] .send-button { transition: background-color var(--lm-d-1) ease, filter var(--lm-d-1) ease, color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .send-button > svg { animation: lm-fade var(--lm-d-2) ease backwards; }
+  .app-shell[data-theme][data-color-scheme] .stop-button { animation: lm-fade var(--lm-d-2) ease backwards; }
+  .app-shell[data-theme][data-color-scheme] .steer-button { animation: lm-slide-left var(--lm-d-2) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .queued-turn { animation: lm-rise-sm var(--lm-d-2) var(--lm-ease-out) backwards; }
+  .app-shell[data-theme][data-color-scheme] .composer-attachments > span { animation: lm-fade var(--lm-d-2) ease backwards; }
   .app-shell[data-theme][data-color-scheme] .mention-menu { animation: lm-pop var(--lm-d-2) var(--lm-ease-out) backwards; transform-origin: bottom left; }
-  .app-shell[data-theme][data-color-scheme] .permission-menu { animation: lm-pop var(--lm-d-3) var(--lm-spring-soft) backwards; transform-origin: bottom left; }
-  .app-shell[data-theme][data-color-scheme] .permission-menu button { transition: background-color var(--lm-d-2) ease, color var(--lm-d-1) ease; }
-  .app-shell[data-theme][data-color-scheme] .toolbar-button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-2) ease, border-color var(--lm-d-2) ease, scale var(--lm-d-2) var(--lm-spring); }
+  .app-shell[data-theme][data-color-scheme] .permission-menu { animation: lm-pop var(--lm-d-2) var(--lm-ease-out) backwards; transform-origin: bottom left; }
+  .app-shell[data-theme][data-color-scheme] .permission-menu button { transition: background-color var(--lm-d-1) ease, color var(--lm-d-1) ease; }
+  .app-shell[data-theme][data-color-scheme] .toolbar-button { transition: color var(--lm-d-1) ease, background-color var(--lm-d-1) ease; }
 }
