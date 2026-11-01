@@ -358,8 +358,19 @@ export async function steerClaudeTurn(
   prompt: string,
   attachments: ClaudeAttachment[],
   expectedTurnId?: string,
-): Promise<void> {
-  await invoke("claude_turn_steer", { threadId, prompt, attachments, expectedTurnId: expectedTurnId ?? null });
+): Promise<string> {
+  // Resolves to the message UUID Claude Code reports in command_lifecycle
+  // events, so the timeline can show when Claude actually read the steer.
+  return invoke<string>("claude_turn_steer", { threadId, prompt, attachments, expectedTurnId: expectedTurnId ?? null });
+}
+
+/**
+ * Interrupt Claude's current step, including foreground sub-agents it is
+ * waiting on, so a queued steer is read now. The turn stays open and Claude
+ * answers the steer; use interruptClaudeTurn to stop the turn instead.
+ */
+export async function deliverClaudeSteerNow(threadId: string, expectedTurnId: string): Promise<void> {
+  await invoke("claude_turn_deliver_steer_now", { threadId, expectedTurnId });
 }
 
 export async function interruptClaudeTurn(threadId: string): Promise<void> {

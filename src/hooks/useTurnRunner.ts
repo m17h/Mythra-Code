@@ -32,6 +32,7 @@ import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/t
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
 import { storedPendingTimedTurns, useTaskStore } from "../lib/taskStore";
+import { claudeSteerReadState } from "../lib/claudeEvents";
 import {
   eligibleQueueHead,
   formatDeliveryTime,
@@ -730,12 +731,15 @@ export function useTurnRunner(context: TurnRunnerContext): {
       });
       try {
         if (isClaudeThread(activeThread)) {
-          await steerClaudeTurn(
+          const steerRuntimeId = await steerClaudeTurn(
             activeThread.id,
             providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
             expectedSteerTurnId,
           );
+          // Claude reads steering between steps. Its lifecycle events then
+          // move this message from "queued" to "read" (claudeEvents.ts).
+          useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, claudeSteerReadState(steerRuntimeId) ?? "queued", steerRuntimeId);
           scheduleClaudeThreadSave(activeThread.id);
         } else if (isCursorThread(activeThread)) {
           await steerCursorTurn(
@@ -754,7 +758,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             input: buildTurnInput(providerText, sentAttachments),
           });
         }
-        useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
+        if (!isClaudeThread(activeThread)) useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
         recordAuthoredPrompt(activeThread.id, steerMessageId);
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
         setTransientStatus("Steer accepted by the active turn");

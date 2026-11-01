@@ -1,7 +1,7 @@
 import { AsyncAgentQuestions } from "./AsyncAgentQuestions";
 import { Children, createContext, Fragment, isValidElement, memo, useCallback, useContext, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDot, Clipboard, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, CircleDot, Clipboard, Clock, CornerUpRight, FileCode2, FoldVertical, MessageSquarePlus, Pencil, TerminalSquare, UsersRound } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Markdown, { type Options as MarkdownOptions } from "react-markdown";
 import remarkBreaks from "remark-breaks";
@@ -23,7 +23,8 @@ import { ProviderLogo } from "./BrandLogos";
 import { decodeHtmlEntities } from "../lib/text";
 import { providerDisplayName } from "../lib/childAgents";
 import { compactionState, compactionTitle } from "../lib/contextCompaction";
-import { describeSubAgentActivity, isSubAgentWorkerActive, resolveSubAgentActivityWorkers, subAgentStatusLabel, subAgentWorkerLabel, summarizeSubAgentActivities, type SubAgentWorker } from "../lib/subAgentActivity";
+import { deliverClaudeSteerNow } from "../lib/claude";
+import { describeSubAgentActivity, isActiveAgentRecord, isSubAgentWorkerActive, resolveSubAgentActivityWorkers, subAgentStatusLabel, subAgentWorkerLabel, summarizeSubAgentActivities, type SubAgentWorker } from "../lib/subAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 import "./ChatTimeline.compaction.css";
@@ -813,6 +814,54 @@ export function AssistantMessageMarkdown({ text, streaming, presentation, reveal
   </FlushStreamingDisplay.Provider>;
 }
 
+/**
+ * A Claude steer the CLI has queued but not read yet. Claude reads steering
+ * between steps, so while its sub-agents run in the foreground the steer
+ * waits for them. "Stop sub-agents and send now" interrupts that step; the
+ * turn stays open and Claude answers the steer right away.
+ */
+function QueuedSteerStatus({ message }: { message: ChatMessage }) {
+  const threadId = useTaskStore((state) => state.activeThreadId);
+  const running = useTaskStore((state) => (threadId ? state.tasks[threadId]?.status === "running" : false));
+  const turnId = useTaskStore((state) => (threadId ? state.tasks[threadId]?.activeTurnId : undefined));
+  const agentsWorking = useTaskStore((state) => Boolean(threadId && state.tasks[threadId]?.agents?.some((agent) =>
+    agent.runtime === "claude" && isActiveAgentRecord(agent.status))));
+  const [delivering, setDelivering] = useState(false);
+  const [failure, setFailure] = useState("");
+  if (!running) {
+    return (
+      <div className="message-steer-status unconfirmed" role="status" title="Claude finished or was stopped before it read this message. Send it again if it still applies.">
+        <AlertTriangle size={11} aria-hidden="true" />
+        Not read before the turn ended
+      </div>
+    );
+  }
+  const deliverNow = async () => {
+    if (!threadId || !turnId || delivering) return;
+    setDelivering(true);
+    setFailure("");
+    try {
+      await deliverClaudeSteerNow(threadId, turnId);
+    } catch (reason) {
+      setFailure(reason instanceof Error ? reason.message : String(reason));
+      setDelivering(false);
+    }
+  };
+  return (
+    <div className="message-steer-status queued" role="status" title={failure || (agentsWorking
+      ? "Claude reads new messages between steps. It is waiting on its sub-agents, so it will read this when they finish."
+      : "Claude reads new messages between steps. It will read this after its current step.")}>
+      <Clock size={11} aria-hidden="true" />
+      {delivering ? "Stopping sub-agents…" : agentsWorking ? "Waiting for Claude's sub-agents to finish" : "Waiting for Claude's next step"}
+      {agentsWorking && !delivering && (
+        <button type="button" className="message-steer-now" onClick={() => void deliverNow()}>
+          Stop sub-agents and send now
+        </button>
+      )}
+    </div>
+  );
+}
+
 export const MessageRow = memo(function MessageRow({ message, provider, onEdit, revealOnMount = false, searching = false }: {
   message: ChatMessage; provider: Provider; onEdit?: (text: string) => void; revealOnMount?: boolean; searching?: boolean;
 }) {
@@ -855,14 +904,18 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit, 
     </div>
   );
   const steerStatus = message.role === "user" && message.steerStatus && (
-    <div className={`message-steer-status ${message.steerStatus}`} role="status" title={message.steerStatus === "unconfirmed"
-      ? "The runtime did not confirm delivery. This guidance may have reached the active turn."
-      : message.steerStatus === "accepted" ? "Runtime input delivery confirmed." : undefined}>
-      {message.steerStatus === "unconfirmed" ? <AlertTriangle size={11} aria-hidden="true" />
-        : message.steerStatus === "accepted" ? <Check size={11} aria-hidden="true" /> : <CornerUpRight size={11} aria-hidden="true" />}
-      {message.steerStatus === "unconfirmed" ? "Steer delivery unconfirmed"
-        : message.steerStatus === "accepted" ? "Steer delivered to runtime input" : "Sending steer…"}
-    </div>
+    message.steerStatus === "queued"
+      ? <QueuedSteerStatus message={message} />
+      : <div className={`message-steer-status ${message.steerStatus}`} role="status" title={message.steerStatus === "unconfirmed"
+        ? "The runtime did not confirm delivery. This guidance may have reached the active turn."
+        : message.steerStatus === "accepted" ? "Runtime input delivery confirmed."
+          : message.steerStatus === "read" ? "Claude has started acting on this message." : undefined}>
+        {message.steerStatus === "unconfirmed" ? <AlertTriangle size={11} aria-hidden="true" />
+          : message.steerStatus === "accepted" || message.steerStatus === "read" ? <Check size={11} aria-hidden="true" /> : <CornerUpRight size={11} aria-hidden="true" />}
+        {message.steerStatus === "unconfirmed" ? "Steer delivery unconfirmed"
+          : message.steerStatus === "accepted" ? "Steer delivered to runtime input"
+            : message.steerStatus === "read" ? "Read by Claude" : "Sending steer…"}
+      </div>
   );
   const avatar = (
     <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>

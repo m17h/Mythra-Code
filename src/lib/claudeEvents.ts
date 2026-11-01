@@ -1008,6 +1008,32 @@ function foregroundError(ctx: ClaudeEventContext, threadId: string, message: str
   if (useTaskStore.getState().activeThreadId === threadId) ctx.onError(message);
 }
 
+/**
+ * Claude Code reports each stream-json message's command_lifecycle (queued,
+ * started, completed) by the UUID we sent. Steered messages carry that UUID
+ * as steerRuntimeId, so the timeline can say "waiting" until Claude actually
+ * reads the steer. A lifecycle can arrive before the steer invoke resolves,
+ * so the latest state per UUID is remembered briefly (claudeSteerReadState).
+ */
+const steerLifecycle = new Map<string, "queued" | "read">();
+
+export function claudeSteerReadState(steerRuntimeId: string): "queued" | "read" | undefined {
+  return steerLifecycle.get(steerRuntimeId);
+}
+
+function applyClaudeSteerLifecycle(threadId: string, commandId: string, state: string): void {
+  if (!commandId) return;
+  const status = state === "queued" ? "queued" : state === "started" || state === "completed" ? "read" : undefined;
+  if (!status) return;
+  if (steerLifecycle.get(commandId) === "read" && status === "queued") return;
+  steerLifecycle.set(commandId, status);
+  if (steerLifecycle.size > 200) steerLifecycle.delete(steerLifecycle.keys().next().value as string);
+  const store = useTaskStore.getState();
+  const message = store.tasks[threadId]?.messages.find((entry) => entry.steerRuntimeId === commandId);
+  if (!message || (message.steerStatus === "read" && status === "queued")) return;
+  store.setMessageSteerStatus(threadId, message.id, status);
+}
+
 export function routeClaudeEvent(
   event: ClaudeEvent,
   ctx: ClaudeEventContext,
@@ -1024,6 +1050,11 @@ export function routeClaudeEvent(
       clearUsageMessageState(threadId, turnId);
       void acknowledgeClaudeTerminalReceipt(threadId, turnId).catch(() => {});
     }
+    return;
+  }
+
+  if (type === "command_lifecycle") {
+    applyClaudeSteerLifecycle(threadId, text(message.command_uuid), text(message.state));
     return;
   }
 
