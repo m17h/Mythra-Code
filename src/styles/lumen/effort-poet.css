@@ -20,8 +20,8 @@
    - Small pixel pips mark each level under the track.
    - Only the chosen level's name shows, in the monospace font, with a
      blinking block cursor after it.
-   - The harder it thinks, the faster the march and the spin
-     (--effort-heat). Change sparks are square pixels that jump in steps.
+   - The march and the spin keep one steady pace at every effort level.
+     Change sparks are square pixels that jump in steps.
    - With reduced motion, everything holds still on the full star.
    The native range input stays, invisible, for keyboard and assistive tech.
    EffortSlider handles click, drag and keyboard, sets --reasoning-fill, and
@@ -70,7 +70,9 @@
 .app-shell[data-theme][data-color-scheme][data-effort-slider="poet"] .composer .openrouter-reasoning-rail,
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .reasoning-rail,
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="poet"] .openrouter-reasoning-rail {
-  --cc-step: calc(1.15s - var(--effort-heat, 0) * .75s);
+  /* Morgan (2026-11-01): one steady pace at every effort level, the pace
+     the Light level used to have, instead of speeding up with effort. */
+  --cc-step: 1.15s;
   position: relative;
   display: block;
   height: 20px;
@@ -330,7 +332,7 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-rail { animation: cc-preview-march .66s steps(3, end) infinite; }
-  .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-thumb { animation: cc-spin .72s steps(6, end) infinite; }
+  .app-shell[data-theme][data-color-scheme] .slider-style-preview.poet .slider-style-thumb { animation: cc-spin .92s steps(6, end) infinite; }
 }
 @keyframes cc-preview-march { to { background-position: 24px 0, 0 0; } }
 
