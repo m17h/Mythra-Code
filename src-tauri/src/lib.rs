@@ -37,6 +37,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod agents;
 mod close_guard;
 mod cursor;
+mod custom_fonts;
 mod file_preview;
 mod git_inspection;
 mod commit_message;
@@ -10526,6 +10527,9 @@ pub fn run() {
                     persistence::local_transcript_search,
                     tray::tray_configure,
                     tray::tray_status,
+                    custom_fonts::custom_font_import,
+                    custom_fonts::custom_font_read,
+                    custom_fonts::custom_font_remove,
                     preference_learning::preference_learning_list,
                     preference_learning::preference_learning_save,
                     preference_learning::preference_learning_forget,

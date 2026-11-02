@@ -1,6 +1,8 @@
 import "./SettingsModal.legacy.css";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
+import { ChatFontSettings, chatFontName, chatFontOptions } from "./ChatFontPicker";
+import { useCustomFonts } from "../lib/customFonts";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
 import { skillMentionRanges } from "../lib/skillMentions";
@@ -279,16 +281,6 @@ function parseTerminalTimeoutMinutes(text: string): number | null {
   const minutes = Number(trimmed);
   return Number.isSafeInteger(minutes) && minutes > 0 && minutes <= MAX_TERMINAL_TIMEOUT_MINUTES ? minutes : null;
 }
-
-// Picker-only metadata stays in the lazy Settings chunk. The actual stacks
-// live in CSS, while startup only needs the compact persisted id sanitizer.
-// Keep these ids synchronized with sanitizeChatFont and --chat-font-*.
-const CHAT_FONTS: ReadonlyArray<{ id: ChatFont; name: string; description: string }> = [
-  { id: "system", name: "Interface default", description: "The same typeface as the rest of Mythra Code" },
-  { id: "humanist", name: "Humanist sans", description: "Open, warm letterforms with a little more air" },
-  { id: "serif", name: "Reading serif", description: "Book-like text for long answers" },
-  { id: "mono", name: "Monospace", description: "Fixed-width throughout, like a terminal" },
-];
 
 const INTERFACE_SIZE_OPTIONS: AppSelectOption[] = [
   { value: "90", label: "Compact", detail: "90% · fit more on screen" },
@@ -1789,25 +1781,7 @@ export function SettingsModal({
 
             <div className="set-group">
               <h4>Chat typeface</h4>
-              <p>Conversation text and the composer only. The rest of the interface keeps its own type, and code stays monospaced.</p>
-              <div className="set-card bare"><div className="set-body">
-                    <div className="chat-font-grid">
-                      {CHAT_FONTS.map((font) => (
-                        <button
-                          type="button"
-                          key={font.id}
-                          className={`chat-font-card ${local.chatFont === font.id ? "selected" : ""}`}
-                          data-chat-font-option={font.id}
-                          aria-pressed={local.chatFont === font.id}
-                          onClick={() => previewChatFont(font.id)}
-                        >
-                          <span className="chat-font-preview" style={{ fontFamily: `var(--chat-font-${font.id})` }} aria-hidden="true">Ag</span>
-                          <span><strong>{font.name}</strong><small>{font.description}</small></span>
-                          {local.chatFont === font.id && <Check size={14} />}
-                        </button>
-                      ))}
-                    </div>
-              </div></div>
+              <ChatFontSettings value={local.chatFont} onChange={previewChatFont} />
             </div>
 
             <div className="set-group">
@@ -2794,6 +2768,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
   onEffortSliderPreview: (style: EffortSliderStyle) => void;
   onChatFontPreview: (font: ChatFont) => void;
 }) {
+  const customFonts = useCustomFonts();
   const [projectToAdd, setProjectToAdd] = useState("");
   const configured = projects.filter((project) => project.overrides?.defaults);
   const available = projects.filter((project) => !project.overrides?.defaults);
@@ -2823,13 +2798,8 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
     })),
   ];
   const fontOptions: AppSelectOption[] = [
-    { value: "", label: "Use global font", detail: CHAT_FONTS.find((font) => font.id === settings.chatFont)?.name ?? settings.chatFont, icon: <RotateCcw size={14} /> },
-    ...CHAT_FONTS.map((font) => ({
-      value: font.id,
-      label: font.name,
-      detail: font.description,
-      icon: <BookOpenCheck size={14} />,
-    })),
+    { value: "", label: "Use global font", detail: chatFontName(settings.chatFont, customFonts), icon: <RotateCcw size={14} /> },
+    ...chatFontOptions(customFonts),
   ];
 
   const updateDefaults = (id: string, update: (defaults: ProjectDefaults) => ProjectDefaults) => {

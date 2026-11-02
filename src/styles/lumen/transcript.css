@@ -135,6 +135,9 @@
   background: var(--lm-press);
   font-size: .86em;
 }
+/* VT323 enlarges chat prose (styles.css); inline code is sized in em from
+   the prose, so it keeps its usual size here. */
+.app-shell[data-theme][data-color-scheme][data-chat-font="vt323"] .rich-markdown code:not(pre code) { font-size: .65em; }
 
 /* ---- Code blocks ----
    A plain neutral block. Reserve room above the code for the copy button,

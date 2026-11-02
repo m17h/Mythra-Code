@@ -72,7 +72,11 @@ export const EFFORT_SLIDER_STYLES: Array<{ id: EffortSliderStyle; name: string; 
  * unrecognised falls back to the interface default rather than an unstyled
  * shell attribute. */
 export function sanitizeChatFont(value: unknown): ChatFont {
-  return value === "humanist" || value === "serif" || value === "mono" ? value : "system";
+  if (value === "humanist" || value === "serif" || value === "mono" || value === "pixelify" || value === "vt323") return value;
+  // Custom fonts resolve against the per-device library at render time; a
+  // missing one falls back to the interface font (customFonts.ts).
+  if (typeof value === "string" && /^custom:[a-z0-9-]{1,64}$/.test(value)) return value as ChatFont;
+  return "system";
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

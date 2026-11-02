@@ -61,6 +61,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.turnContextReceiptsEnabled",
   "kiwi.trayStatus",
   "kiwi.performanceOverlay",
+  "kiwi.customFonts",
 ] as const;
 
 /**
