@@ -6919,6 +6919,32 @@ fn claude_read_only_denial(read_only: bool, message: &Value) -> Option<Value> {
     }))
 }
 
+/// Morgan (2026-11-01): full access means full access. Claude Code's
+/// bypassPermissions mode still routes some tool calls to the permission
+/// prompt (its own safety checks, for example on certain shell commands or
+/// protected paths). On a full-access turn, approve every such request here,
+/// with its input unchanged, so the user is never asked. Requests that are
+/// questions for the user rather than permission checks still reach them.
+fn claude_full_access_approval(full_access: bool, message: &Value) -> Option<Value> {
+    let request = &message["request"];
+    if !full_access
+        || message["type"] != "control_request"
+        || request["subtype"] != "can_use_tool"
+        || matches!(request["tool_name"].as_str(), Some("AskUserQuestion" | "ExitPlanMode"))
+    {
+        return None;
+    }
+    let request_id = message["request_id"].as_str()?;
+    let mut decision = json!({ "behavior": "allow" });
+    if let Some(input) = request.get("input").filter(|input| !input.is_null()) {
+        decision["updatedInput"] = input.clone();
+    }
+    Some(json!({
+        "type": "control_response",
+        "response": { "subtype": "success", "request_id": request_id, "response": decision }
+    }))
+}
+
 /// A scheduled workflow has nobody to answer Claude's stdio permission or
 /// question prompts. Deny the pending tool request through the normal control
 /// protocol so the turn can either continue within its saved access or fail.
@@ -7330,6 +7356,7 @@ async fn claude_turn_start(
     );
     let stdout_app = app.clone();
     let read_only = options.permission == "read-only";
+    let full_access = options.permission == "full";
     let interactive = options.interactive;
     let stdout_mailbox_config = if options.native_subagents {
         None
@@ -7570,6 +7597,7 @@ async fn claude_turn_start(
                     None
                 };
                 if let Some(response) = mailbox_response
+                    .or_else(|| claude_full_access_approval(full_access, &message))
                     .or_else(|| claude_unattended_denial(interactive, &message))
                     .or_else(|| claude_read_only_denial(read_only, &message))
                 {
