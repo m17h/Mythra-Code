@@ -37,6 +37,7 @@ import type { CursorRuntimeStatus } from "../lib/cursor";
 import { onboardingProviderReadiness, type OnboardingProviderStatus } from "../lib/onboardingReadiness";
 import type { OnboardingSettingsDraft } from "../lib/onboardingSettings";
 import { EFFORT_SLIDER_STYLES, THEMES, sanitizeChatFont, sanitizeEffortSlider, sanitizeTheme, themeColorScheme } from "../lib/appConfig";
+import { chatFontCss, customFontFor, useCustomFonts } from "../lib/customFonts";
 import type { Account, ChatFont, EffortSliderStyle, Provider, SettingsSection, ThemeName } from "../types";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { ClaudeLogo, CursorLogo, LmStudioLogo, OpenAILogo, OpenRouterLogo } from "./BrandLogos";
@@ -433,11 +434,22 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onThemeChange, 
 }) {
   const headingId = useId();
   const rootRef = useRef<HTMLElement>(null);
+  const customFonts = useCustomFonts();
   useLayoutEffect(() => {
     if (open && !preview) onPreview(hostAppearance(rootRef.current));
   }, [onPreview, open, preview]);
 
   const current = preview ?? hostAppearance(null);
+  // Keep the compact four-choice tour, while representing a font already
+  // selected in Settings so reopening the tour preserves its actual preview.
+  const fontOptions = CHAT_FONT_OPTIONS.some((font) => font.id === current.chatFont)
+    ? CHAT_FONT_OPTIONS
+    : [...CHAT_FONT_OPTIONS, {
+      id: current.chatFont,
+      name: current.chatFont === "pixelify" ? "Pixelify Sans"
+        : current.chatFont === "vt323" ? "VT323"
+          : customFontFor(current.chatFont, customFonts)?.name ?? "Interface default",
+    }];
   const update = (patch: Partial<AppearancePreview>) => onPreview({ ...current, ...patch });
   const theme = THEMES.find((entry) => entry.id === current.theme) ?? THEMES[0];
   const styleIndex = Math.max(0, EFFORT_SLIDER_STYLES.findIndex((style) => style.id === current.effortSlider));
@@ -474,7 +486,7 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onThemeChange, 
             className="ob-segmented ob-fonts"
             value={current.chatFont}
             onChange={(next) => update({ chatFont: next })}
-            options={CHAT_FONT_OPTIONS.map((font) => ({ id: font.id, label: font.name, content: font.name, style: { fontFamily: `var(--chat-font-${font.id})` } }))}
+            options={fontOptions.map((font) => ({ id: font.id, label: font.name, content: font.name, style: { fontFamily: chatFontCss(font.id, customFonts) } }))}
           />
         </div>
         <div className="ob-field">
@@ -492,7 +504,7 @@ function PersonalizePage({ headingRef, open, preview, onPreview, onThemeChange, 
           <span className="ob-preview-dots" aria-hidden="true"><i /><i /><i /></span>
           <span className="ob-preview-badge"><Sparkles size={11} aria-hidden="true" />Font & slider preview</span>
         </div>
-        <div className="ob-preview-chat" style={{ fontFamily: `var(--chat-font-${current.chatFont})` }}>
+        <div className="ob-preview-chat" style={{ fontFamily: chatFontCss(current.chatFont, customFonts) }}>
           <p className="ob-preview-user">Tidy up the settings panel.</p>
           <p className="ob-preview-reply">I’ll read it first, then propose a small diff you can review.</p>
         </div>

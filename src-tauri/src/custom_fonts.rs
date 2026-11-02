@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{ipc::Response, AppHandle};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MAX_FONT_BYTES: u64 = 20 * 1024 * 1024;
 const FONT_EXTENSIONS: [&str; 4] = ["ttf", "otf", "woff", "woff2"];
@@ -40,15 +41,53 @@ fn has_font_signature(bytes: &[u8]) -> bool {
 
 /// Only names this module created: `<uuid>.<font extension>`, no paths.
 fn stored_font_path(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
-    let valid = !file.is_empty()
-        && file.len() <= 80
-        && file.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
-        && !file.starts_with('.')
-        && font_extension(Path::new(file)).is_some();
+    let valid = file.split_once('.').is_some_and(|(id, extension)| {
+        FONT_EXTENSIONS.contains(&extension)
+            && uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id)
+    });
     if !valid {
         return Err("That custom font file name is not valid.".into());
     }
     Ok(fonts_dir(app)?.join(file))
+}
+
+fn validate_font_metadata(metadata: &std::fs::Metadata) -> Result<(), String> {
+    if !metadata.is_file() {
+        return Err("Choose a font file, not a folder or another type of file.".into());
+    }
+    if metadata.len() > MAX_FONT_BYTES {
+        return Err("That font file is larger than 20 MB.".into());
+    }
+    Ok(())
+}
+
+async fn read_font_bytes(path: &Path, context: &str) -> Result<Vec<u8>, String> {
+    // Reject special files before opening them (a pipe could otherwise wait
+    // indefinitely), then validate the actual opened file as well.
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| format!("{context}: {error}"))?;
+    validate_font_metadata(&metadata)?;
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| format!("{context}: {error}"))?;
+    let metadata = file.metadata()
+        .await
+        .map_err(|error| format!("{context}: {error}"))?;
+    validate_font_metadata(&metadata)?;
+    // Metadata alone does not limit allocation if the file grows while read.
+    // The extra byte lets us distinguish a 20 MB font from an oversized one.
+    let mut bytes = Vec::new();
+    file.take(MAX_FONT_BYTES + 1).read_to_end(&mut bytes)
+        .await
+        .map_err(|error| format!("{context}: {error}"))?;
+    if bytes.len() as u64 > MAX_FONT_BYTES {
+        return Err("That font file is larger than 20 MB.".into());
+    }
+    if !has_font_signature(&bytes) {
+        return Err("That file does not look like a font Mythra Code can use.".into());
+    }
+    Ok(bytes)
 }
 
 fn readable_font_name(path: &Path) -> String {
@@ -62,38 +101,35 @@ pub(crate) async fn custom_font_import(app: AppHandle, path: String) -> Result<I
     let source = PathBuf::from(&path);
     let extension = font_extension(&source)
         .ok_or_else(|| "Choose a .ttf, .otf, .woff or .woff2 font file.".to_string())?;
-    let metadata = tokio::fs::metadata(&source)
-        .await
-        .map_err(|error| format!("Could not open the font file: {error}"))?;
-    if !metadata.is_file() {
-        return Err("Choose a font file, not a folder.".into());
-    }
-    if metadata.len() > MAX_FONT_BYTES {
-        return Err("That font file is larger than 20 MB.".into());
-    }
-    let bytes = tokio::fs::read(&source)
-        .await
-        .map_err(|error| format!("Could not read the font file: {error}"))?;
-    if !has_font_signature(&bytes) {
-        return Err("That file does not look like a font Mythra Code can use.".into());
-    }
+    let bytes = read_font_bytes(&source, "Could not read the font file").await?;
     let directory = fonts_dir(&app)?;
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| format!("Could not create the custom fonts folder: {error}"))?;
     let file = format!("{}.{extension}", uuid::Uuid::new_v4());
-    tokio::fs::write(directory.join(&file), &bytes)
+    let destination_path = directory.join(&file);
+    let mut destination = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination_path)
         .await
         .map_err(|error| format!("Could not save the font: {error}"))?;
+    let saved = async {
+        destination.write_all(&bytes).await?;
+        destination.flush().await
+    }.await;
+    drop(destination);
+    if let Err(error) = saved {
+        let _ = tokio::fs::remove_file(&destination_path).await;
+        return Err(format!("Could not save the font: {error}"));
+    }
     Ok(ImportedFont { file, name: readable_font_name(&source) })
 }
 
 #[tauri::command]
 pub(crate) async fn custom_font_read(app: AppHandle, file: String) -> Result<Response, String> {
     let path = stored_font_path(&app, &file)?;
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|error| format!("Could not load the custom font: {error}"))?;
+    let bytes = read_font_bytes(&path, "Could not load the custom font").await?;
     Ok(Response::new(bytes))
 }
 

@@ -2,7 +2,7 @@ import "./SettingsModal.legacy.css";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { open as openFolderDialog, save } from "@tauri-apps/plugin-dialog";
 import { ChatFontSettings, chatFontName, chatFontOptions } from "./ChatFontPicker";
-import { useCustomFonts } from "../lib/customFonts";
+import { useCustomFontFaces, useCustomFonts } from "../lib/customFonts";
 import { isTauri } from "@tauri-apps/api/core";
 import { confirmDialog } from "../lib/confirmDialog";
 import { skillMentionRanges } from "../lib/skillMentions";
@@ -1781,7 +1781,7 @@ export function SettingsModal({
 
             <div className="set-group">
               <h4>Chat typeface</h4>
-              <ChatFontSettings value={local.chatFont} onChange={previewChatFont} />
+              <ChatFontSettings value={local.chatFont} onChange={previewChatFont} active={open && settingsSection === "general"} />
             </div>
 
             <div className="set-group">
@@ -1992,6 +1992,7 @@ export function SettingsModal({
             </div>
           </div>
           <ProjectDefaultsSettings
+            active={open && settingsSection === "projects"}
             projects={localProjects}
             activeProjectId={activeProjectId}
             settings={local}
@@ -2751,7 +2752,8 @@ function UsageDisplaySettings({ value, onChange }: { value: UsageDisplayMode; on
   </section>;
 }
 
-function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, modelFavorites, onToggleModelFavorite, onDiscoverOpenRouterModels, onProjects, onThemePreview, onEffortSliderPreview, onChatFontPreview }: {
+function ProjectDefaultsSettings({ active, projects, activeProjectId, settings, runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, modelFavorites, onToggleModelFavorite, onDiscoverOpenRouterModels, onProjects, onThemePreview, onEffortSliderPreview, onChatFontPreview }: {
+  active: boolean;
   projects: Project[];
   activeProjectId: string | null;
   settings: AppSettings;
@@ -2769,6 +2771,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
   onChatFontPreview: (font: ChatFont) => void;
 }) {
   const customFonts = useCustomFonts();
+  useCustomFontFaces(customFonts, active);
   const [projectToAdd, setProjectToAdd] = useState("");
   const configured = projects.filter((project) => project.overrides?.defaults);
   const available = projects.filter((project) => !project.overrides?.defaults);
@@ -2842,6 +2845,9 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
 
       {!projects.length ? null : configured.length ? <div className="project-default-list">{configured.map((project) => {
         const defaults = project.overrides!.defaults!;
+        // A removed per-device font uses the interface fallback while retaining
+        // the stored override until the user explicitly chooses a replacement.
+        const selectedFont = defaults.chatFont && !fontOptions.some((option) => option.value === defaults.chatFont) ? "system" : defaults.chatFont ?? "";
         const modelOptions = modelOptionsForProvider(defaults.provider, defaults.model, catalogs);
         const selectedDisplay = savedClaudeModelDisplay(defaults.provider, defaults.model, catalogs);
         const setProvider = (provider: Provider) => {
@@ -2862,7 +2868,7 @@ function ProjectDefaultsSettings({ projects, activeProjectId, settings, runtimeM
               <div className="project-default-field project-default-model"><span>Model</span><AppSelectMenu value={defaults.model} options={modelOptions} selectedDisplay={selectedDisplay} ariaLabel={`Default model for ${project.name}`} placeholder="Choose a model…" searchable={modelOptions.length > 8 || defaults.provider === "openrouter" || defaults.provider === "lmstudio" || defaults.provider === "cursor"} menuPlacement="top" favorites={favoriteModels(modelFavorites, defaults.provider)} {...(onToggleModelFavorite ? { onToggleFavorite: (model: string) => onToggleModelFavorite(defaults.provider, model) } : {})} {...(defaults.provider === "openrouter" && onDiscoverOpenRouterModels ? { onSearch: onDiscoverOpenRouterModels } : {})} emptyMessage={defaults.provider === "lmstudio" ? "Connect LM Studio and refresh its catalog first." : "No models are currently available for this provider."} onChange={(model) => updateDefaults(project.id, (current) => ({ ...current, model }))} /></div>
               <div className="project-default-field"><span>App theme</span><AppSelectMenu value={defaults.theme ?? ""} options={themeOptions} ariaLabel={`App theme for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.theme = value as ThemeName; else delete next.theme; return next; }); if (project.id === activeProjectId) onThemePreview((value || settings.theme) as ThemeName); }} /></div>
               <div className="project-default-field"><span>Effort slider</span><AppSelectMenu value={defaults.effortSlider ?? ""} options={effortOptions} ariaLabel={`Effort slider for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.effortSlider = value as EffortSliderStyle; else delete next.effortSlider; return next; }); if (project.id === activeProjectId) onEffortSliderPreview((value || settings.effortSlider) as EffortSliderStyle); }} /></div>
-              <div className="project-default-field"><span>Chat font</span><AppSelectMenu value={defaults.chatFont ?? ""} options={fontOptions} ariaLabel={`Chat font for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.chatFont = value as ChatFont; else delete next.chatFont; return next; }); if (project.id === activeProjectId) onChatFontPreview((value || settings.chatFont) as ChatFont); }} /></div>
+              <div className="project-default-field"><span>Chat font</span><AppSelectMenu value={selectedFont} options={fontOptions} ariaLabel={`Chat font for ${project.name}`} menuPlacement="top" onChange={(value) => { updateDefaults(project.id, (current) => { const next = { ...current }; if (value) next.chatFont = value as ChatFont; else delete next.chatFont; return next; }); if (project.id === activeProjectId) onChatFontPreview((value || settings.chatFont) as ChatFont); }} /></div>
             </div>
             {!defaults.model && <p className="project-default-warning">Choose a model before saving these project defaults.</p>}
           </article>
