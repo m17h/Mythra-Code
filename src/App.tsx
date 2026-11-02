@@ -872,10 +872,8 @@ export default function App() {
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
-  // Custom chat fonts (Settings > Interface): file fonts are registered with
-  // the document so they render wherever --chat-font is used.
+  // Custom chat fonts (Settings > Interface), persisted per device.
   const customFonts = useCustomFonts();
-  useCustomFontFaces(customFonts);
   const [previewUiScale, setPreviewUiScale] = useState<number | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
   const [globalInstructionFiles, setGlobalInstructionFiles] = useState<InstructionFileDescriptor[]>([]);
@@ -9080,7 +9078,13 @@ export default function App() {
     },
   });
 
-  const activeChatFont = previewChatFont ?? projectDefaults?.chatFont ?? settings.chatFont;
+  const requestedChatFont = previewChatFont ?? projectDefaults?.chatFont ?? settings.chatFont;
+  const activeCustomFonts = useMemo(() => customFonts.filter((font) => `custom:${font.id}` === requestedChatFont), [customFonts, requestedChatFont]);
+  // Only the selected file needs decoding at startup. Settings loads samples
+  // when its picker opens. Missing library entries render as the interface
+  // font without rewriting the saved global/project preference.
+  useCustomFontFaces(activeCustomFonts);
+  const activeChatFont = requestedChatFont.startsWith("custom:") && !activeCustomFonts.length ? "system" : requestedChatFont;
   // Onboarding edits the app-wide look. Show that look even when the active
   // project has its own theme, without overwriting the project's saved choice.
   const activeTheme = previewTheme ?? (onboardingOpen ? settings.theme : projectDefaults?.theme ?? settings.theme);

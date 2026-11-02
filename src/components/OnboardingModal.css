@@ -178,7 +178,7 @@
 .ob-swatch-option.checked { border-color: var(--green); box-shadow: 0 0 0 1px transparent; }
 .ob-swatch { width: 22px; height: 22px; border-radius: 50%; background: conic-gradient(from 210deg, var(--sw-a) 0 33%, var(--sw-b) 0 66%, var(--sw-c) 0); }
 .ob-segmented.ob-fonts { justify-self: stretch; display: flex; flex-wrap: wrap; }
-.ob-fonts [role="radio"] { flex: 1 0 auto; padding: 0 9px; }
+.ob-fonts [role="radio"] { flex: 1 0 auto; min-width: 0; max-width: 100%; padding: 4px 9px; white-space: normal; overflow-wrap: anywhere; }
 .ob-style-stepper { justify-self: start; display: inline-grid; grid-template-columns: 28px minmax(104px, auto) 28px; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--field); }
 .ob-style-name { display: grid; justify-items: center; line-height: 1.2; }
 .ob-style-name strong { font-size: var(--fs-ui); font-weight: 650; }

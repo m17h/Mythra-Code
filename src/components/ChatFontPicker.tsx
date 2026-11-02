@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { FileUp, Plus, Trash2, Type } from "lucide-react";
 import { AppSelectMenu, type AppSelectOption } from "./AppSelectMenu";
@@ -10,6 +10,7 @@ import {
   importCustomFontFile,
   isFontInstalled,
   removeCustomFont,
+  useCustomFontFaces,
   useCustomFonts,
   type CustomChatFont,
 } from "../lib/customFonts";
@@ -52,63 +53,113 @@ export function chatFontName(chatFont: ChatFont, library: CustomChatFont[]): str
 }
 
 /** Settings > Interface: the chat font dropdown and the custom font library. */
-export function ChatFontSettings({ value, onChange }: { value: ChatFont; onChange: (font: ChatFont) => void }) {
+export function ChatFontSettings({ value, onChange, active = true }: { value: ChatFont; onChange: (font: ChatFont) => void; active?: boolean }) {
   const library = useCustomFonts();
-  const [busy, setBusy] = useState(false);
+  useCustomFontFaces(library, active);
+  const [busy, setBusy] = useState<"file" | "remove" | null>(null);
   const [error, setError] = useState("");
   const [installedDraft, setInstalledDraft] = useState<string | null>(null);
+  const operationRef = useRef(false);
+  const sessionRef = useRef(0);
+  const activeRef = useRef(active);
+  const selectionRef = useRef({ value, onChange });
+  const installedButtonRef = useRef<HTMLButtonElement>(null);
+  const fileButtonRef = useRef<HTMLButtonElement>(null);
+  activeRef.current = active;
+  selectionRef.current = { value, onChange };
+  // Settings stays mounted while closed. An operation may finish adding to
+  // the library, but must never select into a closed or reopened draft.
+  useEffect(() => {
+    sessionRef.current += 1;
+    if (!active) {
+      setInstalledDraft(null);
+      setError("");
+    }
+    return () => { sessionRef.current += 1; };
+  }, [active]);
+  const ownsSession = (session: number) => activeRef.current && sessionRef.current === session;
+  const cancelInstalled = () => {
+    const session = sessionRef.current;
+    setInstalledDraft(null);
+    setError("");
+    requestAnimationFrame(() => {
+      if (ownsSession(session)) installedButtonRef.current?.focus();
+    });
+  };
   // A custom font removed elsewhere shows as the interface default.
   const current = value.startsWith("custom:") && !customFontFor(value, library) ? "system" : value;
 
   const addFile = async () => {
+    if (!activeRef.current || operationRef.current) return;
+    operationRef.current = true;
+    const session = sessionRef.current;
+    const initialValue = selectionRef.current.value;
+    setBusy("file");
     setError("");
-    const path = await openFileDialog({
-      multiple: false,
-      directory: false,
-      title: "Choose a font file",
-      filters: [{ name: "Fonts", extensions: ["ttf", "otf", "woff", "woff2"] }],
-    });
-    if (typeof path !== "string") return;
-    setBusy(true);
     try {
+      const path = await openFileDialog({
+        multiple: false,
+        directory: false,
+        title: "Choose a font file",
+        filters: [{ name: "Fonts", extensions: ["ttf", "otf", "woff", "woff2"] }],
+      });
+      if (typeof path !== "string" || !ownsSession(session)) return;
       const font = await importCustomFontFile(path);
-      onChange(customChatFontId(font));
+      if (ownsSession(session) && selectionRef.current.value === initialValue) {
+        selectionRef.current.onChange(customChatFontId(font));
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (ownsSession(session)) setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setBusy(false);
+      operationRef.current = false;
+      setBusy(null);
     }
   };
 
   const addInstalled = () => {
+    if (!activeRef.current || operationRef.current) return;
     const name = installedDraft?.trim() ?? "";
     setError("");
     if (!name) return;
-    if (!isFontInstalled(name)) {
-      setError(`Mythra Code can't find a font called "${name}" on this computer. Check the exact name in your system's font manager.`);
-      return;
-    }
     try {
+      if (!isFontInstalled(name)) {
+        setError(`Mythra Code can't find a font called "${name}" on this computer. Check the exact name in your system's font manager.`);
+        return;
+      }
       const font = addInstalledCustomFont(name);
-      setInstalledDraft(null);
+      cancelInstalled();
       onChange(customChatFontId(font));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
-  const remove = async (font: CustomChatFont) => {
+  const remove = async (font: CustomChatFont, button: HTMLButtonElement) => {
+    if (!activeRef.current || operationRef.current) return;
+    operationRef.current = true;
+    const session = sessionRef.current;
+    setBusy("remove");
     setError("");
-    if (value === customChatFontId(font)) onChange("system");
     try {
       await removeCustomFont(font.id);
+      if (ownsSession(session)) {
+        if (selectionRef.current.value === customChatFontId(font)) selectionRef.current.onChange("system");
+        if (document.activeElement === button || (!button.isConnected && document.activeElement === document.body)) {
+          requestAnimationFrame(() => {
+            if (ownsSession(session)) fileButtonRef.current?.focus();
+          });
+        }
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (ownsSession(session)) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      operationRef.current = false;
+      setBusy(null);
     }
   };
 
   return (
-    <div className="set-card">
+    <div className="set-card chat-font-settings">
       <div className="set-row">
         <div className="set-copy">
           <strong>Chat font</strong>
@@ -127,18 +178,18 @@ export function ChatFontSettings({ value, onChange }: { value: ChatFont; onChang
       <div className="set-row chat-font-library">
         <div className="set-copy">
           <strong>Custom fonts</strong>
-          <small>Add a font file (.ttf, .otf, .woff or .woff2), or use a font already installed on this computer.</small>
+          <small>Add a font file (.ttf, .otf, .woff or .woff2), or use a font already installed on this computer. Library additions and removals are saved immediately; Save applies your font selection.</small>
         </div>
         <div className="set-control chat-font-actions">
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => void addFile()}>
-            <FileUp size={13} /> {busy ? "Adding…" : "Add font file"}
+          <button ref={fileButtonRef} type="button" className="secondary-button" disabled={!!busy} onClick={() => void addFile()}>
+            <FileUp size={13} /> {busy === "file" ? "Adding…" : "Add font file"}
           </button>
-          <button type="button" className="secondary-button" disabled={busy || installedDraft !== null} onClick={() => { setError(""); setInstalledDraft(""); }}>
+          <button ref={installedButtonRef} type="button" className="secondary-button" disabled={!!busy || installedDraft !== null} onClick={() => { setError(""); setInstalledDraft(""); }}>
             <Type size={13} /> Use installed font
           </button>
         </div>
         {installedDraft !== null && (
-          <form className="chat-font-installed" onSubmit={(event) => { event.preventDefault(); addInstalled(); }}>
+          <form className="chat-font-installed" onSubmit={(event) => { event.preventDefault(); addInstalled(); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelInstalled(); } }}>
             <input
               autoFocus
               value={installedDraft}
@@ -146,10 +197,9 @@ export function ChatFontSettings({ value, onChange }: { value: ChatFont; onChang
               aria-label="Installed font name"
               spellCheck={false}
               onChange={(event) => setInstalledDraft(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setInstalledDraft(null); setError(""); } }}
             />
-            <button type="submit" className="secondary-button" disabled={!installedDraft.trim()}><Plus size={13} /> Add</button>
-            <button type="button" className="secondary-button" onClick={() => { setInstalledDraft(null); setError(""); }}>Cancel</button>
+            <button type="submit" className="secondary-button" disabled={!!busy || !installedDraft.trim()}><Plus size={13} /> Add</button>
+            <button type="button" className="secondary-button" onClick={cancelInstalled}>Cancel</button>
           </form>
         )}
         {error && <p className="chat-font-error" role="alert">{error}</p>}
@@ -162,7 +212,7 @@ export function ChatFontSettings({ value, onChange }: { value: ChatFont; onChang
                   <strong>{font.name}</strong>
                   <small>{font.source === "file" ? "From a font file" : "Installed on this computer"}</small>
                 </span>
-                <button type="button" className="icon-button" aria-label={`Remove ${font.name}`} title="Remove this font" onClick={() => void remove(font)}>
+                <button type="button" className="icon-button" disabled={!!busy} aria-label={`Remove ${font.name}`} title="Remove this font" onClick={(event) => void remove(font, event.currentTarget)}>
                   <Trash2 size={13} />
                 </button>
               </li>

@@ -557,13 +557,28 @@ export const Composer = forwardRef<ComposerHandle, {
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    resizeComposerTextarea(textarea, highlightRef.current);
-    // Focus stays on the recorder controls. Follow incoming words explicitly
-    // once the draft is taller than the text area's bounded height.
-    if (liveDraftRef.current?.key === props.threadKey) {
-      textarea.scrollTop = textarea.scrollHeight;
-      syncComposerHighlight(textarea, highlightRef.current);
-    }
+    const resize = () => {
+      resizeComposerTextarea(textarea, highlightRef.current);
+      // Focus stays on the recorder controls. Follow incoming words explicitly
+      // once the draft is taller than the text area's bounded height.
+      if (liveDraftRef.current?.key === props.threadKey) {
+        textarea.scrollTop = textarea.scrollHeight;
+        syncComposerHighlight(textarea, highlightRef.current);
+      }
+    };
+    resize();
+    // Bundled/file faces can replace fallback metrics after this layout pass
+    // without changing the selected font ID or draft. Reflow both input layers.
+    document.fonts?.addEventListener("loadingdone", resize);
+    document.fonts?.addEventListener("loadingerror", resize);
+    // A binary FontFace can finish decoding before registration, in which
+    // case FontFaceSet emits no loading event for its changed metrics.
+    document.addEventListener("mythra-custom-fonts-changed", resize);
+    return () => {
+      document.fonts?.removeEventListener("loadingdone", resize);
+      document.fonts?.removeEventListener("loadingerror", resize);
+      document.removeEventListener("mythra-custom-fonts-changed", resize);
+    };
   }, [draft, hasSkillMentions, props.chatFont, props.threadKey]);
 
   const canLaunchWorkflow = Boolean(selectedWorkflow && workflowAvailable

@@ -17,27 +17,34 @@ export type CustomChatFont =
 
 const KEY = "kiwi.customFonts";
 const MAX_FONTS = 24;
+let pendingImports = 0;
 let fonts: CustomChatFont[] | undefined;
 const listeners = new Set<() => void>();
 
 function sanitize(value: unknown): CustomChatFont[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
+  const seenFiles = new Set<string>();
   const result: CustomChatFont[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
     const { id, name, source } = entry as Record<string, unknown>;
     if (typeof id !== "string" || !/^[a-z0-9-]{1,64}$/.test(id) || seen.has(id)) continue;
     if (typeof name !== "string" || !name.trim()) continue;
-    if (source === "file" && typeof (entry as { file?: unknown }).file === "string") {
-      result.push({ id, name: name.trim().slice(0, 60), source, file: (entry as { file: string }).file });
+    if (source === "file") {
+      const file = (entry as { file?: unknown }).file;
+      if (typeof file !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.(?:ttf|otf|woff2?)$/.test(file) || seenFiles.has(file)) continue;
+      seenFiles.add(file);
+      result.push({ id, name: name.trim().slice(0, 60), source, file });
     } else if (source === "installed" && typeof (entry as { family?: unknown }).family === "string") {
       const family = cleanFamily((entry as { family: string }).family);
-      if (family) result.push({ id, name: name.trim().slice(0, 60), source, family });
+      if (!family) continue;
+      result.push({ id, name: name.trim().slice(0, 60), source, family });
     } else continue;
     seen.add(id);
+    if (result.length === MAX_FONTS) break;
   }
-  return result.slice(0, MAX_FONTS);
+  return result;
 }
 
 function snapshot(): CustomChatFont[] {
@@ -68,9 +75,13 @@ export function customFontFor(chatFont: ChatFont, library: CustomChatFont[]): Cu
   return chatFont.startsWith("custom:") ? library.find((font) => font.id === chatFont.slice(7)) : undefined;
 }
 
-/** Strip characters that could break out of a quoted CSS font-family name. */
+/** Normalize family names; quote them separately so punctuation remains valid. */
 function cleanFamily(family: string): string {
-  return family.replace(/["'\\;{}<>\n\r\t]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
+  return family.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function quotedFamily(family: string): string {
+  return `"${family.replace(/["\\]/g, "\\$&")}"`;
 }
 
 function fontFamily(font: CustomChatFont): string {
@@ -79,7 +90,7 @@ function fontFamily(font: CustomChatFont): string {
 
 /** The CSS font stack for a custom font, falling back to the interface font. */
 export function customFontStack(font: CustomChatFont): string {
-  return `"${fontFamily(font)}", var(--font-sans)`;
+  return `${quotedFamily(fontFamily(font))}, var(--font-sans)`;
 }
 
 /**
@@ -93,32 +104,52 @@ export function chatFontCss(chatFont: ChatFont, library: CustomChatFont[]): stri
   return font ? customFontStack(font) : "var(--chat-font-system)";
 }
 
-const loads = new Map<string, Promise<void>>();
+type FileFontLoad = { file: string; promise: Promise<void>; face?: FontFace };
+const loads = new Map<string, FileFontLoad>();
+
+function forgetFontFace(id: string): void {
+  const entry = loads.get(id);
+  loads.delete(id);
+  if (entry?.face && document.fonts.delete(entry.face)) {
+    document.dispatchEvent(new Event("mythra-custom-fonts-changed"));
+  }
+}
 
 /** Register a file font with the document once; installed fonts need nothing. */
 export function ensureCustomFontLoaded(font: CustomChatFont): Promise<void> {
   if (font.source !== "file" || !isTauri() || typeof FontFace === "undefined") return Promise.resolve();
   const existing = loads.get(font.id);
-  if (existing) return existing;
-  const load = invoke<ArrayBuffer>("custom_font_read", { file: font.file })
-    .then(async (bytes) => {
-      const face = new FontFace(fontFamily(font), bytes);
-      await face.load();
-      document.fonts.add(face);
-    })
-    .catch((reason) => {
-      loads.delete(font.id);
-      throw reason;
-    });
-  loads.set(font.id, load);
-  return load;
+  if (existing?.file === font.file) return existing.promise;
+  if (existing) forgetFontFace(font.id);
+  const entry: FileFontLoad = {
+    file: font.file,
+    promise: invoke<ArrayBuffer>("custom_font_read", { file: font.file })
+      .then(async (bytes) => {
+        // Removal or replacement may finish while IPC or parsing is pending.
+        if (loads.get(font.id) !== entry) return;
+        const face = new FontFace(fontFamily(font), bytes, { display: "swap" });
+        entry.face = face;
+        // Let the document track loading and use fallback text until ready.
+        document.fonts.add(face);
+        await face.load();
+        // Binary sources may finish before FontFaceSet sees a loading cycle.
+        if (loads.get(font.id) === entry) document.dispatchEvent(new Event("mythra-custom-fonts-changed"));
+      })
+      .catch((reason) => {
+        if (loads.get(font.id) === entry) forgetFontFace(font.id);
+        throw reason;
+      }),
+  };
+  loads.set(font.id, entry);
+  return entry.promise;
 }
 
-/** Keep every file font in the library registered (used by the app shell). */
-export function useCustomFontFaces(library: CustomChatFont[]): void {
+/** Load a visible picker library or the app's selected custom font. */
+export function useCustomFontFaces(library: CustomChatFont[], enabled = true): void {
   useEffect(() => {
+    if (!enabled) return;
     for (const font of library) void ensureCustomFontLoaded(font).catch(() => {});
-  }, [library]);
+  }, [library, enabled]);
 }
 
 function newId(): string {
@@ -127,26 +158,32 @@ function newId(): string {
 
 /** Copy a chosen font file into app data and add it to the library. */
 export async function importCustomFontFile(path: string): Promise<CustomChatFont> {
-  if (snapshot().length >= MAX_FONTS) throw new Error(`You can add up to ${MAX_FONTS} custom fonts.`);
-  const imported = await invoke<{ file: string; name: string }>("custom_font_import", { path });
-  const font: CustomChatFont = { id: newId(), name: imported.name, source: "file", file: imported.file };
+  if (snapshot().length + pendingImports >= MAX_FONTS) throw new Error(`You can add up to ${MAX_FONTS} custom fonts.`);
+  pendingImports += 1;
   try {
-    await ensureCustomFontLoaded(font);
-  } catch (reason) {
-    void invoke("custom_font_remove", { file: imported.file }).catch(() => {});
-    throw new Error(`That font file could not be loaded: ${reason instanceof Error ? reason.message : String(reason)}`);
+    const imported = await invoke<{ file: string; name: string }>("custom_font_import", { path });
+    const font: CustomChatFont = { id: newId(), name: imported.name, source: "file", file: imported.file };
+    try {
+      await ensureCustomFontLoaded(font);
+    } catch (reason) {
+      forgetFontFace(font.id);
+      void invoke("custom_font_remove", { file: imported.file }).catch(() => {});
+      throw new Error(`That font file could not be loaded: ${reason instanceof Error ? reason.message : String(reason)}`);
+    }
+    publish([...snapshot(), font]);
+    return font;
+  } finally {
+    pendingImports -= 1;
   }
-  publish([...snapshot(), font]);
-  return font;
 }
 
 /** Add a font that is already installed on this computer, by family name. */
 export function addInstalledCustomFont(familyName: string): CustomChatFont {
   const family = cleanFamily(familyName);
   if (!family) throw new Error("Type the name of a font installed on this computer.");
-  if (snapshot().length >= MAX_FONTS) throw new Error(`You can add up to ${MAX_FONTS} custom fonts.`);
   const existing = snapshot().find((font) => font.source === "installed" && font.family.toLowerCase() === family.toLowerCase());
   if (existing) return existing;
+  if (snapshot().length + pendingImports >= MAX_FONTS) throw new Error(`You can add up to ${MAX_FONTS} custom fonts.`);
   const font: CustomChatFont = { id: newId(), name: family, source: "installed", family };
   publish([...snapshot(), font]);
   return font;
@@ -155,9 +192,10 @@ export function addInstalledCustomFont(familyName: string): CustomChatFont {
 export async function removeCustomFont(id: string): Promise<void> {
   const font = snapshot().find((entry) => entry.id === id);
   if (!font) return;
-  publish(snapshot().filter((entry) => entry.id !== id));
-  loads.delete(id);
+  // Keep the entry available for a retry when deleting the stored file fails.
   if (font.source === "file" && isTauri()) await invoke("custom_font_remove", { file: font.file });
+  publish(snapshot().filter((entry) => entry.id !== id));
+  forgetFontFace(id);
 }
 
 /**
@@ -169,12 +207,12 @@ export function isFontInstalled(familyName: string): boolean {
   const family = cleanFamily(familyName);
   if (!family || typeof document === "undefined") return false;
   const context = document.createElement("canvas").getContext("2d");
-  if (!context) return true;
+  if (!context) return false;
   const sample = "mmmmmmmmmmlliWW@#0123";
   return ["monospace", "serif"].some((fallback) => {
     context.font = `32px ${fallback}`;
     const base = context.measureText(sample).width;
-    context.font = `32px "${family}", ${fallback}`;
+    context.font = `32px ${quotedFamily(family)}, ${fallback}`;
     return Math.abs(context.measureText(sample).width - base) > 0.5;
   });
 }
