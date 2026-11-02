@@ -19,8 +19,11 @@ export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "synthwave" | "atari";
 export type EffortSliderStyle = "studio" | "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "astra" | "ink" | "reactor" | "comet" | "coil" | "poet";
-/** Typeface family used for chat prose and the composer. Built-in stacks only. */
-export type ChatFont = "system" | "humanist" | "serif" | "mono";
+/** Typeface family used for chat prose and the composer: a built-in stack
+ * (styles.css --chat-font-<id>) or `custom:<id>` from the custom font library
+ * (lib/customFonts.ts). */
+export type BuiltInChatFont = "system" | "humanist" | "serif" | "mono" | "pixelify" | "vt323";
+export type ChatFont = BuiltInChatFont | `custom:${string}`;
 export type WorkspaceMode = "chat" | "project";
 export type SettingsSection = "general" | "models" | "voice" | "github" | "usage" | "prompts" | "memory" | "agents" | "workflows" | "scheduled-tasks" | "projects" | "skills" | "tools" | "system" | "updates";
 export type ProjectPromptMode = "replace" | "append";

@@ -56,6 +56,9 @@
   --chat-font-humanist: Seravek, "Gill Sans Nova", Ubuntu, Calibri, "DejaVu Sans", "Segoe UI", sans-serif;
   --chat-font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, "Iowan Old Style", Georgia, serif;
   --chat-font-mono: var(--font-mono);
+  /* Bundled pixel faces (Fontsource, SIL OFL), loaded only when chosen. */
+  --chat-font-pixelify: "Pixelify Sans", var(--font-sans);
+  --chat-font-vt323: "VT323", var(--font-mono);
   --chat-font: var(--chat-font-system);
   --track-tight: -.014em;
   --track-display: -.03em;
@@ -111,6 +114,15 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-chat-font="humanist"] { --chat-font: var(--chat-font-humanist); }
 .app-shell[data-chat-font="serif"] { --chat-font: var(--chat-font-serif); }
 .app-shell[data-chat-font="mono"] { --chat-font: var(--chat-font-mono); }
+.app-shell[data-chat-font="pixelify"] { --chat-font: var(--chat-font-pixelify); }
+.app-shell[data-chat-font="vt323"] { --chat-font: var(--chat-font-vt323); }
+/* VT323's letters are drawn small for its size, so chat text and the
+   composer step up to read at the same size as the other fonts. Setting
+   --fs-body on these elements only leaves the rest of the interface alone. */
+.app-shell[data-chat-font="vt323"] .message-body,
+.app-shell[data-chat-font="vt323"] .composer textarea,
+.app-shell[data-chat-font="vt323"] .composer-input-highlight { --fs-body: 18.5px; }
+
 .app-shell[data-color-scheme="light"] { --bg: #f4f5f2; --sidebar: #ebede8; --panel: #ffffff; --panel-2: #f1f2ee; --panel-3: #e2e5de; --line: rgba(25,35,20,.11); --line-strong: rgba(25,35,20,.19); --muted: #58615a; --muted-2: #61695f; /* 5.2:1 on --bg, 4.8:1 on --sidebar */ --text: #1c211b; --green: #3e8e22; --green-soft: rgba(62,142,34,.11); --orange: #a8621a; --red: #c04742; --shadow: 0 22px 70px rgba(55,65,45,.18); --topbar: rgba(244,245,242,.86); --field: #ffffff; --menu-surface: #ffffff; }
 /* Light palettes share component treatment; their palette blocks below
    provide each theme's surfaces and semantic accent. */

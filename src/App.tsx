@@ -68,6 +68,7 @@ import { SubAgentControlsProvider } from "./components/SubAgentControls";
 import { TransitionInput } from "./components/TransitionInput";
 import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
 import { configureTrayStatus, updateTrayStatus, useTrayStatusEnabled } from "./lib/trayStatus";
+import { chatFontCss, useCustomFontFaces, useCustomFonts } from "./lib/customFonts";
 import { forgetTurnContext } from "./lib/turnContextReceipts";
 import { SubAgentCommandCenter, type SubAgentPolicyMode } from "./components/SubAgentCommandCenter";
 import type { ChildAgentModelCatalogs } from "./components/subAgentModelOptions";
@@ -871,6 +872,10 @@ export default function App() {
   const [previewTheme, setPreviewTheme] = useState<ThemeName | null>(null);
   const [previewEffortSlider, setPreviewEffortSlider] = useState<EffortSliderStyle | null>(null);
   const [previewChatFont, setPreviewChatFont] = useState<ChatFont | null>(null);
+  // Custom chat fonts (Settings > Interface): file fonts are registered with
+  // the document so they render wherever --chat-font is used.
+  const customFonts = useCustomFonts();
+  useCustomFontFaces(customFonts);
   const [previewUiScale, setPreviewUiScale] = useState<number | null>(null);
   const [promptProfiles, setPromptProfiles] = usePersistedState<PromptProfile[]>("kiwi.promptProfiles", DEFAULT_PROMPT_PROFILES);
   const [globalInstructionFiles, setGlobalInstructionFiles] = useState<InstructionFileDescriptor[]>([]);
@@ -9173,7 +9178,7 @@ export default function App() {
   }), [settings.warnOnMaxReasoning, attachmentKey, activeWorkspace?.path, effectiveSettings.provider, effectiveSettings.model, settingsOpen]);
 
   return (
-    <div className="app-shell" onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100 } as CSSProperties}>
+    <div className="app-shell" onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
       <RendererLaunchCommitMarker />
       <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
       <FeedbackProvider enabled={Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
