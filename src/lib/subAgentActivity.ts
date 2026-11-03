@@ -59,6 +59,8 @@ export interface SubAgentWorker extends NativeAgentReadout {
   targetId?: string;
   provider?: Provider;
   model?: string;
+  /** Managed model identity was explicitly saved, rather than expanded from today's provider default. */
+  identityRecorded?: boolean;
   /** One-line "who is doing this" summary, e.g. `Claude · claude-fable-5`. */
   detail: string;
   createdAt: number;
@@ -436,6 +438,7 @@ export function collectSubAgentWorkers(input: SubAgentWorkerInput): SubAgentWork
       targetId: link.targetId,
       provider: link.provider,
       model,
+      identityRecorded: Boolean(link.model.trim()),
       detail: `${providerDisplayName(link.provider)} · ${model || "provider default"}`,
       activationId: link.activationId,
       resultRevision: link.resultRevision,

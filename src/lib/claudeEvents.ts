@@ -13,6 +13,7 @@ import { claudeWrapUpLimitReachedText, parseClaudeContinuation, useClaudeContinu
 import { CLAUDE_USAGE_LIMIT_EXPLANATION, claudeResultError } from "./claudeUsageLimit";
 import { isActiveAgentRecord, workerStatusFromAgentRecord } from "./subAgentActivity";
 import { boundedNativeText, type NativeAgentLink, type NativeAgentReadout } from "./nativeAgentLinks";
+import { coordinationInput, coordinationResult } from "./coordinationProvenance";
 
 interface ClaudeBlock {
   id: string;
@@ -661,6 +662,9 @@ function finalizeTool(threadId: string, turnId: string, block: ClaudeBlock, ctx:
   const kind = activityKind(block.name);
   const workType = toolWorkType(block.name);
   const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === block.id);
+  const coordination = coordinationInput(block.name, input, existing?.turnId === turnId ? existing.coordination : undefined);
+  const settledCoordination = Boolean(coordination?.receipt && existing
+    && ["completed", "failed", "interrupted", "cancelled"].includes(existing.status ?? ""));
   const skillUsage = claudeToolSkillUsage(block.name, input);
   const settledSkill = skillUsage.length > 0 && validSkillUsage(existing?.skillUsage)
     .some((usage) => usage.source === "claude-skill-tool" && usage.status !== "pending");
@@ -677,9 +681,10 @@ function finalizeTool(threadId: string, turnId: string, block: ClaudeBlock, ctx:
     kind,
     ...(workType ? { workType } : {}),
     title: activityTitle(block.name, input),
-    detail: settledSkill ? existing?.detail : activityDetail(input),
-    status: nativeAgent?.status ?? (settledSkill ? existing?.status : "inProgress"),
+    detail: settledSkill || settledCoordination ? existing?.detail : activityDetail(input),
+    status: nativeAgent?.status ?? (settledSkill || settledCoordination ? existing?.status : "inProgress"),
     ...(skillUsage.length ? { skillUsage: settledSkill ? existing?.skillUsage : skillUsage } : {}),
+    coordination,
     turnId,
     ...(/^(agent|task)$/i.test(block.name) ? {
       agent: {
@@ -1375,10 +1380,13 @@ export function routeClaudeEvent(
             .filter(Boolean)
             .join("\n")
         : text(result.content);
+      const coordination = coordinationResult(existing.coordination, resultContent, result.is_error === true);
+      const failed = result.is_error === true || coordination?.receipt?.isError === true;
       store.upsertActivity(threadId, {
         ...existing,
+        coordination,
         detail: resultContent.slice(-4000) || existing.detail,
-        status: result.is_error ? "failed" : "completed",
+        status: failed ? "failed" : "completed",
         ...(existing.skillUsage ? { skillUsage: validSkillUsage(existing.skillUsage).map((usage) =>
           usage.source === "claude-skill-tool" ? { ...usage, status: result.is_error ? "failed" as const : "loaded" as const } : usage) } : {}),
       });

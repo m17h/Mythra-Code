@@ -1928,6 +1928,8 @@ export function useChildAgents(context: ChildAgentContext): {
         .map((message) => `${sibling.childThreadId}\u0000${message.id}`)));
     const waitId = `child-wait-${request.requestId}`;
     let waiting = false;
+    let waitAbandoned = false;
+    let waitReason: string | undefined;
     let settledMessages: ChildMailMessage[] = [];
     let settledUnreadRemaining = 0;
     try {
@@ -2002,9 +2004,20 @@ export function useChildAgents(context: ChildAgentContext): {
           } : undefined);
         if (!await isChildAgentRequestActive(request)) throw new Error("This collection belongs to a retired bridge registration.");
       }
+    } catch (reason) {
+      waitAbandoned = true;
+      waitReason = friendlyError(reason);
+      throw reason;
     } finally {
-      if (waiting && (link.signoff !== "required" || lifecycleRef.current.mounted && lifecycleRef.current.generation === rendererGeneration)) useTaskStore.getState().upsertActivity(link.rootThreadId, {
-        id: waitId, kind: "agent", title: `Checked sub-agent: ${link.title}`, status: "completed",
+      // A wait that threw returned nothing to the parent: it was not a check.
+      // Complete only the original row. A removed conversation must not be
+      // recreated, and a newer parent turn must not acquire this old wait.
+      const waitActivity = useTaskStore.getState().tasks[link.rootThreadId]?.activities.find((activity) => activity.id === waitId);
+      if (waiting && waitActivity && (link.signoff !== "required" || lifecycleRef.current.mounted && lifecycleRef.current.generation === rendererGeneration)) useTaskStore.getState().upsertActivity(link.rootThreadId, {
+        ...waitActivity,
+        id: waitId, kind: "agent", title: `${waitAbandoned ? "Stopped waiting for" : "Checked"} sub-agent: ${link.title}`,
+        status: waitAbandoned ? "interrupted" : "completed",
+        ...(waitReason ? { detail: waitReason } : {}),
         agent: { action: "wait", threadIds: [childId] },
       });
     }
@@ -2172,10 +2185,10 @@ export function useChildAgents(context: ChildAgentContext): {
   }, [childNeedsCutoff, linksIncludingPending, stopChildAgent]);
 
   /** One entry in the parent's work history; never a parent turn. */
-  const recordParentActivity = useCallback((rootThreadId: string, id: string, title: string, detail: string, childThreadId: string, action: "sendInput" | "resume" | "status" | "close", kind: "agent" | "warning" = "agent") => {
+  const recordParentActivity = useCallback((rootThreadId: string, id: string, title: string, detail: string, childThreadId: string, action: "sendInput" | "resume" | "status" | "close", kind: "agent" | "warning" = "agent", messageCreatedAt?: number) => {
     useTaskStore.getState().upsertActivity(rootThreadId, {
       id, kind, title, detail: detail.length > 600 ? `${detail.slice(0, 600)}…` : detail, status: "completed",
-      agent: { action, threadIds: [childThreadId] },
+      agent: { action, threadIds: [childThreadId], ...(messageCreatedAt !== undefined ? { messageCreatedAt } : {}) },
     });
   }, []);
 
@@ -2810,7 +2823,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     const { message, duplicate } = queueMessageToChild(childId, current.rootThreadId, text, replyTo, clientRequestId);
     if (duplicate) return describeDelivery(childId, message.id, true);
-    recordParentActivity(current.rootThreadId, `child-guidance-${childId}-${message.id}`, `Message to sub-agent: ${current.title}`, message.text, childId, "sendInput");
+    recordParentActivity(current.rootThreadId, `child-guidance-${childId}-${message.id}`, `Message to sub-agent: ${current.title}`, message.text, childId, "sendInput", "agent", message.createdAt);
     const running = isChildActive(taskStatusOf(childId)) || recovery === "running";
     if (running) {
       if ((childReadersRef.current.get(childId) ?? 0) > 0) {
@@ -2974,7 +2987,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const title = owner.link?.title ?? "Sub-agent";
     if (!duplicate) {
       recordParentActivity(owner.rootThreadId, `child-message-${owner.childId}-${message.id}`,
-        `${kind === "question" ? "Question" : "Update"} from sub-agent: ${title}`, message.text, owner.childId, "status");
+        `${kind === "question" ? "Question" : "Update"} from sub-agent: ${title}`, message.text, owner.childId, "status", "agent", message.createdAt);
     }
     // A child message never starts a parent turn. A working parent reads it
     // through agent_status/collect_agent; otherwise it waits, visible to the user.

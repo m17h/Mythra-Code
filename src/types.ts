@@ -263,6 +263,20 @@ export interface ChatMessage {
   steerRuntimeId?: string;
 }
 
+export type CoordinationTool = "spawn_mythra_agent" | "agent_status" | "collect_agent" | "cancel_agent"
+  | "send_agent_message" | "accept_agent" | "message_parent" | "read_parent_messages" | "propose_agent_settings";
+
+/** Exact own-server identity captured before provider input/output is trimmed.
+ * Legacy rows omit this evidence; display titles alone never supply an owner. */
+export interface CoordinationMetadata {
+  provenance: "mythra_agents";
+  tool: CoordinationTool;
+  childId?: string;
+  messageId?: string;
+  /** Bounded structured result headers, never the child's result or mailbox. */
+  receipt?: Record<string, unknown>;
+}
+
 export interface Activity {
   id: string;
   /** `compaction` marks where a provider summarised its own conversation
@@ -279,6 +293,7 @@ export interface Activity {
   /** Claude status/boundary UUIDs differ; retain their association on the row
    * so event replays remain idempotent after a transcript reload. */
   compaction?: { boundaryId?: string; endStatusId?: string };
+  coordination?: CoordinationMetadata;
   /** Structured sub-agent identity for the animated timeline dispatch card.
    * Generic agent-shaped activities such as plans intentionally omit this. */
   agent?: {
@@ -297,6 +312,8 @@ export interface Activity {
     /** Exact observed native assignment per represented child, independent of
      * this lifecycle/tool event's own id. Missing legacy evidence is unknown. */
     activationIds?: Record<string, string>;
+    /** Exact mailbox entry creation time; message ids can be reused after clear. */
+    messageCreatedAt?: number;
   };
   /** Number of concrete operations represented by a grouped runtime activity. */
   itemCount?: number;

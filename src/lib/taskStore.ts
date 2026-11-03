@@ -535,6 +535,7 @@ function estimateMessageBytes(message: ChatMessage): number {
 
 function estimateActivityBytes(activity: Activity): number {
   const agent = activity.agent;
+  const coordination = activity.coordination;
   const threadIds = agent?.threadIds ?? [];
   return ACTIVITY_BASE_BYTES
     + stringBytes(activity.id)
@@ -547,6 +548,10 @@ function estimateActivityBytes(activity: Activity): number {
     + stringBytes(activity.turnStatus)
     + estimateSkillUsageBytes(activity.skillUsage)
     + (activity.compaction ? 32 + stringBytes(activity.compaction.boundaryId) + stringBytes(activity.compaction.endStatusId) : 0)
+    + (coordination ? 64 + stringBytes(coordination.provenance) + stringBytes(coordination.tool)
+      + stringBytes(coordination.childId) + stringBytes(coordination.messageId)
+      + Object.entries(coordination.receipt ?? {}).reduce((total, [key, value]) => total + 16 + stringBytes(key)
+        + (typeof value === "string" ? stringBytes(value) : 8), 0) : 0)
     + (agent ? AGENT_ACTIVITY_BASE_BYTES
       + stringBytes(agent.action)
       + stringBytes(agent.provider)
@@ -570,6 +575,13 @@ export function estimateTranscriptBytes(messages: ChatMessage[], activities: Act
  * The metadata gate leaves Codex's separate runtime-history policy unchanged. */
 function restoreHistoryActivity(activity: Activity, task?: ThreadTaskState): Activity {
   const live = task?.activities.find((entry) => entry.id === activity.id);
+  // Runtime-history replays may omit renderer-observed provenance. Retain it
+  // only for the same exact tool row/turn; a changed title cannot inherit it.
+  if (!activity.coordination && live?.coordination && activity.turnId && activity.turnId === live.turnId
+    && activity.title === live.title && activity.kind === live.kind) {
+    activity = { ...activity, coordination: { ...live.coordination,
+      ...(activity.status !== live.status || activity.detail !== live.detail ? { receipt: undefined } : {}) } };
+  }
   if (live?.skillUsage) {
     const observed = validSkillUsage(live.skillUsage);
     const incoming = activity.skillUsage === undefined ? observed : validSkillUsage(activity.skillUsage);
@@ -1448,6 +1460,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
               status: lateReactivation || preserveStopped ? entry.status : incoming.status,
               ...(activity.workType === undefined && entry.workType ? { workType: entry.workType } : {}),
               ...(activity.skillUsage === undefined && entry.skillUsage ? { skillUsage: entry.skillUsage } : {}),
+              ...(!Object.hasOwn(activity, "coordination") && entry.coordination && activityTurnId === entry.turnId
+                && activity.title === entry.title && activity.kind === entry.kind ? { coordination: { ...entry.coordination,
+                  ...(activity.status !== entry.status || activity.detail !== entry.detail ? { receipt: undefined } : {}) } } : {}),
               turnId: activityTurnId,
               turnStatus: incoming.turnStatus ?? entry.turnStatus,
               timelineOrder: entry.timelineOrder,

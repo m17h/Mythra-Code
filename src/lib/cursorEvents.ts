@@ -6,6 +6,7 @@ import { useTaskStore } from "./taskStore";
 import { consumeProviderStopIntent } from "./providerStopIntent";
 import { reportThreadContextUsage } from "./usageLedger";
 import { cursorTurnCanSettle, cursorTurnWasSettled, finishCursorTurnOwner, latestCursorUsageSnapshotTurn, markCursorUsageSnapshotTurn, observeCursorTurnOwner, resetCursorTurnOwnershipForTests } from "./cursorTurnOwnership";
+import { coordinationInput, coordinationResult } from "./coordinationProvenance";
 
 const activeAssistantSegments = new Map<string, string>();
 const assistantSegmentCounts = new Map<string, number>();
@@ -421,6 +422,12 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
       const existing = useTaskStore.getState().tasks[threadId]?.activities.find((activity) => activity.id === id);
       const status = text(update.status);
       const workType = toolWorkType(text(update.kind)) ?? existing?.workType ?? "commands";
+      const title = text(update.title) || existing?.title || "Cursor tool";
+      let coordination = coordinationInput(title, update.rawInput, existing?.turnId === turnId ? existing.coordination : undefined);
+      if (update.rawOutput !== undefined) coordination = coordinationResult(coordination, update.rawOutput, status === "failed");
+      else if ((status === "completed" || status === "failed") && !coordination?.receipt) {
+        coordination = coordinationResult(coordination, undefined, status === "failed");
+      }
       // A genuinely new tool after result is stale noise and would otherwise
       // appear below the final answer, detached from the completed turn. A
       // late status update for a tool we already showed may still refine it.
@@ -430,9 +437,11 @@ export function routeCursorEvent(event: CursorEvent, ctx: CursorEventContext): v
           turnId,
           kind: activityKind(text(update.kind) || existing?.kind || "tool"),
           ...(workType ? { workType } : {}),
-          title: text(update.title) || existing?.title || "Cursor tool",
+          title,
+          coordination,
           detail: detailFor(update.rawOutput ?? update.rawInput ?? update.content) || existing?.detail,
-          status: status === "completed" ? "completed" : status === "failed" ? "failed" : "inProgress",
+          status: status === "failed" || coordination?.receipt?.isError === true ? "failed" : status === "completed" ? "completed"
+            : status ? "inProgress" : existing?.status ?? "inProgress",
         });
       }
     } else if (kind === "plan") {
