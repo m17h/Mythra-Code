@@ -10,6 +10,8 @@ import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatu
 import { PixelWorkingMark } from "./PixelWorkingMark";
 import { InfoPopover } from "./InfoPopover";
 import { usedSkillsForRun } from "../lib/skillUsage";
+import { coordinationRecord, presentManagedAgentActivities } from "../lib/managedAgentActivity";
+import { CoordinationPresentation, CoordinationReceipt, CoordinationRoute, CoordinationState } from "./CoordinationRoute";
 import "./ActivityDetailsModal.css";
 
 /** Searchable text for one transcript entry, shared with timeline search. */
@@ -27,23 +29,34 @@ type ActivityStep =
 
 /** Flatten grouped tool runs so every operation is its own readable step. */
 function stepsFor(entries: readonly CompactWorkEntry[]): ActivityStep[] {
+  const activities = entries.flatMap((entry) => entry.kind === "message" ? [] : entry.kind === "activity" ? [entry.value] : entry.value);
+  const displayed = presentManagedAgentActivities(activities);
+  const rows = new Map(displayed.map((activity) => [activity.id, activity]));
   const steps: ActivityStep[] = [];
+  const append = (source: Activity) => {
+    const activity = rows.get(source.id);
+    if (activity) steps.push({ id: activity.id, kind: "activity", value: activity });
+  };
   for (const entry of entries) {
     if (entry.kind === "message") steps.push({ id: entry.value.id, kind: "message", value: entry.value });
     else if (entry.kind === "activity" && entry.value.kind === "agent" && entry.value.agent?.action === "spawn") {
       // A lone dispatch keeps its relay card and Open/Stop controls.
-      steps.push({ id: entry.value.id, kind: "spawns", value: [entry.value] });
-    } else if (entry.kind === "activity") steps.push({ id: entry.value.id, kind: "activity", value: entry.value });
-    else if (entry.kind === "spawns") { if (entry.value[0]) steps.push({ id: entry.value[0].id, kind: "spawns", value: entry.value }); }
-    else for (const activity of entry.value) steps.push({ id: activity.id, kind: "activity", value: activity });
+      const activity = rows.get(entry.value.id);
+      if (activity) steps.push({ id: activity.id, kind: "spawns", value: [activity] });
+    } else if (entry.kind === "activity") append(entry.value);
+    else if (entry.kind === "spawns") {
+      const values = entry.value.flatMap((activity) => rows.has(activity.id) ? [rows.get(activity.id)!] : []);
+      if (values[0]) steps.push({ id: values[0].id, kind: "spawns", value: values });
+    }
+    else for (const activity of entry.value) append(activity);
   }
   return steps;
 }
 
 function stepSearchText(step: ActivityStep): string {
   if (step.kind === "message") return workEntrySearchText({ kind: "message", value: step.value });
-  if (step.kind === "activity") return `${step.value.title} ${step.value.detail ?? ""}`;
-  return step.value.map((activity) => `${activity.title} ${activity.detail ?? ""}`).join(" ");
+  if (step.kind === "activity") return `${step.value.title} ${step.value.detail ?? ""} ${coordinationRecord(step.value)?.receiptDetail ?? ""}`;
+  return step.value.map((activity) => `${activity.title} ${activity.detail ?? ""} ${coordinationRecord(activity)?.receiptDetail ?? ""}`).join(" ");
 }
 
 const STATUS_WORDS: Record<string, string> = {
@@ -146,7 +159,13 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   if (step.kind === "spawns") {
     return <li className={`activity-step kind-agents${flags}`} data-step-id={step.id}>
       <span className="activity-step-node" aria-hidden="true"><UsersRound size={11} /></span>
-      <div className="activity-step-body">{renderSubAgents(step.value)}</div>
+      <div className="activity-step-body">{renderSubAgents(step.value)}
+        {step.value.map((activity) => {
+          const detail = coordinationRecord(activity)?.receiptDetail;
+          return detail ? <CoordinationReceipt key={activity.id} detail={detail} reveal={match}
+            subject={step.value.length > 1 ? activity.agent?.task || activity.title : undefined} /> : null;
+        })}
+      </div>
     </li>;
   }
 
@@ -189,6 +208,8 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   const showDetail = Boolean(detail) && (!collapsible || expanded);
   const word = statusWord(activity.status);
   const tone = statusTone(activity.status);
+  const coordination = coordinationRecord(activity);
+  const chip = word ? <span className={`activity-step-chip tone-${tone || "quiet"}`}>{word}</span> : null;
   const title = reasoning ? "Thinking" : activity.title;
   const mono = activity.kind === "command" || activity.kind === "file";
   const toggleLabel = reasoning ? "thinking" : activity.kind === "command" ? "output" : "details";
@@ -199,7 +220,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
   const label = reasoning
     ? <span className="activity-step-kind">{title}</span>
     : <span className={`activity-step-title${mono ? " mono" : ""}`}>{title}</span>;
-  return <li className={`activity-step kind-${activity.kind}${tone === "bad" ? " is-failed" : ""}${flags}`} data-step-id={step.id}>
+  const row = <li className={`activity-step kind-${activity.kind}${tone === "bad" ? " is-failed" : ""}${flags}`} data-step-id={step.id}>
     <span className={`activity-step-node${thinkingNow ? " working" : ""}`} aria-hidden="true">{thinkingNow ? <PixelWorkingMark /> : <Icon size={11} />}</span>
     <div className="activity-step-body">
       <div className="activity-step-head">
@@ -211,8 +232,11 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
           </button>
         ) : label}
         {activity.itemCount && activity.itemCount > 1 ? <span className="activity-step-chip">{activity.itemCount} items</span> : null}
-        {word && <span className={`activity-step-chip tone-${tone || "quiet"}`}>{word}</span>}
+        {coordination ? <CoordinationState fallback={chip}
+          render={(state) => <span className={`activity-step-chip tone-${state.tone || "quiet"}`}>{state.label}</span>} /> : chip}
       </div>
+      {coordination && <CoordinationRoute />}
+      {coordination?.receiptDetail && <CoordinationReceipt detail={coordination.receiptDetail} reveal={match} />}
       {!showDetail && reasoning && detail && <p className="activity-step-preview">{detail.slice(0, 220)}</p>}
       {showDetail && (reasoning ? <>
         <div className={`activity-step-thought${clamped ? " is-clamped" : ""}`}>{detail}</div>
@@ -225,6 +249,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
       </> : <pre className="activity-step-output">{detail}</pre>)}
     </div>
   </li>;
+  return coordination ? <CoordinationPresentation activity={activity} record={coordination}>{row}</CoordinationPresentation> : row;
 }, (previous, next) => previous.inChat === next.inChat && previous.match === next.match && previous.live === next.live
   && previous.current === next.current && previous.target === next.target
   && previous.renderMessage === next.renderMessage && previous.renderSubAgents === next.renderSubAgents

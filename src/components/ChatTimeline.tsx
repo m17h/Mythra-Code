@@ -14,6 +14,7 @@ import type { Activity, ChatMessage, PendingApproval, Provider, SkillReference }
 import type { JsonObject } from "../lib/codex";
 import { InlineApprovalCard } from "./ApprovalCenter";
 import { SubAgentClock, SubAgentControls } from "./SubAgentControls";
+import { CoordinationPresentation, CoordinationReceipt, CoordinationRoute, CoordinationState } from "./CoordinationRoute";
 import { activityTurnSegments, compactActivityPresentation, hasTerminalTurnEvidence, runtimeTurnOutcome, settledRunPresentationState, type CompactWorkState } from "../lib/compactActivity";
 import { ActivityStatus, describeLiveActivity, type LiveActivityDescriptor } from "./ActivityStatus";
 import { ActivityDetailsModal, workEntrySearchText, type ActivityDetailsRun } from "./ActivityDetailsModal";
@@ -25,6 +26,7 @@ import { providerDisplayName } from "../lib/childAgents";
 import { compactionState, compactionTitle } from "../lib/contextCompaction";
 import { deliverClaudeSteerNow } from "../lib/claude";
 import { describeSubAgentActivity, isActiveAgentRecord, isSubAgentWorkerActive, resolveSubAgentActivityWorkers, subAgentStatusLabel, subAgentWorkerLabel, summarizeSubAgentActivities, type SubAgentWorker } from "../lib/subAgentActivity";
+import { coordinationRecord, presentManagedAgentActivities } from "../lib/managedAgentActivity";
 import type { ThreadHistoryState } from "../lib/threadHistory";
 import { createStreamingTextFade, type StreamingTextFade } from "../lib/streamingTextFade";
 import "./ChatTimeline.compaction.css";
@@ -1022,7 +1024,8 @@ export const ContextCompactionMarker = memo(function ContextCompactionMarker({ a
   );
 });
 
-export const ActivityRow = memo(function ActivityRow({ activity }: { activity: Activity }) {
+export const ActivityRow = memo(function ActivityRow({ activity: source }: { activity: Activity }) {
+  const activity = presentManagedAgentActivities([source])[0] ?? source;
   const [expanded, setExpanded] = useState(false);
   if (activity.kind === "compaction") {
     return <ContextCompactionMarker activity={activity} />;
@@ -1031,12 +1034,15 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
     return <ReasoningDisclosure detail={activity.detail ?? ""} inProgress={activity.status === "inProgress"} />;
   }
   if (activity.kind === "agent" && activity.agent?.action === "spawn") {
-    return <SubAgentRelayCard activity={activity} />;
+    const receipt = coordinationRecord(activity)?.receiptDetail;
+    return <><SubAgentRelayCard activity={activity} />{receipt && <CoordinationReceipt detail={receipt} />}</>;
   }
 
-  const expandable = Boolean(activity.detail) && activity.kind === "command";
+  const coordination = coordinationRecord(activity);
+  // A relabeled bridge call keeps its full JSON answer folded, like a command.
+  const expandable = Boolean(activity.detail) && (activity.kind === "command" || coordination?.source === "bridge");
   const displayTitle = activity.kind === "agent" ? decodeHtmlEntities(activity.title) : activity.title;
-  const displayDetail = activity.kind === "agent" && activity.detail ? decodeHtmlEntities(activity.detail) : activity.detail;
+  const displayDetail = activity.kind === "agent" && coordination?.source !== "bridge" && activity.detail ? decodeHtmlEntities(activity.detail) : activity.detail;
   const Icon = activity.kind === "command"
     ? TerminalSquare
     : activity.kind === "file"
@@ -1044,8 +1050,8 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
       : activity.kind === "agent"
         ? UsersRound
         : CircleDot;
-  return (
-    <div className={`activity-row ${activity.kind === "command" ? "command-activity" : ""} ${expanded ? "expanded" : "collapsed"}`}>
+  const row = (
+    <div className={`activity-row ${activity.kind === "command" ? "command-activity" : ""} ${coordination ? "coordination-activity" : ""} ${expanded ? "expanded" : "collapsed"}`}>
       <div className={`activity-icon ${activity.kind}`}><Icon size={14} /></div>
       <div className="activity-copy">
         {expandable ? (
@@ -1058,11 +1064,16 @@ export const ActivityRow = memo(function ActivityRow({ activity }: { activity: A
             <span>{displayTitle}</span>
           </button>
         ) : <span>{displayTitle}</span>}
-        {displayDetail && (!expandable || expanded) && <pre>{displayDetail.slice(-1200)}</pre>}
+        {coordination && <CoordinationRoute />}
+        {displayDetail && (!expandable || expanded) && <pre>{coordination ? displayDetail : displayDetail.slice(-1200)}</pre>}
+        {coordination?.receiptDetail && <CoordinationReceipt detail={coordination.receiptDetail} />}
       </div>
-      {activity.status && <small>{activity.status}</small>}
+      {coordination
+        ? <CoordinationState fallback={activity.status && <small>{activity.status}</small>} render={(state) => <small>{state.label}</small>} />
+        : activity.status && <small>{activity.status}</small>}
     </div>
   );
+  return coordination ? <CoordinationPresentation activity={activity} record={coordination}>{row}</CoordinationPresentation> : row;
 });
 
 export const SubAgentRelayCard = memo(function SubAgentRelayCard({ activity, dealIndex }: { activity: Activity; dealIndex?: number }) {
@@ -1213,6 +1224,7 @@ const ToolDisclosure = memo(function ToolDisclosure({
   type: "command" | "file";
 }) {
   const [expanded, setExpanded] = useState(false);
+  const displayedActivities = useMemo(() => presentManagedAgentActivities(activities), [activities]);
   const inProgress = activities.some((activity) => activity.status === "inProgress");
   const isCommand = type === "command";
   const count = isCommand
@@ -1238,7 +1250,9 @@ const ToolDisclosure = memo(function ToolDisclosure({
         <div className="reasoning-panel-inner">
           {expanded && (
             <div className="command-list">
-              {activities.map((activity) => (
+              {displayedActivities.map((activity) => coordinationRecord(activity)
+                ? <ActivityRow key={activity.id} activity={activity} />
+                : (
                 <div className="command-list-item" key={activity.id}>
                   <div className="command-list-title">
                     <Icon size={12} />
@@ -2103,6 +2117,9 @@ export function ChatTimeline({
     return threadId ? awaitingUser(state.tasks[threadId]?.approvals) : null;
   });
   const awaiting = storeAwaiting ?? (approval ? "approval" : null);
+  // Outcome, final-answer, live-status and summary inference always read the
+  // source transcript. Friendly row projection happens only when rendering
+  // individual operations in the details/inline surfaces.
   const ordered = useMemo(() => orderedTimelineEntries(messages, activities), [messages, activities]);
   const runs = useMemo(() => timelineRuns(ordered), [ordered]);
   const presented = useMemo(() => presentTimeline(ordered, runs, running, awaiting, activeTurnId), [activeTurnId, awaiting, ordered, runs, running]);

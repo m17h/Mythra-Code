@@ -1,0 +1,30 @@
+/* One quiet line under a sub-agent coordination row: who talks to whom and
+   what is known about the message. Theme tokens only, no motion. */
+.coordination-route {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px 5px;
+  margin-top: 1px;
+  color: var(--muted-2);
+  font-size: var(--fs-meta, 11px);
+  line-height: 1.4;
+}
+.coordination-party { min-width: 0; max-width: 100%; color: var(--muted); overflow-wrap: anywhere; }
+.coordination-arrow { flex: 0 0 auto; color: var(--info, currentColor); }
+.coordination-note { min-width: 0; overflow-wrap: anywhere; }
+.coordination-party + .coordination-note::before { content: "·"; margin-right: 5px; }
+
+/* Long delivery states and provider/model names wrap inside narrow threads. */
+.activity-row.coordination-activity { grid-template-columns: 24px minmax(0, 1fr); }
+.activity-row.coordination-activity > small { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
+.coordination-receipt { min-width: 0; margin-top: 4px; }
+.coordination-receipt-toggle { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 1px 2px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; font: inherit; font-size: var(--fs-meta, 11px); text-align: left; cursor: pointer; }
+.coordination-receipt-toggle > svg { flex: 0 0 auto; }
+.coordination-receipt-toggle[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.coordination-receipt-toggle:hover { color: var(--text); }
+.coordination-receipt-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
+.coordination-receipt-output { max-height: 320px; overflow: auto; margin: 6px 0 4px; padding: 9px 11px; border: 1px solid var(--line-quiet); border-radius: var(--r-md, 8px); color: var(--muted); background: var(--lm-code-bg, var(--panel)); font: 11px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.coordination-receipt-output:focus-visible { outline: none; box-shadow: var(--ring); }
