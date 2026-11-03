@@ -1450,13 +1450,20 @@ export default function App() {
   // the other, and both are the pair readiness and the spawn path receive.
   const subAgentModelCatalogs = useMemo<ChildAgentModelCatalogs>(() => ({
     hiddenClaudeModelIds: claudeModels.filter((entry) => isClaudeDefaultModel(entry.id, entry.displayName)).map((entry) => entry.id),
-    ...(runtimeModels.length ? {
-      openai: openAiModelOptions(runtimeModels).map((entry) => ({
+    unavailableProviders: {
+      ...(runtimeModelsLoading ? { openai: "Wait for OpenAI models to finish loading before adding an OpenAI sub-agent." }
+        : runtimeModelsError ? { openai: "OpenAI models could not be refreshed. Refresh the model catalog before adding an OpenAI sub-agent." }
+          : !runtimeModels.length ? { openai: "Load the OpenAI model catalog before adding an OpenAI sub-agent." } : {}),
+      ...(claudeModelsLoading ? { claude: "Wait for Claude models to finish loading before adding a Claude sub-agent." }
+        : claudeModelsError ? { claude: "Claude models could not be refreshed. Refresh the model catalog before adding a Claude sub-agent." }
+          : !claudeModels.some((entry) => !entry.disabled && !isClaudeDefaultModel(entry.id, entry.displayName))
+            ? { claude: "No available Claude models are listed. Refresh the model catalog before adding a Claude sub-agent." } : {}),
+    },
+    openai: runtimeModels.length ? openAiModelOptions(runtimeModels).map((entry) => ({
         id: entry.id,
         label: entry.name,
         detail: entry.tagline,
-      })),
-    } : {}),
+      })) : [],
     ...(cursorModels.length ? {
       cursor: cursorModels.map((entry) => ({
         id: entry.id,
@@ -1466,15 +1473,13 @@ export default function App() {
     } : {}),
     // A model the Claude plan cannot run is left out entirely here: a
     // destination roster is a promise the child turn will actually start.
-    ...(claudeModels.length ? {
-      claude: visibleClaudeModels(claudeModels).filter((entry) => !entry.disabled).map((entry) => ({
+    claude: visibleClaudeModels(claudeModels.filter((entry) => !entry.disabled)).map((entry) => ({
         id: entry.id,
         label: entry.displayName,
         detail: entry.description || entry.resolvedModel,
         keywords: entry.resolvedModel,
         resolvedModel: entry.resolvedModel,
       })),
-    } : {}),
     openrouter: openRouterModels.map((entry) => ({
       id: entry.id,
       label: entry.name || entry.id,
@@ -1486,7 +1491,7 @@ export default function App() {
       label: entry.displayName || entry.id,
       detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
-  }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+  }), [claudeModels, claudeModelsLoading, claudeModelsError, cursorModels, lmStudioModels, openRouterModels, runtimeModels, runtimeModelsLoading, runtimeModelsError]);
 
   const nativeModelCatalogs = useMemo<ChildAgentModelCatalogs>(() => ({
     // Keep alias identity: a Default row can resolve to a selectable named model.
@@ -10166,6 +10171,7 @@ export default function App() {
         openRouterModels={openRouterModels}
         cursorModels={cursorModels}
         claudeModels={claudeModels}
+        subAgentModelUnavailable={subAgentModelCatalogs.unavailableProviders}
         modelFavorites={modelFavorites}
         onToggleModelFavorite={toggleModelFavorite}
         onDiscoverOpenRouterModels={(query) => void discoverOpenRouterModels(query)}

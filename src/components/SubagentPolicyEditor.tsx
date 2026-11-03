@@ -3,7 +3,7 @@ import { ChildAgentRoster } from "./ChildAgentRoster";
 import { crewSafeConcurrency, type ChildAgentReadiness } from "../lib/childAgents";
 import type { ProjectSubagentSettings } from "../types";
 import type { Provider } from "../types";
-import type { ChildAgentModelOption } from "./ChildAgentRoster";
+import type { ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import type { ModelFavorites } from "../lib/modelFavorites";
 
 /**
@@ -21,7 +21,7 @@ export function SubagentPolicyEditor({ policy, readiness, disabled, modelCatalog
   policy: ProjectSubagentSettings;
   readiness: ChildAgentReadiness;
   disabled: boolean;
-  modelCatalogs?: Partial<Record<Provider, ChildAgentModelOption[]>>;
+  modelCatalogs?: ChildAgentModelCatalogs;
   modelFavorites?: ModelFavorites;
   onToggleModelFavorite?: (provider: Provider, model: string) => void;
   onDiscoverOpenRouterModels?: (query: string) => void;

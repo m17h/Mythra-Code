@@ -480,6 +480,7 @@ export function SettingsModal({
   openRouterModels = [],
   cursorModels = [],
   claudeModels = [],
+  subAgentModelUnavailable,
   modelFavorites = {},
   onToggleModelFavorite,
   onDiscoverOpenRouterModels,
@@ -602,6 +603,8 @@ export function SettingsModal({
   cursorModels?: CursorModel[];
   /** Live Claude Code catalog; empty falls back to the labelled built-ins. */
   claudeModels?: ClaudeModel[];
+  /** Live catalog load/failure state for new managed sub-agent defaults. */
+  subAgentModelUnavailable?: ChildAgentModelCatalogs["unavailableProviders"];
   /** Starred models, shared with the composer and sub-agent pickers. */
   modelFavorites?: ModelFavorites;
   onToggleModelFavorite?: (provider: Provider, model: string) => void;
@@ -792,19 +795,24 @@ export function SettingsModal({
 
   const subAgentModelCatalogs = useMemo<ChildAgentModelCatalogs>(() => ({
     hiddenClaudeModelIds: claudeModels.filter((entry) => isClaudeDefaultModel(entry.id, entry.displayName)).map((entry) => entry.id),
-    openai: openAiModelOptions(runtimeModels).map((entry) => ({
-      id: entry.id,
-      label: entry.name,
-      detail: entry.tagline,
-    })),
-    ...(claudeModels.length ? {
-      claude: visibleClaudeModels(claudeModels).filter((entry) => !entry.disabled).map((entry) => ({
+    unavailableProviders: {
+      ...(!runtimeModels.length ? { openai: "Load the OpenAI model catalog before adding an OpenAI sub-agent." } : {}),
+      ...(!claudeModels.some((entry) => !entry.disabled && !isClaudeDefaultModel(entry.id, entry.displayName))
+        ? { claude: "No available Claude models are listed. Refresh the model catalog before adding a Claude sub-agent." } : {}),
+      ...subAgentModelUnavailable,
+    },
+    openai: runtimeModels.length ? openAiModelOptions(runtimeModels).map((entry) => ({
+        id: entry.id,
+        label: entry.name,
+        detail: entry.tagline,
+      })) : [],
+    claude: visibleClaudeModels(claudeModels.filter((entry) => !entry.disabled)).map((entry) => ({
         id: entry.id,
         label: entry.displayName,
         detail: entry.description || entry.resolvedModel,
         keywords: entry.resolvedModel,
+        resolvedModel: entry.resolvedModel,
       })),
-    } : {}),
     ...(cursorModels.length ? {
       cursor: cursorModels.map((entry) => ({ id: entry.id, label: entry.name || entry.id, detail: entry.id })),
     } : {}),
@@ -819,7 +827,7 @@ export function SettingsModal({
       label: entry.displayName || entry.id,
       detail: `${entry.publisher}${entry.trainedForToolUse ? " · tool use" : ""}`,
     })),
-  }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels]);
+  }), [claudeModels, cursorModels, lmStudioModels, openRouterModels, runtimeModels, subAgentModelUnavailable]);
 
   // Learning's automatic default must use the live catalog, never the picker fallback.
   const learningModelCatalogs = useMemo(() => ({

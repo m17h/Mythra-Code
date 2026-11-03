@@ -1,4 +1,4 @@
-import { modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelCatalogs } from "./subAgentModelOptions";
+import { defaultChildAgentModel, defaultChildAgentModelIssue, defaultChildAgentModelNotice, modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, Check, Info, LoaderCircle, Lock, MessageCircleQuestion, Minus, Plus, Settings2, Square, SquareArrowOutUpRight, Trash2, UsersRound, X } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
@@ -439,12 +439,12 @@ function targetKey(target: ChildAgentTarget): string {
 }
 
 /** A destination named after its provider, deduped against the roster. */
-function newTargetFor(provider: Provider, existing: ChildAgentTarget[]): ChildAgentTarget {
+function newTargetFor(provider: Provider, existing: ChildAgentTarget[], model: string): ChildAgentTarget {
   const id = uniqueChildAgentId(provider, existing);
   return {
     id,
     provider,
-    model: provider === "cursor" ? "auto" : "",
+    model,
     label: providerDisplayName(provider),
     description: SUGGESTED_CHILD_AGENT_TARGETS.find((entry) => entry.provider === provider)?.description ?? "",
     enabled: true,
@@ -975,9 +975,15 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   const addTarget = useCallback((provider: Provider) => {
     const signInIssue = providerSignInIssue(provider, readiness);
     if (signInIssue) { onUnavailable?.(signInIssue); return; }
+    const modelIssue = defaultChildAgentModelIssue(provider, props.modelCatalogs);
+    if (modelIssue) { onUnavailable?.(modelIssue); return; }
+    const model = defaultChildAgentModel(provider, props.modelCatalogs);
+    if (model === undefined) return;
     const existing = policy.childAgents.targets;
     if (existing.length >= MAX_CHILD_AGENT_TARGETS) return;
-    const target = newTargetFor(provider, existing);
+    const modelNotice = defaultChildAgentModelNotice(provider, props.modelCatalogs);
+    if (modelNotice) onUnavailable?.(modelNotice);
+    const target = newTargetFor(provider, existing, model);
     const nextTargets = [...existing, target];
     const currentEnabledCrew = Math.max(1, existing.filter((entry) => entry.enabled).length);
     const nextChildAgents = { enabled: true, targets: nextTargets };
@@ -998,7 +1004,7 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
       childAgents: nextChildAgents,
     });
     setExpandedId(target.id);
-  }, [onChange, policy, readiness, onUnavailable]);
+  }, [onChange, policy, readiness, onUnavailable, props.modelCatalogs]);
 
   const applyPreset = useCallback(() => {
     const preset = props.presets?.find((entry) => entry.id === selectedPresetId);
@@ -1658,9 +1664,9 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                               value={target.provider}
                               options={CHILD_AGENT_PROVIDERS.map((provider) => ({
                                 value: provider,
-                                disabled: Boolean(providerSignInIssue(provider, readiness)),
+                                disabled: provider !== target.provider && Boolean(providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs)),
                                 label: providerDisplayName(provider),
-                                detail: provider === "openai"
+                                detail: provider !== target.provider && (defaultChildAgentModelIssue(provider, props.modelCatalogs) || defaultChildAgentModelNotice(provider, props.modelCatalogs)) || (provider === "openai"
                                   ? "Codex · subscription or API key"
                                   : provider === "claude"
                                     ? "Claude Code · subscription or API key"
@@ -1668,18 +1674,23 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                                       ? "Cursor subscription"
                                       : provider === "lmstudio"
                                         ? "Local LM Studio server"
-                                        : "API model routing",
+                                        : "API model routing"),
                                 icon: <ProviderLogo provider={provider} size={11} />,
                               }))}
                               onDisabledSelect={(value) => {
-                                const issue = providerSignInIssue(value as Provider, readiness);
+                                const issue = providerSignInIssue(value as Provider, readiness) || defaultChildAgentModelIssue(value as Provider, props.modelCatalogs);
                                 if (issue) onUnavailable?.(issue);
                               }}
                               onChange={(value) => {
                                 const provider = value as Provider;
+                                if (provider === target.provider) return;
+                                const model = defaultChildAgentModel(provider, props.modelCatalogs);
+                                if (model === undefined) return;
+                                const modelNotice = defaultChildAgentModelNotice(provider, props.modelCatalogs);
+                                if (modelNotice) onUnavailable?.(modelNotice);
                                 updateTarget(target.id, {
                                   provider,
-                                  model: childAgentModel({ provider, model: "" }),
+                                  model,
                                   label: target.label === providerDisplayName(target.provider) ? providerDisplayName(provider) : target.label,
                                 });
                               }}
@@ -1789,9 +1800,9 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
                           type="button"
                           key={provider}
                           aria-label={`Add ${providerDisplayName(provider)} sub-agent`}
-                          title={`Add ${providerDisplayName(provider)}`}
-                          className={providerSignInIssue(provider, readiness) ? "unavailable" : undefined}
-                          aria-disabled={Boolean(providerSignInIssue(provider, readiness)) || undefined}
+                          title={providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs) || defaultChildAgentModelNotice(provider, props.modelCatalogs) || `Add ${providerDisplayName(provider)}`}
+                          className={providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs) ? "unavailable" : undefined}
+                          aria-disabled={Boolean(providerSignInIssue(provider, readiness) || defaultChildAgentModelIssue(provider, props.modelCatalogs)) || undefined}
                           onClick={() => addTarget(provider)}
                         >
                           <ProviderLogo provider={provider} size={13} />
