@@ -1,4 +1,4 @@
-import { modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelOption as ChildAgentModelOption } from "./subAgentModelOptions";
+import { defaultChildAgentModel, defaultChildAgentModelIssue, defaultChildAgentModelNotice, modelOptionsFor, REASONING_OPTIONS, type ChildAgentModelCatalogs } from "./subAgentModelOptions";
 import { useId, useState } from "react";
 import { AlertTriangle, ChevronDown, Plus, Trash2 } from "lucide-react";
 import { ProviderLogo } from "./BrandLogos";
@@ -44,7 +44,7 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
   /** Cross-provider delegation is on *and* sub-agents themselves are on. */
   enabled: boolean;
   readiness: ChildAgentReadiness;
-  modelCatalogs?: Partial<Record<Provider, ChildAgentModelOption[]>>;
+  modelCatalogs?: ChildAgentModelCatalogs;
   modelFavorites?: ModelFavorites;
   onToggleModelFavorite?: (provider: Provider, model: string) => void;
   onDiscoverOpenRouterModels?: (query: string) => void;
@@ -65,20 +65,23 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
   };
 
   const full = value.targets.length >= MAX_CHILD_AGENT_TARGETS;
+  const draftModelIssue = defaultChildAgentModelIssue(draftProvider, modelCatalogs);
+  const draftModelNotice = defaultChildAgentModelNotice(draftProvider, modelCatalogs);
   const addTarget = () => {
     if (full) return;
-    // The per-provider suggestion carries a sensible default model and a
-    // description written for the model that has to choose between workers,
-    // so a blank name still produces a worker worth spawning.
+    const model = defaultChildAgentModel(draftProvider, modelCatalogs);
+    if (model === undefined) return;
+    // Keep suggested descriptions, but select a concrete default from the
+    // current catalog rather than the old empty/provider-default model.
     const suggestion = SUGGESTED_CHILD_AGENT_TARGETS.find((entry) => entry.provider === draftProvider);
     const id = uniqueChildAgentId(draftId || suggestion?.id || draftProvider, value.targets);
     setTargets([...value.targets, {
-      model: draftProvider === "cursor" ? "auto" : "",
       description: "",
       reasoningMode: "inherit",
       reasoningEffort: "medium",
       reasoningMaxEffort: "high",
       ...suggestion,
+      model,
       id,
       provider: draftProvider,
       label: draftId || suggestion?.label || providerDisplayName(draftProvider),
@@ -156,7 +159,8 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                         options={CHILD_AGENT_PROVIDERS.map((provider) => ({
                           value: provider,
                           label: providerDisplayName(provider),
-                          detail: provider === "openai"
+                          disabled: provider !== target.provider && Boolean(defaultChildAgentModelIssue(provider, modelCatalogs)),
+                          detail: provider !== target.provider && (defaultChildAgentModelIssue(provider, modelCatalogs) || defaultChildAgentModelNotice(provider, modelCatalogs)) || (provider === "openai"
                             ? "Codex · subscription or API key"
                             : provider === "claude"
                               ? "Claude Code · subscription or API key"
@@ -164,14 +168,17 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
                                 ? "Cursor subscription"
                                 : provider === "lmstudio"
                                   ? "Local LM Studio server"
-                                  : "API model routing",
+                                  : "API model routing"),
                           icon: <ProviderLogo provider={provider} size={11} />,
                         }))}
                         onChange={(value) => {
                           const provider = value as Provider;
+                          if (provider === target.provider) return;
+                          const model = defaultChildAgentModel(provider, modelCatalogs);
+                          if (model === undefined) return;
                           updateTarget(target.id, {
                             provider,
-                            model: childAgentModel({ provider, model: "" }),
+                            model,
                             label: target.label === providerDisplayName(target.provider) ? providerDisplayName(provider) : target.label,
                           });
                         }}
@@ -279,8 +286,10 @@ export function ChildAgentRoster({ value, enabled, readiness, modelCatalogs, mod
           }))}
           onChange={(provider) => setDraftProvider(provider as Provider)}
         />
-        <button type="button" disabled={full} onClick={addTarget}><Plus size={12} /> Add sub-agent</button>
+        <button type="button" disabled={full || Boolean(draftModelIssue)} onClick={addTarget}><Plus size={12} /> Add sub-agent</button>
       </div>
+      {!full && draftModelIssue && <p className="worker-empty" role="status">{draftModelIssue}</p>}
+      {!full && !draftModelIssue && draftModelNotice && <p className="worker-empty" role="status">{draftModelNotice}</p>}
       {full && <p className="worker-empty">This preset has reached its {MAX_CHILD_AGENT_TARGETS}-sub-agent limit.</p>}
     </div>
   );
