@@ -370,7 +370,7 @@ function TrendCard({ buckets, range, grain, onGrain }: {
   buckets: UsageBucket[]; range: UsageRange; grain: UsageGrain; onGrain: (grain: UsageGrain) => void;
 }) {
   const [measure, setMeasure] = useState<Measure>("cost");
-  const periods = usagePeriods(buckets, range, grain);
+  const periods = useMemo(() => usagePeriods(buckets, range, grain), [buckets, range.from, range.to, grain]);
   const values = periods.map((period) => measured(period.amounts, "total", measure));
   const labels = periods.map((period) => periodLabel(period, grain));
   const unpricedPeriods = values.filter((value) => value === null).length;
@@ -566,10 +566,22 @@ function ModelsView({ detail, range, periodRange, grain, onGrain, expanded, onEx
   expanded: string | null; onExpand: (key: string | null) => void;
 }) {
   const baseId = useId();
-  const models = detail.providers.flatMap((provider) => provider.models)
-    .sort((left, right) => componentCost(right) - componentCost(left) || right.totalTokens - left.totalTokens);
+  // Group retained buckets once instead of filtering all history separately
+  // for every model. Expanding a row also reuses these unchanged averages.
+  const modelRows = useMemo(() => {
+    const grouped = new Map<string, UsageBucket[]>();
+    for (const bucket of detail.buckets) {
+      const key = modelKey(bucket.provider, bucket.model);
+      const own = grouped.get(key);
+      if (own) own.push(bucket);
+      else grouped.set(key, [bucket]);
+    }
+    return detail.providers.flatMap((provider) => provider.models)
+      .sort((left, right) => componentCost(right) - componentCost(left) || right.totalTokens - left.totalTokens)
+      .map((model) => ({ model, average: promptAverages(grouped.get(modelKey(model.provider, model.model)) ?? [], "modelTurns") }));
+  }, [detail]);
   const earlier = !range ? detail.unallocated : null;
-  const incomplete = models.some((model) => cacheGap(model, "cacheRead") > 0 || cacheGap(model, "cacheWrite") > 0);
+  const incomplete = modelRows.some(({ model }) => cacheGap(model, "cacheRead") > 0 || cacheGap(model, "cacheWrite") > 0);
   if (!detail.buckets.length && !earlier) return <div className="usage-dashboard-empty"><strong>No model detail in this range</strong><p>Try a wider range.</p></div>;
   return <>
     <section className="usage-dashboard-card" aria-labelledby={`${baseId}-types`}>
@@ -577,15 +589,14 @@ function ModelsView({ detail, range, periodRange, grain, onGrain, expanded, onEx
       <ComponentTable buckets={detail.buckets} earlier={earlier} per="turns" caption="Tokens and estimated cost by type, all models" />
       <p className="usage-card-note">{averagesNote(detail.buckets, "turns")}{incomplete ? " Some cache metrics were not reported. Their unknown use is not zero; reported portions are shown separately." : ""}</p>
     </section>
-    {models.length > 0 && <section className="usage-dashboard-card" aria-labelledby={`${baseId}-models`}>
+    {modelRows.length > 0 && <section className="usage-dashboard-card" aria-labelledby={`${baseId}-models`}>
       <div className="usage-card-head"><h5 id={`${baseId}-models`}>Models</h5></div>
       <table className="usage-models-table">
         <caption className="sr-only">Estimated cost, tokens and prompts by model</caption>
         <thead><tr><th scope="col">Model</th><th scope="col">Est. cost</th><th scope="col">Tokens</th><th scope="col" className="usage-optional">Per prompt</th></tr></thead>
-        <tbody>{models.map((model) => {
+        <tbody>{modelRows.map(({ model, average }) => {
           const key = modelKey(model.provider, model.model);
           const open = expanded === key;
-          const average = promptAverages(bucketsOf(detail.buckets, model.provider, model.model), "modelTurns");
           const panelId = `${baseId}-${key.replace(/[^a-z0-9]/gi, "-")}`;
           return <Fragment key={key}>
             <tr className={open ? "open" : undefined}>

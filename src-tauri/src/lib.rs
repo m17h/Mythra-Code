@@ -10473,6 +10473,7 @@ pub fn run() {
                     cursor_permission_respond,
                     state_read,
                     state_read_raw,
+                    persistence::state_read_snapshot,
                     state_write,
                     state_delete,
                     local_transcript_list,

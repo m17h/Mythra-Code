@@ -7,20 +7,25 @@ import { subscribeUsage } from "../lib/usageLedger";
 export function useFrontierPricing() {
   const [snapshot, setSnapshot] = useState(frontierPricingSnapshot);
   useEffect(() => {
+    // Usage notifications mostly report token ledger writes, so an unchanged
+    // snapshot keeps its identity here and the table does not render.
     const read = () => setSnapshot(frontierPricingSnapshot());
-    const unsubscribe = subscribeUsage(read);
     // A clock correction changes timestamp trust even when no pricing event
     // arrives. Re-read only the saved snapshot while this Settings pane is
     // mounted; this timer never downloads pricing or updates stored evidence.
-    const timer = window.setInterval(read, 60_000);
-    window.addEventListener("focus", read);
-    document.addEventListener("visibilitychange", read);
+    // These reads always render because the view's "today" labels depend on
+    // the clock, not on the snapshot.
+    const readClock = () => setSnapshot({ ...frontierPricingSnapshot() });
+    const unsubscribe = subscribeUsage(read);
+    const timer = window.setInterval(readClock, 60_000);
+    window.addEventListener("focus", readClock);
+    document.addEventListener("visibilitychange", readClock);
     read();
     return () => {
       unsubscribe();
       window.clearInterval(timer);
-      window.removeEventListener("focus", read);
-      document.removeEventListener("visibilitychange", read);
+      window.removeEventListener("focus", readClock);
+      document.removeEventListener("visibilitychange", readClock);
     };
   }, []);
   return { ...snapshot, refresh: refreshFrontierPricing };

@@ -10,12 +10,15 @@ export function useClaudeEvents(context: ClaudeEventContext): (event: ClaudeEven
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
-    onClaudeEvent((event) => routeClaudeEvent(event, contextRef.current))
+    onClaudeEvent((event) => {
+      if (!disposed) routeClaudeEvent(event, contextRef.current);
+    })
       .then((unlisten) => {
         if (disposed) unlisten();
         else stop = unlisten;
       })
       .catch((reason) => {
+        if (disposed) return;
         contextRef.current.onError(
           `Mythra Code could not subscribe to Claude events: ${reason instanceof Error ? reason.message : String(reason)}`,
         );

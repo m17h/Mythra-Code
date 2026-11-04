@@ -1,5 +1,5 @@
 import { fetchPricingDocument } from "./pricingDocuments";
-import { loadStored, storeValue } from "./storage";
+import { loadStored, storedRevision, storeValue } from "./storage";
 import {
   cursorPricingKey, notifyPricingChanged, parseModelPricingCatalog, requestUsageRepricing, OFFICIAL_PRICING_KEY, type ModelPricingCatalogEntry,
 } from "./usageLedger";
@@ -58,6 +58,7 @@ const PROVIDER_KEY: Record<OfficialPricingSource, string> = { openai: "openai", 
 const MAX_MODELS_PER_SOURCE = 300;
 const CURSOR_NOTE = "Cursor list price. Cursor doesn’t report cache writes, and plan token fees aren’t included.";
 let checking = false;
+const NO_RATES: Readonly<Record<string, OfficialRate>> = Object.freeze({});
 
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
 const timestamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 8.64e15 ? value : undefined;
@@ -111,6 +112,28 @@ function readStore(): { models: Record<string, ModelPricingCatalogEntry>; source
   return { models: parseModelPricingCatalog(raw, true)?.models ?? {}, sources, epochs: parseRateEpochs(raw?.epochs) };
 }
 
+type StoredListings = Pick<ReturnType<typeof readStore>, "models" | "sources">;
+type RateListing = Readonly<Record<string, Readonly<OfficialRate>>>;
+let displayStoreCache: StoredListings & { revision: number; migrated: Partial<Record<OfficialPricingSource, RateListing>> } | null = null;
+
+/** Bounded validated listings for repeated display reads, reused until storage
+ * observes a value change. `readStore` is a pure function of that value, and nothing
+ * derived from the clock or `checking` belongs here. Epochs are not retained:
+ * only the write path reads them, and it always parses the current value. */
+function displayStore(): NonNullable<typeof displayStoreCache> {
+  if (displayStoreCache?.revision === storedRevision(OFFICIAL_PRICING_KEY)) return displayStoreCache;
+  const { models, sources } = readStore();
+  // Reading can itself advance the revision when it detects an external change.
+  const store = { revision: storedRevision(OFFICIAL_PRICING_KEY), models, sources, migrated: {} };
+  // An unreadable cache also reads as empty; retrying matches an uncached read
+  // instead of hiding saved rates until the next write.
+  // Restored snapshots can exceed the writer's per-source retention limit.
+  // Keep them fully readable without retaining an unbounded display copy.
+  displayStoreCache = Object.keys(sources).length
+    && Object.keys(models).length <= MAX_MODELS_PER_SOURCE * OFFICIAL_PRICING_SOURCES.length ? store : null;
+  return store;
+}
+
 /** Revalidate persisted display snapshots independently of their successful
  * download. Invalid cache values cannot become free prices or fresh evidence. */
 function validatedRateSnapshot(value: unknown, observedDay?: string, depth = 0): Record<string, OfficialRate> | undefined {
@@ -155,15 +178,16 @@ function validatedRateSnapshot(value: unknown, observedDay?: string, depth = 0):
   return models;
 }
 
-/** Observed official catalog only: no bundled prices or inferred freshness. */
-export function officialPricingSnapshot(source: OfficialPricingSource): Record<string, OfficialRate> {
-  const store = readStore();
+/** Observed official catalog only: no bundled prices or inferred freshness.
+ * Cacheable results are shared until storage observes a value change. */
+export function officialPricingSnapshot(source: OfficialPricingSource): RateListing {
+  const store = displayStore();
   const state = store.sources[source];
-  if (!state?.verifiedAt) return {};
+  if (!state?.verifiedAt) return NO_RATES;
   if (state.catalog) return state.catalog;
   // Existing installations had no exact listing metadata. Keep their dated
   // standard rates visible until the next successful refresh upgrades them.
-  return validatedRateSnapshot(Object.fromEntries(Object.entries(store.models)
+  return store.migrated[source] ??= validatedRateSnapshot(Object.fromEntries(Object.entries(store.models)
     .filter(([key]) => key.startsWith(`${PROVIDER_KEY[source]}:`))
     .map(([key, rate]) => [key.slice(PROVIDER_KEY[source].length + 1), {
       input: rate.inputPerMillion, output: rate.outputPerMillion, asOf: rate.asOf,
@@ -172,7 +196,7 @@ export function officialPricingSnapshot(source: OfficialPricingSource): Record<s
       ...(rate.cacheWrite1hInputPerMillion !== undefined ? { cacheWrite1h: rate.cacheWrite1hInputPerMillion } : {}),
       ...(rate.serviceTier ? { serviceTier: rate.serviceTier } : {}),
       ...(rate.status ? { status: rate.status } : {}),
-    }])), dayOf(state.verifiedAt)) ?? {};
+    }])), dayOf(state.verifiedAt)) ?? NO_RATES;
 }
 
 /**
@@ -206,7 +230,7 @@ export function observeRates(
   return next;
 }
 
-function modelsSeenAtLastCheck(source: OfficialPricingSource, store = readStore()): number {
+function modelsSeenAtLastCheck(source: OfficialPricingSource, store: StoredListings = readStore()): number {
   // Snapshots written before `lastModelCount` still need a best-effort count
   // until their next successful check upgrades the stored source state.
   const storedCount = store.sources[source]?.lastModelCount;
@@ -219,7 +243,7 @@ function modelsSeenAtLastCheck(source: OfficialPricingSource, store = readStore(
 }
 
 export function officialPricingStatus(now = Date.now()): OfficialPricingStatus[] {
-  const store = readStore();
+  const store = displayStore();
   return OFFICIAL_PRICING_SOURCES.map((source) => {
     const state = store.sources[source];
     return {

@@ -6,7 +6,7 @@ use std::{
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use super::unix_timestamp_ms;
@@ -276,11 +276,19 @@ pub(super) fn lock_state_db(
         .unwrap_or_else(std::sync::PoisonError::into_inner))
 }
 
-struct LocalTranscriptEntry {
-    value: Value,
+struct LocalTranscriptEntry<'a> {
+    value: &'a Value,
     wrapped_json: String,
     timeline_order: Option<f64>,
     source_order: usize,
+}
+
+#[derive(Serialize)]
+struct LocalTranscriptEntryEnvelope<'a> {
+    // Keep the same field order as the existing serde_json object encoding so
+    // unchanged chunks still compare byte-for-byte with stored chunks.
+    entry: &'a Value,
+    kind: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -487,7 +495,7 @@ fn local_transcript_identity_from_key(key: &str) -> Option<(&'static str, &str)>
     None
 }
 
-fn ordered_local_transcript_entries(value: &Value) -> Result<Vec<LocalTranscriptEntry>, String> {
+fn ordered_local_transcript_entries(value: &Value) -> Result<Vec<LocalTranscriptEntry<'_>>, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "Stored local transcript is not an object".to_string())?;
@@ -506,12 +514,14 @@ fn ordered_local_transcript_entries(value: &Value) -> Result<Vec<LocalTranscript
         } else {
             "activity"
         };
-        let value = message.clone();
-        let wrapped_json = serde_json::to_string(&json!({ "kind": kind, "entry": value }))
-            .map_err(|error| format!("Could not encode local transcript entry: {error}"))?;
+        let wrapped_json = serde_json::to_string(&LocalTranscriptEntryEnvelope {
+            entry: message,
+            kind,
+        })
+        .map_err(|error| format!("Could not encode local transcript entry: {error}"))?;
         entries.push(LocalTranscriptEntry {
             timeline_order: message.get("timelineOrder").and_then(Value::as_f64),
-            value,
+            value: message,
             wrapped_json,
             source_order,
         });
@@ -532,7 +542,7 @@ fn ordered_local_transcript_entries(value: &Value) -> Result<Vec<LocalTranscript
 
 fn local_transcript_chunks(value: &Value) -> Result<Vec<String>, String> {
     let entries = ordered_local_transcript_entries(value)?;
-    let mut groups: Vec<Vec<LocalTranscriptEntry>> = Vec::new();
+    let mut groups: Vec<Vec<LocalTranscriptEntry<'_>>> = Vec::new();
     let mut turn_groups = HashMap::<String, usize>::new();
     for entry in entries {
         let turn_id = entry
@@ -555,7 +565,7 @@ fn local_transcript_chunks(value: &Value) -> Result<Vec<String>, String> {
         }
     }
 
-    let encode = |entries: &[LocalTranscriptEntry]| -> String {
+    let encode = |entries: &[LocalTranscriptEntry<'_>]| -> String {
         format!(
             "[{}]",
             entries
@@ -566,7 +576,7 @@ fn local_transcript_chunks(value: &Value) -> Result<Vec<String>, String> {
         )
     };
     let mut chunks = Vec::new();
-    let mut current: Vec<LocalTranscriptEntry> = Vec::new();
+    let mut current: Vec<LocalTranscriptEntry<'_>> = Vec::new();
     let mut current_bytes = 2usize;
     for group in groups {
         let group_bytes = group
@@ -723,13 +733,19 @@ fn parse_local_transcript_cursor(cursor: &str, generation: i64) -> Result<i64, S
     Ok(seq)
 }
 
-fn read_local_transcript_page(
+struct LocalTranscriptReconciliation {
+    migrated_legacy: bool,
+    legacy_migration_failed: bool,
+}
+
+/// Bring chunked storage up to date with the compatibility row and make sure
+/// the transcript has a tail boundary. `None` means it no longer exists, and
+/// any rows it left behind are gone.
+fn reconcile_local_transcript(
     connection: &mut Connection,
     provider: &str,
     thread_id: &str,
-    cursor: Option<&str>,
-    byte_budget: Option<usize>,
-) -> Result<Option<LocalTranscriptPage>, String> {
+) -> Result<Option<LocalTranscriptReconciliation>, String> {
     let legacy_key = local_transcript_key(provider, thread_id)?;
     let legacy_updated_at = connection
         .query_row(
@@ -774,8 +790,8 @@ fn read_local_transcript_page(
         (None, None) => return Ok(None),
     };
     // Builds predating mutable-tail persistence can have chunk metadata but no
-    // tail boundary. Initialize it before returning the page and write token
-    // together; the shared connection lock keeps this read atomic to callers.
+    // tail boundary. Initialize it before any caller reads the write token; the
+    // shared connection lock keeps reconciliation atomic to those callers.
     connection
         .execute(
             "INSERT OR IGNORE INTO local_transcript_tail_state(provider, thread_id, tail_seq)
@@ -784,7 +800,26 @@ fn read_local_transcript_page(
             params![provider, thread_id],
         )
         .map_err(|error| format!("Could not initialize local transcript tail state: {error}"))?;
-    let (thread_json, cursor_session_id, head_seq, tail_seq, generation) = connection
+    Ok(Some(LocalTranscriptReconciliation {
+        migrated_legacy,
+        legacy_migration_failed,
+    }))
+}
+
+struct LocalTranscriptHead {
+    thread_json: String,
+    cursor_session_id: Option<String>,
+    head_seq: i64,
+    tail_seq: i64,
+    generation: i64,
+}
+
+fn read_local_transcript_head(
+    connection: &Connection,
+    provider: &str,
+    thread_id: &str,
+) -> Result<LocalTranscriptHead, String> {
+    connection
         .query_row(
             "SELECT meta.thread_json, meta.cursor_session_id, meta.head_seq,
                     tail.tail_seq, meta.generation
@@ -794,26 +829,37 @@ fn read_local_transcript_page(
              WHERE meta.provider = ?1 AND meta.thread_id = ?2",
             params![provider, thread_id],
             |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
+                Ok(LocalTranscriptHead {
+                    thread_json: row.get(0)?,
+                    cursor_session_id: row.get(1)?,
+                    head_seq: row.get(2)?,
+                    tail_seq: row.get(3)?,
+                    generation: row.get(4)?,
+                })
             },
         )
-        .map_err(|error| format!("Could not read local transcript metadata: {error}"))?;
-    let start_seq = cursor
-        .map(|cursor| parse_local_transcript_cursor(cursor, generation))
-        .transpose()?
-        .unwrap_or(head_seq);
-    if start_seq > head_seq {
-        return Err("Local transcript cursor is stale".to_string());
+        .map_err(|error| format!("Could not read local transcript metadata: {error}"))
+}
+
+/// `row.get::<_, String>` without the copy. A value it would reject is handed
+/// back to it, so acceptance and the error are both unchanged.
+fn borrowed_text<'a>(row: &'a rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'a str> {
+    match row.get_ref(index)?.as_str() {
+        Ok(text) => Ok(text),
+        Err(_) => row.get::<_, String>(index).map(|_| ""),
     }
-    let budget = byte_budget
-        .unwrap_or(LOCAL_TRANSCRIPT_PAGE_DEFAULT_BYTES)
-        .clamp(1, LOCAL_TRANSCRIPT_PAGE_MAX_BYTES);
+}
+
+/// The chunks a page starting at `start_seq` holds, oldest first, and their
+/// size. The chunk that ends a page must still be readable text, but it is only
+/// checked in place because the page does not keep it.
+fn select_local_transcript_chunks(
+    connection: &Connection,
+    provider: &str,
+    thread_id: &str,
+    start_seq: i64,
+    budget: usize,
+) -> Result<(Vec<(i64, String)>, usize), String> {
     let mut statement = connection
         .prepare(
             "SELECT seq, entries_json, byte_len FROM local_transcript_chunks
@@ -833,8 +879,7 @@ fn read_local_transcript_page(
         let seq = row
             .get::<_, i64>(0)
             .map_err(|error| format!("Could not read local transcript sequence: {error}"))?;
-        let entries_json = row
-            .get::<_, String>(1)
+        let entries_json = borrowed_text(row, 1)
             .map_err(|error| format!("Could not read local transcript entries: {error}"))?;
         let chunk_bytes = row
             .get::<_, i64>(2)
@@ -844,20 +889,59 @@ fn read_local_transcript_page(
             break;
         }
         byte_len = byte_len.saturating_add(chunk_bytes);
-        selected.push((seq, entries_json));
+        selected.push((seq, entries_json.to_owned()));
     }
     drop(rows);
     drop(statement);
     selected.reverse();
+    Ok((selected, byte_len))
+}
+
+fn read_local_transcript_page(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+    cursor: Option<&str>,
+    byte_budget: Option<usize>,
+) -> Result<Option<LocalTranscriptPage>, String> {
+    let Some(LocalTranscriptReconciliation {
+        migrated_legacy,
+        legacy_migration_failed,
+    }) = reconcile_local_transcript(connection, provider, thread_id)?
+    else {
+        return Ok(None);
+    };
+    let LocalTranscriptHead {
+        thread_json,
+        cursor_session_id,
+        head_seq,
+        tail_seq,
+        generation,
+    } = read_local_transcript_head(connection, provider, thread_id)?;
+    let start_seq = cursor
+        .map(|cursor| parse_local_transcript_cursor(cursor, generation))
+        .transpose()?
+        .unwrap_or(head_seq);
+    if start_seq > head_seq {
+        return Err("Local transcript cursor is stale".to_string());
+    }
+    let budget = byte_budget
+        .unwrap_or(LOCAL_TRANSCRIPT_PAGE_DEFAULT_BYTES)
+        .clamp(1, LOCAL_TRANSCRIPT_PAGE_MAX_BYTES);
+    let (selected, byte_len) =
+        select_local_transcript_chunks(connection, provider, thread_id, start_seq, budget)?;
     let oldest_seq = selected.first().map(|(seq, _)| *seq).unwrap_or(start_seq);
     let mut messages = Vec::new();
     let mut activities = Vec::new();
     for (_, entries_json) in selected {
         let entries: Vec<Value> = serde_json::from_str(&entries_json)
             .map_err(|error| format!("Stored local transcript chunk is invalid: {error}"))?;
-        for wrapped in entries {
-            let kind = wrapped.get("kind").and_then(Value::as_str);
-            let entry = wrapped.get("entry").cloned();
+        for mut wrapped in entries {
+            let Some(object) = wrapped.as_object_mut() else {
+                return Err("Stored local transcript chunk has an invalid entry".to_string());
+            };
+            let entry = object.remove("entry");
+            let kind = object.get("kind").and_then(Value::as_str);
             match (kind, entry) {
                 (Some("message"), Some(entry)) => messages.push(entry),
                 (Some("activity"), Some(entry)) => activities.push(entry),
@@ -880,6 +964,82 @@ fn read_local_transcript_page(
         migrated_legacy,
         legacy_migration_failed,
     }))
+}
+
+fn is_stored_local_transcript_entry(wrapped: &Value) -> bool {
+    let Some(object) = wrapped.as_object() else {
+        return false;
+    };
+    object.contains_key("entry")
+        && matches!(
+            object.get("kind").and_then(Value::as_str),
+            Some("message" | "activity")
+        )
+}
+
+/// A chunk decoded for checking only. This is `Vec<Value>`'s own sequence walk
+/// and `Value`'s own deserializer, so it accepts and rejects the same JSON as a
+/// page read, but each entry is released before the next one is decoded.
+struct LocalTranscriptChunkCheck {
+    invalid_entry: bool,
+}
+
+impl<'de> Deserialize<'de> for LocalTranscriptChunkCheck {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ChunkVisitor;
+        impl<'de> serde::de::Visitor<'de> for ChunkVisitor {
+            type Value = LocalTranscriptChunkCheck;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, mut entries: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                // A later syntax error still outranks an invalid entry, as it
+                // does when the whole chunk is decoded first.
+                let mut invalid_entry = false;
+                while let Some(entry) = entries.next_element::<Value>()? {
+                    invalid_entry |= !is_stored_local_transcript_entry(&entry);
+                }
+                Ok(LocalTranscriptChunkCheck { invalid_entry })
+            }
+        }
+        deserializer.deserialize_seq(ChunkVisitor)
+    }
+}
+
+/// What a save or write token requires of stored data: everything a read of the
+/// smallest newest page requires, with the same errors, so saving can never
+/// replace newest data that could not be opened. `false` means the transcript
+/// no longer exists. Only the page's assembled values are skipped.
+fn verify_local_transcript_writable(
+    connection: &mut Connection,
+    provider: &str,
+    thread_id: &str,
+) -> Result<bool, String> {
+    if reconcile_local_transcript(connection, provider, thread_id)?.is_none() {
+        return Ok(false);
+    }
+    let head = read_local_transcript_head(connection, provider, thread_id)?;
+    // The smallest page: the newest chunk, which holds at least the latest turn.
+    let (selected, _) =
+        select_local_transcript_chunks(connection, provider, thread_id, head.head_seq, 1)?;
+    for (_, entries_json) in selected {
+        let chunk: LocalTranscriptChunkCheck = serde_json::from_str(&entries_json)
+            .map_err(|error| format!("Stored local transcript chunk is invalid: {error}"))?;
+        if chunk.invalid_entry {
+            return Err("Stored local transcript chunk has an invalid entry".to_string());
+        }
+    }
+    serde_json::from_str::<Value>(&head.thread_json)
+        .map_err(|error| format!("Stored local thread metadata is invalid: {error}"))?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -905,11 +1065,21 @@ pub(super) async fn local_transcript_page_read(
     .map_err(|error| format!("Local transcript page task failed: {error}"))?
 }
 
+/// A complete transcript and the write token for exactly that transcript. They
+/// must travel together: generation alone does not version the tail boundary,
+/// so a token read separately can describe different rows than the transcript.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LocalTranscriptFullRead {
+    transcript: Value,
+    write_state: LocalTranscriptWriteState,
+}
+
 fn read_local_transcript_full(
     connection: &mut Connection,
     provider: &str,
     thread_id: &str,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<LocalTranscriptFullRead>, String> {
     let mut cursor = None;
     let mut pages = Vec::new();
     loop {
@@ -935,6 +1105,11 @@ fn read_local_transcript_full(
         .ok_or_else(|| "Local transcript has no readable pages".to_string())?;
     let thread = newest.thread.clone();
     let cursor_session_id = newest.cursor_session_id.clone();
+    let write_state = LocalTranscriptWriteState {
+        generation: newest.generation,
+        head_seq: newest.head_seq,
+        tail_seq: newest.tail_seq,
+    };
     let mut messages = Vec::new();
     let mut activities = Vec::new();
     for page in pages {
@@ -951,7 +1126,10 @@ fn read_local_transcript_full(
     }
     transcript.insert("messages".to_string(), Value::Array(messages));
     transcript.insert("activities".to_string(), Value::Array(activities));
-    Ok(Some(Value::Object(transcript)))
+    Ok(Some(LocalTranscriptFullRead {
+        transcript: Value::Object(transcript),
+        write_state,
+    }))
 }
 
 #[tauri::command]
@@ -959,7 +1137,7 @@ pub(super) async fn local_transcript_full_read(
     app: AppHandle,
     provider: String,
     thread_id: String,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<LocalTranscriptFullRead>, String> {
     let connection = shared_state_db(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut connection = lock_state_db(&connection)?;
@@ -1034,27 +1212,39 @@ fn write_local_transcript_snapshot(
         )
         .optional()
         .map_err(|error| format!("Could not inspect local transcript generation: {error}"))?;
+    // Compare against SQLite's own row buffer so a long transcript is not copied
+    // out of the database just to find the suffix that changed. Every stored
+    // row is still read: an unreadable one fails the save rather than being
+    // replaced, including one after the first difference.
     let mut statement = transaction
         .prepare(
             "SELECT entries_json FROM local_transcript_chunks
              WHERE provider = ?1 AND thread_id = ?2 ORDER BY seq ASC",
         )
         .map_err(|error| format!("Could not prepare local transcript comparison: {error}"))?;
-    let existing_chunks = statement
-        .query_map(params![provider, thread_id], |row| row.get::<_, String>(0))
-        .map_err(|error| format!("Could not compare local transcript chunks: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read local transcript chunk: {error}"))?;
+    let mut rows = statement
+        .query(params![provider, thread_id])
+        .map_err(|error| format!("Could not compare local transcript chunks: {error}"))?;
+    let mut existing_chunks = 0usize;
+    let mut common_prefix = 0usize;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("Could not read local transcript chunk: {error}"))?
+    {
+        let existing = borrowed_text(row, 0)
+            .map_err(|error| format!("Could not read local transcript chunk: {error}"))?;
+        if common_prefix == existing_chunks
+            && chunks.get(common_prefix).map(String::as_str) == Some(existing)
+        {
+            common_prefix += 1;
+        }
+        existing_chunks += 1;
+    }
+    drop(rows);
     drop(statement);
-    let common_prefix = existing_chunks
-        .iter()
-        .zip(chunks.iter())
-        .take_while(|(existing, replacement)| existing == replacement)
-        .count();
-    let chunks_changed = existing_chunks != chunks;
+    let chunks_changed = common_prefix != existing_chunks || common_prefix != chunks.len();
     let rewritten_chunks = if chunks_changed {
         let affected_chunks = existing_chunks
-            .len()
             .max(chunks.len())
             .saturating_sub(common_prefix);
         transaction
@@ -1148,7 +1338,7 @@ fn read_local_transcript_write_state(
     provider: &str,
     thread_id: &str,
 ) -> Result<Option<LocalTranscriptWriteState>, String> {
-    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+    if !verify_local_transcript_writable(connection, provider, thread_id)? {
         return Ok(None);
     }
     connection
@@ -1199,7 +1389,7 @@ fn rename_local_transcript(
     }
     // Import a legacy transcript if necessary, without ever passing an empty
     // renderer window through the destructive snapshot writer.
-    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+    if !verify_local_transcript_writable(connection, provider, thread_id)? {
         return Err("Local transcript no longer exists".into());
     }
     let transaction = connection
@@ -1265,7 +1455,7 @@ fn write_local_transcript_metadata(
     if thread.get("id").and_then(Value::as_str) != Some(thread_id) {
         return Err("Local transcript metadata belongs to a different thread".to_string());
     }
-    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+    if !verify_local_transcript_writable(connection, provider, thread_id)? {
         return Err("Local transcript no longer exists".to_string());
     }
     let thread_json = serde_json::to_string(thread)
@@ -1390,7 +1580,7 @@ fn write_local_transcript_tail(
     // Reconcile a newer compatibility row (or an old-build deletion) before
     // entering the CAS transaction. A remigration advances generation, so the
     // caller must retry from fresh state instead of overwriting it.
-    if read_local_transcript_page(connection, provider, thread_id, None, Some(1))?.is_none() {
+    if !verify_local_transcript_writable(connection, provider, thread_id)? {
         return Err("Local transcript no longer exists".to_string());
     }
     let transaction = connection
@@ -1757,6 +1947,95 @@ pub(super) async fn state_read_raw(app: AppHandle, key: String) -> Result<Option
     })
     .await
     .map_err(|_| "Could not read saved startup data.".to_owned())?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StateSnapshotRequest {
+    key: String,
+    /// Answer as `state_read` would instead of as `state_read_raw` would.
+    parse: bool,
+}
+
+/// What each key's own read would have answered, without its own IPC call.
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub(super) enum StateSnapshotRecord {
+    /// No row. For a parsed read this also covers a saved JSON `null`, which
+    /// `state_read` reports the same way.
+    Absent,
+    /// The stored text. A parsed read only returns text `state_read` accepts,
+    /// so the renderer need not parse it again just to classify it.
+    Saved { raw: String },
+    /// That key's read would have failed. Other keys are unaffected.
+    Failed,
+}
+
+/// One read transaction keeps every key on the same committed WAL snapshot.
+fn read_state_rows(
+    connection: &Connection,
+    requests: &[StateSnapshotRequest],
+) -> Result<Vec<rusqlite::Result<Option<String>>>, String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|_| "Could not read saved startup data.".to_owned())?;
+    let mut statement = transaction
+        .prepare_cached("SELECT value FROM app_state WHERE key = ?1")
+        .map_err(|_| "Could not read saved startup data.".to_owned())?;
+    let rows = requests
+        .iter()
+        .map(|request| {
+            statement
+                .query_row(params![request.key], |row| row.get::<_, String>(0))
+                .optional()
+        })
+        .collect();
+    Ok(rows)
+}
+
+fn state_snapshot_record(
+    parse: bool,
+    row: rusqlite::Result<Option<String>>,
+) -> StateSnapshotRecord {
+    match row {
+        Ok(None) => StateSnapshotRecord::Absent,
+        Ok(Some(raw)) if parse => match serde_json::from_str::<Value>(&raw) {
+            Ok(Value::Null) => StateSnapshotRecord::Absent,
+            Ok(_) => StateSnapshotRecord::Saved { raw },
+            Err(_) => StateSnapshotRecord::Failed,
+        },
+        Ok(Some(raw)) => StateSnapshotRecord::Saved { raw },
+        Err(_) => StateSnapshotRecord::Failed,
+    }
+}
+
+fn read_state_snapshot(
+    connection: &Mutex<Connection>,
+    requests: &[StateSnapshotRequest],
+) -> Result<Vec<StateSnapshotRecord>, String> {
+    let rows = {
+        let connection = lock_state_db(connection)?;
+        read_state_rows(&connection, requests)?
+    };
+    // Parsing large records must not hold the shared reader.
+    Ok(requests
+        .iter()
+        .zip(rows)
+        .map(|(request, row)| state_snapshot_record(request.parse, row))
+        .collect())
+}
+
+/// Hydration's reads as one IPC call, answered in request order. An `Err`
+/// means no key was read and the caller should read them individually.
+#[tauri::command]
+pub(super) async fn state_read_snapshot(
+    app: AppHandle,
+    requests: Vec<StateSnapshotRequest>,
+) -> Result<Vec<StateSnapshotRecord>, String> {
+    let connection = shared_state_db_reader(&app)?;
+    tauri::async_runtime::spawn_blocking(move || read_state_snapshot(&connection, &requests))
+        .await
+        .map_err(|_| "Could not read saved startup data.".to_owned())?
 }
 
 fn write_state_value(

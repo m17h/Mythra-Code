@@ -72,7 +72,7 @@ import { decodeHtmlEntities } from "../lib/text";
 import { upsertThread } from "../lib/threadList";
 import { timelineFromTurns } from "../lib/threadTimeline";
 import { captureHistoryReadBoundary, setPausedRunFollowUpResolver, setRootTurnEndResolver, useTaskStore, type TaskStatus } from "../lib/taskStore";
-import { eligibleQueuedTurns } from "../lib/timedPrompts";
+import { eligibleQueueHead, hasEligibleQueuedTurns } from "../lib/timedPrompts";
 import {
   buildParentNotice,
   classifyParentObligation,
@@ -927,6 +927,8 @@ export function useChildAgents(context: ChildAgentContext): {
   const schedulePumpRef = useRef<(sessionId: string) => void>(() => undefined);
   /** Children whose slot release failed and is being retried (bounded). */
   const releaseFailuresRef = useRef(new Map<string, string>());
+  /** A pump can retry before the backoff expires; keep only its latest timer. */
+  const releaseRetryTimersRef = useRef(new Map<string, ReturnType<typeof window.setTimeout>>());
   const releaseSlot = useCallback((link: ChildAgentLink, activationId: string | undefined = link.activationId, attempt = 0) => {
     const id = link.childThreadId;
     // An activation token releases only the follow-up it reserved; an
@@ -934,6 +936,11 @@ export function useChildAgents(context: ChildAgentContext): {
     const key = `${id}\u0000${activationId ?? "initial"}`;
     releases.current.set(key, { link, activationId });
     if (releasing.current.has(key)) return;
+    const pendingRetry = releaseRetryTimersRef.current.get(key);
+    if (pendingRetry !== undefined) {
+      window.clearTimeout(pendingRetry);
+      releaseRetryTimersRef.current.delete(key);
+    }
     releasing.current.add(key);
     const request = reportChildAgentFinished(link.sessionId, id, activationId).then(() => {
       releases.current.delete(key);
@@ -944,10 +951,15 @@ export function useChildAgents(context: ChildAgentContext): {
       // Never swallow silently: keep it visible and retry a few times with
       // backoff. Later pumps still retry after the bounded attempts end.
       releaseFailuresRef.current.set(key, friendlyError(reason));
-      if (attempt < 3) {
-        window.setTimeout(() => {
+      if (attempt < 3 && lifecycleRef.current.mounted) {
+        const rendererGeneration = lifecycleRef.current.generation;
+        const timer = window.setTimeout(() => {
+          if (releaseRetryTimersRef.current.get(key) !== timer) return;
+          releaseRetryTimersRef.current.delete(key);
+          if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) return;
           if (releases.current.has(key) && !releasing.current.has(key)) releaseSlot(link, activationId, attempt + 1);
         }, 1_000 * 4 ** attempt);
+        releaseRetryTimersRef.current.set(key, timer);
       }
     }).finally(() => releasing.current.delete(key));
     releaseAttemptsRef.current.set(id, request);
@@ -3610,13 +3622,18 @@ export function useChildAgents(context: ChildAgentContext): {
 
   useEffect(() => {
     lifecycleRef.current.mounted = true;
+    // A development effect remount reuses refs after cancelling its timers.
+    // Resume retained releases; an existing request still owns its key.
+    for (const { link, activationId } of releases.current.values()) releaseSlot(link, activationId);
     return () => {
       lifecycleRef.current.mounted = false;
       lifecycleRef.current.generation += 1;
       scheduledPumpsRef.current.clear();
+      for (const timer of releaseRetryTimersRef.current.values()) window.clearTimeout(timer);
+      releaseRetryTimersRef.current.clear();
       notifyChildWaiters();
     };
-  }, [notifyChildWaiters]);
+  }, [notifyChildWaiters, releaseSlot]);
 
   // App-owned availability and persisted ownership may change without a task
   // status event. Existing waits reevaluate their captured identity on render.
@@ -3921,7 +3938,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const root = run.rootThreadId;
     const task = state.tasks[root];
     const status = state.statuses[root] ?? "idle";
-    const head = eligibleQueuedTurns(task?.queuedTurns ?? [])[0];
+    const head = eligibleQueueHead(task?.queuedTurns ?? []);
     return decideParentRun(run, {
       obligations,
       rootActive: isChildActive(status),
@@ -4032,7 +4049,7 @@ export function useChildAgents(context: ChildAgentContext): {
     if (!state.tasks[rootThreadId]?.messages.some((message) => message.role === "assistant")) {
       throw new Error("This conversation's history is still loading. Try again in a moment.");
     }
-    if (eligibleQueuedTurns(state.tasks[rootThreadId]?.queuedTurns ?? []).length) {
+    if (hasEligibleQueuedTurns(state.tasks[rootThreadId]?.queuedTurns)) {
       throw new Error("Send or remove the queued messages first. They run before the parent continues.");
     }
     resumingParentsRef.current.add(rootThreadId);

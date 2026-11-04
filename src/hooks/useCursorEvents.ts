@@ -8,10 +8,14 @@ export function useCursorEvents(context: CursorEventContext): void {
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
-    onCursorEvent((event) => routeCursorEvent(event, contextRef.current)).then((unlisten) => {
+    onCursorEvent((event) => {
+      if (!disposed) routeCursorEvent(event, contextRef.current);
+    }).then((unlisten) => {
       if (disposed) unlisten();
       else stop = unlisten;
-    }).catch((reason) => contextRef.current.onError(`Mythra Code could not subscribe to Cursor events: ${String(reason)}`));
+    }).catch((reason) => {
+      if (!disposed) contextRef.current.onError(`Mythra Code could not subscribe to Cursor events: ${String(reason)}`);
+    });
     return () => { disposed = true; stop?.(); };
   }, []);
 }

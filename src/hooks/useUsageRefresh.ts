@@ -102,7 +102,7 @@ export function useUsageRefresh({
       const superseded = failureCode === "CLAUDE_USAGE_SCOPE_CHANGED";
       const failureKind = failed && !superseded ? usageReadFailureKind(reason) : null;
       const active = latestRef.current;
-      if (active.enabled && active.key === identity) {
+      if (mountedRef.current && active.enabled && active.key === identity) {
         active.onStatus?.(superseded ? "" : failureKind ? usageReadFailureStatus(failureKind, active.hasLastReading) : "Updated");
         if (!superseded) lastReadRef.current = Date.now();
       }
@@ -185,11 +185,17 @@ export function useUsageRefresh({
 
   useEffect(() => {
     if (!enabled || !resetsAt || !Number.isFinite(resetsAt)) return;
-    const delay = resetsAt * 1000 + RESET_GRACE_MS - Date.now();
-    if (delay <= 0 || delay > MAX_TIMEOUT_MS) return;
-    const timer = window.setTimeout(() => request({ force: true }), delay);
+    const resetTime = resetsAt * 1000 + RESET_GRACE_MS;
+    if (!Number.isFinite(resetTime) || resetTime <= Date.now()) return;
+    let timer = 0;
+    const arm = () => {
+      const delay = resetTime - Date.now();
+      if (delay <= 0) request({ force: true });
+      else timer = window.setTimeout(arm, Math.min(delay, MAX_TIMEOUT_MS));
+    };
+    arm();
     return () => window.clearTimeout(timer);
-  }, [enabled, request, resetsAt]);
+  }, [enabled, key, request, resetsAt]);
 
   return request;
 }

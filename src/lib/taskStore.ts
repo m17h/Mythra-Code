@@ -1667,6 +1667,28 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       queuedForThread?.delete(itemId);
     }
     if (queuedForThread?.size === 0) pendingDeltas.delete(threadId);
+    const completedReasoningItems = new Set<string>();
+    const reasoningKeyPrefix = `${threadId}\0`;
+    for (const [key, stream] of reasoningStreams) {
+      if (!key.startsWith(reasoningKeyPrefix)) continue;
+      const itemId = key.slice(reasoningKeyPrefix.length);
+      const existing = previousTask?.activities.find((activity) => activity.id === itemId);
+      // Historical buffers can survive while a newer activation is live.
+      // An ID-less cutoff must not rewrite those already-terminal receipts.
+      if (existing && (TERMINAL_ACTIVITY_STATUSES.has(existing.status ?? "")
+        || ["completed", "interrupted", "failed"].includes(existing.turnStatus ?? ""))) continue;
+      const owner = stream.turnId ?? existing?.turnId;
+      const belongsToCompletedTurn = completedTurnId
+        ? (owner ? owner === completedTurnId : !newerTurnActive)
+        : !newerTurnActive;
+      if (belongsToCompletedTurn) completedReasoningItems.add(itemId);
+    }
+    // A terminal/error event can arrive before the animation frame that
+    // materializes the last reasoning delta. Drain it before sealing rows and
+    // releasing their buffers, or that suffix (even the whole row) is lost.
+    // This turn's assistant deltas were claimed above: the flush would give an
+    // unidentified one the active turn and mark it streaming past the seal.
+    if (pendingReasoningItems.has(threadId)) get().flushDeltas();
     set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const completedTurnId = turnId ?? task.activeTurnId;
@@ -1737,8 +1759,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           return { ...agent, status: terminalAgentStatus };
         });
     const activeAgentIds = new Set(agents.filter((agent) => isActiveAgentRecord(agent.status)).map((agent) => agent.id));
-    const activities = completedTurnId
-      ? task.activities.map((activity) => activity.turnId === completedTurnId
+    const activities = task.activities.map((activity) => (completedTurnId
+      ? activity.turnId === completedTurnId || (!activity.turnId && completedReasoningItems.has(activity.id))
+      : completedReasoningItems.has(activity.id))
         ? (() => {
             const isLiveSpawn = activity.kind === "agent"
               && activity.agent?.action === "spawn"
@@ -1757,12 +1780,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
               // represented child task is genuinely active. This keeps the
               // timeline, composer Stop button, and worker count in agreement.
               status: shouldSettle ? terminalAgentStatus : activity.status,
+              // A buffered row can predate the turn/start acknowledgement.
+              // The completion owns it under the same rules as its deltas.
+              turnId: activity.turnId ?? completedTurnId,
               turnStatus,
               turnDurationMs: turnDurationMs ?? activity.turnDurationMs,
             };
           })()
-        : activity)
-      : task.activities;
+        : activity);
     const parentUpdates: Record<string, ThreadTaskState> = {};
     if (!newerTurnActive) for (const parent of Object.values(state.tasks)) {
       if (parent.threadId === threadId || !parent.agents.some((agent) => agent.id === threadId)) continue;
@@ -1793,7 +1818,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           ...task,
           messages,
           activities,
-          estimatedTranscriptBytes: completedTurnId || queuedAssistantDeltas.size || sealedWithoutTurnId
+          estimatedTranscriptBytes: completedTurnId || queuedAssistantDeltas.size || completedReasoningItems.size || sealedWithoutTurnId
             ? estimateTranscriptBytes(messages, activities)
             : task.estimatedTranscriptBytes,
           agents,

@@ -16,6 +16,8 @@ import {
 interface FileResult { root: string; path: string; file_name: string; score: number }
 interface DirectoryEntry { fileName: string; isDirectory: boolean; isFile: boolean }
 interface FilePreview { text: string; truncated: boolean; binary: boolean }
+interface DirectoryListing { root: string; path: string; entries: DirectoryEntry[] }
+interface SearchListing { root: string; files: FileResult[] }
 
 const IGNORED_NAMES = new Set([".git", ".DS_Store", ".next", ".nuxt", ".turbo", "build", "coverage", "dist", "node_modules", "target"]);
 
@@ -28,8 +30,8 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   const [currentDirectory, setCurrentDirectory] = useState(normalizedRoot);
   const [directoryRoot, setDirectoryRoot] = useState(normalizedRoot);
   const [query, setQuery] = useState("");
-  const [directory, setDirectory] = useState<DirectoryEntry[]>([]);
-  const [results, setResults] = useState<FileResult[]>([]);
+  const [directory, setDirectory] = useState<DirectoryListing | null>(null);
+  const [results, setResults] = useState<SearchListing | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState("");
   const [directoryLoading, setDirectoryLoading] = useState(false);
@@ -41,6 +43,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   // then a small one used to render the large file's late response under the
   // small file's name.
   const previewRequestRef = useRef(0);
+  const rootIsCurrent = directoryRoot === normalizedRoot;
   const loading = query.trim() ? searchLoading : directoryLoading;
 
   useEffect(() => () => { previewRequestRef.current += 1; }, []);
@@ -48,7 +51,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   useEffect(() => {
     setCurrentDirectory(normalizedRoot);
     setDirectoryRoot(normalizedRoot);
-    setDirectory([]);
+    setDirectory(null);
     setSelected(null);
     setPreview("");
     setQuery("");
@@ -67,11 +70,11 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
     void rpc<{ entries: DirectoryEntry[] }>("fs/readDirectory", { path: currentDirectory })
       .then((value) => {
         if (!active) return;
-        setDirectory(value.entries ?? []);
+        setDirectory({ root: normalizedRoot, path: currentDirectory, entries: value.entries ?? [] });
       })
       .catch((reason) => {
         if (!active) return;
-        setDirectory([]);
+        setDirectory(null);
         setDirectoryError(`Couldn’t open this folder. ${friendlyError(reason)}`);
       })
       .finally(() => { if (active) setDirectoryLoading(false); });
@@ -83,7 +86,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
 
   useEffect(() => {
     if (!query.trim()) {
-      setResults([]);
+      setResults(null);
       setSearchLoading(false);
       return;
     }
@@ -94,16 +97,22 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
         query: query.trim(),
         roots: [normalizedRoot],
         cancellationToken: crypto.randomUUID(),
-      }).then((value) => { if (active) setResults(value.files ?? []); })
-        .catch(() => { if (active) setResults([]); })
+      }).then((value) => { if (active) setResults({ root: normalizedRoot, files: value.files ?? [] }); })
+        .catch(() => { if (active) setResults(null); })
         .finally(() => { if (active) setSearchLoading(false); });
     }, 120);
     return () => { active = false; window.clearTimeout(token); };
   }, [normalizedRoot, query]);
 
   const entries = useMemo(() => {
+    // An async result can settle between navigation and its effect cleanup.
+    // Keep the project/folder that owns it, rather than remapping old entries
+    // into a different folder or exposing the previous project's attachments.
+    // Search results carry their own root, so the last ones stay valid and
+    // stay visible through the debounce instead of flashing an empty result.
+    if (!rootIsCurrent) return [];
     if (query.trim()) {
-      return results
+      return (results?.root === normalizedRoot ? results.files : [])
         .filter((entry) => showIgnored || !containsIgnoredSegment(entry.path))
         .slice(0, 150)
         .map((entry) => ({
@@ -112,21 +121,21 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
           directory: false,
         }));
     }
-    return directory
+    return (directory?.root === normalizedRoot && directory.path === currentDirectory ? directory.entries : [])
       .filter((entry) => showIgnored || !IGNORED_NAMES.has(entry.fileName))
       .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.fileName.localeCompare(b.fileName))
       .map((entry) => ({ path: joinPath(currentDirectory, entry.fileName), name: entry.fileName, directory: entry.isDirectory }));
-  }, [currentDirectory, directory, query, results, showIgnored]);
+  }, [currentDirectory, directory, normalizedRoot, query, results, rootIsCurrent, showIgnored]);
 
   const relativeDirectory = relativeDisplayPath(normalizedRoot, currentDirectory);
-  const breadcrumbParts = pathSegments(relativeDirectory);
+  const breadcrumbParts = rootIsCurrent ? pathSegments(relativeDirectory) : [];
 
   const navigate = (path: string) => {
     // Entries belong to the folder that returned them. Clear them in the same
     // update as navigation so they cannot be remapped into the next folder.
     // The current breadcrumb also leaves search/preview mode. Reuse its
     // listing because setting the same path does not trigger another read.
-    if (path !== currentDirectory) setDirectory([]);
+    if (path !== currentDirectory) setDirectory(null);
     setCurrentDirectory(path);
     setSelected(null);
     setPreview("");
@@ -160,14 +169,14 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   };
 
   const goUp = () => {
-    if (currentDirectory === normalizedRoot) return;
+    if (!rootIsCurrent || currentDirectory === normalizedRoot) return;
     navigate(parentPath(currentDirectory) ?? normalizedRoot);
   };
 
   return (
     <div className="file-browser">
       <div className="file-browser-toolbar">
-        <button className="file-nav-button" onClick={goUp} disabled={currentDirectory === normalizedRoot} aria-label="Go to parent folder"><ArrowLeft size={13} /></button>
+        <button className="file-nav-button" onClick={goUp} disabled={!rootIsCurrent || currentDirectory === normalizedRoot} aria-label="Go to parent folder"><ArrowLeft size={13} /></button>
         <nav className="file-breadcrumbs" aria-label="Current project folder">
           <button onClick={() => navigate(normalizedRoot)} title={normalizedRoot}><Home size={11} /><span>{basename(normalizedRoot)}</span></button>
           {breadcrumbParts.map((part, index) => {
@@ -184,7 +193,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
           {!entries.length && !loading && <span className="file-empty">{directoryError || (query ? "No matching files" : "This folder is empty")}</span>}
         </div>
         <div className="file-preview">
-          {selected ? <><div className="file-preview-bar"><span>{relativeDisplayPath(normalizedRoot, selected)}</span><button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} /> Attach</button></div><pre>{previewLoading ? "Loading preview…" : preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
+          {rootIsCurrent && selected ? <><div className="file-preview-bar"><span>{relativeDisplayPath(normalizedRoot, selected)}</span><button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} /> Attach</button></div><pre>{previewLoading ? "Loading preview…" : preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
         </div>
       </div>
     </div>

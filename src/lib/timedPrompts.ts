@@ -93,7 +93,20 @@ function eligibleSince(entry: QueuedTurn): number {
 
 /** The single entry allowed to start next, or undefined for an empty FIFO. */
 export function eligibleQueueHead(entries: readonly QueuedTurn[]): QueuedTurn | undefined {
-  return eligibleQueuedTurns(entries)[0];
+  let first: QueuedTurn | undefined;
+  let earliest: QueuedTurn | undefined;
+  let hasReleasedTurn = false;
+  for (const entry of entries) {
+    if (!isEligibleQueuedTurn(entry)) continue;
+    first ??= entry;
+    hasReleasedTurn ||= entry.releasedAt !== undefined;
+    // Strict comparison keeps array order for equal eligibility times.
+    if (!earliest || eligibleSince(entry) < eligibleSince(earliest)) earliest = entry;
+  }
+  // Ordinary queues retain their existing array order, including entries
+  // restored after a wall-clock adjustment. Only released timed turns need
+  // eligibility-time ordering; finding their head does not need a full sort.
+  return hasReleasedTurn ? earliest : first;
 }
 
 export function hasEligibleQueuedTurns(entries: readonly QueuedTurn[] | undefined): boolean {

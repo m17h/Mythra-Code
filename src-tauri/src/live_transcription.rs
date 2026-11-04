@@ -1,5 +1,5 @@
 //! A single bounded OpenAI transcription socket; credentials never enter the webview.
-use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex}, time::Duration};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -197,6 +197,8 @@ pub(crate) async fn transcription_live_finish(window: WebviewWindow, state: Stat
 #[derive(Default)]
 struct Transcript {
     text: HashMap<String, (String, bool)>,
+    /// Unicode characters across `text`, so a delta need not recount them all.
+    text_chars: usize,
     seen: Vec<String>,
     committed: Vec<String>,
     previous: HashMap<String, Option<String>>,
@@ -231,11 +233,15 @@ impl Transcript {
         let Some(root) = self.committed.iter().find(|id| {
             self.previous.get(*id).is_some_and(|value| value.as_deref().map_or(true, |parent| !self.previous.contains_key(parent)))
         }) else { return ordered };
-        ordered.push(root.as_str());
-        let mut previous = Some(root.as_str());
-        while let Some(id) = self.committed.iter().find(|id| self.previous.get(*id).is_some_and(|value| value.as_deref() == previous)) {
-            ordered.push(id.as_str());
-            previous = Some(id.as_str());
+        // `commit` admits one item per predecessor and no cycles, and `previous`
+        // holds exactly the committed items, so each step has one answer.
+        let successors: HashMap<&str, &str> = self.previous.iter()
+            .filter_map(|(id, parent)| Some((parent.as_deref()?, id.as_str())))
+            .collect();
+        let mut next = Some(root.as_str());
+        while let Some(id) = next {
+            ordered.push(id);
+            next = successors.get(id).copied();
         }
         ordered
     }
@@ -246,18 +252,24 @@ impl Transcript {
             self.seen.push(id.to_owned());
         }
         let value = self.text.entry(id.to_owned()).or_default();
-        if final_text { *value = (text.to_owned(), true); }
-        else if !value.1 { value.0.push_str(text); }
-        if self.text.values().map(|(s, _)| s.chars().count()).sum::<usize>() + self.text.len().saturating_sub(1) > MAX_TEXT {
+        if final_text {
+            self.text_chars = self.text_chars - value.0.chars().count() + text.chars().count();
+            *value = (text.to_owned(), true);
+        } else if !value.1 {
+            self.text_chars += text.chars().count();
+            value.0.push_str(text);
+        }
+        if self.text_chars + self.text.len().saturating_sub(1) > MAX_TEXT {
             return Err("Live dictation returned too much text. Text already received has been kept.".into());
         }
         Ok(())
     }
     fn combined(&self) -> (String, bool) {
         let ordered = self.ordered_commits();
+        let chained: HashSet<&str> = ordered.iter().copied().collect();
         // Uncommitted live deltas still appear immediately. As acknowledgments
         // arrive they move into their provider-defined position.
-        let ids = ordered.iter().copied().chain(self.seen.iter().map(String::as_str).filter(|id| !ordered.contains(id)));
+        let ids = ordered.iter().copied().chain(self.seen.iter().map(String::as_str).filter(|id| !chained.contains(id)));
         let mut parts = Vec::new();
         let mut provisional = false;
         for id in ids {

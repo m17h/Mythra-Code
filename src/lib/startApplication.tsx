@@ -37,6 +37,18 @@ export async function startApplication(): Promise<void> {
     });
   });
   if (hasStartupFailed()) return;
+  try {
+    await mountApplication();
+  } catch (reason) {
+    // The classic bootstrap asset can be unavailable independently of the
+    // application graph. Its absence must not drop a hydration/import failure
+    // or leave the native watchdog waiting after the fallback is visible.
+    failStartup();
+    throw reason;
+  }
+}
+
+async function mountApplication(): Promise<void> {
   installContextMenuBlocker();
   installGlobalErrorCapture();
   // Platform-specific tuning in CSS (for example Windows' heavier text

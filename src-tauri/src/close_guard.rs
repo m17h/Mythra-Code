@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
+use tokio::sync::oneshot;
 
 const CLOSE_DEADLINE: Duration = Duration::from_secs(20);
 const CANCELLED_EVENT: &str = "mythra://close-cancelled";
@@ -50,6 +51,7 @@ enum Action {
 struct Pending {
     request_id: u64,
     phase: Phase,
+    cancel_deadline: Option<oneshot::Sender<()>>,
 }
 
 struct GuardedWindow {
@@ -182,6 +184,7 @@ impl Machine {
         window.pending = Some(Pending {
             request_id: key.request_id,
             phase,
+            cancel_deadline: None,
         });
         if let Some(fault) = self.qa_fault.as_mut() {
             if fault.key.label == key.label
@@ -214,6 +217,16 @@ impl Machine {
         })
     }
 
+    fn watch_deadline(&mut self, key: &Key) -> Option<oneshot::Receiver<()>> {
+        if !self.matches(key, Phase::AwaitingFrontend) {
+            return None;
+        }
+        let pending = self.windows.get_mut(&key.label)?.pending.as_mut()?;
+        let (sender, receiver) = oneshot::channel();
+        pending.cancel_deadline = Some(sender);
+        Some(receiver)
+    }
+
     fn finish(&mut self, label: &str, request_id: u64, result: CloseResult) -> Option<Action> {
         let window = self.windows.get_mut(label)?;
         let pending = window.pending.as_mut()?;
@@ -227,6 +240,9 @@ impl Machine {
             instance: window.instance,
             request_id,
         };
+        // Closing the channel releases the watchdog as soon as the frontend
+        // finishes. Removing a pending request/window does the same via Drop.
+        pending.cancel_deadline = None;
         Some(match result {
             CloseResult::Saved => {
                 pending.phase = Phase::Closing;
@@ -247,7 +263,9 @@ impl Machine {
         if !self.matches(key, Phase::AwaitingFrontend) {
             return None;
         }
-        self.windows.get_mut(&key.label)?.pending.as_mut()?.phase = Phase::NativePrompt;
+        let pending = self.windows.get_mut(&key.label)?.pending.as_mut()?;
+        pending.phase = Phase::NativePrompt;
+        pending.cancel_deadline = None;
         Some(Action::Prompt(key.clone(), Reason::Deadline))
     }
 
@@ -263,6 +281,7 @@ impl Machine {
             return None;
         }
         pending.phase = Phase::NativePrompt;
+        pending.cancel_deadline = None;
         Some(Action::Prompt(
             Key {
                 label: label.to_owned(),
@@ -390,9 +409,18 @@ fn audit(app: &AppHandle, kind: &str, payload: serde_json::Value) {
 fn perform(app: &AppHandle, action: Action) {
     match action {
         Action::Wait(key) => {
+            let Some(mut cancel) = app
+                .state::<CloseGuardState>()
+                .with(|machine| machine.watch_deadline(&key))
+            else {
+                return;
+            };
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(CLOSE_DEADLINE).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(CLOSE_DEADLINE) => {},
+                    _ = &mut cancel => return,
+                }
                 let action = app
                     .state::<CloseGuardState>()
                     .with(|machine| machine.deadline(&key));

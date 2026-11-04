@@ -73,6 +73,7 @@ export const DURABLE_STORAGE_KEYS = [
 export const STORAGE_SCHEMA_VERSION = 31;
 const nativeWriteQueues = new Map<string, Promise<void>>();
 type NativeStateRevision = { operation: () => Promise<unknown> };
+const releasedNativeOperation = async () => undefined;
 // A settled promise is not a persistence receipt. Keep the latest immutable
 // operation until SQLite acknowledges it, even when the cache also failed.
 const unacknowledgedNativeState = new Map<string, NativeStateRevision>();
@@ -201,6 +202,10 @@ function runNativeStateRevision(key: string, revision: NativeStateRevision): voi
 }
 
 function queueNativeStateOperation(key: string, operation: () => Promise<unknown>): void {
+  // A superseded revision never runs again, so a backlog behind a slow write
+  // need not keep every serialized value alive until its turn to be skipped.
+  const superseded = unacknowledgedNativeState.get(key);
+  if (superseded) superseded.operation = releasedNativeOperation;
   const revision = { operation };
   latestNativeState.set(key, (latestNativeState.get(key) ?? 0) + 1);
   unacknowledgedNativeState.set(key, revision);
@@ -245,6 +250,10 @@ if (typeof window !== "undefined") {
 
 export function migrateStorage(readRaw: (key: string) => string | null = readStoredRaw): void {
   validateStartupData(readRaw);
+  applyStorageMigrations(readRaw);
+}
+
+function applyStorageMigrations(readRaw: (key: string) => string | null): void {
   const loadMigrationStored = <T,>(key: string, fallback: T): T => {
     const raw = readRaw(key);
     return raw === null ? fallback : JSON.parse(raw) as T;
@@ -422,6 +431,52 @@ export function removeStoredValue(key: string): void {
   });
 }
 
+type NativeStateRecord = { status: "absent" } | { status: "saved"; raw: string } | { status: "failed" };
+
+/** Hydration's per-key native reads, served by one `state_read_snapshot` call.
+ * Each read answers exactly as its single-key command would: a value, null, or
+ * a rejection. If the batch itself is unavailable (browser development, the
+ * release QA profile, a failed transaction) each key reads individually. */
+function createNativeStateReader(native: boolean) {
+  const requests = new Map<string, boolean>();
+  let snapshot: Promise<Map<string, NativeStateRecord> | null> | undefined;
+  const readSnapshot = async () => {
+    const batch = [...requests].map(([key, parse]) => ({ key, parse }));
+    try {
+      const records = await invoke<NativeStateRecord[]>("state_read_snapshot", { requests: batch });
+      if (!Array.isArray(records) || records.length !== batch.length) return null;
+      return new Map(batch.map(({ key }, index) => [key, records[index]]));
+    } catch {
+      return null;
+    }
+  };
+  const read = async (
+    key: string,
+    parse: boolean,
+    readSingle: () => Promise<string | null>,
+  ): Promise<string | null> => {
+    if (!native) return readSingle();
+    requests.set(key, parse);
+    // Hydration requests every key in one synchronous pass, so the batch is
+    // complete by the time this microtask sends it.
+    snapshot ??= Promise.resolve().then(readSnapshot);
+    const record = (await snapshot)?.get(key);
+    if (record?.status === "saved") return record.raw;
+    if (record?.status === "absent") return null;
+    if (record?.status === "failed") throw new Error("Saved state could not be read.");
+    return readSingle();
+  };
+  return {
+    /** The stored text, for records that must be validated without being lost. */
+    readRaw: (key: string) => read(key, false, () => invoke<string | null>("state_read_raw", { key })),
+    /** Serialized JSON, or null for a missing record or a saved JSON null. */
+    readValue: (key: string) => read(key, true, async () => {
+      const value = await invoke<unknown | null>("state_read", { key });
+      return value === null ? null : JSON.stringify(value);
+    }),
+  };
+}
+
 export async function hydrateNativeStorage(
   keys: readonly string[] = DURABLE_STORAGE_KEYS,
 ): Promise<void> {
@@ -429,11 +484,18 @@ export async function hydrateNativeStorage(
   const initialRevisions = new Map([...new Set([...keys, ...STARTUP_DATA_KEYS])].map((key) => [key, latestNativeState.get(key)]));
   const startupSnapshot = new Map<string, string | null>();
   const nativeStartup = isTauri();
+  const nativeState = createNativeStateReader(nativeStartup);
   let startupReadFailure: string | null = null;
-  const preserveNewerStartupValues = () => {
+  const preserveNewerStartupValues = (): boolean => {
+    let changed = false;
     for (const key of STARTUP_DATA_KEYS) {
-      if (latestNativeState.get(key) !== initialRevisions.get(key)) startupSnapshot.set(key, readStoredRaw(key));
+      if (latestNativeState.get(key) === initialRevisions.get(key)) continue;
+      const raw = readStoredRaw(key);
+      if (startupSnapshot.get(key) === raw) continue;
+      startupSnapshot.set(key, raw);
+      changed = true;
     }
+    return changed;
   };
   await Promise.all(
     keys.map(async (key) => {
@@ -462,7 +524,13 @@ export async function hydrateNativeStorage(
           if (latestNativeState.get(key) !== initialRevisions.get(key)) return;
           if (STARTUP_DATA_KEYS.has(key)) startupSnapshot.set(key, raw);
           if (cacheUnavailable) { uncachedValues.set(key, { cached: null, value: raw }); bumpRevision(key); }
-          else cacheValue(key, raw);
+          else {
+            // Another document can change the cache while the native read is
+            // pending. Only elide a write when its current physical copy still
+            // matches the value being accepted and no fallback needs updating.
+            const currentCache = readCacheChecked(key);
+            if (!currentCache.ok || currentCache.value !== raw || uncachedValues.has(key) || unreadableCacheKeys.has(key)) cacheValue(key, raw);
+          }
         };
         if (pendingToken !== null) {
           // A pending deletion requires proven absence, not a read failure.
@@ -497,7 +565,7 @@ export async function hydrateNativeStorage(
           try {
             // Raw reads distinguish a saved JSON null from a missing row and
             // let validation reject malformed JSON without losing its bytes.
-            const raw = await invoke<string | null>("state_read_raw", { key });
+            const raw = await nativeState.readRaw(key);
             if (raw !== null) {
               acceptNative(raw);
               return;
@@ -507,9 +575,9 @@ export async function hydrateNativeStorage(
             return;
           }
         } else {
-          const nativeValue = await invoke<unknown | null>("state_read", { key });
-          if (nativeValue !== null) {
-            acceptNative(JSON.stringify(nativeValue));
+          const raw = await nativeState.readValue(key);
+          if (raw !== null) {
+            acceptNative(raw);
             return;
           }
         }
@@ -552,7 +620,8 @@ export async function hydrateNativeStorage(
   // remain visible to the normal retry/close path rather than disappearing.
   await Promise.allSettled([...nativeWriteQueues.values()]);
   // A new startup edit can also arrive while recovery itself is persisting.
-  // Migrations must use that edit, not the older pre-replay snapshot.
-  preserveNewerStartupValues();
-  migrateStorage(readStartupSnapshot);
+  // Migrations must use that edit, not the older pre-replay snapshot. Text
+  // that already passed validation above does not need parsing a second time.
+  if (preserveNewerStartupValues()) validateStartupData(readStartupSnapshot);
+  applyStorageMigrations(readStartupSnapshot);
 }

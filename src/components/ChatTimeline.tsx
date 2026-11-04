@@ -316,10 +316,32 @@ interface ActivitySelection {
 }
 
 function selectionMembers(entries: WorkItemEntry[]): string[] {
-  const ids = entries.flatMap(workItemIds);
   // A few member ids re-find the run if its first entry is re-keyed
-  // (optimistic prompt ids) or older history is prepended.
-  return ids.length <= 8 ? ids : [...ids.slice(0, 4), ...ids.slice(-4)];
+  // (optimistic prompt ids) or older history is prepended. Read only those
+  // witnesses: a live details window refreshes them on every streamed delta.
+  const first: string[] = [];
+  firstMembers: for (const entry of entries) {
+    if (entry.kind === "message" || entry.kind === "activity") {
+      first.push(entry.value.id);
+      if (first.length > 8) break;
+    } else for (const activity of entry.value) {
+      first.push(activity.id);
+      if (first.length > 8) break firstMembers;
+    }
+  }
+  if (first.length <= 8) return first;
+  const last: string[] = [];
+  lastMembers: for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind === "message" || entry.kind === "activity") {
+      last.push(entry.value.id);
+      if (last.length === 4) break;
+    } else for (let item = entry.value.length - 1; item >= 0; item -= 1) {
+      last.push(entry.value[item].id);
+      if (last.length === 4) break lastMembers;
+    }
+  }
+  return [...first.slice(0, 4), ...last.reverse()];
 }
 
 function entryHasTurn(entry: WorkItemEntry, turnId: string): boolean {
@@ -571,11 +593,17 @@ function textFromCodeNode(node: ReactNode): string {
 function useCopyFeedback(): [boolean, (text: string) => void] {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
   }, []);
   const copy = useCallback((text: string) => {
     navigator.clipboard.writeText(text).then(() => {
+      if (!mountedRef.current) return;
       setCopied(true);
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(() => setCopied(false), 1200);
@@ -1237,7 +1265,7 @@ const ToolDisclosure = memo(function ToolDisclosure({
   type: "command" | "file";
 }) {
   const [expanded, setExpanded] = useState(false);
-  const displayedActivities = useMemo(() => presentManagedAgentActivities(activities), [activities]);
+  const displayedActivities = useMemo(() => expanded ? presentManagedAgentActivities(activities) : activities, [activities, expanded]);
   const inProgress = activities.some((activity) => activity.status === "inProgress");
   const isCommand = type === "command";
   const count = isCommand

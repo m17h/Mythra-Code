@@ -315,9 +315,13 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
     await publishPending(id, path, expectedGeneration);
   }, [configsRef, generation, pause, publishPending, updateConfig, waitToRetry]);
 
-  const runCycle = useCallback(() => {
+  const runCycle = useCallback((invalidate = true) => {
     if (runningRef.current) {
-      rerunRef.current = true;
+      // Routine polls share the active scan. A slow repository or network
+      // must not queue another complete pass every time the timer fires and
+      // turn the polling interval into uninterrupted work. Explicit actions
+      // still request a later pass so newly-enabled/retried state is seen.
+      if (invalidate) rerunRef.current = true;
       return runningRef.current;
     }
     const run = (async () => {
@@ -325,6 +329,9 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
         rerunRef.current = false;
         const paths = new Map(optionsRef.current.projects.map((project) => [project.id, project.path]));
         for (const [id, config] of Object.entries(configsRef.current)) {
+          // Unmounting during one native read must not launch scans for every
+          // remaining project after that read settles.
+          if (!mountedRef.current) break;
           const path = paths.get(id);
           if (path && config.enabled) await scanProject(id, path);
         }
@@ -338,9 +345,12 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
 
   const enable = useCallback(async (projectId: string, path: string) => {
     const expectedGeneration = advanceGeneration(projectId);
-    const alreadyEnabled = Object.values(configsRef.current).some((config) => config.enabled);
     const snapshot = await getGitPublishSnapshot(path);
     if (!mountedRef.current || generation(projectId) !== expectedGeneration) return;
+    // Another enable can finish while this baseline is being read. Only the
+    // first completed enable starts the effect; later ones must invalidate its
+    // active scan even if both calls began while publishing was disabled.
+    const alreadyEnabled = Object.values(configsRef.current).some((config) => config.enabled);
     const branches = Object.fromEntries(snapshot.branches.map((branch) => [branch.name, branchRecord(branch)]));
     replaceConfig(projectId, {
       enabled: true,
@@ -386,8 +396,9 @@ export function useGitAutoPublish(options: GitAutoPublishOptions): GitAutoPublis
   useEffect(() => {
     mountedRef.current = true;
     if (!hasEnabledProject) return () => { mountedRef.current = false; };
+    // The first enabled project must be seen even if a final scan is settling.
     void runCycle();
-    const timer = window.setInterval(() => { void runCycle(); }, POLL_MS);
+    const timer = window.setInterval(() => { void runCycle(false); }, POLL_MS);
     return () => {
       mountedRef.current = false;
       window.clearInterval(timer);
