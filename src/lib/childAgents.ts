@@ -112,6 +112,14 @@ export interface ChildAgentLink {
   acceptNote?: string;
   /** Who stopped the latest turn. A user stop is never resumed automatically. */
   stopOrigin?: "user" | "parent";
+  /**
+   * The parent run responsible for reviewing this work. It counts only while
+   * that exact run is open, so retiring a run releases its obligations and they
+   * can never attach to later work. Absent on links created before this existed.
+   */
+  reviewRunId?: string;
+  /** Exact review token the parent last received from collect_agent. */
+  collectedReviewToken?: string;
   /** Child's own compaction window, frozen at spawn for follow-up turns. */
   autoCompactTokens?: number;
   /** Completed follow-up turns started on this same conversation. */
@@ -840,6 +848,10 @@ export function sanitizeChildAgentLinks(stored: unknown): Record<string, ChildAg
         ...(sanitizeText(entry.acceptNote, 400) ? { acceptNote: sanitizeText(entry.acceptNote, 400) } : {}),
       } : {}),
       ...(entry.stopOrigin === "user" || entry.stopOrigin === "parent" ? { stopOrigin: entry.stopOrigin } : {}),
+      ...(sanitizeText(entry.reviewRunId, 64) ? { reviewRunId: sanitizeText(entry.reviewRunId, 64) } : {}),
+      // Compared exactly against the current token, so it is never rewritten.
+      ...(typeof entry.collectedReviewToken === "string" && entry.collectedReviewToken.length <= 2048
+        ? { collectedReviewToken: entry.collectedReviewToken } : {}),
       ...(typeof entry.autoCompactTokens === "number" && Number.isInteger(entry.autoCompactTokens)
         && entry.autoCompactTokens >= 100_000 && entry.autoCompactTokens <= 1_000_000 ? { autoCompactTokens: entry.autoCompactTokens } : {}),
       ...(typeof entry.followUps === "number" && Number.isInteger(entry.followUps) && entry.followUps > 0

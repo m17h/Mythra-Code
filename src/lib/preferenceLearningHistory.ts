@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage, Thread, ThreadItem } from "../types";
 import type { PreferenceSourceMessage } from "./preferenceLearningTypes";
 import { normalizeThreadTurnsPage } from "./threadHistory";
+import { displayedUserMessage, isMythraNoticeMessage } from "./userMessageEcho";
 
 export const PREFERENCE_HISTORY_LIMITS = { threads: 8, pagesPerThread: 3, turnsPerPage: 12, localPageBytes: 40 * 1024 } as const;
 export interface PreferenceHistorySource extends PreferenceSourceMessage { turnId?: string }
@@ -10,6 +11,7 @@ const START = "<mythra_code_invoked_skills>\n";
 
 /** Only unwrap the generated envelope's authored field. Never expose skills or attachments. */
 export function preferenceAuthoredHistoryText(text: string): string | null {
+  if (displayedUserMessage(text).provenance) return null;
   let result = text;
   if (text.startsWith(START)) {
     const start = text.indexOf("\n{");
@@ -67,6 +69,7 @@ export async function readPreferenceHistoryPage(thread: Thread, cursor: string |
     if (!page) return { messages: [], nextCursor: null, skipped: 1 };
     if (!preferenceHistoryThreadEligible(page.thread) || !acceptMetadata(page.thread)) return { messages: [], nextCursor: null, skipped: page.messages.length };
     for (const message of page.messages) {
+      if (isMythraNoticeMessage(message)) { skipped += 1; continue; }
       if (message.streaming || message.turnStatus !== "completed") { skipped += 1; continue; }
       if (message.role === "user" && !/^local-/.test(message.clientMessageId ?? message.id)) { skipped += 1; continue; }
       if (message.role === "assistant" && message.phase === "commentary") continue;

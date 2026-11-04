@@ -1,6 +1,6 @@
 import { safeErrorText } from "./errors";
 import { invoke } from "@tauri-apps/api/core";
-import type { Account } from "../types";
+import type { Account, Provider } from "../types";
 import type { ClaudeRuntimeStatus } from "./claude";
 
 /**
@@ -17,19 +17,38 @@ export type ClaudeBilling = "subscription" | "apiKey";
 
 // Native admission protects dispatched work. These leases cover the earlier
 // renderer awaits, including drafts that do not have a thread id yet.
-const preparations: Record<ApiKeyProvider, Set<symbol>> = { openai: new Set(), anthropic: new Set() };
-const authChanges = new Map<ApiKeyProvider, symbol>();
+type AuthPreparationProvider = ApiKeyProvider | "cursor" | "openrouter" | "lmstudio";
+const preparations: Record<AuthPreparationProvider, Set<symbol>> = {
+  openai: new Set(), anthropic: new Set(), cursor: new Set(), openrouter: new Set(), lmstudio: new Set(),
+};
+const authChanges = new Map<AuthPreparationProvider, symbol>();
 
-export function providerAuthChanging(provider: ApiKeyProvider): boolean {
+/**
+ * Counts credential and billing changes made in this app session, so a parent
+ * run can tell they happened while it waited. A change outside Mythra Code that
+ * leaves every reported account field identical is not visible here; the
+ * provider's own spawn-time checks still apply to that case.
+ */
+const authGenerations = new Map<Provider, number>();
+
+export function providerAuthGeneration(provider: Provider): number {
+  return authGenerations.get(provider) ?? 0;
+}
+
+export function noteProviderAuthChanged(provider: Provider): void {
+  authGenerations.set(provider, providerAuthGeneration(provider) + 1);
+}
+
+export function providerAuthChanging(provider: AuthPreparationProvider): boolean {
   return authChanges.has(provider);
 }
 
-function providerName(provider: ApiKeyProvider): string {
-  return provider === "openai" ? "OpenAI" : "Claude";
+function providerName(provider: AuthPreparationProvider): string {
+  return { openai: "OpenAI", anthropic: "Claude", cursor: "Cursor", openrouter: "OpenRouter", lmstudio: "LM Studio" }[provider];
 }
 
 /** Acquire synchronously before any turn/steer preparation await. */
-export function beginProviderPreparation(provider: ApiKeyProvider): () => void {
+export function beginProviderPreparation(provider: AuthPreparationProvider): () => void {
   if (authChanges.has(provider)) {
     throw new Error(`${providerName(provider)} billing or credentials are changing. Wait for that operation to finish before sending.`);
   }
@@ -39,7 +58,7 @@ export function beginProviderPreparation(provider: ApiKeyProvider): () => void {
 }
 
 /** Check immediately before a mutation, after any confirmation dialog. */
-export function beginProviderAuthChange(provider: ApiKeyProvider): () => void {
+export function beginProviderAuthChange(provider: AuthPreparationProvider): () => void {
   if (preparations[provider].size) {
     throw new Error(`Wait for ${providerName(provider)} prompts to finish preparing before changing billing or credentials.`);
   }
@@ -48,10 +67,16 @@ export function beginProviderAuthChange(provider: ApiKeyProvider): () => void {
   }
   const token = Symbol(provider);
   authChanges.set(provider, token);
-  return () => { if (authChanges.get(provider) === token) authChanges.delete(provider); };
+  const modelProvider = provider === "anthropic" ? "claude" : provider;
+  noteProviderAuthChanged(modelProvider);
+  return () => {
+    if (authChanges.get(provider) !== token) return;
+    noteProviderAuthChanged(modelProvider);
+    authChanges.delete(provider);
+  };
 }
 
-async function changeProviderAuth<T>(provider: ApiKeyProvider, change: () => Promise<T>): Promise<T> {
+export async function changeProviderAuth<T>(provider: AuthPreparationProvider, change: () => Promise<T>): Promise<T> {
   const finish = beginProviderAuthChange(provider);
   try {
     return await change();

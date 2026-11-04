@@ -1,4 +1,4 @@
-import { reconcileUserMessages } from "./userMessageEcho";
+import { isMythraNoticeMessage, reconcileUserMessages } from "./userMessageEcho";
 import { sanitizeMessageSkillDependencies } from "./skillDependencies";
 import type { Activity, ChatMessage } from "../types";
 
@@ -48,6 +48,10 @@ export function buildTranscriptMarkdown(label: string, messages: ChatMessage[], 
   for (const entry of entries) {
     if (entry.kind === "message") {
       const message = entry.value as ChatMessage;
+      if (isMythraNoticeMessage(message)) {
+        lines.push("> _Mythra Code continued the parent._", "");
+        continue;
+      }
       lines.push(`## ${message.role === "user" ? "You" : "Assistant"}`, "", message.text.trim(), "");
       continue;
     }

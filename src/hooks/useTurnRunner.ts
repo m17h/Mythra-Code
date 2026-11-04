@@ -31,7 +31,8 @@ import {
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
-import { storedPendingTimedTurns, useTaskStore } from "../lib/taskStore";
+import { parentRunStopEpoch, storedPendingTimedTurns, useTaskStore, type TaskStatus } from "../lib/taskStore";
+import { claimParentRun, parentAuthKey, pausedParentRun, PARENT_EXECUTION_UNCONFIRMED, PARENT_NOTICE_PROVENANCE, PARENT_RUN_CHECKPOINT_LABEL, type ParentExecution, type ParentRun } from "../lib/parentRun";
 import { claudeSteerReadState } from "../lib/claudeEvents";
 import {
   eligibleQueueHead,
@@ -48,12 +49,12 @@ import {
   type NewThreadTimedPrompt,
 } from "../lib/newThreadTimedPrompts";
 import { friendlyError, safeErrorText } from "../lib/errors";
-import { beginProviderPreparation } from "../lib/providerAuth";
+import { beginProviderPreparation, providerAuthGeneration } from "../lib/providerAuth";
 import { SkillDependencyError } from "../lib/skillDependencies";
 import { confirmDialog } from "../lib/confirmDialog";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { sealStoppedTurn } from "../lib/stopTurnHistory";
-import { isClaudeThread, isCursorThread } from "../lib/threadProvider";
+import { isClaudeThread, isCursorThread, modelForProvider } from "../lib/threadProvider";
 import { mythraCodeDeveloperInstructions, withMythraCodeCompletionInstructions } from "../lib/completionPrompt";
 import { RUN_COMMAND_TOOL } from "../lib/projectRun";
 import { CHECK_COMMAND_TOOL } from "../lib/projectChecks";
@@ -81,6 +82,12 @@ import type { AttachmentRecord } from "../components/StudioDock";
 import type { Account, AppSettings, ChatMessage, CustomAgentProfile, NativeSubagentOptions, Project, Provider, SettingsSection, SubagentEngine, Thread, ThreadReasoning, Turn } from "../types";
 
 const queuedDeliveries = new Map<string, { threadId: string; context: TurnRunnerContext }>();
+/**
+ * What an open parent run needs to continue: the root's own delivery context,
+ * captured when it started. Never read from the visible thread, and never
+ * present after a reload, which is what keeps a loaded run from starting.
+ */
+const parentRunDeliveries = new Map<string, TurnRunnerContext>();
 const activeQueuedDeliveries = new Set<string>();
 /** Shared-folder new starts own their folder before a provider assigns a thread id. */
 const pendingSharedDraftStarts = new Map<symbol, string>();
@@ -103,6 +110,31 @@ const newThreadDeliveryErrors = new Map<string, string>();
 
 /** Stop before a provider request is an undelivered prompt, not a runtime error. */
 class CancelledTurnStart extends Error {}
+
+/** An automatic continuation lost the execution identity it was authorized for. */
+class ParentExecutionChanged extends CancelledTurnStart {
+  constructor(readonly difference: string) {
+    super(`The parent's ${difference} changed or could not be confirmed before its continuation was delivered.`);
+  }
+}
+
+/** Is another run using this folder, other than this thread and anything it excludes? */
+function sharedFolderRunActive(
+  context: Pick<TurnRunnerContext, "threadProjectBindingsRef" | "executionPathFor">,
+  sharedPath: string,
+  ownThreadId: string | undefined,
+  ownChild: (threadId: string) => boolean,
+): boolean {
+  const taskState = useTaskStore.getState();
+  return Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
+    if (threadId === ownThreadId || ownChild(threadId)
+      || (threadStatus !== "starting" && threadStatus !== "running" && !taskState.workflowOwners[threadId])) return false;
+    const logicalPath = context.threadProjectBindingsRef.current?.[threadId];
+    const executionPath = taskState.tasks[threadId]?.workspacePath
+      ?? (logicalPath ? context.executionPathFor(threadId, logicalPath) : undefined);
+    return Boolean(executionPath && normalizedProjectPath(executionPath) === sharedPath);
+  });
+}
 
 /** The local provider can cross a lifecycle boundary after the UI enables Steer. */
 function isUnavailableSteerError(reason: unknown): boolean {
@@ -129,6 +161,7 @@ function deliveryIsUncertain(reason: unknown): boolean {
 export function forgetQueuedDeliveries(threadId?: string): void {
   if (threadId === undefined) {
     queuedDeliveries.clear();
+    parentRunDeliveries.clear();
     activeQueuedDeliveries.clear();
     pendingSharedDraftStarts.clear();
     queuedBusyRetries.clear();
@@ -146,6 +179,7 @@ export function forgetQueuedDeliveries(threadId?: string): void {
     }
   }
   activeQueuedDeliveries.delete(threadId);
+  parentRunDeliveries.delete(threadId);
 }
 
 function queuedDeliveryContext(context: TurnRunnerContext, threadId: string, attachments: AttachmentRecord[], resolveSkillMentions?: false, skillInvocationText?: string): TurnRunnerContext {
@@ -258,9 +292,22 @@ function threadWorktreeRecord(threadId: string, project: Project, worktree: Crea
   };
 }
 
+export interface ParentResumeRequest {
+  threadId: string;
+  notice: string;
+  progress: string;
+  wokenQuestions: string[];
+  /** The user pressed Continue in this conversation. */
+  explicit?: boolean;
+}
+
 export interface TurnRunnerContext {
   /** Optional exact parent identity for a UI-generated worker instruction. */
   deliveryGuard?: (ownedRunStartedAt?: number) => boolean;
+  /** This turn is a parent run's generated continuation, not an authored prompt. */
+  coordinationResume?: { dispatchId: string; priorStatus: TaskStatus; priorError?: string; execution?: ParentRun };
+  /** Synchronous root-owned recheck after preparation awaits; null means unchanged. */
+  parentExecutionCurrent?: (run: ParentRun) => string | null;
   activeThread: Thread | null;
   activeWorkspace: Project | null;
   activeProject: Project | null;
@@ -380,6 +427,8 @@ interface SendMessageOptions {
   /** Durable attachments from the sending draft, even after navigation. */
   attachments?: AttachmentRecord[];
   prepareAttachments?: () => Promise<AttachmentRecord[] | null>;
+  /** The user typed this. Applied only if it starts a turn directly; never captured for the queue. */
+  typedFollowUp?: boolean;
 }
 
 /**
@@ -397,7 +446,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   finishFirstPrompt: (id: string | undefined) => void;
   sendMessage: (text: string, options?: SendMessageOptions) => Promise<boolean>;
   answerQuestions: (threadId: string, text: string, submission?: AgentQuestionSubmission) => Promise<boolean>;
-  steerMessage: (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string; expectedThreadId?: string; expectedTurnId?: string; expectedRunStartedAt?: number; deliveryGuard?: () => boolean }) => Promise<boolean>;
+  steerMessage: (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string; expectedThreadId?: string; expectedTurnId?: string; expectedRunStartedAt?: number; deliveryGuard?: () => boolean; typedFollowUp?: boolean }) => Promise<boolean>;
   steerQueuedMessage: (queuedTurnId: string) => Promise<void>;
   retryQueuedMessage: (queuedTurnId: string) => void;
   removeQueuedMessage: (queuedTurnId: string) => void;
@@ -412,6 +461,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
   sendNewThreadPromptNow: (id: string) => boolean;
   removeNewThreadPrompt: (id: string) => void;
   stopTurn: () => Promise<void>;
+  /** Start one claimed continuation of a parent run through the normal send path. */
+  resumeParentTurn: (request: ParentResumeRequest) => Promise<void>;
+  hasParentRunDelivery: (threadId: string) => boolean;
+  parentRunFolderBusy: (threadId: string) => boolean;
   /** Fresh preview-switch authority before a parent has a captured crew. */
   getSubagentPreparationLockedReason: () => string | undefined;
   /** Re-renders consumers when a parent preparation begins or settles. */
@@ -509,8 +562,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
     mode: "turn" | "steer",
     onUnavailableSteer?: () => void,
     onResolutionFailure?: (reason: unknown) => void,
+    // An argument, not context: contexts are captured for the queue and for
+    // continuations, and neither may inherit the authority of a typed message.
+    typedFollowUp = false,
   ): Promise<boolean> => {
     if (ctx.deliveryGuard && !ctx.deliveryGuard()) return false;
+    const coordinationResume = mode === "turn" ? ctx.coordinationResume : undefined;
+    const checkpointPrompt = coordinationResume ? PARENT_RUN_CHECKPOINT_LABEL : text;
+    const noticeProvenance = coordinationResume ? { provenance: PARENT_NOTICE_PROVENANCE } : {};
     const submissionMessageId = `local-${crypto.randomUUID()}`;
     const showPendingPrompt = (threadId: string, turnId?: string) => {
       setPendingThreadPrompts((current) => ({ ...current, [threadId]: {
@@ -535,8 +594,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let finishProviderPreparation: (() => void) | undefined;
     try {
     try {
-      if (ctx.effectiveSettings.provider === "openai" || ctx.effectiveSettings.provider === "claude") {
-        finishProviderPreparation = beginProviderPreparation(ctx.effectiveSettings.provider === "openai" ? "openai" : "anthropic");
+      if (coordinationResume || ctx.effectiveSettings.provider === "openai" || ctx.effectiveSettings.provider === "claude") {
+        finishProviderPreparation = beginProviderPreparation(ctx.effectiveSettings.provider === "claude" ? "anthropic" : ctx.effectiveSettings.provider);
       }
     } catch (reason) {
       ctx.setError(friendlyError(reason));
@@ -547,7 +606,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const recordAuthoredPrompt = (threadId: string, messageId: string) => {
       // Generated reviews/handoffs explicitly disable mention resolution. A
       // wrapper may instead supply its original authored source separately.
-      if (ctx.activeThreadIsChild || (ctx.resolveSkillMentions === false && ctx.skillInvocationText === undefined)) return;
+      if (coordinationResume || ctx.activeThreadIsChild || (ctx.resolveSkillMentions === false && ctx.skillInvocationText === undefined)) return;
       const authoredText = ctx.skillInvocationText ?? text;
       if (!authoredText.trim()) return;
       try {
@@ -799,14 +858,11 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!willUseSharedFolder) return false;
       const sharedPath = normalizedProjectPath(activeWorkspace.path);
       if ([...pendingSharedDraftStarts].some(([token, path]) => token !== sharedDraftStart && path === sharedPath)) return true;
-      const taskState = useTaskStore.getState();
-      return Object.entries(taskState.statuses).some(([threadId, threadStatus]) => {
-        if (threadId === ownThreadId || (threadStatus !== "starting" && threadStatus !== "running" && !taskState.workflowOwners[threadId])) return false;
-        const logicalPath = threadProjectBindingsRef.current?.[threadId];
-        const executionPath = taskState.tasks[threadId]?.workspacePath
-          ?? (logicalPath ? executionPathFor(threadId, logicalPath) : undefined);
-        return Boolean(executionPath && normalizedProjectPath(executionPath) === sharedPath);
-      });
+      // The parent's crew already shares this folder by design. Both an
+      // automatic continuation and the user's next message may coordinate it;
+      // unrelated conversations still require the existing overlap handling.
+      return sharedFolderRunActive(ctx, sharedPath, ownThreadId, (threadId) => Boolean(activeThread
+        && ctx.childAgentLinks[threadId]?.rootThreadId === activeThread.id));
     };
     const needsSharedFolderConfirmation = willUseSharedFolder && anotherSharedRun();
     if (needsSharedFolderConfirmation && deferredDelivery) {
@@ -851,10 +907,17 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // starting. A send with no active thread yet is tracked by the draft
     // flag until the created thread's own status takes over.
     const startingThreadId = activeThread?.id;
+    // A refused start must leave the parent run exactly as it was. Stop and a
+    // newer start are checked first, so a slow failure can never undo either.
+    const parentRunBefore: ParentRun | undefined = startingThreadId ? useTaskStore.getState().parentRuns[startingThreadId] : undefined;
+    const parentDeliveryBefore = startingThreadId ? parentRunDeliveries.get(startingThreadId) : undefined;
+    const parentStopEpochBefore = startingThreadId ? parentRunStopEpoch(startingThreadId) : 0;
+    let startedAgentRunId: string | undefined;
     if (startingThreadId) {
       if (effectiveSettings.provider === "cursor") cursorAttempt = beginCursorTurnStart(startingThreadId, useTaskStore.getState().tasks[startingThreadId]?.activeTurnId);
-      useTaskStore.getState().beginAgentRun(startingThreadId);
+      useTaskStore.getState().beginAgentRun(startingThreadId, undefined, coordinationResume?.dispatchId, typedFollowUp && !deferredDelivery);
       guardedRunStartedAt = useTaskStore.getState().tasks[startingThreadId]?.agentRunStartedAt;
+      startedAgentRunId = useTaskStore.getState().tasks[startingThreadId]?.agentRunId;
       useTaskStore.getState().setTaskStatus(startingThreadId, "starting");
       pendingStart = pendingTurnStartsRef.current.begin(startingThreadId);
     } else if (!deferredDelivery) {
@@ -876,6 +939,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let provisionalWorktree: CreatedWorktree | undefined;
     let provisionalPersisted = false;
     let childBridge: ChildAgentBridgeResult | null = null;
+    // Opt-out during preparation ends the promise without cancelling the
+    // user's foreground prompt. Never recreate a run deleted by that action.
+    const parentRunRetiredDuringStart = () => {
+      const threadId = startingThreadId ?? startedThreadId;
+      return Boolean(threadId && parentRunStopEpoch(threadId) !== (startingThreadId ? parentStopEpochBefore : 0));
+    };
+    // True only while this turn can still be followed by a managed crew.
+    let parentRunReady = false;
     let sentAttachments = [...attachments];
     let preparedExecutionPath: string | undefined;
     let ownedCheckpointId: string | undefined;
@@ -891,12 +962,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
         throw new CancelledTurnStart("A newer turn superseded this preparation");
       }
       if (ctx.deliveryGuard && !ctx.deliveryGuard(guardedRunStartedAt)) throw new CancelledTurnStart("The parent conversation or turn changed before this instruction was delivered");
+      if (coordinationResume?.execution) {
+        const validate = contextRef.current.parentExecutionCurrent;
+        const difference = validate ? validate(coordinationResume.execution) : PARENT_EXECUTION_UNCONFIRMED;
+        if (difference) throw new ParentExecutionChanged(difference);
+      }
       if (cursorAttempt && (cursorAttempt.owner.closed || !isCurrentCursorTurnStart(startedThreadId ?? startingThreadId!, cursorAttempt))) {
         throw new CancelledTurnStart("This Cursor start was superseded");
       }
       if (pendingStart?.cancelRequested || (!activeThread && draftCancelled())) {
         throw new CancelledTurnStart("Stopped before starting the model turn");
       }
+      if (parentRunRetiredDuringStart()) parentRunReady = false;
       if (activeThread) {
         const binding = threadProjectBindingsRef.current?.[activeThread.id];
         const liveThreadBinding = binding === undefined ? undefined : normalizedProjectPath(binding);
@@ -931,6 +1008,50 @@ export function useTurnRunner(context: TurnRunnerContext): {
       childBridge = { ...childBridge, policy: next, captured: false, policyUpdated: false };
       cacheChildAgentPolicy(next);
       persistChildAgentPolicies((current) => ({ ...current, [next.sessionId]: next }));
+    };
+
+    /**
+     * Record the run before any provider request. A renderer reload after this
+     * leaves an honest paused state instead of silently losing the promise the
+     * model was given, and nothing here can start work on its own.
+     */
+    const openParentRun = (thread: Thread, executionPath: string) => {
+      const policy = childBridge?.policy;
+      if (parentRunRetiredDuringStart()) parentRunReady = false;
+      if (!parentRunReady || !policy) return;
+      const agentRunId = useTaskStore.getState().tasks[thread.id]?.agentRunId;
+      const provider = effectiveSettings.provider;
+      const execution: ParentExecution = {
+        provider,
+        // The same normalization the root's own later state resolves through.
+        model: modelForProvider(provider, effectiveSettings.model),
+        reasoningEffort: effectiveSettings.reasoningEffort,
+        ultra: effectiveSettings.ultra === true,
+        serviceTier: effectiveSettings.serviceTier,
+        permission: effectiveSettings.permission,
+        engine: effectiveSettings.subagentEngine,
+        subagentsEnabled: effectiveSettings.subagentsEnabled,
+        executionPath,
+        sessionId: policy.sessionId,
+        policyCapturedAt: policy.capturedAt,
+        endpoint: provider === "lmstudio" ? effectiveSettings.lmStudioBaseUrl : "",
+        authKey: parentAuthKey({
+          provider,
+          claude: claudeStatus,
+          cursor: cursorStatus,
+          account,
+          ready: provider === "openrouter" ? openRouterReady
+            : provider === "lmstudio" ? Boolean(lmStudioReady && lmStudioModels.some((model) => model.id === effectiveSettings.model)) : undefined,
+        }),
+        authGeneration: providerAuthGeneration(provider),
+      };
+      useTaskStore.getState().updateParentRun(thread.id, (run) => run
+        ? { ...run, sessionId: policy.sessionId, execution, autoResume: true, ownerRunId: agentRunId ?? run.ownerRunId }
+        : { id: crypto.randomUUID(), rootThreadId: thread.id, sessionId: policy.sessionId, phase: "active", ownerRunId: agentRunId,
+          resumesUsed: 0, wokenQuestions: [], execution, autoResume: true });
+      parentRunDeliveries.set(thread.id, { ...queuedDeliveryContext(ctx, thread.id, [], false), activeThread: thread,
+        // This send's own bookkeeping and dispatch identity end with this send.
+        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined });
     };
 
     // Shared body of the Claude/Cursor subscription paths: bootstrap the
@@ -987,7 +1108,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         setTransientStatus("Stopped");
         return false;
       }
-      const updatedThread = { ...thread, preview: text.slice(0, 140) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
+      const updatedThread = { ...thread, preview: (coordinationResume ? "" : text.slice(0, 140)) || thread.preview, updatedAt: Math.floor(Date.now() / 1000) };
       rememberThread(updatedThread);
       if (!workspaceChangedMidSend()) {
         setThreads((current) => upsertThread(current, updatedThread));
@@ -998,11 +1119,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!activeThread) {
         useTaskStore.getState().beginAgentRun(thread.id);
         guardedRunStartedAt = useTaskStore.getState().tasks[thread.id]?.agentRunStartedAt;
+        startedAgentRunId = useTaskStore.getState().tasks[thread.id]?.agentRunId;
+        openParentRun(thread, executionPath);
       }
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
       if (!activeThread && !deferredDelivery) showPendingPrompt(thread.id);
-      if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+      if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, checkpointPrompt, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       // Persist the owned thread/prior history before dispatch, not the new
       // optimistic prompt. A Stop or failed save must not leave undelivered
@@ -1014,7 +1137,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (initializeNewThreadGit) {
         await ctx.prepareNewThreadGit?.(thread.id, activeWorkspace, true);
         assertCanStart();
-        ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        ownedCheckpointId = await beginRunCheckpoint(thread.id, executionPath, checkpointPrompt, effectiveSettings.provider, effectiveSettings.model);
         assertCanStart();
       }
       // Only the transient acknowledgement exists while preparation awaits.
@@ -1025,18 +1148,20 @@ export function useTurnRunner(context: TurnRunnerContext): {
         id: sentMessageId,
         role: "user",
         text,
+        ...noticeProvenance,
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
       const taskBeforeDispatch = useTaskStore.getState().tasks[thread.id];
       activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
       completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
-      explicitDispatched = true;
       const nativeStart: { startRequestId: string; runStartedAt?: number; turnId?: string } = {
         startRequestId: provider === "cursor" ? cursorAttempt?.owner.startRequestId ?? localStartRequestId : localStartRequestId,
         runStartedAt: guardedRunStartedAt,
       };
       localStartRequestsRef.current.set(thread.id, nativeStart);
+      assertCanStart();
+      explicitDispatched = true;
       const result = await strategy.startTurn(thread);
       if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
         throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The provider accepted the start without returning its turn identifier.");
@@ -1214,6 +1339,21 @@ export function useTurnRunner(context: TurnRunnerContext): {
         toolAvailable: Boolean(childBridge?.launch.toolNames.includes(CHECK_COMMAND_TOOL)),
         check: activeProject?.overrides?.check ?? null,
       };
+      // Workflows own their thread and never come through this path as a
+      // parent run; a workflow-owned thread keeps its older semantics.
+      parentRunReady = !childThread && !nativeDelegation
+        && Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent"))
+        && !parentRunRetiredDuringStart()
+        && !(activeThread && useTaskStore.getState().workflowOwners[activeThread.id]);
+      if (activeThread) {
+        // A typed message kept this paused run on the promise that its turn
+        // would recapture it. Without a crew there is nothing to recapture, so
+        // automatic work stays off and the user keeps the pause they saw.
+        const keptRun = !coordinationResume && parentRunBefore?.phase === "paused" ? parentRunBefore : undefined;
+        if (keptRun && !(parentRunReady && childBridge?.policy)) {
+          useTaskStore.getState().updateParentRun(activeThread.id, (run) => run?.id === keptRun.id && run.ownerRunId === startedAgentRunId ? keptRun : run);
+        } else openParentRun(activeThread, executionPath);
+      }
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
         assertCanStart();
@@ -1223,7 +1363,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // Appending the optimistic user message cannot flip assistant
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-            const result = await startClaudeTurn({ threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
               throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Claude accepted the start without returning its turn identifier.");
             }
@@ -1269,7 +1409,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
               model: effectiveSettings.model || DEFAULT_CURSOR_MODEL,
               effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort,
               permission: effectiveSettings.permission,
-              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2),
+              systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady),
               resumeSessionId: priorSessionId || undefined,
               attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
               childAgentBridge: childBridge
@@ -1313,12 +1453,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         bridgeInstanceId: childBridge?.launch.configPath,
       }, { provider: runtimeSettings.provider, lmStudioBaseUrl: runtimeSettings.lmStudioBaseUrl, modelContextWindow });
       let threadId = activeThread?.id;
+      let parentRunThread: Thread | null = activeThread;
       let runtimeTurnModel: unknown;
       startedThreadId = threadId;
       if (!threadId) {
         const result = await rpc<{ thread: Thread; model?: unknown; runtimeInstance: string }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check }));
         runtimeInstance = result.runtimeInstance;
         const startedThread = optimisticStartedThread(result.thread, text);
+        parentRunThread = startedThread;
         runtimeTurnModel = result.model;
         threadId = startedThread.id;
         startedThreadId = threadId;
@@ -1388,16 +1530,18 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (!activeThread) {
         useTaskStore.getState().beginAgentRun(threadId);
         guardedRunStartedAt = useTaskStore.getState().tasks[threadId]?.agentRunStartedAt;
+        startedAgentRunId = useTaskStore.getState().tasks[threadId]?.agentRunId;
+        if (parentRunThread) openParentRun(parentRunThread, executionPath);
       }
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
       if (!activeThread && !deferredDelivery) showPendingPrompt(threadId);
-      if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+      if (!initializeNewThreadGit) ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, checkpointPrompt, effectiveSettings.provider, effectiveSettings.model);
       assertCanStart();
       if (initializeNewThreadGit) {
         await ctx.prepareNewThreadGit?.(threadId, activeWorkspace, true);
         assertCanStart();
-        ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, text, effectiveSettings.provider, effectiveSettings.model);
+        ownedCheckpointId = await beginRunCheckpoint(threadId, executionPath, checkpointPrompt, effectiveSettings.provider, effectiveSettings.model);
         assertCanStart();
       }
       // The real message and its skill provenance enter the task only once
@@ -1408,6 +1552,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         id: sentMessageId,
         role: "user",
         text,
+        ...noticeProvenance,
         ...userSkillMetadata,
         attachments: messageImageAttachments(sentAttachments),
       });
@@ -1422,11 +1567,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
           checkButton,
           nativeDelegation,
           collaborationV2,
+          parentRunReady,
         ),
       }), expectedRuntimeInstance: runtimeInstance };
       const taskBeforeDispatch = useTaskStore.getState().tasks[threadId];
       activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
       completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
+      assertCanStart();
       explicitDispatched = true;
       const result = await rpc<{ turn: Turn }>("turn/start", params);
       if (typeof result?.turn?.id !== "string" || !result.turn.id.trim()) {
@@ -1471,10 +1618,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
       // resolved its thread must still clear the "starting" mark applied at
       // the top of this function.
       const failedThreadId = startedThreadId ?? startingThreadId;
-      const ownsAttempt = explicitAttemptCurrent()
+      const ownsAttemptNow = () => explicitAttemptCurrent()
         && (!failedThreadId || guardedRunStartedAt === undefined
           || useTaskStore.getState().tasks[failedThreadId]?.agentRunStartedAt === guardedRunStartedAt)
+        && (!failedThreadId || !startedAgentRunId || useTaskStore.getState().tasks[failedThreadId]?.agentRunId === startedAgentRunId)
         && (!cursorAttempt || !failedThreadId || isCurrentCursorTurnStart(failedThreadId, cursorAttempt));
+      const ownsAttempt = ownsAttemptNow();
       const failedTask = failedThreadId ? useTaskStore.getState().tasks[failedThreadId] : undefined;
       const runtimeObserved = ownsAttempt && Boolean(
         failedTask?.activeTurnId && failedTask.activeTurnId !== activeTurnBeforeDispatch
@@ -1485,6 +1634,10 @@ export function useTurnRunner(context: TurnRunnerContext): {
         const stopRequested = pendingStart ? pendingTurnStartsRef.current.finish(failedThreadId, pendingStart) : false;
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
         if (ownsAttempt) {
+          if (coordinationResume && !runtimeObserved) {
+            useTaskStore.getState().updateParentRun(failedThreadId, (run) => run?.dispatchId === coordinationResume.dispatchId && run.phase === "continuing"
+              ? pausedParentRun(run, "start_uncertain") : run);
+          }
           useTaskStore.getState().upsertActivity(failedThreadId, {
             id: `start-uncertain-${explicitAttemptId ?? sentMessageId ?? failedThreadId}`,
             kind: "warning", title: "Provider start could not be confirmed",
@@ -1526,11 +1679,34 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ).catch(() => undefined);
       }
       if (failedThreadId) {
-        const ownsFailure = ownsAttempt;
+        // Re-evaluate after cleanup awaits: a newer turn may now own the task.
+        const ownsFailure = ownsAttemptNow();
         if (ownsFailure && ownedCheckpointId) discardRunCheckpoint(failedThreadId, ownedCheckpointId);
         if (pendingStart) pendingTurnStartsRef.current.finish(failedThreadId, pendingStart);
         if (ownsFailure && sentMessageId) useTaskStore.getState().removeMessage(failedThreadId, sentMessageId);
-        if (ownsFailure) useTaskStore.getState().setTaskStatus(failedThreadId, cancelled ? "interrupted" : "error", cancelled ? undefined : friendlyError(reason));
+        if (ownsFailure && coordinationResume) {
+          // Nothing ran. The thread returns to how it was, so a refused
+          // continuation can neither mark good work as failed nor hold the
+          // user's queue, which only proceeds from a finished state.
+          // Stop retires the dispatch synchronously, before its provider cutoff
+          // awaits. Never turn that stop into completion or restart its FIFO.
+          if (parentRunStopEpoch(failedThreadId) === parentStopEpochBefore) {
+            useTaskStore.getState().updateParentRun(failedThreadId, (run) => run?.dispatchId === coordinationResume.dispatchId
+              ? reason instanceof ParentExecutionChanged ? pausedParentRun(run, "execution_changed", reason.difference)
+                : pausedParentRun(run, "delivery_failed", friendlyError(reason))
+              : run);
+            useTaskStore.getState().setTaskStatus(failedThreadId, coordinationResume.priorStatus, coordinationResume.priorError);
+          } else if (useTaskStore.getState().tasks[failedThreadId]?.status === "starting") {
+            useTaskStore.getState().setTaskStatus(failedThreadId, "interrupted");
+          }
+        } else if (ownsFailure) {
+          if (parentRunStopEpoch(failedThreadId) === parentStopEpochBefore) {
+            useTaskStore.getState().updateParentRun(failedThreadId, () => parentRunBefore);
+            if (parentDeliveryBefore) parentRunDeliveries.set(failedThreadId, parentDeliveryBefore);
+            else parentRunDeliveries.delete(failedThreadId);
+          }
+          useTaskStore.getState().setTaskStatus(failedThreadId, cancelled ? "interrupted" : "error", cancelled ? undefined : friendlyError(reason));
+        }
         if (ownsFailure && isClaudeThreadBusyError(reason)) {
           // The backend slot is held by a Claude process the UI no longer
           // tracks (e.g. after an event loss). Free it so a retry succeeds
@@ -1546,7 +1722,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         if (!ownsFailure) return false;
       }
       setStatus("Ready");
-      if (cancelled) setTransientStatus("Stopped");
+      if (cancelled && !(reason instanceof ParentExecutionChanged)) setTransientStatus("Stopped");
       else setError(friendlyError(reason));
       return false;
     } finally {
@@ -1822,8 +1998,90 @@ export function useTurnRunner(context: TurnRunnerContext): {
     };
   }, [releaseDueTimedPrompts]);
 
+  /**
+   * Claimed before any provider work and reserved with the status every other
+   * sender already respects, so a user send in this window queues losslessly.
+   * The promise never records success: a fast provider can finish the turn
+   * first, and the turn's own end decides the run. It handles only refusal, and
+   * only while this exact dispatch still owns the run.
+   */
+  const resumeParentTurn = useCallback(async ({ threadId, notice, progress, wokenQuestions, explicit }: ParentResumeRequest): Promise<void> => {
+    const store = useTaskStore.getState();
+    const run = store.parentRuns[threadId];
+    const task = store.tasks[threadId];
+    const current = contextRef.current;
+    if (!run || !task || (explicit ? run.phase !== "paused" : run.phase !== "waiting" || !run.autoResume)
+      || activeQueuedDeliveries.has(threadId) || task.status === "starting" || task.status === "running"
+      || hasEligibleQueuedTurns(task.queuedTurns)
+      || store.workflowOwners[threadId] || current.isThreadArchiving?.(threadId) || current.isThreadUnavailable?.(threadId)) return;
+    const captured = explicit
+      ? current.activeThread?.id === threadId ? queuedDeliveryContext(current, threadId, [], false) : undefined
+      : parentRunDeliveries.get(threadId);
+    const liveThread = captured?.currentThread?.(threadId);
+    const delivery = liveThread?.id === threadId && captured ? { ...captured, activeThread: liveThread } : captured;
+    // A context without this exact thread would start a new conversation.
+    if (delivery?.activeThread?.id !== threadId) {
+      store.updateParentRun(threadId, (latest) => latest && pausedParentRun(latest, "execution_changed"));
+      return;
+    }
+    const dispatchId = crypto.randomUUID();
+    const priorStatus = task.status;
+    const reservedRunId = task.agentRunId;
+    const reservationStopEpoch = parentRunStopEpoch(threadId);
+    const baseTurnId = task.lastCompletedTurnId;
+    activeQueuedDeliveries.add(threadId);
+    store.updateParentRun(threadId, (latest) => latest && claimParentRun(latest, {
+      dispatchId, ...(baseTurnId ? { dispatchBaseTurnId: baseTurnId } : {}), progress, wokenQuestions, explicit,
+    }));
+    store.setTaskStatus(threadId, "starting");
+    let delivered = false;
+    let deliveryError: string | null = null;
+    try {
+      delivered = await deliverMessage({
+        ...withLiveDeliveryReadiness(delivery, contextRef.current),
+        coordinationResume: { dispatchId, priorStatus, priorError: task.error, ...(!explicit ? { execution: run } : {}) },
+        deliveryGuard: () => useTaskStore.getState().parentRuns[threadId]?.dispatchId === dispatchId,
+        setError: (error) => { deliveryError = error; },
+      }, notice, "turn");
+    } catch (reason) {
+      deliveryError = friendlyError(reason);
+    } finally {
+      activeQueuedDeliveries.delete(threadId);
+    }
+    const latest = useTaskStore.getState();
+    const settled = latest.tasks[threadId];
+    const owned = latest.parentRuns[threadId]?.dispatchId === dispatchId && latest.parentRuns[threadId]?.phase === "continuing";
+    if (owned && !delivered) {
+      latest.updateParentRun(threadId, (entry) => entry && pausedParentRun(entry, "delivery_failed", deliveryError ?? undefined));
+    } else if (owned && settled?.status !== "starting" && settled?.status !== "running" && settled?.lastCompletedTurnId === baseTurnId) {
+      latest.updateParentRun(threadId, (entry) => entry && pausedParentRun(entry, "start_uncertain"));
+    }
+    // A refusal before the run began leaves only the reservation to release.
+    if (settled?.status === "starting" && settled.agentRunId === reservedRunId && !settled.activeTurnId) {
+      if (parentRunStopEpoch(threadId) === reservationStopEpoch) latest.setTaskStatus(threadId, priorStatus, task.error);
+      else latest.setTaskStatus(threadId, "interrupted");
+    }
+    // The pump returned early while this reservation held the thread, so a
+    // prompt released in that window has no later event to start it.
+    void pumpQueuedThread(threadId);
+  }, [deliverMessage, pumpQueuedThread]);
+  const hasParentRunDelivery = useCallback((threadId: string) => parentRunDeliveries.has(threadId), []);
+  /** A folder conflict ends by itself, so it holds a continuation instead of refusing it. */
+  const parentRunFolderBusy = useCallback((threadId: string): boolean => {
+    const delivery = parentRunDeliveries.get(threadId);
+    const workspace = delivery?.activeWorkspace;
+    if (!delivery || !workspace || workspace.isChat || delivery.threadWorktreesRef.current[threadId]) return false;
+    const sharedPath = normalizedProjectPath(workspace.path);
+    if ([...pendingSharedDraftStarts.values()].includes(sharedPath)) return true;
+    const links = contextRef.current.childAgentLinks;
+    return sharedFolderRunActive(delivery, sharedPath, threadId, (id) => links[id]?.rootThreadId === threadId);
+  }, []);
+
   useEffect(() => {
     const unsubscribe = useTaskStore.subscribe((state, previous) => {
+      if (state.parentRuns !== previous.parentRuns) {
+        for (const threadId of parentRunDeliveries.keys()) if (!state.parentRuns[threadId]) parentRunDeliveries.delete(threadId);
+      }
       if (state.workflowOwners !== previous.workflowOwners) {
         for (const threadId in previous.workflowOwners) {
           if (!state.workflowOwners[threadId] && state.tasks[threadId]?.queuedTurns.some((entry) => entry.status === "queued")) {
@@ -1916,7 +2174,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
     if (useTaskStore.getState().workflowOwners[threadId]) return queueFollowUp(ctx, text);
     if (status === "starting" || (!ctx.running && hasEligibleQueuedTurns(useTaskStore.getState().tasks[threadId]?.queuedTurns))) return queueFollowUp(ctx, text);
     let unavailable = false;
-    const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; });
+    // Answering the parent's question is the user acting here, like typing.
+    const delivered = await deliverMessage(ctx, text, ctx.running ? "steer" : "turn", () => { unavailable = true; }, undefined, !ctx.running);
     return !delivered && unavailable ? queueFollowUp(ctx, text) : delivered;
   }, [archiveOwnsThread, deliverMessage, queueFollowUp]);
 
@@ -1975,7 +2234,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // yield. A second send must observe that owner even before React renders.
     if (ctx.activeThread && (ctx.running || task?.status === "starting" || task?.status === "running"
       || hasEligibleQueuedTurns(task?.queuedTurns))) return queueAfterAttachments();
-    if (ctx.activeThread || ctx.deferredDelivery) return deliverMessage(ctx, text, "turn");
+    if (ctx.activeThread || ctx.deferredDelivery) return deliverMessage(ctx, text, "turn", undefined, undefined, options?.typedFollowUp === true);
     const id = acknowledgedAttempt?.id ?? beginFirstPrompt(text);
     if (!id) return false;
     deliveringFirstPromptIdsRef.current.add(id);
@@ -1998,7 +2257,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, [archiveOwnsThread, beginFirstPrompt, deliverMessage, finishFirstPrompt, queueFollowUp]);
 
-  const steerMessage = useCallback(async (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string; expectedThreadId?: string; expectedTurnId?: string; expectedRunStartedAt?: number; deliveryGuard?: () => boolean }): Promise<boolean> => {
+  const steerMessage = useCallback(async (text: string, options?: { resolveSkillMentions?: boolean; skillInvocationText?: string; expectedThreadId?: string; expectedTurnId?: string; expectedRunStartedAt?: number; deliveryGuard?: () => boolean; typedFollowUp?: boolean }): Promise<boolean> => {
     const current = contextRef.current;
     const deliveryGuard = options?.expectedThreadId ? (ownedRunStartedAt?: number) => {
       const state = useTaskStore.getState();
@@ -2041,7 +2300,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
       return delivered || (!resolutionFailed && (!deliveryGuard || deliveryGuard()) && queueFollowUp(ctx, text));
     }
     if (hasEligibleQueuedTurns(task?.queuedTurns)) return queueFollowUp({ ...ctx, running: false }, text);
-    return deliverMessage({ ...ctx, running: false }, text, "turn");
+    // The turn ended before this steer arrived, so it is the next typed message.
+    return deliverMessage({ ...ctx, running: false }, text, "turn", undefined, undefined, options?.typedFollowUp === true);
   }, [deliverMessage, queueFollowUp]);
 
   const steerQueuedMessage = useCallback(async (queuedTurnId: string): Promise<void> => {
@@ -2337,6 +2597,6 @@ export function useTurnRunner(context: TurnRunnerContext): {
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
-    stopTurn, getSubagentPreparationLockedReason, subagentPreparationLockRevision,
+    stopTurn, resumeParentTurn, hasParentRunDelivery, parentRunFolderBusy, getSubagentPreparationLockedReason, subagentPreparationLockRevision,
   };
 }

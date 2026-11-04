@@ -37,6 +37,8 @@ import { createStreamingTextPacer, type StreamingTextPacer } from "../lib/stream
 import { createLineStreamingTextPacer } from "../lib/lineStreamingTextPacer";
 import { createCompletionReveal, type CompletionReveal } from "../lib/completionReveal";
 import { MessageImagePreview } from "./MessageImagePreview";
+import { ParentRunTurnLabel } from "./ParentRunLine";
+import { isMythraNoticeMessage } from "../lib/userMessageEcho";
 import { inlinePathParts, type InlinePathParts } from "../lib/inlinePath";
 import "./InlinePath.css";
 
@@ -192,14 +194,20 @@ function isCompactionMarker(entry: WorkItemEntry): boolean {
   return entry.kind === "activity" && entry.value.kind === "compaction";
 }
 
+/** A generated continuation carries no user direction worth keeping expanded. */
+function isContinuationSegment(segment: WorkItemEntry[]): boolean {
+  const first = segment[0];
+  return first?.kind === "message" && isMythraNoticeMessage(first.value);
+}
+
 function compactTurnSegment(segment: WorkItemEntry[], compact: boolean): TimelineEntry[] {
   if (!compact) return segment;
   const users = segment.filter((entry) => entry.kind === "message" && entry.value.role === "user");
   const assistants = segment.filter((entry) => entry.kind === "message" && entry.value.role === "assistant" && !entry.value.streaming);
   // Incomplete turns stay chronological. Steered user messages remain visible,
   // with the work on either side compacted independently in place.
-  if (!users.length || !assistants.length) return segment;
-  const finalAssistant = assistants.at(-1)!;
+  if (!users.length || (!assistants.length && !isContinuationSegment(segment))) return segment;
+  const finalAssistant = assistants.at(-1);
   const output: TimelineEntry[] = [];
   let work: WorkItemEntry[] = [];
   const flushWork = () => {
@@ -277,10 +285,12 @@ export function compactCompletedTurns(entries: WorkItemEntry[], running: boolean
     // message. Legacy transcripts retain the prior idle/older-turn fallback.
     // Looking at the final output rather than the first turn id also repairs a
     // saved transcript whose now-retired provider processes interleaved ids.
-    const compact = !isLastRunningSegment && Boolean(finalAssistant) && (
+    // A failed continuation still collapses: it has no user request to read
+    // around, and its status lines must not fill the conversation.
+    const compact = !isLastRunningSegment && (isContinuationSegment(turnEntries) || Boolean(finalAssistant) && (
       finalStatus === "completed"
       || (!workItemTurnId(finalAssistant!) && !finalStatus)
-    );
+    ));
     return compactTurnSegment(turnEntries, compact);
   });
 }
@@ -944,6 +954,9 @@ export const MessageRow = memo(function MessageRow({ message, provider, onEdit, 
             : message.steerStatus === "read" ? "Read by Claude" : "Sending steer…"}
       </div>
   );
+  if (isMythraNoticeMessage(message)) {
+    return <div className="message-notice" role="note"><CornerUpRight size={11} aria-hidden="true" />Mythra Code continued the parent</div>;
+  }
   const avatar = (
     <div className={`message-avatar ${message.role === "assistant" ? `provider-${provider}` : ""}`}>
       {message.role === "assistant" ? <ProviderLogo provider={provider} size={14} /> : <span>You</span>}
@@ -1383,8 +1396,12 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
   searchMatches: number;
   onOpenActivity: (entry: WorkTimelineEntry, opener: HTMLElement | null) => void;
 }) {
-  const state = entry.state ?? "completed";
-  const live = state === "running";
+  const parentTurn = useContext(ParentRunTurnLabel);
+  const recorded = entry.state ?? "completed";
+  const live = recorded === "running";
+  // Presentation only: the turn's history and grouping keep its real outcome.
+  const parentLabel = !live && recorded === "completed" && parentTurn && entry.turnId === parentTurn.turnId ? parentTurn : undefined;
+  const state = parentLabel?.state ?? recorded;
   const entryRef = useRef(entry);
   entryRef.current = entry;
   const onOpen = useCallback((opener: HTMLButtonElement) => onOpenActivity(entryRef.current, opener), [onOpenActivity]);
@@ -1392,7 +1409,7 @@ const WorkStatusRow = memo(function WorkStatusRow({ entry, open, searchMatches, 
     : live ? stepCountLabel(countWorkItems(entry.value)) : workSummary(entry.value) || stepCountLabel(countWorkItems(entry.value));
   return <ActivityStatus
     state={state}
-    label={live ? entry.live?.label : undefined}
+    label={live ? entry.live?.label : parentLabel?.label}
     category={entry.live?.category}
     playful={entry.live?.playful}
     unconfirmed={entry.unconfirmed}
@@ -2141,7 +2158,7 @@ export function ChatTimeline({
     entries.forEach((entry, index) => {
       const haystack = entry.kind === "work"
         ? entry.value.map(workEntrySearchText).join(" ")
-        : entry.kind === "thinking" || entry.kind === "approval" ? "" : workEntrySearchText(entry);
+        : entry.kind === "thinking" || entry.kind === "approval" || entry.kind === "message" && isMythraNoticeMessage(entry.value) ? "" : workEntrySearchText(entry);
       if (haystack.toLowerCase().includes(query)) hits.push(index);
     });
     return hits;

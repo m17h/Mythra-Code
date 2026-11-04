@@ -1,4 +1,5 @@
 import type { ChatMessage, Provider } from "../types";
+import { isMythraNoticeMessage } from "./userMessageEcho";
 
 const HANDOFF_TRANSCRIPT_BUDGET = 18_000;
 const INITIAL_GOAL_BUDGET = 4_000;
@@ -30,7 +31,9 @@ function renderMessage(message: ChatMessage, text = message.text.trim()): string
 }
 
 function transcriptExcerpt(messages: ChatMessage[], budget = HANDOFF_TRANSCRIPT_BUDGET): string {
-  const usable = messages.filter((message) => message.text.trim());
+  // Generated notices are coordination plumbing. The parent's own answers
+  // carry what actually happened, so they stay in the handoff.
+  const usable = messages.filter((message) => message.text.trim() && !isMythraNoticeMessage(message));
   if (!usable.length) return "No conversation messages were available.";
   const firstUser = usable.find((message) => message.role === "user");
   const sections: string[] = [];

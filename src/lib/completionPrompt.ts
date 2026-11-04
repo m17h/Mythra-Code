@@ -63,6 +63,19 @@ export const MYTHRA_CODE_COLLABORATION_INSTRUCTIONS = [
   "Existing V1 assignments keep their one-shot workflow: collect their results, and spawn a new sub-agent for additional work. They do not receive parent messaging or require accept_agent.",
 ].join(" ");
 
+/**
+ * Only for turns Mythra Code is tracking. Any other turn keeps the older rule
+ * that nothing restarts a parent, so this promise is never made there.
+ */
+export const MYTHRA_CODE_PARENT_RESUME_INSTRUCTIONS = [
+  "Finish your work only after every child you assigned is reviewed: collect each result, and sign off successful V2 work you are satisfied with using accept_agent.",
+  "spawn_mythra_agent, agent_status and collect_agent report automaticFollowUp for each child still needing review. True means automatic follow-up is currently armed for that child, subject to the run staying open and continuation checks passing; it is not a guarantee of another turn.",
+  "If the children still working all currently report automaticFollowUp true and you have nothing else to do, end your turn with one brief status line. Mythra Code can continue this conversation when the followed work is ready for review or a new question arrives; execution confirmation, approvals, availability, progress and the remaining continuation budget can hold or pause it. Never promise an unconditional automatic return.",
+  "For outstanding child work reporting false, or lacking a current report, never say it will be followed up automatically: keep collecting or reviewing it yourself, or tell the user it is still unreviewed. Work with no remaining parent obligation omits automaticFollowUp because nothing remains to follow.",
+  "If you still need an answer from the user, do not guess or decide for them: state what you need and end your turn.",
+  "Do not use sleep, background shell timers or scheduled prompts to wait for children, and do not promise the user a time.",
+].join(" ");
+
 export const MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS = [
   "This saved project exposes Mythra Code's user-approved sub-agent settings control.",
   "If the user asks to enable, disable, or change the project's sub-agent crew, models, reasoning, or parallel limit, use propose_agent_settings.",
@@ -85,12 +98,13 @@ export interface CheckButtonPromptContext {
   check: ProjectCheckCommand | null | undefined;
 }
 
-export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false): string {
+export function mythraCodeDeveloperInstructions(delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false, parentResume = false): string {
   const sections = [MYTHRA_CODE_SKILL_MENTION_INSTRUCTIONS, MYTHRA_CODE_COMPLETION_INSTRUCTIONS];
   if (nativeDelegation) sections.push(MYTHRA_CODE_PROVIDER_DELEGATION_INSTRUCTIONS);
   else if (delegationEnabled) {
     sections.push(MYTHRA_CODE_DELEGATION_INSTRUCTIONS);
     if (collaborationV2) sections.push(MYTHRA_CODE_COLLABORATION_INSTRUCTIONS);
+    if (parentResume) sections.push(MYTHRA_CODE_PARENT_RESUME_INSTRUCTIONS);
   } else if (settingsProposalsEnabled) sections.push(MYTHRA_CODE_SUBAGENT_SETTINGS_INSTRUCTIONS);
   if (runButton?.toolAvailable) sections.push(runButtonInstructions(runButton.run));
   if (runButton?.commitMessageToolAvailable) sections.push("After finishing file changes in this local Git project, call get_commit_message_context, inspect all accumulated changes (including earlier uncommitted work, staged changes and relevant new files), then call set_commit_message before your final response. Supply a concise imperative title with an optional blank line and body. Include stagedMessage for only the staged diff when hasStaged is true. Never stage, commit or push just to draft text. Skip if nothing changed or there is no Git repository, and never let a draft failure prevent your final response.");
@@ -98,9 +112,9 @@ export function mythraCodeDeveloperInstructions(delegationEnabled = false, setti
   return sections.join("\n\n");
 }
 
-export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false): string {
+export function withMythraCodeCompletionInstructions(systemPrompt: string, delegationEnabled = false, settingsProposalsEnabled = delegationEnabled, runButton?: RunButtonPromptContext | null, checkButton?: CheckButtonPromptContext | null, nativeDelegation = false, collaborationV2 = false, parentResume = false): string {
   const prompt = systemPrompt.trim();
-  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation, collaborationV2);
+  const internalInstructions = mythraCodeDeveloperInstructions(delegationEnabled, settingsProposalsEnabled, runButton, checkButton, nativeDelegation, collaborationV2, parentResume);
   return prompt
     ? `${prompt}\n\n${internalInstructions}`
     : internalInstructions;

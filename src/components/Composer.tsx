@@ -221,6 +221,8 @@ export const Composer = forwardRef<ComposerHandle, {
    * not. Stop stays offered so the crew can always be cut off from one place.
    */
   childrenRunning?: boolean;
+  /** One line about work this conversation is waiting on. */
+  statusLine?: ReactNode;
   /**
    * True only when a started thread is running, which is the one case where a
    * plain send queues a follow-up and Steer can reach an active turn. A draft
@@ -700,6 +702,7 @@ export const Composer = forwardRef<ComposerHandle, {
 
   return (
     <div className={`composer ${props.queueing ? "queueing" : ""} ${props.dropActive ? "drop-target" : ""} ${voice.view ? "voice-active" : ""}`}>
+      {props.statusLine}
       {eligibleTurns.length > 0 && (
         <div className="queued-turns">
           <div className="queued-turns-heading">

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { annotateThreadUsage } from "./usageLedger";
+import { noteProviderAuthChanged } from "./providerAuth";
 import type {
   Activity,
   ChatMessage,
@@ -337,6 +338,7 @@ export async function getClaudeRateLimits(accountKey: string, runtimePath?: stri
 
 export async function startClaudeLogin(): Promise<void> {
   await invoke("claude_login");
+  noteProviderAuthChanged("claude");
 }
 
 /** Stops a browser sign-in that `startClaudeLogin` is still waiting for. */

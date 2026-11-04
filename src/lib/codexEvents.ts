@@ -11,6 +11,7 @@ import { nativeSubAgentPresentation } from "./nativeSubAgentActivity";
 import { codexCompactionStatus, compactionActivity, compactionState } from "./contextCompaction";
 import { recordOpenRouterCharge, reportThreadServiceTier } from "./usageLedger";
 import { boundedNativeText, type NativeAgentReadout } from "./nativeAgentLinks";
+import { noteProviderAuthChanged } from "./providerAuth";
 
 /**
  * Events that arrive without a threadId are routed to this bucket instead of
@@ -662,7 +663,12 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     // `account/updated`, but the app must not depend on that second
     // notification to leave "Waiting for sign-in" and load the account.
     if (params.success === false) ctx.onLoginFailed(String(params.error ?? "Sign in did not complete"));
-    else ctx.onAccountUpdated();
+    else {
+      // Browser sign-in can finish after its launching request released the
+      // preparation lease. Retire captured continuation identities here too.
+      noteProviderAuthChanged("openai");
+      ctx.onAccountUpdated();
+    }
     return;
   }
   if (event.id !== undefined) {

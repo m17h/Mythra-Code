@@ -2,6 +2,7 @@ import type { ChatMessage } from "../types";
 import { skillMentionRanges } from "./skillMentions";
 import { isSkillDependencyPath, sanitizeMessageSkillDependencies, validSkillDependencyReport } from "./skillDependencies";
 import { sanitizeSkillUsage } from "./skillUsage";
+import { isParentNoticeText, PARENT_NOTICE_PROVENANCE } from "./parentRun";
 
 const ATTACHED_CONTEXT_MARKER = "\n\nAttached context:\n";
 
@@ -19,8 +20,28 @@ function withoutGeneratedAttachedContext(suffix: string): string {
   return remainder ? `\n${remainder}` : "";
 }
 
-/** Undo Mythra's generated skill envelope and file context when displaying provider history. */
-export function displayedUserMessage(text: string): Pick<ChatMessage, "text" | "skillReferences" | "skillsFolder" | "skillDependencies"> {
+type DisplayedUserMessage = Pick<ChatMessage, "text" | "skillReferences" | "skillsFolder" | "skillDependencies" | "provenance">;
+
+/** Undo Mythra's generated wrappers when displaying provider history, and
+ * recover a generated notice's provenance, which provider history cannot carry. */
+export function displayedUserMessage(text: string): DisplayedUserMessage {
+  const displayed = unwrappedUserMessage(text);
+  return isParentNoticeText(displayed.text) ? { ...displayed, provenance: PARENT_NOTICE_PROVENANCE } : displayed;
+}
+
+/** Durable provider history can omit renderer metadata. All consumers that
+ * distinguish authored text from notices must also recognize the exact format. */
+export function isMythraNoticeMessage(message: Pick<ChatMessage, "role" | "text" | "provenance">): boolean {
+  return message.role === "user" && (message.provenance === PARENT_NOTICE_PROVENANCE
+    || displayedUserMessage(message.text).provenance === PARENT_NOTICE_PROVENANCE);
+}
+
+function restoreNoticeProvenance(message: ChatMessage): ChatMessage {
+  return message.provenance === undefined && isMythraNoticeMessage(message)
+    ? { ...message, provenance: PARENT_NOTICE_PROVENANCE } : message;
+}
+
+function unwrappedUserMessage(text: string): DisplayedUserMessage {
   if (!text.startsWith("<mythra_code_invoked_skills>\n")) return { text };
   const start = text.indexOf("\n{");
   const end = text.indexOf("\n</mythra_code_invoked_skills>");
@@ -88,6 +109,7 @@ function collapseRepeatedUserIds(messages: ChatMessage[]): ChatMessage[] {
         skillsFolder: message.skillsFolder ?? previous.skillsFolder,
         skillDependencies: message.skillDependencies ?? previous.skillDependencies,
         skillUsage: message.skillUsage ?? previous.skillUsage,
+        provenance: message.provenance ?? previous.provenance,
         steerStatus: message.steerStatus === "read" || previous.steerStatus === "read" ? "read" : message.steerStatus ?? previous.steerStatus,
         steerRuntimeId: message.steerRuntimeId ?? previous.steerRuntimeId,
       });
@@ -106,7 +128,7 @@ function collapseRepeatedUserIds(messages: ChatMessage[]): ChatMessage[] {
 /** One-to-one reconciliation: two intentional identical sends remain two rows. */
 export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage[]): { messages: ChatMessage[]; matchedIds: Set<string> } {
   const matchedIds = new Set<string>();
-  const sanitizedLive = live.map((message) => sanitizeSkillUsage(sanitizeMessageSkillDependencies(message)));
+  const sanitizedLive = live.map((message) => restoreNoticeProvenance(sanitizeSkillUsage(sanitizeMessageSkillDependencies(message))));
   const byId = new Map(sanitizedLive.map((message) => [message.id, message]));
   const byTurn = new Map<string, ChatMessage[]>();
   for (const message of sanitizedLive) {
@@ -115,7 +137,7 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
     entries.push(message);
     byTurn.set(message.turnId, entries);
   }
-  const messages = collapseRepeatedUserIds(incoming.map((message) => sanitizeSkillUsage(sanitizeMessageSkillDependencies(message)))).map((message) => {
+  const messages = collapseRepeatedUserIds(incoming.map((message) => restoreNoticeProvenance(sanitizeSkillUsage(sanitizeMessageSkillDependencies(message))))).map((message) => {
     if (message.role !== "user") return message;
     const candidates = byId.has(message.id) ? [] : (byTurn.get(message.turnId ?? "") ?? []).filter((entry) => !matchedIds.has(entry.id));
     const existing = byId.get(message.id) ?? candidates[userEchoIndex(candidates, message)];
@@ -127,6 +149,7 @@ export function reconcileUserMessages(incoming: ChatMessage[], live: ChatMessage
       steerRuntimeId: existing.steerRuntimeId ?? message.steerRuntimeId,
       skillReferences: existing.skillReferences ?? message.skillReferences, skillsFolder: existing.skillsFolder ?? message.skillsFolder,
       skillDependencies: existing.skillDependencies ?? message.skillDependencies,
+      provenance: existing.provenance ?? message.provenance,
       skillUsage: existing.skillUsage ?? message.skillUsage };
   });
   return { messages, matchedIds };
