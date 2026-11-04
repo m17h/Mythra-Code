@@ -5,6 +5,7 @@ import type { Activity, ChatMessage } from "../types";
 import type { CompactWorkEntry, CompactWorkState } from "../lib/compactActivity";
 import { adoptPortalTheme, effectiveZoom } from "../lib/floatingLayer";
 import { prefersReducedMotion } from "../lib/flipRoster";
+import { isWindowsPlatform } from "../lib/platform";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatusCategory } from "./ActivityStatus";
 import { PixelWorkingMark } from "./PixelWorkingMark";
@@ -338,7 +339,7 @@ function FallbackLayer({ sourceRef, labelledBy, onClose, children, frameRef }: {
       document.body.style.overflow = previousOverflow;
     };
   }, [frameRef]);
-  return createPortal(<div ref={layerRef} className="activity-details-fallback" onClick={(event) => {
+  return createPortal(<div ref={layerRef} className="activity-details-fallback" data-backdrop-blur={isWindowsPlatform() ? "always" : undefined} onClick={(event) => {
     event.stopPropagation();
     if (event.target === event.currentTarget) onClose();
   }}>
@@ -698,6 +699,7 @@ export function ActivityDetailsModal({
   return <dialog
     ref={dialogRef}
     className="activity-details-dialog"
+    data-backdrop-blur={isWindowsPlatform() ? "always" : undefined}
     aria-labelledby={titleId}
     onKeyDown={onKeyDown}
     onCancel={(event) => { event.preventDefault(); requestClose(); }}

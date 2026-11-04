@@ -1,5 +1,5 @@
 /* ---- Activity details: an in-app reading window about Settings' size ----
-   A Pro sheet (14px radius, pop shadow, plain scrim), one quiet rail and
+   A Pro sheet (14px radius, pop shadow, Settings' blurred scrim), one quiet rail and
    rounded-square step nodes. Only the entrance
    and the live mark move; reduced motion removes both.
    Reading order: the agent's thinking and updates are the primary text, at
@@ -27,8 +27,34 @@
   line-height: 1.45;
 }
 .activity-details-dialog[open] { display: flex; flex-direction: column; }
-.activity-details-dialog::backdrop { background: rgb(0 0 0 / 42%); background: var(--lm-scrim, rgb(0 0 0 / 42%)); }
-.activity-details-fallback { position: fixed; top: 0; left: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .42); background: var(--lm-scrim, rgba(0, 0, 0, .42)); touch-action: none; }
+.activity-details-fallback { position: fixed; top: 0; left: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; touch-action: none; }
+/* Settings' dim and blur (styles/lumen/settings.css); keep the two in step,
+   Windows override included. This sits outside the shell scope for the
+   body-portaled fallback. ::backdrop keeps rules of its own so an engine that
+   cannot parse it does not drop the fallback's, and it only inherits
+   --lm-scrim from Chrome 122 / Safari 17.4: older engines take the literals,
+   so light themes need theirs. */
+.activity-details-fallback {
+  background: var(--lm-scrim, rgba(0, 0, 0, .42));
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.activity-details-dialog::backdrop {
+  background: var(--lm-scrim, rgba(0, 0, 0, .42));
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.app-shell[data-color-scheme="light"] .activity-details-dialog::backdrop { background: var(--lm-scrim, rgba(0, 0, 0, .22)); }
+@media (prefers-reduced-transparency: reduce) {
+  .activity-details-fallback:not([data-backdrop-blur="always"]) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .activity-details-dialog:not([data-backdrop-blur="always"])::backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
 .activity-details-dialog-fallback { position: relative; inset: auto; margin: 0; display: flex; flex-direction: column; }
 
 .activity-details-frame { position: relative; min-height: 0; flex: 1; display: flex; flex-direction: column; }
@@ -258,6 +284,7 @@ html[data-input-modality="pointer"] .activity-details-scroll:focus { outline: no
 @media (prefers-reduced-motion: no-preference) {
   .activity-details-dialog[open], .activity-details-dialog-fallback { animation: activity-details-in 200ms cubic-bezier(.2, .8, .2, 1) both; }
   .activity-details-dialog[open]::backdrop { animation: activity-details-backdrop-in 160ms ease both; }
+  .activity-details-fallback { animation: activity-details-backdrop-in 160ms ease both; }
 }
 @media (prefers-reduced-motion: reduce) {
   .activity-step-chevron { transition: none; }
