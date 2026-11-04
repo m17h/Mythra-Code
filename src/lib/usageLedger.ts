@@ -394,25 +394,70 @@ export function pricingRevision(): string {
   return `${modelPricingCatalogRevision()}|${storedCatalog(OFFICIAL_PRICING_KEY)?.updatedAt ?? ""}|${[...cursorModelNames.values()].join("\n")}`;
 }
 
-/** Refresh once at launch. The last valid snapshot remains available offline;
- * a stale or malformed response can never replace a newer cached catalog. */
-export async function refreshModelPricingCatalog(
+/** Enforce the byte limit while receiving the document, before buffering its
+ * entire body. TextDecoder preserves Response.text()'s UTF-8 decoding. */
+async function readPricingCatalogBody(response: Response): Promise<string> {
+  const length = response.headers.get("content-length");
+  if (length !== null && Number(length) > MAX_PRICING_CATALOG_BYTES) {
+    throw new Error("Pricing catalog response was too large");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let body = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return body + decoder.decode();
+      bytes += value.byteLength;
+      if (bytes > MAX_PRICING_CATALOG_BYTES) throw new Error("Pricing catalog response was too large");
+      body += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// One ordinary source is refreshed by both launch and manual callers. Keep a
+// single shared request, rather than retaining a cache for arbitrary URLs or
+// injected fetchers. A different source/fetcher remains an independent read.
+let catalogRefreshInFlight: { fetcher: typeof fetch; url: string; promise: Promise<ModelPricingCatalog | null> } | null = null;
+let activeCatalogRefreshes = 0;
+
+/** Refresh once at launch. Concurrent reads of the same source share work.
+ * The last valid snapshot remains available offline; a stale or malformed
+ * response can never replace a newer cached catalog. */
+export function refreshModelPricingCatalog(
   fetcher: typeof fetch = fetch,
   url = MODEL_PRICING_CATALOG_URL,
 ): Promise<ModelPricingCatalog | null> {
-  pricingStatus = { ...pricingStatus, checking: true, error: undefined };
-  notifyUsage();
+  if (catalogRefreshInFlight) {
+    if (catalogRefreshInFlight.fetcher === fetcher && catalogRefreshInFlight.url === url) return catalogRefreshInFlight.promise;
+    return runModelPricingCatalogRefresh(fetcher, url);
+  }
+  // Install ownership before notifying subscribers or invoking the fetcher.
+  const promise = Promise.resolve().then(() => runModelPricingCatalogRefresh(fetcher, url)).finally(() => {
+    if (catalogRefreshInFlight?.promise === promise) catalogRefreshInFlight = null;
+  });
+  catalogRefreshInFlight = { fetcher, url, promise };
+  return promise;
+}
+
+async function runModelPricingCatalogRefresh(fetcher: typeof fetch, url: string): Promise<ModelPricingCatalog | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PRICING_REFRESH_TIMEOUT_MS);
+  activeCatalogRefreshes += 1;
   try {
+    pricingStatus = { ...pricingStatus, checking: true, error: undefined };
+    notifyUsage();
     const separator = url.includes("?") ? "&" : "?";
     const response = await fetcher(`${url}${separator}openkiwi=${Date.now()}`, {
       cache: "no-store",
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`Pricing catalog request failed (${response.status})`);
-    const body = await response.text();
-    if (body.length > MAX_PRICING_CATALOG_BYTES) throw new Error("Pricing catalog response was too large");
+    const body = await readPricingCatalogBody(response);
     const parsed = parseModelPricingCatalog(JSON.parse(body));
     if (!parsed) throw new Error("Pricing catalog response was invalid");
     const current = modelPricingCatalog();
@@ -434,7 +479,10 @@ export async function refreshModelPricingCatalog(
     throw error;
   } finally {
     clearTimeout(timeout);
-    pricingStatus = { ...pricingStatus, checking: false, checkedAt: Date.now() };
+    // Stop unread error/oversized bodies as well as timed-out requests.
+    controller.abort();
+    activeCatalogRefreshes -= 1;
+    pricingStatus = { ...pricingStatus, checking: activeCatalogRefreshes > 0, checkedAt: Date.now() };
     notifyUsage();
   }
 }

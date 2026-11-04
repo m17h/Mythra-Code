@@ -49,7 +49,7 @@ export function GitHistoryView(props: {
             <div className="git-local-note" role="status">
               <GitCommitHorizontal size={13} aria-hidden="true" />
               <span>The branch has moved since this list was read.</span>
-              <button type="button" className="thread-pr-inline-button" onClick={history.reload}>Show latest</button>
+              <button type="button" className="thread-pr-inline-button" onClick={history.reload} disabled={history.loading} aria-busy={history.loading}>Show latest</button>
             </div>
           )}
           {history.error && (

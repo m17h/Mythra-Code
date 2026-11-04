@@ -23,6 +23,7 @@ function recordRecoveredStatus(threadId: string, task: ThreadTaskState, status: 
   const current = store.tasks[threadId];
   if (!current || current.activeTurnId !== task.activeTurnId
     || current.updatedAt !== task.updatedAt
+    || current.pendingNativeActivationId
     || (current.status !== "starting" && current.status !== "running")) return;
   // Completion clears activeTurnId. Retain the probed owner so the recovery
   // warning remains part of that turn's history, even after it is sealed.
@@ -88,17 +89,18 @@ function unchangedSince(task: ThreadTaskState): boolean {
  * - the task changed during a probe.
  * A receipt read failure propagates to the caller, which leaves live state.
  */
-async function reconcileInactiveClaudeTurn(task: ThreadTaskState, deliver?: (event: ClaudeEvent) => void): Promise<void> {
+async function reconcileInactiveClaudeTurn(task: ThreadTaskState, canReconcile: () => boolean, deliver?: (event: ClaudeEvent) => void): Promise<void> {
   const turnId = task.activeTurnId;
   if (turnId && hasProviderStopIntent(task.threadId, turnId)) return;
   if (turnId && deliver) {
     const message = await claudeTurnTerminalReceipt(task.threadId, turnId);
-    if (!unchangedSince(task) || hasProviderStopIntent(task.threadId, turnId)) return;
+    if (!canReconcile() || !unchangedSince(task) || hasProviderStopIntent(task.threadId, turnId)) return;
     if (message) {
       deliver({ threadId: task.threadId, turnId, message });
       return;
     }
   }
+  if (!canReconcile()) return;
   recordRecoveredStatus(task.threadId, task, "error");
 }
 
@@ -117,6 +119,9 @@ export function useThreadHealth(context: ThreadHealthContext): void {
         const snapshot = useTaskStore.getState();
         const candidates = Object.values(snapshot.tasks).filter((task) => (
           (task.status === "starting" || task.status === "running")
+          // A native follow-up has not identified its turn yet. Its latest
+          // saved terminal turn can still belong to the previous activation.
+          && !task.pendingNativeActivationId
           && Date.now() - task.updatedAt >= THREAD_HEALTH_STALE_MS
         ));
         for (const task of candidates) {
@@ -126,16 +131,20 @@ export function useThreadHealth(context: ThreadHealthContext): void {
           try {
             if (isClaudeThread(thread)) {
               if (await isClaudeTurnActive(task.threadId)) continue;
+              if (disposed) return;
               if (!unchangedSince(task)) continue;
-              await reconcileInactiveClaudeTurn(task, contextRef.current.deliverClaudeEvent);
+              await reconcileInactiveClaudeTurn(task, () => !disposed, contextRef.current.deliverClaudeEvent);
               continue;
             }
             if (isCursorThread(thread)) {
-              if (!await isCursorTurnActive(task.threadId)) recordRecoveredStatus(task.threadId, task, "error");
+              const active = await isCursorTurnActive(task.threadId);
+              if (disposed) return;
+              if (!active) recordRecoveredStatus(task.threadId, task, "error");
               continue;
             }
             if (!contextRef.current.runtimeAvailable) continue;
             const latest = await latestCodexTurn(task.threadId);
+            if (disposed) return;
             if (task.activeTurnId && latest?.id !== task.activeTurnId) continue;
             const status = terminalTurnStatus(latest);
             if (status) recordRecoveredStatus(task.threadId, task, status);

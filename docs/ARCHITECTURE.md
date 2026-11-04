@@ -74,20 +74,29 @@ server is probed again. Claude and Cursor transcripts use SQLite-backed bounded
 pages with generation-safe cursors, so incremental writes cannot replace
 history that is not currently hydrated in the renderer.
 
-## Thread creation contract
+## Thread and turn preparation
 
-A new thread is created with:
+Project identity, execution folder and provider conversation history have
+different owners. New threads use the selected shared project or isolated
+worktree, model, reasoning, permission mode and explicit sub-agent setup.
+Existing conversations resume their own provider history.
 
-- the selected shared project or isolated linked worktree as `cwd`;
-- the selected model/provider;
-- the selected reasoning effort, including Ultra when eligible;
-- the selected sandbox and approval policy;
-- `baseInstructions` equal to the Settings prompt, including an explicit empty string;
-- an empty `developerInstructions` value;
-- project instruction loading disabled by default, or explicitly enabled by the user;
-- sub-agent tools explicitly enabled or disabled, with a user-selected child cap and depth fixed at one.
+App-selected instructions are not creation-only. Turn preparation resolves the
+current authored prompt, selected skills, learned-preference snapshot and
+enabled project instruction files, then supplies the provider-specific system
+or developer framing. Explicit replacement and empty snapshots clear earlier
+app instructions; omitting them is not equivalent. Codex can use an explicitly
+empty base with per-turn developer/system snapshots. Claude and Cursor use their
+own adapters and session semantics. Permissions and actual exposed capabilities
+are checked at delivery; a running steer does not silently replace its policy.
 
-These fields are set only when a thread is created. Existing threads retain their original prompt and provider context when resumed, which avoids silently rewriting conversation behavior.
+Managed children use their captured approved setup rather than the visible
+parent's current controls. Workflows and scheduled deliveries retain their own
+authored-input, timing and cancellation rules. See `useTurnRunner.ts`,
+`turnConfig.ts`, `completionPrompt.ts` and
+[managed sub-agent conversations](managed-subagent-conversations.md) before
+changing context assembly. The [context recommendations](performance/model-context-recommendations.md)
+describe candidates and limits; they are not implemented context changes.
 
 ## Isolated worktree contract
 
@@ -108,15 +117,25 @@ Merging is available only when both worktrees are clean and isolated work has be
 
 ## Sub-agent contract
 
-Mythra Code starts its private App Server with multi-agent support explicitly disabled, overriding the upstream default. A new thread can opt in through its config override:
+Provider-native and Mythra-managed delegation are separate modes. Native
+delegation uses its provider's tools and runtime ownership. The private App
+Server's native multi-agent support defaults off and is enabled explicitly for
+eligible native-mode turns; its limits and permissions are configured through
+that runtime.
 
-- `features.multi_agent` mirrors the visible UI toggle;
-- `agents.max_threads` is the exact concurrent child-agent limit selected by the user;
-- `agents.max_depth = 1` permits only direct children;
-- each child inherits the parent thread's sandbox and approval policy;
-- no app-authored delegation instruction is added to the visible base or developer prompts.
+Mythra-managed V1 and V2 use the app's captured crew and local bridge. The bridge
+exposes only approved destinations and applicable tools, enforces ownership and
+concurrency, and keeps children in separate conversations at depth one. Parents
+collect V1 results; successful V2 work additionally requires exact-result
+sign-off. App-authored delegation guidance depends on the actual bridge
+capabilities, rather than appearing unconditionally.
 
-The webview renders collaboration tool calls and child activity as structured timeline events. The Agent Studio can read child histories and interrupt individual children; the underlying App Server remains the owner of lifecycle and concurrency enforcement.
+Managed parent runs can wait after a provider turn ends and continue when
+results need review or a child asks a question. This follow-through is bounded,
+can be stopped or opted out of, and pauses on uncertain execution or restart.
+It does not implement arbitrary timers or replace provider-native lifecycle.
+See [the managed conversation contract](managed-subagent-conversations.md) for
+review, delivery, Stop, persistence and recovery details.
 
 ## Studio protocol map
 

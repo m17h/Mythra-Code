@@ -43,6 +43,16 @@ interface TailSelection {
   seal: boolean;
 }
 
+/** A complete transcript with the write token for exactly those rows, read
+ * under one database lock. Pairing a transcript with a token read separately
+ * could pass the generation check with stale data, and generation alone cannot
+ * make the order safe: a snapshot of unchanged chunks seals the tail without
+ * advancing it. */
+interface LocalTranscriptFullRead<T extends LocalTranscriptValue> {
+  transcript: T;
+  writeState: LocalTranscriptWriteState;
+}
+
 export interface LocalTranscriptPage extends LocalTranscriptValue {
   nextCursor: string | null;
   headSeq: number;
@@ -69,7 +79,9 @@ export async function listLocalTranscriptThreads(knownThreadIds: string[] = []):
 const LOCAL_TRANSCRIPT_INITIAL_BYTES = 40 * 1024;
 
 const persistenceStates = new Map<string, PersistenceState>();
-const saveQueues = new Map<string, Promise<void>>();
+// Reads that install a write token share this queue with mutations, so a
+// delayed read cannot replace state installed by a newer completed save.
+const saveQueues = new Map<string, Promise<unknown>>();
 const deletingTranscripts = new Set<string>();
 const MAX_PERSISTENCE_STATES = 128;
 
@@ -207,14 +219,12 @@ function storedMutableTurnId(
   return selectMutableTail(transcript)?.turnId ?? "__pending__";
 }
 
-async function readWriteState(
-  provider: LocalTranscriptProvider,
-  threadId: string,
-): Promise<LocalTranscriptWriteState | null> {
-  return invoke<LocalTranscriptWriteState | null>("local_transcript_write_state_read", {
-    provider,
-    threadId,
-  });
+function storedSnapshotOnlyTurnId(tail: TailSelection | null, state: LocalTranscriptWriteState): string | null {
+  // A full snapshot seals the native tail even when its logical turn is still
+  // active. Reopening or merely reading it must retain snapshot replacement;
+  // an incremental save would append that same turn after the sealed copy.
+  if (tail?.turnId === "__pending__") return tail.turnId;
+  return tail && !tail.seal && state.tailSeq > state.headSeq ? tail.turnId : null;
 }
 
 async function saveSnapshot(
@@ -399,47 +409,45 @@ async function persistTranscript(
   }
 }
 
-export async function loadLocalTranscript<T extends LocalTranscriptValue>(
+export function loadLocalTranscript<T extends LocalTranscriptValue>(
   provider: LocalTranscriptProvider,
   threadId: string,
 ): Promise<T | null> {
-  const transcript = await invoke<T | null>("local_transcript_full_read", { provider, threadId });
+  return queueTranscriptOperation(provider, threadId, () => readLocalTranscript<T>(provider, threadId));
+}
+
+async function readLocalTranscript<T extends LocalTranscriptValue>(
+  provider: LocalTranscriptProvider,
+  threadId: string,
+): Promise<T | null> {
+  const read = await invoke<LocalTranscriptFullRead<T> | null>("local_transcript_full_read", { provider, threadId });
   const key = persistenceKey(provider, threadId);
-  if (!transcript) {
+  if (!read) {
     persistenceStates.delete(key);
     return null;
   }
-  const existing = persistenceStates.get(key);
-  try {
-    const state = await readWriteState(provider, threadId);
-    if (existing?.partial) return transcript;
-    const persistedTail = selectMutableTail(transcript);
-    if (state) rememberPersistenceState(key, {
-      ...state,
-      partial: false,
-      mutableTurnId: storedMutableTurnId(transcript, state),
-      persistedTurnId: persistedTail?.turnId ?? null,
-      // A sealed snapshot can still contain a local prompt awaiting its real
-      // turn ID. Its first identified save must replace that snapshot.
-      snapshotOnlyTurnId: persistedTail?.turnId === "__pending__" ? "__pending__" : null,
-    });
-    else persistenceStates.delete(key);
-  } catch {
-    // The transcript is already readable. A transient token failure should
-    // only disable incremental writes for a complete in-memory transcript.
-    // Never discard a partial marker: doing so could let a later save replace
-    // unseen history with the bounded renderer window.
-    if (!existing?.partial) persistenceStates.delete(key);
-  }
+  const { transcript, writeState } = read;
+  // Never discard a partial marker: doing so could let a later save replace
+  // unseen history with the bounded renderer window.
+  if (persistenceStates.get(key)?.partial) return transcript;
+  const persistedTail = selectMutableTail(transcript);
+  // The surrounding per-thread queue keeps this pair from installing after a
+  // later save, including same-generation snapshots that seal the tail.
+  rememberPersistenceState(key, {
+    ...writeState,
+    partial: false,
+    mutableTurnId: storedMutableTurnId(transcript, writeState),
+    persistedTurnId: persistedTail?.turnId ?? null,
+    snapshotOnlyTurnId: storedSnapshotOnlyTurnId(persistedTail, writeState),
+  });
   return transcript;
 }
 
-export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
+export function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
   provider: LocalTranscriptProvider,
   threadId: string,
   cursor?: string,
 ): Promise<T | null> {
-  const key = persistenceKey(provider, threadId);
   if (cursor) {
     return invoke<T | null>("local_transcript_page_read", {
       provider,
@@ -448,6 +456,14 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
       byteBudget: LOCAL_TRANSCRIPT_INITIAL_BYTES,
     });
   }
+  return queueTranscriptOperation(provider, threadId, () => readInitialLocalTranscriptPage<T>(provider, threadId));
+}
+
+async function readInitialLocalTranscriptPage<T extends LocalTranscriptPage>(
+  provider: LocalTranscriptProvider,
+  threadId: string,
+): Promise<T | null> {
+  const key = persistenceKey(provider, threadId);
   let page = await invoke<T | null>("local_transcript_page_read", {
     provider,
     threadId,
@@ -458,19 +474,22 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
     persistenceStates.delete(key);
     return null;
   }
-  // A mutable tail or a sealed prompt still awaiting its real turn ID may
-  // need a replacement snapshot. Recover unseen history once before that
-  // replacement; ordinary sealed transcripts stay paged.
+  // A mutable tail or a sealed snapshot of an unfinished turn may need a
+  // replacement snapshot, including a prompt awaiting its real turn ID.
+  // Recover unseen history first; ordinary sealed transcripts stay paged.
   let persistedTail = selectMutableTail(page);
-  if (page.nextCursor && (page.tailSeq <= page.headSeq || persistedTail?.turnId === "__pending__")) {
-    const transcript = await invoke<LocalTranscriptValue | null>("local_transcript_full_read", { provider, threadId });
-    if (!transcript) {
+  if (page.nextCursor && (page.tailSeq <= page.headSeq || storedSnapshotOnlyTurnId(persistedTail, page) !== null)) {
+    const read = await invoke<LocalTranscriptFullRead<LocalTranscriptValue> | null>("local_transcript_full_read", { provider, threadId });
+    if (!read) {
       persistenceStates.delete(key);
       return null;
     }
+    const { transcript, writeState } = read;
+    // The token below must describe this transcript, not the earlier page.
     page = {
       ...page,
       ...transcript,
+      ...writeState,
       nextCursor: null,
       byteLen: estimateTranscriptBytes(transcript.messages, transcript.activities),
     } as T;
@@ -485,7 +504,7 @@ export async function loadLocalTranscriptPage<T extends LocalTranscriptPage>(
     partial: Boolean(page.nextCursor),
     mutableTurnId: storedMutableTurnId(page, page),
     persistedTurnId: persistedTail?.turnId ?? null,
-    snapshotOnlyTurnId: persistedTail?.turnId === "__pending__" ? "__pending__" : null,
+    snapshotOnlyTurnId: storedSnapshotOnlyTurnId(persistedTail, page),
   });
   return page;
 }
@@ -494,22 +513,22 @@ export function saveLocalTranscript(
   provider: LocalTranscriptProvider,
   transcript: LocalTranscriptValue,
 ): Promise<void> {
-  return queueTranscriptWrite(provider, transcript.thread.id, () => persistTranscript(provider, transcript));
+  return queueTranscriptOperation(provider, transcript.thread.id, () => persistTranscript(provider, transcript));
 }
 
 /** Renaming must never synthesize a transcript from a missing/evicted window.
  * Serialize metadata-only renames with saves and deletes for this thread. */
 export function renameLocalTranscript(provider: LocalTranscriptProvider, threadId: string, name: string): Promise<void> {
-  return queueTranscriptWrite(provider, threadId, () => invoke("local_transcript_rename", { provider, threadId, name }));
+  return queueTranscriptOperation(provider, threadId, () => invoke<void>("local_transcript_rename", { provider, threadId, name }));
 }
 
-function queueTranscriptWrite(provider: LocalTranscriptProvider, threadId: string, write: () => Promise<void>): Promise<void> {
+function queueTranscriptOperation<T>(provider: LocalTranscriptProvider, threadId: string, operation: () => Promise<T>): Promise<T> {
   const key = persistenceKey(provider, threadId);
   if (deletingTranscripts.has(key)) {
     return Promise.reject(new Error("Local transcript is being deleted"));
   }
   const previous = saveQueues.get(key) ?? Promise.resolve();
-  const queued = previous.catch(() => undefined).then(write);
+  const queued = previous.catch(() => undefined).then(operation);
   saveQueues.set(key, queued);
   void queued.finally(() => {
     if (saveQueues.get(key) === queued) saveQueues.delete(key);

@@ -78,12 +78,14 @@ export function appUpdateCheckError(reason: unknown): string {
   return friendlyError(reason);
 }
 
-async function checkWithRetry(): Promise<Update | null> {
+async function checkWithRetry(stillCurrent: () => boolean): Promise<Update | null> {
   try {
     return await check({ timeout: CHECK_ATTEMPT_TIMEOUT_MS });
   } catch (reason) {
+    if (!stillCurrent()) return null;
     if (!CHECK_TRANSPORT_FAILURE.test(safeErrorText(reason))) throw reason;
     await new Promise((resolve) => window.setTimeout(resolve, CHECK_RETRY_DELAY_MS));
+    if (!stillCurrent()) return null;
     return check({ timeout: CHECK_ATTEMPT_TIMEOUT_MS });
   }
 }
@@ -93,6 +95,7 @@ export function useAppUpdater(): AppUpdater {
   const updateRef = useRef<Update | null>(null);
   const checkingRef = useRef(false);
   const visibleCheckRef = useRef(false);
+  const lifetimeRef = useRef(0);
   const phaseRef = useRef<AppUpdatePhase>(state.phase);
   phaseRef.current = state.phase;
 
@@ -109,11 +112,19 @@ export function useAppUpdater(): AppUpdater {
       return;
     }
     checkingRef.current = true;
+    const lifetime = lifetimeRef.current;
     visibleCheckRef.current = !silent;
     if (!silent) setState((current) => ({ ...current, phase: "checking", error: null }));
     try {
       const currentVersion = await getVersion();
-      const update = await checkWithRetry();
+      if (lifetime !== lifetimeRef.current) return;
+      const update = await checkWithRetry(() => lifetime === lifetimeRef.current);
+      // A check can finish after cleanup (including StrictMode's effect
+      // replay). Its native resource still needs an owner to close it.
+      if (lifetime !== lifetimeRef.current) {
+        if (update) void update.close().catch(() => undefined);
+        return;
+      }
       // Keep the previous handle until a fresh result replaces it, so a failed
       // background recheck cannot leave an "available" card without its update.
       const previous = updateRef.current;
@@ -143,6 +154,7 @@ export function useAppUpdater(): AppUpdater {
         error: null,
       });
     } catch (reason) {
+      if (lifetime !== lifetimeRef.current) return;
       // Keep the underlying text in diagnostics; the card shows a friendly one.
       const raw = safeErrorText(reason);
       if (!visibleCheckRef.current) {
@@ -155,8 +167,10 @@ export function useAppUpdater(): AppUpdater {
         setState((current) => ({ ...current, phase: "error", error: appUpdateCheckError(reason) }));
       }
     } finally {
-      checkingRef.current = false;
-      visibleCheckRef.current = false;
+      if (lifetime === lifetimeRef.current) {
+        checkingRef.current = false;
+        visibleCheckRef.current = false;
+      }
     }
   }, []);
 
@@ -230,6 +244,9 @@ export function useAppUpdater(): AppUpdater {
   }, [performCheck]);
 
   useEffect(() => () => {
+    lifetimeRef.current += 1;
+    checkingRef.current = false;
+    visibleCheckRef.current = false;
     const update = updateRef.current;
     updateRef.current = null;
     if (update) void update.close().catch(() => undefined);

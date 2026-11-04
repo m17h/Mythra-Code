@@ -207,7 +207,10 @@ export function MessageImagePreview({ path, name }: { path: string; name: string
       ref={dialogRef}
       className="message-image-dialog"
       aria-label={`Image preview: ${name}`}
-      onClose={() => {
+      onClose={(event) => {
+        // An effect cleanup can queue a close event before the same dialog
+        // reopens. That stale event must not dismiss the reopened preview.
+        if (event.currentTarget.open) return;
         setExpanded(false);
         triggerRef.current?.focus({ preventScroll: true });
       }}

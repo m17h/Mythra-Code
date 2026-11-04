@@ -10,8 +10,12 @@ export interface ModelRefreshState<T> {
 export function shareModelRefresh<T>(state: ModelRefreshState<T>, key: string, read: () => Promise<T[]>, kind: "routine" | "manual" = "routine"): Promise<T[]> {
   const previous = state.pending;
   if (previous?.key === key && (kind === "routine" || previous.kind === "manual")) return previous.promise;
+  // The explicit read must follow a failed routine read as well as a
+  // successful one. Recheck ownership in either case so an identity change
+  // still cancels queued work instead of querying the old account/runtime.
+  const readQueued = () => state.pending?.promise === promise ? read() : [];
   const start: Promise<T[]> = previous?.key === key
-    ? previous.promise.then(() => state.pending?.promise === promise ? read() : [])
+    ? previous.promise.then(readQueued, readQueued)
     : read();
   const promise: Promise<T[]> = start.then((models) => {
     if (state.pending?.promise === promise && models.length) state.lastSuccess = { key, at: Date.now() };

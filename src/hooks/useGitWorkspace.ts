@@ -74,6 +74,10 @@ export function useGitWorkspace(options: Options) {
     const { cwd, enabled } = optionsRef.current;
     const scope = cwd ? normalizedProjectPath(cwd) : "";
     if (!mounted.current || !cwd || !enabled || mutationsPending.current.has(scope)) return Promise.resolve();
+    // Clearing an operation error belongs to an explicit refresh request,
+    // never to a later asynchronous read result. An older coalesced read may
+    // settle after a failed operation and must not erase that failure.
+    if (invalidate) update(cwd, { error: "" });
     const pending = readsPending.current.get(scope);
     if (pending) {
       // Background polls and focus events reuse the active read. Queuing a
@@ -104,7 +108,7 @@ export function useGitWorkspace(options: Options) {
           const revision = generation.current;
           try {
             const snapshot = await getGitWorkspace(cwd);
-            if (revision === generation.current) accept(cwd, snapshot, { error: "" });
+            if (revision === generation.current) accept(cwd, snapshot);
           } catch (error) {
             if (revision === generation.current) update(cwd, { readError: formatGitError(error) });
           }
@@ -173,8 +177,14 @@ export function useGitWorkspace(options: Options) {
       leases.forEach(releasePullRequestMutation);
       mutationsPending.current.delete(scope);
       update(captured.cwd, { busy: false });
-      if (changed && optionsRef.current.cwd === captured.cwd) captured.onChanged?.();
-      if (!failed) void refresh();
+      // The checkout is the scope. Leaving the Git tab and coming back changes
+      // the viewer, but the result and its dependents still belong to this cwd.
+      if (mounted.current && optionsRef.current.cwd === captured.cwd) {
+        if (changed) captured.onChanged?.();
+        // A native operation may change refs/files before a later step fails.
+        // Reconcile those facts without clearing its error or retrying it.
+        void refresh(!failed);
+      }
     }
     return changed && !failed;
   }, [refresh, update]);

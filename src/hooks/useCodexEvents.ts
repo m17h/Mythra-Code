@@ -36,7 +36,7 @@ export function useCodexEvents(context: CodexEventContext & {
           if (!disposed && (!current.admitRuntimeEvent || current.admitRuntimeEvent(event) === true)) routeCodexEvent(event, current);
         }
       } catch (reason) {
-        contextRef.current.onError(`Runtime event ownership could not be confirmed: ${reason instanceof Error ? reason.message : String(reason)}`);
+        if (!disposed) contextRef.current.onError(`Runtime event ownership could not be confirmed: ${reason instanceof Error ? reason.message : String(reason)}`);
       } finally {
         resolvingEpoch = false;
       }
@@ -71,6 +71,7 @@ export function useCodexEvents(context: CodexEventContext & {
         }
       })
       .catch((reason) => {
+        if (disposed) return;
         contextRef.current.onError(
           `Mythra Code could not subscribe to runtime events: ${reason instanceof Error ? reason.message : String(reason)}`,
         );

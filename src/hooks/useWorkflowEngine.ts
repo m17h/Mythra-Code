@@ -742,6 +742,20 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             stepError = undefined;
             break;
           } catch (reason) {
+            if (step.type === "command") {
+              const activity = useTaskStore.getState().tasks[threadId]?.activities
+                .find((item) => item.id === `workflow-${runId}-${step.id}`);
+              // Checkpoint preparation, command dispatch and finalization can
+              // all reject before the normal exit-code update. Do not leave
+              // those attempts displayed as live after failure or Stop.
+              if (activity?.status === "inProgress") {
+                useTaskStore.getState().upsertActivity(threadId, {
+                  ...activity,
+                  status: !active.stopError && (active.stopRequested || isWorkflowStoppedError(reason)) ? "interrupted" : "failed",
+                  detail: friendlyError(reason),
+                });
+              }
+            }
             const turnTimedOut = attemptTurnTimedOut
               || isWorkflowTurnTimeoutError(reason)
               || (step.type === "agent"
@@ -914,6 +928,11 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       for (const workflow of current.workflows) {
         if (!workflow.enabled) continue;
         if (workflow.trigger.type === "manual") continue;
+        // Preflight normalizes every step and validates the full recipe. Its
+        // result cannot affect a future interval or an app-start run already
+        // considered this session, so avoid rebuilding those recipes per tick.
+        if (workflow.trigger.type === "interval" && (workflow.nextRunAt ?? 0) > now) continue;
+        if (workflow.trigger.type === "app-start" && appStartRef.current.has(workflow.id)) continue;
         const preflight = workflowPreflight(current, workflow);
         if (!preflight.ready) {
           if (!preflight.retryWhenReady) {

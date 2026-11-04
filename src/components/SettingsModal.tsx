@@ -860,7 +860,12 @@ export function SettingsModal({
   // Invalid text never reaches the draft, so it blocks Save instead of being
   // silently replaced by the previous limit or read as "disabled".
   const terminalTimeoutInvalid = terminalTimeoutTyped === null;
-  const dirty = useMemo(() => open && (JSON.stringify(local) !== JSON.stringify(settings) || JSON.stringify(localProjects) !== JSON.stringify(projects) || JSON.stringify(localProfiles) !== JSON.stringify(profiles) || terminalTimeoutTyped !== terminalTimeoutMinutes || guidanceDraftChanged), [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged]);
+  // Keep unrelated drafts out of each keystroke's comparison. In particular,
+  // editing a prompt must not serialize every project and profile again.
+  const settingsDraftChanged = useMemo(() => open && local !== settings && JSON.stringify(local) !== JSON.stringify(settings), [open, local, settings]);
+  const projectsDraftChanged = useMemo(() => open && localProjects !== projects && JSON.stringify(localProjects) !== JSON.stringify(projects), [open, localProjects, projects]);
+  const profilesDraftChanged = useMemo(() => open && localProfiles !== profiles && JSON.stringify(localProfiles) !== JSON.stringify(profiles), [open, localProfiles, profiles]);
+  const dirty = open && (settingsDraftChanged || projectsDraftChanged || profilesDraftChanged || terminalTimeoutTyped !== terminalTimeoutMinutes || guidanceDraftChanged);
   const activeProjectAppearance = localProjects.find((project) => project.id === activeProjectId)?.overrides?.defaults;
   const activeProjectHasAppearanceOverride = Boolean(activeProjectAppearance?.theme || activeProjectAppearance?.chatFont || activeProjectAppearance?.effortSlider);
   const projectDefaultsComplete = localProjects.every((project) => !project.overrides?.defaults || Boolean(project.overrides.defaults.model.trim()));
@@ -1329,14 +1334,14 @@ export function SettingsModal({
     const panes = new Set<SettingsPane>();
     if (!open) return panes;
     for (const key of Object.keys(SETTING_PANES) as Array<keyof AppSettings>) {
-      if (JSON.stringify(local[key]) !== JSON.stringify(settings[key])) panes.add(SETTING_PANES[key]!);
+      if (local[key] !== settings[key] && JSON.stringify(local[key]) !== JSON.stringify(settings[key])) panes.add(SETTING_PANES[key]!);
     }
-    if (JSON.stringify(localProjects) !== JSON.stringify(projects)) panes.add("projects");
-    if (JSON.stringify(localProfiles) !== JSON.stringify(profiles)) panes.add("prompts");
+    if (projectsDraftChanged) panes.add("projects");
+    if (profilesDraftChanged) panes.add("prompts");
     if (terminalTimeoutTyped !== terminalTimeoutMinutes) panes.add("system");
     if (guidanceDraftChanged) panes.add("agents");
     return panes;
-  }, [open, local, settings, localProjects, projects, localProfiles, profiles, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged]);
+  }, [open, local, settings, projectsDraftChanged, profilesDraftChanged, terminalTimeoutTyped, terminalTimeoutMinutes, guidanceDraftChanged]);
   // A search result names a row; once its pane renders, bring that row into
   // view and mark it briefly. Lazy panes can take a few frames to mount.
   useEffect(() => {

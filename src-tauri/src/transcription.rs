@@ -8,6 +8,7 @@
 //! Nothing is retried, because resending uncertain audio could be billed
 //! twice. Provider error text is never relayed.
 
+use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -1011,11 +1012,11 @@ async fn upload(
     provider: TranscriptionProvider,
     key: &str,
     model: &str,
-    audio: Vec<u8>,
+    audio: Cow<'_, [u8]>,
 ) -> Result<String, String> {
     let label = provider.label();
     let boundary = format!("mythra-{}", uuid::Uuid::new_v4().simple());
-    let body = multipart_body(&boundary, model, &audio);
+    let body = multipart_body(&boundary, model, audio.as_ref());
     drop(audio);
     let mut request = client()?
         .post(provider.transcription_url())
@@ -1089,10 +1090,13 @@ pub(crate) async fn transcription_transcribe(
     if provider == TranscriptionProvider::Openai && (!openai_model_supported(&model) || model == "gpt-live-transcribe") {
         return Err("This model can't transcribe uploaded audio. Choose another in Settings › Voice input.".into());
     }
-    let audio = match request.body() {
+    // Raw IPC already owns the WAV for this command. Borrow it through
+    // admission and multipart assembly instead of retaining a second full
+    // recording; only the JSON transport fallback needs decoded storage.
+    let audio: Cow<'_, [u8]> = match request.body() {
         InvokeBody::Raw(bytes) => {
             validate_wav(bytes)?;
-            bytes.clone()
+            Cow::Borrowed(bytes.as_slice())
         }
         // Tauri's channel fallback serializes a binary body as a JSON byte
         // array when custom-protocol IPC fails. Accept exactly that shape,
@@ -1110,13 +1114,13 @@ pub(crate) async fn transcription_transcribe(
                 bytes.push(byte as u8);
             }
             validate_wav(&bytes)?;
-            bytes
+            Cow::Owned(bytes)
         }
     };
     let identity = UploadIdentity {
         provider,
         model: model.clone(),
-        audio_digest: Sha256::digest(&audio).into(),
+        audio_digest: Sha256::digest(audio.as_ref()).into(),
     };
     let (guard, canceled) = match state.begin_upload(&id, identity)? {
         UploadAdmission::Start(guard, canceled) => (guard, canceled),

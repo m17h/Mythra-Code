@@ -215,15 +215,23 @@ export const useNewThreadTimedPrompts = create<NewThreadTimedPromptState>((set, 
   },
   markMissed: (ids, missedAt = Date.now()) => {
     const wanted = new Set(ids);
-    let prompts = get().prompts;
-    let changed = false;
-    for (const id of wanted) {
-      const entry = locate(prompts, id);
-      if (!entry || entry.missedAt !== undefined || entry.status === "sending") continue;
-      prompts = updated(prompts, id, (item) => ({ ...item, missedAt }));
-      changed = true;
+    if (!wanted.size) return;
+    const current = get().prompts;
+    let prompts = current;
+    // Wake/reload can miss an entire batch. Walk the buckets once instead of
+    // rebuilding every bucket separately for each missed prompt.
+    for (const [workspacePath, entries] of Object.entries(current)) {
+      let changed = false;
+      const next = entries.map((entry) => {
+        if (!wanted.has(entry.id) || entry.missedAt !== undefined || entry.status === "sending") return entry;
+        changed = true;
+        return { ...entry, missedAt };
+      });
+      if (!changed) continue;
+      if (prompts === current) prompts = { ...current };
+      prompts[workspacePath] = next;
     }
-    if (!changed) return;
+    if (prompts === current) return;
     persist(prompts);
     set({ prompts });
   },

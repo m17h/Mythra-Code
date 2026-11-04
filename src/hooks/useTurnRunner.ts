@@ -1954,6 +1954,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   useEffect(() => {
     let timer: number | null = null;
     let checkPending = false;
+    let disposed = false;
     const arm = () => {
       if (timer !== null) window.clearTimeout(timer);
       timer = null;
@@ -1966,12 +1967,13 @@ export function useTurnRunner(context: TurnRunnerContext): {
       if (Number.isFinite(next)) timer = window.setTimeout(check, Math.min(TIMED_PROMPT_MAX_TIMER_MS, next - now + 5));
     };
     const check = () => {
+      if (disposed) return;
       checkPending = false;
       releaseDueTimedPrompts();
       arm();
     };
     const scheduleCheck = () => {
-      if (checkPending) return;
+      if (disposed || checkPending) return;
       checkPending = true;
       queueMicrotask(check);
     };
@@ -1988,6 +1990,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
     window.addEventListener("online", scheduleCheck);
     check();
     return () => {
+      // A queued microtask cannot be cancelled. Retire it before it can run
+      // a stale clock check and re-arm a timeout after this effect detaches.
+      disposed = true;
       if (timer !== null) window.clearTimeout(timer);
       unsubscribeQueue();
       unsubscribeNewThread();

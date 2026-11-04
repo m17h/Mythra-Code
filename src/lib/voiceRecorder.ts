@@ -278,8 +278,9 @@ export class VoiceRecorder {
     if (!this.source || !this.sink) return;
     const node = this.context.createScriptProcessor(FALLBACK_BUFFER_FRAMES, 1, 1);
     node.onaudioprocess = (event) => {
-      // getChannelData returns a view the engine reuses; copy it.
-      this.accept(new Float32Array(event.inputBuffer.getChannelData(0)));
+      // accept consumes the engine-owned view synchronously, retaining only
+      // its independently allocated PCM output. No input copy is needed.
+      this.accept(event.inputBuffer.getChannelData(0));
       // Unlike a worklet, ScriptProcessor cannot flush a partial input buffer.
       // Stop keeps exactly one final callback so the buffered speech tail is
       // retained; resolving the flush also freezes further fallback capture.
