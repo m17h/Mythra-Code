@@ -1,0 +1,47 @@
+.parent-run-line {
+  min-height: 34px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 7px;
+  padding: 7px 8px 7px 13px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--field) 72%, transparent);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+.parent-run-line > svg { flex: 0 0 auto; margin-top: 2px; }
+.parent-run-line.paused > svg { color: var(--orange, var(--muted)); }
+/* Wide enough to read beside the actions; otherwise the actions wrap below. */
+.parent-run-line-copy { position: relative; min-width: 0; flex: 1 1 240px; display: flex; flex-direction: column; gap: 1px; }
+.parent-run-line-copy > span { overflow: hidden; color: var(--ink-2); white-space: nowrap; text-overflow: ellipsis; }
+.parent-run-line-copy > small { color: var(--muted-2); font-size: var(--fs-micro); line-height: 1.35; overflow-wrap: anywhere; }
+.parent-run-line-actions { min-width: 0; max-width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px; margin-left: auto; }
+.parent-run-line-actions button { flex: 0 1 auto; min-width: 0; max-width: 100%; min-height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; white-space: normal; overflow-wrap: anywhere; }
+.parent-run-line-actions button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+/* Keep the action and full model name readable when the composer is narrow. */
+.parent-run-line-actions button.primary { color: var(--text); }
+.parent-run-line-actions button:disabled { opacity: .5; cursor: default; }
+.parent-run-line-actions button:disabled:hover { color: var(--text); background: transparent; }
+.parent-run-line-actions button:focus-visible { outline: 2px solid var(--line-strong); outline-offset: -1px; }
+
+/* The usage note stays in the tooltip and for screen readers when space is tight. */
+@container chat-main (max-width: 720px) {
+  .parent-run-line-usage { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+/* The continuation marker between two turns of the same conversation. */
+.message-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+  color: var(--muted-2);
+  font-size: var(--fs-micro);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .parent-run-line .spin { animation: none; }
+}

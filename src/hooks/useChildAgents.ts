@@ -71,7 +71,24 @@ import { isActiveAgentRecord } from "../lib/subAgentActivity";
 import { decodeHtmlEntities } from "../lib/text";
 import { upsertThread } from "../lib/threadList";
 import { timelineFromTurns } from "../lib/threadTimeline";
-import { captureHistoryReadBoundary, useTaskStore, type TaskStatus } from "../lib/taskStore";
+import { captureHistoryReadBoundary, setPausedRunFollowUpResolver, setRootTurnEndResolver, useTaskStore, type TaskStatus } from "../lib/taskStore";
+import { eligibleQueuedTurns } from "../lib/timedPrompts";
+import {
+  buildParentNotice,
+  classifyParentObligation,
+  decideParentRun,
+  MAX_AUTOMATIC_PARENT_RESUMES,
+  NO_FOLLOW_UP_LIST_NOTE,
+  PARENT_EXECUTION_UNCONFIRMED,
+  parentFollowUpReport,
+  parentRunAtTurnEnd,
+  parentRunProgress,
+  pausedParentRun,
+  pausedRunFollowsTypedTurn,
+  wokenParentQuestions,
+  type ParentObligation,
+  type ParentRun,
+} from "../lib/parentRun";
 import { clearProviderStopIntent, markProviderStopIntent } from "../lib/providerStopIntent";
 import { sealStoppedTurn } from "../lib/stopTurnHistory";
 import type { OpenRouterModel } from "../components/OpenRouterModelControl";
@@ -184,6 +201,15 @@ export interface ChildAgentContext {
   subagentWorkflowForThread?: (threadId: string) => { enabled: boolean; native: boolean };
   /** Optional setup for an identified new child before its first dispatch. */
   prepareNewThreadGit?: (threadId: string, projectId: string, projectPath: string) => Promise<boolean>;
+  /** Start one claimed parent continuation through the normal send path. */
+  resumeParentTurn?: (request: { threadId: string; notice: string; progress: string; wokenQuestions: string[]; explicit?: boolean }) => Promise<void>;
+  hasParentRunDelivery?: (threadId: string) => boolean;
+  /** A different conversation holds this root's shared folder; retried on its status change. */
+  parentRunFolderBusy?: (threadId: string) => boolean;
+  /** Stable availability/lock revision, excluding streamed task content. */
+  parentRunEnvironmentRevision?: string;
+  /** Freshly compare a run's captured identity. Null means provably unchanged. */
+  probeParentExecution?: (run: ParentRun) => Promise<string | null>;
 }
 
 export interface ProjectRunOutcome {
@@ -222,6 +248,23 @@ export interface ChildStopFrontier {
 
 function taskStatusOf(threadId: string): TaskStatus {
   return useTaskStore.getState().statuses[threadId] ?? "idle";
+}
+
+/** Parent-assigned work belongs to the root's open run, when it has one. */
+function parentReviewField(rootThreadId: string): { reviewRunId?: string } {
+  const run = useTaskStore.getState().parentRuns[rootThreadId];
+  return run ? { reviewRunId: run.id } : {};
+}
+
+/**
+ * Whether this root currently has automatic continuation authority. This
+ * reads the exact run that owns the child and writes nothing: looking at a child
+ * never makes it followed.
+ */
+function parentResumeTracked(rootThreadId: string, reviewRunId: string | undefined): boolean {
+  const run = useTaskStore.getState().parentRuns[rootThreadId];
+  return Boolean(run?.autoResume && run.phase !== "paused" && reviewRunId === run.id
+    && run.resumesUsed < MAX_AUTOMATIC_PARENT_RESUMES);
 }
 
 // Re-exported from the policy module, where the UI can reach them without
@@ -862,6 +905,10 @@ export function useChildAgents(context: ChildAgentContext): {
   hasChildStartInFlight: (rootThreadId: string) => boolean;
   /** Fresh authority check; call again when saving the preview setting. */
   getManagedSubagentV2LockedReason: () => string | undefined;
+  /** What each child of this run still needs from its parent. */
+  parentRunObligations: (run: ParentRun) => ParentObligation[];
+  /** The user pressed Continue on a paused run in the open conversation. */
+  continueParentRun: (rootThreadId: string) => Promise<void>;
   /** Re-renders callers when preparation changes before a task/link exists. */
   managedSubagentV2LockRevision: number;
 } {
@@ -917,6 +964,10 @@ export function useChildAgents(context: ChildAgentContext): {
   const pendingChildrenRef = useRef<Map<string, Set<string>>>(new Map());
   /** Links written by a spawn response before React has rendered persistence. */
   const pendingLinksRef = useRef<Map<string, ChildAgentLink>>(new Map());
+  /** A spawn is already assigned before the provider identifies its child. */
+  const pendingParentSpawnsRef = useRef(new Map<string, { rootThreadId: string; reviewRunId: string; title: string }>());
+  /** Assigned after the evaluator exists; ref-only mutations must also wake it. */
+  const parentEvidenceChangedRef = useRef<() => void>(() => undefined);
   /** Monotonic per-root stop generation. A child whose provider start resolves
    * after Stop was pressed is killed before it can escape into the background. */
   const stopGenerationRef = useRef<Map<string, number>>(new Map());
@@ -1021,6 +1072,9 @@ export function useChildAgents(context: ChildAgentContext): {
     if (pendingActivationsRef.current.size || supersededUncertainRef.current.size) {
       return "Confirm or stop sub-agents whose activation is uncertain before changing this preview.";
     }
+    if (Object.values(store.parentRuns).some((run) => run.autoResume && run.phase !== "paused")) {
+      return "Finish or stop the parent run still following its sub-agents before changing this preview.";
+    }
     const links = { ...ctx.links, ...Object.fromEntries(pendingLinksRef.current) };
     for (const link of Object.values(links)) {
       const status = store.statuses[link.childThreadId] ?? "idle";
@@ -1068,7 +1122,10 @@ export function useChildAgents(context: ChildAgentContext): {
       }
       const updated = update(latest);
       pendingLinksRef.current.set(childThreadId, updated);
-      if (updated !== latest) notifyChildWaiters();
+      if (updated !== latest) {
+        notifyChildWaiters();
+        parentEvidenceChangedRef.current();
+      }
       return updated === latest ? current : { ...current, [childThreadId]: updated };
     });
   }, [notifyChildWaiters]);
@@ -1110,9 +1167,10 @@ export function useChildAgents(context: ChildAgentContext): {
       && !followUpsInFlightRef.current.has(threadId) && !pendingActivationsRef.current.has(threadId) ? link.activationId : undefined;
     if (staleToken) releaseSlot(link, staleToken);
     updateLink(threadId, (current) => {
+      // The user took this conversation over, so its next result is theirs.
       const { acceptedAt: _accepted, acceptedBy: _by, acceptNote: _note, stopOrigin: _stop,
         terminalStatus: _terminal, finishedAt: _finished, activationTurnId: _turn,
-        activationStartRequestId: _start, ...reopened } = current;
+        activationStartRequestId: _start, reviewRunId: _review, ...reopened } = current;
       const cleared: Record<string, unknown> = { ...reopened };
       if (staleToken && current.activationId === staleToken) {
         delete cleared.activationPending;
@@ -1129,6 +1187,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const noted = explicitStartsRef.current.get(threadId);
     if (!noted || noted.attemptId !== attemptId) return;
     explicitStartsRef.current.delete(threadId);
+    parentEvidenceChangedRef.current();
     notifyModeLockChanged();
     // Refused before any provider request: restore the pre-attempt record,
     // unless real work happened since (active now, or a newer completed
@@ -1138,7 +1197,7 @@ export function useChildAgents(context: ChildAgentContext): {
       || useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId !== noted.beforeCompleted
       || taskStatusOf(threadId) !== noted.beforeStatus) return;
     const fields = ["acceptedAt", "acceptedBy", "acceptNote", "stopOrigin", "terminalStatus", "finishedAt",
-      "activationTurnId", "resultRevision", "revisionBaseTurnId", "manualAttemptId"] as const;
+      "activationTurnId", "resultRevision", "revisionBaseTurnId", "manualAttemptId", "reviewRunId"] as const;
     let rolledBack = false;
     updateLink(threadId, (current) => {
       // Restore only this exact attempt; anything newer keeps its own state.
@@ -1265,6 +1324,8 @@ export function useChildAgents(context: ChildAgentContext): {
   }, [linksIncludingPending, releaseSlot, updateLink]);
 
   const invalidateChildAgentGuidance = useCallback((threadId: string, reason: string): void => {
+    // Stop has already retired its own run, so this names only archive and delete.
+    useTaskStore.getState().stopParentRun(threadId, "conversation_removed");
     stopGenerationRef.current.set(threadId, (stopGenerationRef.current.get(threadId) ?? 0) + 1);
     const links = linksIncludingPending(contextRef.current.links);
     for (const link of Object.values(links)) {
@@ -1323,6 +1384,62 @@ export function useChildAgents(context: ChildAgentContext): {
     return activeIds.length + pendingCount + nativeActive;
   }, []);
 
+  /** Follow-up guidance for this child is queued or starting, not yet delivered. */
+  const followUpPending = useCallback((childThreadId: string): boolean => (
+    followUpsInFlightRef.current.has(childThreadId)
+    || Boolean(getChildMailbox(childThreadId)?.messages.some((message) => message.direction === "toChild"
+      && (message.state === "queued" || message.state === "delivering")))
+  ), []);
+
+  /** What this child still needs from its parent, from current evidence. Read-only. */
+  const parentObligationFor = useCallback((link: ChildAgentLink): ParentObligation => {
+    const id = link.childThreadId;
+    const status = taskStatusOf(id);
+    const mailbox = getChildMailbox(id);
+    const manualTakeover = explicitStartsRef.current.has(id);
+    const preparingInitialStart = initialStartPending(link);
+    const unconfirmedStart = Boolean(pendingActivationsRef.current.get(id)?.uncertain
+      || link.activationPending && !followUpsInFlightRef.current.has(id) && !preparingInitialStart);
+    const evidence = {
+      childId: id,
+      title: decodeHtmlEntities(link.title || "Sub-agent"),
+      accepted: Boolean(link.acceptedAt),
+      acceptedByUser: link.acceptedBy === "user",
+      userStopped: link.stopOrigin === "user",
+      working: manualTakeover || isChildActive(status) || followUpPending(id) || preparingInitialStart,
+      lifecycle: childLifecycleForLink(link, status),
+      reviewToken: childReviewToken(link),
+      collectedToken: link.collectedReviewToken,
+      signoffRequired: link.signoff === "required",
+      openQuestions: (mailbox?.messages ?? [])
+        .filter((message) => message.direction === "toParent" && message.kind === "question" && !message.answeredAt && !message.closedAt)
+        .map((message) => message.id),
+      resultRevision: link.resultRevision ?? 0,
+      followUps: link.followUps ?? 0,
+      guidanceProgress: (mailbox?.messages ?? []).filter((message) => message.direction === "toChild")
+        .map((message) => `${message.id}:${message.state}`),
+      ...(manualTakeover ? { manualTakeover: true as const } : {}),
+      ...(preparingInitialStart ? { pendingStart: true as const } : {}),
+      ...(unconfirmedStart ? { unconfirmedStart: true as const } : {}),
+    };
+    return { ...evidence, state: classifyParentObligation(evidence) };
+  }, [followUpPending, initialStartPending]);
+
+  /** Report current ownership, never a link captured before asynchronous work. */
+  const parentFollowUpFor = useCallback((link: ChildAgentLink, focused = true) => {
+    const current = linksIncludingPending(contextRef.current.links)[link.childThreadId];
+    if (!current || current.createdAt !== link.createdAt || current.rootThreadId !== link.rootThreadId
+      || current.sessionId !== link.sessionId) return parentFollowUpReport("unknown", false, focused);
+    // A collect response already contains this exact result even if its
+    // persistence callback has not rendered yet. Preserve only that receipt;
+    // ownership and all other evidence still come from the current link.
+    const observed = link.collectedReviewToken && link.collectedReviewToken === childReviewToken(current)
+      ? { ...current, collectedReviewToken: link.collectedReviewToken } : current;
+    const obligation = parentObligationFor(observed);
+    return parentFollowUpReport(obligation.state, !obligation.manualTakeover
+      && lifecycleRef.current.mounted && parentResumeTracked(current.rootThreadId, current.reviewRunId), focused);
+  }, [linksIncludingPending, parentObligationFor]);
+
   const spawnChild = useCallback(async (request: ChildAgentRequest): Promise<Record<string, unknown>> => {
     const ctx = contextRef.current;
     const currentLinks = linksIncludingPending(ctx.links);
@@ -1366,6 +1483,9 @@ export function useChildAgents(context: ChildAgentContext): {
     };
 
     const reservation = `pending-${crypto.randomUUID()}`;
+    // Capture assignment ownership before any preparation awaits. A late
+    // response must never attach this work to a later parent run.
+    const reviewAssignment = parentReviewField(rootThreadId);
     const stopGeneration = stopGenerationRef.current.get(rootThreadId) ?? 0;
     const rendererGeneration = lifecycleRef.current.generation;
     const active = reservedChildCount(policy.sessionId, rootThreadId, currentLinks);
@@ -1394,11 +1514,17 @@ export function useChildAgents(context: ChildAgentContext): {
     pendingChildrenRef.current.set(policy.sessionId, pending);
     const inFlight = inFlightStartsRef.current;
     inFlight.set(rootThreadId, (inFlight.get(rootThreadId) ?? 0) + 1);
+    if (reviewAssignment.reviewRunId) {
+      pendingParentSpawnsRef.current.set(reservation, { rootThreadId, reviewRunId: reviewAssignment.reviewRunId, title });
+      parentEvidenceChangedRef.current();
+    }
     notifyModeLockChanged();
     let startSettled = false;
     const settleStart = () => {
       if (startSettled) return;
       startSettled = true;
+      pendingParentSpawnsRef.current.delete(reservation);
+      parentEvidenceChangedRef.current();
       const remaining = (inFlight.get(rootThreadId) ?? 1) - 1;
       if (remaining > 0) inFlight.set(rootThreadId, remaining);
       else inFlight.delete(rootThreadId);
@@ -1479,6 +1605,7 @@ export function useChildAgents(context: ChildAgentContext): {
             rootThreadId, sessionId: policy.sessionId, targetId: target.id,
             provider: target.provider, model: childAgentModel(target), reasoningEffort, title,
             createdAt: Date.now(), ...(policy.collaborationV2 === true ? { signoff: "required" as const } : {}), activationPending: true,
+            ...reviewAssignment,
             executionPath, executionProjectId: projectId, executionAdditionalWorkspaceRoots: gitDir ? [gitDir] : [],
             ...(target.autoCompactTokens !== undefined ? { autoCompactTokens: target.autoCompactTokens } : {}),
             ...(startRequestId ? { activationStartRequestId: startRequestId } : {}),
@@ -1487,6 +1614,9 @@ export function useChildAgents(context: ChildAgentContext): {
           if (policy.collaborationV2 === true) initialStartsRef.current.set(childThreadId, provisional);
           managedLocalTranscriptProofs.set(childThreadId, { createdAt: provisional.createdAt, fresh: true });
           pendingLinksRef.current.set(childThreadId, provisional);
+          // The real link replaces the temporary obligation synchronously.
+          pendingParentSpawnsRef.current.delete(reservation);
+          parentEvidenceChangedRef.current();
           ctx.persistChildAgentLinks((current) => ({ ...current, [childThreadId]: provisional }));
           ctx.bindThreadToProject(childThreadId, logicalPath);
           ctx.rememberThread(thread);
@@ -1523,8 +1653,17 @@ export function useChildAgents(context: ChildAgentContext): {
               await reportChildAgentFinished(policy.sessionId, abandonedId);
             } catch {
               if (publishedLink) releaseSlot(publishedLink, undefined);
+              // The provider was never dispatched; a failed slot-release
+              // acknowledgement must not turn this known failure into a
+              // permanently "starting" child that cannot be collected.
+              const failure = `The initial sub-agent did not start, but its reserved slot could not be released. Its ownership was retained: ${friendlyError(reason)}`;
+              if (canDiscardUnusedChild(abandonedId)) {
+                updateLink(abandonedId, (current) => current.spawnRequestId === request.requestId
+                  ? { ...current, activationPending: false, terminalStatus: "failed", finishedAt: Date.now() } : current);
+                useTaskStore.getState().setTaskStatus(abandonedId, "error", failure);
+              }
               settleStart();
-              throw new Error(`The initial sub-agent did not start, but its reserved slot could not be released. Its ownership was retained: ${friendlyError(reason)}`);
+              throw new Error(failure);
             }
           }
           // Stop followed by a manual child turn can supersede us during the
@@ -1552,6 +1691,7 @@ export function useChildAgents(context: ChildAgentContext): {
             settleStart();
             return { childId: abandonedId,
               status: retained ? childLifecycleForLink(retained, taskStatusOf(abandonedId)) : "unknown",
+              ...(retained ? parentFollowUpFor(retained) : parentFollowUpReport("unknown", false)),
               note: "The initial preparation was superseded while cleanup was settling. This owned child's current conversation and slot were preserved." };
           }
         }
@@ -1564,7 +1704,8 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration) {
       settleStart();
-      return { childId: result.thread.id, status: "unknown", note: "The child is durably owned; the current renderer recovers its provider status." };
+      return { childId: result.thread.id, status: "unknown", ...parentFollowUpReport("unknown", false),
+        note: "The child is durably owned; the current renderer recovers its provider status." };
     }
     // Hold the slot under the real child id until the rendered link map has it.
     pending.add(result.thread.id);
@@ -1581,6 +1722,7 @@ export function useChildAgents(context: ChildAgentContext): {
       if (pendingActivationsRef.current.get(childThreadId)?.activationId === undefined) pendingActivationsRef.current.delete(childThreadId);
       settleStart();
       return { childId: childThreadId, status: priorLink ? childLifecycleForLink(priorLink, taskStatusOf(childThreadId)) : childLifecycle(taskStatusOf(childThreadId)),
+        ...(priorLink ? parentFollowUpFor(priorLink) : parentFollowUpReport("unknown", false)),
         note: "The initial start was superseded by newer work in this child conversation; its current turn was preserved." };
     }
     // The root was deleted while the provider was starting: its frozen policy
@@ -1637,6 +1779,7 @@ export function useChildAgents(context: ChildAgentContext): {
 
     const link: ChildAgentLink = {
       ...provisionalLink,
+      ...(!provisionalLink ? reviewAssignment : {}),
       ...(result.languageSessionId ? { languageSessionId: result.languageSessionId } : {}),
       childThreadId,
       rootThreadId,
@@ -1711,15 +1854,9 @@ export function useChildAgents(context: ChildAgentContext): {
       ...(startUncertain ? { note: "The provider did not confirm startup. The owned child may still be working and remains visible with its slot reserved. Collect it or Stop it; do not spawn a duplicate based on this uncertainty." } : {}),
       ...(!startUncertain ? { note: "The child runs in this thread's workspace under the same permission policy. Use collect_agent to read its result." } : {}),
       ...(cutoffNote ? { note: cutoffNote } : {}),
+      ...parentFollowUpFor(linksIncludingPending(contextRef.current.links)[childThreadId] ?? link),
     };
-  }, [linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, releaseSlot, reservedChildCount, rootRunStopped, settleManagedCutoff, updateLink]);
-
-  /** Follow-up guidance for this child is queued or starting, not yet delivered. */
-  const followUpPending = useCallback((childThreadId: string): boolean => (
-    followUpsInFlightRef.current.has(childThreadId)
-    || Boolean(getChildMailbox(childThreadId)?.messages.some((message) => message.direction === "toChild"
-      && (message.state === "queued" || message.state === "delivering")))
-  ), []);
+  }, [linksIncludingPending, managedCutoffGuard, notifyModeLockChanged, parentFollowUpFor, releaseSlot, reservedChildCount, rootRunStopped, settleManagedCutoff, updateLink]);
 
   /**
    * Whether Stop must ask the provider for a cutoff. An unconfirmed activation
@@ -1782,6 +1919,7 @@ export function useChildAgents(context: ChildAgentContext): {
           : "Guidance you sent failed or was cancelled. \"not_delivered\" entries never reached the child; \"uncertain\" ones may or may not have. Do not assume the child's result reflects them. They stay listed until you accept the work or a resend of the same text is delivered; the reviewToken already accounts for them. Use agent_status with childId and guidanceNextOffset as guidanceOffset to inspect later outcome pages.",
       } : {}),
       ...(error ? { error } : {}),
+      ...parentFollowUpFor(link, focused),
       ...(status === "failed" && !link.acceptedAt ? {
         retryable: true,
         recovery: link.signoff === "required"
@@ -1789,7 +1927,7 @@ export function useChildAgents(context: ChildAgentContext): {
           : "Inspect the error, then spawn a replacement with a corrected self-contained prompt or another approved destination. Collect it before finishing.",
       } : {}),
     };
-  }, [followUpPending, initialStartPending]);
+  }, [followUpPending, initialStartPending, parentFollowUpFor]);
 
   const reportStatus = useCallback((request: ChildAgentRequest): Record<string, unknown> => {
     const ctx = contextRef.current;
@@ -1849,6 +1987,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     return {
       children,
+      ...(!childId && children.some((child) => child.automaticFollowUp === false) ? { followUpNote: NO_FOLLOW_UP_LIST_NOTE } : {}),
       ...(rest.length ? { omittedChildren: rest.length, omittedByPhase, nextCursor: `p1:${offset + page.length}`,
         omittedNote: "More children follow. Pass nextCursor to agent_status for the next page, or childId to inspect one." } : {}),
       ...(offset ? { pageOffset: offset, pageNote: "Paging is by current attention order; children can move between pages as their state changes." } : {}),
@@ -1984,7 +2123,7 @@ export function useChildAgents(context: ChildAgentContext): {
             ...(siblings.length ? { siblingsNeedingResponse: siblings } : {}),
             note: pending
               ? "Your follow-up for this child is not running yet (it is starting or waiting for a free concurrency slot). Its previous result is unchanged. Collect again later; do not resend the message."
-              : "Still working. Call collect_agent again to keep waiting.",
+              : "Still working. Call collect_agent again to keep waiting. Check automaticFollowUp and followUpNote before relying on an automatic continuation.",
           };
         }
         if (!waiting) {
@@ -2025,7 +2164,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const status = taskStatusOf(childId);
     const lifecycle = childLifecycleForLink(current, status);
     if (status === "idle" && !current.terminalStatus) {
-      return { childId, status: lifecycle, phase: "unknown", result: "", note: "Still working. Call collect_agent again to keep waiting." };
+      return { childId, status: lifecycle, phase: "unknown", result: "", ...parentFollowUpFor(current), note: "Still working. Call collect_agent again to keep waiting." };
     }
     const reviewedToken = childReviewToken(current);
     const snapshotTask = useTaskStore.getState().tasks[childId];
@@ -2068,18 +2207,23 @@ export function useChildAgents(context: ChildAgentContext): {
       || reviewedToken !== childReviewToken(latestLink) || isChildActive(taskStatusOf(childId)) || followUpPending(childId)
       || contextRef.current.threadUnavailable?.(childId) || contextRef.current.threadUnavailable?.(current.rootThreadId);
     if (changed) {
-      return { ...(latestLink ? describeChild(latestLink, true) : { childId, phase: "unknown" }), result: "", superseded: true,
+      return { ...(latestLink ? describeChild(latestLink, true) : { childId, phase: "unknown", ...parentFollowUpReport("unknown", false) }), result: "", superseded: true,
         ...(settledMessages.length ? { messages: settledMessages.map(mailMessageForModel) } : {}),
         ...(settledUnreadRemaining ? { unreadRemaining: settledUnreadRemaining } : {}),
         note: current.signoff === "required"
           ? "The child's result changed while it was loading. Collect the current settled turn before accepting its work."
           : "The child's result changed while it was loading. Collect the current settled turn before using its result." };
     }
+    // Only this exact returned result counts as reviewed by the parent.
+    if (reviewedToken && current.collectedReviewToken !== reviewedToken) {
+      updateLink(childId, (latest) => ({ ...latest, collectedReviewToken: reviewedToken }));
+    }
     const { text, truncated } = truncateResult(storedText);
     const phase = childReviewPhase(current, status);
     const siblings = siblingsNeedingResponse(current);
     return {
-      ...describeChild(current, true),
+      // Report what remains after this read, not what it just satisfied.
+      ...describeChild(reviewedToken ? { ...current, collectedReviewToken: reviewedToken } : current, true),
       result: text,
       ...(siblings.length ? { siblingsNeedingResponse: siblings } : {}),
       ...(settledMessages.length ? { messages: settledMessages.map(mailMessageForModel) } : {}),
@@ -2099,7 +2243,7 @@ export function useChildAgents(context: ChildAgentContext): {
         nextStep: "This turn is finished and awaiting your review. Accept it with accept_agent when satisfied, or continue the same child with send_agent_message.",
       } : {}),
     };
-  }, [childObservationGuard, describeChild, followUpPending, linksIncludingPending, recoverCurrentChild, siblingsNeedingResponse]);
+  }, [childObservationGuard, describeChild, followUpPending, linksIncludingPending, parentFollowUpFor, recoverCurrentChild, siblingsNeedingResponse, updateLink]);
 
   /**
    * Stop exactly one child from the command center or the model bridge.
@@ -2792,6 +2936,7 @@ export function useChildAgents(context: ChildAgentContext): {
     const link = linksIncludingPending(ctx.links)[childId];
     if (!link || link.sessionId !== request.sessionId) throw new Error(`\`${childId}\` was not started from this thread.`);
     assertParentCollaboration(link, request.sessionId);
+    const reviewAssignment = parentReviewField(link.rootThreadId);
     const text = typeof request.arguments.message === "string" ? request.arguments.message : "";
     const replyTo = typeof request.arguments.replyTo === "string" && request.arguments.replyTo ? request.arguments.replyTo : undefined;
     const clientRequestId = typeof request.arguments.clientRequestId === "string" ? request.arguments.clientRequestId : undefined;
@@ -2823,6 +2968,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     const { message, duplicate } = queueMessageToChild(childId, current.rootThreadId, text, replyTo, clientRequestId);
     if (duplicate) return describeDelivery(childId, message.id, true);
+    updateLink(childId, (latest) => ({ ...latest, ...reviewAssignment }));
     recordParentActivity(current.rootThreadId, `child-guidance-${childId}-${message.id}`, `Message to sub-agent: ${current.title}`, message.text, childId, "sendInput", "agent", message.createdAt);
     const running = isChildActive(taskStatusOf(childId)) || recovery === "running";
     if (running) {
@@ -2842,7 +2988,7 @@ export function useChildAgents(context: ChildAgentContext): {
     }
     await startFollowUp(childId);
     return describeDelivery(childId, message.id, false);
-  }, [assertParentCollaboration, describeDelivery, linksIncludingPending, recordParentActivity, recoverCurrentChild, rootRunStopped, startFollowUp, steerPendingGuidance]);
+  }, [assertParentCollaboration, describeDelivery, linksIncludingPending, recordParentActivity, recoverCurrentChild, rootRunStopped, startFollowUp, steerPendingGuidance, updateLink]);
 
   /** Explicit sign-off by the parent model or by the user. */
   const acceptChild = useCallback(async (rootThreadId: string, childId: string, by: "parent" | "user", note?: string, expectedReviewToken?: string, request?: ChildAgentRequest): Promise<Record<string, unknown>> => {
@@ -2989,9 +3135,11 @@ export function useChildAgents(context: ChildAgentContext): {
       recordParentActivity(owner.rootThreadId, `child-message-${owner.childId}-${message.id}`,
         `${kind === "question" ? "Question" : "Update"} from sub-agent: ${title}`, message.text, owner.childId, "status", "agent", message.createdAt);
     }
-    // A child message never starts a parent turn. A working parent reads it
-    // through agent_status/collect_agent; otherwise it waits, visible to the user.
+    // A child message starts a parent turn only inside a run Mythra Code is
+    // following. A working parent reads it through agent_status/collect_agent;
+    // otherwise it waits, visible to the user.
     const parentWorking = isChildActive(taskStatusOf(owner.rootThreadId));
+    const parentFollowed = parentResumeTracked(owner.rootThreadId, owner.link?.reviewRunId);
     return {
       messageId: message.id,
       kind,
@@ -3000,7 +3148,9 @@ export function useChildAgents(context: ChildAgentContext): {
       parentWorking,
       note: duplicate ? "This earlier message remains in bounded mailbox history; its current state is returned. This retry did not send a new message." : parentWorking
         ? "Stored in your parent's mailbox. The parent is working and reads it through its own tools; this is not an instant reply. Keep working when you can."
-        : "Stored in your parent's mailbox and shown to the user. The parent is not running a turn now, so it reads this only when it next works. Continue with what you can, or end your turn with a clear summary of what you need.",
+        : parentFollowed
+          ? "Stored in your parent's mailbox and shown to the user. Mythra Code is currently following the parent and can continue it for a new question or when the followed work is ready for review, provided the run stays open and continuation checks pass. Continue with what you can, or end your turn with a clear summary of what you need."
+          : "Stored in your parent's mailbox and shown to the user. The parent is not running a turn now, so it reads this only when it next works. Continue with what you can, or end your turn with a clear summary of what you need.",
     };
   }, [assertChildMailboxOpen, childOwnerForSession, recordParentActivity]);
 
@@ -3732,6 +3882,183 @@ export function useChildAgents(context: ChildAgentContext): {
     return () => { disposed = true; };
   }, [linksIncludingPending, recoverCurrentChild, updateLink]);
 
+  const parentRunObligations = useCallback((run: ParentRun): ParentObligation[] => {
+    const links = linksIncludingPending(contextRef.current.links);
+    const obligations: ParentObligation[] = Object.values(links)
+      .filter((link) => {
+        const takeover = explicitStartsRef.current.get(link.childThreadId);
+        // Pre-dispatch takeover can still roll back. Keep the old run alive
+        // until admission settles, so its exact restored obligation can count.
+        const takingOver = Boolean(takeover && takeover.before.reviewRunId === run.id && takeover.attemptId === link.manualAttemptId);
+        return link.rootThreadId === run.rootThreadId && (link.reviewRunId === run.id || takingOver)
+          && link.childThreadId !== run.rootThreadId;
+      })
+      .map(parentObligationFor);
+    for (const [reservation, pending] of pendingParentSpawnsRef.current) {
+      if (pending.rootThreadId !== run.rootThreadId || pending.reviewRunId !== run.id) continue;
+      obligations.push({
+        childId: reservation, title: decodeHtmlEntities(pending.title), accepted: false, acceptedByUser: false, userStopped: false,
+        working: true, lifecycle: "starting", signoffRequired: false, openQuestions: [], resultRevision: 0, followUps: 0,
+        state: "working", pendingStart: true,
+      });
+    }
+    return obligations;
+  }, [linksIncludingPending, parentObligationFor]);
+
+  // Inside the store transaction that completes a turn: read only.
+  useEffect(() => {
+    setRootTurnEndResolver((run, end) => parentRunAtTurnEnd(run, { ...end, obligations: parentRunObligations(run) }));
+    setPausedRunFollowUpResolver((run) => pausedRunFollowsTypedTurn(run, parentRunObligations(run)));
+    return () => {
+      setRootTurnEndResolver(null);
+      setPausedRunFollowUpResolver(null);
+    };
+  }, [parentRunObligations]);
+
+  const parentRunDecision = useCallback((run: ParentRun, obligations: readonly ParentObligation[]) => {
+    const ctx = contextRef.current;
+    const state = useTaskStore.getState();
+    const root = run.rootThreadId;
+    const task = state.tasks[root];
+    const status = state.statuses[root] ?? "idle";
+    const head = eligibleQueuedTurns(task?.queuedTurns ?? [])[0];
+    return decideParentRun(run, {
+      obligations,
+      rootActive: isChildActive(status),
+      rootStopped: status === "error" || status === "interrupted",
+      workflowOwned: Boolean(state.workflowOwners[root]),
+      unavailable: Boolean(ctx.threadUnavailable?.(root) || ctx.threadBusy?.(root)),
+      approvalChildren: obligations.filter((entry) => state.tasks[entry.childId]?.approvals.length).map((entry) => entry.childId),
+      folderBusy: Boolean(ctx.parentRunFolderBusy?.(root)),
+      queue: !head ? "none" : head.status === "failed" || head.editing ? "held" : "pending",
+      hasDelivery: Boolean(ctx.resumeParentTurn && ctx.hasParentRunDelivery?.(root)),
+      hydrated: Boolean(task?.messages.some((message) => message.role === "assistant")),
+    });
+  }, []);
+
+  const parentRunEvaluationRef = useRef<() => void>(() => undefined);
+  const parentEvaluationQueuedRef = useRef(false);
+  /** Roots between a resume decision and the end of its start. */
+  const resumingParentsRef = useRef(new Set<string>());
+  /** Each unconfirmed activation gets one recovery; later evidence arrives as events. */
+  const recoveredObligationsRef = useRef(new Set<string>());
+  /** One microtask for any burst of events. There are no timers in this feature. */
+  const scheduleParentEvaluation = useCallback(() => {
+    if (!lifecycleRef.current.mounted || parentEvaluationQueuedRef.current) return;
+    const generation = lifecycleRef.current.generation;
+    parentEvaluationQueuedRef.current = true;
+    queueMicrotask(() => {
+      parentEvaluationQueuedRef.current = false;
+      if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== generation) return;
+      parentRunEvaluationRef.current();
+    });
+  }, []);
+  parentEvidenceChangedRef.current = scheduleParentEvaluation;
+
+  const resumeParentRun = useCallback(async (run: ParentRun): Promise<void> => {
+    const root = run.rootThreadId;
+    if (resumingParentsRef.current.has(root)) return;
+    const rendererGeneration = lifecycleRef.current.generation;
+    resumingParentsRef.current.add(root);
+    try {
+      const ctx = contextRef.current;
+      let difference: string | null;
+      try {
+        difference = ctx.probeParentExecution ? await ctx.probeParentExecution(run) : "execution";
+      } catch {
+        // A failed read proves nothing about the account, so it says only that.
+        difference = PARENT_EXECUTION_UNCONFIRMED;
+      }
+      const latest = useTaskStore.getState().parentRuns[root];
+      if (!lifecycleRef.current.mounted || lifecycleRef.current.generation !== rendererGeneration
+        || !latest || latest.id !== run.id || latest.phase !== "waiting") return;
+      // A user turn can start and finish while the probe awaits, keeping the
+      // coordination ID but replacing its authorized execution. Probe that
+      // new capture on the next evaluation rather than applying stale proof.
+      if (latest.execution !== run.execution || latest.ownerRunId !== run.ownerRunId) return;
+      if (difference) {
+        const detail = difference;
+        useTaskStore.getState().updateParentRun(root, (entry) => entry?.id === run.id && entry.phase === "waiting"
+          ? pausedParentRun(entry, "execution_changed", detail) : entry);
+        return;
+      }
+      // Decide again with no await before the reservation in resumeParentTurn.
+      const obligations = parentRunObligations(latest);
+      if (parentRunDecision(latest, obligations).kind !== "resume") return;
+      await ctx.resumeParentTurn?.({
+        threadId: root,
+        notice: buildParentNotice(crypto.randomUUID(), obligations),
+        progress: parentRunProgress(obligations),
+        wokenQuestions: wokenParentQuestions(obligations),
+      });
+    } finally {
+      resumingParentsRef.current.delete(root);
+      scheduleParentEvaluation();
+    }
+  }, [parentRunDecision, parentRunObligations, scheduleParentEvaluation]);
+
+  parentRunEvaluationRef.current = () => {
+    const store = useTaskStore.getState();
+    for (const run of Object.values(store.parentRuns)) {
+      const root = run.rootThreadId;
+      const obligations = parentRunObligations(run);
+      if (run.phase === "waiting") {
+        const links = linksIncludingPending(contextRef.current.links);
+        for (const obligation of obligations) {
+          const link = links[obligation.childId];
+          if (obligation.state !== "unknown" || !link) continue;
+          const key = `${link.childThreadId}:${link.activationId ?? ""}:${link.resultRevision ?? 0}`;
+          if (recoveredObligationsRef.current.has(key)) continue;
+          recoveredObligationsRef.current.add(key);
+          void recoverCurrentChild(link).catch(() => null).finally(() => {
+            reconcileChildrenRef.current();
+            scheduleParentEvaluation();
+          });
+        }
+      }
+      if (resumingParentsRef.current.has(root)) continue;
+      const decision = parentRunDecision(run, obligations);
+      if (decision.kind === "clear") store.updateParentRun(root, (entry) => entry?.id === run.id ? null : entry);
+      else if (decision.kind === "pause") store.updateParentRun(root, (entry) => entry?.id === run.id ? pausedParentRun(entry, decision.reason) : entry);
+      else if (decision.kind === "resume") void resumeParentRun(run);
+    }
+  };
+
+  const continueParentRun = useCallback(async (rootThreadId: string): Promise<void> => {
+    const state = useTaskStore.getState();
+    const run = state.parentRuns[rootThreadId];
+    if (!run || run.phase !== "paused" || resumingParentsRef.current.has(rootThreadId)) return;
+    // Without its history a provider would begin a new session, not continue this one.
+    if (!state.tasks[rootThreadId]?.messages.some((message) => message.role === "assistant")) {
+      throw new Error("This conversation's history is still loading. Try again in a moment.");
+    }
+    if (eligibleQueuedTurns(state.tasks[rootThreadId]?.queuedTurns ?? []).length) {
+      throw new Error("Send or remove the queued messages first. They run before the parent continues.");
+    }
+    resumingParentsRef.current.add(rootThreadId);
+    try {
+      const obligations = parentRunObligations(run);
+      await contextRef.current.resumeParentTurn?.({
+        threadId: rootThreadId,
+        notice: buildParentNotice(crypto.randomUUID(), obligations),
+        progress: parentRunProgress(obligations),
+        wokenQuestions: wokenParentQuestions(obligations),
+        explicit: true,
+      });
+    } finally {
+      resumingParentsRef.current.delete(rootThreadId);
+      scheduleParentEvaluation();
+    }
+  }, [parentRunObligations, scheduleParentEvaluation]);
+
+  useEffect(() => useTaskStore.subscribe((state, previous) => {
+    if (state.statuses === previous.statuses && state.parentRuns === previous.parentRuns && state.queueRevision === previous.queueRevision
+      && state.workflowOwners === previous.workflowOwners && state.approvalQueryToken === previous.approvalQueryToken) return;
+    if (Object.keys(state.parentRuns).length) scheduleParentEvaluation();
+  }), [scheduleParentEvaluation]);
+  useEffect(() => subscribeChildMailboxes(scheduleParentEvaluation), [scheduleParentEvaluation]);
+  useEffect(scheduleParentEvaluation, [context.links, context.policies, context.parentRunEnvironmentRevision, scheduleParentEvaluation]);
+
   const retryChildAgentGuidance = useCallback((threadId: string): void => {
     const sessions = new Set(Object.values(linksIncludingPending(contextRef.current.links))
       .filter((link) => link.rootThreadId === threadId || link.childThreadId === threadId).map((link) => link.sessionId));
@@ -3951,8 +4278,8 @@ export function useChildAgents(context: ChildAgentContext): {
   }, [captureChildStopFrontier, childNeedsCutoff, childObservationGuard, invalidateChildAgentGuidance, linksIncludingPending, managedCutoffGuard, persistNativeSettlement, rootRunStopped, settleManagedCutoff, updateLink]);
 
   return {
-    acceptChildAgent, cancelChildAgentsFor, captureChildStopFrontier, getManagedSubagentV2LockedReason,
-    hasChildStartInFlight, invalidateChildAgentGuidance, managedSubagentV2LockRevision,
+    acceptChildAgent, cancelChildAgentsFor, captureChildStopFrontier, continueParentRun, getManagedSubagentV2LockedReason,
+    parentRunObligations, hasChildStartInFlight, invalidateChildAgentGuidance, managedSubagentV2LockRevision,
     noteExplicitChildStart, respondToSettingsProposal, retryChildAgentGuidance, settleExplicitChildStart, stopChildAgent,
   };
 }

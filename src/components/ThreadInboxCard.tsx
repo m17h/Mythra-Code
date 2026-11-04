@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useTaskStore } from "../lib/taskStore";
 import { workerStatusFromAgentRecord } from "../lib/subAgentActivity";
+import type { ParentRunPhase } from "../lib/parentRun";
 import type { PullRequest } from "../lib/pullRequests";
 import type { Provider } from "../types";
 import { ThreadTitle } from "./ThreadTitle";
@@ -88,6 +89,9 @@ function ThreadInboxStatus({ threadId, id, active }: { threadId: string; id: str
   const startedAt = useTaskStore((state) => state.tasks[threadId]?.workingStartedAt);
   const approvalCount = useTaskStore((state) => state.tasks[threadId]?.approvals.length ?? 0);
   const unread = useTaskStore((state) => Boolean(state.tasks[threadId]?.unread));
+  const parentPhase = useTaskStore((state) => state.parentRuns[threadId]?.phase);
+  const uncertainStart = useTaskStore((state) => state.statuses[threadId] === "starting"
+    && state.parentRuns[threadId]?.phase === "paused" && state.parentRuns[threadId]?.pause?.reason === "start_uncertain");
 
   if (approvalCount > 0) {
     return (
@@ -95,6 +99,9 @@ function ThreadInboxStatus({ threadId, id, active }: { threadId: string; id: str
         Needs approval
       </span>
     );
+  }
+  if (uncertainStart) {
+    return <span id={id} className="thread-card-status approval" role="status">Status unknown</span>;
   }
   if (status === "starting" || status === "running") {
     return (
@@ -104,6 +111,12 @@ function ThreadInboxStatus({ threadId, id, active }: { threadId: string; id: str
         {status === "running" && startedAt !== undefined && <WorkingDuration startedAt={startedAt} active={active} />}
       </span>
     );
+  }
+  if (parentPhase === "waiting") {
+    return <span id={id} className="thread-card-status" role="status">Waiting</span>;
+  }
+  if (parentPhase === "paused") {
+    return <span id={id} className="thread-card-status approval" role="status">Needs input</span>;
   }
   if (status === "error") {
     return <span id={id} className="thread-card-status error" role="status">Failed</span>;
@@ -184,9 +197,12 @@ interface ThreadInboxCardProps {
 /** Lifecycle class for the card shell: `live` breathes in the provider's
  * accent while a task runs, `settled` replays the completion sweep when a
  * turn finishes with unread output. */
-function threadCardLifecycle(status: string, unread: boolean, approvals: number): string {
+function threadCardLifecycle(status: string, unread: boolean, approvals: number, parentPhase?: ParentRunPhase, uncertainStart = false): string {
   if (approvals > 0) return "attention";
+  if (uncertainStart) return "attention";
   if (status === "starting" || status === "running") return "live";
+  if (parentPhase === "paused") return "attention";
+  if (parentPhase === "waiting") return "waiting";
   if (status === "error") return "faulted";
   if (unread) return "settled";
   return "";
@@ -233,6 +249,9 @@ export const ThreadInboxCard = memo(function ThreadInboxCard({
     state.statuses[threadId] ?? "idle",
     Boolean(state.tasks[threadId]?.unread),
     state.tasks[threadId]?.approvals.length ?? 0,
+    state.parentRuns[threadId]?.phase,
+    state.statuses[threadId] === "starting" && state.parentRuns[threadId]?.phase === "paused"
+      && state.parentRuns[threadId]?.pause?.reason === "start_uncertain",
   ));
   const lifecycle = pendingStatus ? "live" : storedLifecycle;
   // A labelled button hides its own contents from a screen reader, so the pill

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { annotateThreadUsage, usageForThread } from "./usageLedger";
 import { LM_STUDIO_RUNTIME_PROVIDER_ID } from "./providerIds";
+import { changeProviderAuth } from "./providerAuth";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -93,7 +94,7 @@ export async function onCodexEvent(handler: (event: CodexEvent) => void): Promis
 }
 
 export async function saveOpenRouterKey(apiKey: string): Promise<void> {
-  await invoke("save_openrouter_key", { apiKey });
+  await changeProviderAuth("openrouter", () => invoke("save_openrouter_key", { apiKey }));
 }
 
 export async function hasOpenRouterKey(): Promise<boolean> {
@@ -122,7 +123,7 @@ export async function fetchOpenRouterModel<T>(slug: string): Promise<T> {
 }
 
 export async function saveLmStudioKey(apiKey: string): Promise<void> {
-  await invoke("save_lmstudio_key", { apiKey });
+  await changeProviderAuth("lmstudio", () => invoke("save_lmstudio_key", { apiKey }));
 }
 
 export async function hasLmStudioKey(): Promise<boolean> {

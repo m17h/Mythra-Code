@@ -13,6 +13,7 @@ import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_HISTORY_KEY, USAGE_LEDGER_KEY } from "./usageLedger";
 import { loadStored, removeStoredValue, storeValue } from "./storage";
+import { parentRunAtRunStart, sanitizeStoredParentRuns, type ParentRun } from "./parentRun";
 import { EMPTY_THREAD_HISTORY, type ThreadHistoryState } from "./threadHistory";
 import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntimePerformanceTurn, recordStreamingDelta, recordStreamingFlush, resetRuntimePerformanceDiagnostics } from "./runtimePerformanceBridge";
 
@@ -51,6 +52,7 @@ export interface QueuedTurn {
 }
 
 const QUEUED_TURNS_KEY = "kiwi.queuedTurns";
+const PARENT_RUNS_KEY = "kiwi.parentRuns";
 
 /**
  * Rebuild the durable queue from storage. Anything that cannot be delivered
@@ -139,6 +141,75 @@ function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
   storeValue(QUEUED_TURNS_KEY, queuedTurnsCache);
 }
 
+function loadParentRuns(): Record<string, ParentRun> {
+  return sanitizeStoredParentRuns(loadStored<unknown>(PARENT_RUNS_KEY, {}));
+}
+
+export interface RootTurnEnd {
+  status: TaskStatus;
+  completedTurnId?: string;
+  agentRunId?: string;
+}
+
+/**
+ * Child ownership lives in the sub-agent hook. The store calls this inside the
+ * transaction that completes a turn, so every subscriber sees the new status
+ * and the run's outcome together. It must only read and must not touch the store.
+ */
+export type RootTurnEndResolver = (run: ParentRun, end: RootTurnEnd) => ParentRun | null;
+let rootTurnEndResolver: RootTurnEndResolver | null = null;
+
+export function setRootTurnEndResolver(resolver: RootTurnEndResolver | null): void {
+  rootTurnEndResolver = resolver;
+}
+
+/**
+ * Whether a typed message keeps this paused run, from current child evidence.
+ * Like the turn-end resolver it runs inside the store transaction, so the check
+ * and the write cannot be separated by anything else. It must only read.
+ */
+export type PausedRunFollowUpResolver = (run: ParentRun) => boolean;
+let pausedRunFollowUpResolver: PausedRunFollowUpResolver | null = null;
+
+export function setPausedRunFollowUpResolver(resolver: PausedRunFollowUpResolver | null): void {
+  pausedRunFollowUpResolver = resolver;
+}
+
+function withParentRun(runs: Record<string, ParentRun>, threadId: string, next: ParentRun | null | undefined): Record<string, ParentRun> {
+  if ((next ?? undefined) === runs[threadId]) return runs;
+  const updated = { ...runs };
+  if (next) updated[threadId] = next;
+  else delete updated[threadId];
+  // Automatic delivery authority belongs only to this renderer session. Keep
+  // the durable record useful for recovery without writing that authority.
+  storeValue(PARENT_RUNS_KEY, Object.fromEntries(Object.entries(updated).map(([id, run]) => {
+    const { autoResume: _autoResume, ...durable } = run;
+    return [id, durable];
+  })));
+  return updated;
+}
+
+/** Increments whenever the user ends a run, so a slower failure cannot restore it. */
+const parentRunStopEpochs = new Map<string, number>();
+
+export function parentRunStopEpoch(threadId: string): number {
+  return parentRunStopEpochs.get(threadId) ?? 0;
+}
+
+export type ParentRunRetirement = "stop" | "dont_continue" | "dismiss" | "conversation_removed";
+
+/**
+ * Why `stopParentRun` is ending a run, for the diagnostics subscriber that
+ * observes the deletion. Held only for the duration of that store update.
+ */
+const parentRunRetirements = new Map<string, ParentRunRetirement>();
+
+export function takeParentRunRetirement(threadId: string): ParentRunRetirement | undefined {
+  const retirement = parentRunRetirements.get(threadId);
+  parentRunRetirements.delete(threadId);
+  return retirement;
+}
+
 /** Timed entries still waiting for their time, across loaded and restored threads. */
 export function storedPendingTimedTurns(): QueuedTurn[] {
   const result: QueuedTurn[] = [];
@@ -183,6 +254,8 @@ export interface ThreadTaskState {
   /** Only child activity created at or after this root turn belongs in the
    * live crew panel. A new user prompt advances this boundary. */
   agentRunStartedAt?: number;
+  /** Stable identity of that root run; two runs never share one. */
+  agentRunId?: string;
   /**
    * What the Review panel shows for this thread, including where it came from
    * and what it is taken against. Typed so no other surface can drop an
@@ -248,6 +321,11 @@ interface TaskStoreState {
   /** A workflow owns its thread across turns and command steps, including idle gaps. */
   workflowOwners: Record<string, WorkflowThreadOwner>;
   setWorkflowOwner: (threadId: string, owner: WorkflowThreadOwner | null) => void;
+  /** Open managed parent runs by root thread. Absent for almost every thread. */
+  parentRuns: Record<string, ParentRun>;
+  updateParentRun: (threadId: string, update: (run: ParentRun | undefined) => ParentRun | null | undefined) => void;
+  /** The user ended this run: nothing may start for it afterwards. */
+  stopParentRun: (threadId: string, retirement: ParentRunRetirement) => void;
   setActiveThread: (threadId: string | null) => void;
   ensureTask: (threadId: string, workspacePath?: string) => void;
   hydrateTask: (threadId: string, messages: ChatMessage[], activities: Activity[], workspacePath?: string, history?: ThreadHistoryState, readBoundary?: HistoryReadBoundary, options?: HistoryHydrationOptions) => void;
@@ -274,7 +352,8 @@ interface TaskStoreState {
   setUsage: (threadId: string, usage: TokenUsageView | null, turnId?: string) => void;
   addUsage: (threadId: string, usage: TokenUsageView, eventId?: string, turnId?: string) => void;
   upsertAgent: (threadId: string, agent: AgentRecord) => void;
-  beginAgentRun: (threadId: string, startedAt?: number) => void;
+  /** `typedFollowUp` means the user typed this turn, not the queue or a feature. */
+  beginAgentRun: (threadId: string, startedAt?: number, parentDispatchId?: string, typedFollowUp?: boolean) => void;
   enqueueApproval: (approval: PendingApproval) => void;
   resolveApproval: (threadId: string, approvalId: string | number) => void;
   clearApprovals: (threadId: string) => void;
@@ -661,6 +740,9 @@ function evictColdTranscripts(
       && state.statuses[task.threadId] !== "starting"
       && state.statuses[task.threadId] !== "running"
       && !state.workflowOwners[task.threadId]
+      // An automatic continuation needs this history: a provider cannot resume
+      // from a task whose transcript has been released.
+      && !state.parentRuns[task.threadId]?.autoResume
       && task.approvals.length === 0
       && task.queuedTurns.length === 0
       && !task.transcriptDirty
@@ -788,6 +870,23 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
   statuses: {},
   workflowOwners: {},
   queueRevision: 0,
+  parentRuns: loadParentRuns(),
+  updateParentRun: (threadId, update) => set((state) => {
+    const parentRuns = withParentRun(state.parentRuns, threadId, update(state.parentRuns[threadId]));
+    return parentRuns === state.parentRuns ? state : { parentRuns };
+  }),
+  stopParentRun: (threadId, retirement) => {
+    parentRunStopEpochs.set(threadId, parentRunStopEpoch(threadId) + 1);
+    parentRunRetirements.set(threadId, retirement);
+    try {
+      set((state) => {
+        const parentRuns = withParentRun(state.parentRuns, threadId, null);
+        return parentRuns === state.parentRuns ? state : { parentRuns };
+      });
+    } finally {
+      parentRunRetirements.delete(threadId);
+    }
+  },
   setWorkflowOwner: (threadId, owner) => set((state) => {
     const existing = state.workflowOwners[threadId];
     if (owner && existing?.runId === owner.runId && existing.workflowId === owner.workflowId) return state;
@@ -1093,6 +1192,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       const previous = task.messages[echoedIndex];
       const messages = [...task.messages];
       messages[echoedIndex] = { ...previous, text: candidate.text, attachments: candidate.attachments, clientMessageId: candidate.id,
+        ...(candidate.provenance ? { provenance: candidate.provenance } : {}),
         steerStatus: previous.steerStatus === "read" ? "read" : candidate.steerStatus ?? previous.steerStatus,
         steerRuntimeId: candidate.steerRuntimeId ?? previous.steerRuntimeId,
         skillReferences: candidate.skillReferences ?? previous.skillReferences, skillsFolder: candidate.skillsFolder ?? previous.skillsFolder,
@@ -1546,6 +1646,11 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     // A completion without a freshly identified child turn is not evidence
     // that a follow-up stopped. Hard runtime/process cutoffs use no turn ID.
     if (turnId && (previousTask?.pendingNativeActivationId || previousTask?.retiredNativeTurnIds?.includes(turnId))) return false;
+    // Codex can replay the previous completion before a replacement start has
+    // acknowledged its turn ID. Seal that historical row without ending the
+    // new preparation or letting its old event own the current run.
+    preserveThreadState ||= Boolean(turnId && previousTask?.status === "starting"
+      && !previousTask.activeTurnId && previousTask.lastCompletedTurnId === turnId);
     // A local provider may own a replacement start before its native turn ID
     // is acknowledged. Its predecessor may seal history without ending that
     // pending start or clearing its timing, prompts, and approvals.
@@ -1565,7 +1670,9 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const completedTurnId = turnId ?? task.activeTurnId;
-    const newerTurnActive = preserveThreadState || Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
+    const preserveCurrentThreadState = preserveThreadState || Boolean(turnId && task.status === "starting"
+      && !task.activeTurnId && task.lastCompletedTurnId === turnId);
+    const newerTurnActive = preserveCurrentThreadState || Boolean(task.activeTurnId && turnId && task.activeTurnId !== turnId);
     const threadStatus = newerTurnActive ? task.status : status;
     const turnStatus = completedTurnStatus(status);
     const elapsedMs = task.workingStartedAt !== undefined
@@ -1673,7 +1780,12 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     }
     const approvals = task.approvals.filter((approval) => approval.method.startsWith("openkiwi/")
       || (newerTurnActive && approval.params.turnId !== completedTurnId));
+    const parentRun = newerTurnActive ? undefined : state.parentRuns[threadId];
+    const parentRuns = parentRun && rootTurnEndResolver
+      ? withParentRun(state.parentRuns, threadId, rootTurnEndResolver(parentRun, { status, completedTurnId, agentRunId: task.agentRunId }))
+      : state.parentRuns;
     return {
+      parentRuns,
       tasks: {
         ...state.tasks,
         ...parentUpdates,
@@ -1701,8 +1813,8 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           // workflow waiters key off it and would otherwise idle out.
           // An explicitly historical completion cannot replace the scheduler's
           // newest receipt (including the completed-before-start-ack guard).
-          lastCompletedTurnId: preserveThreadState ? task.lastCompletedTurnId : completedTurnId ?? task.lastCompletedTurnId,
-          lastCompletedTurnStatus: preserveThreadState ? task.lastCompletedTurnStatus : completedTurnId ? status : task.lastCompletedTurnStatus,
+          lastCompletedTurnId: preserveCurrentThreadState ? task.lastCompletedTurnId : completedTurnId ?? task.lastCompletedTurnId,
+          lastCompletedTurnStatus: preserveCurrentThreadState ? task.lastCompletedTurnStatus : completedTurnId ? status : task.lastCompletedTurnStatus,
           status: threadStatus,
           unread: state.activeThreadId !== threadId && threadStatus === "completed" ? true : task.unread,
           updatedAt: Date.now(),
@@ -1760,7 +1872,21 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
           return settled;
         })
       : task.activities;
+    // Health reconciliation and provider exits can finish a run without a
+    // turn/completed event. Resolve in this transaction too: a subscriber must
+    // never observe completion before the delegated-work outcome. The active
+    // turn is this end's identity; the last completed turn belongs to earlier
+    // work and cannot stand in for a continuation that has just stopped.
+    const parentRun = wasWorking && !isWorking
+      && (status === "completed" || status === "error" || status === "interrupted")
+      ? state.parentRuns[threadId] : undefined;
+    const parentRuns = parentRun && rootTurnEndResolver
+      ? withParentRun(state.parentRuns, threadId, rootTurnEndResolver(parentRun, {
+          status, completedTurnId: task.activeTurnId, agentRunId: task.agentRunId,
+        }))
+      : state.parentRuns;
     return {
+      parentRuns,
       tasks: {
         ...state.tasks,
         [threadId]: {
@@ -1815,13 +1941,17 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     }) : [...task.agents, agent];
     return { tasks: { ...state.tasks, [threadId]: { ...task, agents, updatedAt: Date.now() } } };
   }),
-  beginAgentRun: (threadId, startedAt = Date.now()) => set((state) => {
+  beginAgentRun: (threadId, startedAt = Date.now(), parentDispatchId, typedFollowUp = false) => set((state) => {
     const task = state.tasks[threadId] ?? emptyTask(threadId);
     const activeAgents = task.agents.filter((agent) => isActiveAgentRecord(agent.status));
+    const agentRunId = crypto.randomUUID();
+    const parentRun = state.parentRuns[threadId];
+    const keepPaused = Boolean(typedFollowUp && !parentDispatchId && parentRun && pausedRunFollowUpResolver?.(parentRun));
     return {
+      parentRuns: parentRun ? withParentRun(state.parentRuns, threadId, parentRunAtRunStart(parentRun, agentRunId, parentDispatchId, keepPaused)) : state.parentRuns,
       tasks: {
         ...state.tasks,
-        [threadId]: { ...task, agents: activeAgents, agentRunStartedAt: startedAt, updatedAt: Date.now() },
+        [threadId]: { ...task, agents: activeAgents, agentRunStartedAt: startedAt, agentRunId, updatedAt: Date.now() },
       },
     };
   }),
@@ -1995,7 +2125,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       delete statuses[threadId];
       delete workflowOwners[threadId];
       persistQueuedTurns(threadId, []);
-      return { tasks, statuses, workflowOwners, approvalQueryToken: state.tasks[threadId]?.approvals.length ? {} : state.approvalQueryToken, queueRevision: state.queueRevision + 1, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
+      return { tasks, statuses, workflowOwners, parentRuns: withParentRun(state.parentRuns, threadId, null), approvalQueryToken: state.tasks[threadId]?.approvals.length ? {} : state.approvalQueryToken, queueRevision: state.queueRevision + 1, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId };
     });
   },
 }));
@@ -2017,5 +2147,10 @@ export function resetTaskStore(): void {
   transcriptCacheHighWaterBytes = DEFAULT_TRANSCRIPT_CACHE_HIGH_WATER_BYTES;
   transcriptCacheLowWaterBytes = DEFAULT_TRANSCRIPT_CACHE_LOW_WATER_BYTES;
   removeStoredValue(QUEUED_TURNS_KEY);
-  useTaskStore.setState({ activeThreadId: null, tasks: {}, approvalQueryToken: {}, statuses: {}, workflowOwners: {}, queueRevision: 0 });
+  removeStoredValue(PARENT_RUNS_KEY);
+  parentRunStopEpochs.clear();
+  parentRunRetirements.clear();
+  rootTurnEndResolver = null;
+  pausedRunFollowUpResolver = null;
+  useTaskStore.setState({ activeThreadId: null, tasks: {}, approvalQueryToken: {}, statuses: {}, workflowOwners: {}, parentRuns: {}, queueRevision: 0 });
 }

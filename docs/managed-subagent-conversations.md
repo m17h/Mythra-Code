@@ -99,9 +99,10 @@ payload with that key is refused. An intentional new instruction uses a fresh
 key, even if its wording is identical. This is bounded-history deduplication,
 not a promise of exactly-once provider execution across failures or forever.
 
-A child message does not automatically start a stopped or idle parent turn.
-It stays visible for the parent's next turn and in the sub-agent details.
-This prevents unexpected model usage.
+A child message starts an idle parent turn only inside a parent run Mythra Code
+is following (see "Following delegated work"). Otherwise it stays visible for
+the parent's next turn and in the sub-agent details, which prevents unexpected
+model usage. Any new question wakes a followed parent once.
 
 While the parent waits in `collect_agent` for one child, a new question from
 another child ends that wait early, once per question. `agent_status` lists
@@ -125,11 +126,161 @@ ends without a turn of its own never presents the previous turn's text as its
 result.
 Users can also explicitly accept work from the sub-agent command center.
 
-Automatic archiving waits for acceptance and for all relevant work to settle.
+Automatic archiving waits for acceptance, for all relevant work to settle, and
+for any parent run following the child to close.
 Parent turn completion alone is not acceptance. Accepted assignments are closed
 to parent follow-ups; new assignments use new children. Users may still open
 and continue a child conversation themselves, which clears its previous signoff.
 Historical children created before this feature retain their old cleanup policy.
+
+## Following delegated work
+
+A parent's model can end its turn while its children still work. A turn that
+started with the Mythra crew available is followed: Mythra Code records a parent
+run before any provider request, and that record decides what happens when the
+turn ends. The model's words are never read, and no timer is involved.
+
+- **Waiting.** If a child is unfinished, the turn shows as waiting rather than
+  completed. No provider process stays alive and no model usage occurs. Servers,
+  watchers and other shell work are not part of this and never hold it open.
+  The sidebar also shows **Waiting**, or **Needs input** when the run pauses,
+  instead of labelling the parent **Done**.
+- **Continuing.** When every assigned child has settled, or one asks a question,
+  one visible continuation turn starts in the same conversation. A generated
+  notice names the children and their states. It never contains child output:
+  results still come through `collect_agent`.
+- **Finishing.** The run completes when every assigned child is reviewed. V1 work
+  needs its exact result collected. Successful V2 work needs that result signed
+  off with `accept_agent`. Failed or parent-cancelled V2 work needs its exact
+  result collected, not accepted. A child the user stopped no longer holds the
+  run and is never restarted automatically. A child the user accepted in the
+  crew panel is settled: if the parent already read that result nothing further
+  runs, and if it never did, it is continued so its answer reflects the result.
+
+Automatic continuation is bounded to eight per user request, and a user turn
+during the wait does not reset that. It pauses, naming the reason, if a
+continuation ends with no progress, the parent turn fails, a provider refuses the
+start, or the limit is reached. **Continue with** uses the current model and
+account and grants a fresh limit; **Dismiss** leaves the children in the crew
+panel.
+
+**Typing into a paused conversation.** A message the user types into the
+conversation while one of the run's children is genuinely still working keeps
+that run: the same children stay followed, the turn recaptures the execution
+identity, and the limit is not reset. Typing is the user acting here, and a
+message sent during a wait already behaves this way. The message can be an
+ordinary send, a steer that arrived after the turn ended, or an answer to the
+parent's question. The kept run stays paused if that turn has no crew.
+
+Otherwise a new prompt while paused retires the run, so nothing attaches to later
+work. That covers runs with only settled children, a loaded run after a restart
+and a start that could not be confirmed. Children the user stopped, accepted or
+took over do not count as working. Preparing or unconfirmed child starts alone
+do not keep a paused run. Queued, timed and generated prompts never keep a run:
+they are not the user answering this pause, so they cannot restore automatic work.
+Each of them retires a paused run as before.
+
+**Stop**, **Dismiss** and **Don't auto-continue** end the run. A later message does
+not bring it back, and reading a child never does either. A child is followed
+again only if the parent gives it more work in a later turn with
+`send_agent_message`.
+
+What the parent is told matches this. `spawn_mythra_agent`, `agent_status` and
+`collect_agent` report `automaticFollowUp` for each child that still needs review,
+true only when a live run owns that exact child and has continuations left. A child
+that is paused, opted out, unowned or created before this feature reports false,
+and the model is told not to promise automatic follow-up for it. These reads
+change nothing about who reviews a child. This keeps tool results truthful, but it
+remains an instruction: a model can still end its turn or say something else.
+
+**Stop** ends the run and stops the children. **Don't auto-continue** ends the run
+and leaves the children working. While a run can still continue by itself, the line
+above the composer says so and that normal model usage applies. A follow-up is a
+continuation of the delegated request, so it does not ask for permission, and
+nothing here promises lower usage. A paused run makes no such promise.
+
+User, queued and timed prompts always go first, and a continuation that fails to
+start leaves the conversation and queue as they were. A continuation also waits,
+rather than pausing, while a different conversation works in the same shared
+folder; a parent's own children never count as that. A question from a child
+waiting on the user's approval does not wake the parent, because only the user can
+unblock that child. Automatic archiving and Git auto-publish wait while a run is
+being followed.
+
+**Nothing starts by itself after a reload or restart.** A live run becomes paused
+there. A run whose start cannot be confirmed says so and is never resent. Children
+are independent of this: they may still be running. Conversations and links from
+before this existed never create a run.
+An unacknowledged start keeps **Stop** available and shows **Status unknown**;
+**Continue** is disabled until that start settles or is stopped, preventing a
+duplicate prompt.
+Existing provider recovery and Stop rules still apply. A Codex-hosted start that
+has not supplied a turn ID cannot yet be interrupted by ID; the app must confirm
+its ownership rather than guessing that nothing started.
+
+### Limits
+
+This follows Mythra crew work only. Provider-native sub-agents and workflow-owned
+conversations are outside it. A shell `sleep` or other waiting in a parent's live
+turn is discouraged by its instructions but not intercepted. A child that hangs
+without any event keeps the run waiting, with no timeout. The limit of eight counts
+turns, not tokens. The model can still mention a time, which the app neither honors
+nor enforces. Actual provider behavior, including how models respond to these
+instructions, has not been exercised at runtime.
+
+### Diagnostics
+
+Each meaningful transition appends one `parentRun.transition` row to the app's
+local audit log, which keeps its newest 20,000 rows. These records have no automatic upload.
+A row holds the run ID, previous and new phase, resumes used and the limit, plus
+the follow-up ID, automatic or explicit trigger, and finite categories for the
+pause cause and outcome when applicable (resolved, retired, failed, uncertain or
+unknown), including whether Stop, **Don't auto-continue**, **Dismiss**, a new turn or removing the
+conversation retired it. A typed message that keeps a paused run appears as a move
+from paused to active on the same run ID, with the pause cause it cleared. If its
+start is refused or has no crew, restoring that earlier pause records the phase
+change without calling the old failure a new outcome. A row never holds prompts, child output, titles, paths,
+account details, keys or provider error text. A run that resolves inside its original
+turn writes no ordinary completion record; explicit retirement actions are still
+recorded. A pause applied while loading saved state is not a row of its own;
+the next action on that run records its cause. Resolved means no child
+obligations remain; it does not judge the work's quality and also covers children
+the user stopped or removed.
+
+### Execution identity
+
+A continuation uses the provider, model, reasoning, permission mode, service
+tier, execution folder, crew and account captured by the turn before it, never
+the visible conversation's. Before it starts, Mythra Code reads the provider's
+current account afresh and compares everything. A difference, or anything it
+cannot establish, pauses the run. The pause names a real difference. If the read
+failed or an account identity is missing, it says Mythra Code couldn't confirm the
+model or account, because nothing shows the account changed. It never switches between subscription and API
+billing. A saved API key is identified by its billing mode and the app's record
+of key changes, since it has no email or plan. A signed-in account must report an
+email or plan; one that reports neither, such as a Cursor Enterprise account
+without an email, pauses here rather than passing as unchanged, and **Continue
+with** still works.
+
+The comparison covers credential and billing changes made in the app and any
+change visible in the reported account. A credential replaced outside Mythra Code
+that leaves those reported fields identical cannot be detected at this point. The
+provider's own spawn-time checks, including Claude's billing confirmation, still
+apply to the continuation.
+
+The notice also tells the parent that if it still needs an answer from the user,
+it should not guess, but state what it needs and end its turn. If that leaves no
+progress, the run pauses for the user. This is an instruction to the model, not a
+check: Mythra Code does not read the model's words or detect that a question is
+open, so a model can still continue without the answer.
+
+Notices are stored as user-role messages because that is the timeline's turn
+boundary, and are shown as one quiet line. They are excluded from previews, edit,
+preference learning and provider handoffs, which keep the parent's own answers.
+Provider history can lose message metadata, so a notice is recognized there only
+by an exact match of its whole generated format, including the earlier v1 request
+wording. Native local conversation search
+reads stored message text directly and can still match notice text.
 
 ## Boundaries and recovery
 

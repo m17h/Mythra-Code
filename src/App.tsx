@@ -23,7 +23,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
-import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging } from "./lib/providerAuth";
+import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
@@ -59,6 +59,7 @@ import { ProjectPromptControl } from "./components/ProjectPromptControl";
 import { ProjectRunControl } from "./components/ProjectRunControl";
 import { ApprovalCenter } from "./components/ApprovalCenter";
 import { Composer, discardDraft, draftFor, type ComposerHandle } from "./components/Composer";
+import { ParentRunLine, ParentRunTurnLabel } from "./components/ParentRunLine";
 import { sanitizeTranscriptionSettings, transcriptionModelFor } from "./lib/transcription";
 import type { VoiceInputConfig } from "./hooks/useVoiceInput";
 import { isVoiceInputLocked, useVoiceInputLock, voiceInputLockGeneration } from "./lib/voiceInputLock";
@@ -99,8 +100,11 @@ import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
 import { captureHistoryReadBoundary, selectInlineApproval, selectPendingApproval, selectPendingApprovalCount, storedPendingTimedTurns, useTaskStore, type QueuedTurn } from "./lib/taskStore";
 import { countScheduledPrompts, scheduledCountsLabel } from "./lib/scheduledPromptCounts";
-import { hasEligibleQueuedTurns } from "./lib/timedPrompts";
+import { eligibleQueueHead, hasEligibleQueuedTurns } from "./lib/timedPrompts";
+import { parentAuthKey, parentExecutionDifference, parentRunBlocked, parentRunView, type ParentExecution, type ParentRun } from "./lib/parentRun";
+import { recordParentRunTransitions } from "./lib/parentRunDiagnostics";
 import { newThreadPromptsForWorkspace, useNewThreadTimedPrompts, type NewThreadTimedPrompt } from "./lib/newThreadTimedPrompts";
+import { isMythraNoticeMessage } from "./lib/userMessageEcho";
 import { useClaudeContinuation } from "./hooks/useClaudeContinuation";
 import { ClaudeContinuationNotice } from "./components/ClaudeContinuationNotice";
 import { formatGitError, formatSkillFileError, friendlyError, isAuthenticationError, safeErrorText } from "./lib/errors";
@@ -220,7 +224,7 @@ import {
   type ChildAgentPolicy,
   type ChildAgentReadiness,
 } from "./lib/childAgents";
-import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions, setSavedSubagentModelGuidance } from "./lib/childAgentSessions";
+import { assertChildAgentProposalAvailable, cacheChildAgentPolicy, childAgentPolicyForSession, ensureChildAgentBridge, invalidateChildAgentLaunch, releaseChildAgentSession, releaseChildAgentSessions, setSavedSubagentModelGuidance } from "./lib/childAgentSessions";
 import { cancelQueuedForChild, forgetChildMailbox, getChildMailbox, summarizeChildMailbox, useChildMailboxes } from "./lib/childAgentMailbox";
 import { forgetSubagentCapabilities, planSubagentCapabilities, recordSubagentCapabilities, subagentCapabilitySignature } from "./lib/threadCapabilities";
 import { boundedNativeText, canOwnNativeThread, ownershipRootIds, nativeAgentLinkFromThread, nativeAgentLinksAfterThreadDeletion, sanitizeNativeAgentLinks, type NativeAgentLink, type NativeAgentReadout, type OwnershipLinks } from "./lib/nativeAgentLinks";
@@ -702,6 +706,9 @@ const ConversationTimeline = memo(function ConversationTimeline({ Timeline, thre
 });
 
 export default function App() {
+  // Observe in the layout phase, before passive turn/child subscriptions:
+  // queued delivery can synchronously write again during completion notices.
+  useLayoutEffect(() => useTaskStore.subscribe(recordParentRunTransitions), []);
   useInputModality();
   const voiceSession = useVoiceInputLock((state) => state.session);
   // Capture covers all React surfaces, including existing dialogs and portals.
@@ -983,11 +990,12 @@ export default function App() {
   const [archivedThreads, persistArchivedThreads, archivedThreadsRef] = usePersistedStateRef<ArchivedThread[]>("kiwi.archivedThreads", []);
   const archivingThreadIdsRef = useRef(new Set<string>());
   const deletedThreadIdsRef = useRef(new Set<string>());
+  const [threadAvailabilityRevision, setThreadAvailabilityRevision] = useState(0);
   const autoArchiveCompletionRef = useRef<(completedThreadId: string) => void>(() => undefined);
   const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
   // Cross-provider delegation: one frozen policy per bridge session, plus the
   // parent/child ownership record that outlives a reload.
-  const [childAgentPolicies, persistChildAgentPolicies] = usePersistedState<Record<string, ChildAgentPolicy>>("kiwi.childAgentPolicies", {}, { init: (load) => sanitizeChildAgentPolicies(load()) });
+  const [childAgentPolicies, persistChildAgentPolicies, childAgentPoliciesRef] = usePersistedStateRef<Record<string, ChildAgentPolicy>>("kiwi.childAgentPolicies", {}, { init: (load) => sanitizeChildAgentPolicies(load()) });
   const [threadSubagentSettings, persistThreadSubagentSettings, threadSubagentSettingsRef] = usePersistedStateRef<Record<string, ThreadSubagentSettings>>("kiwi.threadSubagentSettings", {}, { init: (load) => sanitizeThreadSubagentSettings(load()) });
   const [draftSubagentSettings, setDraftSubagentSettings] = useState<ThreadSubagentSettings>(DEFAULT_THREAD_SUBAGENT_SETTINGS);
   const [childAgentLinks, persistChildAgentLinks, childAgentLinksRef] = usePersistedStateRef<Record<string, ChildAgentLink>>("kiwi.childAgentLinks", {}, { init: (load) => sanitizeChildAgentLinks(load()) });
@@ -4298,7 +4306,9 @@ export default function App() {
           });
         return;
       }
-      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
+      // A parent waiting for its sub-agents has not finished: that notice comes
+      // from the turn that actually completes the run.
+      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
         const thread = threads.find((entry) => entry.id === threadId);
         const label = thread?.name || thread?.preview || "A background task";
         const projectPath = threadProjectBindingsRef.current?.[threadId];
@@ -4345,7 +4355,7 @@ export default function App() {
           // Refresh the preview from the latest user message so the sidebar
           // does not stay frozen on the thread's first optimistic prompt.
           const taskMessages = useTaskStore.getState().tasks[threadId]?.messages ?? [];
-          const latestUserText = [...taskMessages].reverse().find((message) => message.role === "user")?.text;
+          const latestUserText = [...taskMessages].reverse().find((message) => message.role === "user" && !isMythraNoticeMessage(message))?.text;
           const updated = { ...known, preview: latestUserText?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
           rememberThread(updated);
           setThreads((current) => upsertThread(current, updated));
@@ -4420,7 +4430,7 @@ export default function App() {
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
-        const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
+        const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user" && !isMythraNoticeMessage(message))?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
         if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
@@ -4429,7 +4439,9 @@ export default function App() {
         void localTranscriptSaves.flush(threadId)
           .catch((error) => recordError(`Claude transcript save failed: ${String(error)}`));
       }
-      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
+      // A parent waiting for its sub-agents has not finished: that notice comes
+      // from the turn that actually completes the run.
+      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
@@ -4471,7 +4483,7 @@ export default function App() {
       const task = useTaskStore.getState().tasks[threadId];
       const known = knownThreadsRef.current?.[threadId];
       if (known) {
-        const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user")?.text;
+        const latestUser = [...(task?.messages ?? [])].reverse().find((message) => message.role === "user" && !isMythraNoticeMessage(message))?.text;
         const updated = { ...known, preview: latestUser?.slice(0, 140) || known.preview, updatedAt: Math.floor(Date.now() / 1000) };
         rememberThread(updated);
         if (activeWorkspace && threadBelongsToWorkspace(updated, activeWorkspace.path, threadProjectBindingsRef.current ?? {})) {
@@ -4480,7 +4492,9 @@ export default function App() {
         void localTranscriptSaves.flush(threadId)
           .catch((error) => recordError(`Cursor transcript save failed: ${String(error)}`));
       }
-      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId) {
+      // A parent waiting for its sub-agents has not finished: that notice comes
+      // from the turn that actually completes the run.
+      if (settings.notificationsEnabled && useTaskStore.getState().activeThreadId !== threadId && !useTaskStore.getState().parentRuns[threadId]) {
         void (async () => {
           let granted = await isPermissionGranted();
           if (!granted) granted = (await requestPermission()) === "granted";
@@ -6088,13 +6102,56 @@ export default function App() {
       showToast(project ? `Learned preferences updated for ${project.name}` : "App-wide learned preferences updated", "info");
     },
   });
+  /** Resolve only this root's choices, including edits made during preparation. */
+  const parentExecutionFor = (run: ParentRun, authKey = run.execution.authKey): ParentExecution | null => {
+    const threadId = run.rootThreadId;
+    const known = knownThreadsRef.current?.[threadId];
+    const logicalPath = threadProjectBindingsRef.current?.[threadId];
+    if (!known || !logicalPath) return null;
+    const project = projectsRef.current.find((entry) => normalizedProjectPath(entry.path) === normalizedProjectPath(logicalPath));
+    const defaults = project?.overrides?.defaults;
+    const appSettings = settingsRef.current;
+    const projectResolved = settingsWithProjectSubagents(defaults ? { ...appSettings, provider: defaults.provider, model: defaults.model } : appSettings, project?.overrides?.subagents);
+    const threadSettings = settingsForThreadSubagents(projectResolved, threadId, threadSubagentSettingsRef.current);
+    const provider = providerFromThread(known, projectResolved.provider);
+    const remembered = threadReasoningRef.current[threadId];
+    const policies = childAgentPoliciesRef.current;
+    const storedPolicy = childAgentPolicyForThread(policies, threadId);
+    const policy = storedPolicy && childAgentPolicyForSession(policies, storedPolicy.sessionId);
+    // A staged crew edit belongs to an explicitly authorized next prompt.
+    if (!policy || storedPolicy?.pendingRecapture || policy.pendingRecapture) return null;
+    const executionPath = executionPathFor(threadId, logicalPath);
+    return {
+      provider,
+      model: modelForProvider(provider, threadModelsRef.current[threadId] ?? projectResolved.model),
+      reasoningEffort: sanitizeComposerReasoningEffort(remembered?.reasoningEffort ?? projectResolved.reasoningEffort),
+      // The composer normalizes stored ultra to max and disables the old flag.
+      // A scheduled ultra capture therefore fails closed rather than changing it.
+      ultra: false,
+      serviceTier: projectResolved.serviceTier,
+      permission: projectResolved.permission,
+      engine: threadSettings.subagentEngine,
+      subagentsEnabled: threadSettings.subagentsEnabled,
+      executionPath: normalizedProjectPath(executionPath) === normalizedProjectPath(run.execution.executionPath) ? run.execution.executionPath : executionPath,
+      sessionId: policy.sessionId,
+      policyCapturedAt: policy.capturedAt,
+      endpoint: provider === "lmstudio" ? appSettings.lmStudioBaseUrl : "",
+      authKey,
+      authGeneration: providerAuthGeneration(provider),
+    };
+  };
+  // Fresh account identity is probed before reservation. This synchronous part
+  // runs again at preparation boundaries, including immediately before dispatch.
+  const parentExecutionCurrent = (run: ParentRun): string | null => parentExecutionDifference(run.execution, parentExecutionFor(run));
+
   const {
     pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt, getSubagentPreparationLockedReason,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
-    stopTurn,
+    stopTurn, resumeParentTurn, hasParentRunDelivery, parentRunFolderBusy,
   } = useTurnRunner({
+    parentExecutionCurrent,
     activeThread,
     activeWorkspace,
     activeProject,
@@ -6422,12 +6479,39 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeThreadId, executionPathFor, projectForThread, runtimeStatus?.available]);
 
-  const { acceptChildAgent, captureChildStopFrontier, cancelChildAgentsFor, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
+  /**
+   * Compare a run's captured identity against this root's own current state,
+   * never the visible thread's, using a fresh provider read rather than a
+   * cached status. Null means nothing changed that this app can observe.
+   */
+  const probeParentExecution = async (run: ParentRun): Promise<string | null> => {
+    const captured = run.execution;
+    const authKey = captured.provider === "claude" ? parentAuthKey({ provider: "claude", claude: await getClaudeRuntimeStatus() })
+      : captured.provider === "cursor" ? parentAuthKey({ provider: "cursor", cursor: await getCursorRuntimeStatus() })
+        : captured.provider === "openai" ? parentAuthKey({ provider: "openai", account: (await rpc<{ account?: Account | null }>("account/read", { refreshToken: false })).account })
+          : captured.provider === "openrouter" ? parentAuthKey({ provider: "openrouter", ready: await hasOpenRouterKey() })
+            : parentAuthKey({ provider: "lmstudio", ready: (await listLMStudioModels(captured.endpoint)).some((model) => model.id === captured.model) });
+    // Resolve after the status read: another thread's picker and any state
+    // captured by the render that began the probe have no authority here.
+    return parentExecutionDifference(captured, parentExecutionFor(run, authKey));
+  };
+
+  // Rebuilt only when availability changes; the shell re-renders far more often.
+  const parentRunEnvironmentRevision = useMemo(() => JSON.stringify([threadAvailabilityRevision, worktreeBusy,
+    archivedThreads.map((record) => record.id), projects.map((project) => [project.id, project.path])]),
+  [archivedThreads, projects, threadAvailabilityRevision, worktreeBusy]);
+
+  const { acceptChildAgent, captureChildStopFrontier, cancelChildAgentsFor, continueParentRun, parentRunObligations, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
+    parentRunEnvironmentRevision,
+    parentRunFolderBusy,
     policies: childAgentPolicies,
     links: childAgentLinks,
     nativeLinks: nativeAgentLinks,
     persistNativeAgentLinks,
     persistChildAgentLinks,
+    resumeParentTurn,
+    hasParentRunDelivery,
+    probeParentExecution,
     openRouterModels,
     lmStudioModels,
     lmStudioBaseUrl: settings.lmStudioBaseUrl,
@@ -6631,8 +6715,66 @@ export default function App() {
    * thread that owns them reports itself as stopped.
    */
   const stopWorkflowRef = useRef<((workflowId: string) => Promise<boolean>) | null>(null);
+  const activeParentRun = useTaskStore((state) => activeThreadId ? state.parentRuns[activeThreadId] : undefined);
+  const parentRunApprovalChild = useTaskStore((state) => {
+    if (!activeParentRun) return undefined;
+    return Object.values(childAgentLinks).find((link) => link.reviewRunId === activeParentRun.id
+      && state.tasks[link.childThreadId]?.approvals.length)?.childThreadId;
+  });
+  const parentRunHead = eligibleQueueHead(queuedTurns);
+  const parentRunQueueHeld = parentRunHead?.status === "failed" || Boolean(parentRunHead?.editing);
+  // Links, statuses and mailboxes are what the obligations are read from, so
+  // they invalidate this even though the callback itself is stable.
+  const parentRunStatus = useMemo(() => {
+    if (!activeParentRun) return null;
+    const obligations = parentRunObligations(activeParentRun);
+    return parentRunView(activeParentRun, obligations, {
+      rootRunning: running, rootStarting: taskStatus === "starting", queueHeld: parentRunQueueHeld, queuePending: hasQueuedWork,
+      approvalChild: obligations.find((entry) => entry.childId === parentRunApprovalChild)?.title,
+      folderBusy: parentRunFolderBusy(activeParentRun.rootThreadId),
+    });
+  }, [activeParentRun, childAgentLinks, childMailboxes, hasQueuedWork, parentRunApprovalChild, parentRunFolderBusy, parentRunObligations, parentRunQueueHeld, running, taskStatus, threadTaskStatuses]);
+  const parentRunTurn = useMemo(() => parentRunStatus?.turnId
+    ? { turnId: parentRunStatus.turnId, label: parentRunStatus.turnLabel, state: parentRunStatus.kind === "paused" ? "partial" as const : "unknown" as const } : null,
+  [parentRunStatus]);
+  const parentContinueModel = (effectiveSettings.provider === "openai"
+    ? openAiModelOptions(runtimeModels).find((model) => model.id === effectiveSettings.model)?.name
+    : effectiveSettings.provider === "claude" ? claudeModels.find((model) => model.id === effectiveSettings.model)?.displayName
+      : effectiveSettings.provider === "cursor" ? cursorModels.find((model) => model.id === effectiveSettings.model)?.name
+        : effectiveSettings.provider === "openrouter" ? openRouterModels.find((model) => model.id === effectiveSettings.model)?.name
+          : lmStudioModels.find((model) => model.id === effectiveSettings.model)?.displayName)
+    || effectiveSettings.model || "the current model";
+  // A run can close without a turn ending (the user accepts the last child in
+  // the crew panel), and a pause can happen with this conversation out of view.
+  const parentRunNotificationsRef = useRef(settings.notificationsEnabled);
+  parentRunNotificationsRef.current = settings.notificationsEnabled;
+  useEffect(() => useTaskStore.subscribe((state, previous) => {
+    if (state.parentRuns === previous.parentRuns) return;
+    for (const threadId of Object.keys(previous.parentRuns)) {
+      const run = previous.parentRuns[threadId];
+      // Retirement (Stop, Dismiss or a replacement user turn) is not sign-off.
+      if (!state.parentRuns[threadId] && state.statuses[threadId] === "completed"
+        && !parentRunBlocked(parentRunObligations(run))) autoArchiveCompletionRef.current(threadId);
+    }
+    for (const run of Object.values(state.parentRuns)) {
+      if (run.phase !== "paused" || !run.autoResume || previous.parentRuns[run.rootThreadId]?.phase === "paused"
+        || !parentRunNotificationsRef.current || state.activeThreadId === run.rootThreadId) continue;
+      const thread = knownThreadsRef.current?.[run.rootThreadId];
+      void (async () => {
+        let granted = await isPermissionGranted();
+        if (!granted) granted = (await requestPermission()) === "granted";
+        const current = useTaskStore.getState();
+        if (granted && parentRunNotificationsRef.current && current.activeThreadId !== run.rootThreadId
+          && current.parentRuns[run.rootThreadId]?.id === run.id && current.parentRuns[run.rootThreadId]?.phase === "paused") {
+          sendNotification({ title: "Mythra Code needs your input", body: `“${thread?.name || thread?.preview || "A background task"}” paused while following its sub-agents.` });
+        }
+      })().catch(() => {});
+    }
+  }), []);
   const stopTurnAndChildren = useCallback(async () => {
     const rootThreadId = useTaskStore.getState().activeThreadId;
+    // Before anything that can wait: nothing may continue this parent after Stop.
+    if (rootThreadId) useTaskStore.getState().stopParentRun(rootThreadId, "stop");
     if (rootThreadId) rootCutoffIntentRef.current.set(rootThreadId, (rootCutoffIntentRef.current.get(rootThreadId) ?? 0) + 1);
     const frontier = rootThreadId ? captureChildStopFrontier(rootThreadId) : undefined;
     const rootCutoff = rootThreadId ? captureRootCutoff(rootThreadId) : undefined;
@@ -6941,7 +7083,11 @@ export default function App() {
     if (!link) return false;
     const status = useTaskStore.getState().statuses[threadId];
     const mailbox = summarizeChildMailbox(getChildMailbox(threadId));
-    return childAwaitsSignoff(link) || Boolean(link.activationPending)
+    // A run that still follows this child must be able to collect it.
+    // A loaded run with nothing left to review is dormant and holds nothing.
+    const parentRun = useTaskStore.getState().parentRuns[link.rootThreadId];
+    const followedByParent = Boolean(link.reviewRunId && parentRun?.id === link.reviewRunId && (parentRun.autoResume || parentRun.phase === "paused"));
+    return followedByParent || childAwaitsSignoff(link) || Boolean(link.activationPending)
       || (!link.terminalStatus && (!status || status === "idle"))
       || hasChildStartInFlight(link.rootThreadId)
       || mailbox.queuedForChild > 0 || mailbox.unansweredQuestions > 0;
@@ -6988,6 +7134,7 @@ export default function App() {
     // confirmation dialog. Only permanent deletion asks first.
     if (archivingThreadIdsRef.current.has(thread.id)) return false;
     archivingThreadIdsRef.current.add(thread.id);
+    setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(thread.id);
     try {
       await archiveAfterTitleCancellation(
@@ -7029,6 +7176,7 @@ export default function App() {
       return false;
     } finally {
       archivingThreadIdsRef.current.delete(thread.id);
+      setThreadAvailabilityRevision((revision) => revision + 1);
       retryChildAgentGuidance(thread.id);
     }
   };
@@ -7169,6 +7317,7 @@ export default function App() {
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
     if (archivingThreadIdsRef.current.has(threadId)) return false;
     archivingThreadIdsRef.current.add(threadId);
+    setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(threadId);
     try {
       await automaticTitles.cancel(threadId);
@@ -7240,6 +7389,7 @@ export default function App() {
       return false;
     } finally {
       archivingThreadIdsRef.current.delete(threadId);
+      setThreadAvailabilityRevision((revision) => revision + 1);
       retryChildAgentGuidance(threadId);
     }
   };
@@ -7909,7 +8059,7 @@ export default function App() {
         // The runner shows the prompt and registers Stop before image copies
         // finish. It still waits for those copies before dispatching anything.
         const accepted = await attachmentDeliveryRef.current.sendMessage(prompt, {
-          skillInvocationText, firstPromptAttemptId, prepareAttachments: () => prepareAttachments(true),
+          skillInvocationText, firstPromptAttemptId, prepareAttachments: () => prepareAttachments(true), typedFollowUp: true,
         });
         if (accepted) feedback.removeNotes(notes);
         return accepted;
@@ -7923,8 +8073,8 @@ export default function App() {
       }
       if (!prepared) return false;
       const accepted = mode === "sendMessage"
-        ? await attachmentDeliveryRef.current.sendMessage(prompt, { skillInvocationText, firstPromptAttemptId, attachments: prepared })
-        : await attachmentDeliveryRef.current.steerMessage(prompt, { skillInvocationText });
+        ? await attachmentDeliveryRef.current.sendMessage(prompt, { skillInvocationText, firstPromptAttemptId, attachments: prepared, typedFollowUp: true })
+        : await attachmentDeliveryRef.current.steerMessage(prompt, { skillInvocationText, typedFollowUp: true });
       if (accepted) feedback.removeNotes(notes);
       return accepted;
     } finally {
@@ -8016,10 +8166,14 @@ export default function App() {
       `Update the local project to ${base} from GitHub?\n\nThe shared project is currently on ${snapshot.branch}. This downloads committed changes and switches the shared folder to ${base} using a fast-forward update. All shared threads will use it. Dirty folders, divergent history, and branches used by another worktree will be left unchanged.`,
     ),
   });
+  // A paused run holds nothing: it may stay paused until the user returns.
+  const projectHasFollowedParentRun = (path: string) => Object.values(useTaskStore.getState().parentRuns).some((run) => run.autoResume && run.phase !== "paused"
+    && normalizedProjectPath(threadProjectBindingsRef.current?.[run.rootThreadId] ?? "") === normalizedProjectPath(path));
   const autoPublish = useGitAutoPublish({
     projects,
     blocked: (path) => worktreeBusy || gitCommitBusy || gitOperationBusy || githubRepositoryBusy || Boolean(checkpointBusyId)
       || projectHasActiveTask(path)
+      || projectHasFollowedParentRun(path)
       || Object.values(threadWorktreesRef.current).some((record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(path) && projectHasActiveTask(record.path)),
   });
   const publishConfig = activeProject ? autoPublish.configs[activeProject.id] : undefined;
@@ -9532,9 +9686,9 @@ export default function App() {
               <span>Search</span>
               <kbd>{primaryModifierLabel()}+K</kbd>
             </button>
-            <div className="runtime-status" title={childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status}>
-              {running || childrenWorking ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
-              <span>{running || childrenWorking ? "Working" : childrenStatusUnknown ? "Status unknown" : "Ready"}</span>
+            <div className="runtime-status" title={parentRunStatus ? parentRunStatus.title : childrenStatusUnknown && !running && !childrenWorking ? "A sub-agent's current status has not been confirmed." : status}>
+              {(running || childrenWorking) && parentRunStatus?.kind !== "paused" ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
+              <span>{parentRunStatus?.status ?? (running || childrenWorking ? "Working" : childrenStatusUnknown ? "Status unknown" : "Ready")}</span>
             </div>
             {headerUsageView && (effectiveSettings.provider === "openai" || effectiveSettings.provider === "claude" ? (
               <UsagePopover
@@ -9762,7 +9916,7 @@ export default function App() {
                     }
                   >
                     <SubAgentControlsProvider workers={subAgentWorkers} historyWorkers={historicalSubAgentWorkers} onOpen={openSubAgentWorker} onStop={stopSubAgentWorker} onAccept={acceptSubAgentWorker}>
-                    <AgentQuestionDelivery value={agentQuestionDelivery}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} pendingMessage={visiblePendingThreadPrompt} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></AgentQuestionDelivery>
+                    <AgentQuestionDelivery value={agentQuestionDelivery}><ParentRunTurnLabel.Provider value={parentRunTurn}><ConversationTimeline Timeline={timelineView.View} threadId={activeThreadId} pendingMessage={visiblePendingThreadPrompt} running={running} thinkingLabel={activeWorkspace.isChat ? "Thinking in normal chat" : `Working in ${activeProject?.name}`} approval={inlineApproval} provider={effectiveSettings.provider} onLoadEarlier={loadEarlierActive} searchQuery={convSearchOpen ? convSearchQuery : ""} searchActiveMatch={convSearchIndex} onSearchMatches={setConvSearchCount} onEditMessage={editMessageIntoComposer} onApprovalRespond={respondToApproval} skills={skills} onOpenSkill={openSkillInSettings} /></ParentRunTurnLabel.Provider></AgentQuestionDelivery>
                     </SubAgentControlsProvider>
                   </Suspense>
                 </ErrorBoundary>
@@ -9790,6 +9944,12 @@ export default function App() {
                 performanceProvider={effectiveSettings.provider}
                 running={running}
                 childrenRunning={childrenRunning}
+                statusLine={parentRunStatus && activeThreadId ? <ParentRunLine
+                  view={parentRunStatus}
+                  continueLabel={`Continue with ${parentContinueModel}`}
+                  onContinue={() => void continueParentRun(activeThreadId).catch((reason) => setError(friendlyError(reason)))}
+                  onDismiss={() => useTaskStore.getState().stopParentRun(activeThreadId, parentRunStatus.kind === "paused" ? "dismiss" : "dont_continue")}
+                /> : undefined}
                 queueing={Boolean(running && activeThread)}
                 canSteer={Boolean(activeThread && taskStatus === "running" && !activeWorkflowOwner)}
                 dropActive={dropActive}

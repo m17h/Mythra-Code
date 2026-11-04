@@ -10,6 +10,7 @@ import { SETTLED_ACTIVITY_LABELS, UNCONFIRMED_ACTIVITY_LABEL, type ActivityStatu
 import { PixelWorkingMark } from "./PixelWorkingMark";
 import { InfoPopover } from "./InfoPopover";
 import { usedSkillsForRun } from "../lib/skillUsage";
+import { isMythraNoticeMessage } from "../lib/userMessageEcho";
 import { coordinationRecord, presentManagedAgentActivities } from "../lib/managedAgentActivity";
 import { CoordinationPresentation, CoordinationReceipt, CoordinationRoute, CoordinationState } from "./CoordinationRoute";
 import "./ActivityDetailsModal.css";
@@ -171,9 +172,10 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
 
   if (step.kind === "message") {
     const message = step.value;
-    const user = message.role === "user";
+    const notice = isMythraNoticeMessage(message);
+    const user = message.role === "user" && !notice;
     const question = Boolean(message.questions?.length);
-    const label = user ? "You" : question ? "Question" : message.phase === "final" ? "Response" : "Update";
+    const label = notice ? "Mythra Code" : user ? "You" : question ? "Question" : message.phase === "final" ? "Response" : "Update";
     return <li className={`activity-step kind-message ${user ? "from-user" : "from-agent"}${flags}`} data-step-id={step.id}>
       <span className="activity-step-node" aria-hidden="true"><MessageSquareText size={11} /></span>
       <div className="activity-step-body">
@@ -182,7 +184,7 @@ const ActivityStepRow = memo(function ActivityStepRow({ step, inChat, match, cur
           {message.streaming && <span className="activity-step-chip tone-live">Writing</span>}
           {inChat && !user && <span className="activity-step-chip">In chat</span>}
         </div>
-        <div className="activity-step-message">{renderMessage(message)}</div>
+        <div className="activity-step-message">{notice ? "Continued the parent" : renderMessage(message)}</div>
         {question && onAnswerQuestion && (
           <button type="button" className="activity-step-action" onClick={() => onAnswerQuestion(message)}>Answer in chat</button>
         )}

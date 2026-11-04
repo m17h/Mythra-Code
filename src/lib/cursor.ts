@@ -8,6 +8,7 @@ import { forgetLocalTranscriptPersistence, loadLocalTranscript, loadLocalTranscr
 import { acceptCursorTurnStart, beginCursorTurnStart, cursorTurnOwner, cursorTurnStartAttempt, isCurrentCursorTurnStart, rejectCursorTurnStart, retireCursorTurnOwner } from "./cursorTurnOwnership";
 import { useTaskStore } from "./taskStore";
 import { safeErrorText } from "./errors";
+import { changeProviderAuth } from "./providerAuth";
 import { countProviderEvents } from "./performanceOverlay";
 
 export interface CursorRuntimeStatus {
@@ -74,7 +75,7 @@ export function getCursorRuntimeStatus(): Promise<CursorRuntimeStatus> {
 }
 
 export async function startCursorLogin(): Promise<void> {
-  await invoke("cursor_login");
+  await changeProviderAuth("cursor", () => invoke("cursor_login"));
 }
 
 export function listCursorModels(): Promise<CursorModel[]> {
