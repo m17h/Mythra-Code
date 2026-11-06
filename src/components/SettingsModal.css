@@ -99,12 +99,6 @@
 .app-shell[data-color-scheme="light"] .slider-style-preview, .app-shell[data-color-scheme="light"] .chat-font-preview { background: rgba(0,0,0,.06); }
 .slider-style-rail { position: absolute; left: 6px; right: 6px; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 99px; }
 .slider-style-thumb { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid var(--panel); border-radius: 50%; transform: translate(-50%, -50%); }
-.slider-style-preview.classic .slider-style-rail { background: linear-gradient(90deg, var(--green) 0 62%, var(--panel-3) 62%); }
-.slider-style-preview.classic .slider-style-thumb { left: 62%; background: var(--green); }
-.slider-style-preview.spectrum .slider-style-rail { background: linear-gradient(90deg, #4db6ff, #43d97c, #ffc531, #ff8a2b, #ff4655); }
-.slider-style-preview.spectrum .slider-style-thumb { left: 76%; background: #ff8a2b; box-shadow: 0 0 8px #ff8a2b; }
-.slider-style-preview.neon .slider-style-rail { background: var(--green); box-shadow: 0 0 8px color-mix(in srgb, var(--green) 75%, transparent); }
-.slider-style-preview.neon .slider-style-thumb { left: 68%; background: color-mix(in srgb, var(--green) 45%, #fff); box-shadow: 0 0 10px var(--green); }
 
 .slider-style-preview.pixel .slider-style-rail { height: 8px; border-radius: 2px; background: repeating-linear-gradient(90deg, transparent 0 5px, var(--panel) 5px 7px), linear-gradient(90deg, #33d17a 0 42%, #f6d32d 42% 72%, #f66151 72% 100%); }
 .slider-style-preview.pixel .slider-style-thumb { left: 66%; width: 6px; height: 12px; border-radius: 2px; background: var(--text); border-color: var(--bg); }

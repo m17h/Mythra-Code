@@ -110,6 +110,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* Neutral fills for quiet cards and selected rows. Declared on the shell so
    they follow each theme's ink; accent stays on the edge, icon or dot. */
 .app-shell { --toggle-active-track: color-mix(in srgb, var(--green) 38%, var(--panel-3)); --surface-quiet: color-mix(in srgb, var(--text) 3%, transparent); --surface-selected: color-mix(in srgb, var(--text) 6.5%, transparent); display: flex; height: 100%; overflow: hidden; color: var(--text); background: var(--bg); font-size: var(--fs-ui); letter-spacing: var(--track-tight); transition: color 260ms ease, background 260ms ease; }
+/* Soft tints are literal rgba() so they resolve on Safari 13, which has no
+   color-mix(). */
+.app-shell {
+  --provider-accent-openai: #a9b6a0;
+  --provider-accent-claude: #dd8b6a;
+  --provider-accent-cursor: #edecec;
+  --provider-accent-openrouter: #c8ff00;
+  --provider-accent-lmstudio: #75d5c7;
+  --provider-accent-openai-soft: rgba(169,182,160,.18);
+  --provider-accent-claude-soft: rgba(221,139,106,.18);
+  --provider-accent-cursor-soft: rgba(237,236,236,.18);
+  --provider-accent-openrouter-soft: rgba(200,255,0,.18);
+  --provider-accent-lmstudio-soft: rgba(117,213,199,.18);
+}
 .app-shell[data-theme="kiwi"] { --green: #a6df72; --green-soft: rgba(166,223,114,.11); --green-line: rgba(166,223,114,.26); }
 .app-shell[data-chat-font="humanist"] { --chat-font: var(--chat-font-humanist); }
 .app-shell[data-chat-font="serif"] { --chat-font: var(--chat-font-serif); }
@@ -127,6 +141,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 /* Light palettes share component treatment; their palette blocks below
    provide each theme's surfaces and semantic accent. */
 .app-shell[data-color-scheme="light"] {
+  --provider-accent-openai: #53654c;
+  --provider-accent-claude: #b75f42;
+  --provider-accent-cursor: #595954;
+  --provider-accent-openrouter: #7624f4;
+  --provider-accent-lmstudio: #16856c;
+  --provider-accent-openai-soft: rgba(83,101,76,.18);
+  --provider-accent-claude-soft: rgba(183,95,66,.18);
+  --provider-accent-cursor-soft: rgba(89,89,84,.18);
+  --provider-accent-openrouter-soft: rgba(118,36,244,.18);
+  --provider-accent-lmstudio-soft: rgba(22,133,108,.18);
   --ink-2: #3c443c; --line-quiet: rgba(25,35,20,.06); --green-line: rgba(62,142,34,.3); --info: #14639f;
   --elev-1: 0 1px 2px rgba(52,62,44,.09);
   --elev-2: 0 6px 18px rgba(52,62,44,.1);
@@ -206,9 +230,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-color-scheme="light"] .model-menu-option.terra { --option-accent: #3e8e22; }
 .app-shell[data-color-scheme="light"] .model-menu-option.luna { --option-accent: #1668a8; }
 .app-shell[data-color-scheme="light"] .model-menu-option.astra { --option-accent: #6847c7; }
-.app-shell[data-color-scheme="light"] .openrouter-control { --router-accent: #7624f4; }
-.app-shell[data-color-scheme="light"] .openrouter-control.lmstudio-control { --router-accent: #16856c; }
-.app-shell[data-color-scheme="light"] .openrouter-control.claude-control { --router-accent: #b75f42; }
+.app-shell[data-color-scheme="light"] .openrouter-control { --router-accent: var(--provider-accent-openrouter); }
+.app-shell[data-color-scheme="light"] .openrouter-control.lmstudio-control { --router-accent: var(--provider-accent-lmstudio); }
+.app-shell[data-color-scheme="light"] .openrouter-control.claude-control { --router-accent: var(--provider-accent-claude); }
 .app-shell[data-color-scheme="light"] .model-orb, .app-shell[data-color-scheme="light"] .menu-model-orb, .app-shell[data-color-scheme="light"] .openrouter-logo { color: #ffffff; }
 .app-shell[data-color-scheme="light"] .provider-logo { background: #eceee8; }
 
@@ -254,7 +278,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-color-scheme="light"] .fast-tier { background: rgba(0,0,0,.03); }
 .app-shell[data-color-scheme="light"] .reasoning-ticks i, .app-shell[data-color-scheme="light"] .openrouter-reasoning-ticks i { border-color: #c4c9bf; background: #eef0ea; }
 .app-shell[data-color-scheme="light"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), #d8dcd2 var(--reasoning-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
-.app-shell[data-color-scheme="light"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), #d8dcd2 var(--router-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
+.app-shell[data-color-scheme="light"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-track-fill), #d8dcd2 var(--router-track-fill), #d8dcd2 100%); box-shadow: inset 0 1px 2px rgba(40,50,35,.18); }
 .app-shell[data-color-scheme="light"] .reasoning-control input[type="range"]::-webkit-slider-thumb { border-color: #ffffff; }
 
 /* Light Mythra mirrors Light Kiwi's hierarchy with a cool neutral surface
@@ -280,7 +304,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="light-mythra"] :where(.toggle-switch, .mini-toggle, .sa-tile-switch) { background: #c7d3d6; }
 .app-shell[data-theme="light-mythra"] .reasoning-ticks i, .app-shell[data-theme="light-mythra"] .openrouter-reasoning-ticks i { border-color: #becacd; background: #ebf1f2; }
 .app-shell[data-theme="light-mythra"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), #d3dddf var(--reasoning-fill), #d3dddf 100%); }
-.app-shell[data-theme="light-mythra"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), #d3dddf var(--router-fill), #d3dddf 100%); }
+.app-shell[data-theme="light-mythra"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-track-fill), #d3dddf var(--router-track-fill), #d3dddf 100%); }
 
 /* Atari: warm console-era parchment and oxblood, not bright white with a red
    button. The shared light treatment still owns provider marks and diff status. */
@@ -318,7 +342,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, [tabindex]:fo
 .app-shell[data-theme="atari"] :is(.toggle-switch, .mini-toggle, .sa-tile-switch):not(.on) { background: var(--panel-3); }
 .app-shell[data-theme="atari"] :is(.reasoning-ticks i, .openrouter-reasoning-ticks i) { border-color: var(--line-strong); background: var(--panel-2); }
 .app-shell[data-theme="atari"] .reasoning-control input[type="range"] { background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill), var(--panel-3) var(--reasoning-fill), var(--panel-3) 100%); }
-.app-shell[data-theme="atari"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), var(--panel-3) var(--router-fill), var(--panel-3) 100%); }
+.app-shell[data-theme="atari"] .openrouter-reasoning input[type="range"] { background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-track-fill), var(--panel-3) var(--router-track-fill), var(--panel-3) 100%); }
 
 /* usePaneResize writes each pane's width on that pane's root. Registered
    non-inherited, the width variable stays local to that element instead of
@@ -2038,14 +2062,14 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 }
 
 /* OpenRouter model rail */
-.openrouter-control { --router-accent: #c8ff00; --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(125px, .54fr) minmax(150px, .54fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
-.openrouter-control.lmstudio-control { --router-accent: #75d5c7; }
+.openrouter-control { --router-accent: var(--provider-accent-openrouter); --router-fill: 0%; position: relative; z-index: 8; display: grid; grid-template-columns: minmax(125px, .54fr) minmax(150px, .54fr) minmax(245px, .92fr); gap: var(--s-3); align-items: center; margin: 0 10px var(--s-1); padding: var(--s-2); overflow: visible; border: 1px solid var(--line); border-radius: var(--r-lg); background: rgba(255,255,255,.014); box-shadow: none; }
+.openrouter-control.lmstudio-control { --router-accent: var(--provider-accent-lmstudio); }
 .lmstudio-logo { background: transparent !important; }
 .provider-mark.lmstudio, .provider-logo.lmstudio, .thread-card-provider.lmstudio, .message-avatar.provider-lmstudio { background: transparent; }
 .lmstudio-logo img, .provider-logo.lmstudio img, .provider-mark.lmstudio img, .thread-card-provider.lmstudio img, .message-avatar.provider-lmstudio img, .sa-tile.lmstudio img { border-radius: 22%; }
 .lmstudio-model-menu { width: min(620px, calc(100vw - 42px)); }
 .lmstudio-control .openrouter-catalog-warning { color: #75d5c7; background: rgba(117,213,199,.055); }
-.openrouter-control.claude-control { --router-accent: #dd8b6a; }
+.openrouter-control.claude-control { --router-accent: var(--provider-accent-claude); }
 .claude-control .openrouter-trigger { border-color: var(--line); background: var(--field); }
 .claude-control .openrouter-trigger:hover, .claude-control .openrouter-picker.open .openrouter-trigger { border-color: color-mix(in srgb, var(--router-accent) 34%, var(--line-strong)); background: color-mix(in srgb, var(--router-accent) 5%, var(--field)); }
 .claude-control .openrouter-trigger-copy strong { color: var(--text); }
@@ -2119,7 +2143,7 @@ button[aria-disabled="true"] { cursor: not-allowed; }
 .openrouter-reasoning-heading svg, .openrouter-reasoning-heading strong { color: var(--router-accent); }
 .openrouter-reasoning-heading strong { margin-left: auto; font-size: var(--fs-micro); }
 .openrouter-reasoning-rail { position: relative; height: 14px; display: flex; align-items: center; }
-.openrouter-reasoning input[type="range"] { position: relative; z-index: 2; appearance: none; width: 100%; height: 4px; margin: 0; border-radius: 99px; outline: 0; background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-fill), var(--panel-3) var(--router-fill), var(--panel-3) 100%); box-shadow: inset 0 1px 2px rgba(0,0,0,.55); }
+.openrouter-reasoning input[type="range"] { --router-track-fill: var(--reasoning-fill, var(--router-fill, 0%)); position: relative; z-index: 2; appearance: none; width: 100%; height: 4px; margin: 0; border-radius: 99px; outline: 0; background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--router-track-fill), var(--panel-3) var(--router-track-fill), var(--panel-3) 100%); box-shadow: inset 0 1px 2px rgba(0,0,0,.55); }
 .openrouter-reasoning input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border: 2px solid var(--field); border-radius: 50%; background: var(--router-accent); box-shadow: 0 0 0 2px rgba(195,155,255,.12), 0 0 11px rgba(195,155,255,.46); cursor: grab; }
 .openrouter-reasoning-ticks { position: absolute; z-index: 1; inset: 0 2px; display: flex; align-items: center; justify-content: space-between; pointer-events: none; }
 .openrouter-reasoning-ticks i { width: 6px; height: 6px; border: 1px solid #343a3f; border-radius: 50%; background: var(--field); }
@@ -3353,27 +3377,10 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
   .subagent-relay-manifest.live > header > svg { opacity: .9; }
 }
 
-/* ===== Effort slider, unified across every provider =====
-   Codex uses .reasoning-*; Claude/Cursor/OpenRouter/LM Studio share
-   .openrouter-reasoning-*. Each level owns a color (blue → green → amber →
-   orange → red); the fill paints the spectrum travelled so far, the thumb
-   grows and glows with heat, ticks pop in their own level color, sparks fly
-   on every change, dragging streams energy down the rail, and Max catches
-   fire. --effort-heat (0–1) and --effort-color come inline from
-   effortFlair.tsx; --reasoning-fill / --router-fill are the fill percent. */
-.reasoning-control input[type="range"], .openrouter-reasoning input[type="range"] {
-  height: 6px;
-  background:
-    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%,
-    linear-gradient(90deg, #4db6ff 0%, #43d97c 25%, #ffc531 50%, #ff8a2b 75%, #ff4655 100%);
-  box-shadow: 0 0 calc(var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--effort-color, #4db6ff) 55%, transparent);
-  transition: box-shadow 240ms ease;
-}
-.app-shell[data-color-scheme="light"] .reasoning-control input[type="range"], .app-shell[data-color-scheme="light"] .openrouter-reasoning input[type="range"] {
-  background:
-    linear-gradient(#d8dcd2, #d8dcd2) no-repeat right center / calc(100% - var(--reasoning-fill, var(--router-fill, 0%))) 100%,
-    linear-gradient(90deg, #1e8fdc 0%, #17a655 25%, #dfa010 50%, #ec7418 75%, #e63946 100%);
-}
+/* Shared effort-slider effects. Codex uses .reasoning-* and the other
+   providers share .openrouter-reasoning-*. Each selectable style draws
+   its own track. */
+.reasoning-control input[type="range"], .openrouter-reasoning input[type="range"] { transition: box-shadow 240ms ease; }
 .reasoning-control input[type="range"]::-webkit-slider-thumb, .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
   width: 15px; height: 15px; border: 2px solid var(--panel); border-radius: 50%;
   background: var(--effort-color, #4db6ff);
@@ -3536,70 +3543,8 @@ body[data-pane-resizing] .sidebar, body[data-pane-resizing] .studio-dock { trans
 .app-shell[data-theme="synthwave"] { --green: #ff6ac1; --green-soft: rgba(255,106,193,.13); --green-line: rgba(255,106,193,.3); --orange: #ffb45f; --red: #ff7582; --info: #8be1ff; }
 
 /* ===== Effort slider styles =====
-   data-effort-slider on the app shell picks the look; the drag/glide
-   interaction is shared by all three. Spectrum is the default and needs no
-   overrides. */
-
-/* -- Classic: the original quiet accent rail. -- */
-.app-shell[data-effort-slider="classic"] .reasoning-control input[type="range"] { height: 4px; background: linear-gradient(90deg, var(--model-accent) 0, var(--model-accent) var(--reasoning-fill, 0%), var(--panel-3) var(--reasoning-fill, 0%), var(--panel-3) 100%); box-shadow: none; }
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning input[type="range"] { height: 4px; background: linear-gradient(90deg, var(--router-accent) 0, var(--router-accent) var(--reasoning-fill, 0%), var(--panel-3) var(--reasoning-fill, 0%), var(--panel-3) 100%); box-shadow: inset 0 1px 2px rgba(0,0,0,.55); }
-.app-shell[data-effort-slider="classic"] .reasoning-control input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; transform: none; background: var(--model-accent); box-shadow: var(--elev-1); }
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; transform: none; background: var(--router-accent); box-shadow: 0 0 0 2px rgba(195,155,255,.12), 0 0 11px rgba(195,155,255,.46); }
-.app-shell[data-effort-slider="classic"] .dragging input[type="range"]::-webkit-slider-thumb { transform: scale(1.12); }
-.app-shell[data-effort-slider="classic"] .reasoning-ticks i, .app-shell[data-effort-slider="classic"] .openrouter-reasoning-ticks i { animation: none; }
-.app-shell[data-effort-slider="classic"] .reasoning-ticks i.reached { border-color: var(--model-accent); background: var(--model-accent); box-shadow: none; }
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning-ticks i.reached { border-color: var(--router-accent); background: var(--router-accent); box-shadow: 0 0 6px rgba(195,155,255,.45); }
-.app-shell[data-effort-slider="classic"] .reasoning-heading strong { color: var(--ink-2); text-shadow: none; animation: none; }
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning-heading strong { color: var(--router-accent); text-shadow: none; animation: none; }
-.app-shell[data-effort-slider="classic"] .reasoning-heading > svg:first-child { color: var(--model-accent); }
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning-heading > svg:first-child { color: var(--router-accent); }
-.app-shell[data-effort-slider="classic"] .reasoning-labels span.active { color: var(--ink-2); text-shadow: none; }
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning-labels span.active { color: var(--router-accent); text-shadow: 0 0 8px rgba(195,155,255,.42); }
-.app-shell[data-effort-slider="classic"] .effort-sparks,
-.app-shell[data-effort-slider="classic"] .reasoning-rail.dragging::before,
-.app-shell[data-effort-slider="classic"] .openrouter-reasoning-rail.dragging::before,
-.app-shell[data-effort-slider="classic"] .effort-max .reasoning-rail::after,
-.app-shell[data-effort-slider="classic"] .effort-max .openrouter-reasoning-rail::after { display: none; }
-
-/* -- Neon: the active model's accent, glowing hotter with effort.
-   Codex reads --model-accent (Sol/Terra/Luna/Astra), the other providers read
-   their control's --router-accent — same source Classic uses. -- */
-.app-shell[data-effort-slider="neon"] .reasoning-control input[type="range"] {
-  background:
-    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, 0%)) 100%,
-    linear-gradient(90deg, color-mix(in srgb, var(--model-accent) 45%, var(--panel-3)), var(--model-accent));
-  box-shadow: 0 0 calc(4px + var(--effort-heat, 0) * 16px) color-mix(in srgb, var(--model-accent) 70%, transparent);
-}
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning input[type="range"] {
-  background:
-    linear-gradient(var(--panel-3), var(--panel-3)) no-repeat right center / calc(100% - var(--reasoning-fill, 0%)) 100%,
-    linear-gradient(90deg, color-mix(in srgb, var(--router-accent) 45%, var(--panel-3)), var(--router-accent));
-  box-shadow: 0 0 calc(4px + var(--effort-heat, 0) * 16px) color-mix(in srgb, var(--router-accent) 70%, transparent);
-}
-.app-shell[data-effort-slider="neon"] .reasoning-control input[type="range"]::-webkit-slider-thumb {
-  background: color-mix(in srgb, var(--model-accent) 45%, #fff);
-  box-shadow:
-    0 0 0 calc(var(--effort-heat, 0) * 4px) color-mix(in srgb, var(--model-accent) 24%, transparent),
-    0 0 calc(6px + var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--model-accent) 85%, transparent);
-}
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning input[type="range"]::-webkit-slider-thumb {
-  background: color-mix(in srgb, var(--router-accent) 45%, #fff);
-  box-shadow:
-    0 0 0 calc(var(--effort-heat, 0) * 4px) color-mix(in srgb, var(--router-accent) 24%, transparent),
-    0 0 calc(6px + var(--effort-heat, 0) * 14px) color-mix(in srgb, var(--router-accent) 85%, transparent);
-}
-.app-shell[data-effort-slider="neon"] .reasoning-ticks i { color: var(--model-accent); }
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning-ticks i { color: var(--router-accent); }
-.app-shell[data-effort-slider="neon"] .reasoning-heading strong { color: var(--model-accent); text-shadow: 0 0 10px color-mix(in srgb, var(--model-accent) 55%, transparent); }
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning-heading strong { color: var(--router-accent); text-shadow: 0 0 10px color-mix(in srgb, var(--router-accent) 55%, transparent); }
-.app-shell[data-effort-slider="neon"] .reasoning-heading > svg:first-child { color: var(--model-accent); }
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning-heading > svg:first-child { color: var(--router-accent); }
-.app-shell[data-effort-slider="neon"] .reasoning-labels span.active { color: var(--model-accent); text-shadow: 0 0 8px color-mix(in srgb, var(--model-accent) 45%, transparent); }
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning-labels span.active { color: var(--router-accent); text-shadow: 0 0 8px color-mix(in srgb, var(--router-accent) 45%, transparent); }
-.app-shell[data-effort-slider="neon"] .reasoning-rail .effort-sparks i { background: var(--model-accent); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--model-accent) 85%, transparent); }
-.app-shell[data-effort-slider="neon"] .openrouter-reasoning-rail .effort-sparks i { background: var(--router-accent); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--router-accent) 85%, transparent); }
-.app-shell[data-effort-slider="neon"] .effort-max .reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px var(--model-accent); }
-.app-shell[data-effort-slider="neon"] .effort-max .openrouter-reasoning-heading strong { animation: effort-pop 280ms var(--ease); text-shadow: 0 0 16px var(--router-accent); }
+   The app shell selects the look; every style shares the drag and keyboard
+   interaction. */
 
 /* -- Pixel: a chunky retro VU meter. Green through red LED segments, square
    thumb, monospace readout, square sparks. -- */
