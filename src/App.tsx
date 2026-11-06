@@ -27,7 +27,7 @@ import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerA
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
-import { flushPendingStateWrites, loadStored, readStoredRaw, storeValue } from "./lib/storage";
+import { loadStored, readStoredRaw, storeValue } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
@@ -115,6 +115,7 @@ import { forgetRuntimePerformanceProvider, registerRuntimePerformanceProvider } 
 import {
   annotateThreadUsage,
   estimateUsageCost,
+  flushUsageBeforeExit,
   formatEstimatedCost,
   pricingForModel,
   pricingRevision,
@@ -2646,7 +2647,10 @@ export default function App() {
   });
   const scheduleClaudeThreadSave = localTranscriptSaves.schedule;
   const scheduleCursorThreadSave = localTranscriptSaves.schedule;
-  useFlushOnClose(() => flushBeforeClose([localTranscriptSaves.flushAll, flushPendingStateWrites, flushPendingGlobalInstructionFileEdits]), setError);
+  useFlushOnClose(() => flushBeforeClose(
+    [localTranscriptSaves.flushAll, flushPendingGlobalInstructionFileEdits],
+    flushUsageBeforeExit,
+  ), setError);
 
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);

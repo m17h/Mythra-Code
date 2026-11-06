@@ -5,6 +5,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { recordError } from "./errorLog";
 import { friendlyError, safeErrorText } from "./errors";
+import { flushUsageBeforeExit } from "./usageLedger";
 
 export type AppUpdatePhase =
   | "idle"
@@ -24,12 +25,13 @@ export interface AppUpdateState {
   publishedAt: string | null;
   downloadedBytes: number;
   totalBytes: number | null;
+  restartPending: boolean;
   error: string | null;
 }
 
 export interface AppUpdater extends AppUpdateState {
   checkForUpdates: () => Promise<void>;
-  downloadAndRestart: () => Promise<void>;
+  applyUpdate: () => Promise<void>;
 }
 
 const INITIAL_STATE: AppUpdateState = {
@@ -40,6 +42,7 @@ const INITIAL_STATE: AppUpdateState = {
   publishedAt: null,
   downloadedBytes: 0,
   totalBytes: null,
+  restartPending: false,
   error: null,
 };
 
@@ -96,11 +99,12 @@ export function useAppUpdater(): AppUpdater {
   const checkingRef = useRef(false);
   const visibleCheckRef = useRef(false);
   const lifetimeRef = useRef(0);
-  const phaseRef = useRef<AppUpdatePhase>(state.phase);
-  phaseRef.current = state.phase;
+  const phaseRef = useRef<AppUpdatePhase>("idle");
+  const installedRef = useRef(false);
 
   const performCheck = useCallback(async (silent: boolean) => {
     if (!isTauri()
+      || installedRef.current
       || ["downloading", "installing", "restarting"].includes(phaseRef.current)) return;
     if (checkingRef.current) {
       // Opening Updates can join a silent background check. Promote its
@@ -151,6 +155,7 @@ export function useAppUpdater(): AppUpdater {
         publishedAt: update.date ?? null,
         downloadedBytes: 0,
         totalBytes: null,
+        restartPending: false,
         error: null,
       });
     } catch (reason) {
@@ -181,38 +186,69 @@ export function useAppUpdater(): AppUpdater {
     return performCheck(false);
   }, [performCheck]);
 
-  const downloadAndRestart = useCallback(async () => {
+  const applyUpdate = useCallback(async () => {
     if (checkingRef.current
       || ["downloading", "installing", "restarting"].includes(phaseRef.current)) return;
     const update = updateRef.current;
-    if (!update) {
+    if (!update && !installedRef.current) {
       await performCheck(false);
       return;
     }
 
-    let downloadedBytes = 0;
-    let totalBytes: number | null = null;
-    phaseRef.current = "downloading";
-    setState((current) => ({ ...current, phase: "downloading", downloadedBytes: 0, totalBytes: null, error: null }));
+    const lifetime = lifetimeRef.current;
+    // The active operation owns the handle and closes it after the native
+    // call settles, including when downloaded bytes arrive after teardown.
+    updateRef.current = null;
+    let downloading = false;
+    let savedForRestart = false;
     try {
-      await update.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          totalBytes = event.data.contentLength ?? null;
-          setState((current) => ({ ...current, phase: "downloading", downloadedBytes: 0, totalBytes }));
-        } else if (event.event === "Progress") {
-          downloadedBytes += event.data.chunkLength;
-          setState((current) => ({ ...current, downloadedBytes, totalBytes }));
-        } else {
-          phaseRef.current = "installing";
-          setState((current) => ({ ...current, phase: "installing", downloadedBytes, totalBytes }));
-        }
-      }, { timeout: 10 * 60_000 });
+      if (update) {
+        let downloadedBytes = 0;
+        let totalBytes: number | null = null;
+        downloading = true;
+        phaseRef.current = "downloading";
+        setState((current) => ({ ...current, phase: "downloading", downloadedBytes: 0, totalBytes: null, error: null }));
+        await update.download((event) => {
+          if (!downloading || lifetime !== lifetimeRef.current) return;
+          if (event.event === "Started") {
+            totalBytes = event.data.contentLength ?? null;
+            setState((current) => ({ ...current, totalBytes }));
+          } else if (event.event === "Progress") {
+            downloadedBytes += event.data.chunkLength;
+            setState((current) => ({ ...current, downloadedBytes, totalBytes }));
+          }
+        }, { timeout: 10 * 60_000 });
+        downloading = false;
+        if (lifetime !== lifetimeRef.current) return;
+        phaseRef.current = "installing";
+        setState((current) => ({ ...current, phase: "installing", downloadedBytes, totalBytes }));
+        // The Windows installer exits the process from inside install().
+        await flushUsageBeforeExit();
+        if (lifetime !== lifetimeRef.current) return;
+        await update.install();
+        if (lifetime !== lifetimeRef.current) return;
+        installedRef.current = true;
+      }
+
       phaseRef.current = "restarting";
-      setState((current) => ({ ...current, phase: "restarting" }));
+      setState((current) => ({ ...current, phase: "restarting", restartPending: true, error: null }));
+      // Elsewhere install() returns, and the restart bypasses the close guard.
+      await flushUsageBeforeExit();
+      savedForRestart = true;
+      if (lifetime !== lifetimeRef.current) return;
       await relaunch();
     } catch (reason) {
+      if (lifetime !== lifetimeRef.current) return;
+      const restartPending = installedRef.current;
+      const error = restartPending
+        ? `The update is installed, but Mythra Code couldn’t ${savedForRestart ? "restart" : "save pending changes"}. Select Save and restart to try again.`
+        : friendlyError(reason);
+      if (restartPending) recordError(`Update restart failed: ${safeErrorText(reason)}`);
       phaseRef.current = "error";
-      setState((current) => ({ ...current, phase: "error", error: friendlyError(reason) }));
+      setState((current) => ({ ...current, phase: "error", restartPending, error }));
+    } finally {
+      downloading = false;
+      if (update) void update.close().catch(() => undefined);
     }
   }, [performCheck]);
 
@@ -232,9 +268,6 @@ export function useAppUpdater(): AppUpdater {
       void performCheck(true);
     }, 3_500);
     const recheckTimer = window.setInterval(() => {
-      // Never interrupt an in-flight download/install: performCheck closes
-      // the Update handle downloadAndInstall is still using.
-      if (phaseRef.current === "downloading" || phaseRef.current === "installing" || phaseRef.current === "restarting") return;
       void performCheck(true);
     }, AUTOMATIC_RECHECK_INTERVAL_MS);
     return () => {
@@ -252,5 +285,5 @@ export function useAppUpdater(): AppUpdater {
     if (update) void update.close().catch(() => undefined);
   }, []);
 
-  return { ...state, checkForUpdates, downloadAndRestart };
+  return { ...state, checkForUpdates, applyUpdate };
 }

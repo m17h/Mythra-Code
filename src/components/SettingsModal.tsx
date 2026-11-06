@@ -3201,8 +3201,8 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
     <div className="set-group-head"><h4>Mythra Code</h4><span className="set-group-note">signed releases from the public repository</span></div>
     <div className={`update-card ${appUpdater.phase}`}>
       <div className="update-version-row">
-        <span><small>Installed</small><strong>Mythra Code {appUpdater.currentVersion}</strong></span>
-        {appUpdater.availableVersion && <span className="update-version-available"><small>Available</small><strong>{appUpdater.availableVersion}</strong></span>}
+        <span><small>{appUpdater.restartPending ? "Running" : "Installed"}</small><strong>Mythra Code {appUpdater.currentVersion}</strong></span>
+        {appUpdater.availableVersion && <span className="update-version-available"><small>{appUpdater.restartPending ? "Installed" : "Available"}</small><strong>{appUpdater.availableVersion}</strong></span>}
       </div>
       <div className="update-status-row">
         {busy && <LoaderCircle className="spin" size={15} />}
@@ -3219,9 +3219,11 @@ function UpdateSettings({ appUpdater, developerRuntimeUpdater }: { appUpdater: A
       <div className="update-actions">
         <button className="secondary-button" onClick={() => void openUrl(RELEASE_NOTES_URL)}><ExternalLink size={13} /> View release notes</button>
         {appUpdater.phase === "available" ? (
-          <button className="primary-button" onClick={() => void appUpdater.downloadAndRestart()}><Download size={13} /> Download, install, and restart</button>
-        ) : appUpdater.phase === "error" ? (
-          <button className="secondary-button" disabled={busy} onClick={() => void appUpdater.checkForUpdates()}><RotateCcw size={13} /> Try again</button>
+          <button className="primary-button" onClick={() => void appUpdater.applyUpdate()}><Download size={13} /> Download, install, and restart</button>
+        ) : appUpdater.phase === "error" ? appUpdater.restartPending ? (
+          <button className="primary-button" onClick={() => void appUpdater.applyUpdate()}><RotateCcw size={13} /> Save and restart</button>
+        ) : (
+          <button className="secondary-button" onClick={() => void appUpdater.checkForUpdates()}><RotateCcw size={13} /> Try again</button>
         ) : null}
       </div>
     </div>

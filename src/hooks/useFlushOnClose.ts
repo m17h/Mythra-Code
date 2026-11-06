@@ -2,9 +2,13 @@ import { useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 
-/** Give every independent store a chance to save, even if another fails. */
-export async function flushBeforeClose(flushes: Array<() => Promise<void>>): Promise<void> {
+/** Give every independent store a chance to save, then drain writes made while they settled. */
+export async function flushBeforeClose(flushes: Array<() => Promise<void>>, finalFlush?: () => Promise<void>): Promise<void> {
   const results = await Promise.allSettled(flushes.map((flush) => Promise.resolve().then(flush)));
+  if (finalFlush) {
+    try { await finalFlush(); }
+    catch (reason) { results.push({ status: "rejected", reason }); }
+  }
   const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failures.length) throw new Error(failures.map((failure) => String(failure.reason)).join("; "));
 }
