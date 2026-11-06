@@ -1,6 +1,6 @@
 import {
-  isAnthropicPricingModelId, officialPricingSnapshot, officialPricingStatus, refreshOfficialPricing,
-  type OfficialPricingRefresh, type OfficialRate,
+  isAnthropicPricingModelId, officialPricingPageSnapshot, officialPricingSnapshot, officialPricingStatus, refreshOfficialPricing,
+  type OfficialPricingBoundary, type OfficialPricingRefresh, type OfficialRate,
 } from "./officialPricing";
 
 export type FrontierPricingSource = "openai" | "anthropic";
@@ -14,6 +14,8 @@ export interface FrontierTokenRates {
   cachedInputPerMillion?: number;
   cacheWriteInputPerMillion?: number;
   cacheWrite1hInputPerMillion?: number;
+  cacheWrite30m?: true;
+  cacheWrite12hInputPerMillion?: number;
 }
 
 export interface FrontierPricingEntry extends FrontierTokenRates {
@@ -45,6 +47,12 @@ export interface FrontierPricingSnapshot {
   checking: boolean;
 }
 
+export interface FrontierCompactionPricingEntry extends OfficialPricingBoundary {
+  id: string;
+  provider: FrontierPricingSource;
+  name: string;
+}
+
 const SOURCES: readonly FrontierPricingSource[] = ["anthropic", "openai"];
 export const FRONTIER_PRICING_URLS: Record<FrontierPricingSource, string> = {
   anthropic: "https://platform.claude.com/docs/en/about-claude/pricing",
@@ -57,10 +65,12 @@ function tokenRates(rate: OfficialRate): FrontierTokenRates {
     ...(rate.cacheRead !== undefined ? { cachedInputPerMillion: rate.cacheRead } : {}),
     ...(rate.cacheWrite !== undefined ? { cacheWriteInputPerMillion: rate.cacheWrite } : {}),
     ...(rate.cacheWrite1h !== undefined ? { cacheWrite1hInputPerMillion: rate.cacheWrite1h } : {}),
+    ...(rate.cacheWrite30m ? { cacheWrite30m: true as const } : {}),
+    ...(rate.cacheWrite12h !== undefined ? { cacheWrite12hInputPerMillion: rate.cacheWrite12h } : {}),
   };
 }
 
-function displayName(id: string, rate: OfficialRate): string {
+function displayName(id: string, rate: Pick<OfficialRate, "name">): string {
   if (rate.name) return rate.name;
   const claude = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(id);
   return claude ? `Claude ${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}${claude[3] ? `.${claude[3]}` : ""}` : id;
@@ -68,6 +78,10 @@ function displayName(id: string, rate: OfficialRate): string {
 
 let listedEntries: { listings: Array<ReturnType<typeof officialPricingSnapshot>>; entries: FrontierPricingEntry[] } | null = null;
 let latestSnapshot: FrontierPricingSnapshot | null = null;
+let compactionEntries: {
+  listings: Array<ReturnType<typeof officialPricingPageSnapshot>>;
+  entries: readonly FrontierCompactionPricingEntry[];
+} | null = null;
 
 /** Official listings keep their identity until the stored value changes, so
  * the array callers render from does too. Shared: never mutate it. */
@@ -88,6 +102,18 @@ function frontierEntries(): FrontierPricingEntry[] {
   return entries;
 }
 
+/** Compaction advice follows the selected model's pricing-page evidence even
+ * when the model is absent from Settings' active-model catalog. */
+export function frontierCompactionPricingEntries(): readonly FrontierCompactionPricingEntry[] {
+  const listings = SOURCES.map((provider) => officialPricingPageSnapshot(provider));
+  if (compactionEntries?.listings.every((listing, index) => listing === listings[index])) return compactionEntries.entries;
+  const entries = SOURCES.flatMap((provider, index) => Object.entries(listings[index]).map(([id, rate]) => ({
+    ...rate, id, provider, name: displayName(id, rate),
+  })));
+  compactionEntries = { listings, entries };
+  return entries;
+}
+
 function sameProvider(left: FrontierPricingProvider, right: FrontierPricingProvider): boolean {
   return (Object.keys(left) as Array<keyof FrontierPricingProvider>).every((key) => left[key] === right[key]);
 }
@@ -103,8 +129,8 @@ export function frontierPricingSnapshot(): FrontierPricingSnapshot {
     const state = statuses.find((status) => status.source === provider)!;
     return {
       provider, sourceUrl: FRONTIER_PRICING_URLS[provider],
-      checkedAt: state.checkedAt, verifiedAt: state.verifiedAt, error: state.error,
-      verificationTimeUncertain: state.verificationTimeUncertain, checkedTimeUncertain: state.checkedTimeUncertain,
+      checkedAt: state.checkedAt, verifiedAt: state.catalogVerifiedAt, error: state.catalogError ?? state.error,
+      verificationTimeUncertain: state.catalogVerificationTimeUncertain, checkedTimeUncertain: state.checkedTimeUncertain,
       checking: state.checking, models: entries.filter((entry) => entry.provider === provider).length,
     };
   });
