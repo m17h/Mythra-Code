@@ -2,23 +2,24 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, u
 import { ArrowRight, ChevronRight } from "lucide-react";
 import type { Activity } from "../types";
 import { providerDisplayName } from "../lib/childAgents";
-import { getChildMailbox, subscribeChildMailbox } from "../lib/childAgentMailbox";
+import { TimelineSubAgentControls, useTimelineEnvironment } from "./TimelineEnvironment";
 import { coordinationView, type CoordinationRecord, type CoordinationView } from "../lib/managedAgentActivity";
-import { SubAgentControls } from "./SubAgentControls";
+
 import "./CoordinationRoute.css";
 
 /** Live view of one coordination row: the crew's identity for its child and
  * that child's mailbox, so delivery and read states follow the real message. */
 function useCoordinationView(activity: Activity, record: CoordinationRecord): CoordinationView {
-  const controls = useContext(SubAgentControls);
+  const controls = useContext(TimelineSubAgentControls);
+  const source = useTimelineEnvironment().mailbox;
   const workers = controls?.historyWorkers ?? controls?.workers;
   const worker = record.childId ? workers?.find((entry) => entry.id === record.childId) : undefined;
   // Raw bridge receipts cannot prove a mailbox message's identity. A row
   // with no proven app message needs no subscription at all.
   const childId = record.source === "app" && record.messageId ? record.childId : undefined;
-  const subscribe = useCallback((listener: () => void) => childId
-    ? subscribeChildMailbox(childId, listener) : () => {}, [childId]);
-  const snapshot = useCallback(() => childId ? getChildMailbox(childId) : undefined, [childId]);
+  const subscribe = useCallback((listener: () => void) => childId && source
+    ? source.subscribe(childId, listener) : () => {}, [childId, source]);
+  const snapshot = useCallback(() => childId ? source?.get(childId) : undefined, [childId, source]);
   const mailbox = useSyncExternalStore(subscribe, snapshot);
   const title = worker?.title;
   const detail = worker?.identityRecorded ? worker.detail : worker?.provider

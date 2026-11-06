@@ -1,9 +1,16 @@
 //! App-wide Writing Tools policy. Ordinary spelling services remain enabled.
 
+use std::ffi::c_void;
+
 use objc2::{msg_send, rc::Retained, runtime::Bool, sel, ClassType, MainThreadMarker};
 use objc2_app_kit::NSWritingToolsBehavior;
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSProcessInfo, NSString, NSUUID};
-use objc2_web_kit::{WKPreferences, WKWebViewConfiguration, WKWebsiteDataStore};
+use objc2_web_kit::{WKPreferences, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore};
+
+/// `WKInactiveSchedulingPolicy`: suspend is WebKit's default; none keeps timers
+/// and events running while the window is hidden.
+const INACTIVE_POLICY_SUSPEND: isize = 0;
+const INACTIVE_POLICY_NONE: isize = 2;
 
 pub(crate) fn configuration(
     mtm: MainThreadMarker,
@@ -41,6 +48,29 @@ pub(crate) fn configuration(
             suppress_siri_affordance(&config);
         }
         config
+    }
+}
+
+/// Follows live viewer links. `configuration` returns a copy, but that copy
+/// holds the webview's own WKPreferences, so this changes the existing object
+/// rather than creating a new one.
+pub(crate) fn set_keep_active(webview: *mut c_void, keep_active: bool) {
+    if webview.is_null() {
+        return;
+    }
+    // SAFETY: Tauri passes the live WKWebView on the main thread. The selector
+    // is new in macOS 14, so older systems skip this and keep WebKit's default.
+    unsafe {
+        let webview = &*webview.cast::<WKWebView>();
+        let preferences = webview.configuration().preferences();
+        if preferences.respondsToSelector(sel![setInactiveSchedulingPolicy:]) {
+            let policy = if keep_active {
+                INACTIVE_POLICY_NONE
+            } else {
+                INACTIVE_POLICY_SUSPEND
+            };
+            let _: () = msg_send![&preferences, setInactiveSchedulingPolicy: policy];
+        }
     }
 }
 

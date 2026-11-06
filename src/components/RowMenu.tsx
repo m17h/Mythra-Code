@@ -5,6 +5,8 @@ export interface RowMenuItem {
   label: string;
   icon?: ReactNode;
   danger?: boolean;
+  /** Says why it can't be used. The row stays in the menu. */
+  disabledReason?: string;
   onSelect: () => void;
 }
 
@@ -70,6 +72,8 @@ export function RowMenu({ label, items, scale = 1 }: { label: string; items: Row
               key={item.label}
               role="menuitem"
               className={item.danger ? "danger" : ""}
+              disabled={Boolean(item.disabledReason)}
+              title={item.disabledReason}
               onClick={() => {
                 setPosition(null);
                 item.onSelect();

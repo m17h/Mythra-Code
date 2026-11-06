@@ -210,6 +210,17 @@ function QueuedTurnEditor({ entry, index, onFinish, label = "queued message" }: 
   );
 }
 
+/**
+ * How a send ended. A plain boolean is enough on this machine. On another one a
+ * lost acknowledgement is neither success nor failure, so `awaiting confirmation`
+ * must not hand the text back as a draft that could be sent a second time.
+ */
+export type ComposerDelivery = boolean
+  | { status: "accepted" }
+  | { status: "rejected"; message: string }
+  | { status: "awaiting confirmation" };
+const draftStaysSent = (delivery: ComposerDelivery) => typeof delivery === "boolean" ? delivery : delivery.status !== "rejected";
+
 export const Composer = forwardRef<ComposerHandle, {
   threadKey: string;
   /** Effective live-previewed font; changes must remeasure wrapped drafts. */
@@ -249,8 +260,8 @@ export const Composer = forwardRef<ComposerHandle, {
   onWorkflow?: (id: string, prompt: string) => Promise<boolean>;
   onRemoveAttachment: (path: string) => void;
   onPasteImages: (items: DataTransferItemList) => void;
-  onSend: (text: string) => Promise<boolean>;
-  onSteer: (text: string) => Promise<boolean>;
+  onSend: (text: string) => Promise<ComposerDelivery>;
+  onSteer: (text: string) => Promise<ComposerDelivery>;
   onSteerQueued?: (queuedTurnId: string) => void;
   onRetryQueued?: (queuedTurnId: string) => void;
   onRemoveQueued?: (queuedTurnId: string) => void;
@@ -645,7 +656,7 @@ export const Composer = forwardRef<ComposerHandle, {
     closeMentions();
     closeWorkflows();
     setDraft("");
-    let delivered = false;
+    let delivered: ComposerDelivery = false;
     try {
       delivered = await (mode === "steer" ? props.onSteer(text) : props.onSend(text));
     } catch {
@@ -654,7 +665,7 @@ export const Composer = forwardRef<ComposerHandle, {
     } finally {
       submittingRef.current.delete(sentFromKey);
       setSubmittingKeys(new Set(submittingRef.current));
-      if (!delivered && text) {
+      if (!draftStaysSent(delivered) && text) {
         // Persist synchronously, just like typing and transcript admission.
         // A deferred React updater can otherwise overwrite a transcript that
         // arrived after this callback but before React processes the queue.

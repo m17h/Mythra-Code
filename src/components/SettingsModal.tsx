@@ -41,6 +41,7 @@ import {
   Brain,
   CornerDownRight,
   Cpu,
+  MonitorSmartphone,
 } from "lucide-react";
 import { exportDiagnostics, recentAuditRows, rpc, saveLmStudioKey, saveOpenRouterKey, type AuditRow, type CodexRuntimeStatus } from "../lib/codex";
 import { cancelClaudeLogin, isClaudeDefaultModel, isClaudeModelSuperseded, visibleClaudeModels, type ClaudeRuntimeStatus } from "../lib/claude";
@@ -77,6 +78,9 @@ import { SubagentModelGuidanceEditor, subagentModelGuidanceDraftChanged, type Su
 import { HarnessSettings } from "./HarnessSettings";
 import { PreferenceLearningSettings } from "./PreferenceLearningSettings";
 import { LanguageToolsSettings } from "./LanguageToolsSettings";
+import { DevicesSettings } from "./remote/DevicesSettings";
+import { LOCAL_MACHINE, useActiveMachine } from "../lib/remote/activeMachine";
+import { localMachineLabel, useRemoteDevices } from "../lib/remote/devices";
 import type { PreferenceHistoryProgress } from "../hooks/usePreferenceLearning";
 import { SkillLibrary } from "./SkillLibrary";
 import { PromptsSettings, type PromptLayer } from "./PromptsSettings";
@@ -163,6 +167,7 @@ const SETTINGS_NAV: ReadonlyArray<{ group: string; items: ReadonlyArray<Settings
     group: "Connections",
     items: [
       { id: "github", label: "GitHub", icon: GitFork, detail: "Connect your GitHub account and clone repositories into new projects.", keywords: "github git clone repository repo account sign in gh cli remote" },
+      { id: "devices", label: "Devices", icon: MonitorSmartphone, detail: "Use this device from your other devices on the same network, and pair new ones.", keywords: "device devices remote nearby pair pairing paired lan local network host viewer machine switcher another computer pc mac access revoke invitation" },
       { id: "tools", label: "Tools & MCP", icon: Wrench, detail: "Language tools, local MCP servers, and live tool controls.", keywords: "mcp tool tools server stdio model context protocol integration workspace language languages lsp install automatic setup" },
       { id: "skills", label: "Skills", icon: Boxes, detail: "Markdown skills in a local folder that models can call by name.", keywords: "skill skills markdown folder library import capability" },
     ],
@@ -233,6 +238,9 @@ const SETTINGS_ROWS: ReadonlyArray<SettingsRow> = [
   { pane: "agents", label: "Archive sub-agent threads automatically", keywords: "cleanup archive" },
   { pane: "agents", label: "Sub-agent presets", keywords: "preset crew setup" },
   { pane: "agents", label: "Custom agents", keywords: "specialist instructions" },
+  { pane: "devices", label: "Allow access from nearby devices", keywords: "remote host lan local network turn on" },
+  { pane: "devices", label: "Pair a device", keywords: "invitation nearby code approve" },
+  { pane: "devices", label: "Show this name to nearby devices", keywords: "privacy device name announcement" },
   { pane: "tools", label: "MCP servers", keywords: "mcp server stdio" },
   { pane: "tools", label: "Live tool controls", keywords: "thread tools" },
   { pane: "workflows", label: "Quick project actions", keywords: "action command button" },
@@ -708,6 +716,8 @@ export function SettingsModal({
   preferenceHistoryProgress?: PreferenceHistoryProgress | null;
   onPreferenceLearningChanged?: (message: string) => void;
 }) {
+  const remoteMachineActive = useActiveMachine((state) => state.machine !== LOCAL_MACHINE);
+  const localMachine = useRemoteDevices((state) => localMachineLabel(state.snapshot));
   const cursorAccountCheck = accountChecks.cursor || (cursorStatus?.loggedIn && cursorStatus.authVerified === false ? "Connection unverified" : "");
   const managedDeveloperRuntimeUpdater = useDeveloperRuntimeUpdater(onClaudeRefresh, !injectedDeveloperRuntimeUpdater);
   const developerRuntimeUpdater = injectedDeveloperRuntimeUpdater ?? managedDeveloperRuntimeUpdater;
@@ -1652,6 +1662,7 @@ export function SettingsModal({
           <nav className="settings-nav" aria-label="Settings categories">
             <div className="settings-nav-head">
               <h2 id="settings-title">Settings</h2>
+              {remoteMachineActive && <small className="settings-machine-label">Applies to {localMachine}, not the device you're viewing</small>}
               <div className="settings-search">
                 <Search size={13} aria-hidden="true" />
                 <input
@@ -1945,6 +1956,8 @@ export function SettingsModal({
           {settingsSection === "memory" && <section className="settings-section">
             <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
           </section>}
+
+          {settingsSection === "devices" && <DevicesSettings />}
 
           {settingsSection === "tools" && <LanguageToolsSettings />}
 

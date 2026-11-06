@@ -1,0 +1,34 @@
+/* The local pane keeps its size and scroll position underneath this cover. */
+.remote-stage { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; color: var(--text); background: var(--bg); }
+.remote-banner { display: block; margin: var(--s-2) var(--s-4) 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: var(--fs-meta); line-height: 1.45; }
+.remote-banner > .secondary-button { display: inline-flex; margin-left: var(--s-2); }
+.remote-banner p { margin: 4px 0; }
+.remote-timeline { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.remote-timeline > .timeline-shell { flex: 1; min-height: 0; }
+.remote-empty { margin: auto; padding: var(--s-4); color: var(--muted); text-align: center; }
+.remote-note { color: var(--muted); font-size: var(--fs-meta); }
+.remote-question { padding: 10px 0; }
+.remote-question p { margin: 6px 0; }
+.remote-question dl { margin: 8px 0; }
+.remote-question dd { margin: 4px 0 10px; white-space: pre-wrap; }
+.remote-composer-error { margin: 6px 0 0; color: var(--red); font-size: var(--fs-meta); }
+.remote-row-actions { flex: 0 0 auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.remote-row-actions button { display: inline-flex; align-items: center; gap: 5px; }
+.remote-requests { display: flex; flex-direction: column; gap: 8px; }
+.remote-request { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.remote-request > p { min-width: 0; }
+.message-inert-link { overflow-wrap: anywhere; user-select: text; }
+.remote-outbox-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; color: var(--muted); font-size: var(--fs-meta); }
+.remote-outbox-state button { padding: 0; border: 0; color: inherit; background: none; font: inherit; text-decoration: underline; cursor: pointer; }
+.remote-folder-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--backdrop, rgb(0 0 0 / .3)); }
+.remote-folder-browser { width: min(460px, 90vw); max-height: 70vh; display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3); border-radius: var(--r-xl); background: var(--menu-surface); box-shadow: var(--lm-pop-shadow); }
+.remote-folder-browser header, .remote-folder-browser footer { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.remote-folder-browser footer { justify-content: flex-end; }
+.remote-folder-path { margin: 0; color: var(--muted); font-size: var(--fs-meta); }
+.remote-folder-list { min-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.remote-folder-list button { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 3px 8px; border: 0; border-radius: var(--r-sm); color: var(--text); background: transparent; font-size: var(--fs-ui); text-align: left; cursor: pointer; }
+.remote-folder-list button:hover { background: var(--lm-hover); }
+.remote-folder-list button > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-folder-list p { margin: 6px 8px; color: var(--muted); font-size: var(--fs-meta); }
+.remote-change-row { display: block; width: 100%; text-align: left; cursor: pointer; }
+.remote-change-row[aria-pressed="true"] { background: var(--lm-press); }

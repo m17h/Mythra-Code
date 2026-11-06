@@ -166,7 +166,7 @@ function TerminalPanelHost(props: TerminalPanelProps) {
   return Component ? <Component {...props} /> : null;
 }
 
-function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof CodeXml; title: string; subtitle: string; onClose: () => void }) {
+export function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof CodeXml; title: string; subtitle: string; onClose: () => void }) {
   return <div className="studio-header"><span className="studio-header-icon"><Icon size={16} /></span><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close Thread tools"><X size={16} /></button></div>;
 }
 
@@ -175,6 +175,96 @@ function reviewDiffSummary(diff: ReviewDiff, fileCount: number): string {
   const files = fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"} changed`
     : diff.source === "repository" ? "No tracked changes" : "No changes loaded";
   return `${files} · against ${diff.baseline}`;
+}
+
+/** The dock itself: its edge, tabs and panel. Each machine fills the panel. */
+export function StudioDockFrame({ children, ...props }: {
+  open: boolean;
+  rootRef?: Ref<HTMLElement>;
+  onResizeStart?: (event: React.PointerEvent) => void;
+  onResizeKeyDown?: (event: React.KeyboardEvent) => void;
+  resizeValue?: number;
+  tab: StudioTab;
+  onTab: (tab: StudioTab) => void;
+  children: ReactNode;
+}) {
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const idPrefix = useId();
+  const tabId = (tab: StudioTab) => `${idPrefix}-tab-${tab}`;
+  const panelId = `${idPrefix}-panel`;
+
+  // Vertical tablist: arrows move between tabs and select as they go, Home and
+  // End jump to the ends. Focus follows selection so the panel below always
+  // matches what the roving tab stop is on.
+  const moveTab = (offset: number, absolute?: "first" | "last") => {
+    const index = TABS.findIndex((entry) => entry.id === props.tab);
+    const next = absolute === "first"
+      ? 0
+      : absolute === "last"
+        ? TABS.length - 1
+        : (index + offset + TABS.length) % TABS.length;
+    const target = TABS[next];
+    props.onTab(target.id);
+    tabsRef.current?.querySelector<HTMLButtonElement>(`[data-studio-tab="${target.id}"]`)?.focus();
+  };
+
+  return (
+    <aside ref={props.rootRef} className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Thread tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
+      {props.onResizeStart && (
+        <div
+          className="pane-resize dock-resize"
+          onPointerDown={props.onResizeStart}
+          onKeyDown={props.onResizeKeyDown}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize Thread tools"
+          aria-valuemin={PANE_BOUNDS.dock.min}
+          aria-valuemax={PANE_BOUNDS.dock.max}
+          aria-valuenow={props.resizeValue === undefined ? undefined : Math.round(props.resizeValue)}
+          tabIndex={0}
+        />
+      )}
+      <div
+        className="studio-tabs"
+        role="tablist"
+        aria-orientation="vertical"
+        aria-label="Thread tools"
+        ref={tabsRef}
+        // Drives the sliding selection indicator below; presentation only.
+        style={{ "--studio-tab-index": Math.max(0, TABS.findIndex((entry) => entry.id === props.tab)) } as CSSProperties}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); moveTab(1); }
+          else if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); moveTab(-1); }
+          else if (event.key === "Home") { event.preventDefault(); moveTab(0, "first"); }
+          else if (event.key === "End") { event.preventDefault(); moveTab(0, "last"); }
+        }}
+      >
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            id={tabId(id)}
+            data-studio-tab={id}
+            role="tab"
+            className={props.tab === id ? "active" : ""}
+            onClick={() => props.onTab(id)}
+            title={label}
+            aria-label={`${label} thread tool`}
+            aria-selected={props.tab === id}
+            aria-controls={panelId}
+            tabIndex={props.tab === id ? 0 : -1}
+          >
+            <Icon size={16} /><span>{label}</span>
+          </button>
+        ))}
+        <span className="studio-tab-indicator" aria-hidden="true" />
+      </div>
+      {/* The terminal sizes to the dock instead of the window, so its panel
+          lays out as a column the terminal can flex into. */}
+      <div className={`studio-panel${props.tab === "terminal" ? " fill" : ""}`} role="tabpanel" id={panelId} aria-labelledby={tabId(props.tab)} tabIndex={0}>
+        {children}
+      </div>
+    </aside>
+  );
 }
 
 export function StudioDock(props: {
@@ -379,10 +469,6 @@ export function StudioDock(props: {
       ? { ...current, [gitDraftScope]: { ...current[gitDraftScope], commitMessage: "", commitMessageEdited: false, commitMessageSuggestionId: undefined, commitMessageToken: undefined, commitScope: undefined } }
       : current);
   }, [gitDraftScope, props.gitCommitSuccess, props.gitCommitSuccessRevision, props.gitCommitBusy]);
-  const tabsRef = useRef<HTMLDivElement>(null);
-  const idPrefix = useId();
-  const tabId = (tab: StudioTab) => `${idPrefix}-tab-${tab}`;
-  const panelId = `${idPrefix}-panel`;
   const diffSections = useMemo(
     () => (renderContent && props.tab === "review" ? parseDiffSections(props.reviewDiff.text) : []),
     [props.reviewDiff.text, props.tab, renderContent],
@@ -396,20 +482,6 @@ export function StudioDock(props: {
     [props.checkpoints],
   );
 
-  // Vertical tablist: arrows move between tabs and select as they go, Home and
-  // End jump to the ends. Focus follows selection so the panel below always
-  // matches what the roving tab stop is on.
-  const moveTab = (offset: number, absolute?: "first" | "last") => {
-    const index = TABS.findIndex((entry) => entry.id === props.tab);
-    const next = absolute === "first"
-      ? 0
-      : absolute === "last"
-        ? TABS.length - 1
-        : (index + offset + TABS.length) % TABS.length;
-    const target = TABS[next];
-    props.onTab(target.id);
-    tabsRef.current?.querySelector<HTMLButtonElement>(`[data-studio-tab="${target.id}"]`)?.focus();
-  };
 
   // When the dock is closed, skip all panel work (diff parsing, xterm,
   // file browser) — it re-rendered fully even while hidden.
@@ -420,58 +492,7 @@ export function StudioDock(props: {
   const outsideRepositoryRoot = props.gitWorkflow?.snapshot?.isRoot === false;
   const repositoryRootReason = `Open the repository root (${props.gitWorkflow?.snapshot?.rootPath}) as your project before changing Git. This selected folder is inside that repository.`;
   return (
-    <aside ref={props.rootRef} className={`studio-dock ${props.open ? "open" : "closed"}`} aria-label="Thread tools" aria-hidden={!props.open} inert={!props.open ? true : undefined}>
-      {props.onResizeStart && (
-        <div
-          className="pane-resize dock-resize"
-          onPointerDown={props.onResizeStart}
-          onKeyDown={props.onResizeKeyDown}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize Thread tools"
-          aria-valuemin={PANE_BOUNDS.dock.min}
-          aria-valuemax={PANE_BOUNDS.dock.max}
-          aria-valuenow={props.resizeValue === undefined ? undefined : Math.round(props.resizeValue)}
-          tabIndex={0}
-        />
-      )}
-      <div
-        className="studio-tabs"
-        role="tablist"
-        aria-orientation="vertical"
-        aria-label="Thread tools"
-        ref={tabsRef}
-        // Drives the sliding selection indicator below; presentation only.
-        style={{ "--studio-tab-index": Math.max(0, TABS.findIndex((entry) => entry.id === props.tab)) } as CSSProperties}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowRight") { event.preventDefault(); moveTab(1); }
-          else if (event.key === "ArrowUp" || event.key === "ArrowLeft") { event.preventDefault(); moveTab(-1); }
-          else if (event.key === "Home") { event.preventDefault(); moveTab(0, "first"); }
-          else if (event.key === "End") { event.preventDefault(); moveTab(0, "last"); }
-        }}
-      >
-        {TABS.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            id={tabId(id)}
-            data-studio-tab={id}
-            role="tab"
-            className={props.tab === id ? "active" : ""}
-            onClick={() => props.onTab(id)}
-            title={label}
-            aria-label={`${label} thread tool`}
-            aria-selected={props.tab === id}
-            aria-controls={panelId}
-            tabIndex={props.tab === id ? 0 : -1}
-          >
-            <Icon size={16} /><span>{label}</span>
-          </button>
-        ))}
-        <span className="studio-tab-indicator" aria-hidden="true" />
-      </div>
-      {/* The terminal sizes to the dock instead of the window, so its panel
-          lays out as a column the terminal can flex into. */}
-      <div className={`studio-panel${props.tab === "terminal" ? " fill" : ""}`} role="tabpanel" id={panelId} aria-labelledby={tabId(props.tab)} tabIndex={0}>
+    <StudioDockFrame open={props.open} rootRef={props.rootRef} onResizeStart={props.onResizeStart} onResizeKeyDown={props.onResizeKeyDown} resizeValue={props.resizeValue} tab={props.tab} onTab={props.onTab}>
         {props.tab === "files" && <>
           <PanelHeader icon={FilePlus2} title="Project files" subtitle="Search, preview, and attach local context" onClose={props.onClose} />
           {props.projectPath ? <FileBrowser root={props.projectPath} onAttach={props.onAttachPath} /> : <Empty icon={FilePlus2} title="No project folder" text="Open a project to browse its files." />}
@@ -792,8 +813,7 @@ export function StudioDock(props: {
             onOpenTool={props.onTab}
           />
         </>}
-      </div>
-    </aside>
+    </StudioDockFrame>
   );
 }
 
@@ -824,7 +844,7 @@ function LastTurnInstructions({ threadId }: { threadId: string | null }) {
   </section>;
 }
 
-function Empty({ icon: Icon, title, text }: { icon: typeof CodeXml; title: string; text: string }) {
+export function Empty({ icon: Icon, title, text }: { icon: typeof CodeXml; title: string; text: string }) {
   return <div className="studio-empty"><Icon size={21} /><strong>{title}</strong><span>{text}</span></div>;
 }
 

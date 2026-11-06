@@ -118,6 +118,9 @@ struct CursorProcess {
     /// these, so the webview cannot answer a request this process never
     /// asked (mirrors the Codex bridge's server-request set).
     server_requests: Mutex<HashSet<String>>,
+    remote_requests: Mutex<HashMap<String,Value>>,
+    remote_start: Mutex<Option<crate::remote::work::NativePermit>>,
+    remote_permission: Option<String>,
     emit: CursorEmit,
 }
 
@@ -371,6 +374,8 @@ pub struct CursorAttachment {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorTurnOptions {
+    #[serde(default)]
+    remote_delivery: Option<crate::remote::work::RemoteDelivery>,
     thread_id: String,
     /// Renderer-owned start intent, echoed only on Mythra event envelopes.
     /// Never sent to ACP or used as a permission/authorization credential.
@@ -440,7 +445,15 @@ impl CursorProcess {
             return Err("This Cursor turn is no longer running".into());
         }
         self.stage("write: start");
-        let result = write_json(&self.stdin, message, Instant::now() + self.input_timeout).await;
+        let remote=if message.get("method").and_then(Value::as_str)==Some("session/prompt"){self.remote_start.lock().await.take()}else{None};
+        let result=if let Some(mut permit)=remote {
+            let deadline=Instant::now()+self.input_timeout;
+            let mut stdin=timeout_at(deadline,self.stdin.lock()).await.map_err(|_|crate::remote::work::refused("busy"))?;
+            if !self.alive.load(Ordering::Acquire){return Err(crate::remote::work::refused("stale_target"));}
+            let bytes=format!("{message}\n");
+            timeout_at(deadline,permit.write_claimed(||{if !self.alive.load(Ordering::Acquire){return Err(crate::remote::work::refused("stale_target"));}Ok(())},async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input flush failed.".to_string())})).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input timed out.".to_string())??;
+            permit.accepted(json!({"threadId":self.thread_id,"turnId":self.turn_id})).await
+        }else{write_json(&self.stdin,message,Instant::now()+self.input_timeout).await};
         self.stage(if result.is_ok() {
             "write: done"
         } else {
@@ -1381,6 +1394,9 @@ async fn spawn_cursor_process(
     event_context: Option<(String, String, String, bool)>,
     start_request_id: Option<&str>,
 ) -> Result<Arc<CursorProcess>, String> {
+    spawn_cursor_process_remote(app,cwd,event_context,start_request_id,None).await
+}
+async fn spawn_cursor_process_remote(app:&AppHandle,cwd:&Path,event_context:Option<(String,String,String,bool)>,start_request_id:Option<&str>,remote:Option<&crate::remote::work::NativePermit>)->Result<Arc<CursorProcess>,String>{
     let runtime = resolve_cursor_runtime(app).await?;
     let mut command = runtime.background(Some(cwd));
     command
@@ -1394,12 +1410,8 @@ async fn spawn_cursor_process(
     // descendant the agent spawns, not just the direct child.
     #[cfg(unix)]
     command.process_group(0);
-    let child = command.spawn().map_err(|error| {
-        format!(
-            "Could not start Cursor Agent at `{}`: {error}",
-            runtime.display_path()
-        )
-    })?;
+    let mut spawn=||command.spawn().map_err(|error|format!("Could not start Cursor Agent at `{}`: {error}",runtime.display_path()));
+    let child=if let Some(remote)=remote{remote.check_spawn(spawn)?}else{spawn()?};
     let app = app.clone();
     let emit: CursorEmit = Arc::new(move |event: &str, payload: Value| {
         let _ = app.emit(event, payload);
@@ -1478,6 +1490,9 @@ fn attach_cursor_process(
             .map(|(_, turn_id, _, _)| turn_id.clone()),
         wsl,
         server_requests: Mutex::new(HashSet::new()),
+        remote_requests: Mutex::new(HashMap::new()),
+        remote_start: Mutex::new(None),
+        remote_permission: event_context.as_ref().map(|(_,_,permission,_)|permission.clone()),
         emit,
     });
     let stderr_task = stderr.map(|stderr| {
@@ -1592,6 +1607,7 @@ async fn read_cursor_output(
                     // Record the id (before emitting) so the response
                     // command can verify it targets a live request.
                     process.server_requests.lock().await.insert(id.to_string());
+                    process.remote_requests.lock().await.insert(id.to_string(),json!({"method":"cursor/request_permission","params":params}));
                     emit(
                         "cursor-event",
                         json!({
@@ -1610,6 +1626,7 @@ async fn read_cursor_output(
             {
                 if *interactive {
                     process.server_requests.lock().await.insert(id.to_string());
+                    process.remote_requests.lock().await.insert(id.to_string(),json!({"method":"cursor/ask_question","params":message.get("params")}));
                     emit(
                         "cursor-event",
                         json!({
@@ -1875,6 +1892,8 @@ pub async fn cursor_turn_start(
     agent_state: State<'_, ChildAgentState>,
     mut options: CursorTurnOptions,
 ) -> Result<CursorTurnStarted, String> {
+    let remote_permit=if let Some(meta)=options.remote_delivery.take(){Some(crate::remote::work::prepare_native(&app,meta,"cursor_prompt",Some(&options.permission),None).await?)}else{None};
+    if let Some(permit)=remote_permit.as_ref(){permit.verify_thread(&options.thread_id)?;}
     let mut process_requested = false;
     let mut safe_not_dispatched = false;
     let result: Result<CursorTurnStarted, String> = async {
@@ -1928,7 +1947,7 @@ pub async fn cursor_turn_start(
     }
     start.assert_current()?;
     process_requested = true;
-    let process = spawn_cursor_process(
+    let process = spawn_cursor_process_remote(
         &app,
         Path::new(&options.cwd),
         Some((
@@ -1938,8 +1957,10 @@ pub async fn cursor_turn_start(
             options.interactive,
         )),
         options.start_request_id.as_deref(),
+        remote_permit.as_ref(),
     )
     .await?;
+    *process.remote_start.lock().await=remote_permit;
     if !super::claim_turn_slot(&state.turns, &options.thread_id, &process, |existing| {
         existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
     })
@@ -2273,6 +2294,7 @@ pub async fn cursor_permission_respond(
     {
         return Err("Cursor is no longer waiting for that request".into());
     }
+    turn.remote_requests.lock().await.remove(&request_id.to_string());
     turn.respond(request_id, result).await
 }
 
@@ -2298,4 +2320,77 @@ pub fn shutdown_cursor_on_exit(app: &AppHandle) {
             }
         }
     }
+}
+
+pub(crate) async fn remote_owner(app:&AppHandle,target:&mut crate::remote::work::Target)->Result<String,String>{
+    let stale=||crate::remote::work::refused("stale_target");let state=app.state::<CursorState>();let thread=target.thread_id.as_deref().ok_or_else(stale)?;
+    if target.kind=="start"{let(turn,start,phase)=state.starts.identity(thread).ok_or_else(stale)?;
+        if phase!="starting"||start.as_deref()!=target.start_request_id.as_deref()||target.turn_id.as_ref().is_some_and(|id|id!=&turn){return Err(stale());}target.turn_id=Some(turn.clone());return Ok(format!("cursor-start:{turn}:{}",start.unwrap_or_default()));}
+    let process=state.turns.lock().await.get(thread).cloned().filter(|turn|turn.alive.load(Ordering::Acquire)).ok_or_else(stale)?;
+    if target.turn_id.as_ref().is_some_and(|id|process.turn_id.as_ref()!=Some(id)){return Err(stale());}target.turn_id=process.turn_id.clone();
+    if ["approval","question"].contains(&target.kind.as_str()){
+        let id=target.request_id.as_ref().ok_or_else(stale)?.to_string();if !process.server_requests.lock().await.contains(&id){return Err(stale());}
+        let requests=process.remote_requests.lock().await;let request=requests.get(&id).ok_or_else(stale)?;
+        if request.get("method").and_then(Value::as_str)!=target.method.as_deref()||(target.method.as_deref()==Some("cursor/ask_question"))!=(target.kind=="question"){return Err(stale());}
+    }
+    Ok(format!("cursor:{}",process.turn_id.as_deref().ok_or_else(stale)?))
+}
+
+async fn remote_write(process:&CursorProcess,message:&Value,permit:&mut crate::remote::work::NativePermit)->Result<(),String>{
+    let deadline=Instant::now()+process.input_timeout;let mut stdin=timeout_at(deadline,process.stdin.lock()).await.map_err(|_|crate::remote::work::refused("busy"))?;
+    if !process.alive.load(Ordering::Acquire){return Err(crate::remote::work::refused("stale_target"));}
+    let bytes=format!("{message}\n");timeout_at(deadline,permit.write_claimed(||{if !process.alive.load(Ordering::Acquire){return Err(crate::remote::work::refused("stale_target"));}Ok(())},async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input flush failed.".to_string())})).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input timed out.".to_string())?
+}
+
+pub(crate) async fn remote_dispatch(app:&AppHandle,target:&crate::remote::work::Target,action:&str,args:Value,permit:&mut crate::remote::work::NativePermit)->Result<Value,String>{
+    let stale=||crate::remote::work::refused("stale_target");let state=app.state::<CursorState>();let thread=target.thread_id.as_deref().ok_or_else(stale)?;
+    if action=="turn_stop"&&target.kind=="start"{let attempt=permit.begin(||state.starts.cancel(thread,target.turn_id.as_deref(),target.start_request_id.as_deref()))?;super::await_native_start_settlement(attempt).await?;return Ok(Value::Null);}
+    let process=state.turns.lock().await.get(thread).cloned().ok_or_else(stale)?;
+    if process.turn_id!=target.turn_id||target.owner!=format!("cursor:{}",process.turn_id.as_deref().unwrap_or(""))||!process.alive.load(Ordering::Acquire){return Err(stale());}
+    if action=="turn_stop"{
+        let mut child=process.child.lock().await;
+        permit.begin(||{if !process.alive.load(Ordering::Acquire){return Err(stale());}process.alive.store(false,Ordering::Release);process.cutoff_uncertain.store(true,Ordering::Release);process.run.close();
+            match child.try_wait(){Ok(None)=>{if let Some(pid)=child.id(){super::kill_process_tree(pid)?;}child.start_kill().map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff could not be confirmed.".to_string())},_=>Err(stale())}})?;
+        timeout(CURSOR_KILL_REAP_GRACE,child.wait()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff timed out.".to_string())?.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor cutoff could not be confirmed.".to_string())?;
+        process.cutoff_uncertain.store(false,Ordering::Release);drop(child);
+        let mut turns=state.turns.lock().await;if turns.get(thread).is_some_and(|current|Arc::ptr_eq(current,&process)){turns.remove(thread);}return Ok(Value::Null);
+    }
+    if action=="cursor_turn_steer"{
+        if target.kind!="turn"||args.get("expectedTurnId").and_then(Value::as_str)!=process.turn_id.as_deref(){return Err(stale());}
+        permit.enforce_permission(process.remote_permission.as_deref().unwrap_or("unknown"))?;
+        let blocks=cursor_prompt_blocks_for(args.get("prompt").and_then(Value::as_str).ok_or_else(stale)?,None,&[],process.wsl).await?;
+        let session=process.session_id.lock().await.clone().ok_or_else(stale)?;
+        let input=process.run.admit_steer()?;
+        if let Err(error)=input.wait().await{if let Some(outcomes)=process.run.settle(None){finish_cursor_run(&process,&state.turns,outcomes).await;}return Err(error);}
+        let id=process.next_id.fetch_add(1,Ordering::Relaxed);let(sender,receiver)=oneshot::channel();process.pending.lock().await.insert(id,sender);
+        let message=json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session,"prompt":blocks}});
+        let written=remote_write(&process,&message,permit).await;drop(input);
+        if let Err(error)=written{process.pending.lock().await.remove(&id);if let Some(outcomes)=process.run.settle(None){finish_cursor_run(&process,&state.turns,outcomes).await;}return Err(error);}
+        // Native acceptance is durable before returning the input receipt. The
+        // ACP completion remains owned by the process, just like a local steer.
+        let accepted=json!({"threadId":thread,"turnId":process.turn_id});
+        // Own completion even if saving the input receipt fails or this caller
+        // disappears. It must never strand the shared run's outstanding count.
+        let turns=state.turns.clone();tauri::async_runtime::spawn(async move{let result=receiver.await.unwrap_or_else(|_|Err("Cursor input receipt was lost.".into()));if let Some(outcomes)=process.run.settle(Some(CursorPromptOutcome{kind:CursorPromptKind::Steer,result})){finish_cursor_run(&process,&turns,outcomes).await;}});
+        permit.accepted(accepted).await?;
+        return Ok(Value::Null);
+    }
+    if !["approval_answer","question_answer"].contains(&action){return Err(crate::remote::work::refused("unsupported"));}
+    let id=target.request_id.clone().ok_or_else(stale)?;let key=id.to_string();let mut pending=process.server_requests.lock().await;if !pending.contains(&key){return Err(stale());}
+    let mut requests=process.remote_requests.lock().await;let request=requests.get(&key).ok_or_else(stale)?;let result=args.get("result").cloned().ok_or_else(stale)?;
+    if action=="approval_answer"{
+        if target.method.as_deref()!=Some("cursor/request_permission"){return Err(stale());}
+        let selected=result.pointer("/outcome/optionId").ok_or_else(stale)?;
+        let safe=result.pointer("/outcome/outcome").and_then(Value::as_str)==Some("selected")&&request.pointer("/params/options").and_then(Value::as_array).is_some_and(|options|options.iter().any(|option|option.get("optionId")==Some(selected)&&matches!(option.get("kind").and_then(Value::as_str),Some("allow_once"|"reject_once"))));
+        if !safe{return Err(crate::remote::work::refused("forbidden"));}
+    }else if target.method.as_deref()!=Some("cursor/ask_question")||!result.get("answers").is_some_and(Value::is_object)||!result.as_object().is_some_and(|object|object.len()==1){return Err(crate::remote::work::refused("forbidden"));}
+    let message=json!({"jsonrpc":"2.0","id":id,"result":result});let mut stdin=process.stdin.lock().await;if !process.alive.load(Ordering::Acquire){return Err(stale());}let bytes=format!("{message}\n");
+    timeout(process.input_timeout,permit.write_claimed(||{if !process.alive.load(Ordering::Acquire)||!pending.remove(&key){return Err(stale());}requests.remove(&key);Ok(())},async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor answer write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor answer flush failed.".to_string())})).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor answer timed out.".to_string())??;Ok(Value::Null)
+}
+
+pub(crate) async fn remote_claim(app:&AppHandle,target:&crate::remote::work::Target,meta:&crate::remote::work::RemoteDelivery,handle:&str)->Result<(),String>{
+    let stale=||crate::remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;let state=app.state::<CursorState>();
+    if target.kind=="start"{return state.starts.with_remote_owner(thread,target.turn_id.as_deref(),target.start_request_id.as_deref(),||crate::remote::work::claim_target(app,meta,handle));}
+    let turns=state.turns.lock().await;let process=turns.get(thread).filter(|turn|turn.alive.load(Ordering::Acquire)&&target.turn_id==turn.turn_id&&target.owner==format!("cursor:{}",turn.turn_id.as_deref().unwrap_or(""))).ok_or_else(stale)?;
+    let _=process;crate::remote::work::claim_target(app,meta,handle)
 }

@@ -22,7 +22,7 @@ import { beginCursorTurnStart, cursorTurnOwner, isCurrentCursorTurnStart, reject
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL } from "../lib/appConfig";
 import { cacheChildAgentPolicy, ensureChildAgentBridge, releaseChildAgentSession, type ChildAgentBridgeResult } from "../lib/childAgentSessions";
 import { childAgentPolicyForThread, settingsWithoutChildDelegation, type ChildAgentLink, type ChildAgentPolicy, type ChildAgentReadiness } from "../lib/childAgents";
-import { nativeSubagentUnavailableReason, parentAutoCompactionUnavailableReason, sanitizeNativeSubagentMax } from "../lib/threadSubagentSettings";
+import { nativeSubagentUnavailableReason, parentAutoCompactionUnavailableReason, sanitizeNativeSubagentMax, sanitizeSubagentEngine } from "../lib/threadSubagentSettings";
 import {
   planSubagentCapabilities,
   recordSubagentCapabilities,
@@ -31,7 +31,11 @@ import {
 import { threadResumeParams, threadStartParams, turnStartParams } from "../lib/turnConfig";
 import { buildTurnInput, withoutSentAttachments } from "../lib/turnInput";
 import { optimisticStartedThread, upsertThread } from "../lib/threadList";
-import { parentRunStopEpoch, storedPendingTimedTurns, useTaskStore, type TaskStatus } from "../lib/taskStore";
+import { parentRunStopEpoch, storedPendingTimedTurns, useTaskStore, type TaskStatus, type QueuedTurn, type RemoteQueuedDelivery } from "../lib/taskStore";
+import { flushPendingStateWrites } from "../lib/storage";
+import type { RemoteStopSnapshot, RemoteTurnDelivery, RemoteTurnRunner } from "../lib/remote/host/workTypes";
+import type { RemoteWorkResult } from "../lib/remote/wire";
+import { HostReadError } from "../lib/remote/host/scope";
 import { claimParentRun, parentAuthKey, pausedParentRun, PARENT_EXECUTION_UNCONFIRMED, PARENT_NOTICE_PROVENANCE, PARENT_RUN_CHECKPOINT_LABEL, type ParentExecution, type ParentRun } from "../lib/parentRun";
 import { claudeSteerReadState } from "../lib/claudeEvents";
 import {
@@ -302,6 +306,11 @@ export interface ParentResumeRequest {
 }
 
 export interface TurnRunnerContext {
+  /** Optional remote-only hooks; local calls retain their existing path. */
+  remoteDelivery?: RemoteTurnDelivery;
+  remoteStop?: (args: Record<string, unknown>) => Promise<void>;
+  resolveRemoteQueuedDelivery?: (entry: QueuedTurn) => Promise<TurnRunnerContext>;
+  remoteQueuesReady?: () => boolean;
   /** Optional exact parent identity for a UI-generated worker instruction. */
   deliveryGuard?: (ownedRunStartedAt?: number) => boolean;
   /** This turn is a parent run's generated continuation, not an authored prompt. */
@@ -438,7 +447,7 @@ interface SendMessageOptions {
  * entry, mirroring the closure captures of the original inline handlers, so
  * mid-flight awaits keep operating on the workspace the send started in.
  */
-export function useTurnRunner(context: TurnRunnerContext): {
+export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
   pendingFirstPrompts: readonly PendingFirstPrompt[];
   /** Presentation only; preparation must not write undelivered history. */
   pendingThreadPrompts: Readonly<Record<string, ChatMessage>>;
@@ -570,7 +579,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     const coordinationResume = mode === "turn" ? ctx.coordinationResume : undefined;
     const checkpointPrompt = coordinationResume ? PARENT_RUN_CHECKPOINT_LABEL : text;
     const noticeProvenance = coordinationResume ? { provenance: PARENT_NOTICE_PROVENANCE } : {};
-    const submissionMessageId = `local-${crypto.randomUUID()}`;
+    const submissionMessageId = ctx.remoteDelivery?.messageId ?? `local-${crypto.randomUUID()}`;
     const showPendingPrompt = (threadId: string, turnId?: string) => {
       setPendingThreadPrompts((current) => ({ ...current, [threadId]: {
         id: submissionMessageId, role: "user", text,
@@ -790,8 +799,14 @@ export function useTurnRunner(context: TurnRunnerContext): {
         steerStatus: "sending",
       });
       try {
+        if (ctx.remoteDelivery) await ctx.remoteDelivery.beforeDispatch({ threadId: activeThread.id, messageId: steerMessageId,
+          provider: effectiveSettings.provider, turnId: expectedSteerTurnId, permission: effectiveSettings.permission });
+        if (ctx.remoteDelivery) ctx.remoteDelivery.assertAllowed();
         if (isClaudeThread(activeThread)) {
-          const steerRuntimeId = await steerClaudeTurn(
+          const steerRuntimeId = ctx.remoteDelivery
+            ? await ctx.remoteDelivery.invokeSteer<string>("claude_turn_steer", { threadId: activeThread.id, prompt: providerText,
+              attachments: [], expectedTurnId: expectedSteerTurnId })
+            : await steerClaudeTurn(
             activeThread.id,
             providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
@@ -802,7 +817,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
           useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, claudeSteerReadState(activeThread.id, expectedSteerTurnId, steerRuntimeId) ?? "queued", steerRuntimeId);
           scheduleClaudeThreadSave(activeThread.id);
         } else if (isCursorThread(activeThread)) {
-          await steerCursorTurn(
+          if (ctx.remoteDelivery) await ctx.remoteDelivery.invokeSteer("cursor_turn_steer", { threadId: activeThread.id, prompt: providerText,
+            attachments: [], expectedTurnId: expectedSteerTurnId });
+          else await steerCursorTurn(
             activeThread.id,
             providerText,
             sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })),
@@ -812,19 +829,23 @@ export function useTurnRunner(context: TurnRunnerContext): {
         } else {
           const expectedTurnId = expectedSteerTurnId;
           if (!expectedTurnId) throw new Error("The active turn is still starting");
-          await rpc("turn/steer", {
+          const steerParams = {
             threadId: activeThread.id,
             expectedTurnId,
             input: buildTurnInput(providerText, sentAttachments),
-          });
+          };
+          if (ctx.remoteDelivery) await ctx.remoteDelivery.invokeSteer("codex_steer", steerParams);
+          else await rpc("turn/steer", steerParams);
         }
+        if (ctx.remoteDelivery) await ctx.remoteDelivery.accepted({ threadId: activeThread.id, turnId: expectedSteerTurnId, messageId: steerMessageId });
         if (!isClaudeThread(activeThread)) useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "accepted");
         recordAuthoredPrompt(activeThread.id, steerMessageId);
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
         setTransientStatus(isClaudeThread(activeThread) ? "Steer sent to Claude" : "Steer accepted by the active turn");
         return true;
       } catch (reason) {
-        if (deliveryIsUncertain(reason)) {
+        if (ctx.remoteDelivery) await ctx.remoteDelivery.failure(reason);
+        if (deliveryIsUncertain(reason) || ctx.remoteDelivery?.result().state === "uncertain") {
           // Keep uncertain input visible without returning it to the draft or
           // automatically queueing another copy after a transport failure.
           useTaskStore.getState().setMessageSteerStatus(activeThread.id, steerMessageId, "unconfirmed");
@@ -951,6 +972,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     let preparedExecutionPath: string | undefined;
     let ownedCheckpointId: string | undefined;
     const assertCanStart = () => {
+      if (ctx.remoteDelivery) ctx.remoteDelivery.assertAllowed();
       const ownedThreadId = startedThreadId ?? startingThreadId;
       if (ownedThreadId && (contextRef.current.isThreadArchiving?.(ownedThreadId)
         || contextRef.current.isThreadUnavailable?.(ownedThreadId))) {
@@ -1029,7 +1051,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         ultra: effectiveSettings.ultra === true,
         serviceTier: effectiveSettings.serviceTier,
         permission: effectiveSettings.permission,
-        engine: effectiveSettings.subagentEngine,
+        engine: sanitizeSubagentEngine(effectiveSettings.subagentEngine),
         subagentsEnabled: effectiveSettings.subagentsEnabled,
         executionPath,
         sessionId: policy.sessionId,
@@ -1051,7 +1073,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           resumesUsed: 0, wokenQuestions: [], execution, autoResume: true });
       parentRunDeliveries.set(thread.id, { ...queuedDeliveryContext(ctx, thread.id, [], false), activeThread: thread,
         // This send's own bookkeeping and dispatch identity end with this send.
-        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined });
+        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined, remoteDelivery: undefined, remoteStop: undefined });
     };
 
     // Shared body of the Claude/Cursor subscription paths: bootstrap the
@@ -1097,6 +1119,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         }
       }
       startedThreadId = thread.id;
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.bindThread(thread.id);
       rememberChildAgentPolicy(thread.id);
       // Stop landed while this brand-new thread was still being created. The
       // prompt was never delivered, so report it as undelivered and let the
@@ -1161,6 +1184,9 @@ export function useTurnRunner(context: TurnRunnerContext): {
       };
       localStartRequestsRef.current.set(thread.id, nativeStart);
       assertCanStart();
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.beforeDispatch({ threadId: thread.id, messageId: sentMessageId,
+        provider, startRequestId: nativeStart.startRequestId, permission: effectiveSettings.permission });
+      assertCanStart();
       explicitDispatched = true;
       const result = await strategy.startTurn(thread);
       if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
@@ -1168,6 +1194,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       if (localStartRequestsRef.current.get(thread.id) === nativeStart) nativeStart.turnId = result.turnId;
       providerAccepted = true;
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.accepted({ threadId: thread.id, turnId: result.turnId, messageId: sentMessageId });
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       recordAuthoredPrompt(thread.id, sentMessageId);
       // Provider events can race ahead of the start RPC response. If a very
@@ -1207,6 +1234,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
     };
 
     try {
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.beforeCreate();
       if (sharedDraftStart) {
         // Reserve synchronously before any preparation await. The draft flag
         // alone is invisible to other background deliveries until a thread id
@@ -1363,7 +1391,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             // Appending the optimistic user message cannot flip assistant
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-            const result = await startClaudeTurn({ threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : {}), threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
               throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Claude accepted the start without returning its turn identifier.");
             }
@@ -1390,7 +1418,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
             if (saved?.cursorSessionId?.trim()) {
               cursorSessionIdsRef.current[priorThreadId] = saved.cursorSessionId;
               const resident = useTaskStore.getState().tasks[priorThreadId];
-              useTaskStore.getState().hydrateTask(priorThreadId, saved.messages, saved.activities, executionPath, resident?.history, undefined, { source: "local" });
+              useTaskStore.getState().hydrateTask(priorThreadId, saved.messages, saved.activities, executionPath, resident?.history, undefined, { source: "local", ...(ctx.remoteDelivery ? { preserveUnread: true } : {}) });
             } else if (saved?.messages.some((message) => message.role === "assistant")
               || useTaskStore.getState().tasks[priorThreadId]?.messages.some((message) => message.role === "assistant")) {
               throw new Error("This Cursor conversation's resume identity is unavailable. Its saved history was retained; a replacement conversation was not started.");
@@ -1402,6 +1430,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           startTurn: async (thread) => {
             const priorSessionId = cursorSessionIdsRef.current[thread.id];
             const result = await startCursorTurn({
+              ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : {}),
               threadId: thread.id,
               startRequestId: cursorAttempt?.owner.startRequestId,
               cwd: executionPath,
@@ -1457,7 +1486,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
       let runtimeTurnModel: unknown;
       startedThreadId = threadId;
       if (!threadId) {
-        const result = await rpc<{ thread: Thread; model?: unknown; runtimeInstance: string }>("thread/start", threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check }));
+        const startParams = threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
+        const result = await rpc<{ thread: Thread; model?: unknown; runtimeInstance: string }>("thread/start", ctx.remoteDelivery ? { ...startParams, remoteDelivery: ctx.remoteDelivery.metadata() } : startParams);
         runtimeInstance = result.runtimeInstance;
         const startedThread = optimisticStartedThread(result.thread, text);
         parentRunThread = startedThread;
@@ -1500,7 +1530,8 @@ export function useTurnRunner(context: TurnRunnerContext): {
         assertCanStart();
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
-          const resumed = await rpc<{ model?: unknown; runtimeInstance: string }>("thread/resume", effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume);
+          const resumeParams = effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume;
+          const resumed = await rpc<{ model?: unknown; runtimeInstance: string }>("thread/resume", ctx.remoteDelivery ? { ...resumeParams, remoteDelivery: ctx.remoteDelivery.metadata() } : resumeParams);
           runtimeInstance = resumed.runtimeInstance;
           runtimeTurnModel = resumed?.model;
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
@@ -1517,6 +1548,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
           if (!threadSelectionChangedMidSend()) setActiveThread(updatedThread);
         }
       }
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.bindThread(threadId);
       rememberChildAgentPolicy(threadId);
       // See runLocalTurn: a draft stopped before its turn started keeps its text.
       if (!activeThread && draftCancelled()) {
@@ -1569,17 +1601,24 @@ export function useTurnRunner(context: TurnRunnerContext): {
           collaborationV2,
           parentRunReady,
         ),
-      }), expectedRuntimeInstance: runtimeInstance };
+      }), expectedRuntimeInstance: runtimeInstance, ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : {}) };
       const taskBeforeDispatch = useTaskStore.getState().tasks[threadId];
       activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
       completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
       assertCanStart();
+      if (ctx.remoteDelivery) {
+        localStartRequestsRef.current.set(threadId, { startRequestId: localStartRequestId, runStartedAt: guardedRunStartedAt });
+        await ctx.remoteDelivery.beforeDispatch({ threadId, messageId: sentMessageId, provider: effectiveSettings.provider,
+          startRequestId: localStartRequestId, permission: effectiveSettings.permission });
+        assertCanStart();
+      }
       explicitDispatched = true;
       const result = await rpc<{ turn: Turn }>("turn/start", params);
       if (typeof result?.turn?.id !== "string" || !result.turn.id.trim()) {
         throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The runtime accepted the start without returning its turn identifier.");
       }
       providerAccepted = true;
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.accepted({ threadId, turnId: result.turn.id, messageId: sentMessageId });
       // Retain the last confirmed receipt through rejected/cancelled starts.
       // An older response must not replace a newer turn's confirmed context.
       if (contextReceipt && explicitAttemptCurrent()
@@ -1609,6 +1648,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
       }
       return true;
     } catch (reason) {
+      if (ctx.remoteDelivery) await ctx.remoteDelivery.failure(reason);
       const cancelled = reason instanceof CancelledTurnStart;
       if (reason instanceof SkillDependencyError) ctx.onSkillDependencyFailure?.(reason);
       setStartingDraftTurn(false);
@@ -1629,7 +1669,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         failedTask?.activeTurnId && failedTask.activeTurnId !== activeTurnBeforeDispatch
         || failedTask?.lastCompletedTurnId && failedTask.lastCompletedTurnId !== completedTurnBeforeDispatch,
       );
-      if (!providerAccepted && explicitDispatched && (deliveryIsUncertain(reason) || runtimeObserved) && failedThreadId) {
+      if (!providerAccepted && explicitDispatched && (deliveryIsUncertain(reason) || runtimeObserved || ctx.remoteDelivery?.result().state === "uncertain") && failedThreadId) {
         if (!activeThread) contextRef.current.onThreadTitleCancelled?.(failedThreadId);
         const stopRequested = pendingStart ? pendingTurnStartsRef.current.finish(failedThreadId, pendingStart) : false;
         setAttachments((current) => withoutSentAttachments(current, sentAttachments));
@@ -1707,12 +1747,12 @@ export function useTurnRunner(context: TurnRunnerContext): {
           }
           useTaskStore.getState().setTaskStatus(failedThreadId, cancelled ? "interrupted" : "error", cancelled ? undefined : friendlyError(reason));
         }
-        if (ownsFailure && isClaudeThreadBusyError(reason)) {
+        if (!ctx.remoteDelivery && ownsFailure && isClaudeThreadBusyError(reason)) {
           // The backend slot is held by a Claude process the UI no longer
           // tracks (e.g. after an event loss). Free it so a retry succeeds
           // instead of failing until Mythra Code restarts.
           await killClaudeTurn(failedThreadId, { startRequestId: localStartRequestId }).catch(() => undefined);
-        } else if (ownsFailure && effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
+        } else if (!ctx.remoteDelivery && ownsFailure && effectiveSettings.provider === "cursor" && /already working/i.test(friendlyError(reason))) {
           void killCursorTurn(failedThreadId, { startRequestId: cursorAttempt?.owner.startRequestId }).catch(() => undefined);
         }
         if (cursorAttempt) {
@@ -1767,6 +1807,31 @@ export function useTurnRunner(context: TurnRunnerContext): {
     // never held behind one and a timed entry can never start early.
     const queuedTurn = eligibleQueueHead(task.queuedTurns);
     if (!queuedTurn || queuedTurn.status !== "queued" || queuedTurn.editing) return;
+    if (queuedTurn.remoteDelivery) {
+      if (queuedTurn.remoteDelivery.disposition !== "queued") return;
+      const resolve = contextRef.current.resolveRemoteQueuedDelivery;
+      if (!resolve || contextRef.current.remoteQueuesReady?.() === false) return; // No guessed selection/provider/authority after reload.
+      activeQueuedDeliveries.add(threadId);
+      let delivery: TurnRunnerContext | undefined;
+      try {
+        delivery = await resolve(queuedTurn);
+        if (!delivery.remoteDelivery || delivery.activeThread?.id !== threadId) throw new HostReadError("stale_target", "The remote queue target changed.");
+        useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
+        await flushPendingStateWrites();
+        const sent = await deliverMessage(delivery, queuedTurn.text, "turn");
+        if (!sent) await delivery.remoteDelivery.rejected("internal");
+        const result = delivery.remoteDelivery.result();
+        if (result.state === "accepted" || result.state === "rejected") {
+          useTaskStore.getState().removeQueuedTurn(threadId, queuedTurn.id);
+          await flushPendingStateWrites();
+        }
+      } catch (reason) {
+        if (delivery?.remoteDelivery) await delivery.remoteDelivery.failure(reason);
+        else useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "failed", "Remote delivery is held until its authority and receipt can be confirmed.");
+      } finally { activeQueuedDeliveries.delete(threadId); }
+      if (useTaskStore.getState().tasks[threadId]?.status === "completed") queueMicrotask(() => { void pumpQueuedThread(threadId); });
+      return;
+    }
     const capturedContext = queuedDeliveries.get(queuedTurn.id)?.context;
     // A durable queue can outlive the renderer. Once the user opens that task,
     // the render path below reattaches a fresh delivery context and pumping
@@ -1841,6 +1906,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
   if (activeThreadId) {
     const queuedTurns = useTaskStore.getState().tasks[activeThreadId]?.queuedTurns ?? [];
     for (const queuedTurn of queuedTurns) {
+      if (queuedTurn.remoteDelivery) continue;
       // Refresh live readiness/settings for entries the user can act on. The
       // thread/provider/workspace identity remains the same, while a sign-in,
       // model repair, or settings change made after queuing can now unblock a
@@ -2146,6 +2212,53 @@ export function useTurnRunner(context: TurnRunnerContext): {
     return true;
   }, [archiveOwnsThread, pumpQueuedThread]);
 
+  const queuePromptTo = useCallback(async (ctx: TurnRunnerContext, text: string, delivery: RemoteQueuedDelivery): Promise<RemoteWorkResult> => {
+    const remote = ctx.remoteDelivery;
+    const thread = ctx.activeThread;
+    if (!remote || !thread) throw new HostReadError("unsupported", "Remote queueing requires an existing conversation.");
+    remote.assertAllowed();
+    if (archiveOwnsThread(thread.id)) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
+    const existing = useTaskStore.getState().tasks[thread.id]?.queuedTurns.find((entry) => entry.remoteDelivery?.device === delivery.device && entry.remoteDelivery.opId === delivery.opId);
+    if (existing) return { opId: delivery.opId, state: existing.remoteDelivery?.disposition === "queued" ? "queued" : "uncertain", threadId: thread.id, queuedTurnId: existing.id };
+    const queued = useTaskStore.getState().enqueueTurn(thread.id, text, [], { remoteDelivery: { ...delivery, disposition: "uncertain" } });
+    try {
+      await remote.queued(thread.id, queued.id);
+      queueMicrotask(() => { void pumpQueuedThread(thread.id); });
+    } catch (reason) { await remote.failure(reason); }
+    return remote.result();
+  }, [archiveOwnsThread, pumpQueuedThread]);
+
+  const sendPromptTo = useCallback(async (ctx: TurnRunnerContext, text: string): Promise<RemoteWorkResult> => {
+    const remote = ctx.remoteDelivery;
+    if (!remote) throw new HostReadError("unsupported", "Remote delivery ownership is required.");
+    const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
+    if (ctx.activeThread && (task?.status === "running" || task?.status === "starting" || hasEligibleQueuedTurns(task?.queuedTurns)
+      || useTaskStore.getState().workflowOwners[ctx.activeThread.id])) {
+      return queuePromptTo(ctx, text, { ...remote.identity, workspaceId: ctx.activeWorkspace!.id,
+        attemptId: remote.attemptId, messageId: remote.messageId, disposition: "uncertain" });
+    }
+    try {
+      if (!await deliverMessage(ctx, text, "turn", undefined, undefined, true)) await remote.rejected("internal");
+    } catch (reason) { await remote.failure(reason); }
+    return remote.result();
+  }, [deliverMessage, queuePromptTo]);
+
+  const steerThread = useCallback(async (ctx: TurnRunnerContext, text: string, expected: RemoteStopSnapshot): Promise<RemoteWorkResult> => {
+    const remote = ctx.remoteDelivery;
+    if (!remote || ctx.activeThread?.id !== expected.threadId) throw new HostReadError("stale_target", "This steering target changed.");
+    const matches = () => {
+      const task = useTaskStore.getState().tasks[expected.threadId];
+      return task?.status === "running" && task.activeTurnId === expected.turnId && task.agentRunId === expected.agentRunId;
+    };
+    try {
+      if (!expected.turnId || !matches()) throw new HostReadError("stale_target", "The observed turn has ended.");
+      const guard = ctx.deliveryGuard;
+      const delivery = { ...ctx, running: true, deliveryGuard: () => matches() && (!guard || guard()) };
+      if (!await deliverMessage(delivery, text, "steer")) await remote.rejected("stale_target");
+    } catch (reason) { await remote.failure(reason); }
+    return remote.result();
+  }, [deliverMessage]);
+
   const answerQuestions = useCallback(async (threadId: string, text: string, submission?: AgentQuestionSubmission): Promise<boolean> => {
     const current = contextRef.current;
     if (archiveOwnsThread(threadId)) return false;
@@ -2168,7 +2281,7 @@ export function useTurnRunner(context: TurnRunnerContext): {
         resolvePending();
       }
     }
-    if (requestId !== undefined && submission?.message.questions?.some((question) => question.secret)) {
+    if (submission?.message.questions?.some((question) => question.secret)) {
       throw new Error("This private question has expired. Ask the agent to request it again.");
     }
     if (current.activeThread?.id !== threadId) throw new Error("Open the conversation that asked these questions before answering.");
@@ -2496,10 +2609,33 @@ export function useTurnRunner(context: TurnRunnerContext): {
     newThreadDeliveries.delete(id);
   }, []);
 
-  const stopTurn = useCallback(async () => {
-    const ctx = contextRef.current;
+  const stopTurnForContext = useCallback(async (ctx: TurnRunnerContext, expected?: RemoteStopSnapshot) => {
     const { activeThread, running, pendingTurnStartsRef, setError, setStatus, setStartingDraftTurn, setTransientStatus } = ctx;
+    if (expected) {
+      const task = useTaskStore.getState().tasks[expected.threadId];
+      const start = localStartRequestsRef.current.get(expected.threadId);
+      if (activeThread?.id !== expected.threadId || task?.agentRunId !== expected.agentRunId
+        || expected.turnId && task?.activeTurnId !== expected.turnId
+        || expected.startRequestId && start?.startRequestId !== expected.startRequestId) {
+        throw new HostReadError("stale_target", "The observed turn or startup attempt changed.");
+      }
+    }
     if (!running) return;
+    if (expected && ctx.remoteStop && activeThread) {
+      // Claim/owner checks happened before the outer orchestration retired the
+      // parent. Cancel the exact renderer preparation synchronously as well:
+      // a start that has not reached native dispatch must never escape Stop.
+      pendingTurnStartsRef.current.requestCancel(activeThread.id);
+      await ctx.remoteStop({ threadId: activeThread.id, turnId: expected.turnId,
+        startRequestId: expected.startRequestId, agentRunId: expected.agentRunId });
+      const task = useTaskStore.getState().tasks[activeThread.id];
+      if (task?.agentRunId === expected.agentRunId && expected.turnId && task.activeTurnId === expected.turnId) {
+        sealStoppedTurn(activeThread.id, expected.turnId);
+        if (isClaudeThread(activeThread)) ctx.scheduleClaudeThreadSave(activeThread.id);
+        if (isCursorThread(activeThread)) ctx.scheduleCursorThreadSave(activeThread.id);
+      }
+      return;
+    }
     const selectedAttemptId = ctx.activeFirstPromptIdRef?.current;
     const ownsPrompt = (id: string, prompt: PendingFirstPrompt) => activeThread
       ? prompt.threadId === activeThread.id
@@ -2597,7 +2733,22 @@ export function useTurnRunner(context: TurnRunnerContext): {
     }
   }, []);
 
+  const stopTurn = useCallback(() => stopTurnForContext(contextRef.current), [stopTurnForContext]);
+  const stopThreadTurn = useCallback((ctx: TurnRunnerContext, expected: RemoteStopSnapshot) => stopTurnForContext(ctx, expected), [stopTurnForContext]);
+  const getThreadStopTarget = useCallback((threadId: string): RemoteStopSnapshot => {
+    const store = useTaskStore.getState();
+    const task = store.tasks[threadId];
+    const start = localStartRequestsRef.current.get(threadId);
+    const workflow = store.workflowOwners[threadId];
+    return { threadId, turnId: task?.activeTurnId,
+      startRequestId: start?.runStartedAt === task?.agentRunStartedAt ? start?.startRequestId : undefined,
+      agentRunId: task?.agentRunId, runStartedAt: task?.agentRunStartedAt,
+      parentRunId: store.parentRuns[threadId]?.id, workflowId: workflow?.workflowId, workflowRunId: workflow?.runId };
+  }, []);
+  const pumpRemoteQueue = useCallback((threadId: string) => { void pumpQueuedThread(threadId); }, [pumpQueuedThread]);
+
   return {
+    sendPromptTo, steerThread, queuePromptTo, stopThreadTurn, getThreadStopTarget, pumpRemoteQueue,
     pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,

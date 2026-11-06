@@ -3,11 +3,19 @@ import type { ChatMessage } from "../types";
 import { savedQuestionAnswers, saveQuestionAnswers } from "../lib/agentQuestionRecords";
 import { AgentQuestionForm, type QuestionAnswers } from "./AgentQuestionForm";
 
+import { useTimelineEnvironment } from "./TimelineEnvironment";
+
 import { AgentQuestionDelivery } from "../lib/agentQuestionContext";
 
 const deliveries = new Map<string, Promise<QuestionAnswers>>();
 
 export function AsyncAgentQuestions({ message }: { message: ChatMessage }) {
+  const Questions = useTimelineEnvironment().Questions;
+  return Questions ? <Questions message={message} /> : null;
+}
+
+/** Mounted only by the explicit local timeline environment. */
+export function LocalAsyncAgentQuestions({ message }: { message: ChatMessage }) {
   const delivery = useContext(AgentQuestionDelivery);
   const key = `kiwi.questionAnswer:${delivery?.threadId}:${message.id}`;
   const [saved, setSaved] = useState<QuestionAnswers | null>(() => savedQuestionAnswers(delivery?.threadId ?? "", message.id));

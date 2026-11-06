@@ -13,9 +13,9 @@ import {
   stripTrailingSeparator,
 } from "../lib/paths";
 
-interface FileResult { root: string; path: string; file_name: string; score: number }
-interface DirectoryEntry { fileName: string; isDirectory: boolean; isFile: boolean }
-interface FilePreview { text: string; truncated: boolean; binary: boolean }
+export interface FileResult { root: string; path: string; file_name: string; score: number }
+export interface DirectoryEntry { fileName: string; isDirectory: boolean; isFile: boolean }
+export interface FilePreview { text: string; truncated: boolean; binary: boolean }
 interface DirectoryListing { root: string; path: string; entries: DirectoryEntry[] }
 interface SearchListing { root: string; files: FileResult[] }
 
@@ -25,7 +25,20 @@ function containsIgnoredSegment(relativePath: string): boolean {
   return pathSegments(relativePath).some((segment) => IGNORED_NAMES.has(segment));
 }
 
-export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path: string) => void }) {
+/** Where the listing comes from. Another machine supplies its own; the default
+ * reads this one. */
+export interface FileBrowserSource {
+  list(path: string): Promise<{ entries: DirectoryEntry[] }>;
+  search(query: string, root: string): Promise<{ files: FileResult[] }>;
+  preview(root: string, path: string): Promise<FilePreview>;
+}
+const LOCAL_FILES: FileBrowserSource = {
+  list: (path) => rpc<{ entries: DirectoryEntry[] }>("fs/readDirectory", { path }),
+  search: (query, root) => rpc<{ files: FileResult[] }>("fuzzyFileSearch", { query, roots: [root], cancellationToken: crypto.randomUUID() }),
+  preview: (root, path) => invoke<FilePreview>("preview_project_file", { root, path }),
+};
+
+export function FileBrowser({ root, onAttach, source = LOCAL_FILES }: { root: string; onAttach?: (path: string) => void; source?: FileBrowserSource }) {
   const normalizedRoot = stripTrailingSeparator(root);
   const [currentDirectory, setCurrentDirectory] = useState(normalizedRoot);
   const [directoryRoot, setDirectoryRoot] = useState(normalizedRoot);
@@ -67,7 +80,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
     let active = true;
     setDirectoryLoading(true);
     setDirectoryError("");
-    void rpc<{ entries: DirectoryEntry[] }>("fs/readDirectory", { path: currentDirectory })
+    void source.list(currentDirectory)
       .then((value) => {
         if (!active) return;
         setDirectory({ root: normalizedRoot, path: currentDirectory, entries: value.entries ?? [] });
@@ -82,7 +95,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
   // `entries` is derived below and is not read by this directory request;
   // Babel's TypeScript parser currently reports it as a false dependency.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDirectory, directoryRoot, normalizedRoot]);
+  }, [currentDirectory, directoryRoot, normalizedRoot, source]);
 
   useEffect(() => {
     if (!query.trim()) {
@@ -93,16 +106,12 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
     let active = true;
     const token = window.setTimeout(() => {
       setSearchLoading(true);
-      void rpc<{ files: FileResult[] }>("fuzzyFileSearch", {
-        query: query.trim(),
-        roots: [normalizedRoot],
-        cancellationToken: crypto.randomUUID(),
-      }).then((value) => { if (active) setResults({ root: normalizedRoot, files: value.files ?? [] }); })
+      void source.search(query.trim(), normalizedRoot).then((value) => { if (active) setResults({ root: normalizedRoot, files: value.files ?? [] }); })
         .catch(() => { if (active) setResults(null); })
         .finally(() => { if (active) setSearchLoading(false); });
     }, 120);
     return () => { active = false; window.clearTimeout(token); };
-  }, [normalizedRoot, query]);
+  }, [normalizedRoot, query, source]);
 
   const entries = useMemo(() => {
     // An async result can settle between navigation and its effect cleanup.
@@ -154,7 +163,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
     setPreview("");
     setPreviewLoading(true);
     try {
-      const value = await invoke<FilePreview>("preview_project_file", { root: normalizedRoot, path });
+      const value = await source.preview(normalizedRoot, path);
       if (previewRequestRef.current !== request) return;
       setPreview(value.binary ? "This file is binary or cannot be previewed as UTF-8 text."
         : `${value.text}${value.truncated ? "\n\n… Preview truncated at 250,000 bytes." : ""}`);
@@ -193,7 +202,7 @@ export function FileBrowser({ root, onAttach }: { root: string; onAttach: (path:
           {!entries.length && !loading && <span className="file-empty">{directoryError || (query ? "No matching files" : "This folder is empty")}</span>}
         </div>
         <div className="file-preview">
-          {rootIsCurrent && selected ? <><div className="file-preview-bar"><span>{relativeDisplayPath(normalizedRoot, selected)}</span><button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} /> Attach</button></div><pre>{previewLoading ? "Loading preview…" : preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
+          {rootIsCurrent && selected ? <><div className="file-preview-bar"><span>{relativeDisplayPath(normalizedRoot, selected)}</span>{onAttach && <button onClick={() => onAttach(selected)} aria-label={`Attach ${basename(selected)}`}><Paperclip size={11} /> Attach</button>}</div><pre>{previewLoading ? "Loading preview…" : preview}</pre></> : <div className="file-preview-empty"><File size={22} /><span>{query ? "Select a search result to preview it" : "Select a file to preview it"}</span></div>}
         </div>
       </div>
     </div>
