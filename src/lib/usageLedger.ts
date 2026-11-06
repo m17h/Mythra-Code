@@ -1,6 +1,6 @@
 import type { TokenUsageView } from "../components/StudioDock";
 import type { Provider } from "../types";
-import { loadStored, readStoredRaw, storedRevision, storeValue } from "./storage";
+import { flushPendingStateWrites, hasPendingStateWrites, loadStored, readStoredRaw, storedRevision, storeValue } from "./storage";
 import type { UsageHistoryDelta } from "./usageHistory";
 import { cacheUnknownTokens, mergedUsageEvidence, normalizedServiceTier } from "./usageEvidence";
 
@@ -574,12 +574,14 @@ function ledger(): ThreadUsageRecord[] {
   if (cachedLedger && ledgerDirty) return cachedLedger;
   const revision = storedRevision(USAGE_LEDGER_KEY);
   if (cachedLedger && revision === cachedRevision) return cachedLedger;
-  let raw: string | null = null;
-  try { raw = localStorage.getItem(USAGE_LEDGER_KEY); } catch { /* Usage must not prevent starting a provider when storage is unavailable. */ }
-  cachedRevision = revision;
+  // Hydration can restore SQLite's newer value in memory even if the webview
+  // cache is full. Compare and parse the same authoritative value.
+  const raw = readStoredRaw(USAGE_LEDGER_KEY);
+  cachedRevision = storedRevision(USAGE_LEDGER_KEY);
   if (cachedLedger && raw === cachedRaw) return cachedLedger;
   cachedRaw = raw;
-  const stored = loadStored<ThreadUsageRecord[]>(USAGE_LEDGER_KEY, []);
+  let stored: ThreadUsageRecord[] = [];
+  try { if (raw !== null) stored = JSON.parse(raw); } catch { /* An invalid ledger must not prevent starting a provider. */ }
   cachedLedger = (Array.isArray(stored) ? stored : []).filter((record) => record && typeof record.threadId === "string" && record.usage && typeof record.usage === "object").map((record) => {
     const archivedThreadIds = Array.isArray(record.archivedThreadIds)
       ? [...new Set(record.archivedThreadIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())))]
@@ -889,14 +891,26 @@ export function flushUsageLedger(): void {
       persistTimer = null;
     }
     const records = compactUsageRecords([...cachedLedger]).sort((left, right) => right.updatedAt - left.updatedAt);
+    cachedRaw = storeValue(USAGE_LEDGER_KEY, records);
+    cachedRevision = storedRevision(USAGE_LEDGER_KEY);
     cachedLedger = records;
     ledgerDirty = false;
-    cachedRaw = storeValue(USAGE_LEDGER_KEY, records);
     historySink?.flush();
     notifyUsage();
     return;
   }
   historySink?.flush();
+}
+
+/** Submit buffered usage before draining the native writes, including the
+ * saved parent-child links that identify whose usage it is. Check both the
+ * buffer and SQLite acknowledgements because another caller may submit usage
+ * just as this caller's drain finishes. */
+export async function flushUsageBeforeExit(): Promise<void> {
+  do {
+    flushUsageLedger();
+    await flushPendingStateWrites();
+  } while (ledgerDirty || hasPendingStateWrites());
 }
 
 function save(records: ThreadUsageRecord[]): void {

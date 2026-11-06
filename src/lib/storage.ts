@@ -212,31 +212,39 @@ function queueNativeStateOperation(key: string, operation: () => Promise<unknown
   runNativeStateRevision(key, revision);
 }
 
-export async function flushPendingStateWrites(): Promise<void> {
+export function hasPendingStateWrites(): boolean {
+  return unacknowledgedNativeState.size > 0;
+}
+
+export function flushPendingStateWrites(): Promise<void> {
   if (nativeFlush) return nativeFlush;
-  const flush = async () => {
+  const flush = async (): Promise<void> => {
     const retried = new Set<NativeStateRevision>();
-    for (;;) {
-      await Promise.allSettled([...nativeWriteQueues.values()]);
-      // Writes added during a wait belong to this flush too. Serial per-key
-      // ordering prevents a retry of an older value overtaking a newer edit.
-      if (nativeWriteQueues.size) continue;
-      const retries = [...unacknowledgedNativeState].filter(([, revision]) => !retried.has(revision));
-      if (!retries.length) break;
-      for (const [key, revision] of retries) {
-        retried.add(revision);
-        runNativeStateRevision(key, revision);
+    try {
+      for (;;) {
+        await Promise.allSettled([...nativeWriteQueues.values()]);
+        // Writes added during a wait belong to this flush too. Serial per-key
+        // ordering prevents a retry of an older value overtaking a newer edit.
+        if (nativeWriteQueues.size) continue;
+        const retries = [...unacknowledgedNativeState].filter(([, revision]) => !retried.has(revision));
+        if (!retries.length) break;
+        for (const [key, revision] of retries) {
+          retried.add(revision);
+          runNativeStateRevision(key, revision);
+        }
       }
-    }
-    if (unacknowledgedNativeState.size) {
-      // Do not include backend error details or saved values in close UI.
-      throw new Error(`Pending changes could not be saved (${[...unacknowledgedNativeState.keys()].join(", ")}).`);
+      if (unacknowledgedNativeState.size) {
+        // Do not include backend error details or saved values in close UI.
+        throw new Error(`Pending changes could not be saved (${[...unacknowledgedNativeState.keys()].join(", ")}).`);
+      }
+    } finally {
+      // A new caller must not join a drain that has already checked its queue.
+      if (nativeFlush === current) nativeFlush = undefined;
     }
   };
   const current = flush();
   nativeFlush = current;
-  try { await current; }
-  finally { if (nativeFlush === current) nativeFlush = undefined; }
+  return current;
 }
 
 if (typeof window !== "undefined") {
