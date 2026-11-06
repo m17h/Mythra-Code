@@ -17,9 +17,9 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 use tokio::{
-    io::{AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{Mutex, Semaphore},
-    time::timeout,
+    time::{timeout, timeout_at, Instant as TokioInstant},
 };
 
 pub(super) const LANGUAGE_TOOL_IDS: [&str; 25] = [
@@ -51,6 +51,7 @@ pub(super) const LANGUAGE_TOOL_IDS: [&str; 25] = [
 ];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+const RUSTUP_STDERR_LIMIT: usize = 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +71,8 @@ pub(super) struct LanguageToolStatus {
     pub detail: String,
     pub enabled: bool,
     pub health: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_command: Option<String>,
 }
 fn default_true() -> bool {
     true
@@ -591,10 +594,27 @@ struct LaunchIdentity {
     configuration: [u8; 32],
 }
 #[derive(Clone, PartialEq, Eq)]
+enum ProbeFailure {
+    Verification(String),
+    RustupPrerequisite { toolchain: String },
+}
+impl ProbeFailure {
+    fn into_detail(self) -> String {
+        match self {
+            Self::Verification(detail) => detail,
+            Self::RustupPrerequisite { toolchain } => format!(
+                "Rust-analyzer is missing from {toolchain}. Run {} in a terminal, then refresh.",
+                rustup_install_command(&toolchain)
+            ),
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq)]
 struct ExecutableProof {
     identity: LaunchIdentity,
     checked: Instant,
-    error: Option<String>,
+    probe_started: Option<Instant>,
+    error: Option<ProbeFailure>,
 }
 type HealthProofs = StdMutex<HashMap<(PathBuf, String), Vec<ExecutableProof>>>;
 fn proofs() -> &'static HealthProofs {
@@ -620,19 +640,33 @@ fn probe_slots() -> &'static Semaphore {
     static SLOTS: OnceLock<Semaphore> = OnceLock::new();
     SLOTS.get_or_init(|| Semaphore::new(4))
 }
-fn cached_health(key: &(PathBuf, String), identity: &LaunchIdentity) -> Option<Result<(), String>> {
+fn cached_health(
+    key: &(PathBuf, String),
+    identity: &LaunchIdentity,
+    probe_after: Option<Instant>,
+) -> Option<Result<(), ProbeFailure>> {
     proofs().lock().ok()?.get(key)?.iter().find_map(|proof| {
         let ttl = if proof.error.is_some() { 10 } else { 120 };
-        (proof.identity == *identity && proof.checked.elapsed() < Duration::from_secs(ttl))
+        let recent_probe = probe_after
+            .is_none_or(|after| proof.probe_started.is_some_and(|started| started >= after));
+        (proof.identity == *identity && recent_probe && proof.checked.elapsed() < Duration::from_secs(ttl))
             .then(|| proof.error.clone().map_or(Ok(()), Err))
     })
 }
 fn cached_metadata_health(
     key: &(PathBuf, String),
     identity: &LaunchIdentity,
-) -> Option<Result<(), String>> {
+) -> Option<Result<(), ProbeFailure>> {
     proofs().lock().ok()?.get(key)?.iter().find_map(|proof| {
-        let ttl = if proof.error.is_some() { 10 } else { 120 };
+        // The proxy's identity stays the same without its component. Keep the
+        // last guidance visible until a new Rust probe replaces it.
+        let fresh = match &proof.error {
+            Some(ProbeFailure::RustupPrerequisite { .. }) => true,
+            Some(ProbeFailure::Verification(_)) => {
+                proof.checked.elapsed() < Duration::from_secs(10)
+            }
+            None => proof.checked.elapsed() < Duration::from_secs(120),
+        };
         let same = proof.identity.configuration == identity.configuration
             && proof.identity.files.len() == identity.files.len()
             && proof
@@ -646,16 +680,24 @@ fn cached_metadata_health(
                         && old.modified == current.modified
                         && old.stamp == current.stamp
                 });
-        (same && proof.checked.elapsed() < Duration::from_secs(ttl))
-            .then(|| proof.error.clone().map_or(Ok(()), Err))
+        (same && fresh).then(|| proof.error.clone().map_or(Ok(()), Err))
     })
 }
-fn proof_matches(key: &(PathBuf, String), current: &[LaunchIdentity]) -> bool {
+fn proof_matches(
+    key: &(PathBuf, String),
+    current: &[LaunchIdentity],
+    probe_after: Option<Instant>,
+) -> bool {
     current
         .iter()
-        .all(|identity| cached_health(key, identity) == Some(Ok(())))
+        .all(|identity| cached_health(key, identity, probe_after) == Some(Ok(())))
 }
-fn remember_health(key: &(PathBuf, String), identity: LaunchIdentity, error: Option<String>) {
+fn remember_health(
+    key: &(PathBuf, String),
+    identity: LaunchIdentity,
+    error: Option<ProbeFailure>,
+    probe_started: Option<Instant>,
+) {
     if let Ok(mut proofs) = proofs().lock() {
         // Bound profile/catalog proof retention. Each tool has at most three roles.
         if proofs.len() >= 128 && !proofs.contains_key(key) {
@@ -668,15 +710,29 @@ fn remember_health(key: &(PathBuf, String), identity: LaunchIdentity, error: Opt
             }
         }
         let entries = proofs.entry(key.clone()).or_default();
-        entries.retain(|proof| {
-            proof.identity != identity && proof.checked.elapsed() < Duration::from_secs(120)
-        });
+        if key.1 == "rust" {
+            // A project query can run the same proxy against another toolchain.
+            // Its success cannot replace a prerequisite seen in the profile probe.
+            if probe_started.is_none() && entries.iter().any(|proof| {
+                proof.identity == identity
+                    && matches!(proof.error, Some(ProbeFailure::RustupPrerequisite { .. }))
+            }) {
+                return;
+            }
+            // Rust has one launcher. Keep only its latest proof.
+            entries.clear();
+        } else {
+            entries.retain(|proof| {
+                proof.identity != identity && proof.checked.elapsed() < Duration::from_secs(120)
+            });
+        }
         if entries.len() >= 6 {
             entries.remove(0);
         }
         entries.push(ExecutableProof {
             identity,
             checked: Instant::now(),
+            probe_started,
             error,
         });
     }
@@ -688,7 +744,7 @@ fn invalidate_failures(root: &Path) {
     if let Ok(mut proofs) = proofs().lock() {
         for ((profile, _), entries) in proofs.iter_mut() {
             if profile == root {
-                entries.retain(|proof| proof.error.is_none());
+                entries.retain(|proof| !matches!(proof.error, Some(ProbeFailure::Verification(_))));
             }
         }
     }
@@ -1134,29 +1190,158 @@ mod windows_language_job {
         }
     }
 }
-async fn handshake_with_timeout(
+fn rustup_toolchain(stderr: &[u8]) -> Option<String> {
+    // The capture may end mid-line. Never parse a truncated diagnostic.
+    let stderr = if stderr.len() == RUSTUP_STDERR_LIMIT {
+        &stderr[..stderr.iter().rposition(|&b| b == b'\n')?]
+    } else {
+        stderr
+    };
+    let stderr = String::from_utf8_lossy(stderr);
+    stderr.lines().find_map(|line| {
+        let (prefix, rest) = line.trim().strip_prefix("error: ")?.split_once('\'')?;
+        let (binary, rest) = rest.split_once('\'')?;
+        if !matches!(binary, "rust-analyzer" | "rust-analyzer.exe") {
+            return None;
+        }
+        // Rustup versions differ on the closing period, so accept either form.
+        let rest = rest.strip_suffix('.').unwrap_or(rest);
+        let name = match prefix {
+            // Older Rustup versions use this message for the missing component
+            // when they cannot map the proxy's filename back to it.
+            "Unknown binary " => rest.strip_prefix(" in official toolchain '")?,
+            "" => rest.strip_prefix(" is not installed for the toolchain '")?,
+            _ => return None,
+        }
+        .strip_suffix('\'')?;
+        // Only display a single shell-safe toolchain argument from stderr.
+        (name.len() <= 128
+            && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
+        .then(|| name.to_string())
+    })
+}
+fn rustup_install_command(toolchain: &str) -> String {
+    format!("rustup component add rust-analyzer --toolchain {toolchain}")
+}
+fn is_rustup_proxy(launch: &Launch, identity: &LaunchIdentity) -> bool {
+    let Some(analyzer) = identity.files.first() else {
+        return false;
+    };
+    let rustup = launch.command.with_file_name(executable_name("rustup"));
+    let Some(rustup) = file_metadata_identity(&rustup) else {
+        return false;
+    };
+    // The installer can use symlinks, hardlinks or copies of the Rustup binary.
+    analyzer.path == rustup.path
+        || (analyzer.size == rustup.size
+            && file_identity(&rustup.path).is_some_and(|file| file.digest == analyzer.digest))
+}
+async fn initialize_server(
+    input: &mut tokio::process::ChildStdin,
+    output: &mut BufReader<tokio::process::ChildStdout>,
     launch: &Launch,
+    saw_output: &mut bool,
+) -> Result<(), String> {
+    let request = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"processId":null,"rootUri":null,"capabilities":{},"workspaceFolders":null,"initializationOptions":launch.initialization_options}}).to_string();
+    let message = format!("Content-Length: {}\r\n\r\n{}", request.len(), request);
+    input
+        .write_all(message.as_bytes())
+        .await
+        .map_err(|_| "The language server closed its input.")?;
+    *saw_output = !output
+        .fill_buf()
+        .await
+        .map_err(|_| "The language server exited before answering.")?
+        .is_empty();
+    if !*saw_output {
+        return Err("The language server exited before answering.".into());
+    }
+    // Bound framing, individual payloads and notifications before initialize.
+    for _ in 0..32 {
+        let response = super::language_framing::read_message(output, 1024 * 1024).await?;
+        if response.get("id") == Some(&json!(1)) {
+            return if response.pointer("/result/capabilities").is_some_and(Value::is_object) {
+                Ok(())
+            } else {
+                Err("The language server refused initialization.".into())
+            };
+        }
+    }
+    Err("The language server did not complete initialization.".to_string())
+}
+
+async fn handshake_with_timeout(
+    id: &str,
+    launch: &Launch,
+    identity: &LaunchIdentity,
     cwd: &Path,
     duration: Duration,
-) -> Result<(), String> {
-    let mut owned = OwnedProcess::spawn(command(launch, cwd))?;
-    let child = &mut owned.child;
-    let result = timeout(duration, async {
-        let request = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"processId":null,"rootUri":null,"capabilities":{},"workspaceFolders":null,"initializationOptions":launch.initialization_options}}).to_string();
-        let message = format!("Content-Length: {}\r\n\r\n{}", request.len(), request);
-        child.stdin.as_mut().ok_or("The language server input is unavailable.")?.write_all(message.as_bytes()).await.map_err(|_| "The language server closed its input.")?;
-        let mut stdout = BufReader::new(child.stdout.take().ok_or("The language server output is unavailable.")?);
-        // Bound framing, individual payloads and notifications before initialize.
-        for _ in 0..32 {
-            let response = super::language_framing::read_message(&mut stdout, 1024 * 1024).await?;
-            if response.get("id") == Some(&json!(1)) {
-                return if response.pointer("/result/capabilities").is_some_and(Value::is_object) { Ok(()) } else { Err("The language server refused initialization.".to_string()) };
+) -> Result<(), ProbeFailure> {
+    let mut cmd = command(launch, cwd);
+    if id == "rust" {
+        cmd.stderr(Stdio::piped());
+    }
+    let mut owned = OwnedProcess::spawn(cmd).map_err(ProbeFailure::Verification)?;
+    let deadline = TokioInstant::now() + duration;
+    let mut missing_toolchain = None;
+    let result = async {
+        let child = &mut owned.child;
+        // Keep stdin and stdout alive while observing the exit. Child::wait
+        // would otherwise close stdin and could make a live server exit.
+        let mut input = child.stdin.take().ok_or("The language server input is unavailable.")?;
+        let mut output = BufReader::new(child.stdout.take().ok_or("The language server output is unavailable.")?);
+        let mut diagnostic = Vec::new();
+        let mut saw_output = false;
+        let result = {
+            let initialize = timeout_at(deadline, initialize_server(&mut input, &mut output, launch, &mut saw_output));
+            if let Some(mut stderr) = child.stderr.take() {
+                // Drain even after capturing the prefix so a noisy server can initialize.
+                let drain = async {
+                    let _ = (&mut stderr).take(RUSTUP_STDERR_LIMIT as u64).read_to_end(&mut diagnostic).await;
+                    let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+                };
+                tokio::pin!(initialize, drain);
+                tokio::select! {
+                    _ = &mut drain => initialize.await,
+                    result = &mut initialize => {
+                        if matches!(result, Ok(Err(_))) {
+                            // Stdout can close before buffered stderr is read.
+                            let until = deadline.min(TokioInstant::now() + Duration::from_millis(150));
+                            let _ = timeout_at(until, &mut drain).await;
+                        }
+                        result
+                    }
+                }
+            } else {
+                initialize.await
+            }
+        }.map_err(|_| "The language server initialization timed out.")?;
+        if result.is_err() && !saw_output {
+            if let Some(toolchain) = rustup_toolchain(&diagnostic) {
+                let until = deadline.min(TokioInstant::now() + Duration::from_millis(500));
+                let exited = timeout_at(until, async {
+                    // A write can race the proxy's exit, so confirm EOF even
+                    // if initialization failed before reading stdout.
+                    output.fill_buf().await.is_ok_and(|bytes| bytes.is_empty())
+                        && child.wait().await.is_ok_and(|status| status.code() == Some(1))
+                }).await.unwrap_or(false);
+                if exited {
+                    missing_toolchain = Some(toolchain);
+                }
             }
         }
-        Err("The language server did not complete initialization.".to_string())
-    }).await;
+        result
+    }.await;
     owned.stop().await;
-    result.map_err(|_| "The language server initialization timed out.".to_string())?
+    result.map_err(|error| {
+        match missing_toolchain.filter(|_| is_rustup_proxy(launch, identity)) {
+            Some(toolchain) => ProbeFailure::RustupPrerequisite { toolchain },
+            None => ProbeFailure::Verification(error),
+        }
+    })
 }
 fn project_contains(path: &Path, project: &Path) -> bool {
     #[cfg(windows)]
@@ -1221,6 +1406,7 @@ async fn verified_launches_scoped(
     root: &Path,
     settings: &Settings,
     project: Option<&Path>,
+    probe_after: Option<Instant>,
 ) -> Result<Vec<Launch>, String> {
     let prefix = managed_prefix(root, settings, tool.id);
     let launches = launches(tool, prefix.as_deref());
@@ -1232,13 +1418,14 @@ async fn verified_launches_scoped(
     if launches.len() != expected {
         return Ok(vec![]);
     }
-    verify_launch_list(tool.id, root, launches, project).await
+    verify_launch_list(tool.id, root, launches, project, probe_after).await
 }
 async fn verify_launch_list(
     id: &str,
     root: &Path,
     launches: Vec<Launch>,
     project: Option<&Path>,
+    probe_after: Option<Instant>,
 ) -> Result<Vec<Launch>, String> {
     if let Some(project) = project {
         for launch in &launches {
@@ -1248,7 +1435,7 @@ async fn verify_launch_list(
     let mut current =
         tool_identities(id, &launches).ok_or("The language server executable is unavailable.")?;
     let key = (root.to_path_buf(), id.to_string());
-    if proof_matches(&key, &current) {
+    if proof_matches(&key, &current, probe_after) {
         return Ok(launches);
     }
     // Deduplicate cold snapshots and bound child processes across the catalog.
@@ -1256,7 +1443,7 @@ async fn verify_launch_list(
     let _gate = gate.lock().await;
     current =
         tool_identities(id, &launches).ok_or("The language server executable is unavailable.")?;
-    if proof_matches(&key, &current) {
+    if proof_matches(&key, &current, probe_after) {
         return Ok(launches);
     }
     let _permit = probe_slots()
@@ -1288,19 +1475,20 @@ async fn verify_launch_list(
         if let Some(project) = project {
             validate_launch_project(launch, project)?;
         }
-        match cached_health(&key, identity) {
+        match cached_health(&key, identity, probe_after) {
             Some(Ok(())) => continue,
-            Some(Err(error)) => return Err(error),
+            Some(Err(error)) => return Err(error.into_detail()),
             None => (),
         }
-        let result = handshake_with_timeout(launch, root, PROBE_TIMEOUT).await;
+        let probe_started = Instant::now();
+        let result = handshake_with_timeout(id, launch, identity, root, PROBE_TIMEOUT).await;
         let after = tool_identities(id, std::slice::from_ref(launch))
             .ok_or("The language server executable changed during verification.")?;
         if after.first() != Some(identity) {
             return Err("The language server executable changed during verification.".into());
         }
-        remember_health(&key, identity.clone(), result.as_ref().err().cloned());
-        result?;
+        remember_health(&key, identity.clone(), result.as_ref().err().cloned(), Some(probe_started));
+        result.map_err(ProbeFailure::into_detail)?;
     }
     if tool_identities(id, &launches).as_ref() != Some(&current) {
         return Err("The language server executable changed during verification.".into());
@@ -1333,6 +1521,7 @@ async fn metadata_snapshot(
         .clone();
     let tools = TOOLS.iter().filter(|tool| ids.is_none_or(|ids| ids.iter().any(|id| id == tool.id))).map(|tool| {
         let enabled = settings.enabled.get(tool.id).copied().unwrap_or(true);
+        let mut install_command = None;
         let (state, health, detail) = if !enabled {
             ("unavailable", "unverified", "This language tool is disabled in Settings.".into())
         } else if installing.contains(tool.id) {
@@ -1344,17 +1533,28 @@ async fn metadata_snapshot(
                 match tool_identities_inner(tool.id, &launches, false) {
                     None => ("error", "error", "The language server executable or runtime is unavailable.".into()),
                     Some(current) => {
-                        let error = current.iter().find_map(|identity| cached_metadata_health(&key, identity).and_then(Result::err))
-                            .or_else(|| launches.iter().find_map(|launch| plugin_command(launch).err()));
-                        if let Some(error) = error { ("error", "error", error) }
-                        else if current.iter().all(|identity| cached_metadata_health(&key, identity) == Some(Ok(()))) { ("installed", "verified", "Last verified language server; shared by your projects. Refresh to recheck health.".into()) }
-                        else {
-                            let stale = proofs().lock().is_ok_and(|proofs| proofs.get(&key).is_some_and(|entries| !entries.is_empty()));
-                            ("available", if stale { "stale" } else { "unverified" }, "Language server found. Refresh to verify its current health.".into())
+                        let error = current.iter()
+                            .find_map(|identity| cached_metadata_health(&key, identity).and_then(Result::err))
+                            .or_else(|| launches.iter()
+                                .find_map(|launch| plugin_command(launch).err())
+                                .map(ProbeFailure::Verification));
+                        match error {
+                            Some(ProbeFailure::RustupPrerequisite { toolchain }) => {
+                                install_command = Some(rustup_install_command(&toolchain));
+                                ("unavailable", "unverified", format!("Rust-analyzer is missing from {toolchain}. Run this command in a terminal, then refresh."))
+                            }
+                            Some(ProbeFailure::Verification(detail)) => ("error", "error", detail),
+                            None if current.iter().all(|identity| cached_metadata_health(&key, identity) == Some(Ok(()))) => {
+                                ("installed", "verified", "Last verified language server; shared by your projects. Refresh to recheck health.".into())
+                            }
+                            None => {
+                                let stale = proofs().lock().is_ok_and(|proofs| proofs.get(&key).is_some_and(|entries| !entries.is_empty()));
+                                ("available", if stale { "stale" } else { "unverified" }, "Language server found. Refresh to verify its current health.".into())
+                            }
                         }
                     }
                 }
-            } else if let Some(error) = settings.errors.get(tool.id) {
+            } else if let Some(error) = settings.errors.get(tool.id).filter(|_| tool.id != "rust") {
                 ("error", "unverified", error.clone())
             } else if (tool.packages.is_empty() && tool.id != "go") || (!tool.packages.is_empty() && system_binary("node").is_none()) || (tool.id == "go" && system_binary("go").is_none()) {
                 ("unavailable", "unverified", tool.help.into())
@@ -1370,6 +1570,7 @@ async fn metadata_snapshot(
             detail,
             enabled,
             health: health.into(),
+            install_command,
         }
     }).collect();
     Ok(LanguageToolsSnapshot {
@@ -1421,6 +1622,7 @@ async fn snapshot_at_scoped_selected(
                 status.state = "unavailable".into();
                 status.health = "unverified".into();
                 status.detail = error;
+                status.install_command = None;
             }
         }
     }
@@ -1498,52 +1700,58 @@ async fn refresh_at(
         })
         .cloned()
         .collect::<BTreeSet<_>>();
+    let mut to_probe = eligible.clone();
     if completed.as_ref().is_some_and(|done| {
         done.finished >= started
             && done.scope == scope_key
             && done.settings == settings_key
             && eligible.is_subset(&done.ids)
     }) {
-        let unchanged = eligible.iter().all(|id| {
+        to_probe.retain(|id| {
             let launches = launches(
                 tool(id).expect("validated catalog id"),
                 managed_prefix(root, &settings, id).as_deref(),
             );
             if launches.is_empty() {
-                return true;
+                return false;
             }
             if scope.is_some_and(|(project, _)| {
                 launches
                     .iter()
                     .any(|launch| validate_launch_project(launch, project).is_err())
             }) {
-                return false;
+                return true;
             }
-            tool_identities(id, &launches).is_some_and(|identities| {
+            !tool_identities(id, &launches).is_some_and(|identities| {
                 identities.iter().all(|identity| {
-                    cached_health(&(root.to_path_buf(), id.clone()), identity).is_some()
+                    cached_health(
+                        &(root.to_path_buf(), id.clone()),
+                        identity,
+                        (id == "rust").then_some(started),
+                    ).is_some()
                 })
             })
         });
-        if unchanged {
+        if to_probe.is_empty() {
             return Ok(());
         }
     }
-    // Only this coalesced refresh invalidates failures/positive ages. Overlapping
-    // callers share the completed health work rather than each starting servers.
+    // Rust must be probed after this refresh began. Keep its previous guidance
+    // visible while waiting so an older in-flight probe cannot undo the refresh.
+    // The remaining tools share completed health work across overlapping callers.
     if let Ok(mut proofs) = proofs().lock() {
-        for id in &eligible {
+        for id in to_probe.iter().filter(|id| id.as_str() != "rust") {
             proofs.remove(&(root.to_path_buf(), id.clone()));
         }
     }
-    let checks = eligible.iter().map(|id| async {
-        let _ = verified_launches_scoped(
+    let checks = to_probe.iter().map(|id| {
+        verified_launches_scoped(
             tool(id).expect("validated catalog id"),
             root,
             &settings,
             scope.map(|(project, _)| project),
+            (id == "rust").then_some(started),
         )
-        .await;
     });
     futures_util::future::join_all(checks).await;
     *completed = Some(RefreshCompletion {
@@ -1861,10 +2069,22 @@ async fn install_at_scoped(
                 .into(),
         );
     }
-    if verified_launches_scoped(tool, root, &settings, project)
-        .await
-        .is_ok_and(|launches| !launches.is_empty())
-    {
+    let verification = verified_launches_scoped(tool, root, &settings, project, None).await;
+    if id == "rust" {
+        // Rust is externally managed. Keep its verification outcome without
+        // recording a managed installation error or creating a staging prefix.
+        if let Some(app) = app {
+            changed(app);
+        }
+        return verification.and_then(|launches| {
+            if launches.is_empty() {
+                Err(tool.help.into())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    if verification.is_ok_and(|launches| !launches.is_empty()) {
         return Ok(());
     }
     if automatic {
@@ -1900,14 +2120,16 @@ async fn install_at_scoped(
         }
         let current = tool_identities(id, &launches)
             .ok_or("The installed language server identity is unavailable.")?;
-        for launch in &launches {
+        for (launch, identity) in launches.iter().zip(&current) {
             if automatic {
                 check_automatic_install(runtime, id).await?;
             }
             if let Some(project) = project {
                 validate_launch_project(launch, project)?;
             }
-            handshake_with_timeout(launch, root, PROBE_TIMEOUT).await?;
+            handshake_with_timeout(id, launch, identity, root, PROBE_TIMEOUT)
+                .await
+                .map_err(ProbeFailure::into_detail)?;
         }
         if tool_identities(id, &launches).as_ref() != Some(&current) {
             return Err("The installed language server changed during verification.".into());
@@ -1935,7 +2157,7 @@ async fn install_at_scoped(
         let current = launches(tool, Some(&prefix));
         if tool_identities(id, &current).as_ref() == Some(identities) {
             for identity in identities {
-                remember_health(&(root.to_path_buf(), id.into()), identity.clone(), None);
+                remember_health(&(root.to_path_buf(), id.into()), identity.clone(), None, None);
             }
         }
     }
@@ -1947,6 +2169,15 @@ pub(super) async fn install(app: &AppHandle, id: &str) -> Result<LanguageToolsSn
     // Installation failures are represented in the returned catalog and event.
     let result = install_at(Some(app), &root, &runtime, id, false).await;
     if let Err(error) = result {
+        if id == "rust" {
+            let snapshot = snapshot_at(&root, &runtime).await?;
+            if snapshot.tools.iter().any(|tool| {
+                tool.id == id && (tool.install_command.is_some() || tool.detail == error)
+            }) {
+                return Ok(snapshot);
+            }
+            return Err(error);
+        }
         if !is_known_tool(id) || runtime.settings.lock().await.errors.get(id) != Some(&error) {
             return Err(error);
         }
@@ -2290,6 +2521,7 @@ pub(super) async fn record_query_initialization(
         &(proof.root.clone(), proof.id.clone()),
         proof.identity.clone(),
         None,
+        None,
     );
     let generation = runtime.generation.load(Ordering::SeqCst);
     drop(settings);
@@ -2466,7 +2698,7 @@ async fn prepare_project_inner(
             continue;
         }
         if let Ok(launches) =
-            verified_launches_scoped(tool(&id)?, &root, &settings, Some(&canonical)).await
+            verified_launches_scoped(tool(&id)?, &root, &settings, Some(&canonical), None).await
         {
             if !launches.is_empty()
                 && launches.iter().all(|launch| plugin_command(launch).is_ok())
