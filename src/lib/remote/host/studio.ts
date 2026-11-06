@@ -51,6 +51,7 @@ function component(value: unknown): string {
     || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw unavailable();
   return name;
 }
+export function relativeStudioPath(value: unknown): string { return relative(value); }
 function relative(value: unknown): string {
   const path = string(value, 4096);
   const parts = path.split("/");
@@ -75,7 +76,7 @@ function textPrefix(value: string, maximum: number): string {
   return value.slice(0, low);
 }
 /** JSON escaping can expand text sixfold; enforce the final envelope too. */
-function boundText<T extends { text: string; truncated: boolean }>(result: T): T {
+export function boundText<T extends { text: string; truncated: boolean }>(result: T): T {
   const original = result.text;
   result.text = textPrefix(original, STUDIO_TEXT_BYTES);
   result.truncated ||= original !== result.text;
@@ -149,6 +150,12 @@ export class HostStudio {
     }
     return handle;
   }
+  /** Resolve only a handle issued to this viewer for this exact live checkout. */
+  resolveGitChange(request: HostRequest, args: Record<string, unknown>, resourceId: unknown): { path: string; area: StudioGitArea } {
+    const target = this.target(request, args);
+    const handle = this.handle(request, target, resourceId, "change");
+    return { path: handle.relative, area: handle.area! };
+  }
   private async native(request: HostRequest, args: Record<string, unknown>, target: Target,
     command: string, nativeArgs: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.assertTarget(request, args, target);
@@ -157,6 +164,10 @@ export class HostStudio {
     catch { throw unavailable(); } // No stderr, exception, credential URL or absolute path crosses the bridge.
     this.assertTarget(request, args, target);
     return record(result);
+  }
+  /** The path behind a change this device was shown, for a revert preview. */
+  changePath(request: HostRequest, args: Record<string, unknown>, changeId: unknown): string {
+    return this.handle(request, this.target(request, args), changeId, "change").relative;
   }
   async execute(request: HostRequest): Promise<StudioResult> {
     this.check(request);
@@ -224,7 +235,7 @@ export class HostStudio {
     const file = this.handle(request, target, args.fileId, "file");
     // Existing native command canonicalizes containment, then uses anchored,
     // opened-handle checks and bounded regular-file reads on both platforms.
-    const raw = await this.native(request, args, target, "preview_project_file", { root: target.root, path: join(target.root, file.relative) });
+    const raw = await this.native(request, args, target, "remote_studio_file_preview", { root: target.root, path: join(target.root, file.relative) });
     const binary = boolean(raw.binary);
     return boundText({ fileId: idArg(args.fileId), path: file.relative, binary,
       text: binary ? "" : string(raw.text, 1024 * 1024), truncated: boolean(raw.truncated) });

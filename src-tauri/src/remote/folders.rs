@@ -358,3 +358,10 @@ pub(crate) async fn remote_folders_select(
     result["token"] = json!(folder_token);
     Ok(result)
 }
+
+pub(super) struct Selection { pub path:PathBuf, pub name:String, anchor:Anchor }
+impl Selection { pub(super) fn validate(&self)->Result<(),String>{self.anchor.validate()} }
+pub(super) fn selection(inner:&Arc<super::Inner>,generation:u64,device:&str,revision:u64,token:&str)->Result<Selection,String>{
+    let folder={let mut core=inner.lock();sweep(&mut core.folders);core.folders.folders.get(token).filter(|folder|folder.device==device&&folder.generation==generation&&folder.revision==revision&&folder.can_add).cloned().ok_or_else(failed)?};
+    let anchor=anchored(&folder)?;anchor.validate()?;Ok(Selection{path:anchor.path.clone(),name:folder.name,anchor})
+}

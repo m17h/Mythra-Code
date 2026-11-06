@@ -25,6 +25,8 @@ export interface HostSources {
   rememberThread?(thread: Thread): void;
   /** Must reconcile native ownership/pending requests before ready; never start work. */
   reconcile(isCurrent: () => boolean): Promise<void>;
+  /** What the Studio reads need from app state. Without it they answer empty. */
+  getStudioReads?(): import("./studioReads").StudioReadSources;
   /** Optional Phase 3 integration, created and disposed for each renderer lease. */
   createWork?(lease: RemoteWorkLease): RemoteWorkAdapter;
 }

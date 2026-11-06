@@ -47,3 +47,35 @@ export interface ProjectsAddResult {
   workspace?: { id: string; name: string; isChat: false };
 }
 export type ProjectNavigationResult = FoldersBrowseResult | ProjectsAddResult;
+
+/** Studio reads beyond files and status. Replies never carry a native path
+ * except the worktree's own, which is what Copy path copies. */
+export type StudioReadOperation = "checkpoint.list" | "checkpoint.diff" | "worktree.status" | "git.log" | "git.revert.preview" | "agents.list" | "attachment.image";
+export interface WireCheckpoint {
+  id: string; threadId: string; label: string; createdAt: number; completedAt?: number;
+  status?: string; accepted?: boolean; threadLabel?: string; provider?: string; model?: string; branch?: string; head?: string;
+  parentId?: string; parentPosition?: "before" | "after"; restoredFromId?: string; overlappingRun?: boolean;
+  fileCount?: number; changedFiles?: number; additions?: number; deletions?: number;
+  /** Whether each saved side can be restored. The commits themselves stay on the host. */
+  restorable: { before: boolean; after: boolean };
+}
+export interface CheckpointListResult { checkpoints: WireCheckpoint[]; head?: { checkpointId: string; position: "before" | "after" }; truncated: boolean }
+export interface CheckpointDiffResult { checkpointId: string; text: string; truncated: boolean }
+export interface WireWorktree {
+  threadId: string; path: string; branch: string; baseCommit: string; status: string; createdAt: number;
+  lastAppliedAt?: number; mergedAt?: number; removedAt?: number; recreatedFromMissing?: boolean;
+}
+export interface WireWorktreeStatus {
+  headOid: string | null; sourceBranch: string | null; exists: boolean; registered: boolean; branch: string | null; baseCommit: string | null;
+  changedFiles: number; untrackedFiles: number; ignoredFileCount: number; ahead: number; behind: number; clean: boolean;
+}
+export interface WorktreeStatusResult { worktree: WireWorktree | null; status: WireWorktreeStatus | null }
+export interface WireGitCommit { oid: string; shortOid: string; subject: string; authorName: string; authoredAt: string }
+export interface GitLogResult { repository: boolean; entries: WireGitCommit[]; hasMore: boolean; nextOffset: number; headOid: string | null; truncated: boolean }
+export interface RevertPreviewResult { previewId: string; restorePaths: string[]; preservedPaths: string[]; truncated: boolean }
+export interface WireAgent {
+  id: string; prompt: string; status: string; provider?: string; model?: string; runtime?: "codex" | "claude"; createdAt?: number;
+  canOpen?: boolean; canStop?: boolean; task?: string; progress?: string; result?: string;
+}
+export interface AgentsListResult { agents: WireAgent[]; truncated: boolean }
+export interface AttachmentImageResult { tooLarge?: boolean; mime?: string; size?: number; data?: string; done?: boolean }

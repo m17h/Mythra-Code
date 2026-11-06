@@ -58,10 +58,13 @@ pub(super) struct WorkState {
     pub(super) targets: HashMap<String, Target>,
     tickets: HashMap<String, bool>,
     stops: HashMap<String, (String, String)>,
+    cancelled: std::collections::HashSet<(String,String)>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RemoteDelivery {
+    #[serde(default)]
+    pub(crate) owner_handle: Option<String>,
     pub(crate) generation: u64,
     pub(crate) device: String,
     pub(crate) op_id: String,
@@ -73,7 +76,7 @@ pub(crate) struct RemoteDelivery {
 }
 impl RemoteDelivery {
     fn valid(&self) -> bool {
-        super::identity::fingerprint_is_valid(&self.device)
+        self.owner_handle.as_ref().is_none_or(|handle|uuid::Uuid::parse_str(handle).is_ok()) && super::identity::fingerprint_is_valid(&self.device)
             && !self.op_id.is_empty()
             && self.op_id.len() <= 256
             && self.op_seq > 0
@@ -83,6 +86,8 @@ impl RemoteDelivery {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Target {
+    #[serde(default)]
+    pub(crate) owner_handle: Option<String>,
     pub(crate) generation: u64,
     pub(crate) device: String,
     pub(crate) kind: String,
@@ -139,9 +144,10 @@ pub(super) fn validate_args(op: &str, args: &Value) -> Result<(), WireError> {
         return Ok(());
     }
     let object = args.as_object().ok_or_else(invalid)?;
+    if op=="prompt.send"&&args.get("draftHandle").is_some()&&args.get("workspaceId").is_none(){return Err(invalid());}
     let extra: &[&str] = match op {
-        "prompt.send" => &["threadId", "workspaceId", "text"],
-        "prompt.queue" => &["threadId", "text"],
+        "prompt.send" => &["threadId", "workspaceId", "text", "draftHandle", "attachmentIds"],
+        "prompt.queue" => &["threadId", "workspaceId", "text", "attachmentIds"],
         "prompt.steer" => &["threadId", "handle", "target", "text"],
         "turn.stop" => &["threadId", "handle", "target"],
         "approval.answer" => &["threadId", "handle", "target", "decision"],
@@ -165,7 +171,7 @@ pub(super) fn validate_args(op: &str, args: &Value) -> Result<(), WireError> {
     {
         return Err(invalid());
     }
-    for field in ["threadId", "workspaceId", "handle", "target"] {
+    for field in ["threadId", "workspaceId", "handle", "target", "draftHandle"] {
         if let Some(value) = args.get(field) {
             if !value.as_str().is_some_and(|text| {
                 !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_control)
@@ -181,6 +187,7 @@ pub(super) fn validate_args(op: &str, args: &Value) -> Result<(), WireError> {
     } else if args.get("threadId").is_none() {
         return Err(invalid());
     }
+    if let Some(ids)=args.get("attachmentIds"){let ids=ids.as_array().ok_or_else(invalid)?;let mut seen=std::collections::HashSet::new();if ids.len()>20||ids.iter().any(|id|!id.as_str().is_some_and(|id|uuid::Uuid::parse_str(id).is_ok()&&seen.insert(id))){return Err(invalid());}}
     if op.starts_with("prompt.")
         && !args
             .get("text")
@@ -314,6 +321,7 @@ async fn execute(
     seq: u64,
     digest: &str,
 ) -> Result<Value, WireError> {
+    let attachment_ids=args.get("attachmentIds").cloned();
     let saved = {
         let core = inner.lock();
         let grant = hostbridge::authorize(&core, link)?;
@@ -328,8 +336,9 @@ async fn execute(
             digest.to_owned(),
         );
         inner.enqueue_write(false, move |db| {
-            store::claim_operation(db, &device, &id, seq, &op, &digest)
-                .map_err(|_| "The instruction could not be admitted.".into())
+            let claim=store::claim_operation(db, &device, &id, seq, &op, &digest).map_err(|_| "The instruction could not be admitted.".to_string())?;
+            if matches!(claim,JournalClaim::Claimed){if let Some(ids)=attachment_ids{db.execute("UPDATE remote_op_journal SET attachments_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",rusqlite::params![device,id,seq as i64,ids.to_string()]).map_err(|_|"The attachment identity could not be saved.".to_string())?;}}
+            Ok(claim)
         })
     };
     match finish_write(saved).await.map_err(|_| internal())? {
@@ -355,7 +364,10 @@ async fn execute(
         }
         JournalClaim::Claimed => {}
     }
-    let response = hostbridge::request_value(inner, link, op, args, Some((id, seq))).await;
+    let response = if op=="attachment.put" {
+        let stamp={let core=inner.lock();let grant=hostbridge::authorize(&core,link)?;super::commit::Stamp{generation:core.bridge.generation,device:link.peer_fingerprint.clone(),grant_revision:grant.revision,op_id:id.to_owned(),op_seq:seq,workspace_id:args.get("workspaceId").and_then(Value::as_str).map(str::to_owned),thread_id:None}};
+        super::attachments::put(inner,stamp,args).await.map_err(|_|WireError::new("internal","The host could not confirm this upload. Check the attachment before trying again."))
+    }else{hostbridge::request_value(inner, link, op, args, Some((id, seq))).await};
     let result = match response {
         Ok(value) => value,
         Err(error) => {
@@ -391,6 +403,13 @@ async fn execute(
         "workspaceId",
         "workflowRunId",
         "editHandle",
+        "uploadId",
+        "attachmentId",
+        "name",
+        "kind",
+        "terminalId",
+        "draftHandle",
+        "startTarget",
     ] {
         if let Some(value) = result
             .get(key)
@@ -400,6 +419,11 @@ async fn execute(
             safe[key] = json!(value);
         }
     }
+    for key in ["nextOffset","size"] {if let Some(n)=result.get(key).and_then(Value::as_u64).filter(|n|*n<=50*1024*1024){safe[key]=json!(n);}}
+    if op=="draft.settings.set"{if let Some(settings)=result.get("settings").filter(|v|v.is_object()){
+        let mut check=settings.clone();check["opId"]=json!(id);check["opSeq"]=json!(seq);check["workspaceId"]=result.get("workspaceId").cloned().unwrap_or(json!("draft"));
+        if super::manifest::validate("draft.settings.set",&check).is_ok(){safe["settings"]=settings.clone();}
+    }}
     // Project registration is App-owned. If its durable adapter supplies the
     // explicit public projection, retain it for retries after folder expiry.
     if op == "projects.add" && safe.get("state").and_then(Value::as_str) == Some("accepted") {
@@ -476,9 +500,11 @@ pub(crate) async fn remote_work_receipt(
     permission: Option<String>,
     error_code: Option<String>,
     stop_handle: Option<String>,
+    owner_handle: Option<String>,
 ) -> Result<(), WireError> {
     hostbridge::window_is_host(&window)?;
     let meta = RemoteDelivery {
+        owner_handle:None,
         generation,
         device: device.clone(),
         op_id: op_id.clone(),
@@ -489,7 +515,7 @@ pub(crate) async fn remote_work_receipt(
     if !meta.valid() {
         return Err(invalid());
     }
-    let receipt = json!({"generation":generation,"device":device,"opId":op_id,"opSeq":op_seq,"disposition":disposition,"threadId":thread_id,"workspaceId":workspace_id,"queuedTurnId":queued_turn_id,"messageId":message_id,"attemptId":attempt_id,"startRequestId":start_request_id,"turnId":turn_id,"provider":provider,"permission":permission,"errorCode":error_code,"stopHandle":stop_handle});
+    let receipt = json!({"ownerHandle":owner_handle,"generation":generation,"device":device,"opId":op_id,"opSeq":op_seq,"disposition":disposition,"threadId":thread_id,"workspaceId":workspace_id,"queuedTurnId":queued_turn_id,"messageId":message_id,"attemptId":attempt_id,"startRequestId":start_request_id,"turnId":turn_id,"provider":provider,"permission":permission,"errorCode":error_code,"stopHandle":stop_handle});
     if serde_json::to_vec(&receipt).map_or(true, |bytes| bytes.len() > 16384) {
         return Err(invalid());
     }
@@ -535,6 +561,7 @@ pub(crate) async fn remote_work_recover(
     if receipt.get("disposition").and_then(Value::as_str) == Some("queued") {
         let device = receipt.get("device").and_then(Value::as_str).unwrap_or("");
         let meta = RemoteDelivery {
+        owner_handle:None,
             generation,
             device: device.to_owned(),
             op_id: receipt
@@ -547,7 +574,9 @@ pub(crate) async fn remote_work_recover(
             message_id: None,
         };
         let core = state.inner.lock();
-        if authorize(
+        if receipt.get("ownerHandle").and_then(Value::as_str).is_some_and(|handle|!super::owners::is_open(&core,handle)){
+            receipt["disposition"]=json!("uncertain");
+        }else if authorize(
             &core,
             &meta,
             receipt.get("workspaceId").and_then(Value::as_str),
@@ -602,11 +631,16 @@ impl NativePermit {
             &grant,
         )
         .map_err(|error| refused(&error.code))?;
+        if let Some(op)=self.receipt.get("op").and_then(Value::as_str){super::manifest::access(op,&grant).map_err(|_|refused("forbidden"))?;}
+        if self.receipt.get("grantRevision").and_then(Value::as_u64).is_some_and(|revision|revision!=grant.revision){return Err(refused("forbidden"));}
+        if self.step.starts_with("command/exec")&&!self.receipt.get("terminalId").and_then(Value::as_str).is_some_and(|id|super::terminal::dispatch_allowed(&core,id)){return Err(refused("stale_target"));}
         if self.receipt.get("permission").and_then(Value::as_str) == Some("full")
             && !grant.capabilities.full_access
         {
             return Err(refused("forbidden"));
         }
+        super::owners::check(&core,&self.meta)?;
+        if core.work.cancelled.contains(&(self.meta.device.clone(),self.meta.op_id.clone())){return Err(refused("stale_target"));}
         if core.work.tickets.get(&self.ticket) != Some(&false) {
             return Err(refused("stale_target"));
         }
@@ -677,6 +711,16 @@ impl NativePermit {
         .await
     }
     pub(crate) async fn accepted(&self, extra: Value) -> Result<(), String> {
+        if self.meta.owner_handle.is_some(){
+            let provider=match self.step.as_str(){"claude_prompt"=>Some("claude"),"cursor_prompt"=>Some("cursor"),"turn/start"=>Some("openai"),_=>None};
+            if let(Some(provider),Some(turn))=(provider,extra.get("turnId").and_then(Value::as_str)){
+                let thread=extra.get("threadId").and_then(Value::as_str).or_else(||self.receipt.get("threadId").and_then(Value::as_str)).ok_or_else(||refused("stale_target"))?;
+                let owner=if provider=="openai"{format!("codex:{}",extra.get("runtimeInstance").and_then(Value::as_str).ok_or_else(||refused("stale_target"))?)}else{format!("{provider}:{turn}")};
+                let target=Target{owner_handle:None,generation:self.meta.generation,device:self.meta.device.clone(),kind:"turn".into(),thread_id:Some(thread.into()),workspace_id:self.receipt.get("workspaceId").and_then(Value::as_str).map(str::to_owned),provider:Some(provider.into()),request_id:None,method:None,turn_id:Some(turn.into()),item_id:None,start_request_id:extra.get("startRequestId").and_then(Value::as_str).map(str::to_owned),agent_run_id:None,attempt_id:self.meta.attempt_id.clone(),parent_run_id:None,revision:0,owner,expires:None,claimed:None};
+                super::owners::record(&mut self.inner.lock(),&self.meta,target)?;
+            }
+        }
+
         let mut receipt = self.receipt.clone();
         receipt["disposition"] = json!("accepted");
         if let Some(extra) = extra.as_object() {
@@ -716,12 +760,15 @@ pub(crate) async fn prepare_native(
         generation(&core, &meta).map_err(|error| refused(&error.code))?;
         let (meta, step) = (meta.clone(), step.to_owned());
         inner.enqueue_write(false, move |db| {
-            store::claim_native_step(db, &meta.device, &meta.op_id, meta.op_seq, &step)
+            let mut receipt=store::claim_native_step(db, &meta.device, &meta.op_id, meta.op_seq, &step)?;
+            if let Some(owner)=meta.owner_handle.as_ref(){if receipt.get("ownerHandle").and_then(Value::as_str).is_some_and(|old|old!=owner){return Err(refused("stale_target"));}receipt["ownerHandle"]=json!(owner);db.execute("UPDATE remote_op_journal SET delivery_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",rusqlite::params![meta.device,meta.op_id,meta.op_seq as i64,receipt.to_string()]).map_err(|_|refused("stale_target"))?;}
+            Ok(receipt)
         })
     };
     let receipt = finish_write(saved)
         .await
         .map_err(|_| refused("stale_target"))?;
+    if receipt.get("ownerHandle").and_then(Value::as_str).is_some_and(|owner|meta.owner_handle.as_deref()!=Some(owner)){return Err(refused("stale_target"));}
     if !["thread/start", "thread/resume"].contains(&step)
         && receipt.get("disposition").and_then(Value::as_str) != Some("dispatched")
     {
@@ -749,7 +796,7 @@ pub(crate) async fn prepare_native(
             "full" => 2,
             _ => 3,
         };
-        if strength(permission) > strength(saved) || strength(permission) > 2 {
+        if strength(permission) > strength(saved) || strength(permission) > 2 || receipt.get("permissionCeiling").and_then(Value::as_str).is_some_and(|ceiling|strength(permission)>strength(ceiling)) {
             return Err(refused("forbidden"));
         }
     }
@@ -765,6 +812,9 @@ pub(crate) async fn prepare_native(
         if core.work.tickets.len() >= 512 {
             return Err(refused("busy"));
         }
+        super::owners::attach(&mut core,&meta,receipt.get("workspaceId").and_then(Value::as_str),&ticket)?;
+        if meta.owner_handle.is_some(){if let Some(child)=target.as_ref().and_then(|handle|core.work.targets.get(handle)).filter(|child|child.owner_handle.is_none()&&matches!(child.kind.as_str(),"turn"|"start")).cloned(){super::owners::record(&mut core,&meta,child)?;}}
+
         core.work.tickets.insert(ticket.clone(), false);
     }
     Ok(NativePermit {
@@ -781,6 +831,7 @@ impl Drop for NativePermit {
     fn drop(&mut self) {
         let mut core = self.inner.lock();
         core.work.tickets.remove(&self.ticket);
+        super::owners::release(&mut core,&self.meta,&self.ticket);
         if !self.begun {
             let meta = self.meta.clone();
             let mut receipt = self.receipt.clone();
@@ -809,6 +860,7 @@ impl NativePermit {
         spawn: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
         let core = self.inner.lock();
+        super::owners::check(&core,&self.meta)?;
         let grant = authorize(
             &core,
             &self.meta,
@@ -868,6 +920,8 @@ pub(crate) async fn remote_work_target_register(
     agent_run_id: Option<String>,
     attempt_id: Option<String>,
     parent_run_id: Option<String>,
+    owner_handle: Option<String>,
+    owner_run_id: Option<String>,
 ) -> Result<Value, WireError> {
     hostbridge::window_is_host(&window)?;
     if !["turn", "start", "parent", "approval", "question"].contains(&kind.as_str())
@@ -876,6 +930,7 @@ pub(crate) async fn remote_work_target_register(
         return Err(invalid());
     }
     let mut target = Target {
+        owner_handle,
         generation,
         device,
         kind,
@@ -895,12 +950,14 @@ pub(crate) async fn remote_work_target_register(
         expires: None,
         claimed: None,
     };
+    if let Some(handle)=target.owner_handle.as_ref(){target.method=Some(super::owners::target_method(&state.inner,handle,owner_run_id.as_deref())?);}
     if serde_json::to_vec(&target).map_or(true, |bytes| bytes.len() > 8192) {
         return Err(invalid());
     }
     {
         let core = state.inner.lock();
         let meta = RemoteDelivery {
+        owner_handle:None,
             generation,
             device: target.device.clone(),
             op_id: "target".into(),
@@ -969,6 +1026,7 @@ pub(crate) async fn remote_work_target_claim(
 ) -> Result<(), String> {
     hostbridge::window_is_host(&window).map_err(|_| refused("forbidden"))?;
     let meta = RemoteDelivery {
+        owner_handle:None,
         generation,
         device,
         op_id,
@@ -1031,6 +1089,7 @@ pub(crate) async fn remote_work_dispatch(
         return Err(refused("unsupported"));
     }
     let meta = RemoteDelivery {
+        owner_handle:None,
         generation,
         device,
         op_id,
@@ -1046,6 +1105,7 @@ pub(crate) async fn remote_work_dispatch(
     if target.thread_id.as_deref() != args.get("threadId").and_then(Value::as_str) {
         return Err(refused("stale_target"));
     }
+    if target.owner_handle.is_some()&&target.kind=="parent"&&action=="turn_stop"{let revision=work_grant_revision(&state.inner,&meta)?;return super::owners::retire(&app,&state,super::commit::Stamp{generation:meta.generation,device:meta.device.clone(),grant_revision:revision,op_id:meta.op_id.clone(),op_seq:meta.op_seq,workspace_id:target.workspace_id.clone(),thread_id:target.thread_id.clone()},target.owner_handle.clone().unwrap()).await;}
     let owner = crate::remote_native_owner(&app, &mut target).await?;
     if owner != target.owner {
         return Err(refused("stale_target"));
@@ -1072,6 +1132,7 @@ pub(super) fn generation_ended(core: &mut Core) {
     core.work.targets.clear();
     core.work.tickets.clear();
     core.work.stops.clear();
+    core.work.cancelled.clear();
 }
 impl NativePermit {
     pub(crate) fn enforce_permission(&self, actual: &str) -> Result<(), String> {
@@ -1147,4 +1208,20 @@ impl NativePermit {
             Err(error) => Poll::Ready(Err(error)),
         }
     }
+}
+
+#[tauri::command]
+pub(crate) async fn remote_work_pending_requests(app:tauri::AppHandle,state:tauri::State<'_,RemoteState>,window:tauri::WebviewWindow,generation:u64)->Result<Value,WireError>{
+    hostbridge::window_is_host(&window)?;hostbridge::check_generation(&state.inner.lock(),generation)?;
+    let result=tokio::time::timeout(Duration::from_secs(3),crate::remote_pending_request_inventory(&app)).await.unwrap_or_else(|_|json!({"complete":false,"requests":[]}));hostbridge::check_generation(&state.inner.lock(),generation)?;Ok(result)
+}
+
+pub(super) fn cancel_preparation(core:&mut Core,device:&str,op:&str)->Result<(),String>{if core.work.cancelled.len()>=4096{return Err(refused("busy"));}core.work.cancelled.insert((device.to_owned(),op.to_owned()));Ok(())}
+
+fn work_grant_revision(inner:&super::Inner,meta:&RemoteDelivery)->Result<u64,String>{grant_locked(&inner.lock(),&meta.device).map(|g|g.revision).ok_or_else(||refused("forbidden"))}
+
+impl NativePermit{
+ pub(crate) fn track_start(&self,provider:&str,thread:&str,turn:&str,start:Option<&str>)->Result<(),String>{
+  if self.meta.owner_handle.is_none(){return Ok(());}let target=Target{owner_handle:None,generation:self.meta.generation,device:self.meta.device.clone(),kind:"start".into(),thread_id:Some(thread.into()),workspace_id:self.receipt.get("workspaceId").and_then(Value::as_str).map(str::to_owned),provider:Some(provider.into()),request_id:None,method:None,turn_id:Some(turn.into()),item_id:None,start_request_id:start.map(str::to_owned),agent_run_id:None,attempt_id:self.meta.attempt_id.clone(),parent_run_id:None,revision:0,owner:format!("{provider}-start:{turn}:{}",start.unwrap_or("")),expires:None,claimed:None};let mut core=self.inner.lock();super::owners::check(&core,&self.meta)?;super::owners::record(&mut core,&self.meta,target)
+ }
 }

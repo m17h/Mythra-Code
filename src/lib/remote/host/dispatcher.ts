@@ -1,7 +1,7 @@
 import { drainTaskDeltas, pinTaskTranscript, useTaskStore } from "../../taskStore";
 import type { HostRequest, HostResponse, ThreadsListResult, WireThread } from "../wire";
 import { REMOTE_RESULT_BYTES } from "../wire";
-import { HostBridge } from "./bridge";
+import { HostBridge, type HostTransport } from "./bridge";
 import { HostCatalog } from "./catalog";
 import { HostHistory } from "./history";
 import { HostPublishers } from "./publisher";
@@ -11,16 +11,25 @@ import { HostReadError, currentGrant, idArg, objectArgs, requireThread, requireW
 import { isRemoteWorkOperation } from "./workActions";
 import type { RemoteWorkAdapter } from "./workTypes";
 import { isParityRead } from "./parityActions";
+import { HostStudio, isStudioOperation } from "./studio";
+import { HostStudioReads, isStudioRead } from "./studioReads";
+import { isDomainRead } from "./domainActions";
 
 interface ListPage { workspaceId: string; rows: WireThread[]; offset: number; expires: number }
 export class HostDispatcher {
   private lists = new Map<string, ListPage>();
   private pins = new Set<() => void>();
+  readonly studio: HostStudio;
+  readonly studioReads: HostStudioReads;
   constructor(private readonly sources: HostSources, private readonly catalog: HostCatalog,
     private readonly history: HostHistory, private readonly windows: HostWindows,
     private readonly publishers: HostPublishers, private readonly bridge: HostBridge, private readonly isCurrent: () => boolean,
-    private readonly work?: RemoteWorkAdapter) {}
+    private readonly work?: RemoteWorkAdapter, transport?: HostTransport) {
+    this.studio = work?.studio ?? new HostStudio(sources, catalog, bridge.generation, isCurrent, transport);
+    this.studioReads = work?.studioReads ?? new HostStudioReads(sources, catalog, this.studio, bridge.generation, isCurrent, sources.getStudioReads?.(), transport);
+  }
   dispose(): void {
+    this.studio.dispose(); this.studioReads.dispose();
     for (const release of this.pins) release();
     this.pins.clear(); this.lists.clear();
   }
@@ -36,10 +45,14 @@ export class HostDispatcher {
       this.check(request);
       const args = objectArgs(request.args);
       let result: HostResponse["result"];
-      const isWork = isRemoteWorkOperation(request.op);
+      const isWork = isRemoteWorkOperation(request.op) && (Boolean(this.work) || !isStudioOperation(request.op) && !isStudioRead(request.op));
       if (isWork) {
         if (!this.work) throw new HostReadError("unsupported", "This host has not enabled remote work yet.");
         result = await this.work.dispatch(request);
+      } else if (isStudioOperation(request.op)) {
+        result = await this.studio.execute(request) as HostResponse["result"];
+      } else if (isStudioRead(request.op)) {
+        result = await this.studioReads.execute(request) as HostResponse["result"];
       } else if (request.op === "workspaces.list") {
         result = { workspaces: this.sources.getWorkspaces().filter((workspace) => workspaceAllowed(workspace, request.grant)).slice(0, 256)
           .map((workspace) => ({ id: workspace.id, name: boundedText(workspace.name, 256), isChat: workspace.isChat === true, pinned: workspace.pinned === true })) };
@@ -83,7 +96,7 @@ export class HostDispatcher {
       } else throw new HostReadError("unsupported", "This host supports live viewing only.");
       // A grant may be removed after a provider accepted work. Never turn that
       // accepted receipt into a rejected send; the journal remains authoritative.
-      if (!isWork || isParityRead(request.op) || request.op === "work.inspect" || request.op === "host.context" || request.op === "files.search") this.check(request);
+      if (!isWork || request.op === "folders.browse" || isDomainRead(request.op) || isParityRead(request.op) || request.op === "work.inspect" || request.op === "host.context" || request.op === "files.search") this.check(request);
       else if (!this.isCurrent()) throw new HostReadError("host_unavailable", "The host is recovering.");
       if (jsonBytes(result) > REMOTE_RESULT_BYTES) throw new HostReadError("busy", "This page is too large. Request fewer rows.");
       response = { generation: request.generation, requestId: request.requestId, result };

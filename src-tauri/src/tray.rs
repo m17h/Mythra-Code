@@ -84,12 +84,16 @@ pub(crate) fn tray_configure(app: AppHandle, state: State<'_, TrayState>, enable
 }
 
 #[tauri::command]
-pub(crate) fn tray_status(app: AppHandle, state: State<'_, TrayState>, working: u32, approvals: u32) -> Result<(), String> {
+pub(crate) fn tray_status(app: AppHandle, state: State<'_, TrayState>, working: u32, approvals: u32, machine: Option<String>) -> Result<(), String> {
     let status_item = state.status_item.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(item) = status_item.as_ref() else {
         return Ok(());
     };
-    let text = status_text(working, approvals);
+    let mut text = status_text(working, approvals);
+    // Device names come from the network: keep this to one short plain line.
+    if let Some(name) = machine.map(|name| name.chars().filter(|c| !c.is_control()).take(64).collect::<String>()).filter(|name| !name.is_empty()) {
+        text = format!("{name} · {text}");
+    }
     item.set_text(&text).map_err(|error| error.to_string())?;
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(format!("Mythra Code · {text}")));

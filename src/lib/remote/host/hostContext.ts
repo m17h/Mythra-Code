@@ -1,15 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useTaskStore } from "../../taskStore";
 import { usageForThread } from "../../usageLedger";
-import type { HostContextResult, HostRequest, FilesSearchResult, WireEffort, WireHostProvider, WireHostUsage } from "../wire";
-import { resolveThreadExecutionContext, type ExecutionSources } from "./executionContext";
-import { currentGrant, HostReadError, idArg, requireThread, requireWorkspace } from "./scope";
+import type { HostContextResult, HostRequest, FilesSearchResult, WireEffort, WireHostProvider, WireHostUsage, WireProvider } from "../wire";
+import { remotePermission, resolveThreadExecutionContext, type ExecutionSources } from "./executionContext";
+import { currentGrant, HostReadError, idArg, normalizedHostPath, requireThread, requireWorkspace } from "./scope";
+import { publicCrew } from "./executionPreferences";
+import type { LocalSkill } from "../../skills";
 
 export const wireEfforts = new Set<WireEffort>(["low", "medium", "high", "xhigh", "max"]);
 export interface HostContextSources extends ExecutionSources {
   /** Same live catalogs as the local pickers, including their readiness. No secrets. */
   getProviderCatalog(): readonly WireHostProvider[];
   getPublicSkills(): readonly { name: string; description?: string; enabled?: boolean }[];
+  /** Host-only identities; never serialized or supplied by a viewer. */
+  getLocalSkills?(): readonly LocalSkill[];
+  refreshProviderCatalog?(provider: WireProvider): Promise<void>;
+  getAccountUsage?(): readonly { provider: WireProvider; label: string; usedPercent: number; resetsAt: number | null }[];
+  refreshAccountUsage?(provider: WireProvider): Promise<void>;
   getPublicWorkflows(workspaceId: string): readonly { id: string; name: string; description?: string }[];
 }
 const providers = new Set(["openai", "openrouter", "lmstudio", "claude", "cursor"]);
@@ -49,6 +56,11 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
   const run = workspace.overrides?.run, check = workspace.overrides?.check;
   const capability = grant.capabilities as typeof grant.capabilities & { manageProjects?: boolean };
   const result: HostContextResult = { workspaceId, ...(threadId ? { threadId } : {}), providers: publicCatalog(sources),
+    execution: { provider: ctx.effectiveSettings.provider, model: ctx.effectiveSettings.model, effort,
+      permission: remotePermission(ctx.effectiveSettings.permission, grant), serviceTier: ctx.effectiveSettings.serviceTier === "fast" ? "fast" : "standard",
+      subagents: { enabled: ctx.effectiveSettings.subagentsEnabled, engine: ctx.effectiveSettings.subagentEngine === "native" ? "native" : "mythra",
+        maxConcurrent: ctx.effectiveSettings.nativeSubagentMax ?? 6, crew: publicCrew(ctx.effectiveSettings.childAgents.targets) },
+      ...(threadId ? { isolated: normalizedHostPath(sources.executionPathFor(threadId, workspace.path)) !== normalizedHostPath(workspace.path) } : {}) },
     selected: { provider: ctx.effectiveSettings.provider, model: text(ctx.effectiveSettings.model, 256), effort },
     ...(threadId ? { saved: { ...(savedModel ? { model: text(savedModel, 256) } : {}), ...(savedEffort ? { effort: savedEffort === "ultra" ? "max" : savedEffort } : {}) } } : {}),
     projectPrompt: text(workspace.overrides?.systemPrompt, 65536), projectPromptMode: workspace.overrides?.systemPromptMode === "append" ? "append" : "replace",
@@ -75,15 +87,24 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
 export async function searchHostFiles(sources: HostContextSources, request: HostRequest, args: Record<string, unknown>, assertCurrent: () => void): Promise<FilesSearchResult> {
   const grant = currentGrant(sources, request.device, request.grant);
   const workspace = requireWorkspace(sources, idArg(args.workspaceId), grant);
+  const threadId = args.threadId === undefined ? undefined : idArg(args.threadId);
+  const root = () => {
+    if (!threadId) return workspace.path;
+    const target = requireThread(sources, sources.getKnownThreads()[threadId], grant);
+    if (target.workspace.id !== workspace.id) throw new HostReadError("forbidden", "This conversation is not in this workspace.");
+    return sources.executionPathFor(threadId, target.workspace.path);
+  };
+  const executionRoot = root();
   const query = args.query;
   if (typeof query !== "string" || !query.trim() || query.length > 256 || /[\u0000-\u001f]/.test(query)) throw new HostReadError("unsupported", "Enter a short file name to search.");
   const raw = await invoke<{ files: { id: string; name: string; relativePath: string }[]; truncated: boolean }>("remote_work_files_search", {
     generation: request.generation, device: request.device, grantRevision: grant.revision,
-    workspaceId: workspace.id, root: workspace.path, query, limit: 100,
+    workspaceId: workspace.id, threadId, root: executionRoot, query, limit: 100,
   });
   assertCurrent();
   currentGrant(sources, request.device, request.grant);
   if (requireWorkspace(sources, workspace.id, grant).path !== workspace.path) throw new HostReadError("stale_target", "This workspace changed.");
+  if (root() !== executionRoot) throw new HostReadError("stale_target", "This checkout changed during file search.");
   if (!raw || !Array.isArray(raw.files) || raw.files.length > 100) throw new HostReadError("host_unavailable", "The host could not search files.");
   const files = raw.files.map((file) => {
     const path = file.relativePath;

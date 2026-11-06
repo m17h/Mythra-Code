@@ -150,7 +150,7 @@ function preloadTerminalPanel() {
 
 /** Stable host that renders the resolved panel directly (no React.lazy
  * suspension on first read). Import failures reach the dock's error boundary. */
-function TerminalPanelHost(props: TerminalPanelProps) {
+export function TerminalPanelHost(props: TerminalPanelProps) {
   const [Component, setComponent] = useState(() => loadedTerminalPanel);
   const [failure, setFailure] = useState<{ reason: unknown } | null>(null);
   useEffect(() => {
@@ -164,6 +164,188 @@ function TerminalPanelHost(props: TerminalPanelProps) {
   }, [Component]);
   if (failure) throw failure.reason;
   return Component ? <Component {...props} /> : null;
+}
+
+type StudioDockProps = Parameters<typeof StudioDock>[0];
+export type AgentsPanelProps = Pick<StudioDockProps, "agents" | "onClose" | "onOpenAgent" | "onStopAgent">;
+/** The real panels are written once. Another machine supplies their data and actions. */
+export function AgentsPanel(props: AgentsPanelProps) {
+  return <>
+          <PanelHeader icon={UsersRound} title="Agent control" subtitle="Direct children and delegated work" onClose={props.onClose} />
+          <div className="metric-grid"><div><strong>{props.agents.length}</strong><span>Observed</span></div><div><strong>{props.agents.filter((agent) => isActiveAgentRecord(agent.status)).length}</strong><span>Active</span></div></div>
+          <div className="studio-list">{props.agents.length ? props.agents.map((agent) => <div className="studio-list-row" key={agent.id}>
+            <span className={`status-orb ${agent.status}`} /><div><strong>{agent.prompt || "Delegated task"}</strong>
+              <small>{subAgentStatusLabel(workerStatusFromAgentRecord(agent.status))} · {agent.id.slice(0, 8)}</small>
+              {agent.runtime && <small>{agent.provider === "claude" ? "Claude" : "OpenAI"} · {agent.model ? `${agent.modelSource === "configured" ? "Configured model" : "Reported model"}: ${agent.model}` : "Model: provider managed / unknown"}{agent.requestedModel ? ` · Requested: ${agent.requestedModel}` : ""}</small>}
+              {(agent.task || agent.progress || agent.result) && <details><summary>Task and reported progress</summary>
+                {agent.task && <div><small>Assigned task</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.task}</p></div>}
+                {agent.progress && <div><small>Latest reported progress</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.progress}</p></div>}
+                {agent.result && <div><small>Reported result</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.result}</p></div>}
+              </details>}
+            </div>{agent.canOpen !== false && agent.runtime !== "claude" && <button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button>}{agent.canStop !== false && agent.runtime !== "claude" && isActiveAgentRecord(agent.status) && <button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button>}</div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
+        </>;
+}
+
+export type CheckpointsPanelProps = Pick<StudioDockProps, "activeThread" | "checkpoints" | "checkpointHead" | "checkpointBusyId" | "checkpointPreview" | "onClose"
+  | "onCheckpoint" | "onFork" | "onCheckpointRestore" | "onCheckpointAccept" | "onCheckpointPreview" | "onCheckpointDelete" | "onRollback">;
+export function CheckpointsPanel(props: CheckpointsPanelProps) {
+  const checkpointById = useMemo(
+    () => new Map(props.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint])),
+    [props.checkpoints],
+  );
+  return <>
+          <PanelHeader icon={History} title="Checkpoints" subtitle="Automatic, reversible project snapshots" onClose={props.onClose} />
+          <div className="studio-actions wrap">
+            <button onClick={props.onCheckpoint} disabled={!props.activeThread || Boolean(props.checkpointBusyId)}>
+              <Plus size={13} /> {props.checkpointBusyId === "manual" ? "Saving current state…" : "Save current state"}
+            </button>
+          </div>
+          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. Mythra Code saves the current state first, while Git commits and ignored files remain unchanged. Accept only marks a run as reviewed here; it does not commit, merge, or push anything.</span></div></div>
+          <div className="checkpoint-list">
+            {props.checkpoints.length ? props.checkpoints.map((checkpoint) => {
+              const currentPosition = props.checkpointHead?.checkpointId === checkpoint.id
+                ? props.checkpointHead.position
+                : null;
+              // Only the card an operation names is working. A manual save is
+              // not tied to any historical card, and treating "manual" as a
+              // match made every card in the list appear to be running.
+              const workingHere = props.checkpointBusyId === checkpoint.id;
+              const busy = Boolean(props.checkpointBusyId);
+              const legacy = !checkpoint.workspacePath || checkpoint.status === "legacy" || !checkpoint.beforeCommit;
+              const canRestoreBefore = checkpointIsRestorable(checkpoint, "before");
+              const canRestoreAfter = checkpointIsRestorable(checkpoint, "after");
+              const stats = checkpoint.changedFiles !== undefined
+                ? `${checkpoint.changedFiles} file${checkpoint.changedFiles === 1 ? "" : "s"} · +${checkpoint.additions ?? 0} −${checkpoint.deletions ?? 0}`
+                : `${checkpoint.fileCount ?? 0} source file${checkpoint.fileCount === 1 ? "" : "s"} saved`;
+              return (
+                <article className={`checkpoint-card ${currentPosition ? "current" : ""} ${checkpoint.accepted ? "accepted" : ""}`} key={checkpoint.id}>
+                  <div className="checkpoint-card-head">
+                    <span className={`checkpoint-state-icon ${checkpoint.status ?? "legacy"}`}>
+                      {checkpoint.status === "running" || workingHere ? <RefreshCw className="spin" size={14} /> : checkpoint.accepted ? <Check size={14} /> : <Clock3 size={14} />}
+                    </span>
+                    <div>
+                      <strong>{checkpoint.label}</strong>
+                      <small>{checkpointStatusLabel(checkpoint)}{currentPosition ? ` · current ${currentPosition} state` : ""}</small>
+                    </div>
+                  </div>
+                  <div className="checkpoint-meta">
+                    <span>{new Date(checkpoint.completedAt ?? checkpoint.createdAt).toLocaleString()}</span>
+                    {checkpoint.threadLabel && <span>{checkpoint.threadLabel}</span>}
+                    {(checkpoint.provider || checkpoint.model) && <span>{[checkpoint.provider, checkpoint.model].filter(Boolean).join(" · ")}</span>}
+                    {checkpoint.branch && <span>{checkpoint.branch}</span>}
+                  </div>
+                  {!legacy && checkpoint.status !== "running" && checkpoint.status !== "failed" && <div className="checkpoint-stats">{stats}</div>}
+                  {checkpoint.parentId && <div className="checkpoint-lineage">Continues from {checkpointById.get(checkpoint.parentId)?.label ?? "an earlier saved state"}{checkpoint.parentPosition ? ` · ${checkpoint.parentPosition}` : ""}</div>}
+                  {checkpoint.restoredFromId && <div className="checkpoint-lineage">Safety copy created before a restore</div>}
+                  {checkpoint.overlappingRun && <div className="checkpoint-error">Another thread was editing this shared worktree during the run, so this snapshot can include both threads’ changes.</div>}
+                  {checkpoint.error && <div className="checkpoint-error">{checkpoint.error}</div>}
+                  <div className="checkpoint-actions">
+                    {legacy ? (
+                      <button onClick={() => props.onFork(checkpoint)} disabled={busy}><GitFork size={12} /> Fork conversation</button>
+                    ) : <>
+                      <button onClick={() => props.onCheckpointPreview(checkpoint)} disabled={!checkpoint.afterCommit || busy}><Eye size={12} /> {props.checkpointPreview?.id === checkpoint.id ? "Hide changes" : "Preview"}</button>
+                      {checkpoint.status === "safety" ? (
+                        <button onClick={() => props.onCheckpointRestore(checkpoint, "after")} disabled={!canRestoreAfter || busy}><RotateCw size={12} /> Restore safety copy</button>
+                      ) : <>
+                        <button className="danger-action" onClick={() => props.onCheckpointRestore(checkpoint, "before")} disabled={!canRestoreBefore || busy}><RotateCcw size={12} /> Restore before</button>
+                        <button onClick={() => props.onCheckpointRestore(checkpoint, "after")} disabled={!canRestoreAfter || busy}><RotateCw size={12} /> {checkpoint.status === "restored-before" ? "Reapply run" : "Restore result"}</button>
+                      </>}
+                      {checkpoint.status !== "safety" && <button className={checkpoint.accepted ? "approved" : ""} onClick={() => props.onCheckpointAccept(checkpoint)} disabled={checkpoint.status === "running" || busy} title="Mark this run as reviewed. Nothing is committed, merged, or pushed."><Check size={12} /> {checkpoint.accepted ? "Undo accept" : "Accept"}</button>}
+                    </>}
+                    <button className="danger-action icon-only" onClick={() => props.onCheckpointDelete(checkpoint)} disabled={checkpoint.status === "running" || busy} title={`Delete ${checkpoint.label}`} aria-label={`Delete ${checkpoint.label}`}><Trash2 size={12} /></button>
+                  </div>
+                  {props.checkpointPreview?.id === checkpoint.id && (
+                    <div className="checkpoint-preview">
+                      {props.checkpointPreview.diff
+                        ? <DiffText text={props.checkpointPreview.diff} />
+                        : <span>No source changes were recorded in this run.</span>}
+                    </div>
+                  )}
+                </article>
+              );
+            }) : <Empty icon={History} title="No checkpoints yet" text="The first project run will automatically create a restorable checkpoint." />}
+          </div>
+          <h3 className="panel-label">Conversation history</h3>
+          <div className="studio-actions wrap"><button onClick={() => props.onFork()} disabled={!props.activeThread}><GitFork size={13} /> Fork thread</button><button onClick={props.onRollback} disabled={!props.activeThread}><RotateCcw size={13} /> Undo conversation turn</button></div>
+          <div className="history-warning"><ShieldCheck size={13} /> Conversation undo changes chat history only. Checkpoint restore changes project files without rewriting Git commits.</div>
+        </>;
+}
+
+export type WorktreesPanelProps = { revealLabel?: string } & Pick<StudioDockProps, "worktree" | "worktreeStatus" | "worktreeBusy" | "gitActionsReadOnly" | "onClose" | "onWorktreeReview" | "onWorktreeApply"
+  | "onWorktreeMerge" | "onWorktreeReveal" | "onWorktreeRefresh" | "onWorktreeRemove" | "onWorktreeRecreate" | "onWorktreeContinueShared" | "onWorktreeReturnShared">;
+export function WorktreesPanel(props: WorktreesPanelProps) {
+  return <>
+          <PanelHeader icon={GitFork} title="Worktrees" subtitle="Isolated branches and project handoff" onClose={props.onClose} />
+          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Experiment without touching the shared project.</strong><span>Copying brings the resulting files across. Merging brings the committed branch history across. Both act on your local project only — neither one touches GitHub. Removing an unmerged worktree leaves the shared project unchanged.</span></div></div>
+          {props.worktree ? (
+            <div className="worktree-card">
+              <div className="worktree-card-head">
+                <span><GitBranch size={14} /></span>
+                <div><strong>{props.worktree.branch}</strong><small>{props.worktree.path}</small></div>
+                <em>{worktreeStatusLabel(props.worktree.status)}</em>
+              </div>
+              {props.worktreeStatus && (
+                <div className="worktree-metrics">
+                  <span><strong>{props.worktreeStatus.changedFiles}</strong> changed</span>
+                  <span><strong>{props.worktreeStatus.ahead}</strong> commits ahead</span>
+                  <span><strong>{props.worktreeStatus.ignoredFileCount}</strong> ignored</span>
+                </div>
+              )}
+              {props.worktree.status === "missing" || props.worktree.status === "removed" ? (
+                <div className="studio-actions wrap">
+                  {props.worktree.status === "missing" && <button onClick={props.onWorktreeRecreate} disabled={props.worktreeBusy}><RotateCw size={13} /> Recreate from branch</button>}
+                  {props.worktree.status === "removed" && <button onClick={props.onWorktreeContinueShared} disabled={props.worktreeBusy}><FolderOpen size={13} /> Continue shared</button>}
+                </div>
+              ) : worktreeMergeComplete(props.worktree, props.worktreeStatus) ? (
+                /* A finished merge, and still finished: the branch head is
+                   exactly what was merged and the folder is clean. */
+                <>
+                  <div className="worktree-complete" role="status">
+                    <CheckCircle2 size={14} aria-hidden="true" />
+                    <div>
+                      <strong>Merged into local project</strong>
+                      <span>This branch was merged into your local project. GitHub updates are separate.</span>
+                    </div>
+                  </div>
+                  <div className="studio-actions wrap">
+                    <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review merged changes</button>
+                    {props.onWorktreeReturnShared && (
+                      <button onClick={props.onWorktreeReturnShared} disabled={props.worktreeBusy}><FolderOpen size={13} /> Continue in shared project</button>
+                    )}
+                    <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Merged once, then worked in again — or merged once and no
+                      longer verifiable. Both are reported for what they are:
+                      the old completion state simply claimed the branch was
+                      still fully merged, indefinitely. */}
+                  {worktreeMergeFollowUp(props.worktree, props.worktreeStatus) && (
+                    <div className="worktree-note">
+                      <TriangleAlert size={13} aria-hidden="true" />
+                      <span>{worktreeMergeFollowUp(props.worktree, props.worktreeStatus)}</span>
+                    </div>
+                  )}
+                  <div className="studio-actions wrap">
+                    <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review</button>
+                    <button onClick={props.onWorktreeApply} disabled={props.worktreeBusy || props.gitActionsReadOnly} title="Copy the resulting files into the shared project folder, without their commit history"><RotateCw size={13} /> Copy changes to project</button>
+                    <button
+                      onClick={props.onWorktreeMerge}
+                      disabled={props.worktreeBusy || props.gitActionsReadOnly}
+                      title={`Merge this branch's committed history into your local project${props.worktreeStatus?.sourceBranch ? ` (${props.worktreeStatus.sourceBranch})` : ""}. This is a local merge — it does not touch GitHub.`}
+                    ><GitCommitHorizontal size={13} /> Merge into local project…</button>
+                    <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
+                  </div>
+                  {props.gitActionsReadOnly && <div className="worktree-note"><ShieldCheck size={13} aria-hidden="true" /><span>Switch this thread to Ask or Full access before copying or merging changes into the local project.</span></div>}
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="history-warning"><ShieldCheck size={13} /> This thread uses the shared project folder. Choose Isolated worktree before sending the first message in a new thread.</div>
+          )}
+          <div className="history-warning"><ShieldCheck size={13} /> Worktrees and their branches stay local unless you push them or enable automatic publishing.</div>
+        </>;
 }
 
 export function PanelHeader({ icon: Icon, title, subtitle, onClose }: { icon: typeof CodeXml; title: string; subtitle: string; onClose: () => void }) {
@@ -477,10 +659,6 @@ export function StudioDock(props: {
     () => new Set(diffSections.map((section) => section.path ?? section.displayPath)).size,
     [diffSections],
   );
-  const checkpointById = useMemo(
-    () => new Map(props.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint])),
-    [props.checkpoints],
-  );
 
 
   // When the dock is closed, skip all panel work (diff parsing, xterm,
@@ -542,20 +720,7 @@ export function StudioDock(props: {
           )}
         </>}
 
-        {props.tab === "agents" && <>
-          <PanelHeader icon={UsersRound} title="Agent control" subtitle="Direct children and delegated work" onClose={props.onClose} />
-          <div className="metric-grid"><div><strong>{props.agents.length}</strong><span>Observed</span></div><div><strong>{props.agents.filter((agent) => isActiveAgentRecord(agent.status)).length}</strong><span>Active</span></div></div>
-          <div className="studio-list">{props.agents.length ? props.agents.map((agent) => <div className="studio-list-row" key={agent.id}>
-            <span className={`status-orb ${agent.status}`} /><div><strong>{agent.prompt || "Delegated task"}</strong>
-              <small>{subAgentStatusLabel(workerStatusFromAgentRecord(agent.status))} · {agent.id.slice(0, 8)}</small>
-              {agent.runtime && <small>{agent.provider === "claude" ? "Claude" : "OpenAI"} · {agent.model ? `${agent.modelSource === "configured" ? "Configured model" : "Reported model"}: ${agent.model}` : "Model: provider managed / unknown"}{agent.requestedModel ? ` · Requested: ${agent.requestedModel}` : ""}</small>}
-              {(agent.task || agent.progress || agent.result) && <details><summary>Task and reported progress</summary>
-                {agent.task && <div><small>Assigned task</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.task}</p></div>}
-                {agent.progress && <div><small>Latest reported progress</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.progress}</p></div>}
-                {agent.result && <div><small>Reported result</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.result}</p></div>}
-              </details>}
-            </div>{agent.canOpen !== false && agent.runtime !== "claude" && <button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button>}{agent.canStop !== false && agent.runtime !== "claude" && isActiveAgentRecord(agent.status) && <button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button>}</div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
-        </>}
+        {props.tab === "agents" && <AgentsPanel {...props} />}
 
         {props.tab === "terminal" && <>
           <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={projectLabel} onClose={props.onClose} />
@@ -576,155 +741,9 @@ export function StudioDock(props: {
           />
         </>}
 
-        {props.tab === "checkpoints" && <>
-          <PanelHeader icon={History} title="Checkpoints" subtitle="Automatic, reversible project snapshots" onClose={props.onClose} />
-          <div className="studio-actions wrap">
-            <button onClick={props.onCheckpoint} disabled={!props.activeThread || Boolean(props.checkpointBusyId)}>
-              <Plus size={13} /> {props.checkpointBusyId === "manual" ? "Saving current state…" : "Save current state"}
-            </button>
-          </div>
-          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Every model run is protected automatically.</strong><span>Restore moves the complete source worktree to that point. Mythra Code saves the current state first, while Git commits and ignored files remain unchanged. Accept only marks a run as reviewed here; it does not commit, merge, or push anything.</span></div></div>
-          <div className="checkpoint-list">
-            {props.checkpoints.length ? props.checkpoints.map((checkpoint) => {
-              const currentPosition = props.checkpointHead?.checkpointId === checkpoint.id
-                ? props.checkpointHead.position
-                : null;
-              // Only the card an operation names is working. A manual save is
-              // not tied to any historical card, and treating "manual" as a
-              // match made every card in the list appear to be running.
-              const workingHere = props.checkpointBusyId === checkpoint.id;
-              const busy = Boolean(props.checkpointBusyId);
-              const legacy = !checkpoint.workspacePath || checkpoint.status === "legacy" || !checkpoint.beforeCommit;
-              const canRestoreBefore = checkpointIsRestorable(checkpoint, "before");
-              const canRestoreAfter = checkpointIsRestorable(checkpoint, "after");
-              const stats = checkpoint.changedFiles !== undefined
-                ? `${checkpoint.changedFiles} file${checkpoint.changedFiles === 1 ? "" : "s"} · +${checkpoint.additions ?? 0} −${checkpoint.deletions ?? 0}`
-                : `${checkpoint.fileCount ?? 0} source file${checkpoint.fileCount === 1 ? "" : "s"} saved`;
-              return (
-                <article className={`checkpoint-card ${currentPosition ? "current" : ""} ${checkpoint.accepted ? "accepted" : ""}`} key={checkpoint.id}>
-                  <div className="checkpoint-card-head">
-                    <span className={`checkpoint-state-icon ${checkpoint.status ?? "legacy"}`}>
-                      {checkpoint.status === "running" || workingHere ? <RefreshCw className="spin" size={14} /> : checkpoint.accepted ? <Check size={14} /> : <Clock3 size={14} />}
-                    </span>
-                    <div>
-                      <strong>{checkpoint.label}</strong>
-                      <small>{checkpointStatusLabel(checkpoint)}{currentPosition ? ` · current ${currentPosition} state` : ""}</small>
-                    </div>
-                  </div>
-                  <div className="checkpoint-meta">
-                    <span>{new Date(checkpoint.completedAt ?? checkpoint.createdAt).toLocaleString()}</span>
-                    {checkpoint.threadLabel && <span>{checkpoint.threadLabel}</span>}
-                    {(checkpoint.provider || checkpoint.model) && <span>{[checkpoint.provider, checkpoint.model].filter(Boolean).join(" · ")}</span>}
-                    {checkpoint.branch && <span>{checkpoint.branch}</span>}
-                  </div>
-                  {!legacy && checkpoint.status !== "running" && checkpoint.status !== "failed" && <div className="checkpoint-stats">{stats}</div>}
-                  {checkpoint.parentId && <div className="checkpoint-lineage">Continues from {checkpointById.get(checkpoint.parentId)?.label ?? "an earlier saved state"}{checkpoint.parentPosition ? ` · ${checkpoint.parentPosition}` : ""}</div>}
-                  {checkpoint.restoredFromId && <div className="checkpoint-lineage">Safety copy created before a restore</div>}
-                  {checkpoint.overlappingRun && <div className="checkpoint-error">Another thread was editing this shared worktree during the run, so this snapshot can include both threads’ changes.</div>}
-                  {checkpoint.error && <div className="checkpoint-error">{checkpoint.error}</div>}
-                  <div className="checkpoint-actions">
-                    {legacy ? (
-                      <button onClick={() => props.onFork(checkpoint)} disabled={busy}><GitFork size={12} /> Fork conversation</button>
-                    ) : <>
-                      <button onClick={() => props.onCheckpointPreview(checkpoint)} disabled={!checkpoint.afterCommit || busy}><Eye size={12} /> {props.checkpointPreview?.id === checkpoint.id ? "Hide changes" : "Preview"}</button>
-                      {checkpoint.status === "safety" ? (
-                        <button onClick={() => props.onCheckpointRestore(checkpoint, "after")} disabled={!canRestoreAfter || busy}><RotateCw size={12} /> Restore safety copy</button>
-                      ) : <>
-                        <button className="danger-action" onClick={() => props.onCheckpointRestore(checkpoint, "before")} disabled={!canRestoreBefore || busy}><RotateCcw size={12} /> Restore before</button>
-                        <button onClick={() => props.onCheckpointRestore(checkpoint, "after")} disabled={!canRestoreAfter || busy}><RotateCw size={12} /> {checkpoint.status === "restored-before" ? "Reapply run" : "Restore result"}</button>
-                      </>}
-                      {checkpoint.status !== "safety" && <button className={checkpoint.accepted ? "approved" : ""} onClick={() => props.onCheckpointAccept(checkpoint)} disabled={checkpoint.status === "running" || busy} title="Mark this run as reviewed. Nothing is committed, merged, or pushed."><Check size={12} /> {checkpoint.accepted ? "Undo accept" : "Accept"}</button>}
-                    </>}
-                    <button className="danger-action icon-only" onClick={() => props.onCheckpointDelete(checkpoint)} disabled={checkpoint.status === "running" || busy} title={`Delete ${checkpoint.label}`} aria-label={`Delete ${checkpoint.label}`}><Trash2 size={12} /></button>
-                  </div>
-                  {props.checkpointPreview?.id === checkpoint.id && (
-                    <div className="checkpoint-preview">
-                      {props.checkpointPreview.diff
-                        ? <DiffText text={props.checkpointPreview.diff} />
-                        : <span>No source changes were recorded in this run.</span>}
-                    </div>
-                  )}
-                </article>
-              );
-            }) : <Empty icon={History} title="No checkpoints yet" text="The first project run will automatically create a restorable checkpoint." />}
-          </div>
-          <h3 className="panel-label">Conversation history</h3>
-          <div className="studio-actions wrap"><button onClick={() => props.onFork()} disabled={!props.activeThread}><GitFork size={13} /> Fork thread</button><button onClick={props.onRollback} disabled={!props.activeThread}><RotateCcw size={13} /> Undo conversation turn</button></div>
-          <div className="history-warning"><ShieldCheck size={13} /> Conversation undo changes chat history only. Checkpoint restore changes project files without rewriting Git commits.</div>
-        </>}
+        {props.tab === "checkpoints" && <CheckpointsPanel {...props} />}
 
-        {props.tab === "worktrees" && <>
-          <PanelHeader icon={GitFork} title="Worktrees" subtitle="Isolated branches and project handoff" onClose={props.onClose} />
-          <div className="checkpoint-note"><ShieldCheck size={14} /><div><strong>Experiment without touching the shared project.</strong><span>Copying brings the resulting files across. Merging brings the committed branch history across. Both act on your local project only — neither one touches GitHub. Removing an unmerged worktree leaves the shared project unchanged.</span></div></div>
-          {props.worktree ? (
-            <div className="worktree-card">
-              <div className="worktree-card-head">
-                <span><GitBranch size={14} /></span>
-                <div><strong>{props.worktree.branch}</strong><small>{props.worktree.path}</small></div>
-                <em>{worktreeStatusLabel(props.worktree.status)}</em>
-              </div>
-              {props.worktreeStatus && (
-                <div className="worktree-metrics">
-                  <span><strong>{props.worktreeStatus.changedFiles}</strong> changed</span>
-                  <span><strong>{props.worktreeStatus.ahead}</strong> commits ahead</span>
-                  <span><strong>{props.worktreeStatus.ignoredFileCount}</strong> ignored</span>
-                </div>
-              )}
-              {props.worktree.status === "missing" || props.worktree.status === "removed" ? (
-                <div className="studio-actions wrap">
-                  {props.worktree.status === "missing" && <button onClick={props.onWorktreeRecreate} disabled={props.worktreeBusy}><RotateCw size={13} /> Recreate from branch</button>}
-                  {props.worktree.status === "removed" && <button onClick={props.onWorktreeContinueShared} disabled={props.worktreeBusy}><FolderOpen size={13} /> Continue shared</button>}
-                </div>
-              ) : worktreeMergeComplete(props.worktree, props.worktreeStatus) ? (
-                /* A finished merge, and still finished: the branch head is
-                   exactly what was merged and the folder is clean. */
-                <>
-                  <div className="worktree-complete" role="status">
-                    <CheckCircle2 size={14} aria-hidden="true" />
-                    <div>
-                      <strong>Merged into local project</strong>
-                      <span>This branch was merged into your local project. GitHub updates are separate.</span>
-                    </div>
-                  </div>
-                  <div className="studio-actions wrap">
-                    <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review merged changes</button>
-                    {props.onWorktreeReturnShared && (
-                      <button onClick={props.onWorktreeReturnShared} disabled={props.worktreeBusy}><FolderOpen size={13} /> Continue in shared project</button>
-                    )}
-                    <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
-                  </div>
-                </>
-              ) : (
-                <>
-                  {/* Merged once, then worked in again — or merged once and no
-                      longer verifiable. Both are reported for what they are:
-                      the old completion state simply claimed the branch was
-                      still fully merged, indefinitely. */}
-                  {worktreeMergeFollowUp(props.worktree, props.worktreeStatus) && (
-                    <div className="worktree-note">
-                      <TriangleAlert size={13} aria-hidden="true" />
-                      <span>{worktreeMergeFollowUp(props.worktree, props.worktreeStatus)}</span>
-                    </div>
-                  )}
-                  <div className="studio-actions wrap">
-                    <button onClick={props.onWorktreeReview} disabled={props.worktreeBusy}><SearchCode size={13} /> Review</button>
-                    <button onClick={props.onWorktreeApply} disabled={props.worktreeBusy || props.gitActionsReadOnly} title="Copy the resulting files into the shared project folder, without their commit history"><RotateCw size={13} /> Copy changes to project</button>
-                    <button
-                      onClick={props.onWorktreeMerge}
-                      disabled={props.worktreeBusy || props.gitActionsReadOnly}
-                      title={`Merge this branch's committed history into your local project${props.worktreeStatus?.sourceBranch ? ` (${props.worktreeStatus.sourceBranch})` : ""}. This is a local merge — it does not touch GitHub.`}
-                    ><GitCommitHorizontal size={13} /> Merge into local project…</button>
-                    <AppActionMenu label="More" ariaLabel="More worktree actions" items={worktreeMenuItems(props)} />
-                  </div>
-                  {props.gitActionsReadOnly && <div className="worktree-note"><ShieldCheck size={13} aria-hidden="true" /><span>Switch this thread to Ask or Full access before copying or merging changes into the local project.</span></div>}
-                </>
-              )}
-            </div>
-          ) : (
-            <div className="history-warning"><ShieldCheck size={13} /> This thread uses the shared project folder. Choose Isolated worktree before sending the first message in a new thread.</div>
-          )}
-          <div className="history-warning"><ShieldCheck size={13} /> Worktrees and their branches stay local unless you push them or enable automatic publishing.</div>
-        </>}
+        {props.tab === "worktrees" && <WorktreesPanel {...props} />}
 
         {props.tab === "usage" && <>
           <PanelHeader icon={Gauge} title="Thread usage" subtitle="API estimates and context for this conversation" onClose={props.onClose} />
@@ -889,6 +908,7 @@ function worktreeMergeFollowUp(
 
 function worktreeMenuItems(props: {
   worktreeBusy?: boolean;
+  revealLabel?: string;
   onWorktreeReveal: () => void;
   onWorktreeRefresh: () => void;
   onWorktreeRemove: () => void;
@@ -896,7 +916,7 @@ function worktreeMenuItems(props: {
   return [
     {
       id: "reveal",
-      label: "Show folder",
+      label: props.revealLabel ?? "Show folder",
       icon: <Eye size={13} aria-hidden="true" />,
       disabled: props.worktreeBusy,
       onSelect: props.onWorktreeReveal,

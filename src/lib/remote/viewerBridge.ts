@@ -12,6 +12,14 @@ export function viewerRequest<T>(device: string, op: ViewerOperation, args: obje
   }
   return invoke<T>("remote_request", { device, op, args });
 }
+/** Reads and journaled writes reach the host by name. Rust and the host decide
+ * what each one may do, and an op neither knows comes back as a refusal. */
+export function viewerHostOperation<T>(device: string, op: string, args: Record<string, unknown>): Promise<T> {
+  if (!/^[0-9a-f]{64}$/.test(device) || !/^[a-z]+(\.[a-zA-Z]+)+$/.test(op)) {
+    return Promise.reject({ code: "forbidden", message: "That request is not valid." });
+  }
+  return invoke<T>("remote_request", { device, op, args });
+}
 /** Mutations travel the same route, and every one carries a journal identity. */
 export function viewerWork<T>(device: string, op: RemoteWorkOperation | "projects.add", args: { opId?: unknown; opSeq?: unknown; [key: string]: unknown }): Promise<T> {
   if (!/^[0-9a-f]{64}$/.test(device) || !WORK_OPERATIONS.has(op) || typeof args.opId !== "string" || typeof args.opSeq !== "number") {

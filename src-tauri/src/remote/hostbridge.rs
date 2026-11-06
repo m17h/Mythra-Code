@@ -47,7 +47,7 @@ struct ViewerSubscription {
 }
 
 pub(super) struct Bridge {
-    generation: u64,
+    pub(super) generation: u64,
     attached: bool,
     ready: bool,
     lease_waiting: bool,
@@ -96,6 +96,7 @@ pub(super) struct DeliveryGate {
     generation: u64,
     revision: u64,
     epoch: String,
+    terminal: Option<String>,
 }
 
 fn unavailable() -> WireError {
@@ -115,6 +116,8 @@ fn stale() -> WireError {
 }
 
 fn emit(inner: &Inner, name: &str, value: Value) -> bool {
+    #[cfg(test)]
+    if let Some(result) = super::tests::emit(inner, name, &value) { return result; }
     inner
         .app
         .get()
@@ -246,6 +249,9 @@ fn viewer_state(inner: &Inner, device: &str, thread: &str, state: &str) {
 /// Called under the same core lock that changes a grant or relationship. No
 /// old projection survives the scope check that authorized it.
 pub(super) fn retire_device_locked(inner: &Inner, core: &mut Core, device: &str) {
+    super::owners::retire_device(core,device);
+    super::preview::retire(inner,Some(device));
+    super::terminal::invalidate(core,Some(device));
     super::folders::invalidate(core,Some(device));
     let state = if core
         .devices
@@ -302,6 +308,9 @@ pub(super) fn forget_viewer_locked(inner: &Inner, core: &mut Core, device: &str)
 }
 
 fn end_generation(inner: &Inner, core: &mut Core) {
+    super::preview::retire(inner,None);
+    super::terminal::invalidate(core,None);
+    super::owners::invalidate(core);
     super::work::generation_ended(core);
     super::folders::invalidate(core,None);
     core.bridge.ready = false;
@@ -321,6 +330,7 @@ fn end_generation(inner: &Inner, core: &mut Core) {
 }
 
 pub(super) fn hosting_stopped_locked(inner: &Inner, core: &mut Core) {
+    super::terminal::invalidate(core,None);
     super::folders::invalidate(core,None);
     let keys: Vec<_> = core.bridge.timelines.subscribers.keys().cloned().collect();
     for (device, thread) in keys {
@@ -483,6 +493,7 @@ async fn tick_loop(inner: Arc<Inner>) {
 /// The writer calls this immediately before a queued stream frame is written.
 pub(super) fn delivery_allowed(inner: &Inner, link: &Link, gate: &DeliveryGate) -> bool {
     let core = inner.lock();
+    if let Some(id)=&gate.terminal{return super::terminal::allowed(&core,link,id);}
     core.bridge.ready
         && check_generation(&core, gate.generation).is_ok()
         && authorize(&core, link).is_ok_and(|grant| grant.revision == gate.revision)
@@ -537,6 +548,7 @@ fn deliver(
         generation: sub.generation,
         revision: sub.revision,
         epoch: sub.epoch,
+        terminal: None,
     };
     if !link.send_stream(&frame, gate) {
         remove_subscription(inner, core, device, thread, Some("recovering"));
@@ -549,9 +561,10 @@ fn deliver(
 }
 
 pub(super) fn link_closed(inner: &Arc<Inner>, link: &Link) {
+    super::preview::link_closed(inner,link);
     let mut core = inner.lock();
     let replacement = current_link(&core, &link.peer_fingerprint, link.role);
-    if replacement.is_none()&&link.role==Role::Host{super::folders::invalidate(&mut core,Some(&link.peer_fingerprint));}
+    if replacement.is_none()&&link.role==Role::Host{super::terminal::invalidate(&mut core,Some(&link.peer_fingerprint));super::folders::invalidate(&mut core,Some(&link.peer_fingerprint));}
     let keys: Vec<_> = core
         .bridge
         .timelines
@@ -1020,7 +1033,10 @@ pub(crate) fn remote_host_respond(
     error: Option<WireError>,
 ) -> Result<(), WireError> {
     window_is_host(&window)?;
-    let mut core = state.inner.lock();
+    renderer_respond(&state.inner, generation, request_id, result, error)
+}
+pub(super) fn renderer_respond(inner: &Inner, generation: u64, request_id: String, result: Option<Value>, error: Option<WireError>) -> Result<(), WireError> {
+    let mut core = inner.lock();
     check_generation(&core, generation)?;
     if result.is_some() == error.is_some() {
         return Err(invalid());
@@ -1059,7 +1075,9 @@ pub(crate) fn remote_host_publish(
     frames: Vec<PublishedFrame>,
 ) -> Result<(), WireError> {
     window_is_host(&window)?;
-    let inner = &state.inner;
+    renderer_publish(&state.inner, generation, thread_id, epoch, frames)
+}
+pub(super) fn renderer_publish(inner: &Inner, generation: u64, thread_id: String, epoch: String, frames: Vec<PublishedFrame>) -> Result<(), WireError> {
     let mut core = inner.lock();
     check_generation(&core, generation)?;
     if thread_id.is_empty() || thread_id.len() > 512 || !epoch_is_valid(&epoch) {
@@ -1127,11 +1145,14 @@ pub(crate) async fn remote_request(
     args: Value,
 ) -> Result<Value, WireError> {
     window_is_host(&window)?;
+    viewer_request(&state.inner, device, op, args).await
+}
+pub(super) async fn viewer_request(inner: &Arc<Inner>, device: String, op: String, args: Value) -> Result<Value, WireError> {
     if !super::identity::fingerprint_is_valid(&device) {
         return Err(invalid());
     }
     let args = validate_args(&op, args)?;
-    let inner = state.inner.clone();
+    let inner = inner.clone();
     let thread = if op.starts_with("timeline.") {
         Some(thread_id(&args)?)
     } else {
@@ -1332,6 +1353,10 @@ pub(super) fn receive_event(
     seq: u64,
     data: Value,
 ) {
+    if let Some(id)=stream.strip_prefix("terminal:") {
+        let core=inner.lock();let valid=link.role==Role::Viewer&&link.is_paired()&&current_link(&core,&link.peer_fingerprint,Role::Viewer).is_some_and(|current|current.id==link.id)&&core.devices.get(&link.peer_fingerprint).is_some_and(|d|d.they_host&&!d.access_removed);
+        if valid&&id.len()<=512&&seq<=MAX_SAFE_SEQ&&serde_json::to_vec(&data).is_ok_and(|b|b.len()<=128*1024){emit(inner,"remote-terminal-output",json!({"device":link.peer_fingerprint,"terminalId":id,"seq":seq,"data":data}));}return;
+    }
     let mut core = inner.lock();
     if link.role != Role::Viewer
         || !link.is_paired()
@@ -1404,3 +1429,13 @@ pub(super) async fn request_value(inner:&Arc<Inner>,link:&Arc<Link>,op:&str,args
     if !core.bridge.ready||grant.revision!=pending.grant.revision{return Err(unavailable());}
     let result=result?;if serde_json::to_vec(&result).map_or(true,|bytes|bytes.len()>MAX_RESULT_BYTES){return Err(invalid());}Ok(result)
 }
+
+#[cfg(test)]
+pub(super) fn test_attach(inner: &Inner, generation: u64) {
+    let mut core = inner.lock();
+    core.bridge.generation = generation;
+    core.bridge.attached = true;
+    core.bridge.ready = true;
+}
+
+pub(super) fn terminal_gate(stamp:&super::commit::Stamp,id:&str)->DeliveryGate{DeliveryGate{device:stamp.device.clone(),thread:String::new(),generation:stamp.generation,revision:stamp.grant_revision,epoch:String::new(),terminal:Some(id.to_owned())}}

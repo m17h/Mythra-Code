@@ -9,6 +9,8 @@ import type { HostSources } from "./scope";
 import { HostReadError } from "./scope";
 import type { RemoteWorkAdapter } from "./workTypes";
 import type { QueuedTurn } from "../../taskStore";
+import { reconcilePendingRequests } from "./pendingRequests";
+import { reconcileRemoteStateCommits } from "./stateCommit";
 
 export type { HostSources } from "./scope";
 export { createRemoteWork } from "./workActions";
@@ -16,6 +18,9 @@ export type { RemoteWorkOptions, RemoteWorkLease, HostRowActions, HostSettingsAc
 export type { HostContextSources } from "./hostContext";
 export type { StopActionSources } from "./stopActions";
 export type { HostParityActions } from "./parityActions";
+export { createHostSettingsActions } from "./settingsActions";
+export { applyHostExecutionPreferences, getHostThreadPreferences } from "./executionPreferences";
+export { commitHostState, operationStamp } from "./stateCommit";
 interface Session { generation: number; ready: boolean; bridge: HostBridge; publisher: HostPublishers; dispatcher: HostDispatcher; work?: RemoteWorkAdapter }
 
 /** App mounts one controller after its own indexes/provider listeners are ready. */
@@ -67,12 +72,13 @@ export function createRemoteHost(sources: HostSources, transport: HostTransport 
             if (history.availability(id) !== "ready") throw new HostReadError("host_unavailable", "This conversation's runtime ownership is recovering.");
           },
         });
-        const dispatcher = new HostDispatcher(sources, catalog, history, windows, publisher, bridge, isCurrent, remoteWork);
+        const dispatcher = new HostDispatcher(sources, catalog, history, windows, publisher, bridge, isCurrent, remoteWork, transport);
         session = { generation, ready: false, bridge, publisher, dispatcher, work: remoteWork };
         let reconciliationTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
-            (async () => { await sources.reconcile(isCurrent); if (isCurrent()) await remoteWork?.reconcileQueues(false); })(),
+            (async () => { await reconcileRemoteStateCommits(); await sources.reconcile(isCurrent); history.requestRecovery(await reconcilePendingRequests(generation, isCurrent));
+              if (isCurrent()) await remoteWork?.reconcileQueues(false); })(),
             new Promise<never>((_, reject) => { reconciliationTimer = setTimeout(() => reject(new Error("Host reconciliation timed out")), 15_000); }),
           ]);
         } finally { clearTimeout(reconciliationTimer); }

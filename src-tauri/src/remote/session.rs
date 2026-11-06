@@ -173,6 +173,8 @@ impl Link {
         *self.closed.borrow()
     }
 
+    pub(super) fn closed(&self) -> watch::Receiver<Option<CloseReason>> { self.closed.subscribe() }
+
     pub(super) fn is_open(&self) -> bool {
         self.closed.borrow().is_none()
     }
@@ -570,7 +572,7 @@ fn dispatch(inner: &Arc<Inner>, link: &Arc<Link>, frame: Frame) {
                 }
             });
         }
-        Frame::Evt { stream, epoch, seq, data } => super::hostbridge::receive_event(inner, link, stream, epoch, seq, data),
+        Frame::Evt { stream, epoch, seq, data } => {if !super::preview::receive_event(inner,link,&stream,&data){super::hostbridge::receive_event(inner, link, stream, epoch, seq, data)}},
         Frame::Hello(_) => {}
     }
 }
@@ -1049,6 +1051,8 @@ fn authorize_paired_operation(inner: &Arc<Inner>, link: &Link) -> Result<(), Wir
 
 async fn handle_request(inner: &Arc<Inner>, link: &Arc<Link>, id: u64, op: &str, args: Value) -> Reply {
     let result = match op {
+        "preview.list" | "preview.open" | "preview.ready" | "preview.http" | "preview.close" | "preview.ws.open" | "preview.ws.write" | "preview.stream.read" | "preview.stream.close" => return Reply::Done(super::preview::handle_request(inner,link,op,args).await),
+        "terminal.ack" => return Reply::Done(super::terminal::ack(inner,link,&args)),
         op if super::work::is_mutation(op) => return Reply::Done(super::work::handle_request(inner,link,op,args).await),
         op if super::manifest::fields(op).is_some()=>return Reply::Done(super::hostbridge::request_value(inner,link,op,args,None).await),
         "pair.offer" => return pairing::handle_offer(inner, link),

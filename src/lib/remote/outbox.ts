@@ -28,6 +28,9 @@ export interface OutboxEntry {
   threadId?: string;
   workspaceId?: string;
   handle?: string;
+  /** Host-issued choices for a new thread, kept with the prompt they belong to. */
+  draftHandle?: string;
+  attachmentIds?: string[];
   draftKey: string;
   text: string;
   state: OutboxState;

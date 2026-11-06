@@ -10,6 +10,8 @@ export interface TerminalPanelProps {
   /** Execution path this panel is showing; also the command draft's identity. */
   scope: string;
   scopeLabel: string;
+  /** Names the shell on another machine. This device's is the default. */
+  shell?: string;
   running: boolean;
   runningCommand: string;
   runningElsewhere: RunningTerminalCommand[];
@@ -52,7 +54,7 @@ function TerminalPanelInner(props: TerminalPanelProps) {
                 {props.runningCommand ? <> · <code title={props.runningCommand}>{props.runningCommand}</code></> : null}
               </span>
             ) : (
-              <span className="terminal-status-text">Ready <span className="terminal-shell">{shellLabel()}</span></span>
+              <span className="terminal-status-text">Ready <span className="terminal-shell">{props.shell ?? shellLabel()}</span></span>
             )}
           </div>
           <button type="button" className="terminal-tool" onClick={props.onClear} aria-label="Clear terminal" title="Clear output">
@@ -70,7 +72,7 @@ function TerminalPanelInner(props: TerminalPanelProps) {
         ))}
         <XtermPanel
           outputStore={props.outputStore}
-          placeholder={`MYTHRA CODE terminal ready — ${props.scopeLabel} (${shellLabel()})\n`}
+          placeholder={`MYTHRA CODE terminal ready — ${props.scopeLabel} (${props.shell ?? shellLabel()})\n`}
           running={props.running}
           onInput={props.onInput}
           onResize={props.onResize}

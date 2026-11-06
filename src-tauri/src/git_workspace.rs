@@ -824,7 +824,7 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
     })
 }
 
-fn revert_preview_sync(cwd: &str, path: &str) -> Result<GitWorkspaceRevertPreview, String> {
+pub(crate) fn revert_preview_sync(cwd: &str, path: &str) -> Result<GitWorkspaceRevertPreview, String> {
     let state = revert_state(cwd, path)?;
     let token = uuid::Uuid::new_v4().to_string();
     let result = GitWorkspaceRevertPreview {
@@ -858,7 +858,7 @@ fn revert_preview_sync(cwd: &str, path: &str) -> Result<GitWorkspaceRevertPrevie
     Ok(result)
 }
 
-fn revert_sync(
+pub(crate) fn revert_sync(
     cwd: &str,
     path: &str,
     expected_token: &str,
@@ -1072,7 +1072,7 @@ fn bulk_revert_state(cwd: &str) -> Result<BulkRevertState, String> {
     })
 }
 
-fn revert_all_preview_sync(cwd: &str) -> Result<GitWorkspaceRevertAllPreview, String> {
+pub(crate) fn revert_all_preview_sync(cwd: &str) -> Result<GitWorkspaceRevertAllPreview, String> {
     let state = bulk_revert_state(cwd)?;
     let token = uuid::Uuid::new_v4().to_string();
     let result = GitWorkspaceRevertAllPreview {
@@ -1105,7 +1105,7 @@ fn revert_all_preview_sync(cwd: &str) -> Result<GitWorkspaceRevertAllPreview, St
     Ok(result)
 }
 
-fn revert_all_sync(cwd: &str, expected_token: &str) -> Result<GitWorkspaceCommandResult, String> {
+pub(crate) fn revert_all_sync(cwd: &str, expected_token: &str) -> Result<GitWorkspaceCommandResult, String> {
     let saved = bulk_revert_previews()
         .lock()
         .map_err(|_| "Revert confirmation is unavailable. Try again.".to_string())?
@@ -1147,7 +1147,7 @@ fn revert_all_sync(cwd: &str, expected_token: &str) -> Result<GitWorkspaceComman
     })
 }
 
-fn stage_sync(
+pub(crate) fn stage_sync(
     cwd: &str,
     path: Option<&str>,
     unstage: bool,
@@ -1205,7 +1205,7 @@ fn stage_sync(
     }
 }
 
-fn commit_sync(
+pub(crate) fn commit_sync(
     cwd: &str,
     message: &str,
     staged_only: bool,
@@ -1342,7 +1342,7 @@ fn occupied_elsewhere(repo: &Path, branch: &str) -> Result<bool, String> {
     Ok(other != current_root)
 }
 
-fn branch_sync(
+pub(crate) fn branch_sync(
     cwd: &str,
     name: &str,
     create: bool,
@@ -1678,6 +1678,9 @@ impl GitProcessScope {
 pub(super) fn spawn_scoped_git(
     command: &mut std::process::Command,
 ) -> Result<(std::process::Child, GitProcessScope), String> {
+    crate::remote::domain::spawn_gate(||spawn_scoped_git_unfenced(command))
+}
+fn spawn_scoped_git_unfenced(command:&mut std::process::Command)->Result<(std::process::Child,GitProcessScope),String>{
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1866,6 +1869,7 @@ fn bounded_git_output_with_capture(
     stdout_nul_count: Option<Arc<AtomicUsize>>,
     isolated_initialization: bool,
 ) -> Result<(Output, bool), String> {
+    let timeout=crate::remote::domain::limit_timeout(timeout);
     let (network, suppress_askpass) = prompt_policy;
     let home = env::var_os("HOME").map(PathBuf::from);
     let mut command = git_command_for(repo, env::var_os("PATH").as_deref(), home.as_deref());
@@ -2163,7 +2167,7 @@ fn push_destination(
     Ok((push_urls[0].to_string(), target, needs_upstream, tracking))
 }
 
-fn push_sync(
+pub(crate) fn push_sync(
     cwd: &str,
     head_oid: &str,
     branch: &str,
@@ -2254,7 +2258,7 @@ fn push_sync(
     })
 }
 
-fn fetch_sync(cwd: &str) -> Result<GitWorkspaceSnapshot, String> {
+pub(crate) fn fetch_sync(cwd: &str) -> Result<GitWorkspaceSnapshot, String> {
     let selected = mutation_repo(cwd)?;
     let (remote, _) = remote_for_repository(&selected, None)?;
     bounded_git(&selected, &["fetch", "--prune", "--no-tags", &remote])?;
@@ -2318,7 +2322,7 @@ fn pull_destination(
     Ok((target.to_owned(), tracking))
 }
 
-fn pull_sync(
+pub(crate) fn pull_sync(
     cwd: &str,
     expected_head: &str,
     expected_branch: &str,
@@ -2403,7 +2407,7 @@ fn pull_sync(
     result
 }
 
-fn update_sync(
+pub(crate) fn update_sync(
     cwd: &str,
     repository: &str,
     base: &str,

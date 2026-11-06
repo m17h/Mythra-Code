@@ -20,6 +20,7 @@ const writes: Record<string, readonly string[]> = {
   "parent.continue": ["parentRunId"], "parent.dismiss": ["parentRunId"],
   "thread.archiveMany": ["threadIds"], "thread.deleteMany": ["threadIds", "confirmed"],
   "workflows.start": ["workflowId", "variables", "userPrompt"], "workflows.stop": ["workflowId", "runId"],
+  "checkpoint.accept": ["checkpointId"], "agents.stop": ["agentId"],
   "projects.settings.set": ["name", "provider", "model", "effort"], "projects.instructions.set": ["prompt", "mode"],
   "projects.profiles.save": ["profileId", "name", "prompt", "mode"], "projects.profiles.delete": ["profileId"], "projects.profiles.select": ["profileId"],
   "projects.run.set": ["command", "setupCommand", "label"], "projects.check.set": ["command"],
@@ -44,11 +45,11 @@ export interface HostParityActions {
    */
   execute(op: HostParityOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext & {
     delivery: RemoteTurnDelivery;
-  }): Promise<{ state: "accepted"; threadId?: string; workflowRunId?: string; editHandle?: string }>;
+  }): Promise<{ state: "accepted" | "queued"; threadId?: string; queuedTurnId?: string; workflowRunId?: string; editHandle?: string }>;
 }
 export function assertParityAuthority(op: string, grant: DeviceGrant): void {
   if (!grant.view || !isParityRead(op) && !grant.work) throw new HostReadError("forbidden", "This action requires Work access.");
-  const managing = op === "projects.settings.set" || op === "projects.instructions.set" || op.startsWith("projects.profiles.");
+  const managing = op === "projects.settings.set" || op === "projects.instructions.set" || op.startsWith("projects.profiles.") || op === "projects.run.set" || op === "projects.check.set";
   if (managing && (grant.scope.kind !== "all" || (grant.capabilities as { manageProjects?: boolean }).manageProjects !== true)) {
     throw new HostReadError("forbidden", "This action requires Manage projects and an all-project grant.");
   }
@@ -68,7 +69,7 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
   idArg(args.workspaceId);
   if (args.threadId !== undefined) idArg(args.threadId);
   if (!reads.has(op)) idArg(args.revision);
-  for (const key of ["queueId", "editHandle", "scheduleId", "workflowId", "runId", "parentRunId", "messageId", "handoffId", "processHandle", "profileId", "target", "skillId", "cursor"]) {
+  for (const key of ["checkpointId", "agentId", "queueId", "editHandle", "scheduleId", "workflowId", "runId", "parentRunId", "messageId", "handoffId", "processHandle", "profileId", "target", "skillId", "cursor"]) {
     if (args[key] !== undefined) idArg(args[key]);
   }
   for (const key of ["text", "prompt", "userPrompt"]) if (args[key] !== undefined) string(args[key], 65536);
@@ -138,7 +139,7 @@ export function projectParityRead(raw: WireParityReadResult): WireParityReadResu
 }
 export async function executeParityMutation(op: HostParityOperation, args: Record<string, unknown>, actions: HostParityActions,
   context: TurnRunnerContext, identity: RemoteOperationIdentity, generation: number, delivery: RemoteTurnDelivery,
-  assertAllowed: () => void): Promise<RemoteWorkResult> {
+  assertAllowed: () => void, grantRevision = 0): Promise<RemoteWorkResult> {
   const assertRevision = () => {
     assertAllowed();
     if (actions.revision(context) !== args.revision) throw new HostReadError("stale_target", "This host state changed. Refresh before applying the action.");
@@ -153,7 +154,11 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
     assertRevision();
     await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
     assertRevision();
-    const result = await actions.execute(op, args, { context, identity, generation, delivery, assertAllowed: assertRevision });
+    const result = await actions.execute(op, args, { context, identity, generation, grantRevision, delivery, assertAllowed: assertRevision });
+    if (result?.state === "queued" && result.threadId && result.queuedTurnId) {
+      if (delivery.result().state !== "queued") await delivery.queued(result.threadId, result.queuedTurnId);
+      return delivery.result();
+    }
     if (result?.state !== "accepted") throw new HostReadError("uncertain", "The host action could not be confirmed.");
     await flushPendingStateWrites();
     await delivery.accepted({ threadId: result?.threadId ?? threadId });

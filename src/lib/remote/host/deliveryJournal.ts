@@ -11,7 +11,7 @@ export interface DeliveryReceipt extends RemoteOperationIdentity {
   disposition: "preparing" | RemoteQueuedDelivery["disposition"];
   workspaceId: string; attemptId: string; messageId: string;
   threadId?: string; queuedTurnId?: string; startRequestId?: string; turnId?: string;
-  provider?: string; permission?: string; errorCode?: string; stopHandle?: string;
+  ownerHandle?: string; provider?: string; permission?: string; errorCode?: string; stopHandle?: string;
 }
 export interface JournalOptions {
   generation: number; identity: RemoteOperationIdentity; workspaceId: string;
@@ -29,6 +29,27 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
   private receipt: DeliveryReceipt;
   private outcome: RemoteWorkResult;
   private dispatched = false;
+  private owner?: { kind: string; runId: string; handle: string };
+  get ownerHandle(): string | undefined { return this.owner?.handle; }
+  async openOwner(kind: "parent" | "workflow" | "start", runId: string, threadId?: string): Promise<string> {
+    if (this.owner) {
+      if (this.owner.kind !== kind || this.owner.runId !== runId) throw new HostReadError("stale_target", "This engine lifetime changed.");
+      return this.owner.handle;
+    }
+    await this.refreshGrant();
+    const grant = await invoke<DeviceGrant | null>("remote_work_grant", { generation: this.options.generation, device: this.identity.device });
+    this.options.validateGrant(grant); this.assertAllowed();
+    if (!grant) throw new HostReadError("forbidden", "Remote work is no longer allowed.");
+    const result = await invoke<{ ownerHandle: string }>("remote_work_owner_open", {
+      stamp: { generation: this.options.generation, ...this.identity, grantRevision: grant.revision, workspaceId: this.receipt.workspaceId, threadId: threadId ?? this.receipt.threadId }, kind, runId,
+    });
+    this.assertAllowed();
+    if (!result?.ownerHandle || result.ownerHandle.length > 256) throw new HostReadError("uncertain", "The native engine lifetime was not confirmed.");
+    this.owner = { kind, runId, handle: result.ownerHandle };
+    this.receipt.ownerHandle = result.ownerHandle;
+    await this.save(this.receipt.disposition);
+    return result.ownerHandle;
+  }
   constructor(private readonly options: JournalOptions) {
     this.identity = options.identity;
     this.attemptId = options.attemptId ?? crypto.randomUUID();
@@ -44,7 +65,7 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
     this.options.assertAllowed();
   }
   metadata(): ReturnType<RemoteTurnDelivery["metadata"]> {
-    return { ...this.identity, generation: this.options.generation, attemptId: this.attemptId, messageId: this.messageId };
+    return { ...this.identity, generation: this.options.generation, attemptId: this.attemptId, messageId: this.messageId, ...(this.ownerHandle ? { ownerHandle: this.ownerHandle } : {}) };
   }
   private async refreshGrant(): Promise<void> {
     this.assertAllowed();
@@ -119,6 +140,6 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
   result(): RemoteWorkResult { return { ...this.outcome, ...(this.outcome.error ? { error: { ...this.outcome.error } } : {}) }; }
   queueRecord(): RemoteQueuedDelivery {
     return { ...this.identity, workspaceId: this.options.workspaceId, attemptId: this.attemptId,
-      messageId: this.messageId, disposition: "uncertain", needsRecovery: false };
+      messageId: this.messageId, ...(this.ownerHandle ? { ownerHandle: this.ownerHandle } : {}), disposition: "uncertain", needsRecovery: false };
   }
 }

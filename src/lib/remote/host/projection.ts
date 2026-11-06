@@ -25,7 +25,11 @@ export function projectMessage(threadId: string, message: ChatMessage, order: nu
   if (finite(message.turnDurationMs)) result.turnDurationMs = message.turnDurationMs;
   if (message.provenance === "mythra-notice") result.provenance = message.provenance;
   if (["sending", "accepted", "queued", "read", "unconfirmed"].includes(message.steerStatus ?? "")) result.steerStatus = message.steerStatus;
-  if (message.attachments?.length) result.attachmentNames = message.attachments.slice(0, 8).map((attachment) => fileName(attachment.name));
+  if (message.attachments?.length) {
+    result.attachmentNames = message.attachments.slice(0, 8).map((attachment) => fileName(attachment.name));
+    const images = message.attachments.slice(0, 8).flatMap((attachment, index) => attachment.kind === "image" ? [index] : []);
+    if (images.length) result.attachmentImages = images;
+  }
   if (message.questions?.length) {
     if (message.questions.length > 8) result.truncated = true;
     const answers = savedQuestionAnswers(threadId, message.id);
@@ -90,10 +94,10 @@ function approvalSummary(approval: PendingApproval): Pick<WireApproval, "kind" |
   }
 }
 export function projectApprovals(task: ThreadTaskState | undefined): WireApproval[] {
-  return (task?.approvals ?? []).slice(0, 64).map((approval, index) => ({
+  return [...(task?.approvals ?? []).slice(0, 64).map((approval, index): WireApproval => ({
     id: `approval-${Number.isFinite(approval.receivedAt) ? approval.receivedAt : 0}-${index}`,
     ...approvalSummary(approval), hostOnly: true,
-  }));
+  })), ...(task?.expiredApprovals ?? []).slice(-16).map((entry): WireApproval => ({ id: entry.id, kind: "other", summary: entry.summary, hostOnly: true }))].slice(0, 64);
 }
 export function projectQueue(task: ThreadTaskState | undefined): WireQueuedTurn[] {
   return (task?.queuedTurns ?? []).slice(0, 16).map((turn) => {

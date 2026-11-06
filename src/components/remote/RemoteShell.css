@@ -32,3 +32,7 @@
 .remote-folder-list p { margin: 6px 8px; color: var(--muted); font-size: var(--fs-meta); }
 .remote-change-row { display: block; width: 100%; text-align: left; cursor: pointer; }
 .remote-change-row[aria-pressed="true"] { background: var(--lm-press); }
+.remote-project-editor { width: min(520px, 92vw); overflow-y: auto; }
+.remote-project-editor fieldset { display: flex; flex-direction: column; gap: var(--s-2); margin: 0; padding: 0; border: 0; }
+.remote-project-editor label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: var(--fs-meta); }
+.remote-project-editor input, .remote-project-editor textarea, .remote-project-editor select { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-control); color: var(--text); background: transparent; font: inherit; font-size: var(--fs-ui); }

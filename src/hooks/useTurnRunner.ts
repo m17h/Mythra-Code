@@ -36,6 +36,7 @@ import { flushPendingStateWrites } from "../lib/storage";
 import type { RemoteStopSnapshot, RemoteTurnDelivery, RemoteTurnRunner } from "../lib/remote/host/workTypes";
 import type { RemoteWorkResult } from "../lib/remote/wire";
 import { HostReadError } from "../lib/remote/host/scope";
+import { rememberRemoteEngineOwner, remoteEngineOwner, forgetRemoteEngineOwner, type RemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { claimParentRun, parentAuthKey, pausedParentRun, PARENT_EXECUTION_UNCONFIRMED, PARENT_NOTICE_PROVENANCE, PARENT_RUN_CHECKPOINT_LABEL, type ParentExecution, type ParentRun } from "../lib/parentRun";
 import { claudeSteerReadState } from "../lib/claudeEvents";
 import {
@@ -308,9 +309,11 @@ export interface ParentResumeRequest {
 export interface TurnRunnerContext {
   /** Optional remote-only hooks; local calls retain their existing path. */
   remoteDelivery?: RemoteTurnDelivery;
+  remoteEngineOwner?: RemoteEngineOwner;
   remoteStop?: (args: Record<string, unknown>) => Promise<void>;
   resolveRemoteQueuedDelivery?: (entry: QueuedTurn) => Promise<TurnRunnerContext>;
   remoteQueuesReady?: () => boolean;
+  remoteAttachmentIds?: string[];
   /** Optional exact parent identity for a UI-generated worker instruction. */
   deliveryGuard?: (ownedRunStartedAt?: number) => boolean;
   /** This turn is a parent run's generated continuation, not an authored prompt. */
@@ -1071,9 +1074,21 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         ? { ...run, sessionId: policy.sessionId, execution, autoResume: true, ownerRunId: agentRunId ?? run.ownerRunId }
         : { id: crypto.randomUUID(), rootThreadId: thread.id, sessionId: policy.sessionId, phase: "active", ownerRunId: agentRunId,
           resumesUsed: 0, wokenQuestions: [], execution, autoResume: true });
-      parentRunDeliveries.set(thread.id, { ...queuedDeliveryContext(ctx, thread.id, [], false), activeThread: thread,
-        // This send's own bookkeeping and dispatch identity end with this send.
-        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined, remoteDelivery: undefined, remoteStop: undefined });
+      const capture = (owner?: RemoteEngineOwner) => parentRunDeliveries.set(thread.id, { ...queuedDeliveryContext(ctx, thread.id, [], false), activeThread: thread,
+        // Each continuation needs a fresh durable native step, never reuse the
+        // accepted prompt's dispatch identity or silently fall back to local.
+        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined, remoteDelivery: undefined, remoteStop: undefined, remoteEngineOwner: owner });
+      if (ctx.remoteDelivery) {
+        const delivery = ctx.remoteDelivery;
+        if (!delivery.openOwner) throw new HostReadError("unsupported", "Native parent ownership is not connected.");
+        const runId = useTaskStore.getState().parentRuns[thread.id]!.id;
+        return delivery.openOwner("parent", runId, thread.id).then((ownerHandle) => {
+          const owner: RemoteEngineOwner = { generation: delivery.metadata().generation, threadId: thread.id, runId, kind: "parent", ownerHandle };
+          rememberRemoteEngineOwner(owner); capture(owner);
+        });
+      }
+      forgetRemoteEngineOwner(thread.id);
+      capture();
     };
 
     // Shared body of the Claude/Cursor subscription paths: bootstrap the
@@ -1143,7 +1158,8 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         useTaskStore.getState().beginAgentRun(thread.id);
         guardedRunStartedAt = useTaskStore.getState().tasks[thread.id]?.agentRunStartedAt;
         startedAgentRunId = useTaskStore.getState().tasks[thread.id]?.agentRunId;
-        openParentRun(thread, executionPath);
+        const opened = openParentRun(thread, executionPath);
+        if (opened) await opened;
       }
       useTaskStore.getState().setTaskStatus(thread.id, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(thread.id);
@@ -1380,7 +1396,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         const keptRun = !coordinationResume && parentRunBefore?.phase === "paused" ? parentRunBefore : undefined;
         if (keptRun && !(parentRunReady && childBridge?.policy)) {
           useTaskStore.getState().updateParentRun(activeThread.id, (run) => run?.id === keptRun.id && run.ownerRunId === startedAgentRunId ? keptRun : run);
-        } else openParentRun(activeThread, executionPath);
+        } else { const opened = openParentRun(activeThread, executionPath); if (opened) await opened; }
       }
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
@@ -1563,7 +1579,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         useTaskStore.getState().beginAgentRun(threadId);
         guardedRunStartedAt = useTaskStore.getState().tasks[threadId]?.agentRunStartedAt;
         startedAgentRunId = useTaskStore.getState().tasks[threadId]?.agentRunId;
-        if (parentRunThread) openParentRun(parentRunThread, executionPath);
+        if (parentRunThread) { const opened = openParentRun(parentRunThread, executionPath); if (opened) await opened; }
       }
       useTaskStore.getState().setTaskStatus(threadId, "starting");
       if (!pendingStart) pendingStart = pendingTurnStartsRef.current.begin(threadId);
@@ -1649,7 +1665,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       return true;
     } catch (reason) {
       if (ctx.remoteDelivery) await ctx.remoteDelivery.failure(reason);
-      const cancelled = reason instanceof CancelledTurnStart;
+      const cancelled = reason instanceof CancelledTurnStart || reason instanceof HostReadError && reason.code === "cancelled";
       if (reason instanceof SkillDependencyError) ctx.onSkillDependencyFailure?.(reason);
       setStartingDraftTurn(false);
       // Use the locally captured thread ids: for a brand-new thread the
@@ -1815,6 +1831,8 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       let delivery: TurnRunnerContext | undefined;
       try {
         delivery = await resolve(queuedTurn);
+        const latest = useTaskStore.getState().tasks[threadId]?.queuedTurns.find((row) => row.id === queuedTurn.id);
+        if (!latest || latest.editing || latest.status !== "queued" || latest.remoteDelivery?.disposition !== "queued") return;
         if (!delivery.remoteDelivery || delivery.activeThread?.id !== threadId) throw new HostReadError("stale_target", "The remote queue target changed.");
         useTaskStore.getState().setQueuedTurnStatus(threadId, queuedTurn.id, "sending");
         await flushPendingStateWrites();
@@ -2090,6 +2108,12 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       : parentRunDeliveries.get(threadId);
     const liveThread = captured?.currentThread?.(threadId);
     const delivery = liveThread?.id === threadId && captured ? { ...captured, activeThread: liveThread } : captured;
+    if (!explicit && delivery?.remoteEngineOwner) {
+      // Until the engine owns per-step durable admissions, the accepted first
+      // prompt is not authority to send another provider instruction locally.
+      store.updateParentRun(threadId, (latest) => latest && pausedParentRun(latest, "execution_changed", "This remote parent needs a new confirmed execution step. Continue it on the host."));
+      return;
+    }
     // A context without this exact thread would start a new conversation.
     if (delivery?.activeThread?.id !== threadId) {
       store.updateParentRun(threadId, (latest) => latest && pausedParentRun(latest, "execution_changed"));
@@ -2220,7 +2244,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     if (archiveOwnsThread(thread.id)) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
     const existing = useTaskStore.getState().tasks[thread.id]?.queuedTurns.find((entry) => entry.remoteDelivery?.device === delivery.device && entry.remoteDelivery.opId === delivery.opId);
     if (existing) return { opId: delivery.opId, state: existing.remoteDelivery?.disposition === "queued" ? "queued" : "uncertain", threadId: thread.id, queuedTurnId: existing.id };
-    const queued = useTaskStore.getState().enqueueTurn(thread.id, text, [], { remoteDelivery: { ...delivery, disposition: "uncertain" } });
+    const queued = useTaskStore.getState().enqueueTurn(thread.id, text, ctx.attachments, { remoteDelivery: { ...delivery, disposition: "uncertain" } });
     try {
       await remote.queued(thread.id, queued.id);
       queueMicrotask(() => { void pumpQueuedThread(thread.id); });
@@ -2235,7 +2259,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     if (ctx.activeThread && (task?.status === "running" || task?.status === "starting" || hasEligibleQueuedTurns(task?.queuedTurns)
       || useTaskStore.getState().workflowOwners[ctx.activeThread.id])) {
       return queuePromptTo(ctx, text, { ...remote.identity, workspaceId: ctx.activeWorkspace!.id,
-        attemptId: remote.attemptId, messageId: remote.messageId, disposition: "uncertain" });
+        attemptId: remote.attemptId, messageId: remote.messageId, disposition: "uncertain", attachmentIds: ctx.remoteAttachmentIds });
     }
     try {
       if (!await deliverMessage(ctx, text, "turn", undefined, undefined, true)) await remote.rejected("internal");
@@ -2743,7 +2767,8 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     return { threadId, turnId: task?.activeTurnId,
       startRequestId: start?.runStartedAt === task?.agentRunStartedAt ? start?.startRequestId : undefined,
       agentRunId: task?.agentRunId, runStartedAt: task?.agentRunStartedAt,
-      parentRunId: store.parentRuns[threadId]?.id, workflowId: workflow?.workflowId, workflowRunId: workflow?.runId };
+      parentRunId: store.parentRuns[threadId]?.id, workflowId: workflow?.workflowId, workflowRunId: workflow?.runId,
+      ...(() => { const owner = remoteEngineOwner(threadId, store.parentRuns[threadId]?.id, workflow?.runId); return owner ? { ownerHandle: owner.ownerHandle, ownerRunId: owner.runId } : {}; })() };
   }, []);
   const pumpRemoteQueue = useCallback((threadId: string) => { void pumpQueuedThread(threadId); }, [pumpQueuedThread]);
 

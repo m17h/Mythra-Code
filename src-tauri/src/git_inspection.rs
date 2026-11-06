@@ -330,7 +330,7 @@ fn head(read: &GitReadOperation, repo: &Path) -> Result<Option<String>, String> 
     Ok(Some(oid))
 }
 
-fn validate_oid(oid: &str) -> Result<(), String> {
+pub(super) fn validate_oid(oid: &str) -> Result<(), String> {
     if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Git history requires a full hexadecimal commit ID".into());
     }
@@ -716,7 +716,7 @@ fn file_diff_sync(cwd: &str, path: &str, area: &str) -> Result<ProjectGitFileDif
     })
 }
 
-fn parse_history(bytes: &[u8], truncated: bool) -> Result<Vec<ProjectGitCommit>, String> {
+pub(super) fn parse_history(bytes: &[u8], truncated: bool) -> Result<Vec<ProjectGitCommit>, String> {
     if !bytes.is_empty() && !bytes.ends_with(&[0]) && !truncated {
         return Err("Git returned an incomplete commit history".into());
     }

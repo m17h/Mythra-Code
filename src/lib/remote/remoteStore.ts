@@ -88,6 +88,10 @@ function message(value: unknown): WireMessage {
   if (v.provenance === "mythra-notice") result.provenance = v.provenance;
   if (["sending", "accepted", "queued", "read", "unconfirmed"].includes(String(v.steerStatus))) result.steerStatus = v.steerStatus as WireMessage["steerStatus"];
   if (v.attachmentNames !== undefined) result.attachmentNames = rows(v.attachmentNames, (entry) => text(entry, 512), 100);
+  if (v.attachmentImages !== undefined) result.attachmentImages = rows(v.attachmentImages, (entry) => {
+    if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0 || entry > 7) throw new Error("Invalid image reference");
+    return entry;
+  }, 8);
   if (v.questions !== undefined) result.questions = rows(v.questions, (entry) => {
     const q = object(entry);
     const secret = bool(q.secret);

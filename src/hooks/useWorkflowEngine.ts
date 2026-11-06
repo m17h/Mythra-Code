@@ -336,6 +336,28 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     }
   }, []);
 
+  /** Stops exactly this run, for a caller that owns the provider cutoff. A
+   * failed cutoff is thrown, because that caller reports it. */
+  const stopWorkflowRun = useCallback(async (workflowId: string, runId: string, stopRoot?: () => Promise<void>): Promise<boolean> => {
+    const active = runningRef.current.get(workflowId);
+    if (!active || active.runId !== runId) return false;
+    if (!active.stopRequested) {
+      active.stopRequested = true;
+      active.publish({ stopRequestedAt: Date.now() });
+    }
+    active.waitController?.abort();
+    const requests: Array<Promise<unknown>> = [];
+    if (active.processId) {
+      const processId = active.processId;
+      requests.push(rpc("command/exec/terminate", { processId }).catch((error) => {
+        if (active.processId === processId) throw error;
+      }));
+    }
+    requests.push(stopRoot ? stopRoot() : interruptActiveTurn(active));
+    await Promise.all(requests);
+    return true;
+  }, []);
+
   const runWorkflow = useCallback(async (
     workflowId: string,
     source: WorkflowRunSource = "manual",
@@ -985,5 +1007,5 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     return () => window.clearInterval(timer);
   }, [runWorkflow, deps.runtimeAvailable, deps.chatGptConnected, deps.lmStudioReady, deps.openRouterReady, deps.claudeReady, deps.cursorReady]);
 
-  return { runWorkflow, stopWorkflow };
+  return { runWorkflow, stopWorkflow, stopWorkflowRun };
 }

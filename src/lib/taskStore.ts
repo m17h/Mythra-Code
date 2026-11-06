@@ -12,8 +12,10 @@ import { EMPTY_REVIEW_DIFF, type ReviewDiff } from "./gitDiff";
 import { isActiveAgentRecord } from "./subAgentActivity";
 import { durationForTurn, recordTurnDuration } from "./turnDurations";
 import { recordCumulativeUsage, recordUsageDelta, resetUsageLedgerCache, usageForThread, USAGE_HISTORY_KEY, USAGE_LEDGER_KEY } from "./usageLedger";
-import { loadStored, removeStoredValue, storeValue } from "./storage";
+import { isRemoteStateFenced, loadStored, removeStoredValue, storeValue } from "./storage";
 import { parentRunAtRunStart, sanitizeStoredParentRuns, type ParentRun } from "./parentRun";
+import { restoredRemoteProvenance, type RemoteExecutionProvenance } from "./remote/host/provenance";
+import { isLiveRemoteEngineOwner } from "./remote/host/engineOwners";
 import { EMPTY_THREAD_HISTORY, type ThreadHistoryState } from "./threadHistory";
 import { beginRuntimePerformanceTurn, bindRuntimePerformanceTurn, completeRuntimePerformanceTurn, recordStreamingDelta, recordStreamingFlush, resetRuntimePerformanceDiagnostics } from "./runtimePerformanceBridge";
 
@@ -28,27 +30,36 @@ export type QueuedTurnStatus = "queued" | "sending" | "failed";
 
 /** No prompts or credentials here: only durable delivery identity/disposition. */
 export interface RemoteQueuedDelivery {
+  provenance?: RemoteExecutionProvenance;
+  ownerHandle?: string;
   device: string; opId: string; opSeq: number; workspaceId: string;
   attemptId: string; messageId: string;
   disposition: "queued" | "dispatched" | "accepted" | "rejected" | "uncertain";
   needsRecovery?: boolean;
+  attachmentIds?: string[];
   errorCode?: string;
 }
 
-function restoredRemoteDelivery(value: unknown, id: string): RemoteQueuedDelivery {
+function restoredRemoteDelivery(value: unknown, id: string, adoptLive = false): RemoteQueuedDelivery {
   const entry = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const text = (key: string) => typeof entry[key] === "string" && (entry[key] as string).trim().length > 0 && (entry[key] as string).length <= 256 ? entry[key] as string : "invalid";
-  const valid = ["device", "opId", "workspaceId", "attemptId", "messageId"].every((key) => text(key) !== "invalid")
+  const provenance = restoredRemoteProvenance(entry.provenance);
+  const valid = (entry.provenance === undefined || Boolean(provenance)) && (entry.ownerHandle === undefined || adoptLive && typeof entry.ownerHandle === "string" && isLiveRemoteEngineOwner(entry.ownerHandle)) && ["device", "opId", "workspaceId", "attemptId", "messageId"].every((key) => text(key) !== "invalid")
     && typeof entry.opSeq === "number" && Number.isSafeInteger(entry.opSeq) && entry.opSeq > 0;
   const disposition = valid && entry.disposition === "queued" ? "queued"
     : valid && entry.disposition === "rejected" ? "rejected"
     : valid && entry.disposition === "accepted" ? "accepted" : "uncertain";
   return { device: text("device"), opId: text("opId"), opSeq: valid ? entry.opSeq as number : 0,
     workspaceId: text("workspaceId"), attemptId: text("attemptId"), messageId: valid ? text("messageId") : id,
-    disposition, needsRecovery: true, ...(typeof entry.errorCode === "string" ? { errorCode: entry.errorCode.slice(0, 64) } : {}) };
+    disposition, needsRecovery: true, ...(Array.isArray(entry.attachmentIds) && entry.attachmentIds.length <= 20 && entry.attachmentIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256) ? { attachmentIds: entry.attachmentIds as string[] } : {}),
+    ...(provenance ? { provenance } : {}),
+    ...(adoptLive && typeof entry.ownerHandle === "string" && isLiveRemoteEngineOwner(entry.ownerHandle) ? { ownerHandle: entry.ownerHandle } : {}),
+    ...(typeof entry.errorCode === "string" ? { errorCode: entry.errorCode.slice(0, 64) } : {}) };
 }
 
 export interface QueuedTurn {
+  remoteAdmissionPending?: boolean;
+  remoteEdit?: { handle: string; device: string; generation: number; expiresAt: number };
   id: string;
   threadId: string;
   text: string;
@@ -83,7 +94,7 @@ const PARENT_RUNS_KEY = "kiwi.parentRuns";
  * half-written record must never turn into a model turn with a missing prompt
  * or a bogus attachment path.
  */
-export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, QueuedTurn[]> {
+export function sanitizeStoredQueuedTurns(stored: unknown, adoptLive = false): Record<string, QueuedTurn[]> {
   if (!stored || typeof stored !== "object") return {};
   const result: Record<string, QueuedTurn[]> = {};
   const seenIds = new Set<string>();
@@ -117,10 +128,10 @@ export function sanitizeStoredQueuedTurns(stored: unknown): Record<string, Queue
         createdAt: typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
         // A process cannot still be delivering after an app restart, and an
         // unknown status would be a queue entry the pump never picks up.
-        status: Object.hasOwn(entry, "remoteDelivery") && restoredRemoteDelivery(entry.remoteDelivery, entry.id).disposition !== "queued"
+        status: Object.hasOwn(entry, "remoteDelivery") && restoredRemoteDelivery(entry.remoteDelivery, entry.id, adoptLive).disposition !== "queued"
           ? "failed" : entry.status === "failed" ? "failed" : "queued",
-        ...(Object.hasOwn(entry, "remoteDelivery") ? { remoteDelivery: restoredRemoteDelivery(entry.remoteDelivery, entry.id) } : {}),
-        ...(entry.editing === true ? { editing: true } : {}),
+        ...(Object.hasOwn(entry, "remoteDelivery") ? { remoteDelivery: restoredRemoteDelivery(entry.remoteDelivery, entry.id, adoptLive) } : {}),
+        ...(entry.editing === true && !entry.remoteEdit && !entry.remoteAdmissionPending ? { editing: true } : {}),
         ...(entry.resolveSkillMentions === false ? { resolveSkillMentions: false as const } : {}),
         ...(typeof entry.skillInvocationText === "string" ? { skillInvocationText: entry.skillInvocationText } : {}),
         ...(typeof entry.error === "string" && entry.error ? { error: entry.error } : {}),
@@ -161,6 +172,7 @@ export function storedRemoteQueuedTurns(): QueuedTurn[] {
 }
 
 function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
+  if (isRemoteStateFenced(QUEUED_TURNS_KEY)) throw new Error("This queue is being changed remotely. Try again after the change settles.");
   if (entries.length) queuedTurnsCache = { ...queuedTurnsCache, [threadId]: entries };
   else {
     const next = { ...queuedTurnsCache };
@@ -168,6 +180,38 @@ function persistQueuedTurns(threadId: string, entries: QueuedTurn[]): void {
     queuedTurnsCache = next;
   }
   storeValue(QUEUED_TURNS_KEY, queuedTurnsCache);
+}
+/** Already committed native rows: adopt without issuing another blind write. */
+export function adoptRemoteQueuedTurns(value: unknown): void {
+  const normalized = sanitizeStoredQueuedTurns(value, true);
+  const raw = value && typeof value === "object" ? value as Record<string, QueuedTurn[]> : {};
+  for (const [id, entries] of Object.entries(normalized)) for (const entry of entries) {
+    const original = raw[id]?.find((row) => row.id === entry.id);
+    if (!original) continue;
+    if (original.remoteAdmissionPending) { entry.remoteAdmissionPending = true; entry.editing = true; }
+    if (!entry.remoteDelivery && original.status === "sending") entry.status = "sending";
+    if (original.remoteEdit && original.remoteEdit.expiresAt > Date.now()) { entry.remoteEdit = original.remoteEdit; entry.editing = true; }
+  }
+  queuedTurnsCache = normalized;
+  useTaskStore.setState((state) => ({ queueRevision: state.queueRevision + 1,
+    tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, task]) => [id, { ...task, queuedTurns: normalized[id] ?? [] }])) }));
+}
+export function releaseRemoteQueueAdmission(threadId: string, id: string, attemptId: string): void {
+  const entries = queuedTurnsCache[threadId];
+  if (!entries) return;
+  const next = entries.map((entry) => entry.id === id && entry.remoteDelivery?.attemptId === attemptId
+    ? { ...entry, remoteAdmissionPending: undefined, editing: undefined, status: "queued" as const } : entry);
+  persistQueuedTurns(threadId, next);
+  useTaskStore.setState((state) => ({ queueRevision: state.queueRevision + 1,
+    ...(state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], queuedTurns: next } } } : {}) }));
+}
+export function releaseRemoteQueueEdit(threadId: string, id: string, handle: string): void {
+  const entries = queuedTurnsCache[threadId];
+  if (!entries?.some((entry) => entry.id === id && entry.remoteEdit?.handle === handle)) return;
+  const next = entries.map((entry) => entry.id === id && entry.remoteEdit?.handle === handle ? { ...entry, remoteEdit: undefined, editing: undefined } : entry);
+  persistQueuedTurns(threadId, next);
+  useTaskStore.setState((state) => ({ queueRevision: state.queueRevision + 1,
+    ...(state.tasks[threadId] ? { tasks: { ...state.tasks, [threadId]: { ...state.tasks[threadId], queuedTurns: next } } } : {}) }));
 }
 
 function loadParentRuns(): Record<string, ParentRun> {
@@ -249,6 +293,7 @@ export function storedPendingTimedTurns(): QueuedTurn[] {
 }
 
 export interface ThreadTaskState {
+  expiredApprovals?: { id: string; summary: string }[];
   threadId: string;
   activeTurnId?: string;
   /**

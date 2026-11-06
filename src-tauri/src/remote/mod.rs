@@ -11,6 +11,7 @@ mod identity;
 mod manifest;
 mod fs_guard;
 pub(crate) mod studio;
+pub(crate) mod studio_extra;
 pub(crate) mod folders;
 #[cfg(target_os = "macos")]
 mod macos_activity;
@@ -21,6 +22,14 @@ mod tls;
 mod timeline;
 mod wire;
 pub(crate) mod work;
+pub(crate) mod commit;
+pub(crate) mod attachments;
+pub(crate) mod preview;
+pub(crate) mod terminal;
+pub(crate) mod upload_source;
+pub(crate) mod domain;
+pub(crate) mod owners;
+pub(crate) mod bookkeeping;
 #[cfg(test)]
 mod tests;
 
@@ -198,6 +207,8 @@ struct Core {
     app_version: String,
     devices: HashMap<String, DeviceRecord>,
     links: HashMap<u64, Arc<Link>>,
+    terminals: terminal::Registry,
+    owners: owners::Registry,
     nearby: HashMap<String, NearbyEntry>,
     pairing: Option<PairingWindow>,
     flow: Option<ViewerFlow>,
@@ -281,6 +292,8 @@ impl Default for Core {
             app_version: String::new(),
             devices: HashMap::new(),
             links: HashMap::new(),
+            terminals: terminal::Registry::default(),
+            owners: owners::Registry::default(),
             nearby: HashMap::new(),
             pairing: None,
             flow: None,

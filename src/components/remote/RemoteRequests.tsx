@@ -4,7 +4,7 @@ import { answerRemoteApproval, answerRemoteQuestion, refreshRemoteCapabilities, 
 import type { WireApproval, WireQuestion, WireWorkApproval, WireWorkCapabilities } from "../../lib/remote/wire";
 import { AgentQuestionForm, type FormQuestion, type QuestionAnswers } from "../AgentQuestionForm";
 
-export interface RemoteThreadScope { device: string; name: string; threadId: string; connected: boolean }
+export interface RemoteThreadScope { device: string; name: string; threadId: string; connected: boolean; workspaceId?: string }
 export const RemoteThreadContext = createContext<RemoteThreadScope | null>(null);
 
 function formQuestions(questions: WireQuestion[]): FormQuestion[] {

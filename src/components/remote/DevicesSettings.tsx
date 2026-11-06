@@ -101,6 +101,12 @@ function GrantEditor({ device, grant, saving, onChange }: { device: RemoteDevice
           />
         </div>
       ))}
+      {!grant.capabilities.terminal && (grant.capabilities.gitWrite || grant.capabilities.checkpointRestore) && (
+        <div className="devices-grant-row" role="note">
+          <span>{grant.capabilities.gitWrite ? "Changing Git history" : "Restoring checkpoints"} also needs Use the terminal, because Git hooks and helper programs can run commands on this computer. It won't work until that's on.</span>
+          <button type="button" className="secondary-button" disabled={saving || !grant.view} onClick={() => onChange({ ...grant, capabilities: { ...grant.capabilities, terminal: true } })}>Turn on terminal</button>
+        </div>
+      )}
       <p className="devices-note">{grant.scope.kind === "all" ? "Covers every project on this device, except archived threads and sub-agent threads." : `Covers ${grant.scope.projectIds.length} selected projects.`} This sets which conversations it can open. It isn't a sandbox: a model with enough permission can reach files outside a project.</p>
       <span className="sr-only" role="status">{saving ? "Saving access settings…" : ""}</span>
     </div>

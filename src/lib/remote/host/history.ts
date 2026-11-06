@@ -14,6 +14,8 @@ import { sourceRows } from "./window";
 
 interface HistoryTarget { thread: Thread; workspacePath: string; assertCurrent(): void }
 export class HostHistory {
+  private pendingRequestsRecovering = false;
+  requestRecovery(complete: boolean): void { this.pendingRequestsRecovering = !complete; }
   private pending = new Map<string, Promise<void>>();
   private hydrated = new Map<string, { messages: ChatMessage[]; activities: Activity[] }>();
   private uncertain = new Set<string>();
@@ -27,6 +29,7 @@ export class HostHistory {
     this.pins.clear();
   }
   availability(threadId: string): WireAvailability {
+    if (this.pendingRequestsRecovering) return "recovering";
     const task = useTaskStore.getState().tasks[threadId];
     if (task?.activeTurnId && (task.status === "running" || task.status === "starting")) return "ready";
     if (this.uncertain.has(threadId)) return "recovering";

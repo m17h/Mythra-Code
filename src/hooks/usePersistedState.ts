@@ -1,8 +1,30 @@
-import { useCallback, useRef, useState, type MutableRefObject } from "react";
-import { loadStored, storeValue } from "../lib/storage";
+import { useCallback, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
+import { deferUntilRemoteStateAdopted, loadStored, storeValue, subscribeRemoteStateAdoption } from "../lib/storage";
 
 export type PersistedUpdate<T> = T | ((current: T) => T);
 export type SetPersisted<T> = (update: PersistedUpdate<T>) => void;
+/** Rebase a direct local edit captured during a remote commit over its adoption. */
+export function rebasePersistedIntent(base: unknown, next: unknown, adopted: unknown): unknown {
+  if (JSON.stringify(base) === JSON.stringify(next)) return adopted;
+  if (Array.isArray(base) && Array.isArray(next) && Array.isArray(adopted)
+    && [...base, ...next, ...adopted].every((row) => row && typeof row === "object" && typeof row.id === "string")) {
+    const before = new Map(base.map((row) => [row.id, row]));
+    const after = new Map(next.map((row) => [row.id, row]));
+    const latest = new Map(adopted.map((row) => [row.id, row]));
+    for (const key of before.keys()) if (!after.has(key)) latest.delete(key);
+    for (const [key, value] of after) latest.set(key, before.has(key) ? rebasePersistedIntent(before.get(key), value, latest.get(key)) : value);
+    const order = next.map((row) => row.id);
+    return [...order.map((id) => latest.get(id)), ...[...latest].filter(([id]) => !order.includes(id)).map(([, row]) => row)].filter(Boolean);
+  }
+  if (base && next && adopted && !Array.isArray(base) && !Array.isArray(next) && !Array.isArray(adopted)
+    && typeof base === "object" && typeof next === "object" && typeof adopted === "object") {
+    const a = base as Record<string, unknown>, b = next as Record<string, unknown>, result = { ...adopted } as Record<string, unknown>;
+    for (const key of Object.keys(a)) if (!Object.hasOwn(b, key)) delete result[key];
+    for (const key of Object.keys(b)) result[key] = rebasePersistedIntent(a[key], b[key], result[key]);
+    return result;
+  }
+  return next;
+}
 
 export interface PersistedStateOptions<T> {
   /**
@@ -40,8 +62,15 @@ export function usePersistedStateRef<T>(
     return options?.init ? options.init(load) : load();
   });
   const ref = useRef(value);
+  useLayoutEffect(() => subscribeRemoteStateAdoption(key, (adopted) => {
+    ref.current = adopted as T;
+    setValue(adopted as T);
+  }), [key]);
   const setPersisted = useCallback<SetPersisted<T>>(
     (update) => {
+      const base = ref.current;
+      if (deferUntilRemoteStateAdopted(key, () => setPersisted(typeof update === "function" ? update
+        : rebasePersistedIntent(base, update, ref.current) as T))) return;
       const next = typeof update === "function"
         ? (update as (current: T) => T)(ref.current)
         : update;

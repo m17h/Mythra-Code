@@ -14,13 +14,14 @@ const noRefresh = () => undefined;
 
 /** The real pickers, filled with what the host offers. The host checks every
  * change, so nothing here decides what is allowed. */
-export function RemoteModelControls({ context, name, provider, running, editable, onSettings, onDefaults, onNotice }: {
+export function RemoteModelControls({ context, chosen, name, provider, running, threadStarted, onSettings, onDefaults, onNotice }: {
   context: HostContextResult | undefined;
+  /** A new thread's choices, not yet saved in a thread. */
+  chosen?: { model?: string; effort?: WireEffort };
   name: string;
   provider: Provider;
   running: boolean;
-  /** False until the thread exists: new threads start on the host's defaults. */
-  editable: boolean;
+  threadStarted: boolean;
   onSettings: (change: { provider?: Provider; model?: string; effort?: WireEffort }) => void;
   onDefaults: () => void;
   onNotice: (message: string) => void;
@@ -28,20 +29,19 @@ export function RemoteModelControls({ context, name, provider, running, editable
   const models = context?.providers.find((entry) => entry.id === provider)?.models ?? NO_MODELS;
   const unavailable = useMemo(() => Object.fromEntries((context?.providers ?? []).filter((entry) => !entry.ready)
     .map((entry) => [entry.id, `${entry.name} isn't signed in on ${name}. Sign in on that device first.`])) as Partial<Record<Provider, string>>, [context?.providers, name]);
-  const model = context?.selected.model ?? "";
-  const effort: ReasoningEffort = context?.selected.effort ?? "medium";
-  const afterFirstMessage = `New threads use ${name}'s default model. You can change it after your first message.`;
-  const changeModel = (next: string) => editable ? onSettings({ model: next }) : onNotice(afterFirstMessage);
-  const changeEffort = (next: ReasoningEffort) => editable ? onSettings({ effort: hostEffort(next) }) : onNotice(afterFirstMessage);
+  const model = chosen?.model ?? context?.selected.model ?? "";
+  const effort: ReasoningEffort = chosen?.effort ?? context?.selected.effort ?? "medium";
+  const changeModel = (next: string) => onSettings({ model: next });
+  const changeEffort = (next: ReasoningEffort) => onSettings({ effort: hostEffort(next) });
   const shared = { model, effort, loading: !context, error: "", onModel: changeModel, onEffort: changeEffort, onRefresh: noRefresh };
   const providerControl = <ThreadProviderControl
     provider={provider}
     defaultProvider={context?.selected.provider ?? provider}
-    threadStarted={false}
+    threadStarted={threadStarted}
     disabled={running || !context}
     unavailable={unavailable}
     onUnavailable={onNotice}
-    onProvider={(next) => editable ? onSettings({ provider: next }) : onNotice(afterFirstMessage)}
+    onProvider={(next) => onSettings({ provider: next })}
     onDefaultSettings={onDefaults}
   />;
   if (provider === "openai") {

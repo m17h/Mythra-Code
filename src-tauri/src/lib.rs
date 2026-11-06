@@ -1024,6 +1024,7 @@ struct RuntimeState {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct CodexServerRequestIdentity {
+    params: Value,
     method: String,
     thread_id: Option<String>,
     turn_id: Option<String>,
@@ -1033,6 +1034,7 @@ struct CodexServerRequestIdentity {
 fn codex_server_request_identity(message: &Value) -> Option<CodexServerRequestIdentity> {
     let params = message.get("params").unwrap_or(&Value::Null);
     Some(CodexServerRequestIdentity {
+        params: if serde_json::to_vec(params).is_ok_and(|bytes|bytes.len()<=128*1024){params.clone()}else{Value::Null},
         method: message.get("method")?.as_str()?.to_string(),
         thread_id: params
             .get("threadId")
@@ -2725,10 +2727,10 @@ impl AppServer {
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {self.request_remote(method,params,None).await}
     async fn request_remote(&self, method:&str,params:Value,remote_delivery:Option<remote::work::RemoteDelivery>)->Result<Value,String>{
         let mut remote_permit=if let Some(meta)=remote_delivery {
-            let permission=if method=="turn/start" {match params.pointer("/sandboxPolicy/type").and_then(Value::as_str){Some("readOnly")=>"read-only",Some("workspaceWrite")=>"ask",Some("dangerFullAccess")=>"full",_=>return Err(remote::work::refused("forbidden"))}}else{"ask"};
-            Some(remote::work::prepare_native(&self.app,meta,method,if method=="turn/start"{Some(permission)}else{None},None).await?)
+            let permission=if matches!(method,"turn/start"|"command/exec") {match params.pointer("/sandboxPolicy/type").and_then(Value::as_str){Some("readOnly")=>"read-only",Some("workspaceWrite")=>"ask",Some("dangerFullAccess")=>"full",_=>return Err(remote::work::refused("forbidden"))}}else{"ask"};
+            Some(remote::work::prepare_native(&self.app,meta,method,if matches!(method,"turn/start"|"command/exec"){Some(permission)}else{None},None).await?)
         }else{None};
-        if let Some(permit)=remote_permit.as_ref(){if method!="thread/start"{permit.verify_thread(params.get("threadId").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?)?;}}
+        if let Some(permit)=remote_permit.as_ref(){if matches!(method,"thread/resume"|"turn/start"){permit.verify_thread(params.get("threadId").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?)?;}}
         validate_command_timeout_runtime(method, &params, &self.runtime_version)
             .map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error)))?;
         let mut activity_guard = self.lifecycle.begin_activity(
@@ -2782,13 +2784,15 @@ impl AppServer {
                 return Err(format!("MYTHRA_DELIVERY_UNCERTAIN: {error}"));
             }
 
+            if method.starts_with("command/exec")&&method!="command/exec/terminate"{if let Some(permit)=remote_permit.as_ref(){permit.accepted(json!({"terminalId":params.get("processId")})).await?;if method=="command/exec"{if let Some(id)=params.get("processId").and_then(Value::as_str){remote::terminal::started(&self.app,id);}}}}
             let mut result = receive_server_reply(receiver, method, response_deadline, &mut replied).await;
             if !replied {
                 result = result.map_err(|error| if error.starts_with("MYTHRA_DELIVERY_UNCERTAIN:") { error }
                     else { format!("MYTHRA_DELIVERY_UNCERTAIN: {error}") });
             }
+            if method=="command/exec/terminate"&&result.is_ok(){if let Some(permit)=remote_permit.as_ref(){let id=params.get("processId").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?;remote::terminal::confirm_finished(&self.app,id).await?;permit.accepted(json!({"terminalId":id})).await?;}}
             if let Ok(value) = &result {
-                if let Some(permit)=remote_permit.as_ref(){
+                if let Some(permit)=remote_permit.as_ref().filter(|_|!method.starts_with("command/exec")){
                     let extra=json!({"threadId":value.pointer("/thread/id").or_else(||tracking_thread_id.as_ref().map(|_|&message["params"]["threadId"])),"turnId":value.pointer("/turn/id"),"runtimeInstance":self.instance});
                     if method=="turn/start"{permit.accepted(extra).await?;}else{permit.prepared(extra).await?;}
                 }
@@ -7091,6 +7095,7 @@ async fn claude_turn_start(
     let _billing_admission = provider_auth::begin_use(&app, provider_auth::ApiKeyProvider::Anthropic)?;
     let turn_id = uuid::Uuid::new_v4().to_string();
     let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
+    if let Some(permit)=remote_permit.as_ref(){permit.track_start("claude",&options.thread_id,&turn_id,options.start_request_id.as_deref())?;}
     let binary = resolve_claude_binary(&app).await?;
     start.assert_current()?;
     let authorized_generation = claude_auth_generation(&app);
@@ -9109,6 +9114,7 @@ async fn spawn_server(app: &AppHandle, state: &RuntimeState, slot: &mut Option<A
                 continue;
             };
             lifecycle_for_reader.observe_server_message(&instance_for_reader, &message);
+            if remote::terminal::capture(&app_for_reader,&instance_for_reader,&message){continue;}
             if let Some(thread_id) = message["params"]["threadId"].as_str() {
                 // Nearly every line names an already-known thread: check under
                 // the shared read lock before taking the write lock.
@@ -10359,6 +10365,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
+            remote::upload_source::note_window_event(window, event);
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<transcription::TranscriptionState>() {
                     state.live.cancel_window(window.label());
@@ -10682,6 +10689,26 @@ pub fn run() {
                     remote::hostbridge::remote_host_respond,
                     remote::hostbridge::remote_host_thread_retired,
                     remote::hostbridge::remote_request,
+                    remote::preview::remote_preview_register,
+                    remote::preview::remote_preview_list,
+                    remote::preview::remote_preview_open,
+                    remote::preview::remote_preview_close,
+                    remote::owners::remote_work_owner_finish,
+                    remote::owners::remote_work_owner_open,
+                    remote::owners::remote_work_owner_retire,
+                    remote::bookkeeping::remote_domain_snapshot,
+                    remote::domain::remote_domain_execute,
+                    remote::terminal::remote_terminal_start,
+                    remote::terminal::remote_terminal_action,
+                    remote::upload_source::remote_upload_read_dropped,
+                    remote::attachments::remote_attachment_resolve,
+                    remote::commit::remote_work_queue_authorize,
+                    remote::commit::remote_work_cancel_attempt,
+                    remote::commit::remote_state_snapshot,
+                    remote::commit::remote_state_commit,
+                    remote::commit::remote_projects_add,
+                    remote::commit::remote_work_reject_queued,
+                    remote::work::remote_work_pending_requests,
                     remote::work::remote_work_grant,
                     remote::work::remote_work_receipt,
                     remote::work::remote_work_recover,
@@ -10689,6 +10716,11 @@ pub fn run() {
                     remote::work::remote_work_target_claim,
                     remote::work::remote_work_dispatch,
                     remote::studio::remote_studio_files_list,
+                    remote::studio_extra::remote_studio_checkpoint_diff,
+                    remote::studio_extra::remote_studio_git_log,
+                    remote::studio_extra::remote_studio_worktree_status,
+                    remote::studio_extra::remote_studio_revert_preview,
+                    remote::studio_extra::remote_studio_attachment_image,
                     remote::studio::remote_studio_file_preview,
                     remote::studio::remote_studio_git_status,
                     remote::studio::remote_studio_git_diff,
@@ -10763,6 +10795,7 @@ pub fn run() {
 // Native-only remote adapters. All ordinary local commands retain their
 // existing paths; no renderer-selected provider/cwd reaches these over LAN.
 pub(crate) async fn remote_native_owner(app:&AppHandle,target:&mut remote::work::Target)->Result<String,String>{
+    if target.owner_handle.is_some(){return remote::owners::prove_owner(app,target);}
     let stale=||remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;
     match target.provider.as_deref(){
         Some("cursor")=>cursor::remote_owner(app,target).await,
@@ -10901,6 +10934,7 @@ async fn remote_codex_dispatch(app:&AppHandle,target:&remote::work::Target,actio
 }
 
 pub(crate) async fn remote_native_claim(app:&AppHandle,target:&remote::work::Target,meta:&remote::work::RemoteDelivery,handle:&str)->Result<(),String>{
+    if target.owner_handle.is_some(){return remote::work::claim_target(app,meta,handle);}
     let stale=||remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;
     match target.provider.as_deref(){
         Some("cursor")=>cursor::remote_claim(app,target,meta,handle).await,
@@ -10910,4 +10944,26 @@ pub(crate) async fn remote_native_claim(app:&AppHandle,target:&remote::work::Tar
         Some("openai"|"openrouter"|"lmstudio")=>{let state=app.state::<RuntimeState>();let servers=state.server.lock().await;let server=servers.as_ref().filter(|server|server.is_alive()&&target.owner==format!("codex:{}",server.instance)).ok_or_else(stale)?;
             let owner=server.lifecycle.lock();if owner.instance.as_deref()!=Some(server.instance.as_str())||owner.remote_turn_owners.get(thread)!=target.turn_id.as_ref(){return Err(stale());}remote::work::claim_target(app,meta,handle)},_=>Err(stale())
     }
+}
+
+pub(crate) async fn remote_pending_request_inventory(app:&AppHandle)->Value{
+    let mut result=Vec::new();let now=unix_timestamp_ms();
+    let claude=app.state::<ClaudeState>();let turns:Vec<_>=claude.turns.lock().await.iter().map(|(id,turn)|(id.clone(),turn.clone())).collect();
+    for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.control_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){if let Some(params)=requests.get(id){result.push(json!({"id":id,"method":"claude/can_use_tool","params":params,"threadId":thread,"receivedAt":now}));}}}
+    let cursor=app.state::<cursor::CursorState>();result.extend(cursor::remote_pending_inventory(&cursor).await);
+    let runtime=app.state::<RuntimeState>();let server=runtime.server.lock().await.as_ref().filter(|server|server.is_alive()).cloned();
+    if let Some(server)=server{let requests=server.server_requests.lock().await;for(id,request)in requests.iter(){if request.params.is_null(){return json!({"complete":false,"requests":[]});}if let(Some(thread),Ok(id))=(request.thread_id.as_deref(),serde_json::from_str::<Value>(id)){result.push(json!({"id":id,"method":request.method,"params":request.params,"threadId":thread,"receivedAt":now}));}}}
+    if result.len()>1024||serde_json::to_vec(&result).map_or(true,|bytes|bytes.len()>4*1024*1024){json!({"complete":false,"requests":[]})}else{json!({"complete":true,"requests":result})}
+}
+
+pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut remote::work::Target)->Result<bool,String>{
+ let stale=||remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;
+ match target.provider.as_deref(){
+ Some("cursor")=>cursor::remote_owned_child_ended(app,target).await,
+ Some("claude")=>{let state=app.state::<ClaudeState>();if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,phase)|Some(&turn)==target.turn_id.as_ref()&&phase=="starting"){return Ok(false);}
+  let turn=state.turns.lock().await.get(thread).cloned();if let Some(turn)=turn.filter(|turn|Some(&turn.turn_id)==target.turn_id.as_ref()){
+   if turn.cutoff_uncertain.load(Ordering::Acquire){return Err(stale());}if !turn.alive.load(Ordering::Acquire){return Ok(true);}target.kind="turn".into();target.owner=format!("claude:{}",turn.turn_id);Ok(false)
+  }else{Ok(true)}},
+ Some("openai"|"openrouter"|"lmstudio")=>{let state=app.state::<RuntimeState>();let server=state.server.lock().await.as_ref().cloned().ok_or_else(stale)?;if target.owner!=format!("codex:{}",server.instance){return Err(stale());}let owner=server.lifecycle.lock();Ok(owner.remote_turn_owners.get(thread)!=target.turn_id.as_ref())},
+ _=>Err(stale())}
 }

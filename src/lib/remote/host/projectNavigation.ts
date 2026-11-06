@@ -180,7 +180,8 @@ export class HostProjectNavigation {
       // as a new operation, and never expose its exception or filesystem path.
       return { opId, state: "uncertain" };
     }
-    this.check(request);
+    // A grant change after durable acceptance must not turn the receipt into a rejection.
+    if (this.disposed || !this.isCurrent()) throw unavailable();
     if (outcome.state !== "accepted") return { opId, state: "uncertain" };
     // Only public workspace metadata crosses the wire; never spread Project.
     return { opId, state: "accepted", workspace: { id: idArg(outcome.project.id), name: name(outcome.project.name), isChat: false } };

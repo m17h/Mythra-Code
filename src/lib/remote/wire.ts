@@ -1,3 +1,4 @@
+import type { StudioResult, ProjectNavigationResult } from "./wire-studio";
 /** Phase 2 protocol. These are allowlists, never serialized local store objects. */
 import type { DeviceGrant } from "./types";
 
@@ -26,6 +27,8 @@ export interface WireMessage {
   provenance?: "mythra-notice";
   steerStatus?: "sending" | "accepted" | "queued" | "read" | "unconfirmed";
   attachmentNames?: string[];
+  /** Positions in the message's attachments that hold an image to ask for. */
+  attachmentImages?: number[];
   questions?: WireQuestion[];
   truncated?: boolean;
 }
@@ -104,7 +107,7 @@ export interface HostPublish {
 }
 export interface HostResponse {
   generation: number; requestId: string;
-  result?: WorkspacesListResult | ThreadsListResult | ThreadReadResult | HostTimelineSubscribeResult | RemoteWorkResult | WireWorkCapabilities | HostContextResult | FilesSearchResult | WireParityReadResult;
+  result?: WorkspacesListResult | ThreadsListResult | ThreadReadResult | HostTimelineSubscribeResult | RemoteWorkResult | WireWorkCapabilities | HostContextResult | FilesSearchResult | WireParityReadResult | StudioResult | ProjectNavigationResult | WireDomainReadResult;
   error?: RemoteWireError;
 }
 export interface RemoteViewerFrame { device: string; threadId: string; epoch: string; seq: number; frame: ThreadFrame }
@@ -118,7 +121,7 @@ export const REMOTE_DEFAULT_ROWS = 80;
 export const REMOTE_GRACE_MS = 120_000;
 
 // Phase 3 is separate from the presentation-only Phase 2 timeline shapes.
-export type RemoteWorkOperation = "prompt.send" | "prompt.steer" | "prompt.queue" | "turn.stop" | "approval.answer" | "question.answer"
+export type RemoteWorkOperation = "draft.settings.set" | "prompt.cancel" | "prompt.send" | "prompt.steer" | "prompt.queue" | "turn.stop" | "approval.answer" | "question.answer"
   | "thread.settings.set" | RemoteRowOperation | ParityMutationOperation;
 export interface RemoteOperationIdentity { device: string; opId: string; opSeq: number }
 export interface RemoteWorkResult {
@@ -127,6 +130,8 @@ export interface RemoteWorkResult {
   threadId?: string; turnId?: string; queuedTurnId?: string; messageId?: string; attemptId?: string;
   workspaceId?: string;
   workflowRunId?: string; editHandle?: string;
+  terminalId?: string; output?: string;
+  draftHandle?: string; startTarget?: string; settings?: WireExecutionSettings;
   error?: RemoteWireError;
 }
 export interface WireWorkTarget { handle: string; kind: "turn" | "start" | "parent" | "approval" | "question" }
@@ -157,6 +162,7 @@ export interface WireRemoteCapabilities {
 }
 export interface HostContextArgs { workspaceId: string; threadId?: string }
 export interface HostContextResult {
+  execution?: WireExecutionSettings;
   /** Present when the host's contextual mutation adapter supplies revisions. */
   revision?: string;
   workspaceId: string; threadId?: string; providers: WireHostProvider[];
@@ -168,14 +174,33 @@ export interface HostContextResult {
   check?: { command: string }; usage: WireHostUsage | null;
   capabilities: WireRemoteCapabilities; truncated: boolean;
 }
-export interface FilesSearchArgs { workspaceId: string; query: string }
+export interface FilesSearchArgs { workspaceId: string; threadId?: string; query: string }
 export interface FilesSearchResult {
   /** Paths are project-relative display/mention text only, never native roots. */
   files: { id: string; name: string; relativePath: string }[]; truncated: boolean;
 }
 export interface ThreadSettingsSetArgs {
   opId: string; opSeq: number; threadId: string; model?: string; effort?: WireEffort; provider?: WireProvider;
+  permission?: "read-only" | "ask" | "full"; serviceTier?: "standard" | "fast" | null; subagents?: WireSubagents;
 }
+export interface WireCrewTarget {
+  id: string; provider: WireProvider; model: string; label: string; description: string; enabled: boolean;
+  reasoningMode: "inherit" | "fixed" | "agent"; reasoningEffort: WireEffort; reasoningMaxEffort: WireEffort; autoCompactTokens?: number;
+}
+export interface WireSubagents {
+  enabled: boolean; engine: "mythra" | "native"; maxConcurrent: number; autoCompactTokens?: number;
+  /** Who the Mythra engine may delegate to. Checked against the host's own catalog. */
+  crew?: WireCrewTarget[];
+  nativeOptions?: { claude?: { model?: string; autoCompactTokens?: number }; codex?: { model?: string; reasoningEffort?: WireEffort; autoCompactTokens?: number } };
+}
+export interface WireExecutionSettings {
+  provider?: WireProvider; model?: string; effort?: WireEffort; permission?: "read-only" | "ask" | "full";
+  serviceTier?: "standard" | "fast" | null; subagents?: WireSubagents; isolated?: boolean;
+  /** A saved thread's crew. A draft carries it in `subagents.crew`. */
+  crew?: WireCrewTarget[];
+}
+export interface DraftSettingsSetArgs extends WireExecutionSettings { opId: string; opSeq: number; workspaceId: string; draftHandle?: string }
+export interface PromptCancelArgs { opId: string; opSeq: number; workspaceId: string; startTarget: string }
 export type RemoteRowOperation = "thread.rename" | "thread.archive" | "thread.restore" | "thread.delete" | "thread.pin" | "thread.fork"
   | "projects.pin" | "projects.remove" | "projects.reorder";
 export interface ThreadRenameArgs { opId: string; opSeq: number; threadId: string; name: string }
@@ -199,7 +224,8 @@ export type ParityMutationOperation = "queue.edit.begin" | "queue.edit.finish" |
   | "thread.archiveMany" | "thread.deleteMany" | "workflows.start" | "workflows.stop"
   | "projects.settings.set" | "projects.instructions.set" | "projects.profiles.save" | "projects.profiles.delete" | "projects.profiles.select"
   | "projects.run.set" | "projects.check.set" | "run.start" | "run.stop" | "checks.start" | "checks.stop"
-  | "discovery.run.start" | "discovery.run.stop" | "discovery.check.start" | "discovery.check.stop" | "discovery.settings.set";
+  | "discovery.run.start" | "discovery.run.stop" | "discovery.check.start" | "discovery.check.stop" | "discovery.settings.set"
+  | "checkpoint.accept" | "agents.stop";
 export type HostParityOperation = ParityReadOperation | ParityMutationOperation;
 /** Host-generated resource revision; never a timestamp supplied as authority. */
 export interface ParityTarget { workspaceId: string; threadId?: string }
@@ -221,3 +247,10 @@ export interface WireParityRow {
   steps?: { id: string; type: "agent" | "command" | "wait"; name: string; prompt?: string; command?: string; provider?: WireProvider; model?: string }[];
 }
 export interface WireParityReadResult { revision: string; rows: WireParityRow[]; cursor?: string; truncated: boolean; timezone?: string }
+
+// Domain presentation is deliberately separate from host filesystem records.
+export type NativeTerminalOperation = "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close";
+export interface TerminalOpenArgs { opId: string; opSeq: number; workspaceId: string; threadId?: string; command: string; columns: number; rows: number }
+/** Studio uses one shared presentation contract and one opaque-handle namespace. */
+export type WireDomainReadResult = import("./wire-studio").CheckpointListResult | import("./wire-studio").WorktreeStatusResult
+  | import("./wire-studio").RevertPreviewResult;

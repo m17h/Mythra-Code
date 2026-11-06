@@ -13,7 +13,7 @@ const stale = () => new HostReadError("stale_target", "This request or turn has 
 export function sameStop(a: RemoteStopSnapshot, b: RemoteStopSnapshot): boolean {
   return a.threadId === b.threadId && a.turnId === b.turnId && a.startRequestId === b.startRequestId
     && a.agentRunId === b.agentRunId && a.runStartedAt === b.runStartedAt && a.parentRunId === b.parentRunId
-    && a.workflowId === b.workflowId && a.workflowRunId === b.workflowRunId;
+    && a.workflowId === b.workflowId && a.workflowRunId === b.workflowRunId && a.ownerHandle === b.ownerHandle && a.ownerRunId === b.ownerRunId;
 }
 /** Renderer identity checks supplement, never replace, native owner fencing. */
 export class WorkTargets {
@@ -36,7 +36,8 @@ export class WorkTargets {
     const params = approval?.params;
     const result = await invoke<{ handle: string }>("remote_work_target_register", {
       generation: this.generation, device: input.device, kind, workspaceId: input.workspaceId, provider: input.provider,
-      ...input.stop, threadId: approval?.threadId ?? input.stop?.threadId,
+      ...input.stop,
+      ...(kind === "parent" ? {} : { ownerHandle: undefined, ownerRunId: undefined }), threadId: approval?.threadId ?? input.stop?.threadId,
       ...(approval ? { requestId: approval.id, method: approval.method,
         turnId: typeof params?.turnId === "string" ? params.turnId : undefined,
         itemId: typeof params?.itemId === "string" ? params.itemId : undefined } : {}),

@@ -1899,6 +1899,7 @@ pub async fn cursor_turn_start(
     let result: Result<CursorTurnStarted, String> = async {
     let turn_id = uuid::Uuid::new_v4().to_string();
     let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
+    if let Some(permit)=remote_permit.as_ref(){permit.track_start("cursor",&options.thread_id,&turn_id,options.start_request_id.as_deref())?;}
     if options
         .start_request_id
         .as_ref()
@@ -2393,4 +2394,13 @@ pub(crate) async fn remote_claim(app:&AppHandle,target:&crate::remote::work::Tar
     if target.kind=="start"{return state.starts.with_remote_owner(thread,target.turn_id.as_deref(),target.start_request_id.as_deref(),||crate::remote::work::claim_target(app,meta,handle));}
     let turns=state.turns.lock().await;let process=turns.get(thread).filter(|turn|turn.alive.load(Ordering::Acquire)&&target.turn_id==turn.turn_id&&target.owner==format!("cursor:{}",turn.turn_id.as_deref().unwrap_or(""))).ok_or_else(stale)?;
     let _=process;crate::remote::work::claim_target(app,meta,handle)
+}
+
+pub(crate) async fn remote_pending_inventory(state:&CursorState)->Vec<Value>{
+    let turns:Vec<_>=state.turns.lock().await.iter().map(|(id,turn)|(id.clone(),turn.clone())).collect();let mut result=Vec::new();for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.server_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){if let(Some(request),Ok(id))=(requests.get(id),serde_json::from_str::<Value>(id)){result.push(json!({"id":id,"method":request["method"],"params":request["params"],"threadId":thread,"receivedAt":crate::unix_timestamp_ms()}));}}}result
+}
+
+pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut crate::remote::work::Target)->Result<bool,String>{let stale=||crate::remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;let state=app.state::<CursorState>();
+ if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,phase)|Some(&turn)==target.turn_id.as_ref()&&phase=="starting"){return Ok(false);}
+ let process=state.turns.lock().await.get(thread).cloned();if let Some(process)=process.filter(|p|p.turn_id==target.turn_id){if process.cutoff_uncertain.load(Ordering::Acquire){return Err(stale());}if !process.alive.load(Ordering::Acquire){return Ok(true);}target.kind="turn".into();target.owner=format!("cursor:{}",process.turn_id.as_deref().unwrap_or(""));Ok(false)}else{Ok(true)}
 }

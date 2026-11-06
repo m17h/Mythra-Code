@@ -1,17 +1,30 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type KeyboardEvent, type Ref } from "react";
-import { Bot, CodeXml, FilePlus2, FolderGit2, Gauge, GitBranch, GitFork, History, RefreshCw, SearchCode, TerminalSquare, UsersRound, Wrench } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type Ref } from "react";
+import { CodeXml, FilePlus2, FolderGit2, Gauge, RefreshCw, SearchCode, ShieldCheck, TerminalSquare, Wrench } from "lucide-react";
 import { DiffFileSections } from "../DiffView";
 import { FileBrowser, type FileBrowserSource } from "../FileBrowser";
-import { Empty, PanelHeader, StudioDockFrame, type StudioTab } from "../StudioDock";
+import { ChecksControl } from "../ChecksControl";
+import type { GitPathAction } from "../GitChangesView";
+import { GitPanel, type GitPanelAction } from "../GitPanel";
+import { AgentsPanel, CheckpointsPanel, Empty, PanelHeader, StudioDockFrame, TerminalPanelHost, WorktreesPanel, type AgentRecord, type StudioTab } from "../StudioDock";
+import { confirmDialog } from "../../lib/confirmDialog";
+import type { CheckpointRecord, CheckpointRestoreTarget } from "../../lib/checkpoints";
 import { parseDiffSections } from "../../lib/gitDiff";
+import type { GitChangeArea } from "../../lib/gitInspection";
 import { joinPath } from "../../lib/paths";
+import type { GitRoute, GitView, ProjectGitInspection } from "../../lib/projectGit";
+import { accessReason, hostRead, hostWrite } from "../../lib/remote/remoteActions";
+import { remoteTerminal, remoteTerminalKey, useRemoteTerminals } from "../../lib/remote/remoteTerminal";
 import { remoteContextKey, useRemoteContext } from "../../lib/remote/remoteWork";
 import { viewerRequest } from "../../lib/remote/viewerBridge";
 import { useRemoteDevices } from "../../lib/remote/devices";
-import { useRemoteStore } from "../../lib/remote/remoteStore";
-import type { FilePreviewResult, FilesListResult, GitDiffResult, GitStatusResult, StudioTarget, WireGitChange } from "../../lib/remote/wire-studio";
+import { selectRemoteThread, useRemoteStore } from "../../lib/remote/remoteStore";
+import type { AgentsListResult, CheckpointDiffResult, CheckpointListResult, FilePreviewResult, FilesListResult, GitDiffResult, GitLogResult, GitStatusResult, RevertPreviewResult, StudioTarget, WireCheckpoint, WireGitChange, WorktreeStatusResult } from "../../lib/remote/wire-studio";
+import type { HostContextResult } from "../../lib/remote/wire";
+import type { ThreadWorktreeRecord } from "../../lib/worktrees";
 
 const MAX_LIST_PAGES = 5;
+type HostGitAction = "init" | "stage" | "unstage" | "commit" | "push" | "pull" | "fetch" | "revert" | "revertAll";
+const noop = () => undefined;
 
 /** The host hands out opaque handles. The browser thinks in paths, so this
  * remembers which handle each shown path came from. */
@@ -24,7 +37,7 @@ function hostFiles(device: string, target: StudioTarget): FileBrowserSource {
       let cursor: string | undefined;
       for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
         const result: FilesListResult = await viewerRequest(device, "files.list", { ...target, ...(parentId ? { parentId } : {}), ...(cursor ? { cursor } : {}) });
-        for (const entry of result.entries) {
+        for (const entry of Array.isArray(result?.entries) ? result.entries : []) {
           handles.set(joinPath(path, entry.name), entry.id);
           entries.push({ fileName: entry.name, isDirectory: entry.kind === "directory", isFile: entry.kind === "file" });
         }
@@ -35,7 +48,7 @@ function hostFiles(device: string, target: StudioTarget): FileBrowserSource {
     },
     async search(query, root) {
       const result = await viewerRequest<{ files: { id: string; name: string; relativePath: string }[] }>(device, "files.search", { workspaceId: target.workspaceId, query });
-      return { files: result.files.map((file) => {
+      return { files: (Array.isArray(result?.files) ? result.files : []).map((file) => {
         handles.set(joinPath(root, file.relativePath), file.id);
         return { root, path: file.relativePath, file_name: file.name, score: 0 };
       }) };
@@ -49,55 +62,256 @@ function hostFiles(device: string, target: StudioTarget): FileBrowserSource {
   };
 }
 
-function HostChanges({ device, name, target, onClose }: { device: string; name: string; target: StudioTarget; onClose: () => void }) {
-  const [status, setStatus] = useState<GitStatusResult | null>(null);
+/** Reads one thing from the host for an open panel. Nothing here polls. */
+function useHostData<T>(load: (() => Promise<T>) | null, key: string): { data: T | null; failed: boolean; reload: () => void } {
+  const [data, setData] = useState<T | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const latest = useRef(load);
+  latest.current = load;
+  useEffect(() => {
+    setData(null);
+    setFailed(false);
+    const read = latest.current;
+    if (!read) return;
+    let current = true;
+    read().then((value) => { if (current) setData(value); }, () => { if (current) setFailed(true); });
+    return () => { current = false; };
+  }, [key, revision]);
+  return { data, failed, reload: useCallback(() => setRevision((value) => value + 1), []) };
+}
+
+function Reason({ text }: { text: string | null | undefined }) {
+  return text ? <div className="worktree-note" role="status"><ShieldCheck size={13} aria-hidden="true" /><span>{text}</span></div> : null;
+}
+
+function HostChanges({ device, name, target, context, onClose }: { device: string; name: string; target: StudioTarget; context: HostContextResult | undefined; onClose: () => void }) {
+  const [checking, setChecking] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const canCheck = Boolean(context?.capabilities.terminal);
+  const checkRevision = { workspaceId: target.workspaceId, ...(target.threadId ? { threadId: target.threadId } : {}), revision: context?.revision ?? "" };
+  const { data: status, failed, reload } = useHostData(() => viewerRequest<GitStatusResult>(device, "git.status", target), `${device}:${JSON.stringify(target)}`);
   const [selected, setSelected] = useState<WireGitChange | null>(null);
   const [diff, setDiff] = useState("");
-  const [error, setError] = useState("");
   const request = useRef(0);
-  const refresh = () => {
-    const current = ++request.current;
-    setError("");
-    viewerRequest<GitStatusResult>(device, "git.status", target)
-      .then((next) => { if (current === request.current) setStatus(next); })
-      .catch(() => { if (current === request.current) setError(`Mythra Code couldn't read changes on ${name}. Try again.`); });
-  };
-  useEffect(refresh, [device, name, target]);
   const open = (change: WireGitChange) => {
     setSelected(change);
     setDiff("");
     const current = ++request.current;
     viewerRequest<GitDiffResult>(device, "git.diff", { ...target, changeId: change.id })
       .then((result) => { if (current === request.current) setDiff(result.binary ? "This file is binary." : `${result.text}${result.truncated ? "\n… Diff shortened." : ""}`); })
-      .catch(() => { if (current === request.current) setError(`Mythra Code couldn't read that change on ${name}. Try again.`); });
+      .catch(() => { if (current === request.current) setDiff(`Mythra Code couldn't read that change on ${name}. Try again.`); });
   };
   const sections = useMemo(() => parseDiffSections(diff), [diff]);
   return <>
     <PanelHeader icon={SearchCode} title="Review center" subtitle={`Inspect changes on ${name}`} onClose={onClose} />
-    <div className="studio-actions wrap review-actions"><button onClick={refresh}><RefreshCw size={13} /> Refresh</button></div>
+    <div className="studio-actions wrap review-actions">
+      <button onClick={reload}><RefreshCw size={13} /> Refresh</button>
+      <ChecksControl command={context?.check?.command} running={Boolean(checking)} result={null} onAddFeedback={noop}
+        disabledReason={canCheck ? undefined : accessReason(name, "run checks", "Use the terminal")}
+        onRun={() => { void hostWrite<{ processHandle?: string }>(device, name, "checks.start", checkRevision).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(outcome.result?.processHandle ?? "running"); }); }}
+        onStop={() => { if (checking) void hostWrite(device, name, "checks.stop", { ...checkRevision, processHandle: checking }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(null); }); }}
+        onSave={(command) => { void hostWrite(device, name, "projects.check.set", { ...checkRevision, command }).then((outcome) => setNotice(outcome.message)); }} />
+    </div>
+    <Reason text={notice} />
     <div className="diff-summary">
       <span><CodeXml size={13} /> Repository changes</span>
-      <small>{status ? `${status.changedFiles} file${status.changedFiles === 1 ? "" : "s"} changed` : "Reading changes…"}</small>
+      <small>{status ? `${status.changedFiles} file${status.changedFiles === 1 ? "" : "s"} changed` : failed ? "Not available" : "Reading changes…"}</small>
     </div>
-    {error && <p className="git-local-note bad" role="alert">{error}</p>}
-    <div className="studio-list">{status?.changes.map((change) => <button key={change.id} className="studio-list-row remote-change-row" aria-pressed={selected?.id === change.id} onClick={() => open(change)}>
+    {failed && <Reason text={`Mythra Code couldn't read changes on ${name}. Try again.`} />}
+    <div className="studio-list">{(Array.isArray(status?.changes) ? status.changes : []).map((change) => <button key={change.id} className="studio-list-row remote-change-row" aria-pressed={selected?.id === change.id} onClick={() => open(change)}>
       <div><strong>{change.path}</strong><small>{change.status} · {change.area}</small></div>
     </button>)}</div>
-    {sections.length ? <DiffFileSections sections={sections} readOnly readOnlyReason={`Stage and revert aren't available from here yet. Use ${name} to do this.`} onPathAction={() => undefined} />
+    {sections.length ? <DiffFileSections sections={sections} readOnly readOnlyReason={`Use the Git tab to stage or revert files on ${name}.`} onPathAction={noop} />
       : diff && <pre className="diff-view">{diff}</pre>}
   </>;
 }
 
-const NOT_YET: Partial<Record<StudioTab, { icon: typeof Bot; title: string }>> = {
-  agents: { icon: UsersRound, title: "Agent control" },
-  terminal: { icon: TerminalSquare, title: "Terminal" },
-  checkpoints: { icon: History, title: "Checkpoints" },
-  worktrees: { icon: GitFork, title: "Worktrees" },
-  git: { icon: GitBranch, title: "Git" },
-};
+function HostTerminal({ device, name, target, allowed, onClose }: { device: string; name: string; target: StudioTarget; allowed: boolean; onClose: () => void }) {
+  const session = useMemo(() => remoteTerminal(device, target.workspaceId), [device, target.workspaceId]);
+  const view = useRemoteTerminals((state) => state.views[remoteTerminalKey(device, target.workspaceId)]);
+  const platform = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.platform);
+  return <>
+    <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={`Runs on ${name}`} onClose={onClose} />
+    <Reason text={!allowed ? accessReason(name, "run commands", "Use the terminal") : view?.notice ?? ""} />
+    <TerminalPanelHost outputStore={session.store} scope={`${device}/${target.workspaceId}`} scopeLabel={name} shell={platform === "windows" ? "Command Prompt" : platform === "macos" ? "zsh" : "shell"} running={Boolean(view?.running || view?.opening)}
+      runningCommand={view?.command ?? ""} runningElsewhere={[]} readOnly={!allowed}
+      onRun={(command) => { void session.run(name, target.threadId, command); }}
+      onStop={() => session.stop(name)}
+      onClear={() => session.clear()}
+      onInput={(data) => session.write(name, data)}
+      onResize={(columns, rows) => session.resize(name, columns, rows)} />
+  </>;
+}
 
-/** The real dock, reading this machine's project through the host. */
-export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKeyDown, resizeValue, tab, onTab, onClose }: {
+const NOT_HERE_YET = (what: string, name: string) => `${what} on ${name} isn't available from here yet.`;
+/** Which of the host's listed changes a path action means. */
+/** The host keeps a checkpoint's commits and folder. Their presence is all the panel needs. */
+const HOST_ONLY = "host";
+const checkpointRecord = ({ restorable, status, ...checkpoint }: WireCheckpoint): CheckpointRecord => ({ ...checkpoint, status: status as CheckpointRecord["status"],
+  ...(restorable.before ? { workspacePath: HOST_ONLY, beforeCommit: HOST_ONLY } : {}), ...(restorable.after ? { afterCommit: HOST_ONLY } : {}) });
+const CHANGE_AREAS: Record<GitPathAction, readonly GitChangeArea[]> = { stage: ["unstaged", "untracked"], unstage: ["staged"], revert: ["unstaged", "staged", "untracked"] };
+
+function HostGit({ device, name, target, revision, allowed, view, route, onView, onTab, onClose }: {
+  device: string; name: string; target: StudioTarget; revision: string; allowed: boolean; view: GitView; route: GitRoute | null;
+  onView: (view: GitView) => void; onTab: (tab: StudioTab) => void; onClose: () => void;
+}) {
+  const [output, setOutput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const changeIds = useRef(new Map<string, string>());
+  const reason = accessReason(name, "change Git", "Change Git history and Use the terminal");
+  const inspection = useMemo<ProjectGitInspection>(() => ({
+    cwd: `${device}/${target.workspaceId}/${target.threadId ?? ""}`,
+    getChanges: async () => {
+      const status = await viewerRequest<GitStatusResult>(device, "git.status", target);
+      const changes = Array.isArray(status?.changes) ? status.changes : [];
+      changeIds.current = new Map(changes.map((change) => [`${change.area}:${change.path}`, change.id]));
+      return { rootPath: "", rows: changes.map(({ path, originalPath, area, status: state }) => ({ path, originalPath, area, status: state })),
+        stagedFiles: status.stagedFiles, unstagedFiles: status.unstagedFiles, untrackedFiles: status.untrackedFiles, changedFiles: status.changedFiles, truncated: status.truncated };
+    },
+    getFileDiff: async (_cwd, path, area: GitChangeArea) => {
+      const changeId = changeIds.current.get(`${area}:${path}`);
+      if (!changeId) throw new Error("That change is no longer available.");
+      const diff = await viewerRequest<GitDiffResult>(device, "git.diff", { ...target, changeId });
+      return { path: diff.path, area: diff.area, text: diff.text, binary: diff.binary, truncated: diff.truncated };
+    },
+    getHistory: (_cwd, offset, limit, headOid) => hostRead<GitLogResult>(device, "git.log", { ...target, offset, limit, ...(headOid ? { headOid } : {}) }),
+  }), [device, target]);
+  const { data: repository, reload: reloadRepository } = useHostData(() => hostRead<GitLogResult>(device, "git.log", { ...target, limit: 1 }), `${device}:${JSON.stringify(target)}`);
+  const write = async (action: HostGitAction, extra: Record<string, unknown> = {}) => {
+    if (!allowed) { setOutput(reason); return false; }
+    setBusy(true);
+    const outcome = await hostWrite<{ output?: string }>(device, name, "git.write", { ...target, revision, action, ...extra });
+    setOutput(outcome.ok ? outcome.result?.output ?? "" : outcome.message);
+    setBusy(false);
+    return outcome.ok;
+  };
+  /** The host says what would change first, and the write answers that preview. */
+  const revert = (action: "revert" | "revertAll", question: string, changeId?: string) => {
+    if (!allowed) { setOutput(reason); return; }
+    hostRead<RevertPreviewResult>(device, "git.revert.preview", { ...target, ...(changeId ? { changeId } : {}) }).then(async (preview) => {
+      const kept = preview.preservedPaths.length ? `\n\n${preview.preservedPaths.length} staged ${preview.preservedPaths.length === 1 ? "file stays" : "files stay"} as ${preview.preservedPaths.length === 1 ? "it is" : "they are"}.` : "";
+      if (await confirmDialog(`${question}\n\n${preview.restorePaths.length} ${preview.restorePaths.length === 1 ? "file goes" : "files go"} back to the last commit. This can't be undone.${kept}`)) void write(action, { resourceId: preview.previewId, confirmed: true });
+    }, () => setOutput(`Mythra Code couldn't check that change on ${name}. Refresh and try again.`));
+  };
+  const pathAction = (action: GitPathAction, path: string) => {
+    const resourceId = CHANGE_AREAS[action].map((area) => changeIds.current.get(`${area}:${path}`)).find(Boolean);
+    if (!resourceId) { setOutput("That change is no longer available. Refresh and try again."); return; }
+    if (action !== "revert") { void write(action, { resourceId }); return; }
+    revert("revert", `Undo the changes to “${path}” on ${name}?`, resourceId);
+  };
+  const panelAction = (action: GitPanelAction, message?: string) => {
+    switch (action) {
+      case "stage": case "unstage": case "fetch": case "pull": case "push": void write(action); return;
+      case "revert":
+        revert("revertAll", `Undo every uncommitted change on ${name}?`);
+        return;
+      case "commit": case "commitStaged": case "commitPush": case "commitStagedPush": {
+        const stagedOnly = action === "commitStaged" || action === "commitStagedPush";
+        void write("commit", { ...(message ? { message } : {}), stagedOnly }).then((saved) => { if (saved && action.endsWith("Push")) void write("push"); });
+        return;
+      }
+      default: setOutput(NOT_HERE_YET("That", name));
+    }
+  };
+  return <>
+    <PanelHeader icon={FolderGit2} title="Git" subtitle={`Changes on ${name}`} onClose={onClose} />
+    <GitPanel repositoryState={repository?.repository === false ? "absent" : "ready"} gitInitializing={busy} gitOutput={output} gitCommitSuccess="" gitCommitBusy={busy} githubAuthenticated={false} githubRepoStatus={null}
+      readOnly={!allowed} readOnlyReason={reason} gitOperationBusy={busy} defaultRepositoryName="" inspection={inspection} view={view} onViewChange={onView} focusRequest={route}
+      onOpenTool={onTab} onPathAction={pathAction} onAction={panelAction}
+      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} onGitHubAttach={noop} onGitHubCreate={noop} onOpenGitHubSettings={noop} />
+  </>;
+}
+
+function HostCheckpoints({ device, name, target, revision, threadOpen, allowed, onFork, onClose }: {
+  device: string; name: string; target: StudioTarget; revision: string; threadOpen: boolean; allowed: boolean; onFork: () => void; onClose: () => void;
+}) {
+  const { data, failed, reload } = useHostData(() => hostRead<CheckpointListResult>(device, "checkpoint.list", { ...target }), `${device}:${JSON.stringify(target)}`);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ id: string; diff: string } | null>(null);
+  const [notice, setNotice] = useState("");
+  const checkpoints = useMemo(() => (Array.isArray(data?.checkpoints) ? data.checkpoints : []).map(checkpointRecord), [data?.checkpoints]);
+  const run = (id: string, op: string, args: Record<string, unknown>) => {
+    setBusy(id);
+    setNotice("");
+    void hostWrite(device, name, op, { ...target, revision, ...args }).then((outcome) => {
+      setBusy(null);
+      setNotice(outcome.message);
+      if (outcome.ok) reload();
+    });
+  };
+  return <>
+    <Reason text={failed ? `Checkpoints from ${name} aren't available here yet.` : notice} />
+    <CheckpointsPanel activeThread={threadOpen} checkpoints={checkpoints} checkpointHead={data?.head} checkpointBusyId={busy} checkpointPreview={preview} onClose={onClose}
+      onCheckpoint={() => run("manual", "checkpoint.create", { checkpointId: crypto.randomUUID(), label: "Manual checkpoint" })}
+      onFork={onFork}
+      onCheckpointRestore={(checkpoint, restore: CheckpointRestoreTarget) => {
+        if (!allowed) { setNotice(accessReason(name, "restore checkpoints", "Restore checkpoints and Use the terminal")); return; }
+        void confirmDialog(`Restore “${checkpoint.label}” on ${name}?\n\nA safety copy is saved first.`).then((confirmed) => { if (confirmed) run(checkpoint.id, "checkpoint.restore", { checkpointId: checkpoint.id, target: restore, confirmed: true }); });
+      }}
+      onCheckpointAccept={(checkpoint) => run(checkpoint.id, "checkpoint.accept", { checkpointId: checkpoint.id })}
+      onCheckpointPreview={(checkpoint) => {
+        if (preview?.id === checkpoint.id) { setPreview(null); return; }
+        hostRead<CheckpointDiffResult>(device, "checkpoint.diff", { ...target, checkpointId: checkpoint.id }).then(
+          (result) => setPreview({ id: checkpoint.id, diff: result.text }), () => setNotice(`Mythra Code couldn't read that checkpoint on ${name}.`));
+      }}
+      onCheckpointDelete={(checkpoint) => {
+        void confirmDialog(`Delete “${checkpoint.label}” on ${name}?\n\nThis can't be undone.`).then((confirmed) => { if (confirmed) run(checkpoint.id, "checkpoint.delete", { checkpointId: checkpoint.id, confirmed: true }); });
+      }}
+      onRollback={() => {
+        void confirmDialog(`Undo the last turn on ${name}?\n\nThis permanently removes the latest exchange from the conversation.`).then((confirmed) => { if (confirmed) run("rollback", "thread.rollback", { confirmed: true }); });
+      }} />
+  </>;
+}
+
+function HostWorktrees({ device, name, target, revision, allowed, onReview, onClose }: { device: string; name: string; target: StudioTarget; revision: string; allowed: boolean; onReview: () => void; onClose: () => void }) {
+  const { data, failed, reload } = useHostData(target.threadId ? () => hostRead<WorktreeStatusResult>(device, "worktree.status", { ...target }) : null,
+    `${device}:${target.threadId ?? ""}`);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const worktree = useMemo<ThreadWorktreeRecord | undefined>(() => data?.worktree ? { ...data.worktree, status: data.worktree.status as ThreadWorktreeRecord["status"], projectId: "", projectPath: "", gitDir: "" } : undefined, [data?.worktree]);
+  const run = (op: "worktree.apply" | "worktree.merge" | "worktree.remove" | "worktree.recreate", confirmText: string | null) => {
+    void (confirmText ? confirmDialog(confirmText) : Promise.resolve(true)).then((confirmed) => {
+      if (!confirmed) return;
+      setBusy(true);
+      void hostWrite(device, name, op, { ...target, revision, ...(op === "worktree.recreate" ? { label: worktree?.branch ?? "" } : { confirmed: true }) }).then((outcome) => { setBusy(false); setNotice(outcome.message); if (outcome.ok) reload(); });
+    });
+  };
+  const notYet = () => setNotice(NOT_HERE_YET("That", name));
+  return <>
+    <Reason text={failed ? `Worktrees on ${name} aren't available here yet.` : !allowed ? accessReason(name, "copy or merge worktree changes", "Use the terminal") : notice} />
+    <WorktreesPanel worktree={worktree} worktreeStatus={data?.status ?? undefined} worktreeBusy={busy} gitActionsReadOnly={!allowed} revealLabel="Copy path" onClose={onClose}
+      onWorktreeReview={onReview} onWorktreeApply={() => run("worktree.apply", `Copy this worktree's changes into the shared project on ${name}?`)} onWorktreeMerge={() => run("worktree.merge", `Merge this branch into the shared project on ${name}?`)}
+      onWorktreeReveal={() => { if (worktree) void navigator.clipboard.writeText(worktree.path).catch(noop); }}
+      onWorktreeRefresh={reload} onWorktreeRemove={() => run("worktree.remove", `Remove this worktree and its branch on ${name}?`)} onWorktreeRecreate={() => run("worktree.recreate", null)}
+      onWorktreeContinueShared={notYet} onWorktreeReturnShared={notYet} />
+  </>;
+}
+
+function HostAgents({ device, name, target, revision, onClose }: { device: string; name: string; target: StudioTarget; revision: string; onClose: () => void }) {
+  const { data, failed, reload } = useHostData(target.threadId ? () => hostRead<AgentsListResult>(device, "agents.list", { ...target }) : null, `${device}:${target.threadId ?? ""}`);
+  const [notice, setNotice] = useState("");
+  return <>
+    <Reason text={failed ? `Agent details from ${name} aren't available here yet.` : notice} />
+    <AgentsPanel agents={(Array.isArray(data?.agents) ? data.agents : []) as AgentRecord[]} onClose={onClose} onOpenAgent={(id) => selectRemoteThread(device, id)}
+      onStopAgent={(id) => { void hostWrite(device, name, "agents.stop", { ...target, revision, agentId: id }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) reload(); }); }} />
+  </>;
+}
+
+function HostUsage({ context, name, onClose }: { context: HostContextResult | undefined; name: string; onClose: () => void }) {
+  return <>
+    <PanelHeader icon={Gauge} title="Thread usage" subtitle={`As reported by ${name}`} onClose={onClose} />
+    {context?.usage ? <div className="metric-grid">
+      <div><strong>{context.usage.totalTokens.toLocaleString()}</strong><span>Total tokens</span></div>
+      <div><strong>{context.usage.inputTokens.toLocaleString()}</strong><span>Input</span></div>
+      <div><strong>{context.usage.outputTokens.toLocaleString()}</strong><span>Output</span></div>
+      <div><strong>{context.usage.cachedInputTokens.toLocaleString()}</strong><span>Cached</span></div>
+    </div> : <Empty icon={Gauge} title="No usage yet" text="Usage appears after a turn finishes." />}
+  </>;
+}
+
+/** The real dock and panels, reading this machine's project through the host. */
+export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKeyDown, resizeValue, tab, gitRoute, onTab, onClose, onFork }: {
   device: string;
   open: boolean;
   rootRef?: Ref<HTMLElement>;
@@ -105,43 +319,42 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
   onResizeKeyDown?: (event: KeyboardEvent) => void;
   resizeValue?: number;
   tab: StudioTab;
+  gitRoute: GitRoute | null;
   onTab: (tab: StudioTab) => void;
   onClose: () => void;
+  onFork: () => void;
 }) {
   const workspaceId = useRemoteStore((state) => state.devices[device]?.workspaceId ?? null);
   const threadId = useRemoteStore((state) => state.devices[device]?.threadId ?? undefined);
   const workspaceName = useRemoteStore((state) => state.devices[device]?.workspaces.find((entry) => entry.id === workspaceId)?.name);
-  const name = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.name) ?? "this device";
-  const context = useRemoteContext((state) => workspaceId ? state.contexts[device]?.get(remoteContextKey(workspaceId, threadId)) : undefined);
+  const name = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.name) ?? "the other device";
+  const context = useRemoteContext((state) => workspaceId ? state.contexts[device]?.get(remoteContextKey(workspaceId, threadId)) ?? state.contexts[device]?.get(remoteContextKey(workspaceId)) : undefined);
   const target = useMemo<StudioTarget | null>(() => workspaceId ? { workspaceId, ...(threadId ? { threadId } : {}) } : null, [threadId, workspaceId]);
   const files = useMemo(() => target ? hostFiles(device, target) : null, [device, target]);
-  const missing = NOT_YET[tab];
+  const [gitView, setGitView] = useState<GitView>("changes");
+  useEffect(() => { if (gitRoute) setGitView(gitRoute.view); }, [gitRoute]);
+  const capabilities = context?.capabilities;
+  const revision = context?.revision ?? "";
+  const empty = <Empty icon={FilePlus2} title="No project selected" text={`Choose a project on ${name}.`} />;
   return <StudioDockFrame open={open} rootRef={rootRef} onResizeStart={onResizeStart} onResizeKeyDown={onResizeKeyDown} resizeValue={resizeValue} tab={tab} onTab={onTab}>
     {tab === "files" && <>
       <PanelHeader icon={FilePlus2} title="Project files" subtitle={`Search and preview files on ${name}`} onClose={onClose} />
-      {files ? <FileBrowser root={`/${workspaceName ?? name}`} source={files} /> : <Empty icon={FilePlus2} title="No project selected" text={`Choose a project on ${name}.`} />}
+      {files ? <FileBrowser root={`/${workspaceName ?? name}`} source={files} /> : empty}
     </>}
-    {tab === "review" && (target ? <HostChanges device={device} name={name} target={target} onClose={onClose} />
-      : <><PanelHeader icon={SearchCode} title="Review center" subtitle={name} onClose={onClose} /><Empty icon={FolderGit2} title="No project selected" text={`Choose a project on ${name}.`} /></>)}
-    {tab === "usage" && <>
-      <PanelHeader icon={Gauge} title="Thread usage" subtitle={`As reported by ${name}`} onClose={onClose} />
-      {context?.usage ? <div className="metric-grid">
-        <div><strong>{context.usage.totalTokens.toLocaleString()}</strong><span>Total tokens</span></div>
-        <div><strong>{context.usage.inputTokens.toLocaleString()}</strong><span>Input</span></div>
-        <div><strong>{context.usage.outputTokens.toLocaleString()}</strong><span>Output</span></div>
-        <div><strong>{context.usage.cachedInputTokens.toLocaleString()}</strong><span>Cached</span></div>
-      </div> : <Empty icon={Gauge} title="No usage yet" text="Usage appears after a turn finishes." />}
-    </>}
+    {!target && tab !== "files" && tab !== "usage" && tab !== "tools" && <><PanelHeader icon={FolderGit2} title="Thread tools" subtitle={name} onClose={onClose} />{empty}</>}
+    {target && tab === "review" && <HostChanges device={device} name={name} target={target} context={context} onClose={onClose} />}
+    {target && tab === "terminal" && <HostTerminal key={`${device}:${target.workspaceId}`} device={device} name={name} target={target} allowed={Boolean(capabilities?.terminal)} onClose={onClose} />}
+    {target && tab === "git" && <HostGit device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.gitWrite && capabilities.terminal)} view={gitView} route={gitRoute} onView={setGitView} onTab={onTab} onClose={onClose} />}
+    {target && tab === "checkpoints" && <HostCheckpoints device={device} name={name} target={target} revision={revision} threadOpen={Boolean(threadId)} allowed={Boolean(capabilities?.checkpointRestore && capabilities.terminal)} onFork={onFork} onClose={onClose} />}
+    {target && tab === "worktrees" && <HostWorktrees device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.terminal)} onReview={() => onTab("review")} onClose={onClose} />}
+    {target && tab === "agents" && <HostAgents device={device} name={name} target={target} revision={revision} onClose={onClose} />}
+    {tab === "usage" && <HostUsage context={context} name={name} onClose={onClose} />}
     {tab === "tools" && <>
       <PanelHeader icon={Wrench} title="Tools & skills" subtitle={`Available on ${name}`} onClose={onClose} />
       <div className="studio-list">{context?.skills.map((skill) => <div className="studio-list-row" key={skill.id}>
         <div><strong>{skill.name}</strong><small>{skill.description}</small></div>
       </div>)}</div>
       {!context?.skills.length && <Empty icon={Wrench} title="No skills" text={`${name} has no skills to show here.`} />}
-    </>}
-    {missing && <>
-      <PanelHeader icon={missing.icon} title={missing.title} subtitle={name} onClose={onClose} />
-      <Empty icon={missing.icon} title="Not available here yet" text={`Use ${name} directly for this for now.`} />
     </>}
   </StudioDockFrame>;
 }

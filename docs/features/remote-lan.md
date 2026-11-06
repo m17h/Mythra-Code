@@ -302,15 +302,19 @@ renderer enforces project scope using data only the host holds.
 | `prompt.send`, `prompt.steer`, `prompt.queue`, `turn.stop` | work | 3 |
 | `approval.answer`, `question.answer` | work, per the table below | 3 |
 | `files.list`, `files.preview`, `git.status`, `git.diff` | view | 4 |
-| `attachment.put`, `worktree.*` | work | 4 |
-| `git.write` | `gitWrite` | 4 |
-| `checkpoint.restore` | `checkpointRestore` | 4 |
+| `attachment.put` | work | 4 |
+| `worktree.*` | work and `terminal` | 4 |
+| `git.write` | `gitWrite` and `terminal` | 4 |
+| `checkpoint.restore` | `checkpointRestore` and `terminal` | 4 |
 | `terminal.*` | `terminal` | 4 |
 | `folders.browse`, `projects.add`, `projects.remove`, project settings, prompts, skills, MCP | work, "all" scope and `manageProjects` | 4 |
 | `threads.*` row actions, pins, order, queue edits, compact, fork, rollback, workflows | work | 3 |
 | Run, Checks, quick actions, anything that saves or runs a shell command | `terminal` | 4 |
-| Pull request writes, publishing | `gitWrite` | 4 |
-| `preview.*` | view | 4 |
+| Pull request writes, publishing | `gitWrite` and `terminal` | 4 |
+
+Git hooks, filters and credential or signing helpers on the host can run commands,
+so remote operations that keep those local semantics also need `terminal`.
+| `preview.*` | work | 4 |
 
 ## Host side
 
@@ -600,7 +604,7 @@ Decisions for things that have no direct remote meaning:
 | Reveal in Finder or Explorer, open in editor | Hidden, with Copy path offered. It would act on a screen the user can't see. |
 | Attachments and file drops | Uploaded to the host with `attachment.put`, then attached as usual. |
 | Terminal | Runs on the host, with the `terminal` capability. |
-| Local web previews | Reach the host's `localhost` port through the authenticated link, not by exposing the port. |
+| Local web previews | A click opens this device's normal browser on a temporary `127.0.0.1` tunnel to that one host port, through the authenticated link. It never runs in the app's webview, and it closes when idle, on revocation or on link loss. Needs Work. |
 | Voice input | Stays on this device. The text goes to the host. |
 | Notifications | Shown on this device for the visible remote machine, labeled with it. |
 | Settings | Stays this device's settings, labeled so. Project-level settings shown in context belong to the host. |

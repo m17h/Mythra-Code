@@ -238,6 +238,7 @@ impl Anchor {
             return Err(denied());
         }
         for part in parts {
+            current.validate()?;
             #[cfg(unix)]
             {
                 let file = open_child(&current.file, part, true)?;
@@ -264,9 +265,10 @@ impl Anchor {
                 };
             }
         }
+        current.validate()?;
         Ok(current)
     }
-    fn regular(&self, name: &str) -> Result<File, String> {
+    pub(super) fn regular(&self, name: &str) -> Result<File, String> {
         if !leaf(name) {
             return Err(denied());
         }
@@ -295,6 +297,7 @@ impl Anchor {
     pub(super) fn read(&self, path: &str, maximum: usize) -> Result<(Vec<u8>, bool), String> {
         let parts = relative(path, false)?;
         let parent = self.directory(&parts[..parts.len() - 1].join("/"))?;
+        parent.validate()?;
         let mut file = parent.regular(parts[parts.len() - 1])?;
         let mut bytes = Vec::new();
         file.by_ref()
@@ -303,6 +306,7 @@ impl Anchor {
             .map_err(|_| denied())?;
         let truncated = bytes.len() > maximum;
         bytes.truncate(maximum);
+        parent.validate()?;
         self.validate()?;
         Ok((bytes, truncated))
     }
@@ -407,7 +411,20 @@ impl Anchor {
         Ok(entries)
     }
     pub(super) fn git_cwd(&self) -> PathBuf {
-        #[cfg(unix)]
+        // macOS won't start a process inside /dev/fd/N. It can name what an open
+        // folder is right now, which keeps the same "this exact folder" promise.
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            let mut name = [0u8; libc::PATH_MAX as usize];
+            if unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) } == 0 {
+                if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&name).map(|name| name.to_string_lossy()) {
+                    return PathBuf::from(path.as_ref());
+                }
+            }
+            self.path.clone()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
         {
             use std::os::fd::AsRawFd;
             PathBuf::from(format!("/dev/fd/{}", self.file.as_raw_fd()))
@@ -417,4 +434,19 @@ impl Anchor {
             self.path.clone()
         }
     }
+}
+
+/// Exclusive creation in an already-opened directory, used only by the host's
+/// private upload store. The caller chooses an unpredictable leaf, never LAN data.
+pub(super) fn create_new(anchor:&Anchor,name:&str)->Result<File,String>{
+    if !leaf(name){return Err(denied());}anchor.validate()?;
+    #[cfg(unix)] {use std::os::fd::{AsRawFd,FromRawFd};let name=std::ffi::CString::new(name).map_err(|_|denied())?;let fd=unsafe{libc::openat(anchor.file.as_raw_fd(),name.as_ptr(),libc::O_WRONLY|libc::O_CREAT|libc::O_EXCL|libc::O_NOFOLLOW|libc::O_CLOEXEC,0o600)};if fd<0{return Err(denied());}Ok(unsafe{File::from_raw_fd(fd)})}
+    #[cfg(windows)] {use std::os::windows::fs::OpenOptionsExt;fs::OpenOptions::new().write(true).create_new(true).share_mode(3).custom_flags(0x00200000).open(anchor.path.join(name)).map_err(|_|denied())}
+    #[cfg(not(any(unix,windows)))] {Err(denied())}
+}
+pub(super) fn append_file(anchor:&Anchor,name:&str)->Result<File,String>{
+    if !leaf(name){return Err(denied());}anchor.validate()?;
+    #[cfg(unix)] {use std::os::fd::{AsRawFd,FromRawFd};let name=std::ffi::CString::new(name).map_err(|_|denied())?;let fd=unsafe{libc::openat(anchor.file.as_raw_fd(),name.as_ptr(),libc::O_WRONLY|libc::O_APPEND|libc::O_NOFOLLOW|libc::O_CLOEXEC|libc::O_NONBLOCK)};if fd<0{return Err(denied());}let file=unsafe{File::from_raw_fd(fd)};if !file.metadata().map_err(|_|denied())?.is_file(){return Err(denied());}Ok(file)}
+    #[cfg(windows)] {use std::os::windows::fs::{OpenOptionsExt,MetadataExt};let file=fs::OpenOptions::new().append(true).share_mode(3).custom_flags(0x00200000).open(anchor.path.join(name)).map_err(|_|denied())?;let meta=file.metadata().map_err(|_|denied())?;if !meta.is_file()||meta.file_attributes()&0x400!=0{return Err(denied());}Ok(file)}
+    #[cfg(not(any(unix,windows)))] {Err(denied())}
 }

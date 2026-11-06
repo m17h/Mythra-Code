@@ -1,3 +1,4 @@
+import { endRemoteTerminals } from "./remoteTerminal";
 import { create } from "zustand";
 import { keepRemoteSessions, openRemoteThread } from "./remoteStore";
 import {
@@ -18,7 +19,7 @@ export const UNCONFIRMED_TEXT = "We couldn't confirm whether this was sent. Chec
 /** Refused before anything ran. Any other failure might have reached the host. */
 const DEFINITE_REFUSALS = new Set(["forbidden", "busy", "rate_limited", "stale_target", "unsupported", "not_paired", "invalid", "thread_unavailable"]);
 
-function refusalText(code: string, name: string): string {
+export function refusalText(code: string, name: string): string {
   switch (code) {
     case "forbidden": case "not_paired": return `${name} doesn't allow this device to do that.`;
     case "busy": case "rate_limited": return `${name} is busy. Try again in a moment.`;
@@ -54,6 +55,7 @@ export function clearRemoteCapabilities(device: string): void {
 
 /** Once per session, resume above whatever the host has seen from this device. */
 const alignedDevices = new Set<string>();
+export const nextHostOperationSequence = (device: string) => operationSequence(device);
 async function operationSequence(device: string): Promise<number> {
   let floor = 0;
   if (!alignedDevices.has(device)) {
@@ -70,6 +72,8 @@ function promptArgs(entry: OutboxEntry): Record<string, unknown> {
     ...(entry.threadId ? { threadId: entry.threadId } : {}),
     ...(entry.workspaceId && !entry.threadId ? { workspaceId: entry.workspaceId } : {}),
     ...(entry.handle ? { handle: entry.handle } : {}),
+    ...(entry.draftHandle ? { draftHandle: entry.draftHandle } : {}),
+    ...(entry.attachmentIds?.length ? { attachmentIds: entry.attachmentIds } : {}),
   };
 }
 
@@ -116,9 +120,9 @@ const claimedDrafts = new Set<string>();
  * machine. */
 export async function sendRemotePrompt(request: {
   device: string; name: string; draftKey: string; text: string; mode: keyof typeof OPERATION_FOR_MODE;
-  threadId?: string; workspaceId?: string; handle?: string;
+  threadId?: string; workspaceId?: string; handle?: string; draftHandle?: string; attachmentIds?: string[];
 }): Promise<RemoteSendOutcome> {
-  const { device, name, draftKey, mode, threadId, workspaceId, handle } = request;
+  const { device, name, draftKey, mode, threadId, workspaceId, handle, draftHandle, attachmentIds } = request;
   const text = request.text.trim();
   if (!text) return { status: "rejected", message: "Write a message first." };
   if (text.length > MAX_PROMPT_CHARS) return { status: "rejected", message: "That message is too long to send to another device." };
@@ -135,6 +139,7 @@ export async function sendRemotePrompt(request: {
       opId: crypto.randomUUID(), opSeq, device, op: OPERATION_FOR_MODE[mode], draftKey, text,
       state: "sending", createdAt: Date.now(),
       ...(threadId ? { threadId } : {}), ...(workspaceId ? { workspaceId } : {}), ...(handle ? { handle } : {}),
+      ...(draftHandle ? { draftHandle } : {}), ...(attachmentIds?.length ? { attachmentIds } : {}),
     };
     try { await admitToOutbox(entry); }
     catch {
@@ -257,5 +262,6 @@ export async function addRemoteProject(device: string, name: string, folderId: s
 }
 export function keepRemoteDevices(paired: readonly string[], online: readonly string[]): void {
   keepRemoteSessions(paired, online);
+  for (const device of paired) if (!online.includes(device)) endRemoteTerminals(device);
   for (const device of Object.keys(useRemoteContext.getState().contexts)) if (!paired.includes(device)) forgetRemoteContext(device);
 }

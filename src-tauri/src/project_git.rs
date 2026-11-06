@@ -296,6 +296,7 @@ pub(super) fn run_git(
     if let Some(index_file) = index_file {
         command.env("GIT_INDEX_FILE", index_file);
     }
+    if let Some(output)=crate::remote::domain::output(&mut command){return output;}
     command
         .output()
         .map_err(|error| format!("Could not run Git: {error}"))
@@ -447,9 +448,8 @@ pub(super) fn run_git_with_input(
     if let Some(index_file) = index_file {
         command.env("GIT_INDEX_FILE", index_file);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("Could not run Git: {error}"))?;
+    if let Some(output)=crate::remote::domain::output_with_input(&mut command,Some(input)){return output;}
+    let mut child = crate::remote::domain::spawn_gate(||command.spawn().map_err(|error|format!("Could not run Git: {error}")))?;
     let mut stdin = child
         .stdin
         .take()
@@ -576,9 +576,7 @@ pub(super) fn capture_checkpoint_snapshot(
             .env("GIT_AUTHOR_EMAIL", "checkpoints@openkiwi.local")
             .env("GIT_COMMITTER_NAME", "Mythra Code Checkpoints")
             .env("GIT_COMMITTER_EMAIL", "checkpoints@openkiwi.local");
-        let output = commit
-            .output()
-            .map_err(|error| format!("Could not create the checkpoint snapshot: {error}"))?;
+        let output = match crate::remote::domain::output(&mut commit){Some(output)=>output?,None=>commit.output().map_err(|error|format!("Could not create the checkpoint snapshot: {error}"))?};
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
@@ -692,14 +690,13 @@ pub(super) fn remove_checkpoint_path(repo: &Path, relative: &Path) -> Result<(),
             relative.display()
         ));
     }
-    fs::remove_file(&target)
-        .map_err(|error| format!("Could not restore {}: {error}", relative.display()))?;
+    crate::remote::domain::filesystem_gate(||fs::remove_file(&target).map_err(|error|format!("Could not restore {}: {error}",relative.display())))?;
     let mut parent = target.parent();
     while let Some(directory) = parent {
         if directory == repo {
             break;
         }
-        if fs::remove_dir(directory).is_err() {
+        if crate::remote::domain::filesystem_gate(||fs::remove_dir(directory).map_err(|error|error.to_string())).is_err() {
             break;
         }
         parent = directory.parent();
@@ -1443,6 +1440,14 @@ pub(super) async fn worktree_create(
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
     let guard = lock.lock_owned().await;
     spawn_locked_worktree_worker(guard, move || {
+        worktree_create_sync_with_data(&app_data,&project_path,&label)
+    })
+    .await
+    .map_err(|error| format!("Worktree creation task failed: {error}"))?
+}
+
+pub(crate) fn worktree_create_sync(app:&AppHandle,project_path:&str,label:&str)->Result<CreatedWorktree,String>{let data=crate::release_qa::app_data_dir(app).map_err(|error|error.to_string())?;worktree_create_sync_with_data(&data,project_path,label)}
+fn worktree_create_sync_with_data(app_data:&Path,project_path:&str,label:&str)->Result<CreatedWorktree,String>{
         let source = checkpoint_repo(&project_path)?;
         let base_commit =
             git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None).map_err(|_| {
@@ -1459,9 +1464,9 @@ pub(super) async fn worktree_create(
                 .unwrap_or("project"),
         );
         let root = app_data.join("worktrees").join(project_slug);
-        fs::create_dir_all(&root).map_err(|error| {
+        crate::remote::domain::filesystem_gate(||fs::create_dir_all(&root).map_err(|error| {
             format!("Could not create the Mythra Code worktree folder: {error}")
-        })?;
+        }))?;
         let path = root.join(format!("{slug}-{suffix}"));
         let path_string = path.to_string_lossy().into_owned();
         git_stdout(
@@ -1475,9 +1480,6 @@ pub(super) async fn worktree_create(
             base_commit,
             git_dir: git_common_dir(&source)?.to_string_lossy().into_owned(),
         })
-    })
-    .await
-    .map_err(|error| format!("Worktree creation task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1492,6 +1494,14 @@ pub(super) async fn worktree_recreate(
     let lock = crate::git_workspace::repository_lock(Path::new(&project_path)).await?;
     let guard = lock.lock_owned().await;
     spawn_locked_worktree_worker(guard, move || {
+        worktree_recreate_sync_with_data(&app_data,&project_path,&branch,&label)
+    })
+    .await
+    .map_err(|error| format!("Worktree recreation task failed: {error}"))?
+}
+
+pub(crate) fn worktree_recreate_sync(app:&AppHandle,project_path:&str,branch:&str,label:&str)->Result<CreatedWorktree,String>{let data=crate::release_qa::app_data_dir(app).map_err(|error|error.to_string())?;worktree_recreate_sync_with_data(&data,project_path,branch,label)}
+fn worktree_recreate_sync_with_data(app_data:&Path,project_path:&str,branch:&str,label:&str)->Result<CreatedWorktree,String>{
         let source = checkpoint_repo(&project_path)?;
         if !is_managed_worktree_branch(&branch) {
             return Err("That branch is not managed by Mythra Code".into());
@@ -1516,9 +1526,9 @@ pub(super) async fn worktree_recreate(
                 .unwrap_or("project"),
         );
         let root = app_data.join("worktrees").join(project_slug);
-        fs::create_dir_all(&root).map_err(|error| {
+        crate::remote::domain::filesystem_gate(||fs::create_dir_all(&root).map_err(|error| {
             format!("Could not create the Mythra Code worktree folder: {error}")
-        })?;
+        }))?;
         // A worktree folder can be deleted outside Mythra Code while Git still
         // has a stale registration for it. Prune that dead administrative
         // entry before attaching the surviving branch to its replacement.
@@ -1528,13 +1538,10 @@ pub(super) async fn worktree_recreate(
         git_stdout(&source, &["worktree", "add", &path_string, &branch], None)?;
         Ok(CreatedWorktree {
             path: path_string,
-            branch,
+            branch:branch.to_owned(),
             base_commit: branch_commit,
             git_dir: git_common_dir(&source)?.to_string_lossy().into_owned(),
         })
-    })
-    .await
-    .map_err(|error| format!("Worktree recreation task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2684,3 +2691,5 @@ pub(super) async fn worktree_remove(
     .await
     .map_err(|error| format!("Worktree removal task failed: {error}"))?
 }
+
+pub(crate) fn remote_worktree_remove_sync(managed_root:&Path,thread_id:Option<&str>,project_path:&str,worktree_path:&str,branch:&str,force:bool,delete_branch:bool,expected_retained_branch_oid:Option<&str>)->Result<WorktreeRemoveResult,String>{worktree_remove_sync(managed_root,thread_id,project_path,worktree_path,branch,WorktreeRemoveOptions{force,delete_branch,expected_retained_branch_oid,timeout:Duration::from_secs(120)})}

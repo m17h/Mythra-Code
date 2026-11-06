@@ -1,7 +1,7 @@
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import type { PermissionMode, Provider } from "../../../types";
 import type { QueuedTurn, RemoteQueuedDelivery } from "../../taskStore";
-import type { HostRequest, HostContextResult, FilesSearchResult, RemoteOperationIdentity, RemoteWorkResult, WireWorkCapabilities, WireParityReadResult } from "../wire";
+import type { HostRequest, HostResponse, RemoteOperationIdentity, RemoteWorkResult } from "../wire";
 
 export interface RemoteDispatchInfo {
   threadId: string; messageId: string; provider: Provider; startRequestId?: string; turnId?: string;
@@ -12,6 +12,9 @@ export interface RemoteTurnDelivery {
   identity: RemoteOperationIdentity;
   attemptId: string;
   messageId: string;
+  /** Native lifetime for all children of an orchestration, not permission to replay a step. */
+  openOwner?(kind: "parent" | "workflow" | "start", runId: string, threadId?: string): Promise<string>;
+  readonly ownerHandle?: string;
   assertAllowed(): void;
   beforeCreate(): Promise<void>;
   queued(threadId: string, queuedTurnId: string): Promise<void>;
@@ -21,13 +24,13 @@ export interface RemoteTurnDelivery {
   uncertain(info?: Partial<RemoteDispatchInfo>): Promise<void>;
   rejected(code?: string): Promise<void>;
   failure(reason: unknown): Promise<void>;
-  metadata(): RemoteOperationIdentity & { generation: number; attemptId: string; messageId: string };
+  metadata(): RemoteOperationIdentity & { generation: number; attemptId: string; messageId: string; ownerHandle?: string };
   invokeSteer<T>(action: string, args: Record<string, unknown>): Promise<T>;
   result(): RemoteWorkResult;
 }
 export interface RemoteStopSnapshot {
   threadId: string; turnId?: string; startRequestId?: string; agentRunId?: string; runStartedAt?: number;
-  parentRunId?: string; workflowId?: string; workflowRunId?: string;
+  parentRunId?: string; workflowId?: string; workflowRunId?: string; ownerHandle?: string; ownerRunId?: string;
 }
 export interface RemoteTurnRunner {
   sendPromptTo(context: TurnRunnerContext, text: string): Promise<RemoteWorkResult>;
@@ -38,7 +41,10 @@ export interface RemoteTurnRunner {
   pumpRemoteQueue(threadId: string): void;
 }
 export interface RemoteWorkAdapter {
-  dispatch(request: HostRequest): Promise<RemoteWorkResult | WireWorkCapabilities | HostContextResult | FilesSearchResult | WireParityReadResult>;
+  /** Shared Studio handle namespaces for reads and stamped mutations. */
+  studio?: import("./studio").HostStudio;
+  studioReads?: import("./studioReads").HostStudioReads;
+  dispatch(request: HostRequest): Promise<NonNullable<HostResponse["result"]>>;
   resolveQueued(entry: QueuedTurn): Promise<TurnRunnerContext>;
   reconcileQueues(pump?: boolean): Promise<void>;
   dispose(): void;

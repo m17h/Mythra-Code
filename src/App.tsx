@@ -20,7 +20,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, Shield, ShieldAlert, ShieldCheck, TerminalSquare, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Code2, Download, FileCode2, Folder, FolderOpen, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, Paperclip, PanelRight, PanelLeftClose, PanelLeftOpen, Plus, Pin, PinOff, Pencil, Search, Settings, TerminalSquare, Trash2, X } from "lucide-react";
 import { getCodexRuntimeStatus, refreshCodexRuntimeStatus, reserveRuntimeRestart, RuntimeRestartBusyError, releaseRuntimeRestart, restartRuntimeReserved, auditEvent, exportTextFile, getNormalChatWorkspace, getOpenRouterCredits, hasLmStudioKey, hasOpenRouterKey, respond, restartRuntime, rpc, onCodexEvent, runtimeInstanceId, runtimeThreadState, type CodexEvent, type CodexRuntimeStatus, type JsonObject, type OpenRouterCreditBalance } from "./lib/codex";
 import { deleteClaudeTranscript, getClaudeRateLimits, getClaudeRuntimeStatus, isClaudeDefaultModel, isClaudeTurnActive, listClaudeModels, loadClaudeTranscript, loadClaudeTranscriptPage, respondClaudeControlError, respondToClaudePermission, saveClaudeTranscript, startClaudeLogin, visibleClaudeModels, CLAUDE_LOGIN_CANCELLED, type ClaudeModel, type ClaudeRuntimeStatus } from "./lib/claude";
 import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerAuthChanging, providerAuthGeneration } from "./lib/providerAuth";
@@ -42,8 +42,11 @@ import { MythraMark } from "./components/MythraMark";
 import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { MachineSwitcher } from "./components/remote/MachineSwitcher";
+import { startProjectPointerDrag } from "./lib/projectPointerDrag";
+import { ConversationSearchBar } from "./components/ConversationSearchBar";
 import { ChatsRow, ThreadRenameInput, ThreadSearch, ThreadsSection, WorkspaceRow, WorkspacesSection } from "./components/SidebarLists";
 import { hasPairingSheet, localMachineLabel, useRemoteDevices } from "./lib/remote/devices";
+import { PermissionPicker, permissionLabel } from "./components/PermissionPicker";
 import { isRemoteMachineActive, LOCAL_MACHINE, machineActions, machineSwitchGeneration, useActiveMachine } from "./lib/remote/activeMachine";
 import { SpellingMenu } from "./components/SpellingMenu";
 import { useSpellingMenu } from "./lib/spelling";
@@ -70,7 +73,6 @@ import { isVoiceInputLocked, useVoiceInputLock, voiceInputLockGeneration } from 
 import { FeedbackProvider } from "./components/FeedbackProvider";
 import { FeedbackTray } from "./components/FeedbackTray";
 import { SubAgentControlsProvider } from "./components/SubAgentControls";
-import { TransitionInput } from "./components/TransitionInput";
 import { usePerformanceOverlayEnabled } from "./lib/performanceOverlay";
 import { configureTrayStatus, updateTrayStatus, useTrayStatusEnabled } from "./lib/trayStatus";
 import { chatFontCss, useCustomFontFaces, useCustomFonts } from "./lib/customFonts";
@@ -80,7 +82,10 @@ import type { ChildAgentModelCatalogs } from "./components/subAgentModelOptions"
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
-import type { HostSources } from "./lib/remote/host";
+import type { HostContextSources, HostParityActions, HostRowActions, HostSettingsActions, StopActionSources } from "./lib/remote/host";
+import { HostReadError } from "./lib/remote/host/scope";
+import { hostProviderCatalog, hostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
+import { createHostParity } from "./lib/remote/hostParity";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitRoute, ProjectGitInspection, ProjectPullRequestAccess } from "./lib/projectGit";
 import type { GitPanelAction, GitRepositoryState } from "./components/GitPanel";
@@ -148,7 +153,7 @@ import {
 import { useAppUpdater } from "./lib/appUpdater";
 import { UpdateNotice, useUpdateNoticePreview } from "./components/UpdateNotice";
 import { usePersistedState, usePersistedStateRef } from "./hooks/usePersistedState";
-import { forgetQueuedDeliveries, useTurnRunner } from "./hooks/useTurnRunner";
+import { forgetQueuedDeliveries, useTurnRunner, type TurnRunnerContext } from "./hooks/useTurnRunner";
 import { clearCommitMessageSuggestion } from "./lib/commitMessages";
 import { useCheckpoints } from "./hooks/useCheckpoints";
 import { useAppShortcuts, workspaceShortcutLabel } from "./hooks/useAppShortcuts";
@@ -599,12 +604,6 @@ function hydrateLocalProviderTask(
   store.hydrateTask(threadId, transcript?.messages ?? [], transcript?.activities ?? [], executionPath, mergedHistory, undefined, { source: "local" });
 }
 
-function permissionLabel(mode: PermissionMode): string {
-  if (mode === "read-only") return "Read only";
-  if (mode === "full") return "Full access";
-  return "Ask to act";
-}
-
 class RuntimeCapabilityBusyError extends Error {}
 
 function providerLabel(provider: AppSettings["provider"]): string {
@@ -613,12 +612,6 @@ function providerLabel(provider: AppSettings["provider"]): string {
   if (provider === "claude") return "Claude";
   if (provider === "cursor") return "Cursor";
   return "OpenAI";
-}
-
-function PermissionIcon({ mode, size = 15 }: { mode: PermissionMode; size?: number }) {
-  if (mode === "read-only") return <Shield size={size} />;
-  if (mode === "full") return <ShieldAlert size={size} />;
-  return <ShieldCheck size={size} />;
 }
 
 /**
@@ -722,6 +715,9 @@ export default function App() {
   const shownRemote = shownMachine !== LOCAL_MACHINE;
   const machinePhase = useActiveMachine((state) => state.phase);
   const remoteRunning = useActiveMachine((state) => state.remoteRunning);
+  const remoteThreadOpen = useActiveMachine((state) => state.remoteThreadOpen);
+  const remoteApprovals = useActiveMachine((state) => state.remoteApprovals);
+  const shownMachineName = useActiveMachine((state) => state.shown === LOCAL_MACHINE ? null : state.name);
   const [remoteStudioOpen, setRemoteStudioOpen] = useState(false);
   // Loaded ahead of the first switch and held here, so a switch never paints a
   // blank frame waiting for a lazy boundary.
@@ -832,8 +828,9 @@ export default function App() {
   useEffect(() => {
     if (!trayReady || !trayCounts) return;
     const [working, approvals] = trayCounts.split(":").map(Number);
-    void updateTrayStatus(working ?? 0, approvals ?? 0).catch(() => undefined);
-  }, [trayCounts, trayReady]);
+    // This device, plus the machine on screen.
+    void updateTrayStatus((working ?? 0) + (remoteRunning ? 1 : 0), (approvals ?? 0) + remoteApprovals, shownMachineName).catch(() => undefined);
+  }, [remoteApprovals, remoteRunning, shownMachineName, trayCounts, trayReady]);
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
@@ -2101,6 +2098,19 @@ export default function App() {
     }, 4_500);
   }, []);
   const showSuccessToast = useCallback((message: string) => showToast(message, "success"), [showToast]);
+  useEffect(() => {
+    // This device is the host here: someone's terminal may have outlived their access.
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    listen<{ message?: unknown }>("remote-runtime-warning", ({ payload }) => {
+      if (typeof payload?.message !== "string" || !payload.message) return;
+      const message = payload.message.slice(0, 300);
+      // The banner stays until dismissed; the toast shows over any machine.
+      setError(message);
+      showToast(message, "info");
+    }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }, () => undefined);
+    return () => { disposed = true; stop?.(); };
+  }, [showToast]);
 
   useGitHubLogin({
     pending: githubLoginPending,
@@ -4920,9 +4930,15 @@ export default function App() {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
           // Native drops bypass DOM inert and pointer capture.
+          if (isRemoteMachineActive()) {
+            setDropActive(false);
+            useActiveMachine.setState({ remoteDropHover: event.payload.type === "over" });
+            if (event.payload.type === "drop") machineActions()?.dropFiles(event.payload.paths);
+            return;
+          }
+          if (useActiveMachine.getState().remoteDropHover) useActiveMachine.setState({ remoteDropHover: false });
           if (localInputBlocked()) {
             setDropActive(false);
-            if (event.payload.type === "drop" && isRemoteMachineActive()) showToast(`Files can't be sent to ${useActiveMachine.getState().name ?? "that device"} yet.`, "info");
             return;
           }
           if (event.payload.type === "over") setDropActive(true);
@@ -5076,98 +5092,20 @@ export default function App() {
     };
   }, [activeWorkspace, localSearchScope, runtimeStatus?.available, threadSearch, workspaceHasRuntimeThreads, sidebarThreadBindings]);
 
-  const startProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
+  const beginProjectPointerDrag = (event: ReactPointerEvent<HTMLDivElement>, projectId: string) => {
     if (localInputBlocked()) return;
-    if ((event.button !== undefined && event.button !== 0) || (event.target as HTMLElement).closest(".row-menu")) return;
-    const pointerId = event.pointerId;
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const workspaceList = event.currentTarget.closest(".workspace-list") as HTMLElement | null;
-    let active = false;
-    const isCurrentPointer = (candidate: number | undefined) =>
-      pointerId === undefined || candidate === undefined || candidate === pointerId;
-
-    // A drag reorders within the pinned or the unpinned block, never across
-    // them, so only same-group rows are offered as drop targets. The indicator
-    // then always sits where the project will actually land, instead of
-    // promising a slot the pinned-first order would immediately take back.
-    const sourcePinned = Boolean(projectsRef.current.find((project) => project.id === projectId)?.pinned);
-    const inSourceGroup = (row: HTMLElement) => (row.dataset.projectPinned === "true") === sourcePinned;
-
-    const updateTarget = (clientX: number, clientY: number) => {
-      if (!workspaceList) return;
-      const listBounds = workspaceList.getBoundingClientRect();
-      if (clientY < listBounds.top - 8 || clientY > listBounds.bottom + 8) {
-        projectDropTargetRef.current = null;
-        setProjectDropTarget(null);
-        return;
-      }
-      if (clientY < listBounds.top + 24) workspaceList.scrollTop -= 8;
-      else if (clientY > listBounds.bottom - 24) workspaceList.scrollTop += 8;
-
-      const pointedRow = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-project-id]");
-      if (pointedRow?.dataset.projectId === projectId) {
-        projectDropTargetRef.current = null;
-        setProjectDropTarget(null);
-        return;
-      }
-      const rows = [...workspaceList.querySelectorAll<HTMLElement>("[data-project-id]")]
-        .filter((row) => row.dataset.projectId !== projectId && inSourceGroup(row));
-      const targetRow = pointedRow && pointedRow.dataset.projectId !== projectId && inSourceGroup(pointedRow) && workspaceList.contains(pointedRow)
-        ? pointedRow
-        : rows.reduce<HTMLElement | null>((nearest, row) => {
-            if (!nearest) return row;
-            const rowDistance = Math.abs(clientY - (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2));
-            const nearestBounds = nearest.getBoundingClientRect();
-            const nearestDistance = Math.abs(clientY - (nearestBounds.top + nearestBounds.height / 2));
-            return rowDistance < nearestDistance ? row : nearest;
-          }, null);
-      const targetId = targetRow?.dataset.projectId;
-      if (!targetRow || !targetId) return;
-      const bounds = targetRow.getBoundingClientRect();
-      const position: ProjectDropPosition = clientY < bounds.top + bounds.height / 2 ? "before" : "after";
-      const nextTarget = { id: targetId, position };
-      projectDropTargetRef.current = nextTarget;
-      setProjectDropTarget((current) => current?.id === targetId && current.position === position ? current : nextTarget);
-    };
-
-    const onMove = (moveEvent: PointerEvent) => {
-      if (!isCurrentPointer(moveEvent.pointerId)) return;
-      if (!active && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
-      moveEvent.preventDefault();
-      if (!active) {
-        active = true;
-        draggedProjectIdRef.current = projectId;
-        setDraggedProjectId(projectId);
-        document.body.classList.add("project-reordering");
-      }
-      updateTarget(moveEvent.clientX, moveEvent.clientY);
-    };
-
-    const onEnd = (endEvent: PointerEvent) => {
-      if (!isCurrentPointer(endEvent.pointerId)) return;
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onEnd);
-      window.removeEventListener("pointercancel", onEnd);
-      document.body.classList.remove("project-reordering");
-
-      const target = projectDropTargetRef.current;
-      if (endEvent.type === "pointerup" && active && target) {
+    startProjectPointerDrag(event, projectId, {
+      isPinned: (id) => Boolean(projectsRef.current.find((project) => project.id === id)?.pinned),
+      setDragged: (id) => { draggedProjectIdRef.current = id; setDraggedProjectId(id); },
+      setTarget: (target) => { projectDropTargetRef.current = target; setProjectDropTarget(target); },
+      onDrop: (target) => {
         setProjects((current) => reorderProjects(current, projectId, target.id, target.position));
         suppressProjectClickRef.current = true;
         window.setTimeout(() => {
           suppressProjectClickRef.current = false;
         }, 0);
-      }
-      draggedProjectIdRef.current = null;
-      projectDropTargetRef.current = null;
-      setDraggedProjectId(null);
-      setProjectDropTarget(null);
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onEnd);
-    window.addEventListener("pointercancel", onEnd);
+      },
+    });
   };
 
   const addProject = async () => {
@@ -5223,7 +5161,7 @@ export default function App() {
       wrapProps={{
         "data-project-id": project.id,
         "data-project-pinned": project.pinned ? "true" : "false",
-        onPointerDown: (event) => startProjectPointerDrag(event, project.id),
+        onPointerDown: (event) => beginProjectPointerDrag(event, project.id),
       }}
       onOpen={(event) => {
         if (suppressProjectClickRef.current) {
@@ -6150,7 +6088,7 @@ export default function App() {
       ultra: false,
       serviceTier: projectResolved.serviceTier,
       permission: projectResolved.permission,
-      engine: threadSettings.subagentEngine,
+      engine: sanitizeSubagentEngine(threadSettings.subagentEngine),
       subagentsEnabled: threadSettings.subagentsEnabled,
       executionPath: normalizedProjectPath(executionPath) === normalizedProjectPath(run.execution.executionPath) ? run.execution.executionPath : executionPath,
       sessionId: policy.sessionId,
@@ -6162,6 +6100,17 @@ export default function App() {
   };
   // Fresh account identity is probed before reservation. This synchronous part
   // runs again at preparation boundaries, including immediately before dispatch.
+  // The whole current context and hook result, for host work addressed to other
+  // threads. Local callers keep their usual destructured methods.
+  const turnRunnerContextRef = useRef<TurnRunnerContext | null>(null);
+  const turnRunnerRef = useRef<ReturnType<typeof useTurnRunner> | null>(null);
+  const remoteHostRef = useRef<ReturnType<typeof import("./lib/remote/host").createRemoteHost> | null>(null);
+  const useRecordedTurnRunner = (context: TurnRunnerContext) => {
+    turnRunnerContextRef.current = context;
+    const runner = useTurnRunner(context);
+    turnRunnerRef.current = runner;
+    return runner;
+  };
   const parentExecutionCurrent = (run: ParentRun): string | null => parentExecutionDifference(run.execution, parentExecutionFor(run));
 
   const {
@@ -6170,7 +6119,7 @@ export default function App() {
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
     stopTurn, resumeParentTurn, hasParentRunDelivery, parentRunFolderBusy,
-  } = useTurnRunner({
+  } = useRecordedTurnRunner({
     parentExecutionCurrent,
     activeThread,
     activeWorkspace,
@@ -6291,6 +6240,12 @@ export default function App() {
     setRuntimeSetupOpen,
     setAuthRequiredOpen,
     openSettings,
+    // A remote queue resolves against its host receipt, never a guessed context.
+    resolveRemoteQueuedDelivery: (entry) => {
+      const host = remoteHostRef.current;
+      return host ? host.resolveQueued(entry) : Promise.reject(new HostReadError("host_unavailable", "Remote queue delivery is not ready."));
+    },
+    remoteQueuesReady: () => remoteHostRef.current?.isReady() === true,
   });
   // Stable props for the memoized transcript (see ConversationTimeline).
   const agentQuestionDelivery = useMemo(() => activeThreadId ? { threadId: activeThreadId, send: answerQuestions } : null, [activeThreadId, answerQuestions]);
@@ -7016,7 +6971,7 @@ export default function App() {
     setRenamingThreadId(thread.id);
   };
 
-  const renameThread = async (thread: Thread, draft: string) => {
+  const renameThread = async (thread: Thread, draft: string, strict = false) => {
     const name = draft.trim();
     const previous = threadRenameWritesRef.current.get(thread.id);
     setRenamingThreadId(null);
@@ -7032,7 +6987,10 @@ export default function App() {
         await titleCancellation;
         const target = knownThreadsRef.current?.[thread.id];
         if (!target || archivingThreadIdsRef.current.has(thread.id) || deletedThreadIdsRef.current.has(thread.id)
-          || archivedThreadsRef.current.some((record) => record.id === thread.id)) return;
+          || archivedThreadsRef.current.some((record) => record.id === thread.id)) {
+          if (strict) throw new HostReadError("stale_target", "This conversation is no longer available.");
+          return;
+        }
         if (isLocalSubscriptionThread(target)) {
           await renameLocalTranscript(isClaudeThread(target) ? "claude" : "cursor", thread.id, name);
         } else {
@@ -7050,6 +7008,7 @@ export default function App() {
         setThreads((entries) => entries.map((entry) => (entry.id === thread.id ? { ...entry, name } : entry)));
         setActiveThread((entry) => (entry?.id === thread.id ? { ...entry, name } : entry));
       } catch (reason) {
+        if (strict) throw reason;
         if (threadRenameWritesRef.current.get(thread.id)?.token === token && knownThreadsRef.current?.[thread.id]
           && !archivingThreadIdsRef.current.has(thread.id) && !deletedThreadIdsRef.current.has(thread.id)) setError(friendlyError(reason));
       }
@@ -7113,7 +7072,7 @@ export default function App() {
       || mailbox.queuedForChild > 0 || mailbox.unansweredQuestions > 0;
   };
 
-  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean, automatic = false): Promise<boolean> => {
+  const archiveThreadRecord = async (thread: Thread, confirmArchive: boolean, automatic = false, strict = false): Promise<boolean> => {
     let label = thread.name || thread.preview || "Untitled thread";
     const archiveActivityBlock = () => {
       if (automatic && managedChildArchivePending(thread.id)) return "This sub-agent still needs sign-off or has pending work.";
@@ -7147,12 +7106,16 @@ export default function App() {
     };
     const initialBlock = archiveActivityBlock();
     if (initialBlock) {
+      if (strict) throw new HostReadError("busy", initialBlock);
       if (confirmArchive) setError(initialBlock);
       return false;
     }
     // Archiving is reversible from the Archived list, so it runs without a
     // confirmation dialog. Only permanent deletion asks first.
-    if (archivingThreadIdsRef.current.has(thread.id)) return false;
+    if (archivingThreadIdsRef.current.has(thread.id)) {
+      if (strict) throw new HostReadError("busy", "This conversation is already being archived.");
+      return false;
+    }
     archivingThreadIdsRef.current.add(thread.id);
     setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(thread.id);
@@ -7192,6 +7155,7 @@ export default function App() {
       );
       return true;
     } catch (reason) {
+      if (strict) throw reason;
       setError(friendlyError(reason));
       return false;
     } finally {
@@ -7260,7 +7224,7 @@ export default function App() {
     }
   };
 
-  const unarchiveThread = async (record: ArchivedThread) => {
+  const unarchiveThread = async (record: ArchivedThread, strict = false) => {
     try {
       const claudeTranscript = record.provider === "cursor" ? null : await loadClaudeTranscript(record.id);
       const cursorTranscript = claudeTranscript || record.provider === "claude" ? null : await loadCursorTranscript(record.id);
@@ -7275,21 +7239,25 @@ export default function App() {
       persistArchivedThreads((current) => current.filter((entry) => entry.id !== record.id));
       void loadThreads(activeWorkspace);
     } catch (reason) {
+      if (strict) throw reason;
       setError(friendlyError(reason));
     }
   };
 
-  const deleteThreadRecord = async (threadId: string, label: string, confirmDelete: boolean): Promise<boolean> => {
+  const deleteThreadRecord = async (threadId: string, label: string, confirmDelete: boolean, strict = false): Promise<boolean> => {
+    const refuse = (message: string): false => {
+      if (strict) throw new HostReadError("busy", message);
+      setError(message);
+      return false;
+    };
     const thread = threads.find((entry) => entry.id === threadId) ?? knownThreadsRef.current?.[threadId];
     const isolation = threadWorktreesRef.current[threadId];
     if (isolation && isolation.status !== "removed") {
-      setError(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
-      return false;
+      return refuse(`Remove “${isolation.branch}” from the Worktrees workspace tab before permanently deleting this thread.`);
     }
     const taskStatus = useTaskStore.getState().statuses[threadId];
     if (taskStatus === "starting" || taskStatus === "running" || useTaskStore.getState().workflowOwners[threadId]) {
-      setError(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
-      return false;
+      return refuse(`Stop “${label}” before deleting it so no model process continues working after the conversation is removed.`);
     }
     const nativeDeletionBusy = () => {
       const current = useTaskStore.getState();
@@ -7309,14 +7277,12 @@ export default function App() {
         || hasChildStartInFlight(threadId);
     };
     if (nativeDeletionBusy()) {
-      setError("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
-      return false;
+      return refuse("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
     }
     if (Object.values(childAgentLinksRef.current).some((link) => link.rootThreadId === threadId && !link.terminalStatus)
       || useTaskStore.getState().tasks[threadId]?.agents.some((agent) => isActiveAgentRecord(agent.status))
       || hasChildStartInFlight(threadId)) {
-      setError("Finish or stop this task’s sub-agents before deleting it.");
-      return false;
+      return refuse("Finish or stop this task’s sub-agents before deleting it.");
     }
     const archived = archivedThreads.find((record) => record.id === threadId);
     let legacyClaudeTranscript = false;
@@ -7324,6 +7290,7 @@ export default function App() {
       try {
         legacyClaudeTranscript = Boolean(await loadClaudeTranscript(threadId));
       } catch (reason) {
+        if (strict) throw reason;
         setError(friendlyError(reason));
         return false;
       }
@@ -7335,7 +7302,7 @@ export default function App() {
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
-    if (archivingThreadIdsRef.current.has(threadId)) return false;
+    if (archivingThreadIdsRef.current.has(threadId)) return strict ? refuse("This conversation is already being removed.") : false;
     archivingThreadIdsRef.current.add(threadId);
     setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(threadId);
@@ -7345,16 +7312,14 @@ export default function App() {
       // otherwise it can write a name into a transcript that was just removed.
       await threadRenameWritesRef.current.get(threadId)?.promise;
       if (nativeDeletionBusy()) {
-        setError("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
-        return false;
+        return refuse("Open and finish or stop this task and its sub-agents before deleting it. Unknown status must be resolved first.");
       }
       // Cancellation cannot stop a save already in flight. Let its captured
       // revision finish before deleting the file so it cannot recreate it.
       if (localSubscription && thread && useTaskStore.getState().tasks[threadId]?.transcriptDirty) {
         await localTranscriptSaves.flush(threadId);
         if (nativeDeletionBusy()) {
-          setError("Finish or stop this task and its sub-agents before deleting it.");
-          return false;
+          return refuse("Finish or stop this task and its sub-agents before deleting it.");
         }
       }
       localTranscriptSaves.cancel(threadId);
@@ -7405,6 +7370,7 @@ export default function App() {
       if (cleanupErrors.length) setError(`Deleted “${label}”, but some sub-agent cleanup did not finish: ${cleanupErrors.join(" ")}`);
       return true;
     } catch (reason) {
+      if (strict) throw reason;
       setError(friendlyError(reason));
       return false;
     } finally {
@@ -7449,6 +7415,13 @@ export default function App() {
   };
 
   const openGitRoute = (route: Omit<GitRoute, "nonce">) => {
+    if (isRemoteMachineActive()) {
+      gitRouteNonceRef.current += 1;
+      setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
+      setStudioTab("git");
+      setRemoteStudioOpen(true);
+      return;
+    }
     if (localInputBlocked()) return;
     gitRouteNonceRef.current += 1;
     setGitRoute({ ...route, nonce: gitRouteNonceRef.current });
@@ -7635,6 +7608,26 @@ export default function App() {
     } catch (reason) {
       setError(friendlyError(reason));
     }
+  };
+
+  /** Fork for a host request: same bookkeeping, no navigation, failures thrown. */
+  const forkThreadFor = async (thread: Thread, context: TurnRunnerContext): Promise<string> => {
+    const worktree = threadWorktreesRef.current[thread.id];
+    if (worktree && worktree.status !== "removed") throw new HostReadError("busy", "Isolated conversations can't be forked yet.");
+    if (isLocalSubscriptionThread(thread)) throw new HostReadError("unsupported", "This provider's conversations can't be forked.");
+    await waitForThreadPreparation(thread.id);
+    await ensureSkillRoots();
+    const settingsFor = context.effectiveSettings;
+    const workspacePath = context.activeWorkspace?.path;
+    const modelProvider = runtimeModelProviderId(settingsFor.provider);
+    const forkParams = { threadId: thread.id, cwd: workspacePath, runtimeWorkspaceRoots: workspacePath ? [workspacePath] : undefined, model: settingsFor.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig({ ...settingsFor, subagentsEnabled: false }, { customAgents, modelContextWindow: settingsFor.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === settingsFor.model)?.context_length : settingsFor.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === settingsFor.model)?.maxContextLength : undefined }), baseInstructions: "", developerInstructions: mythraCodeDeveloperInstructions(false) };
+    const result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
+    persistThreadSubagentSettings((current) => ({ ...current, [result.thread.id]: { ...DEFAULT_THREAD_SUBAGENT_SETTINGS, autoCompactTokens: settingsFor.autoCompactTokens } }));
+    if (workspacePath) bindThreadToProject(result.thread.id, workspacePath);
+    rememberThread(sidebarThread(result.thread));
+    persistThreadModel(result.thread.id, settingsFor.model);
+    persistThreadReasoning(result.thread.id, { reasoningEffort: settingsFor.reasoningEffort, ultra: settingsFor.ultra });
+    return result.thread.id;
   };
 
   const rollbackTurn = async () => {
@@ -8999,13 +8992,14 @@ export default function App() {
     running: remoteActive ? remoteRunning : Boolean((running || childrenRunning) && activeThread),
     modalOpen: pairingModalOpen || Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
-    threadOpen: !remoteActive && Boolean(activeThreadId),
+    threadOpen: remoteActive ? remoteThreadOpen : Boolean(activeThreadId),
     workspaceOpen: remoteActive ? remoteStudioOpen : studioOpen && Boolean(activeProject),
     workspaceAvailable: remoteActive || Boolean(activeProject),
     toggleWorkspace: () => { if (remoteActive) setRemoteStudioOpen((open) => !open); else if (studioOpen) setStudioOpen(false); else openStudio(studioTab); },
     closeWorkspace: () => { if (remoteActive) setRemoteStudioOpen(false); else setStudioOpen(false); },
     toggleCommandPalette: () => setCommandPaletteOpen((open) => !open),
     openConversationSearch: () => {
+      if (isRemoteMachineActive()) { machineActions()?.findInConversation(); return; }
       setConvSearchOpen(true);
       requestAnimationFrame(() => convSearchInputRef.current?.focus());
     },
@@ -9039,53 +9033,248 @@ export default function App() {
   // Serving other devices starts with the Allow access switch and ends with it,
   // so nobody who leaves it off loads or runs any of this.
   const hostingOn = useRemoteDevices((state) => Boolean(state.snapshot?.ready && state.snapshot.hosting));
-  const remoteHostLive = useRef({ chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren });
-  remoteHostLive.current = { chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren };
+  // Everything the host reads or runs, current as of this render. Host requests
+  // arrive at any time, so nothing below captures state from one render.
+  const remoteHostValues = {
+    chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
+    runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
+    renameThread, archiveThreadRecord, unarchiveThread, deleteThreadRecord, forkThreadFor, setProjects, setPinnedThreadIds, persistThreadModel, persistThreadReasoning,
+    captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent,
+  };
+  const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined });
+  Object.assign(remoteHostLive.current, remoteHostValues);
+  const hostGitCacheRef = useRef(new Map<string, WorkspaceGitInfo | null>());
   useEffect(() => {
     if (!hostingOn) return;
     let disposed = false;
     let dispose: (() => void) | undefined;
-    // Live getters and bookkeeping only. Nothing here selects a thread, starts
-    // work or changes what the user of this device is looking at.
-    const sources: HostSources = {
+    const live = remoteHostLive;
+    const archivedRecord = (threadId: string) => archivedThreadsRef.current.find((record) => record.id === threadId);
+    const projectIdForPath = (path: string) => projectsRef.current.find((project) => normalizedProjectPath(project.path) === normalizedProjectPath(path))?.id
+      ?? (live.current.chatWorkspace && normalizedProjectPath(live.current.chatWorkspace.path) === normalizedProjectPath(path) ? live.current.chatWorkspace.id : null);
+    // Live getters and bookkeeping only. Nothing here selects a thread or
+    // changes what the user of this device is looking at.
+    const sources: HostContextSources = {
       getWorkspaces: () => {
-        const chat = remoteHostLive.current.chatWorkspace;
+        const chat = live.current.chatWorkspace;
         return chat ? [...projectsRef.current, chat] : projectsRef.current;
       },
       getKnownThreads: () => knownThreadsRef.current ?? {},
       getBindings: () => threadProjectBindingsRef.current ?? {},
       getOwnershipLinks: () => childThreadLinksRef.current,
       getArchivedThreadIds: () => new Set(archivedThreadsRef.current.map((record) => record.id)),
+      getArchivedThreads: () => archivedThreadsRef.current.map(synthesizedArchivedThread),
+      getPinnedThreadIds: () => new Set(live.current.pinnedThreadIds),
       getUnavailableThreadIds: () => deletedThreadIdsRef.current,
       getRuntime: () => ({
-        available: Boolean(remoteHostLive.current.runtimeStatus?.available),
-        dataHome: remoteHostLive.current.runtimeStatus?.dataHome,
+        available: Boolean(live.current.runtimeStatus?.available),
+        dataHome: live.current.runtimeStatus?.dataHome,
       }),
       getDefaultProvider: () => settingsRef.current.provider,
       watchThreadNames: () => watchThreadNameSaves(),
       getGrant: (device) => useRemoteDevices.getState().snapshot?.devices.find((entry) => entry.fingerprint === device)?.grant ?? null,
       executionPathFor,
       onCursorSession: (threadId, sessionId) => { cursorSessionIdsRef.current[threadId] = sessionId; },
-      rememberThread: (thread) => remoteHostLive.current.rememberThread(thread),
+      rememberThread: (thread) => live.current.rememberThread(thread),
       reconcile: async (isCurrent) => {
         const roots = new Set(Object.values(nativeAgentLinksRef.current).map((link) => link.rootThreadId));
         for (const threadId of roots) {
           if (!isCurrent()) return;
-          await remoteHostLive.current.reconcileIdleClaudeNativeChildren(threadId);
+          await live.current.reconcileIdleClaudeNativeChildren(threadId);
+        }
+      },
+      getSettings: () => settingsRef.current,
+      getThreadModels: () => threadModelsRef.current,
+      getThreadReasoning: () => threadReasoningRef.current,
+      getThreadSubagents: () => threadSubagentSettingsRef.current,
+      getRuntimeModels: () => live.current.runtimeModels,
+      getBaseContext: () => {
+        const context = turnRunnerContextRef.current;
+        if (!context) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
+        return context;
+      },
+      getWorkspaceGitInfo: (workspaceId) => {
+        if (live.current.activeProject?.id === workspaceId) return live.current.workspaceGitInfo;
+        const path = projectsRef.current.find((project) => project.id === workspaceId)?.path;
+        return path ? hostWorkspaceGit(hostGitCacheRef.current, workspaceId, () => readWorkspaceGitInfo(path)) : null;
+      },
+      // The busy flag describes the worktree of the thread on screen.
+      isWorktreeBusy: (threadId) => Boolean(threadId && threadId === live.current.activeThreadId && live.current.worktreeBusy),
+      onRemoteCodexRuntimeOwned: (threadId, instance) => {
+        codexRuntimeOwnersRef.current.set(threadId, instance);
+        knownCodexRuntimeInstancesRef.current.add(instance);
+        if (useTaskStore.getState().activeThreadId === threadId) activeCodexRuntimeInstanceRef.current = instance;
+      },
+      getProviderCatalog: () => hostProviderCatalog({ ...live.current, ready: {
+        openai: Boolean(live.current.childAgentReadiness.openAiSignedIn), claude: Boolean(live.current.childAgentReadiness.claudeReady), cursor: Boolean(live.current.childAgentReadiness.cursorReady),
+        openrouter: Boolean(live.current.childAgentReadiness.openRouterReady), lmstudio: Boolean(live.current.childAgentReadiness.lmStudioReady),
+      } }),
+      getStudioReads: () => ({
+        getCheckpoints: () => live.current.checkpoints,
+        getCheckpointHead: (root) => live.current.checkpointHeads[normalizedProjectPath(root)],
+        getThreadWorktree: (threadId) => threadWorktreesRef.current[threadId],
+      }),
+      getPublicSkills: () => live.current.skills.map((skill) => ({ name: skill.name, description: skill.description, enabled: skill.enabled })),
+      getPublicWorkflows: (workspaceId) => live.current.workflows.filter((workflow) => workflow.enabled && (!workflow.projectId || workflow.projectId === workspaceId))
+        .map((workflow) => ({ id: workflow.id, name: workflow.name, description: workflow.description })),
+    };
+    const stop: StopActionSources = {
+      bumpRootCutoffIntent: (threadId) => { rootCutoffIntentRef.current.set(threadId, (rootCutoffIntentRef.current.get(threadId) ?? 0) + 1); },
+      captureChildStopFrontier: (threadId) => live.current.captureChildStopFrontier(threadId),
+      cancelChildAgentsFor: (threadId, frontier) => live.current.cancelChildAgentsFor(threadId, frontier as ReturnType<typeof captureChildStopFrontier>),
+      stopWorkflow: (workflowId, runId, stopRoot) => live.current.stopWorkflowRun?.(workflowId, runId, stopRoot) ?? Promise.resolve(false),
+    };
+    const rows: HostRowActions = {
+      archivedThread: (threadId) => {
+        const record = archivedRecord(threadId);
+        const workspaceId = record ? projectIdForPath(record.path) : null;
+        return record && workspaceId ? { thread: synthesizedArchivedThread(record), workspaceId } : null;
+      },
+      execute: async (op, args, operation) => {
+        const threadId = typeof args.threadId === "string" ? args.threadId : "";
+        const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId : "";
+        const thread = threadId ? knownThreadsRef.current?.[threadId] : undefined;
+        const requireThread = () => {
+          if (!thread) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
+          return thread;
+        };
+        switch (op) {
+          case "thread.rename":
+            operation.assertAllowed();
+            await live.current.renameThread(requireThread(), String(args.name), true);
+            return { state: "accepted", threadId };
+          case "thread.archive":
+            operation.assertAllowed();
+            await live.current.archiveThreadRecord(requireThread(), false, false, true);
+            return { state: "accepted", threadId };
+          case "thread.restore": {
+            const record = archivedRecord(threadId);
+            if (!record) throw new HostReadError("stale_target", "This conversation is no longer archived.");
+            operation.assertAllowed();
+            await live.current.unarchiveThread(record, true);
+            return { state: "accepted", threadId };
+          }
+          case "thread.delete": {
+            const label = archivedRecord(threadId)?.label ?? thread?.name ?? thread?.preview ?? "this conversation";
+            operation.assertAllowed();
+            await live.current.deleteThreadRecord(threadId, label, false, true);
+            return { state: "accepted", threadId };
+          }
+          case "thread.pin":
+            operation.assertAllowed();
+            live.current.setPinnedThreadIds((current) => args.pinned === true
+              ? (current.includes(threadId) ? current : [...current, threadId]) : current.filter((id) => id !== threadId));
+            return { state: "accepted", threadId };
+          case "thread.fork":
+            operation.assertAllowed();
+            return { state: "accepted", threadId: await live.current.forkThreadFor(requireThread(), operation.context) };
+          case "projects.pin":
+            operation.assertAllowed();
+            live.current.setProjects((current) => Boolean(current.find((project) => project.id === workspaceId)?.pinned) === (args.pinned === true)
+              ? current : toggleProjectPinned(current, workspaceId));
+            return { state: "accepted", workspaceId };
+          case "projects.reorder":
+            operation.assertAllowed();
+            live.current.setProjects((current) => reorderProjects(current, workspaceId, String(args.relativeTo), args.position === "before" ? "before" : "after"));
+            return { state: "accepted", workspaceId };
+          case "projects.remove": {
+            const project = projectsRef.current.find((entry) => entry.id === workspaceId);
+            if (!project) throw new HostReadError("thread_unavailable", "This project is unavailable.");
+            if (Object.values(threadWorktreesRef.current).some((record) => normalizedProjectPath(record.projectPath) === normalizedProjectPath(project.path) && record.status !== "removed")) {
+              throw new HostReadError("busy", "Remove this project's isolated worktrees first.");
+            }
+            operation.assertAllowed();
+            live.current.autoPublish.disable(project.id);
+            live.current.setProjects((current) => current.filter((entry) => entry.id !== project.id));
+            if (activeProjectIdRef.current === project.id) {
+              const next = projectsRef.current.find((entry) => entry.id !== project.id);
+              setActiveProjectId(next?.id ?? null);
+              if (!next) setWorkspaceMode("chat");
+            }
+            return { state: "accepted", workspaceId };
+          }
+          default: throw new HostReadError("unsupported", "This action isn't available.");
         }
       },
     };
-    void import("./lib/remote/host").then(({ createRemoteHost }) => {
+    const settings: HostSettingsActions = {
+      set: async (threadId, values, operation) => {
+        operation.assertAllowed();
+        if (values.model !== undefined) live.current.persistThreadModel(threadId, values.model);
+        if (values.effort !== undefined) live.current.persistThreadReasoning(threadId, { reasoningEffort: values.effort as ReasoningEffort, ultra: false });
+        return { state: "accepted" };
+      },
+    };
+    const parity: HostParityActions = createHostParity({
+      getProject: (workspaceId) => projectsRef.current.find((project) => project.id === workspaceId) ?? null,
+      updateProject: (workspaceId, change) => live.current.setProjects((current) => current.map((project) => project.id === workspaceId ? change(project) : project)),
+      getWorkflows: () => live.current.workflows,
+      getPublicSkills: sources.getPublicSkills,
+      acceptCheckpoint: (context, checkpointId) => {
+        const entry = live.current.checkpoints.find((record) => record.id === checkpointId);
+        const inWorkspace = entry && (entry.threadId === context.activeThread?.id
+          || normalizedProjectPath(entry.workspacePath ?? "") === normalizedProjectPath(context.activeWorkspace?.path ?? ""));
+        if (!entry || !inWorkspace) return false;
+        live.current.toggleCheckpointAccepted(entry);
+        return true;
+      },
+      stopAgent: (parent, agentId) => live.current.stopChildAgent(childAgentLinksRef.current[agentId]?.rootThreadId ?? nativeAgentLinksRef.current[agentId]?.rootThreadId ?? parent, agentId),
+      getArchived: (workspaceId) => archivedThreadsRef.current.filter((record) => projectIdForPath(record.path) === workspaceId)
+        .map((record) => ({ id: record.id, label: record.label, archivedAt: record.archivedAt, provider: record.provider, child: Boolean(childThreadLinksRef.current[record.id]) })),
+      searchThreads: async (context, query) => {
+        const workspacePath = normalizedProjectPath(context.activeWorkspace?.path ?? "");
+        const bindings = threadProjectBindingsRef.current ?? {};
+        const inWorkspace = (thread: Thread) => normalizedProjectPath(bindings[thread.id] || thread.cwd) === workspacePath;
+        const known = Object.values(knownThreadsRef.current ?? {}).filter(inWorkspace);
+        const words = query.toLowerCase();
+        const found = new Map(known.filter((thread) => `${thread.name ?? ""} ${thread.preview}`.toLowerCase().includes(words)).map((thread) => [thread.id, thread]));
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10_000);
+        try {
+          if (live.current.runtimeStatus?.available) {
+            const page = await rpc<ThreadSearchResponse>("thread/search", threadSearchParams(query, 50, undefined));
+            for (const thread of threadsForWorkspace(page?.data ?? [], context.activeWorkspace?.path ?? "", bindings)) found.set(thread.id, thread);
+          }
+          const locals = known.flatMap((thread): { provider: "claude" | "cursor"; threadId: string }[] => isClaudeThread(thread) ? [{ provider: "claude", threadId: thread.id }]
+            : isCursorThread(thread) ? [{ provider: "cursor", threadId: thread.id }] : []);
+          const local = await searchLocalTranscripts(query, locals, controller.signal);
+          for (const hit of local.hits) {
+            const thread = knownThreadsRef.current?.[hit.threadId];
+            if (thread) found.set(thread.id, thread);
+          }
+        } catch { /* Name and preview matches stand on their own. */ } finally { clearTimeout(timer); }
+        return [...found.values()];
+      },
+      archiveThread: async (threadId) => {
+        const thread = knownThreadsRef.current?.[threadId];
+        if (!thread) throw new HostReadError("thread_unavailable", "A conversation is unavailable.");
+        await live.current.archiveThreadRecord(thread, false, false, true);
+      },
+      deleteThread: async (threadId) => { await live.current.deleteThreadRecord(threadId, archivedRecord(threadId)?.label ?? "this conversation", false, true); },
+      stopWorkflow: (workflowId, runId) => live.current.stopWorkflowRun?.(workflowId, runId) ?? Promise.resolve(false),
+      pumpQueue: (threadId) => turnRunnerRef.current?.pumpRemoteQueue(threadId),
+    });
+    void import("./lib/remote/host").then(({ createRemoteHost, createRemoteWork }) => {
       if (disposed) return;
+      sources.createWork = (lease) => createRemoteWork({
+        ...lease, sources, stop, rows, settings, parity,
+        getRunner: () => {
+          const runner = turnRunnerRef.current;
+          if (!runner) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
+          return runner;
+        },
+        subscribeAuthority: (changed) => useRemoteDevices.subscribe(changed),
+      });
       const host = createRemoteHost(sources);
-      dispose = () => host.dispose();
+      remoteHostRef.current = host;
+      dispose = () => { if (remoteHostRef.current === host) remoteHostRef.current = null; host.dispose(); };
       void host.start();
     }).catch(() => undefined);
     return () => {
       disposed = true;
       dispose?.();
     };
-  }, [archivedThreadsRef, executionPathFor, hostingOn, nativeAgentLinksRef, projectsRef, settingsRef, watchThreadNameSaves]);
+  }, [archivedThreadsRef, executionPathFor, hostingOn, nativeAgentLinksRef, projectsRef, settingsRef, threadModelsRef, threadReasoningRef, threadSubagentSettingsRef, watchThreadNameSaves]);
   useThreadHealth({
     runtimeAvailable: Boolean(runtimeStatus?.available),
     threadFor: (threadId) => knownThreadsRef.current?.[threadId] ?? (activeThread?.id === threadId ? activeThread : undefined),
@@ -9112,7 +9301,7 @@ export default function App() {
   const openWorkflowThreadRef = useRef(openAgent);
   openWorkflowThreadRef.current = openAgent;
 
-  const { runWorkflow, stopWorkflow } = useWorkflowEngine({
+  const { runWorkflow, stopWorkflow, stopWorkflowRun } = useWorkflowEngine({
     workflows,
     projects,
     automaticGitInitialization: settings.automaticGitInitialization === true,
@@ -9168,6 +9357,7 @@ export default function App() {
     onError: (message) => setError(message),
   });
   stopWorkflowRef.current = stopWorkflow;
+  remoteHostLive.current.stopWorkflowRun = stopWorkflowRun;
 
   useEffect(() => {
     if (pendingWorkflowOpen && (localInputBlocked() || pendingWorkflowOpen.voiceGeneration !== localInputGeneration())) {
@@ -9859,50 +10049,12 @@ export default function App() {
             <section className="conversation">
               {ActivityDemo ? <Suspense fallback={<div className="timeline-loading">Loading isolated activity preview…</div>}><ActivityDemo /></Suspense> : <>
               {activeThreadId && <ThreadOpenCommitMarker threadId={activeThreadId} commitToken={threadOpenCommitToken} />}
-              {convSearchOpen && activeThreadId && (
-                <div className="conv-search-bar" role="search">
-                  <Search size={12} />
-                  <TransitionInput
-                    ref={convSearchInputRef}
-                    value={convSearchQuery}
-                    onValueChange={(query) => {
-                      setConvSearchQuery(query);
-                      setConvSearchIndex(0);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        setConvSearchIndex((current) => current + (event.shiftKey ? -1 : 1));
-                      }
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setConvSearchOpen(false);
-                        setConvSearchQuery("");
-                      }
-                    }}
-                    placeholder="Search this conversation…"
-                    aria-label="Search this conversation"
-                  />
-                  <small>{convSearchQuery.trim() ? (convSearchCount ? `${(((convSearchIndex % convSearchCount) + convSearchCount) % convSearchCount) + 1} of ${convSearchCount}` : "No matches") : ""}</small>
-                  <button onClick={() => setConvSearchIndex((current) => current - 1)} disabled={!convSearchCount} title="Previous match" aria-label="Previous match">
-                    <ChevronDown style={{ transform: "rotate(180deg)" }} size={13} />
-                  </button>
-                  <button onClick={() => setConvSearchIndex((current) => current + 1)} disabled={!convSearchCount} title="Next match" aria-label="Next match">
-                    <ChevronDown size={13} />
-                  </button>
-                  <button
-                    onClick={() => {
-                      setConvSearchOpen(false);
-                      setConvSearchQuery("");
-                    }}
-                    title="Close search"
-                    aria-label="Close conversation search"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              )}
+              {convSearchOpen && activeThreadId && <ConversationSearchBar
+                inputRef={convSearchInputRef} query={convSearchQuery} index={convSearchIndex} count={convSearchCount}
+                onQuery={(query) => { setConvSearchQuery(query); setConvSearchIndex(0); }}
+                onIndex={setConvSearchIndex}
+                onClose={() => { setConvSearchOpen(false); setConvSearchQuery(""); }}
+              />}
               {visibleStartingPrompt && timelineEmpty ? (
                 <PendingFirstPrompt prompt={visibleStartingPrompt} />
               ) : timelineEmpty || !activeThreadId ? (
@@ -10127,34 +10279,7 @@ export default function App() {
                 }
                 controls={
                   <>
-                    <div className="permission-control" ref={permissionControlRef}>
-                      <button className="toolbar-button" onClick={() => setPermissionOpen((open) => !open)} aria-haspopup="menu" aria-expanded={permissionOpen}>
-                        <PermissionIcon mode={effectiveSettings.permission} />
-                        {permissionLabel(effectiveSettings.permission)}
-                        <ChevronDown size={13} />
-                      </button>
-                      {permissionOpen && (
-                        <div className="permission-menu" role="menu" aria-label="Permission mode">
-                          {(["read-only", "ask", "full"] as PermissionMode[]).map((mode) => (
-                            <button
-                              key={mode}
-                              className={effectiveSettings.permission === mode ? "selected" : ""}
-                              onClick={() => {
-                                persistComposerPermission(mode);
-                                setPermissionOpen(false);
-                              }}
-                            >
-                              <PermissionIcon mode={mode} size={17} />
-                              <span>
-                                <strong>{permissionLabel(mode)}</strong>
-                                <small>{mode === "read-only" ? "Inspect without changing files" : mode === "ask" ? "Work locally; ask for elevated actions" : "Unrestricted local access"}</small>
-                              </span>
-                              {effectiveSettings.permission === mode && <Check size={15} />}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    <PermissionPicker value={effectiveSettings.permission} open={permissionOpen} rootRef={permissionControlRef} onOpenChange={setPermissionOpen} onChange={persistComposerPermission} />
                     <SubAgentCommandCenter
                       policy={activeThreadSubagentPolicy}
                       engine={sanitizeSubagentEngine(effectiveSettings.subagentEngine)}
@@ -10218,7 +10343,7 @@ export default function App() {
         </div>
         {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
           <remoteUi.RemoteConversation device={shownMachine} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarOpen} chatFont={activeChatFont} voiceInput={voiceInputConfig}
-            actions={paletteTrigger}
+            actions={paletteTrigger} onOpenTool={(tab) => { setStudioTab(tab); setRemoteStudioOpen(true); }}
             studioToggle={<button className={`workspace-tools-trigger studio-toggle ${remoteStudioOpen ? "active" : ""}`} onClick={() => setRemoteStudioOpen((open) => !open)} title={`Thread tools on ${remoteMachineName}`}>
               <PanelRight size={17} />
               <span>Thread tools</span>
@@ -10230,7 +10355,7 @@ export default function App() {
 
       {shownRemote && remoteUi && <ErrorBoundary label="remote thread tools" key={`remote-tools:${shownMachine}`}>
         <remoteUi.RemoteStudio device={shownMachine} open={remoteStudioOpen} rootRef={paneRefs.dock} onResizeStart={startPaneResize("dock")} onResizeKeyDown={resizePaneWithKeyboard("dock")}
-          resizeValue={paneSizes.dock} tab={studioTab} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} />
+          resizeValue={paneSizes.dock} tab={studioTab} gitRoute={gitRoute} onTab={setStudioTab} onClose={() => setRemoteStudioOpen(false)} onFork={() => machineActions()?.forkThread()} />
       </ErrorBoundary>}
       <ErrorBoundary label="thread tools" key={`workspace-tools:${studioView.attempt}`} resetKey={JSON.stringify([activeProject?.id, activeThreadId, studioTab])} showError={studioOpen} onDismiss={() => setStudioOpen(false)} onRetry={() => setStudioView((current) => ({ View: lazy(loadStudioDock), attempt: current.attempt + 1 }))}>
         <Suspense fallback={null}>
@@ -10641,7 +10766,7 @@ export default function App() {
         open={commandPaletteOpen}
         projects={remoteActive ? machineActions()?.palette().projects ?? EMPTY_PROJECTS : projects}
         threads={remoteActive ? machineActions()?.palette().threads ?? EMPTY_THREADS : paletteThreads}
-        workflows={remoteActive ? EMPTY_WORKFLOWS : workflows}
+        workflows={remoteActive ? machineActions()?.palette().workflows ?? EMPTY_WORKFLOWS : workflows}
         projectActive={remoteActive || Boolean(activeProject)}
         onClose={() => setCommandPaletteOpen(false)}
         onProject={(project) => {
@@ -10651,11 +10776,11 @@ export default function App() {
           setWorkspaceMode("project");
         }}
         onThread={(thread) => { if (isRemoteMachineActive()) machineActions()?.openThread(thread.id); else void selectThread(thread); }}
-        onWorkflow={(workflow) => void runWorkflowFromShortcut(workflow)}
+        onWorkflow={(workflow) => { if (isRemoteMachineActive()) machineActions()?.runWorkflow(workflow.id); else void runWorkflowFromShortcut(workflow); }}
         onNewThread={() => { if (isRemoteMachineActive()) machineActions()?.newThread(); else newThread(); }}
         onSettings={() => openSettings()}
         onTool={(tab) => { if (isRemoteMachineActive()) { setStudioTab(tab); setRemoteStudioOpen(true); } else openStudio(tab); }}
-        onGitRoute={remoteActive ? undefined : openGitRoute}
+        onGitRoute={openGitRoute}
       />
       </Suspense></ErrorBoundary>}
       {!voiceSession && <ConfirmDialogModal />}

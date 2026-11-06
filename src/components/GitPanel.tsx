@@ -82,6 +82,8 @@ export interface GitPanelProps {
   githubOperationError?: string;
   gitOperationBusy?: boolean;
   readOnly: boolean;
+  /** Replaces the thread-permission wording where something else makes this read only. */
+  readOnlyReason?: string;
   defaultRepositoryName: string;
   selectedFolder?: string;
   /** The dock can retain per-checkout drafts when this tab closes. */
@@ -124,7 +126,7 @@ export interface GitPanelProps {
   onOpenGitHubSettings: () => void;
 }
 
-const READ_ONLY_REASON = "Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.";
+const THREAD_READ_ONLY_REASON = "Switch this thread from Read only to Ask or Full access before changing Git or contacting GitHub.";
 
 const VIEWS: Array<{ id: GitView; label: string; icon: typeof FileDiff }> = [
   { id: "changes", label: "Changes", icon: FileDiff },
@@ -188,6 +190,7 @@ function commitReadiness(input: {
 }
 
 function GitPanelInner(props: GitPanelProps) {
+  const READ_ONLY_REASON = props.readOnlyReason ?? THREAD_READ_ONLY_REASON;
   // These fields are local so typing a commit message does not re-render the
   // conversation, the sidebar, and every other Workspace surface.
   const [localDraft, setLocalDraft] = useState<GitPanelDraft>({ commitMessage: "", remoteInput: "", repositoryName: props.defaultRepositoryName, visibility: "private" });
@@ -708,7 +711,7 @@ function GitPanelInner(props: GitPanelProps) {
 
   return (
     <div className="git-workspace" ref={rootRef}>
-      {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> Read only: you can inspect changes, history and pull requests. Switch thread access to Ask or Full access before changing Git or contacting GitHub.</div>}
+      {props.readOnly && <div className="history-warning"><ShieldCheck size={13} /> {props.readOnlyReason ?? "Read only: you can inspect changes, history and pull requests. Switch thread access to Ask or Full access before changing Git or contacting GitHub."}</div>}
       {outsideRepositoryRoot && <div className="git-local-note bad" role="alert"><CircleAlert size={13} aria-hidden="true" /><span>{rootRequiredReason}</span></div>}
       {absent && (
         <div className="git-initialize-card">

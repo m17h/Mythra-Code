@@ -33,7 +33,8 @@ pub(super) const READS: &[&str] = &[
 pub(super) fn mutation(op: &str) -> bool {
     matches!(
         op,
-        "queue.edit.begin"
+        "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
+            | "queue.edit.begin"
             | "queue.edit.finish"
             | "queue.retry"
             | "queue.steer"
@@ -85,6 +86,27 @@ pub(super) fn mutation(op: &str) -> bool {
 }
 pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
     Some(match op {
+        "draft.settings.set" => (&["opId","opSeq","workspaceId","draftHandle","provider","model","effort","permission","serviceTier","subagents","isolated"],true),
+        "prompt.cancel" => (&["opId","opSeq","workspaceId","startTarget"],true),
+        "git.write" => (&["opId","opSeq","workspaceId","threadId","action","resourceId","revision","message","name","create","stagedOnly","confirmed"],true),
+        "checkpoint.list" | "worktree.status" | "agents.list" => (&["workspaceId","threadId"],false),
+        "checkpoint.diff" => (&["workspaceId","threadId","checkpointId"],false),
+        "git.log" => (&["workspaceId","threadId","offset","limit","headOid"],false),
+        "git.revert.preview" => (&["workspaceId","threadId","changeId"],false),
+        "attachment.image" => (&["workspaceId","threadId","messageId","index","offset"],false),
+        "checkpoint.accept" => (&["opId","opSeq","workspaceId","threadId","checkpointId","revision"],true),
+        "agents.stop" => (&["opId","opSeq","workspaceId","threadId","agentId","revision"],true),
+        "checkpoint.create"|"checkpoint.complete" => (&["opId","opSeq","workspaceId","threadId","checkpointId","label","revision"],true),
+        "checkpoint.delete" => (&["opId","opSeq","workspaceId","threadId","checkpointId","revision","confirmed"],true),
+        "checkpoint.restore" => (&["opId","opSeq","workspaceId","threadId","checkpointId","target","revision","confirmed"],true),
+        "worktree.create" | "worktree.recreate" => (&["opId","opSeq","workspaceId","threadId","label","revision"],true),
+        "worktree.apply"|"worktree.remove"|"worktree.merge"|"worktree.baseline" => (&["opId","opSeq","workspaceId","threadId","revision","confirmed"],true),
+        "terminal.open" => (&["opId","opSeq","workspaceId","threadId","command","columns","rows"],true),
+        "terminal.write" => (&["opId","opSeq","workspaceId","terminalId","data"],true),
+        "terminal.resize" => (&["opId","opSeq","workspaceId","terminalId","columns","rows"],true),
+        "terminal.close" => (&["opId","opSeq","workspaceId","terminalId"],true),
+        "terminal.ack" => (&["workspaceId","terminalId","through"],false),
+        "attachment.put" => (&["opId","opSeq","workspaceId","phase","name","kind","size","uploadId","offset","data","sha256"],true),
         "queue.edit.begin" => (
             &[
                 "workspaceId",
@@ -483,7 +505,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
             true,
         ),
         "thread.settings.set" => (
-            &["opId", "opSeq", "threadId", "model", "effort", "provider"],
+            &["opId", "opSeq", "threadId", "model", "effort", "provider", "permission", "serviceTier", "subagents"],
             true,
         ),
         "thread.rename" => (&["opId", "opSeq", "threadId", "name"], true),
@@ -535,8 +557,11 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
             | "projects.profiles.save"
             | "projects.profiles.delete"
             | "projects.profiles.select"
+            | "projects.run.set"
+            | "projects.check.set"
     );
-    let shell = matches!(
+    let domain=op=="git.write"||(op.starts_with("checkpoint.")&&!matches!(op,"checkpoint.list"|"checkpoint.diff"|"checkpoint.accept"))||(op.starts_with("worktree.")&&op!="worktree.status");
+    let shell = domain || op.starts_with("terminal.") || matches!(
         op,
         "projects.run.set"
             | "projects.check.set"
@@ -550,6 +575,7 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
             | "discovery.check.stop"
             | "discovery.settings.set"
     );
+    if (op=="git.write"&&!grant.capabilities.git_write)||(op=="checkpoint.restore"&&!grant.capabilities.checkpoint_restore){return Err(WireError::new("forbidden","This repository action needs its access switch on the host."));}
     if !grant.view
         || (mutation(op)
             || manage
@@ -740,6 +766,23 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
             },
             true,
         )?;
+    }
+    if op=="attachment.put"{super::attachments::validate(args).map_err(|_|invalid())?;}
+    if matches!(op,"draft.settings.set"|"thread.settings.set"){
+        if args.get("permission").is_some_and(|p|!matches!(p.as_str(),Some("read-only"|"ask"|"full")))||args.get("serviceTier").is_some_and(|tier|!tier.is_null()&&!matches!(tier.as_str(),Some("standard"|"fast"))){return Err(invalid());}
+        if let Some(sub)=args.get("subagents"){let object=sub.as_object().ok_or_else(invalid)?;if object.keys().any(|key|!["enabled","engine","maxConcurrent","autoCompactTokens","nativeOptions","crew"].contains(&key.as_str()))||!sub.get("enabled").is_some_and(Value::is_boolean)||!matches!(sub.get("engine").and_then(Value::as_str),Some("mythra"|"native"))||!sub.get("maxConcurrent").and_then(Value::as_u64).is_some_and(|n|(1..=24).contains(&n))||serde_json::to_vec(sub).map_or(true,|b|b.len()>16384){return Err(invalid());}}
+        if args.get("isolated").is_some_and(|value|!value.is_boolean()){return Err(invalid());}
+    }
+    if op=="prompt.cancel"{id(args,"startTarget",true)?;}
+    if op=="git.write"&&!matches!(args.get("action").and_then(Value::as_str),Some("init"|"stage"|"unstage"|"commit"|"branch"|"push"|"pull"|"fetch"|"update"|"revert"|"revertAll")){return Err(invalid());}
+    if matches!(op,"checkpoint.restore"|"checkpoint.delete"|"worktree.apply"|"worktree.remove")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}
+    if op.starts_with("checkpoint.")&&op!="checkpoint.list"{id(args,"checkpointId",true)?;}
+    if op.starts_with("terminal.") {
+        if op!="terminal.open"{id(args,"terminalId",true)?;}
+        if op=="terminal.open"&&!args.get("command").and_then(Value::as_str).is_some_and(|s|!s.is_empty()&&s.len()<=32768&&!s.contains('\0')){return Err(invalid());}
+        if matches!(op,"terminal.open"|"terminal.resize")&&["columns","rows"].iter().any(|key|!args.get(*key).and_then(Value::as_u64).is_some_and(|n|n>0&&n<=1000)){return Err(invalid());}
+        if op=="terminal.write"&&!args.get("data").and_then(Value::as_str).is_some_and(|s|!s.is_empty()&&s.len()<=16384){return Err(invalid());}
+        if op=="terminal.ack"&&!args.get("through").and_then(Value::as_u64).is_some_and(|s|s<=super::timeline::MAX_SAFE_SEQ){return Err(invalid());}
     }
     Ok(true)
 }
