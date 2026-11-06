@@ -705,14 +705,17 @@ let historySink: UsageHistorySink | null = null;
 let historyLoading: Promise<unknown> | null = null;
 let pendingHistory: UsageHistoryDelta[] = [];
 
+function loadUsageHistory(): Promise<unknown> {
+  return historyLoading ??= import("./usageHistory").catch(() => { historyLoading = null; });
+}
+
 /** Called once by `usageHistory` when it is evaluated. */
 export function attachUsageHistory(sink: UsageHistorySink): void {
   historySink = sink;
   const pending = pendingHistory;
   pendingHistory = [];
   for (const delta of pending) sink.record(delta);
-  // Detail must never be saved ahead of the ledger that accounts for it. A
-  // dirty ledger has a persist pending, which flushes this detail after it.
+  // A dirty ledger has a persist pending, which queues this detail after it.
   if (pending.length && !ledgerDirty) sink.flush();
   // Finish any correction the ledger committed before an interruption, and
   // apply evidence that arrived while the detail wasn't loaded.
@@ -735,7 +738,7 @@ export function requestUsageRepricing(): void {
   queueMicrotask(() => {
     repricingQueued = false;
     if (historySink) historySink.reprice();
-    else historyLoading ??= import("./usageHistory").catch(() => { historyLoading = null; });
+    else void loadUsageHistory();
   });
 }
 
@@ -876,13 +879,12 @@ function recordHistory(delta: UsageHistoryDelta): void {
   if (historySink) return historySink.record(delta);
   pendingHistory.push(delta);
   if (pendingHistory.length > MAX_PENDING_HISTORY) pendingHistory.shift();
-  historyLoading ??= import("./usageHistory").catch(() => { historyLoading = null; });
+  void loadUsageHistory();
 }
 
 /**
- * Writes the authoritative ledger first and the optional dated detail second.
- * Interrupted between the two, detail can only fall short of the ledger (an
- * undated remainder), never exceed it.
+ * Queues the authoritative ledger before the dated detail. The two keys
+ * acknowledge independently, so an interrupted save can leave them out of sync.
  */
 export function flushUsageLedger(): void {
   if (ledgerDirty && cachedLedger) {
@@ -907,10 +909,18 @@ export function flushUsageLedger(): void {
  * buffer and SQLite acknowledgements because another caller may submit usage
  * just as this caller's drain finishes. */
 export async function flushUsageBeforeExit(): Promise<void> {
-  do {
+  for (;;) {
     flushUsageLedger();
     await flushPendingStateWrites();
-  } while (ledgerDirty || hasPendingStateWrites());
+    // On first use, detail may still be waiting for its lazy module to attach.
+    // Give the ledger its own durable save even if loading the detail fails.
+    if (pendingHistory.length) {
+      await loadUsageHistory();
+      if (pendingHistory.length) throw new Error("Pending dated usage could not be saved.");
+      continue;
+    }
+    if (!ledgerDirty && !hasPendingStateWrites()) return;
+  }
 }
 
 function save(records: ThreadUsageRecord[]): void {

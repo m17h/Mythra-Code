@@ -810,7 +810,7 @@ function officialSourceState(status: OfficialPricingStatus): SourceState {
       detail: status.error,
     };
   }
-  if (status.verifiedAt) return { tone: "ok", text: `${plural(status.models, "model")} verified ${when(status.verifiedAt)}` };
+  if (status.verifiedAt) return { tone: "ok", text: `Pricing page verified ${when(status.verifiedAt)}` };
   return { tone: "idle", text: "Not checked yet · using catalog and bundled rates" };
 }
 
@@ -854,7 +854,7 @@ function PricingStatus({ onRefreshPricing, openRouterPricingError }: { onRefresh
         <span className="sr-only"> · rate sources and what estimates include</span>
       </summary>
       <div className="usage-pricing-panel">
-        <p>Rates are read from each provider’s pricing page at most once a day, and whenever you refresh. New usage takes each model’s most recently verified rate. Earlier estimates keep the rate they were recorded at unless historical evidence supports a correction for dated, model-specific usage. Then that usage is repriced automatically.</p>
+        <p>The app checks each provider’s pricing page daily and whenever you refresh. New usage takes each model’s most recently verified rate. Earlier estimates keep the rate they were recorded at unless historical evidence supports a correction for dated, model-specific usage. Then that usage is repriced automatically.</p>
         <ul className="usage-pricing-sources" aria-label="Rate sources">
           {states.map(({ status, state }) => <SourceRow key={status.source} label={OFFICIAL_LABELS[status.source]} {...state} />)}
           <SourceRow label="Mythra catalog" {...catalog} />
@@ -863,7 +863,7 @@ function PricingStatus({ onRefreshPricing, openRouterPricingError }: { onRefresh
         <h6>What estimates include</h6>
         <ul className="usage-pricing-notes">
           <li>Model- and tier-specific API rates where supported. A runtime-reported tier wins; otherwise a known requested tier is an explicitly labelled estimate fallback. Unknown or unsupported OpenAI tiers are unpriced, not assigned a universal multiplier. Long-context, regional and data-residency adjustments are not inferred without evidence.</li>
-          <li>Where a provider lists no separate cache rate, those tokens are priced as input. Claude’s 1-hour cache writes use the 1-hour rate; usage recorded before this app read that split used the 5-minute rate.</li>
+          <li>Where a provider lists no separate cache rate, those tokens are priced as input. When OpenAI reports a cache-write total, estimates use the published 30-minute rate where available. Claude’s reported 1-hour cache writes use the 1-hour rate. Usage recorded before this app read Claude’s split used the 5-minute rate.</li>
           <li>Cursor models are priced at Cursor’s listed rate only when the model name matches exactly. Auto isn’t priced because Cursor doesn’t report where it routed. Missing cache metrics are Unknown, not zero. Cursor’s Teams and Enterprise token rate is not added.</li>
           <li>A past rate is supported only if the pricing page showed it both before and after that time, with no more than two days between checks, or if the Mythra catalog gives the date and time it took effect. Two matching reads cannot rule out a change and reversal between them. A rate first seen after the usage is never applied to it. Usage without a known model and time can’t be repriced. That includes usage from before dated tracking, and days before this app recorded rates that mix priced and unpriced usage.</li>
           <li>OpenRouter charges come from cost receipts captured by this app. Earlier requests, interrupted responses without a receipt, and activity in other apps are not included. This is not an invoice.</li>

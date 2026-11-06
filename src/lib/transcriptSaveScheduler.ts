@@ -137,7 +137,7 @@ export function createTranscriptSaveScheduler(options: {
       const revision = pending.get(id)?.revision;
       if (revision !== undefined) await flushThrough(id, revision);
     },
-    flushAll: async () => {
+    flushAll: async ({ allowNewRevisions = false }: { allowNewRevisions?: boolean } = {}) => {
       const failed = new Map<string, unknown>();
       for (let pass = 0; pass < 3 && pending.size; pass++) {
         const snapshot = [...pending.entries()].filter(([id]) => !failed.has(id)).map(([id, entry]) => [id, entry.revision] as const);
@@ -146,9 +146,9 @@ export function createTranscriptSaveScheduler(options: {
         results.forEach((result, index) => { if (result.status === "rejected") failed.set(snapshot[index][0], result.reason); });
       }
       if (failed.size) throw new Error([...failed.values()].map(String).join("; "));
-      // Never report a successful close flush while a final delta is unsaved.
-      // Continuous output stays dirty and reaches the explicit discard choice.
-      if (pending.size) throw new Error("Messages are still arriving. Stop active runs and retry closing to save them all.");
+      // Close can offer an explicit discard choice when output keeps arriving.
+      // An update saves through the bounded snapshots above before exiting.
+      if (pending.size && !allowNewRevisions) throw new Error("Messages are still arriving. Stop active runs and retry closing to save them all.");
     },
     dispose: () => {
       for (const entry of pending.values()) clearTimeout(entry.timer);

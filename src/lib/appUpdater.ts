@@ -5,7 +5,6 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { recordError } from "./errorLog";
 import { friendlyError, safeErrorText } from "./errors";
-import { flushUsageBeforeExit } from "./usageLedger";
 
 export type AppUpdatePhase =
   | "idle"
@@ -93,7 +92,7 @@ async function checkWithRetry(stillCurrent: () => boolean): Promise<Update | nul
   }
 }
 
-export function useAppUpdater(): AppUpdater {
+export function useAppUpdater(flushBeforeUpdate: () => Promise<void>): AppUpdater {
   const [state, setState] = useState<AppUpdateState>(INITIAL_STATE);
   const updateRef = useRef<Update | null>(null);
   const checkingRef = useRef(false);
@@ -200,7 +199,7 @@ export function useAppUpdater(): AppUpdater {
     // call settles, including when downloaded bytes arrive after teardown.
     updateRef.current = null;
     let downloading = false;
-    let savedForRestart = false;
+    let savingChanges = false;
     try {
       if (update) {
         let downloadedBytes = 0;
@@ -223,7 +222,9 @@ export function useAppUpdater(): AppUpdater {
         phaseRef.current = "installing";
         setState((current) => ({ ...current, phase: "installing", downloadedBytes, totalBytes }));
         // The Windows installer exits the process from inside install().
-        await flushUsageBeforeExit();
+        savingChanges = true;
+        await flushBeforeUpdate();
+        savingChanges = false;
         if (lifetime !== lifetimeRef.current) return;
         await update.install();
         if (lifetime !== lifetimeRef.current) return;
@@ -233,24 +234,28 @@ export function useAppUpdater(): AppUpdater {
       phaseRef.current = "restarting";
       setState((current) => ({ ...current, phase: "restarting", restartPending: true, error: null }));
       // Elsewhere install() returns, and the restart bypasses the close guard.
-      await flushUsageBeforeExit();
-      savedForRestart = true;
+      savingChanges = true;
+      await flushBeforeUpdate();
+      savingChanges = false;
       if (lifetime !== lifetimeRef.current) return;
       await relaunch();
     } catch (reason) {
       if (lifetime !== lifetimeRef.current) return;
       const restartPending = installedRef.current;
-      const error = restartPending
-        ? `The update is installed, but Mythra Code couldn’t ${savedForRestart ? "restart" : "save pending changes"}. Select Save and restart to try again.`
-        : friendlyError(reason);
-      if (restartPending) recordError(`Update restart failed: ${safeErrorText(reason)}`);
+      const error = savingChanges
+        ? `Couldn’t save pending changes before ${restartPending ? "restarting" : "installing the update"}. ${friendlyError(reason)}`
+        : restartPending
+          ? "The update is installed, but Mythra Code couldn’t restart. Select Save and restart to try again."
+          : friendlyError(reason);
+      if (savingChanges) recordError(`Update save failed: ${safeErrorText(reason)}`);
+      else if (restartPending) recordError(`Update restart failed: ${safeErrorText(reason)}`);
       phaseRef.current = "error";
       setState((current) => ({ ...current, phase: "error", restartPending, error }));
     } finally {
       downloading = false;
       if (update) void update.close().catch(() => undefined);
     }
-  }, [performCheck]);
+  }, [flushBeforeUpdate, performCheck]);
 
   useEffect(() => {
     if (!isTauri()) {
