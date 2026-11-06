@@ -1,7 +1,6 @@
 /* ==========================================================================
    Studio effort control (the default since 2026-11-01)
-   Morgan turned down a segmented control and then a Mac-style slider ("too
-   close to Classic"), then picked "Dot steps" from four directions:
+   Dot steps with a provider-colored fill:
 
      ⏱ Reasoning  ⚡Fast
      ●──────────●──────────◉──────────○──────────○
@@ -23,6 +22,12 @@
    Selectors follow the Lumen contract: no :is()/:where()/:has() and no
    :focus-visible inside a selector list.
    ========================================================================== */
+
+.app-shell[data-theme][data-color-scheme] { --studio-accent: var(--provider-accent-openai); --studio-accent-soft: var(--provider-accent-openai-soft); }
+.app-shell[data-theme][data-color-scheme][data-model-provider="claude"] { --studio-accent: var(--provider-accent-claude); --studio-accent-soft: var(--provider-accent-claude-soft); }
+.app-shell[data-theme][data-color-scheme][data-model-provider="cursor"] { --studio-accent: var(--provider-accent-cursor); --studio-accent-soft: var(--provider-accent-cursor-soft); }
+.app-shell[data-theme][data-color-scheme][data-model-provider="openrouter"] { --studio-accent: var(--provider-accent-openrouter); --studio-accent-soft: var(--provider-accent-openrouter-soft); }
+.app-shell[data-theme][data-color-scheme][data-model-provider="lmstudio"] { --studio-accent: var(--provider-accent-lmstudio); --studio-accent-soft: var(--provider-accent-lmstudio-soft); }
 
 /* ---- Heading ---- */
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-heading > svg:first-child,
@@ -49,6 +54,7 @@
   display: block;
   height: 20px;
   cursor: pointer;
+  outline-color: var(--studio-accent);
 }
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-rail.disabled,
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-rail.disabled { cursor: default; opacity: .5; }
@@ -82,8 +88,8 @@
   justify-content: space-between;
   background:
     linear-gradient(90deg,
-      var(--lm-fill, var(--green)) 0,
-      var(--lm-fill, var(--green)) var(--reasoning-fill, 0%),
+      var(--studio-accent) 0,
+      var(--studio-accent) var(--reasoning-fill, 0%),
       var(--line-strong) var(--reasoning-fill, 0%),
       var(--line-strong) 100%)
     center / 100% 2px no-repeat;
@@ -129,7 +135,7 @@
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-ticks i.reached::before,
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .reasoning-ticks i.reached::before,
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .openrouter-reasoning-ticks i.reached::before {
-  background: var(--lm-fill, var(--green));
+  background: var(--studio-accent);
 }
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-ticks i.current::before,
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-ticks i.current::before,
@@ -139,8 +145,8 @@
   top: -6px;
   width: 12px;
   height: 12px;
-  background: var(--lm-fill, var(--green));
-  box-shadow: 0 0 0 2px var(--panel), 0 0 0 5px var(--green-soft);
+  background: var(--studio-accent);
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 5px var(--studio-accent-soft);
 }
 @media (prefers-reduced-motion: no-preference) {
   .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-ticks i::before,
@@ -154,7 +160,7 @@
 .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-rail input[type="range"]:focus + .openrouter-reasoning-ticks i.current::before,
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .reasoning-rail input[type="range"]:focus + .reasoning-ticks i.current::before,
 .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .openrouter-reasoning-rail input[type="range"]:focus + .openrouter-reasoning-ticks i.current::before {
-  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--green);
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--studio-accent);
 }
 
 /* ---- Only the chosen level's name, centred under its dot ---- */
@@ -219,21 +225,23 @@
   height: 8px;
   border-radius: 0;
   background:
-    radial-gradient(circle, var(--lm-fill, var(--green)) 0 2px, transparent 2.5px) 0 50% / 25% 100% repeat-x,
-    linear-gradient(90deg, var(--lm-fill, var(--green)) 0 50%, var(--line-strong) 50% 100%) center / 100% 2px no-repeat;
+    radial-gradient(circle, var(--studio-accent) 0 2px, transparent 2.5px) 0 50% / 25% 100% repeat-x,
+    linear-gradient(90deg, var(--studio-accent) 0 50%, var(--line-strong) 50% 100%) center / 100% 2px no-repeat;
 }
 .app-shell[data-theme][data-color-scheme] .slider-style-preview.studio .slider-style-thumb {
   left: 50%;
   width: 10px;
   height: 10px;
   border: 0;
-  background: var(--lm-fill, var(--green));
-  box-shadow: 0 0 0 3px var(--green-soft);
+  background: var(--studio-accent);
+  box-shadow: 0 0 0 3px var(--studio-accent-soft);
 }
 
 /* System high-contrast palettes remove our gradient and shadow geometry.
    Restore the native range, retaining the shared rail's pointer handling. */
 @media (forced-colors: active) {
+  .app-shell[data-theme][data-color-scheme],
+  .app-shell[data-theme][data-color-scheme][data-model-provider] { --studio-accent: Highlight; }
   .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .reasoning-rail input[type="range"],
   .app-shell[data-theme][data-color-scheme][data-effort-slider="studio"] .composer .openrouter-reasoning-rail input[type="range"],
   .app-shell[data-theme][data-color-scheme] .ob-effort-shell[data-effort-slider="studio"] .reasoning-rail input[type="range"],

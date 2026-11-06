@@ -18,7 +18,7 @@ export type ClaudeLogoStyle = "claude" | "anthropic";
 export type CursorLogoStyle = "cube" | "app-dark";
 export type PermissionMode = "read-only" | "ask" | "full";
 export type ThemeName = "mythra" | "light-mythra" | "kiwi" | "daylight" | "synthwave" | "atari";
-export type EffortSliderStyle = "studio" | "spectrum" | "classic" | "neon" | "pixel" | "aurora" | "astra" | "ink" | "reactor" | "comet" | "coil" | "poet";
+export type EffortSliderStyle = "studio" | "pixel" | "aurora" | "astra" | "ink" | "reactor" | "comet" | "coil" | "poet";
 /** Typeface family used for chat prose and the composer: a built-in stack
  * (styles.css --chat-font-<id>) or `custom:<id>` from the custom font library
  * (lib/customFonts.ts). */
