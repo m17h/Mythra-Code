@@ -10,6 +10,7 @@ export interface LanguageToolStatus {
   languages: string[];
   state: LanguageToolState;
   detail: string;
+  installCommand?: string;
   enabled: boolean;
   health: LanguageToolHealth;
 }

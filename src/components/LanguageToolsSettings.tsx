@@ -10,6 +10,7 @@ import {
   setLanguageToolsAutoInstall,
   type LanguageToolsSnapshot,
   type LanguageToolState,
+  type LanguageToolStatus,
 } from "../lib/languageTools";
 import "./LanguageToolsSettings.css";
 
@@ -22,8 +23,14 @@ const STATE_LABELS: Record<LanguageToolState, string> = {
   unavailable: "Prerequisite needed",
 };
 
-function verifiedInstallation(snapshot: LanguageToolsSnapshot | null, id: string | null): boolean {
-  return Boolean(id && snapshot?.tools.some((tool) => tool.id === id && tool.state === "installed" && tool.health === "verified"));
+function rustPrerequisiteCommand(tool: LanguageToolStatus | undefined): string | undefined {
+  return tool?.id === "rust" && tool.enabled && tool.state === "unavailable" ? tool.installCommand : undefined;
+}
+
+function installErrorResolved(snapshot: LanguageToolsSnapshot | null, id: string | null): boolean {
+  if (!id) return false;
+  const tool = snapshot?.tools.find((entry) => entry.id === id);
+  return Boolean((tool?.state === "installed" && tool.health === "verified") || rustPrerequisiteCommand(tool));
 }
 
 export function LanguageToolsSettings() {
@@ -50,9 +57,9 @@ export function LanguageToolsSettings() {
   const accept = useCallback((next: LanguageToolsSnapshot) => {
     const previous = currentSnapshot.current;
     if (!mounted.current || (previous && next.generation < previous.generation)) return false;
-    // Inventory cannot prove a settings write persisted, but an exact tool's
-    // successful server verification does resolve that tool's setup failure.
-    if (errorKind.current === "mutation" && verifiedInstallation(next, failedInstall.current)) {
+    // A verified tool or its specific prerequisite replaces an earlier setup
+    // failure for that tool. Neither can establish that a settings write persisted.
+    if (errorKind.current === "mutation" && installErrorResolved(next, failedInstall.current)) {
       setError("");
       errorKind.current = null;
       failedInstall.current = null;
@@ -152,7 +159,7 @@ export function LanguageToolsSettings() {
     };
   }, [refresh]);
 
-  const run = async (key: string, action: () => Promise<LanguageToolsSnapshot>, outcome: (next: LanguageToolsSnapshot) => { message: string; failed?: boolean }) => {
+  const run = async (key: string, action: () => Promise<LanguageToolsSnapshot>, outcome: (next: LanguageToolsSnapshot) => { message: string; failed?: boolean } | null) => {
     // A synchronous guard covers repeated clicks before React renders disabled.
     if (writing.current || !snapshot) return;
     writing.current = true;
@@ -169,16 +176,16 @@ export function LanguageToolsSettings() {
       const result = await action();
       if (epoch === lifetime.current && accept(result)) {
         const completion = outcome(result);
-        if (completion.failed) {
+        if (completion?.failed) {
           errorKind.current = "mutation";
           failedInstall.current = installId;
           setError(completion.message);
         }
-        else setNotice(completion.message);
+        else if (completion) setNotice(completion.message);
       }
     } catch (reason) {
       if (mounted.current && epoch === lifetime.current) {
-        if (!verifiedInstallation(currentSnapshot.current, installId)) {
+        if (!installErrorResolved(currentSnapshot.current, installId)) {
           errorKind.current = "mutation";
           failedInstall.current = installId;
           setError(`${installId ? "Language tool setup could not complete." : "Language tool settings could not be saved."} ${safeErrorText(reason)}`);
@@ -216,7 +223,8 @@ export function LanguageToolsSettings() {
       {snapshot?.tools.map((tool) => {
         const installing = tool.state === "installing" || pending === `install:${tool.id}`;
         const hasInstallation = tool.state === "installed" || tool.state === "available";
-        const checkingTool = checking && hasInstallation && tool.enabled && !installing;
+        const installCommand = rustPrerequisiteCommand(tool);
+        const checkingTool = checking && (hasInstallation || Boolean(installCommand)) && tool.enabled && !installing;
         return <div key={tool.id} className="set-row language-tools-row">
           <div className="set-copy">
             <strong>{tool.name}</strong>
@@ -226,16 +234,20 @@ export function LanguageToolsSettings() {
               {installing ? "Installing…" : !tool.enabled ? "Disabled" : checkingTool ? "Checking…" : tool.state === "available" && tool.health === "stale" ? "Verification expired" : tool.state === "error" && tool.health === "error" ? "Verification failed" : STATE_LABELS[tool.state]}
             </span>
             {tool.detail && <small className="language-tools-detail">{tool.detail}</small>}
+            {installCommand && <code className="language-tools-install-command">{installCommand}</code>}
           </div>
           <div className="set-control language-tools-controls">
             <label className="language-tools-enabled"><input type="checkbox" aria-label={`Enable ${tool.name}`} checked={tool.enabled} disabled={pending !== null || installing} onChange={(event) => {
               const enabled = event.currentTarget.checked;
               void run(`enabled:${tool.id}`, () => setLanguageToolEnabled(tool.id, enabled), (next) => ({ message: `${tool.name} ${next.tools.find((entry) => entry.id === tool.id)?.enabled ? "enabled" : "disabled"}.` }));
             }} /> Enabled</label>
-            {hasInstallation && !installing ? <span className="language-tools-installed" role="img" aria-label={`${tool.name} installed`}>
+            {installCommand && !installing ? <button type="button" className="secondary-button" aria-label={`Refresh ${tool.name} verification`} disabled={refreshing || pending !== null} onClick={() => void refresh(true)}>
+              <RefreshCw size={13} aria-hidden="true" />{checkingTool ? "Refreshing…" : "Refresh"}
+            </button> : hasInstallation && !installing ? <span className="language-tools-installed" role="img" aria-label={`${tool.name} installed`}>
               <Check size={15} aria-hidden="true" /> Installed
             </span> : <button type="button" className="secondary-button" aria-label={`${tool.state === "error" ? "Retry installing" : "Install"} ${tool.name}`} disabled={pending !== null || installing || tool.state === "unavailable"} onClick={() => void run(`install:${tool.id}`, () => installLanguageTool(tool.id), (next) => {
               const updated = next.tools.find((entry) => entry.id === tool.id);
+              if (rustPrerequisiteCommand(updated)) return null;
               return {
                 message: updated?.state === "installed" ? `${tool.name} is installed.` : `${tool.name}: ${updated?.detail || `setup is ${updated?.state ?? "pending"}.`}`,
                 failed: updated?.state !== "installed",
