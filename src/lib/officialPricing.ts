@@ -1,4 +1,4 @@
-import { fetchPricingDocument } from "./pricingDocuments";
+import { fetchModelLifecycleDocument, fetchPricingDocument } from "./pricingDocuments";
 import { loadStored, storedRevision, storeValue } from "./storage";
 import {
   cursorPricingKey, notifyPricingChanged, parseModelPricingCatalog, requestUsageRepricing, OFFICIAL_PRICING_KEY, type ModelPricingCatalogEntry,
@@ -16,6 +16,10 @@ export interface OfficialRate {
   cacheWrite?: number;
   /** Claude's 1-hour cache write; `cacheWrite` is the 5-minute rate. */
   cacheWrite1h?: number;
+  /** The pricing page explicitly identifies `cacheWrite` as OpenAI's 30-minute rate. */
+  cacheWrite30m?: true;
+  /** OpenAI's optional 12-hour cache write; `cacheWrite` is its default rate. */
+  cacheWrite12h?: number;
   /** Day the rate was read. */
   asOf: string;
   /** Published display name, where the key is derived from it. */
@@ -28,7 +32,12 @@ export interface OfficialRate {
   longContext?: Omit<OfficialRate, "longContext" | "name" | "vendor" | "status">;
   longContextThresholdTokens?: number;
 }
-export type OfficialPricingResult = { ok: true; models: Record<string, OfficialRate>; catalogModels?: Record<string, OfficialRate>; skipped?: number } | { ok: false; error: string };
+export interface OfficialPricingBoundary {
+  name?: string;
+  longContext?: true;
+  longContextThresholdTokens?: number;
+}
+export type OfficialPricingResult = { ok: true; models: Record<string, OfficialRate>; catalogModels?: Record<string, OfficialRate>; catalogError?: string; pricingPageModels?: Record<string, OfficialRate>; skipped?: number } | { ok: false; error: string };
 interface SourceState {
   /** Last attempt, successful or not. */
   checkedAt?: number;
@@ -38,16 +47,20 @@ interface SourceState {
   lastModelCount?: number;
   /** Why the last attempt failed; cleared by a successful one. */
   error?: string;
-  /** Exact last successful listing for the settings catalog. The ledger
-   * deliberately retains older removed rows for historical usage. */
+  /** Exact last successful listing for Settings. Kept when either document fails. */
   catalog?: Record<string, OfficialRate>;
+  catalogVerifiedAt?: number;
+  catalogError?: string;
+  /** Compact context-price coverage from the pricing page, independent of model lifecycle. */
+  pricingBoundaries?: Record<string, OfficialPricingBoundary>;
 }
-export interface OfficialPricingStatus extends SourceState {
+export interface OfficialPricingStatus extends Pick<SourceState, "checkedAt" | "verifiedAt" | "error" | "catalogVerifiedAt" | "catalogError"> {
   source: OfficialPricingSource;
   checking: boolean;
   /** Saved provenance stays intact when the clock moves backward. These
    * flags prevent future timestamps from attesting present freshness. */
   verificationTimeUncertain: boolean;
+  catalogVerificationTimeUncertain: boolean;
   checkedTimeUncertain: boolean;
   /** Models the page listed at its last successful check. */
   models: number;
@@ -59,6 +72,7 @@ const MAX_MODELS_PER_SOURCE = 300;
 const CURSOR_NOTE = "Cursor list price. Cursor doesn’t report cache writes, and plan token fees aren’t included.";
 let checking = false;
 const NO_RATES: Readonly<Record<string, OfficialRate>> = Object.freeze({});
+const NO_BOUNDARIES: Readonly<Record<string, OfficialPricingBoundary>> = Object.freeze({});
 
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
 const timestamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 8.64e15 ? value : undefined;
@@ -78,6 +92,38 @@ const LEGACY_CLAUDE_IDS: Readonly<Record<string, string>> = {
 const isLegacyClaudeId = (id: string) => Object.values(LEGACY_CLAUDE_IDS).includes(id);
 export const isAnthropicPricingModelId = (id: string) => /^claude-[a-z]+-\d+(?:-\d+)?$/.test(id) || isLegacyClaudeId(id);
 
+function validCatalogId(source: OfficialPricingSource, id: string): boolean {
+  return source === "openai" ? /^[a-z0-9][a-z0-9.-]{0,79}(?:@(fast|flex|batch|ultrafast))?$/.test(id)
+    : source === "anthropic" ? isAnthropicPricingModelId(id) : true;
+}
+
+function pricingBoundaries(models: Record<string, OfficialRate>): Record<string, OfficialPricingBoundary> {
+  return Object.fromEntries(Object.entries(models).filter(([id]) => !id.includes("@")).map(([id, rate]) => [id, {
+    ...(rate.name !== undefined ? { name: rate.name } : {}),
+    ...(rate.longContext ? { longContext: true as const, longContextThresholdTokens: rate.longContextThresholdTokens } : {}),
+  }]));
+}
+
+function validatedPricingBoundaries(source: OfficialPricingSource, value: unknown): Record<string, OfficialPricingBoundary> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const rows = Object.entries(value);
+  if (rows.length > MAX_ROWS) return undefined;
+  const boundaries: Record<string, OfficialPricingBoundary> = {};
+  for (const [id, rate] of rows) {
+    if (id.length > 160 || !validCatalogId(source, id) || id.includes("@") || !rate || typeof rate !== "object" || Array.isArray(rate)) return undefined;
+    const { name, longContext, longContextThresholdTokens } = rate as Record<string, unknown>;
+    if (name !== undefined && (typeof name !== "string" || name.length > 120)) return undefined;
+    if (longContext !== undefined && longContext !== true) return undefined;
+    if (longContextThresholdTokens !== undefined && (longContext !== true || !validContextThreshold(longContextThresholdTokens))) return undefined;
+    boundaries[id] = { name, longContext, longContextThresholdTokens };
+  }
+  return boundaries;
+}
+
+function validContextThreshold(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 2_000_000;
+}
+
 /** The stored snapshot, re-validated: rates through the ledger's own catalog
  * validator (the same one it prices from), source states field by field. */
 function readStore(): { models: Record<string, ModelPricingCatalogEntry>; sources: Partial<Record<OfficialPricingSource, SourceState>>; epochs: Record<string, RateEpoch[]> } {
@@ -92,21 +138,27 @@ function readStore(): { models: Record<string, ModelPricingCatalogEntry>; source
     const state = raw?.sources?.[source];
     if (!state || typeof state !== "object") continue;
     const verifiedAt = timestamp(state.verifiedAt);
-    const parsedCatalog = verifiedAt ? validatedRateSnapshot(state.catalog, dayOf(verifiedAt)) : undefined;
-    const idsValid = parsedCatalog && Object.keys(parsedCatalog).every((id) => source === "openai"
-      ? /^[a-z0-9][a-z0-9.-]{0,79}(?:@(fast|flex|batch|ultrafast))?$/.test(id)
-      : source === "anthropic" ? isAnthropicPricingModelId(id) : true);
-    const catalog = idsValid ? parsedCatalog : undefined;
+    const catalogVerifiedAt = timestamp(state.catalogVerifiedAt);
+    const catalogAt = catalogVerifiedAt ?? verifiedAt;
+    const parsedCatalog = catalogAt ? validatedRateSnapshot(state.catalog, dayOf(catalogAt)) : undefined;
+    const catalog = parsedCatalog && Object.keys(parsedCatalog).length && Object.entries(parsedCatalog).every(([id, rate]) =>
+      validCatalogId(source, id) && (source === "cursor" || !catalogVerifiedAt || (!id.includes("@") && rate.status !== "retired")))
+      ? parsedCatalog : undefined;
+    // Before lifecycle verification, the stored listing was the unfiltered
+    // pricing page. Its context evidence remains useful during migration.
+    const boundaries = source === "cursor" || !verifiedAt ? undefined : state.pricingBoundaries !== undefined
+      ? validatedPricingBoundaries(source, state.pricingBoundaries)
+      : !catalogVerifiedAt && catalog ? pricingBoundaries(catalog) : undefined;
     sources[source] = {
       checkedAt: timestamp(state.checkedAt),
       verifiedAt,
       ...(typeof state.lastModelCount === "number" && Number.isSafeInteger(state.lastModelCount)
         && state.lastModelCount >= 0 && state.lastModelCount <= MAX_ROWS ? { lastModelCount: state.lastModelCount } : {}),
       ...(typeof state.error === "string" ? { error: state.error.slice(0, 240) } : {}),
-      // A corrupt new-format listing must not silently fall back to older,
-      // deliberately retained historical ledger rows.
-      ...(state.catalog !== undefined ? { catalog: catalog ?? {} } : {}),
-      ...(state.catalog !== undefined && !catalog ? { error: "Stored pricing listing is invalid; refresh to read the official prices." } : {}),
+      ...(catalog && (source === "cursor" || catalogVerifiedAt) ? { catalog, catalogVerifiedAt } : {}),
+      ...(typeof state.catalogError === "string" ? { catalogError: state.catalogError.slice(0, 240) } : {}),
+      ...(catalogVerifiedAt && !catalog ? { catalogError: "Stored pricing listing is invalid; refresh to read the official prices." } : {}),
+      ...(boundaries ? { pricingBoundaries: boundaries } : {}),
     };
   }
   return { models: parseModelPricingCatalog(raw, true)?.models ?? {}, sources, epochs: parseRateEpochs(raw?.epochs) };
@@ -114,7 +166,7 @@ function readStore(): { models: Record<string, ModelPricingCatalogEntry>; source
 
 type StoredListings = Pick<ReturnType<typeof readStore>, "models" | "sources">;
 type RateListing = Readonly<Record<string, Readonly<OfficialRate>>>;
-let displayStoreCache: StoredListings & { revision: number; migrated: Partial<Record<OfficialPricingSource, RateListing>> } | null = null;
+let displayStoreCache: StoredListings & { revision: number } | null = null;
 
 /** Bounded validated listings for repeated display reads, reused until storage
  * observes a value change. `readStore` is a pure function of that value, and nothing
@@ -124,7 +176,7 @@ function displayStore(): NonNullable<typeof displayStoreCache> {
   if (displayStoreCache?.revision === storedRevision(OFFICIAL_PRICING_KEY)) return displayStoreCache;
   const { models, sources } = readStore();
   // Reading can itself advance the revision when it detects an external change.
-  const store = { revision: storedRevision(OFFICIAL_PRICING_KEY), models, sources, migrated: {} };
+  const store = { revision: storedRevision(OFFICIAL_PRICING_KEY), models, sources };
   // An unreadable cache also reads as empty; retrying matches an uncached read
   // instead of hiding saved rates until the next write.
   // Restored snapshots can exceed the writer's per-source retention limit.
@@ -153,7 +205,7 @@ function validatedRateSnapshot(value: unknown, observedDay?: string, depth = 0):
       || !Number.isFinite(Date.parse(rate.asOf)) || dayOf(Date.parse(rate.asOf)) !== rate.asOf
       || (observedDay !== undefined && rate.asOf > observedDay)) return undefined;
     const numeric: Record<string, number> = {};
-    for (const field of ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"] as const) {
+    for (const field of ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "cacheWrite12h"] as const) {
       const amount = rate[field];
       if (amount === undefined && field !== "input" && field !== "output") continue;
       if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0 || amount > MAX_RATE) return undefined;
@@ -161,17 +213,18 @@ function validatedRateSnapshot(value: unknown, observedDay?: string, depth = 0):
     }
     if ((numeric.cacheRead !== undefined && numeric.cacheRead > numeric.input)
       || (numeric.cacheWrite !== undefined && numeric.cacheWrite < numeric.input)
-      || (numeric.cacheWrite1h !== undefined && numeric.cacheWrite1h < (numeric.cacheWrite ?? numeric.input))) return undefined;
+      || (numeric.cacheWrite1h !== undefined && numeric.cacheWrite1h < (numeric.cacheWrite ?? numeric.input))
+      || (numeric.cacheWrite12h !== undefined && numeric.cacheWrite12h < (numeric.cacheWrite ?? numeric.input))) return undefined;
     const long = rate.longContext === undefined ? undefined : validatedRateSnapshot({ [id]: rate.longContext }, observedDay, depth + 1);
     if (rate.longContext !== undefined && !long) return undefined;
     models[id] = {
       ...numeric, asOf: rate.asOf,
       ...(typeof rate.name === "string" && rate.name.length <= 120 ? { name: rate.name } : {}),
       ...(typeof rate.serviceTier === "string" && ["standard", "fast", "flex", "batch", "ultrafast"].includes(rate.serviceTier) ? { serviceTier: rate.serviceTier } : {}),
+      ...(rate.cacheWrite30m === true && numeric.cacheWrite !== undefined ? { cacheWrite30m: true } : {}),
       ...(rate.status === "retired" || rate.status === "limited" ? { status: rate.status } : {}),
       ...(long ? { longContext: long[id] } : {}),
-      ...(typeof rate.longContextThresholdTokens === "number" && Number.isSafeInteger(rate.longContextThresholdTokens)
-        && rate.longContextThresholdTokens > 0 && rate.longContextThresholdTokens <= 2_000_000
+      ...(validContextThreshold(rate.longContextThresholdTokens)
         ? { longContextThresholdTokens: rate.longContextThresholdTokens } : {}),
     } as OfficialRate;
   }
@@ -181,22 +234,13 @@ function validatedRateSnapshot(value: unknown, observedDay?: string, depth = 0):
 /** Observed official catalog only: no bundled prices or inferred freshness.
  * Cacheable results are shared until storage observes a value change. */
 export function officialPricingSnapshot(source: OfficialPricingSource): RateListing {
-  const store = displayStore();
-  const state = store.sources[source];
-  if (!state?.verifiedAt) return NO_RATES;
-  if (state.catalog) return state.catalog;
-  // Existing installations had no exact listing metadata. Keep their dated
-  // standard rates visible until the next successful refresh upgrades them.
-  return store.migrated[source] ??= validatedRateSnapshot(Object.fromEntries(Object.entries(store.models)
-    .filter(([key]) => key.startsWith(`${PROVIDER_KEY[source]}:`))
-    .map(([key, rate]) => [key.slice(PROVIDER_KEY[source].length + 1), {
-      input: rate.inputPerMillion, output: rate.outputPerMillion, asOf: rate.asOf,
-      ...(rate.cachedInputPerMillion !== undefined ? { cacheRead: rate.cachedInputPerMillion } : {}),
-      ...(rate.cacheWriteInputPerMillion !== undefined ? { cacheWrite: rate.cacheWriteInputPerMillion } : {}),
-      ...(rate.cacheWrite1hInputPerMillion !== undefined ? { cacheWrite1h: rate.cacheWrite1hInputPerMillion } : {}),
-      ...(rate.serviceTier ? { serviceTier: rate.serviceTier } : {}),
-      ...(rate.status ? { status: rate.status } : {}),
-    }])), dayOf(state.verifiedAt)) ?? NO_RATES;
+  const state = displayStore().sources[source];
+  return state?.catalog ?? NO_RATES;
+}
+
+/** Pricing-page context evidence for model controls, independent of Settings' active list. */
+export function officialPricingPageSnapshot(source: "openai" | "anthropic"): Readonly<Record<string, Readonly<OfficialPricingBoundary>>> {
+  return displayStore().sources[source]?.pricingBoundaries ?? NO_BOUNDARIES;
 }
 
 /**
@@ -248,7 +292,9 @@ export function officialPricingStatus(now = Date.now()): OfficialPricingStatus[]
     const state = store.sources[source];
     return {
       source, checking, checkedAt: state?.checkedAt, verifiedAt: state?.verifiedAt, error: state?.error,
+      catalogVerifiedAt: state?.catalogVerifiedAt, catalogError: state?.catalogError,
       verificationTimeUncertain: timestampAhead(state?.verifiedAt, now),
+      catalogVerificationTimeUncertain: timestampAhead(state?.catalogVerifiedAt, now),
       checkedTimeUncertain: timestampAhead(state?.checkedAt, now), models: modelsSeenAtLastCheck(source, store),
     };
   });
@@ -261,7 +307,7 @@ export function officialPricingStatus(now = Date.now()): OfficialPricingStatus[]
  * catalog or bundled rate supersedes it. A failure only records the attempt,
  * leaving every previously verified rate in place.
  */
-export function recordOfficialPricingResult(source: OfficialPricingSource, result: OfficialPricingResult, now = Date.now()): void {
+export function recordOfficialPricingResult(source: OfficialPricingSource, result: OfficialPricingResult, now = Date.now(), checkedAt = now): void {
   const store = readStore();
   const prefix = `${PROVIDER_KEY[source]}:`;
   const models = { ...store.models };
@@ -288,10 +334,24 @@ export function recordOfficialPricingResult(source: OfficialPricingSource, resul
     for (const [key] of own.slice(MAX_MODELS_PER_SOURCE)) delete models[key];
     for (const key of Object.keys(epochs)) if (!(key in models)) delete epochs[key];
   }
-  const state: SourceState = result.ok
-    ? { checkedAt: now, verifiedAt: now, lastModelCount: Object.keys(result.catalogModels ?? result.models).filter((model) => !model.includes("@")).length, catalog: result.catalogModels ?? result.models }
-    : { ...store.sources[source], checkedAt: now, error: result.error.slice(0, 240) };
-  storeValue(OFFICIAL_PRICING_KEY, { schemaVersion: 1, updatedAt: new Date(now).toISOString(), models, sources: { ...store.sources, [source]: state }, epochs });
+  const state: SourceState = { ...store.sources[source], checkedAt };
+  if (result.ok) {
+    const pageModels = result.pricingPageModels ?? result.models;
+    state.verifiedAt = now;
+    state.lastModelCount = standardModelCount(pageModels);
+    delete state.error;
+    if (source !== "cursor") state.pricingBoundaries = pricingBoundaries(pageModels);
+    if (result.catalogError) state.catalogError = result.catalogError.slice(0, 240);
+    else if (result.catalogModels || source === "cursor") {
+      state.catalog = result.catalogModels ?? result.models;
+      state.catalogVerifiedAt = now;
+      delete state.catalogError;
+    }
+  } else {
+    state.error = result.error.slice(0, 240);
+    if (source !== "cursor") state.catalogError = state.error;
+  }
+  storeValue(OFFICIAL_PRICING_KEY, { schemaVersion: 1, updatedAt: new Date(checkedAt).toISOString(), models, sources: { ...store.sources, [source]: state }, epochs });
   notifyPricingChanged();
   if (result.ok) requestUsageRepricing();
 }
@@ -305,9 +365,9 @@ function setChecking(value: boolean): void {
  * Reads per-model rates from the providers' official Markdown pricing pages.
  *
  * Loaded on demand (a deferred launch check and the Settings refresh button),
- * never at startup. Each parser reads only the one table it knows, checks its
- * exact columns, and fails the whole source on anything it does not
- * recognise: a moved heading, a renamed or added column, a row with the wrong
+ * never during startup rendering. Each parser reads the tables it recognizes,
+ * checks their columns, and fails the source on ambiguous input such as
+ * an unsupported column layout, a row with the wrong
  * cell count, an unreadable rate, or two different rates for one model. A
  * failed source changes nothing, and its last verified rates stay in use.
  * Rows it cannot map to a model id with certainty are skipped rather than
@@ -345,14 +405,32 @@ interface Table { header: string[]; rows: string[][] }
 
 /** The first table after `anchor` (an exact line) and before the next heading. */
 function tableAfter(lines: string[], anchor: string, required: boolean): Table | "missing" | string {
+  const tables = tablesAfter(lines, anchor, required, false);
+  return typeof tables === "string" ? tables : tables[0];
+}
+
+function tablesAfter(lines: string[], anchor: string, required: boolean, consecutive = true, stopAt?: (line: string) => boolean): Table[] | string {
   const matches = lines.flatMap((line, index) => line.trim() === anchor ? [index] : []);
   if (matches.length === 0) return required ? `“${anchor}” not found` : "missing";
   if (matches.length > 1) return `“${anchor}” appears more than once`;
   let index = matches[0] + 1;
   while (index < lines.length && !lines[index].trim().startsWith("|")) {
-    if (/^#{1,6}\s/.test(lines[index].trim())) return `No table under “${anchor}”`;
+    const line = lines[index].trim();
+    if (/^#{1,6}\s/.test(line) || stopAt?.(line)) return `No table under “${anchor}”`;
     index += 1;
   }
+  const tables: Table[] = [];
+  do {
+    const read = tableAt(lines, index, anchor);
+    if (typeof read === "string") return read;
+    tables.push(read.table);
+    index = read.next;
+    while (index < lines.length && !lines[index].trim()) index += 1;
+  } while (consecutive && lines[index]?.trim().startsWith("|"));
+  return tables;
+}
+
+function tableAt(lines: string[], index: number, anchor: string): { table: Table; next: number } | string {
   const header = cells(lines[index] ?? "");
   const separator = cells(lines[index + 1] ?? "");
   if (!header || !separator || separator.length !== header.length || !separator.every((cell) => SEPARATOR_CELL.test(cell))) {
@@ -365,7 +443,7 @@ function tableAfter(lines: string[], anchor: string, required: boolean): Table |
     rows.push(row);
     if (rows.length > MAX_ROWS) return `Too many rows under “${anchor}”`;
   }
-  return rows.length ? { header, rows } : `Empty table under “${anchor}”`;
+  return rows.length ? { table: { header, rows }, next: index } : `Empty table under “${anchor}”`;
 }
 
 function normalizedHeader(cell: string): string {
@@ -402,16 +480,17 @@ function rateCell(cell: string): number | undefined | null {
   return Number.isFinite(value) && value > 0 && value <= MAX_RATE ? value : null;
 }
 
-interface RowRates { input?: number; cacheRead?: number; cacheWrite?: number; cacheWrite1h?: number; output?: number }
+interface RowRates { input?: number; cacheRead?: number; cacheWrite?: number; cacheWrite1h?: number; cacheWrite12h?: number; output?: number }
+type RawRates = Partial<Record<keyof RowRates, string>>;
 
 /** Adds one model, rejecting unreadable or implausible rates and conflicting
  * duplicates. Returns an error, or null when the row was accepted or skipped. */
 function addModel(
   models: Record<string, OfficialRate>, key: string,
-  raw: Record<Exclude<keyof RowRates, "cacheWrite1h">, string> & { cacheWrite1h?: string }, extra: Partial<OfficialRate>,
+  raw: RawRates, extra: Partial<OfficialRate>,
 ): string | null | "skipped" {
   const rates: RowRates = {};
-  for (const component of ["input", "cacheRead", "cacheWrite", "cacheWrite1h", "output"] as const) {
+  for (const component of ["input", "cacheRead", "cacheWrite", "cacheWrite1h", "cacheWrite12h", "output"] as const) {
     const cell = raw[component];
     if (cell === undefined) continue;
     const value = rateCell(cell);
@@ -424,17 +503,20 @@ function addModel(
   // Anything else means columns moved.
   if ((rates.cacheRead !== undefined && rates.cacheRead > rates.input)
     || (rates.cacheWrite !== undefined && rates.cacheWrite < rates.input)
-    || (rates.cacheWrite1h !== undefined && rates.cacheWrite1h < (rates.cacheWrite ?? rates.input))) return `Unexpected cache rates for ${key}`;
+    || (rates.cacheWrite1h !== undefined && rates.cacheWrite1h < (rates.cacheWrite ?? rates.input))
+    || (rates.cacheWrite12h !== undefined && rates.cacheWrite12h < (rates.cacheWrite ?? rates.input))) return `Unexpected cache rates for ${key}`;
   const rate: OfficialRate = {
     input: rates.input, output: rates.output,
     ...(rates.cacheRead !== undefined ? { cacheRead: rates.cacheRead } : {}),
     ...(rates.cacheWrite !== undefined ? { cacheWrite: rates.cacheWrite } : {}),
     ...(rates.cacheWrite1h !== undefined ? { cacheWrite1h: rates.cacheWrite1h } : {}),
+    ...(rates.cacheWrite12h !== undefined ? { cacheWrite12h: rates.cacheWrite12h } : {}),
     ...extra,
   } as OfficialRate;
   const existing = models[key];
   if (existing && (existing.input !== rate.input || existing.output !== rate.output
-    || existing.cacheRead !== rate.cacheRead || existing.cacheWrite !== rate.cacheWrite || existing.cacheWrite1h !== rate.cacheWrite1h)) return `Conflicting rates for ${key}`;
+    || existing.cacheRead !== rate.cacheRead || existing.cacheWrite !== rate.cacheWrite
+    || existing.cacheWrite1h !== rate.cacheWrite1h || existing.cacheWrite12h !== rate.cacheWrite12h)) return `Conflicting rates for ${key}`;
   models[key] = existing ?? rate;
   return null;
 }
@@ -443,101 +525,150 @@ function finish(models: Record<string, OfficialRate>, skipped: number): Parsed {
   return Object.keys(models).length ? { ok: true, models, skipped } : fail("No priced models found");
 }
 
-const OPENAI_ANCHOR = "### Standard pricing data";
-const OPENAI_HEADER = [
-  "model", "short context input", "short context cached input", "short context cache writes", "short context output",
-  "long context input", "long context cached input", "long context cache writes", "long context output",
-];
 const OPENAI_MODEL = /^[a-z0-9][a-z0-9.-]{0,79}$/;
-/** The short-context columns apply below this annotated threshold, so the
- * annotation does not change which model the row describes. */
 const OPENAI_CONTEXT_NOTE = /\s*\(<\s*\d+K context length\)$/i;
+const OPENAI_SECTIONS = ["Flagship models", "Cyber models", "Life sciences models", "Legal model configurations", "Multimodal models", "Specialized models", "Fine-tuning", "Cloud platforms"];
+const OPENAI_OTHER_TIERS = /^(Batch|Flex|Fast|Ultrafast)$/;
+const OPENAI_TIER_LABEL = /^(Standard|Batch|Flex|Fast|Ultrafast)$/;
+const OPENAI_SIMPLE_COLUMNS = ["model", "input", "output", "cached input"];
+const OPENAI_CONTEXT_COLUMNS = ["input", "output", "cached input"];
 
-/** Explicitly labelled tier tables only; never infer one tier from another. */
+function pricingSection(lines: string[], label: string): string[] | string | undefined {
+  const starts = lines.flatMap((line, index) => line.trim() === label ? [index] : []);
+  if (starts.length > 1) return `OpenAI's ${label} section appears more than once`;
+  if (!starts.length) return undefined;
+  const [start] = starts;
+  const end = lines.findIndex((line, index) => index > start && (OPENAI_SECTIONS.includes(line.trim()) || /^#{1,2}\s/.test(line.trim())));
+  return lines.slice(start, end < 0 ? undefined : end);
+}
+
+function openAIHasTokenUnits(lines: string[], required: boolean): boolean {
+  const units = lines.map((line) => line.trim()).filter((line) => /^prices per\b/i.test(line));
+  return (!required || units.length > 0) && units.every((line) => line === "Prices per 1M tokens.");
+}
+
+function openAIContextThreshold(lines: string[]): number | undefined {
+  const notes = lines.map((line) => /^Short context: ≤(\d+)K input tokens\. Long context: >(\d+)K input tokens\.$/.exec(line.trim())).filter(Boolean);
+  const note = notes[0];
+  if (notes.length !== 1 || !note || note[1] !== note[2]) return undefined;
+  const threshold = Number(note[1]) * 1_000;
+  return threshold > 0 && threshold <= 2_000_000 ? threshold : undefined;
+}
+
+function openAITableLayout(header: string[]) {
+  const columns = header.map(normalizedHeader);
+  const hasColumns = (expected: string[]) => columns.length === expected.length && expected.every((label) => columns.includes(label));
+  const wideColumns = (write: string[]) => ["model", ...["short", "long"].flatMap((context) =>
+    [...OPENAI_CONTEXT_COLUMNS, ...write].map((label) => `${context} context ${label}`))];
+  const timed = hasColumns(wideColumns(["30m write", "12h write"]));
+  const wide = timed || hasColumns(wideColumns(["cache writes"]));
+  const categorized = hasColumns(["category", ...OPENAI_SIMPLE_COLUMNS]);
+  if (!wide && !categorized && !hasColumns(OPENAI_SIMPLE_COLUMNS)) return null;
+  return {
+    wide, timed, category: columns.indexOf("category"), model: columns.indexOf("model"),
+    rates(row: string[], context = "short"): RawRates {
+      const cell = (label: string) => row[columns.indexOf(wide ? `${context} context ${label}` : label)];
+      return { input: cell("input"), output: cell("output"), cacheRead: cell("cached input"),
+        cacheWrite: cell(timed ? "30m write" : "cache writes"), cacheWrite12h: cell("12h write") };
+    },
+  };
+}
+
+/** Explicitly scoped standard and service-tier tables. Each table must match a
+ * supported schema, and its rates are read by label so ordering cannot affect costs. */
 export function parseOpenAIPricing(markdown: string, asOf: string, options: { includeLongContext?: boolean; includeCatalogDetails?: boolean } = {}): Parsed {
-  const table = tableAfter(markdown.split(/\r?\n/), OPENAI_ANCHOR, true);
-  if (typeof table === "string") return fail(table);
-  if (!headerMatches(table.header, OPENAI_HEADER)) return fail("OpenAI's standard pricing columns changed");
+  const lines = markdown.split(/\r?\n/);
+  const flagshipSection = pricingSection(lines, "Flagship models");
+  if (typeof flagshipSection === "string") return fail(flagshipSection);
+  // The legacy layout has no Flagship label. Its Standard table must still
+  // appear before any named section.
+  const firstSection = lines.findIndex((line) => OPENAI_SECTIONS.includes(line.trim()));
+  const flagship = flagshipSection ?? lines.slice(0, firstSection < 0 ? undefined : firstSection);
+  if (!openAIHasTokenUnits(flagship, flagshipSection !== undefined)) return fail("OpenAI's Flagship models units changed");
   const models: Record<string, OfficialRate> = {};
   let skipped = 0;
-  for (const row of table.rows) {
-    const id = plainText(row[0]).replace(OPENAI_CONTEXT_NOTE, "");
-    if (!OPENAI_MODEL.test(id)) { skipped += 1; continue; }
-    const error = addModel(models, id, { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }, { asOf });
-    if (error === "skipped") skipped += 1;
-    else if (error) return fail(error);
-    if (options.includeLongContext && models[id]) {
-      const long: Record<string, OfficialRate> = models[id].longContext ? { [id]: models[id].longContext } : {};
-      const longError = addModel(long, id, { input: row[5], cacheRead: row[6], cacheWrite: row[7], output: row[8] }, { asOf });
-      if (longError && longError !== "skipped") return fail(longError);
-      // All dashes mean the provider publishes no separate long-context rate.
-      // A partially published base pair signals a malformed table.
-      if (longError === "skipped" && row.slice(5).some((cell) => !MISSING.has(plainText(cell)))) return fail(`Incomplete long-context rates for ${id}`);
-      if (long[id]) models[id].longContext = long[id];
-    }
-  }
-  if (options.includeCatalogDetails) {
-    const lines = markdown.split(/\r?\n/);
-    for (const [section, endLabel, expected] of [
-      ["Cyber models", "Life sciences models", OPENAI_HEADER],
-      ["Life sciences models", "Multimodal models", ["model", "input", "cached input", "output"]],
-      ["Specialized models", "Fast", ["category", "model", "input", "cached input", "output"]],
-    ] as const) {
-      const starts = lines.flatMap((line, index) => line.trim() === section ? [index] : []);
-      if (!starts.length) continue;
-      if (starts.length !== 1) return fail(`OpenAI's ${section} section appears more than once`);
-      const start = starts[0];
-      const end = lines.findIndex((line, index) => index > start && line.trim() === endLabel);
-      const scoped = lines.slice(start, end < 0 ? undefined : end);
-      if (!scoped.some((line) => line.trim() === "Prices per 1M tokens.")) return fail(`OpenAI's ${section} units changed`);
-      const beforeTable = scoped.slice(0, scoped.findIndex((line) => line.trim() === "### Grouped Pricing Table data"));
-      const tierLabels = beforeTable.map((line) => line.trim()).filter((line) => ["Standard", "Batch", "Fast", "Flex", "Ultrafast"].includes(line));
-      if (section === "Specialized models" ? tierLabels.length !== 1 || tierLabels[0] !== "Standard"
-        : tierLabels.some((label) => label !== "Standard")) return fail(`OpenAI's ${section} Standard label changed`);
-      const extra = tableAfter(scoped, "### Grouped Pricing Table data", true);
-      if (typeof extra === "string") return fail(extra);
-      if (!headerMatches(extra.header, [...expected])) return fail(`OpenAI's ${section} pricing columns changed`);
-      for (const row of extra.rows) {
-        if (section === "Specialized models" && ["Embedding", "Moderation"].includes(plainText(row[0]))) continue;
-        const offset = section === "Specialized models" ? 1 : 0;
-        const id = plainText(row[offset]).replace(OPENAI_CONTEXT_NOTE, "");
+
+  const read = (scoped: string[], anchor: string, required: boolean, serviceTier?: string, status?: OfficialRate["status"], threshold?: number): string | null => {
+    const tables = tablesAfter(scoped, anchor, required, true, (line) => OPENAI_TIER_LABEL.test(line));
+    if (tables === "missing") return null;
+    if (typeof tables === "string") return tables;
+    for (const table of tables) {
+      const layout = openAITableLayout(table.header);
+      if (!layout) return `OpenAI's columns changed under “${anchor}”`;
+      for (const row of table.rows) {
+        if (layout.category >= 0 && ["Embedding", "Moderation"].includes(plainText(row[layout.category]))) continue;
+        const id = plainText(row[layout.model]).replace(OPENAI_CONTEXT_NOTE, "");
         if (!OPENAI_MODEL.test(id)) { skipped += 1; continue; }
-        const raw = section === "Cyber models"
-          ? { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }
-          : { input: row[offset + 1], cacheRead: row[offset + 2], cacheWrite: "-", output: row[offset + 3] };
-        const error = addModel(models, id, raw, { asOf });
-        if (error === "skipped") skipped += 1;
-        else if (error) return fail(error);
-        if (options.includeLongContext && section === "Cyber models" && models[id]) {
-          const long: Record<string, OfficialRate> = models[id].longContext ? { [id]: models[id].longContext } : {};
-          const error = addModel(long, id, { input: row[5], cacheRead: row[6], cacheWrite: row[7], output: row[8] }, { asOf });
-          if (error && error !== "skipped") return fail(error);
-          if (error === "skipped" && row.slice(5).some((cell) => !MISSING.has(plainText(cell)))) return fail(`Incomplete long-context rates for ${id}`);
-          if (long[id]) models[id].longContext = long[id];
+        const key = serviceTier ? `${id}@${serviceTier}` : id;
+        const extra = { asOf, ...(serviceTier ? { serviceTier } : {}), ...(status ? { status } : {}) };
+        const error = addModel(models, key, layout.rates(row), extra);
+        if (error === "skipped") { skipped += 1; continue; }
+        if (error) return error;
+        if (layout.timed && models[key].cacheWrite !== undefined) models[key].cacheWrite30m = true;
+        if (layout.wide && options.includeLongContext && !serviceTier) {
+          const raw = layout.rates(row, "long");
+          const long = models[key].longContext ? { [key]: models[key].longContext } : {};
+          const longError = addModel(long, key, raw, { asOf });
+          if (longError && longError !== "skipped") return longError;
+          if (longError === "skipped" && Object.values(raw).some((cell) => cell !== undefined && !MISSING.has(plainText(cell)))) {
+            return `Incomplete long-context rates for ${key}`;
+          }
+          if (longError === "skipped") continue;
+          if (layout.timed && long[key].cacheWrite !== undefined) long[key].cacheWrite30m = true;
+          models[key].longContext = long[key];
+          if (threshold !== undefined) {
+            const existing = models[key].longContextThresholdTokens;
+            if (existing !== undefined && existing !== threshold) return `Conflicting long-context thresholds for ${key}`;
+            models[key].longContextThresholdTokens = threshold;
+          }
         }
       }
     }
+    return null;
+  };
+
+  const standard = read(flagship, "### Standard pricing data", true, undefined, undefined, openAIContextThreshold(flagship));
+  if (standard) return fail(standard);
+  if (!Object.keys(models).length) return fail("No priced models under “### Standard pricing data”");
+  const batchHeading = flagship.findIndex((line) => line.trim() === "### Batch pricing data");
+  const batchEnd = flagship.findIndex((line, index) => index > batchHeading && /^#{1,3}\s/.test(line.trim()));
+  const batchSection = batchHeading < 0 ? [] : flagship.slice(batchHeading + 1, batchEnd < 0 ? undefined : batchEnd);
+  const nestedBatch = batchSection.some((line) => /^#### (Batch|Flex)$/.test(line.trim()));
+  if (nestedBatch && flagship.slice(batchHeading + 1).some((line) => /^(### Batch pricing data|### Flex pricing data)$/.test(line.trim()))) {
+    return fail("OpenAI's Batch and Flex pricing sections are ambiguous");
   }
-  if (options.includeLongContext) {
-    const contextNote = /^Short context: ≤(\d+)K input tokens\. Long context: >(\d+)K input tokens\.$/m.exec(markdown);
-    if (contextNote && contextNote[1] === contextNote[2]) {
-      const threshold = Number(contextNote[1]) * 1_000;
-      if (threshold > 0 && threshold <= 2_000_000) {
-        for (const rate of Object.values(models)) if (rate.longContext) rate.longContextThresholdTokens = threshold;
+  for (const [tier, anchor, scoped, required] of [
+    ["batch", nestedBatch ? "#### Batch" : "### Batch pricing data", nestedBatch ? batchSection : flagship, nestedBatch],
+    ["flex", nestedBatch ? "#### Flex" : "### Flex pricing data", nestedBatch ? batchSection : flagship, false],
+    ["fast", "### Fast pricing data", flagship, false],
+    ["ultrafast", "### Ultrafast pricing data", flagship, false],
+  ] as const) {
+    const error = read(scoped, anchor, required, tier);
+    if (error) return fail(error);
+  }
+
+  if (options.includeCatalogDetails) {
+    for (const label of ["Cyber models", "Life sciences models", "Specialized models"]) {
+      let scoped = pricingSection(lines, label);
+      if (typeof scoped === "string") return fail(scoped);
+      if (!scoped) continue;
+      if (!openAIHasTokenUnits(scoped, true)) return fail(`OpenAI's ${label} units changed`);
+      const threshold = openAIContextThreshold(scoped);
+      let anchor = scoped.some((line) => line.trim() === "### Standard pricing data") ? "### Standard pricing data" : "### Grouped Pricing Table data";
+      if (label === "Specialized models") {
+        const start = scoped.findIndex((line) => line.trim() === "Standard");
+        if (start < 0) return fail("OpenAI's Specialized models Standard label changed");
+        const end = scoped.findIndex((line, index) => index > start && OPENAI_TIER_LABEL.test(line.trim()));
+        if (end >= 0 && scoped.slice(end).some((line) => line.trim() === "Standard")) return fail("OpenAI's Specialized models Standard label appears more than once");
+        scoped = scoped.slice(start, end < 0 ? undefined : end);
+        anchor = "### Grouped Pricing Table data";
       }
-    }
-  }
-  for (const [tier, label] of [["fast", "Fast"], ["flex", "Flex"], ["batch", "Batch"]] as const) {
-    const extra = tableAfter(markdown.split(/\r?\n/), `### ${label} pricing data`, false);
-    if (extra === "missing") continue;
-    if (typeof extra === "string") return fail(extra);
-    if (!headerMatches(extra.header, OPENAI_HEADER)) return fail(`OpenAI's ${tier} pricing columns changed`);
-    for (const row of extra.rows) {
-      const id = plainText(row[0]).replace(OPENAI_CONTEXT_NOTE, "");
-      if (!OPENAI_MODEL.test(id)) { skipped += 1; continue; }
-      const error = addModel(models, `${id}@${tier}`, { input: row[1], cacheRead: row[2], cacheWrite: row[3], output: row[4] }, { asOf, serviceTier: tier });
-      if (error === "skipped") skipped += 1;
-      else if (error) return fail(error);
+      const heading = scoped.findIndex((line) => line.trim() === anchor);
+      if (heading >= 0 && scoped.slice(0, heading).some((line) => OPENAI_OTHER_TIERS.test(line.trim()))) {
+        return fail(`OpenAI's ${label} Standard label changed`);
+      }
+      const error = read(scoped, anchor, true, undefined, label === "Life sciences models" ? "limited" : undefined, threshold);
+      if (error) return fail(error);
     }
   }
   return finish(models, skipped);
@@ -641,12 +772,127 @@ const PARSERS: Record<OfficialPricingSource, (markdown: string, asOf: string) =>
   cursor: parseCursorPricing,
 };
 
+const OPENAI_DEPRECATION_COLUMNS = new Set(["model / system", "model family / snapshot", "model snapshot", "deprecated model", "legacy model", "system"]);
+
+function anthropicActiveModelIds(lines: string[]): Set<string> {
+  const status = lines.indexOf("## Model status");
+  const history = lines.indexOf("## Deprecation history");
+  const table = history > status && status >= 0 ? tableAfter(lines.slice(0, history), "## Model status", true) : "missing";
+  if (typeof table === "string" || normalizedHeader(table.header[0]) !== "api model name"
+    || normalizedHeader(table.header[1] ?? "") !== "current state") throw new Error("Claude's model status table changed.");
+
+  const states = new Map<string, string>();
+  for (const row of table.rows) {
+    const id = plainText(row[0]);
+    const state = plainText(row[1]).toLowerCase();
+    if (!/^claude-[a-z0-9][a-z0-9.-]{0,72}$/.test(id) || !["active", "legacy", "deprecated", "retired"].includes(state)
+      || (states.has(id) && states.get(id) !== state)) throw new Error("Claude's model status table contains an unrecognized entry.");
+    states.set(id, state);
+  }
+  const ids = new Set<string>();
+  for (const [id, state] of states) {
+    const family = id.replace(/-\d{8}$/, "");
+    if (state === "active" && (states.get(family) ?? state) === "active") ids.add(family);
+  }
+  return ids;
+}
+
+function openAINoticeModelIds(target: string, title: string): string[] {
+  // These notices cover endpoints, API versions, or new training jobs. The
+  // training notice explicitly says inference with existing models is unaffected.
+  if (/^(?:`?\/v\d+\/|OpenAI-Beta: |[\w ]+ API$|New fine-tuning training on )/.test(target)) return [];
+
+  const namedFamily = /^([\w.-]+(?: [\w.-]+)*) \((`[^)]+)\)$/.exec(target);
+  const subjects = namedFamily?.[2] ?? target.replace(/ \(including (.+), which point to this snapshot\)$/, " | $1");
+  const ids = subjects.split(/\s*\|\s*|,\s*|\s+and\s+/).map((id) => id.trim().replace(/^`([^`]+)`$/, "$1"));
+  if (ids.some((id) => !OPENAI_MODEL.test(id))) throw new Error("OpenAI's deprecation notice contains an unrecognized model entry.");
+
+  // A displayed family applies only when the notice explicitly names it and
+  // the listed dated snapshots identify the same family.
+  if (namedFamily) {
+    const family = namedFamily[1].toLowerCase().replaceAll(" ", "-");
+    if (ids.every((id) => id !== family && id.replace(/-\d{4}-\d{2}-\d{2}$/, "") === family)) ids.push(family);
+  }
+  // This notice calls the preview GPT-5.5-Cyber, the name used on the pricing page.
+  if (title === "2026-11-05: GPT-5.5-Cyber" && ids.includes("gpt-5.5-cyber-preview")) ids.push("gpt-5.5-cyber");
+  return ids;
+}
+
+function openAIDeprecationIds(lines: string[]): Set<string> {
+  const title = lines.indexOf("# Deprecations");
+  const upcoming = lines.indexOf("## Upcoming deprecations");
+  const past = lines.indexOf("## Past deprecations");
+  if (title < 0 || upcoming <= title || past <= upcoming
+    || upcoming !== lines.lastIndexOf("## Upcoming deprecations") || past !== lines.lastIndexOf("## Past deprecations")) {
+    throw new Error("OpenAI's model deprecations page changed.");
+  }
+  const ids = new Set<string>();
+  for (const [start, end] of [[upcoming + 1, past], [past + 1, lines.length]]) {
+    let notice = "";
+    let awaitingTable = false;
+    let sawTable = false;
+    let sawModelNotice = false;
+    const section = lines.slice(start, end);
+    for (let index = 0; index < section.length; index += 1) {
+      const line = section[index];
+      if (line.startsWith("### ")) {
+        if (awaitingTable) throw new Error("An OpenAI deprecation notice is missing its table.");
+        notice = line.slice(4);
+        awaitingTable = /^\d{4}-\d{2}-\d{2}: /.test(notice);
+      }
+      if (!line.startsWith("|")) continue;
+      const read = tableAt(section, index, "OpenAI model deprecations");
+      if (typeof read === "string") throw new Error(read);
+      index = read.next - 1;
+      sawTable = true;
+      awaitingTable = false;
+      const header = read.table.header.map(normalizedHeader);
+      if (header.length === 2 && header[0] === "date" && header[1] === "update") continue;
+      if (header[0] !== "shutdown date" || !OPENAI_DEPRECATION_COLUMNS.has(header[1])) throw new Error("OpenAI's model deprecations columns changed.");
+      for (const row of read.table.rows) {
+        const models = openAINoticeModelIds(row[1], notice);
+        if (models.length) sawModelNotice = true;
+        for (const id of models) ids.add(id);
+      }
+    }
+    const isUpcoming = end === past;
+    const noUpcoming = isUpcoming && section.some((line) => /^(?:there are )?no upcoming deprecations\.?$/i.test(plainText(line)));
+    if (awaitingTable || (isUpcoming ? !sawTable && !noUpcoming : !sawModelNotice)) {
+      throw new Error("OpenAI's model deprecations page is incomplete.");
+    }
+  }
+  return ids;
+}
+
+function activePricingCatalog(source: "openai" | "anthropic", markdown: string, models: Record<string, OfficialRate>): Record<string, OfficialRate> {
+  const lines = markdown.split(/\r?\n/).map((line) => line.trim());
+  const ids = source === "openai" ? openAIDeprecationIds(lines) : anthropicActiveModelIds(lines);
+  if (!ids.size) throw new Error("The provider's model lifecycle page listed no recognizable models.");
+  const catalog = Object.fromEntries(Object.entries(models).filter(([id, rate]) =>
+    !id.includes("@") && rate.status !== "retired" && (source === "openai" ? !ids.has(id) : ids.has(id))));
+  if (!Object.keys(catalog).length) throw new Error("No current models matched the provider's published pricing.");
+  return catalog;
+}
+
+/** Lifecycle pages decide only the settings listing. If one can't be verified,
+ * usage rates still refresh and the last verified listing stays on screen. */
+function activeListing(source: "openai" | "anthropic", lifecycle: string | Error, models: Record<string, OfficialRate>): { catalogModels: Record<string, OfficialRate> } | { catalogError: string } {
+  try {
+    if (lifecycle instanceof Error) throw lifecycle;
+    return { catalogModels: activePricingCatalog(source, lifecycle, models) };
+  } catch (error) {
+    return { catalogError: `Couldn’t verify which models are active. ${describeFetchError(error)}` };
+  }
+}
+
+const standardModelCount = (models: Record<string, OfficialRate>) => Object.keys(models).filter((model) => !model.includes("@")).length;
+
 /** A page that suddenly lists far fewer models than last time is more likely
  * a truncated or restructured table than a mass retirement. */
 function shrankSuspiciously(source: OfficialPricingSource, result: OfficialPricingResult): boolean {
   if (!result.ok) return false;
   const before = modelsSeenAtLastCheck(source);
-  return before >= 6 && Object.keys(result.catalogModels ?? result.models).filter((model) => !model.includes("@")).length < before / 2;
+  return before >= 6 && standardModelCount(result.pricingPageModels ?? result.models) < before / 2;
 }
 
 export type PricingDocumentFetcher = (source: OfficialPricingSource) => Promise<string>;
@@ -673,7 +919,8 @@ export function refreshOfficialPricing(options: { force?: boolean; fetchDocument
     // A manual refresh must check every source even if it arrives while the
     // routine launch poll is checking only the sources currently due.
     if (options.force && !inFlightForced) {
-      forcedAfterRoutine ??= inFlight.then(() => refreshOfficialPricing(options)).finally(() => { forcedAfterRoutine = null; });
+      const refresh = () => refreshOfficialPricing(options);
+      forcedAfterRoutine ??= inFlight.then(refresh, refresh).finally(() => { forcedAfterRoutine = null; });
       return forcedAfterRoutine;
     }
     return inFlight;
@@ -689,17 +936,24 @@ async function run({ force = false, fetchDocument = fetchPricingDocument, now = 
     if (force) return true;
     const state = sources[source];
     const at = now();
-    return !state?.checkedAt || timestampAhead(state.checkedAt, at)
-      || at - state.checkedAt >= (state.error ? RETRY_FAILED_MS : DAY_MS);
+    // A legacy verified pricing page says nothing about lifecycle status.
+    const needsFirstCatalog = source !== "cursor" && state?.verifiedAt && !state.catalogVerifiedAt && !state.catalogError;
+    return needsFirstCatalog || !state?.checkedAt || timestampAhead(state.checkedAt, at)
+      || at - state.checkedAt >= (state.error || state.catalogError ? RETRY_FAILED_MS : DAY_MS);
   });
   if (!due.length) return { checked: [], failed: [] };
   setChecking(true);
   try {
     const outcomes = await Promise.all(due.map(async (source) => {
       let result: OfficialPricingResult;
+      let observedAt: number | undefined;
       try {
-        const document = await fetchDocument(source);
-        const asOf = dayOf(now());
+        const [document, lifecycle] = await Promise.all([
+          fetchDocument(source).then((document) => { observedAt = now(); return document; }),
+          source === "cursor" ? undefined : Promise.resolve().then(() => fetchModelLifecycleDocument(source))
+            .catch((error: unknown) => new Error(describeFetchError(error))),
+        ]);
+        const asOf = dayOf(observedAt ?? now());
         const parsed = PARSERS[source](document, asOf);
         if (!parsed.ok) result = parsed;
         else {
@@ -709,13 +963,16 @@ async function run({ force = false, fetchDocument = fetchPricingDocument, now = 
           const ledger = source === "openai" ? parseOpenAIPricing(document, asOf)
             : source === "anthropic" ? { ...parsed, models: Object.fromEntries(Object.entries(parsed.models)
               .filter(([id, rate]) => !isLegacyClaudeId(id) && rate.longContextThresholdTokens === undefined)) } : parsed;
-          result = ledger.ok ? { ...ledger, catalogModels: parsed.models } : ledger;
+          result = !ledger.ok ? ledger : source === "cursor" ? ledger : {
+            ...ledger, ...activeListing(source, lifecycle ?? "", parsed.models), pricingPageModels: parsed.models,
+          };
         }
         if (shrankSuspiciously(source, result)) result = { ok: false, error: "Far fewer models than the last check; keeping the previous rates" };
       } catch (error) {
         result = { ok: false, error: describeFetchError(error) };
       }
-      recordOfficialPricingResult(source, result, now());
+      const checkedAt = now();
+      recordOfficialPricingResult(source, result, observedAt ?? checkedAt, checkedAt);
       return result.ok;
     }));
     return { checked: due, failed: due.filter((_, index) => !outcomes[index]) };

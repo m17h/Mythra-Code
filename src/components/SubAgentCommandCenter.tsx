@@ -34,7 +34,7 @@ import {
 import { favoriteModels, type ModelFavorites } from "../lib/modelFavorites";
 import { autoCompactTokensError, nativeSubagentVersionAtLeast } from "../lib/threadSubagentSettings";
 import { claudeCompactionModelKey, claudeNativeCompactionConflict, isClaudeDefaultModel } from "../lib/claude";
-import { frontierPricingSnapshot, type FrontierPricingEntry } from "../lib/frontierPricing";
+import { frontierCompactionPricingEntries, type FrontierCompactionPricingEntry } from "../lib/frontierPricing";
 import { compactionPriceBoundary, compactionPricingEntry, describeCompactionPriceBoundary, modelCompactionWindows } from "../lib/modelCompactionPricing";
 import { subscribeUsage } from "../lib/usageLedger";
 import { useRosterFlip } from "../hooks/useRosterFlip";
@@ -317,7 +317,7 @@ function compactionValue(saved: number | undefined): string {
  * setting, every window stays visible but unavailable, while Provider default
  * remains selectable so an old value can still be cleared.
  */
-function compactionChoices(saved: number | undefined, entry: FrontierPricingEntry | undefined, unavailable?: string): AppSelectOption[] {
+function compactionChoices(saved: number | undefined, entry: FrontierCompactionPricingEntry | undefined, unavailable?: string): AppSelectOption[] {
   const windows = modelCompactionWindows(entry);
   const priceBoundary = compactionPriceBoundary(entry);
   const options: AppSelectOption[] = [
@@ -467,10 +467,10 @@ export const SubAgentCommandCenter = memo(function SubAgentCommandCenter(props: 
   const [workerActionError, setWorkerActionError] = useState<string | null>(null);
   const [compactInfoOpen, setCompactInfoOpen] = useState(false);
   const [workerDetailsOpen, setWorkerDetailsOpen] = useState<string | null>(null);
-  const [compactionPricing, setCompactionPricing] = useState<FrontierPricingEntry[]>([]);
+  const [compactionPricing, setCompactionPricing] = useState<readonly FrontierCompactionPricingEntry[]>([]);
   useEffect(() => {
     if (!open) return;
-    const read = () => setCompactionPricing(frontierPricingSnapshot().entries);
+    const read = () => setCompactionPricing(frontierCompactionPricingEntries());
     const unsubscribe = subscribeUsage(read);
     read();
     return unsubscribe;

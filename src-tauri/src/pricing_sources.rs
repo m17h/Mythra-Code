@@ -1,9 +1,9 @@
-//! Fetches the providers' official pricing pages for the usage page's rate
-//! refresh. Claude and Cursor use this bridge; OpenAI's public Markdown page
-//! now permits CORS and is normally read directly by the webview. Keep its
-//! fixed native route for callers using the bridge.
+//! Fetches the providers' official pricing and model status documents. Claude
+//! and Cursor use this bridge; OpenAI's public Markdown pages permit CORS and
+//! are normally read directly by the webview. Keep the fixed native pricing
+//! route for callers using the bridge.
 //!
-//! The command reads only three fixed HTTPS documents and never a caller URL.
+//! The command reads only fixed HTTPS documents and never a caller URL.
 //! It sends no credentials or cookies and returns bounded UTF-8 text. Parsing
 //! and validation stay in the renderer, which fails closed on any layout it
 //! does not recognise.
@@ -23,6 +23,9 @@ fn pricing_document_url(source: &str) -> Option<&'static str> {
     match source {
         "openai" => Some("https://developers.openai.com/api/docs/pricing.md"),
         "anthropic" => Some("https://platform.claude.com/docs/en/about-claude/pricing.md"),
+        "anthropic-model-status" => {
+            Some("https://platform.claude.com/docs/en/about-claude/model-deprecations.md")
+        }
         "cursor" => Some("https://cursor.com/docs/models-and-pricing.md"),
         _ => None,
     }
@@ -36,6 +39,8 @@ fn redirect_allowed(origin: &Url, next: &Url, hops: usize) -> bool {
         && next.host_str().is_some()
         && next.host_str() == origin.host_str()
         && next.port_or_known_default() == Some(443)
+        && next.username().is_empty()
+        && next.password().is_none()
 }
 
 /// Markdown is served as `text/markdown` or `text/plain`. An HTML page means
@@ -52,9 +57,9 @@ fn accepts_content_type(value: Option<&str>) -> bool {
     mime.starts_with("text/") && mime != "text/html"
 }
 
-fn append_bounded(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+fn append_bounded(body: &mut Vec<u8>, chunk: &[u8], page: &str) -> Result<(), String> {
     if body.len().saturating_add(chunk.len()) > MAX_PRICING_DOCUMENT_BYTES {
-        return Err("The pricing page was unexpectedly large".into());
+        return Err(format!("The {page} was unexpectedly large"));
     }
     body.extend_from_slice(chunk);
     Ok(())
@@ -63,6 +68,11 @@ fn append_bounded(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
 #[tauri::command]
 pub async fn fetch_pricing_document(source: String) -> Result<String, String> {
     let url = pricing_document_url(&source).ok_or("Unknown pricing source")?;
+    let page = if source == "anthropic-model-status" {
+        "model status page"
+    } else {
+        "pricing page"
+    };
     let origin = Url::parse(url).map_err(|_| "Invalid pricing source")?;
     let policy_origin = origin.clone();
     let client = reqwest::Client::builder()
@@ -89,36 +99,36 @@ pub async fn fetch_pricing_document(source: String) -> Result<String, String> {
         .get(origin.clone())
         .send()
         .await
-        .map_err(|error| format!("Could not reach the pricing page: {error}"))?;
+        .map_err(|error| format!("Could not reach the {page}: {error}"))?;
     if !response.status().is_success() {
         return Err(format!(
-            "The pricing page returned HTTP {}",
+            "The {page} returned HTTP {}",
             response.status().as_u16()
         ));
     }
     if response.url().host_str() != origin.host_str() {
-        return Err("The pricing page redirected to another site".into());
+        return Err(format!("The {page} redirected to another site"));
     }
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok());
     if !accepts_content_type(content_type) {
-        return Err("The pricing page was not returned as text".into());
+        return Err(format!("The {page} was not returned as text"));
     }
     if response
         .content_length()
         .is_some_and(|length| length > MAX_PRICING_DOCUMENT_BYTES as u64)
     {
-        return Err("The pricing page was unexpectedly large".into());
+        return Err(format!("The {page} was unexpectedly large"));
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| format!("Could not read the pricing page: {error}"))?
+        .map_err(|error| format!("Could not read the {page}: {error}"))?
     {
-        append_bounded(&mut body, &chunk)?;
+        append_bounded(&mut body, &chunk, page)?;
     }
-    String::from_utf8(body).map_err(|_| "The pricing page was not UTF-8 text".into())
+    String::from_utf8(body).map_err(|_| format!("The {page} was not UTF-8 text"))
 }

@@ -1,10 +1,10 @@
 import type { Provider } from "../types";
-import type { FrontierPricingEntry } from "./frontierPricing";
+import type { FrontierCompactionPricingEntry } from "./frontierPricing";
 
 /** Manual context-management choices, not provider pricing boundaries. */
 const MANUAL_WINDOWS = [200_000, 500_000, 1_000_000];
 
-export function compactionPricingEntry(provider: Provider | undefined, model: string | undefined, entries: readonly FrontierPricingEntry[], resolvedModel?: string): FrontierPricingEntry | undefined {
+export function compactionPricingEntry(provider: Provider | undefined, model: string | undefined, entries: readonly FrontierCompactionPricingEntry[], resolvedModel?: string): FrontierCompactionPricingEntry | undefined {
   const source = provider === "claude" ? "anthropic" : provider === "openai" ? "openai" : null;
   const selected = (resolvedModel?.trim() || model?.trim())?.toLowerCase();
   if (!source || !selected) return undefined;
@@ -21,18 +21,18 @@ export function compactionPricingEntry(provider: Provider | undefined, model: st
 }
 
 /** A published input-price band, not a context capacity or a billing cap. */
-export function compactionPriceBoundary(entry: FrontierPricingEntry | undefined): number | undefined {
+export function compactionPriceBoundary(entry: FrontierCompactionPricingEntry | undefined): number | undefined {
   const value = entry?.longContextThresholdTokens;
   return entry?.longContext && value !== undefined && Number.isInteger(value)
     && value >= 100_000 && value <= 1_000_000 ? value : undefined;
 }
 
-export function modelCompactionWindows(entry: FrontierPricingEntry | undefined): number[] {
+export function modelCompactionWindows(entry: FrontierCompactionPricingEntry | undefined): number[] {
   const boundary = compactionPriceBoundary(entry);
   return [...new Set([...MANUAL_WINDOWS, ...(boundary !== undefined ? [boundary] : [])])].sort((a, b) => a - b);
 }
 
-export function describeCompactionPriceBoundary(entry: FrontierPricingEntry | undefined): string {
+export function describeCompactionPriceBoundary(entry: FrontierCompactionPricingEntry | undefined): string {
   const boundary = compactionPriceBoundary(entry);
   if (boundary !== undefined) {
     const amount = boundary % 1_000 === 0 ? `${boundary / 1_000}K` : boundary.toLocaleString("en-US");

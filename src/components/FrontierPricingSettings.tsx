@@ -52,21 +52,18 @@ function listedDay(asOf: string): string {
 /** Never claims freshness it doesn't have: a failed check always says so, and
  * names how old the rates still on screen are. */
 export function providerStatusText(status: FrontierPricingProvider | undefined, checking: boolean): { tone: "ok" | "warn" | "idle"; text: string } {
-  if (checking || status?.checking) return { tone: "idle", text: "Checking the official pricing page…" };
+  if (checking || status?.checking) return { tone: "idle", text: "Checking prices and model availability…" };
   if (!status) return { tone: "idle", text: "Not checked yet" };
   if (status.verificationTimeUncertain || status.checkedTimeUncertain) {
-    const saved = status.models > 0;
-    const prefix = status.error
-      ? `Couldn’t verify · ${saved ? "showing saved rates" : "no verified rates saved"};`
-      : `${saved ? "Saved rates" : "No verified rates saved"} ·`;
-    return { tone: "warn", text: `${prefix} verification time is uncertain. Refresh to check the official page.` };
+    const saved = status.models > 0 ? "Showing saved rates." : "No verified rates saved.";
+    return { tone: "warn", text: `${status.error ? "Couldn’t verify. " : ""}${saved} Verification time is uncertain. Refresh to check again.` };
   }
   if (status.error) {
     const attempted = status.checkedAt ? ` ${when(status.checkedAt)}` : "";
     return { tone: "warn", text: `Couldn’t verify${attempted} · ${status.verifiedAt ? `showing rates verified ${when(status.verifiedAt)}` : "no verified rates saved yet"}` };
   }
   if (status.verifiedAt) return { tone: "ok", text: `${status.models} ${status.models === 1 ? "model" : "models"} verified ${when(status.verifiedAt)}` };
-  return { tone: "idle", text: "Not checked yet" };
+  return { tone: "idle", text: status.checkedAt ? "Refresh to verify model availability" : "Not checked yet" };
 }
 
 function tokenCount(tokens: number): string {
@@ -94,8 +91,12 @@ function safeSourceUrl(url: string | undefined): string | null {
 }
 
 function CacheWrite({ provider, rates }: { provider: FrontierPricingSource; rates: FrontierTokenRates }) {
-  // Anthropic prices cache writes by how long the entry lives; both durations
-  // are shown together so neither reads as the only rate.
+  if (provider === "openai" && (rates.cacheWrite30m || rates.cacheWrite12hInputPerMillion !== undefined)) {
+    return <span className="frontier-pricing-cache-write">
+      {rates.cacheWriteInputPerMillion !== undefined && <span><small>30m</small> <Rate value={rates.cacheWriteInputPerMillion} /></span>}
+      {rates.cacheWrite12hInputPerMillion !== undefined && <span><small>12h</small> <Rate value={rates.cacheWrite12hInputPerMillion} /></span>}
+    </span>;
+  }
   if (provider === "anthropic" && (formatRate(rates.cacheWriteInputPerMillion) || formatRate(rates.cacheWrite1hInputPerMillion))) {
     return <span className="frontier-pricing-cache-write">
       <span><small>5m</small> <Rate value={rates.cacheWriteInputPerMillion} /></span>
@@ -125,7 +126,6 @@ function ModelRows({ entry, verifiedDay }: { entry: FrontierPricingEntry; verifi
         <span className="frontier-pricing-name">{entry.name}</span>
         <span className="frontier-pricing-meta">
           {entry.name !== entry.id && <code>{entry.id}</code>}
-          {entry.status === "retired" && <span className="frontier-pricing-badge">Retired</span>}
           {entry.status === "limited" && <span className="frontier-pricing-badge">Limited availability</span>}
           {stale && <span className="frontier-pricing-badge">Last listed {listedDay(entry.asOf)}</span>}
         </span>
@@ -163,7 +163,7 @@ function ProviderSection({ provider, label, page, status, models, checking, quer
         <ExternalLink size={12} aria-hidden="true" />{page}
       </button>}
     </header>
-    {status?.error && <p className="frontier-pricing-error">{status.error}</p>}
+    {status?.error && !checking && !status.checking && <p className="frontier-pricing-error">{status.error}</p>}
     {models.length
       ? <div className="frontier-pricing-table-wrap">
         <table className="frontier-pricing-table" aria-labelledby={headingId}>
@@ -173,9 +173,9 @@ function ProviderSection({ provider, label, page, status, models, checking, quer
           {models.map((entry) => <ModelRows key={entry.id} entry={entry} verifiedDay={verifiedDay} />)}
         </table>
       </div>
-      : <p className="frontier-pricing-empty">{query
+      : <p className="frontier-pricing-empty">{query && status?.models
         ? `No ${label} models match “${query}”.`
-        : checking || status?.checking ? `Reading ${label}’s pricing page…` : `No verified ${label} rates saved yet. Refresh to read the official pricing page.`}</p>}
+        : checking || status?.checking ? `Checking ${label}’s prices and model availability…` : `No verified ${label} rates saved yet. Refresh to check prices and model availability.`}</p>}
   </section>;
 }
 
@@ -206,8 +206,8 @@ export function FrontierPricingView({ entries, providers, checking, onRefresh }:
 
   return <div className="frontier-pricing">
     <p className="frontier-pricing-intro">
-      Pay-as-you-go API list prices in US dollars per 1M tokens, read from each company’s official pricing page.
-      These are not Claude or ChatGPT subscription allowances, and nothing here changes your selected model or how you’re billed.
+      Pay-as-you-go API list prices for active models in US dollars per 1M tokens.
+      Claude and ChatGPT subscription allowances are separate.
     </p>
     <div className="frontier-pricing-toolbar">
       <div className="frontier-pricing-filter" role="radiogroup" aria-label="Company">
@@ -244,7 +244,7 @@ export function FrontierPricingView({ entries, providers, checking, onRefresh }:
         {busy ? "Checking…" : "Refresh prices"}
       </button>
     </div>
-    {refreshFailed && <p className="frontier-pricing-error" role="alert">Couldn’t refresh pricing. Previously verified rates are still shown.</p>}
+    {refreshFailed && <p className="frontier-pricing-error" role="alert">Couldn’t complete the pricing refresh.</p>}
     {PROVIDERS.filter(({ id }) => filter === "all" || filter === id).map(({ id, label, page }) => (
       <ProviderSection
         key={id}
@@ -258,7 +258,7 @@ export function FrontierPricingView({ entries, providers, checking, onRefresh }:
       />
     ))}
     <p className="frontier-pricing-footnote">
-      Cache read is the discounted rate for cached input. Anthropic lists separate 5-minute and 1-hour cache-write rates.
+      Cache read is the discounted rate for cached input. Anthropic lists separate 5-minute and 1-hour cache-write rates, and OpenAI lists 30-minute and 12-hour rates where published.
       Long-context rows apply only when a request exceeds the stated threshold; batch, priority, regional, and data-residency pricing are not shown.
     </p>
   </div>;
