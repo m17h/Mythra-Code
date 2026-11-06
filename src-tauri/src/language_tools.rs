@@ -2074,7 +2074,7 @@ async fn install_at_scoped(
         // Rust is externally managed. Keep its verification outcome without
         // recording a managed installation error or creating a staging prefix.
         if let Some(app) = app {
-            notify_generation(app, runtime.generation.load(Ordering::SeqCst));
+            changed(app);
         }
         return verification.and_then(|launches| {
             if launches.is_empty() {
