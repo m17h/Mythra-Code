@@ -791,7 +791,6 @@ export default function App() {
     };
   }, []);
   useEffect(() => subscribeBackgroundUsage(() => recordError("Background helper usage could not be recorded.")), []);
-  const appUpdater = useAppUpdater();
   const updateNoticePreview = useUpdateNoticePreview();
   const performanceOverlay = usePerformanceOverlayEnabled();
   // Optional menu bar / tray status: working threads and pending approvals.
@@ -2647,10 +2646,13 @@ export default function App() {
   });
   const scheduleClaudeThreadSave = localTranscriptSaves.schedule;
   const scheduleCursorThreadSave = localTranscriptSaves.schedule;
-  useFlushOnClose(() => flushBeforeClose(
-    [localTranscriptSaves.flushAll, flushPendingGlobalInstructionFileEdits],
+  const flushBeforeExit = useCallback((allowNewTranscriptRevisions = false) => flushBeforeClose(
+    [() => localTranscriptSaves.flushAll({ allowNewRevisions: allowNewTranscriptRevisions }), flushPendingGlobalInstructionFileEdits],
     flushUsageBeforeExit,
-  ), setError);
+  ), [localTranscriptSaves]);
+  const flushBeforeUpdate = useCallback(() => flushBeforeExit(true), [flushBeforeExit]);
+  const appUpdater = useAppUpdater(flushBeforeUpdate);
+  useFlushOnClose(flushBeforeExit, setError);
 
   const checkRuntime = useCallback(async (showSetupWhenMissing = true): Promise<CodexRuntimeStatus> => {
     setRuntimeChecking(true);

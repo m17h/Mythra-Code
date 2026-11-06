@@ -136,7 +136,7 @@ function ModelRows({ entry, verifiedDay }: { entry: FrontierPricingEntry; verifi
     {entry.longContext && <tr className="frontier-pricing-long">
       <th scope="row" data-label="Tier">
         <span className="frontier-pricing-tier">Long context<span className="sr-only"> for {entry.name}</span></span>
-        <span className="frontier-pricing-condition">{condition ?? "Applies above the threshold on the pricing page"}</span>
+        <span className="frontier-pricing-condition">{condition ?? "Input-token threshold unavailable"}</span>
       </th>
       <RateCells provider={entry.provider} rates={entry.longContext} />
     </tr>}
@@ -259,7 +259,7 @@ export function FrontierPricingView({ entries, providers, checking, onRefresh }:
     ))}
     <p className="frontier-pricing-footnote">
       Cache read is the discounted rate for cached input. Anthropic lists separate 5-minute and 1-hour cache-write rates, and OpenAI lists 30-minute and 12-hour rates where published.
-      Long-context rows apply only when a request exceeds the stated threshold; batch, priority, regional, and data-residency pricing are not shown.
+      Long-context rates apply above the model’s input-token threshold. The table covers standard global pricing and shows thresholds where available.
     </p>
   </div>;
 }

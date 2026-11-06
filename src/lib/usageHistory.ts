@@ -5,7 +5,7 @@ import {
   type ModelPricing, type PricingCorrection, type PricingCorrectionCheckpoint, type UsageProvider,
 } from "./usageLedger";
 import { historicalPricing } from "./pricingEvidence";
-import { loadStored, storedRevision, storeValue } from "./storage";
+import { readStoredRaw, storedRevision, storeValue } from "./storage";
 import type { UsageEvidence } from "../types";
 import { cacheUnknownTokens, normalizedServiceTier } from "./usageEvidence";
 
@@ -498,19 +498,17 @@ let recentTurnSet: Set<string> | null = null;
 let rateIndex: Map<string, number> | null = null;
 let cohortSequence = 0;
 
-function readRaw(): string | null {
-  try { return localStorage.getItem(USAGE_HISTORY_KEY); } catch { return null; }
-}
-
 function state(): UsageHistoryState | null {
   if (cachedState && dirty) return cachedState;
   const revision = storedRevision(USAGE_HISTORY_KEY);
   if (cachedRaw !== undefined && revision === cachedRevision) return cachedState;
-  const raw = readRaw();
-  cachedRevision = revision;
+  const raw = readStoredRaw(USAGE_HISTORY_KEY);
+  cachedRevision = storedRevision(USAGE_HISTORY_KEY);
   if (cachedRaw !== undefined && raw === cachedRaw) return cachedState;
   cachedRaw = raw;
-  cachedState = parseHistory(loadStored<unknown>(USAGE_HISTORY_KEY, null));
+  let stored: unknown = null;
+  try { if (raw !== null) stored = JSON.parse(raw); } catch { /* An invalid history can be rebuilt from new usage. */ }
+  cachedState = parseHistory(stored);
   recentTurnSet = null;
   rateIndex = null;
   return cachedState;
@@ -828,9 +826,9 @@ export function pruneUsageHistory(now = Date.now()): void {
 export function flushUsageHistory(now = Date.now()): void {
   if (!dirty || !cachedState) return;
   pruneUsageHistory(now);
-  const serialized = serialize(cachedState);
+  cachedRaw = storeValue(USAGE_HISTORY_KEY, serialize(cachedState));
+  cachedRevision = storedRevision(USAGE_HISTORY_KEY);
   dirty = false;
-  cachedRaw = storeValue(USAGE_HISTORY_KEY, serialized);
 }
 
 export function resetUsageHistoryCache(): void {

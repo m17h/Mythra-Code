@@ -710,22 +710,29 @@ fn remember_health(
             }
         }
         let entries = proofs.entry(key.clone()).or_default();
-        if key.1 == "rust" {
-            // A project query can run the same proxy against another toolchain.
-            // Its success cannot replace a prerequisite seen in the profile probe.
-            if probe_started.is_none() && entries.iter().any(|proof| {
+        // A project query can run the same proxy against another toolchain.
+        // Its success cannot replace a prerequisite seen in the profile probe.
+        if key.1 == "rust"
+            && probe_started.is_none()
+            && entries.iter().any(|proof| {
                 proof.identity == identity
                     && matches!(proof.error, Some(ProbeFailure::RustupPrerequisite { .. }))
-            }) {
-                return;
-            }
-            // Rust has one launcher. Keep only its latest proof.
-            entries.clear();
-        } else {
-            entries.retain(|proof| {
-                proof.identity != identity && proof.checked.elapsed() < Duration::from_secs(120)
-            });
+            })
+        {
+            return;
         }
+        // A result for a previous launcher can arrive after the current launcher
+        // was checked. Only replace the proof for the launcher that just ran.
+        entries.retain(|proof| {
+            let different_launcher = if key.1 == "rust" {
+                proof.identity.configuration != identity.configuration
+            } else {
+                proof.identity != identity
+            };
+            different_launcher
+                && (matches!(proof.error, Some(ProbeFailure::RustupPrerequisite { .. }))
+                    || proof.checked.elapsed() < Duration::from_secs(120))
+        });
         if entries.len() >= 6 {
             entries.remove(0);
         }
@@ -2059,6 +2066,9 @@ async fn install_at_scoped(
     project: Option<&Path>,
 ) -> Result<(), String> {
     let tool = tool(id)?;
+    // Rust setup happens outside the app without changing the proxy executable.
+    // A setup request must recheck health even if the previous proof is recent.
+    let probe_after = (id == "rust").then(Instant::now);
     // Serializing installs prevents concurrent npm/go cache writes and deduplicates
     // simultaneous project setup. Settings and snapshots remain responsive.
     let _install = runtime.installs.lock().await;
@@ -2069,7 +2079,7 @@ async fn install_at_scoped(
                 .into(),
         );
     }
-    let verification = verified_launches_scoped(tool, root, &settings, project, None).await;
+    let verification = verified_launches_scoped(tool, root, &settings, project, probe_after).await;
     if id == "rust" {
         // Rust is externally managed. Keep its verification outcome without
         // recording a managed installation error or creating a staging prefix.

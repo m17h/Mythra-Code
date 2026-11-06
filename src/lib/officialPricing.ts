@@ -43,7 +43,7 @@ interface SourceState {
   checkedAt?: number;
   /** Last attempt whose page parsed and validated. */
   verifiedAt?: number;
-  /** Count from the last successfully parsed page, including same-day removals. */
+  /** Standard-rate rows from the last successfully parsed page, for shrink detection. */
   lastModelCount?: number;
   /** Why the last attempt failed; cleared by a successful one. */
   error?: string;
@@ -62,8 +62,6 @@ export interface OfficialPricingStatus extends Pick<SourceState, "checkedAt" | "
   verificationTimeUncertain: boolean;
   catalogVerificationTimeUncertain: boolean;
   checkedTimeUncertain: boolean;
-  /** Models the page listed at its last successful check. */
-  models: number;
 }
 
 /** Stored rates are keyed the way the ledger looks them up. */
@@ -274,9 +272,10 @@ export function observeRates(
   return next;
 }
 
-function modelsSeenAtLastCheck(source: OfficialPricingSource, store: StoredListings = readStore()): number {
+function modelsSeenAtLastCheck(source: OfficialPricingSource): number {
   // Snapshots written before `lastModelCount` still need a best-effort count
   // until their next successful check upgrades the stored source state.
+  const store = readStore();
   const storedCount = store.sources[source]?.lastModelCount;
   if (storedCount !== undefined) return storedCount;
   const verifiedAt = store.sources[source]?.verifiedAt;
@@ -295,7 +294,7 @@ export function officialPricingStatus(now = Date.now()): OfficialPricingStatus[]
       catalogVerifiedAt: state?.catalogVerifiedAt, catalogError: state?.catalogError,
       verificationTimeUncertain: timestampAhead(state?.verifiedAt, now),
       catalogVerificationTimeUncertain: timestampAhead(state?.catalogVerifiedAt, now),
-      checkedTimeUncertain: timestampAhead(state?.checkedAt, now), models: modelsSeenAtLastCheck(source, store),
+      checkedTimeUncertain: timestampAhead(state?.checkedAt, now),
     };
   });
 }
