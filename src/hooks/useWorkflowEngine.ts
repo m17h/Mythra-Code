@@ -1,4 +1,5 @@
-import { noteCheckpointSkipped } from "../lib/remote/host/remoteCheckpoint";
+import { remotePromptPreparation, type RemotePromptPreparation } from "../lib/remote/host/promptPreparation";
+import { runCheckpointLabel } from "../lib/checkpoints";
 import { openLocalEngineOwner, rememberRemoteEngineOwner, finishRemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { useCallback, useEffect, useRef } from "react";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
@@ -575,6 +576,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
           });
           publish({ steps });
           let remoteStep: RemoteTurnDelivery | undefined;
+          let stepPreparation: RemotePromptPreparation | undefined;
+          // Its own instruction took the before snapshot, so it takes the after one too,
+          // here at the step's end and not when the whole workflow's owner closes.
+          const finishStepCheckpoint = (turnId?: string) => stepPreparation?.complete(turnId).catch(() => false);
           try {
             if (remote) remoteStep = await remote.step(`step-${index}-attempt-${attempt}`, step.type === "command" ? "command" : "prompt", threadId);
             if (step.type === "command") {
@@ -592,7 +597,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               // Command steps edit the project unattended; snapshot around
               // them so their changes are restorable like any model turn's.
               if (!remote) await current.beginRunCheckpoint(threadId, project.path, command, workflow.run.provider, workflow.run.model);
-              else if (!project.isChat) noteCheckpointSkipped(threadId);
+              else if (remoteStep && !project.isChat) {
+                stepPreparation = remotePromptPreparation(remoteStep, project.id, threadId);
+                await stepPreparation.checkpointBefore(threadId, runCheckpointLabel(command));
+              }
               let result: { exitCode: number; stdout: string; stderr: string };
               try {
                 if (active.stopRequested) throw new WorkflowStoppedError();
@@ -612,8 +620,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 active.processId = undefined;
                 // Even a failed command may have modified files before it
                 // stopped; finish the snapshot so those edits are captured.
-                await current.finalizeRunCheckpoint(threadId);
+                // A remote step can only do that once its delivery has settled.
+                if (!remote) await current.finalizeRunCheckpoint(threadId);
               }
+              await finishStepCheckpoint();
               stepOutput = [result.stdout, result.stderr].filter(Boolean).join("\n").trim().slice(-12_000);
               useTaskStore.getState().upsertActivity(threadId, {
                 id: activityId,
@@ -670,7 +680,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               let turnDispatched = false;
               try {
                 if (!remote) await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
-                else if (!project.isChat) noteCheckpointSkipped(threadId);
+                else if (remoteStep && !project.isChat) {
+                  stepPreparation = remotePromptPreparation(remoteStep, project.id, threadId);
+                  await stepPreparation.checkpointBefore(threadId, runCheckpointLabel(prompt));
+                }
                 if (active.stopRequested) throw new WorkflowStoppedError();
                 if (localProvider) {
                   // Save only prior history while preparation can still fail
@@ -724,7 +737,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                           cursorSessionId = started.cursorSessionId;
                           localThread = depsRef.current.onLocalThreadUpdated?.(localThread!, cursorSessionId, workflow.run) ?? localThread;
                         }
-                        await current.finalizeRunCheckpoint(threadId, started.turnId);
+                        if (!remote) await current.finalizeRunCheckpoint(threadId, started.turnId);
                       }
                       throw new WorkflowStoppedError();
                     }
@@ -807,6 +820,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 clearActiveWaitSignal(active, signal);
               }
               if (localProvider) await current.finalizeRunCheckpoint(threadId, active.turnId);
+              await finishStepCheckpoint(active.turnId);
               active.turnId = undefined;
               const messages = useTaskStore.getState().tasks[threadId]?.messages.slice(beforeMessages) ?? [];
               stepOutput = [...messages].reverse().find((message) => message.role === "assistant")?.text.trim().slice(-12_000) ?? "";
@@ -828,6 +842,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             if (remoteStep) {
               await remoteStep.failure(reason);
               if (remoteStep.result().state === "uncertain") active.deliveryUncertain = true;
+              await finishStepCheckpoint();
             }
             if (step.type === "command") {
               const activity = useTaskStore.getState().tasks[threadId]?.activities

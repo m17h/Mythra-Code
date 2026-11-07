@@ -1,3 +1,4 @@
+import { configureRemoteCheckpointSettlement, configureRemotePreparationRoots } from "./promptPreparation";
 import type { ChildAgentTarget } from "../../../types";
 import { invoke } from "@tauri-apps/api/core";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
@@ -80,6 +81,11 @@ interface RecoveredDelivery {
   disposition: string; threadId?: string; queuedTurnId?: string; attemptId?: string; messageId?: string;
 }
 export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter {
+  const releaseCheckpointSettlement = configureRemoteCheckpointSettlement((id, error) => options.sources.settleRemoteCheckpoint?.(id, error));
+  const releasePreparationRoots = configureRemotePreparationRoots((workspaceId, threadId) => {
+    const workspace = options.sources.getWorkspaces().find((entry) => entry.id === workspaceId);
+    return workspace ? options.sources.executionPathFor(threadId ?? "", workspace.path) : undefined;
+  });
   const targets = new WorkTargets(options.generation, options.isCurrent);
   const drafts = new DraftTokens(() => !disposed && options.isCurrent());
   const nativeGrants = new Map<string, DeviceGrant | null>();
@@ -260,7 +266,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           const previous = args.draftHandle === undefined ? undefined : idArg(args.draftHandle);
           const patch = Object.fromEntries(Object.entries(args).filter(([key]) => ["provider", "model", "effort", "permission", "serviceTier", "subagents", "isolated"].includes(key)));
           const settings = validateExecutionSettings({ ...(previous ? drafts.get(previous, id.device, workspaceId).settings : {}), ...patch }, sources, ctx.effectiveSettings);
-          if (settings.isolated) throw new HostReadError("unsupported", "Create the isolated worktree on the host before sending. Remote draft preparation is not connected yet.");
+          if (settings.isolated && !currentWorkGrant(sources, id.device).capabilities.terminal) throw new HostReadError("forbidden", "Isolated drafts need Terminal access. Enable it in the host device settings.");
           if (settings.permission && remotePermission(settings.permission, currentWorkGrant(sources, id.device)) !== settings.permission
             || settings.permission === "full" && ctx.effectiveSettings.permission !== "full") throw new HostReadError("forbidden", "Full access isn't allowed for this device. To change it, open Settings → Connections → Devices on the other device.");
           await delivery.beforeCreate();
@@ -680,6 +686,6 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         try { return await work; } finally { inflight.delete(key); }
       } finally { active -= 1; }
     },
-    dispose() { disposed = true; clearRemoteEngineOwners(options.generation); navigation.dispose(); resources.dispose(); domains.dispose(); engines?.dispose(); drafts.clear(); targets.dispose(); unsubscribe?.(); nativeGrants.clear(); learned.clear(); for (const release of releases) release(); releases.clear(); },
+    dispose() { disposed = true; releaseCheckpointSettlement(); releasePreparationRoots(); clearRemoteEngineOwners(options.generation); navigation.dispose(); resources.dispose(); domains.dispose(); engines?.dispose(); drafts.clear(); targets.dispose(); unsubscribe?.(); nativeGrants.clear(); learned.clear(); for (const release of releases) release(); releases.clear(); },
   };
 }

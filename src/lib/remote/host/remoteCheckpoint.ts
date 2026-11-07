@@ -5,7 +5,7 @@ import { hasRemoteWork } from "./engineOwners";
 export function noteCheckpointSkipped(threadId: string): void {
   useTaskStore.getState().upsertActivity(threadId, {
     id: `remote-checkpoint-preparation-${threadId}`, kind: "warning", title: "Automatic checkpoint not created",
-    detail: "Remote prompts do not run local Git preparation. Use the explicit checkpoint action when Terminal access is enabled.",
+    detail: "This step was started from another device without its own checkpoint permission, so nothing was saved before it ran. You can save one yourself from Checkpoints if Terminal is turned on for that device.",
   });
 }
 

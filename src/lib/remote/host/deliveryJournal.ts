@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { markRemotePromptDelivered, settleRemotePromptPreparation } from "./promptPreparation";
 import { flushPendingStateWrites } from "../../storage";
 import { useTaskStore, type RemoteQueuedDelivery } from "../../taskStore";
 import type { DeviceGrant } from "../types";
@@ -146,18 +147,21 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
     this.dispatched = true;
   }
   async accepted(info: Partial<RemoteDispatchInfo>): Promise<void> {
+    markRemotePromptDelivered(this, info); settleRemotePromptPreparation(this);
     this.outcome = { ...this.outcome, state: "accepted", ...(info.threadId ? { threadId: info.threadId } : {}), ...(info.turnId ? { turnId: info.turnId } : {}) };
     try { await this.save("accepted", info); await this.mirror("accepted"); }
     catch { await this.uncertain(info); }
   }
   async uncertain(info: Partial<RemoteDispatchInfo> = {}): Promise<void> {
+    settleRemotePromptPreparation(this);
     this.outcome = { ...this.outcome, state: "uncertain", ...(info.threadId ? { threadId: info.threadId } : {}), ...(info.turnId ? { turnId: info.turnId } : {}),
       error: { code: "uncertain", message: "Delivery could not be confirmed. Check the conversation before sending again." } };
     try { await this.save("uncertain", info); } catch { /* Rust retains its stronger native receipt. */ }
     try { await this.mirror("uncertain"); } catch { /* The pre-dispatch mirror remains held. */ }
   }
   async rejected(code = "internal"): Promise<void> {
-    if (this.outcome.state === "accepted" || this.outcome.state === "uncertain") return;
+    settleRemotePromptPreparation(this);
+    if (this.outcome.state === "accepted" || this.outcome.state === "uncertain" || this.outcome.error) return;
     this.outcome = { ...this.outcome, state: "rejected", error: { code,
       message: code === "forbidden" ? "Remote access was removed before this instruction could run." : "The other device did not deliver this instruction." } };
     try { await this.save("rejected", { errorCode: code }); await this.mirror("rejected", code); }

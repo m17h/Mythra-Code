@@ -682,6 +682,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const canWork = threadId ? capabilities !== null : true;
   const viewOnly = Boolean(threadId && capabilities === null);
   const canRun = Boolean(context?.capabilities.terminal);
+  const blockedIsolation = context?.execution?.isolationBlocked;
+  const isolationReason = blockedIsolation === "repository" ? `Needs a Git repository on ${name}` : blockedIsolation === "root" ? "Open the repository root folder" : blockedIsolation === "commit" ? "Requires at least one Git commit" : undefined;
   const revision = context?.revision ?? "";
   const parityTarget = useMemo(() => ({ ...(workspaceId ? { workspaceId } : {}), ...(threadId ? { threadId } : {}) }), [threadId, workspaceId]);
   const { handle: runHandle, latest: lastRun, set: setRunHandle } = useRemoteCommand(device, "run.status", parityTarget, connected);
@@ -1089,9 +1091,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
             <button className={!chosen?.isolated ? "active" : ""} aria-pressed={!chosen?.isolated} onClick={() => changeSettings({ isolated: false })}>
               <Folder size={15} /><span><strong>Shared project</strong><small>Work directly in {workspace.name}</small></span>
             </button>
-            <button className={chosen?.isolated ? "active" : ""} aria-pressed={Boolean(chosen?.isolated)} disabled={!canRun}
-              title={canRun ? undefined : accessReason(name, "create worktrees", "Terminal")} onClick={() => changeSettings({ isolated: true })}>
-              <GitBranch size={15} /><span><strong>Isolated worktree</strong><small>A separate branch and folder on {name}</small></span>
+            <button className={chosen?.isolated ? "active" : ""} aria-pressed={Boolean(chosen?.isolated)} disabled={!canRun || Boolean(isolationReason)}
+              title={!canRun ? accessReason(name, "create worktrees", "Terminal") : isolationReason} onClick={() => changeSettings({ isolated: true })}>
+              <GitBranch size={15} /><span><strong>Isolated worktree</strong><small>{isolationReason ?? `A separate branch and folder on ${name}`}</small></span>
             </button>
           </div>}
         </div> : known ? <RemoteMachineName.Provider value={name}><RemoteThreadContext.Provider value={scope}><TimelinePresentation key={`${device}:${compose ? "new" : thread?.id}`} environment={timelineEnvironment}

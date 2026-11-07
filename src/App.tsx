@@ -27,7 +27,7 @@ import { beginProviderAuthChange, claudeUsesApiKey, codexAccountReady, providerA
 import { cursorCanAttemptRequest, deleteCursorTranscript, getCursorRuntimeStatus, listCursorModels, loadCursorTranscript, loadCursorTranscriptPage, respondToCursorPermission, saveCursorTranscript, startCursorLogin, type CursorModel, type CursorRuntimeStatus } from "./lib/cursor";
 import { waitForSignIn } from "./lib/signInPolling";
 import { listLocalTranscriptThreads } from "./lib/localTranscriptPersistence";
-import { loadStored, readStoredRaw, storeValue } from "./lib/storage";
+import { loadStored, readStoredRaw, storeValue, subscribeRemoteStateAdoption } from "./lib/storage";
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_LM_STUDIO_BASE_URL, DEFAULT_OPENAI_MODEL, DEFAULT_PROMPT_PROFILES, DEFAULT_SETTINGS, sanitizeAutoArchiveSubagentThreads, sanitizeChatFont, sanitizeEffortSlider, sanitizeEscapeStopsRun, sanitizeTerminalTimeoutMinutes, sanitizeTheme, themeColorScheme } from "./lib/appConfig";
 import { modelCatalogRecentlyRefreshed, shareModelRefresh, type ModelRefreshState } from "./lib/modelCatalogRefresh";
 import { commandSandbox, threadResumeParams, threadRuntimeConfig } from "./lib/turnConfig";
@@ -1223,6 +1223,10 @@ export default function App() {
     threadProjectBindingsRef.current = loadStored("kiwi.threadProjects", {});
   }
   if (knownThreadsRef.current === null) knownThreadsRef.current = initialKnownThreads;
+  // Native preparation binds a new thread's folder directly, without a host row lifecycle.
+  useEffect(() => subscribeRemoteStateAdoption("kiwi.threadProjects", (adopted) => {
+    if (adopted && typeof adopted === "object") threadProjectBindingsRef.current = adopted as Record<string, string>;
+  }), []);
 
   const selectedProject = useMemo(() => projects.find((project) => project.id === activeProjectId) ?? null, [activeProjectId, projects]);
   const activeProjectIdRef = useRef(activeProjectId);
@@ -4056,6 +4060,7 @@ export default function App() {
     retryUnsupportedCheckpointPath,
     finalizeRunCheckpoint,
     discardRunCheckpoint,
+    settleRemoteCheckpoint,
     projectHasActiveTask,
     captureCurrentStateCheckpoint,
     createCheckpoint,
@@ -9059,7 +9064,7 @@ export default function App() {
   // Everything the host reads or runs, current as of this render. Host requests
   // arrive at any time, so nothing below captures state from one render.
   const remoteHostValues = {
-    chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
+    settleRemoteCheckpoint, chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
     runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
     archiveThreadRecord, deleteThreadRecord, setProjects,
     captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent, stageDelegationCrew,
@@ -9195,6 +9200,7 @@ export default function App() {
         else if (provider === "openrouter") await refreshOpenRouterModels();
         else if (provider === "openai") await refreshModels();
       },
+      settleRemoteCheckpoint: (id, error) => live.current.settleRemoteCheckpoint(id, error),
       getStudioReads: () => ({
         getCheckpoints: () => live.current.checkpoints,
         getCheckpointHead: (root) => live.current.checkpointHeads[normalizedProjectPath(root)],

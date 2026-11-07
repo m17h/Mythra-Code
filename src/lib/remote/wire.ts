@@ -203,6 +203,8 @@ export interface WireSubagents {
 export interface WireExecutionSettings {
   provider?: WireProvider; model?: string; effort?: WireEffort; permission?: "read-only" | "ask" | "full";
   serviceTier?: "standard" | "fast" | null; subagents?: WireSubagents; isolated?: boolean;
+  /** Why a new draft here can't use an isolated worktree. Absent when it can, or when the host doesn't know yet. */
+  isolationBlocked?: "repository" | "root" | "commit";
   /** A saved thread's crew. A draft carries it in `subagents.crew`. */
   crew?: WireCrewTarget[];
 }

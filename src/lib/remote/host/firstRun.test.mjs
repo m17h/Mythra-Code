@@ -5,7 +5,8 @@ import { renderToString } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { useTurnRunner } from "../../../hooks/useTurnRunner.ts";
 import { DEFAULT_SETTINGS } from "../../appConfig.ts";
-import { flushPendingStateWrites } from "../../storage.ts";
+import { flushPendingStateWrites, subscribeRemoteStateAdoption } from "../../storage.ts";
+import { completeRemotePreparedCheckpoint } from "./promptPreparation.ts";
 import { PendingTurnStarts } from "../../pendingTurnStarts.ts";
 import { resetTaskStore, useTaskStore } from "../../taskStore.ts";
 import { RemoteDeliveryJournal } from "./deliveryJournal.ts";
@@ -16,15 +17,33 @@ const deferred = () => { let resolve; const promise = new Promise((done) => { re
 const device = "a".repeat(64), grant = { revision: 1, view: true, work: true, scope: { kind: "all" }, capabilities: { fullAccess: false } };
 const project = { id: "p", path: "/host/project", name: "Project" };
 
-for (const mode of ["stop", "send", "project", "isolated"]) for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"]) test(`${provider}: real runner ${mode === "stop" ? "exposes owner and cancels preparation before input" : mode === "isolated" ? "refuses unstamped isolated draft creation" : `reaches registered native start (${mode})`}`, async () => {
+for (const mode of ["stop", "send", "project", "isolated", "isolatedSend"]) for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"]) test(`${provider}: real runner ${mode === "stop" ? "exposes owner and cancels preparation before input" : mode === "isolated" ? "refuses isolated drafts without Terminal access" : `reaches registered native start (${mode})`}`, async () => {
   resetTaskStore(); clearRemoteEngineOwners(13);
   const old = globalThis.window, calls = [], errors = [], ownerAdmission = deferred(), skills = deferred(), skillEntered = deferred();
+  const deviceGrant = mode === "isolatedSend" ? { ...grant, capabilities: { ...grant.capabilities, terminal: true } } : grant;
+  const worktree = { path: "/host/isolated", branch: "remote", baseCommit: "head", gitDir: "/host/project/.git/worktrees/remote" };
+  const nativeRows = (threadId, ready = false) => [
+    { key: "kiwi.threadWorktrees", value: threadId ? { [threadId]: { ...worktree, threadId, projectId: "p", projectPath: project.path, status: "active" } } : {}, revision: 1 },
+    { key: "kiwi.threadProjects", value: threadId ? { [threadId]: project.path } : {}, revision: 1 },
+    { key: "kiwi.checkpoints", value: threadId ? [{ id: "prepared-checkpoint", threadId, remotePrepared: true, status: ready ? "ready" : "running" }] : [], revision: 1 },
+    { key: "kiwi.checkpointHeads", value: null, revision: null },
+  ];
   globalThis.window = { setTimeout, clearTimeout, __TAURI_INTERNALS__: { invoke: async (command, args) => {
     calls.push([command, args]);
-    if (command === "remote_work_grant") return grant;
+    if (command === "remote_work_grant") return deviceGrant;
     if (command === "remote_work_receipt") return;
     if (command === "remote_work_owner_open") { await ownerAdmission.promise; return { ownerHandle: `owner-${provider}` }; }
     if (command === "remote_work_owner_finish") return { confirmed: true };
+    if (mode === "isolatedSend") {
+      if (command === "remote_studio_git_identity") return { headOid: "head", branch: "remote", isRoot: true };
+      if (command === "remote_prompt_prepare") return { preparationId: `prep-${args.kind}`, kind: args.kind, opId: args.stamp.opId,
+        checkpointId: args.kind.startsWith("checkpoint") ? "prepared-checkpoint" : null, worktree: args.kind === "isolatedCreate" ? worktree : null,
+        rows: nativeRows(args.threadId, args.kind === "checkpointAfter") };
+      if (command === "remote_prompt_preparation_bind") return { bound: true, rows: nativeRows(args.threadId) };
+      if (command === "remote_work_owner_bind") return { bound: true };
+      if (command === "runtime_instance") return "runtime";
+      if (command === "codex_rpc" && args.method === "thread/start") return { thread: { id: `created-${provider}`, modelProvider: provider, cwd: worktree.path, preview: "", updatedAt: 1 }, model: "provider-model", runtimeInstance: "runtime" };
+    }
     if (mode !== "stop") {
       if (command === "child_agent_session_start") return { registrationId: `registration-${provider}`, name: "project-tools", command: "host-bridge", args: [], configPath: "/private/project-tools.json", toolNames: ["propose_agent_settings"] };
       if (command === "child_agent_session_end" || command === "child_agent_revoke_root_registration") return;
@@ -43,7 +62,7 @@ for (const mode of ["stop", "send", "project", "isolated"]) for (const provider 
   const thread = { id: provider, modelProvider: provider, cwd: project.path, updatedAt: 1, preview: "Existing thread" };
   useTaskStore.getState().ensureTask(thread.id, project.path);
   const settings = { ...DEFAULT_SETTINGS, provider, model: "provider-model", subagentsEnabled: false, autoCompactTokens: undefined, projectInstructionsEnabled: false, projectClaudeInstructionsEnabled: false };
-  const journal = new RemoteDeliveryJournal({ generation: 13, identity: { device, opId: `send-${provider}`, opSeq: 1 }, threadId: thread.id, workspaceId: "p", permission: "ask", provider,
+  const journal = new RemoteDeliveryJournal({ generation: 13, identity: { device, opId: `send-${provider}`, opSeq: 1 }, threadId: mode === "isolated" || mode === "isolatedSend" ? undefined : thread.id, workspaceId: "p", permission: "ask", provider,
     isCurrent: () => true, assertAllowed() {}, validateGrant() {} });
   const noop = () => {};
   const context = { activeThread: thread, activeWorkspace: project, activeProject: project, effectiveSettings: settings,
@@ -63,19 +82,43 @@ for (const mode of ["stop", "send", "project", "isolated"]) for (const provider 
     childAgentReadiness: {}, ensureSkillRoots: async () => {}, waitForThreadPreparation: async () => {},
     beginRunCheckpoint: async () => { assert.fail("remote prompt executed an unstamped local checkpoint"); }, prepareNewThreadGit: async () => { assert.fail("remote prompt executed unstamped Git init"); }, discardRunCheckpoint: noop, rememberThread: noop, persistChildAgentPolicies: noop,
     scheduleClaudeThreadSave: noop, scheduleCursorThreadSave: noop,
+    bindThreadToProject: () => { assert.fail("native prepared draft must adopt bindings, not write them locally"); },
+    onThreadCreated: noop, persistThreadModel: noop, persistThreadReasoning: noop,
+    persistThreadWorktrees: () => { assert.fail("native prepared draft must adopt worktrees, not write them locally"); },
   };
-  if (mode === "isolated") { context.activeThread = null; context.draftThreadIsolated = true; }
+  if (mode === "isolated" || mode === "isolatedSend") { context.activeThread = null; context.draftThreadIsolated = true; }
   if (mode === "send") { context.activeProject = null; context.activeWorkspace = { ...project, isChat: true }; }
+  const unbind = subscribeRemoteStateAdoption("kiwi.threadProjects", (value) => { context.threadProjectBindingsRef.current = value; });
+  const untrees = subscribeRemoteStateAdoption("kiwi.threadWorktrees", (value) => { context.threadWorktreesRef.current = value; });
   let runner;
   function Fixture() { runner = useTurnRunner(context); return React.createElement("span"); }
   try {
     renderToString(React.createElement(Fixture));
     const sending = runner.sendPromptTo(context, "Hello from another machine");
     if (mode === "isolated") {
+      ownerAdmission.resolve(); skills.resolve();
       const outcome = await sending;
-      assert.equal(outcome.state, "rejected"); assert.equal(outcome.error?.code, "unsupported");
+      assert.equal(outcome.state, "rejected"); assert.equal(outcome.error?.code, "forbidden");
       assert.equal(calls.some(([name]) => name === "worktree_create" || name === "codex_rpc" || name === "claude_turn_start" || name === "cursor_turn_start"), false);
       return;
+    }
+    if (mode === "isolatedSend") {
+      ownerAdmission.resolve(); await skillEntered.promise; skills.resolve();
+      const outcome = await sending;
+      assert.equal(outcome.state, "accepted", errors.join("; ")); const created = outcome.threadId;
+      assert.ok(created); assert.equal(useTaskStore.getState().activeThreadId, null);
+      const start = calls.find(([name, args]) => name === (provider === "claude" ? "claude_turn_start" : provider === "cursor" ? "cursor_turn_start" : "codex_rpc") && (name !== "codex_rpc" || args.method === "turn/start"));
+      assert.equal((start[1].options ?? start[1].params).cwd, worktree.path);
+      assert.equal(context.threadWorktreesRef.current[created].path, worktree.path);
+      assert.equal(context.threadProjectBindingsRef.current[created], project.path);
+      const bindIndex = calls.findIndex(([name]) => name === "remote_prompt_preparation_bind");
+      const paidIndex = calls.indexOf(start);
+      assert.ok(provider === "claude" || provider === "cursor" ? bindIndex > paidIndex : bindIndex < paidIndex);
+      assert.equal(calls.some(([name, args]) => name === "remote_prompt_prepare" && args.kind === "checkpointBefore" && args.threadId === undefined), true);
+      useTaskStore.getState().completeTurn(created, `turn-${provider}`, "completed");
+      assert.equal(await completeRemotePreparedCheckpoint("prepared-checkpoint", `turn-${provider}`), true);
+      assert.equal(calls.some(([name]) => ["worktree_create", "worktree_remove", "checkpoint_create", "checkpoint_complete", "language_tools_prepare_project"].includes(name)), false);
+      await flushPendingStateWrites(); return;
     }
     assert.equal(useTaskStore.getState().tasks[thread.id].status, "starting", errors.join("; "));
     let joined = false;
@@ -105,7 +148,7 @@ for (const mode of ["stop", "send", "project", "isolated"]) for (const provider 
     skills.resolve(); const outcome = await sending;
     assert.notEqual(outcome.state, "accepted");
     assert.equal(calls.some(([name]) => name === "codex_rpc" || name === "claude_turn_start" || name === "cursor_turn_start"), false);
-  } finally { skills.resolve(); ownerAdmission.resolve(); remoteEngineStopped(`owner-${provider}`); clearRemoteEngineOwners(13); globalThis.window = old; resetTaskStore(); }
+  } finally { unbind(); untrees(); skills.resolve(); ownerAdmission.resolve(); remoteEngineStopped(`owner-${provider}`); clearRemoteEngineOwners(13); globalThis.window = old; resetTaskStore(); }
 });
 
 test("whole-owner startup Stop survives its turn-ID acknowledgement, but not a successor; Steer stays exact", () => {
@@ -120,7 +163,7 @@ test("core first-run native commands are actually registered, not only mocked by
   const source = readFileSync("src-tauri/src/lib.rs", "utf8");
   const registered = new Set([...source.matchAll(/generate_handler!\[([\s\S]*?)\]/g)].flatMap((match) => [...match[1].matchAll(/(?:[a-zA-Z_][a-zA-Z0-9_]*::)*([a-zA-Z_][a-zA-Z0-9_]*)\s*,/g)].map((entry) => entry[1])));
   for (const command of ["remote_request", "remote_host_attach", "remote_host_ready", "remote_host_renew", "remote_host_publish", "remote_host_respond", "remote_host_tick_ack", "remote_host_thread_retired",
-    "remote_work_grant", "remote_work_receipt", "remote_work_recover", "remote_work_owner_open", "remote_work_owner_bind", "remote_work_owner_retire", "remote_work_owner_finish", "remote_work_target_register", "remote_work_target_claim", "remote_work_dispatch",
+    "remote_work_grant", "remote_work_receipt", "remote_work_recover", "remote_work_owner_open", "remote_work_owner_bind", "remote_work_owner_retire", "remote_work_owner_finish", "remote_work_target_register", "remote_work_target_claim", "remote_work_dispatch", "remote_prompt_prepare", "remote_prompt_preparation_bind", "remote_prompt_preparation_discard",
     "runtime_instance", "runtime_thread_state", "codex_rpc", "claude_turn_start", "cursor_turn_start", "cursor_turn_state", "local_transcript_page_read"]) assert.ok(registered.has(command), `${command} missing from lib.rs handler`);
 });
 

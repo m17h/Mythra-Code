@@ -22,10 +22,18 @@ pub(super) struct Registry {
 }
 struct PreparedRoot {
     owner: String,
-    root: Arc<Anchor>,
+    // None is a discard tombstone: release Windows DELETE-denying handles,
+    // but keep this owner fenced from all future provider preparation/input.
+    root: Option<Arc<Anchor>>,
     display_root: String,
     thread: Option<String>,
 }
+impl PreparedRoot {
+    fn anchor(&self) -> Result<&Anchor, String> {
+        self.root.as_deref().ok_or_else(stale)
+    }
+}
+
 fn stale() -> String {
     work::refused("stale_target")
 }
@@ -183,17 +191,17 @@ fn register(core: &mut Core, stamp: &Stamp, owner: &str, payload: &Value) -> Res
         return Err(work::refused("busy"));
     }
     if let Some(previous) = core.prompt_preparations.roots.get(&key) {
-        if previous.owner != owner || previous.root.identity()? != root.identity()? {
+        if previous.owner != owner || previous.anchor()?.identity()? != root.identity()? {
             return Err(stale());
         }
-        previous.root.validate()?;
+        previous.anchor()?.validate()?;
         return Ok(());
     }
     core.prompt_preparations.roots.insert(
         key,
         PreparedRoot {
             owner: owner.into(),
-            root,
+            root: Some(root),
             display_root: payload["path"].as_str().ok_or_else(stale)?.to_string(),
             thread: None,
         },
@@ -216,9 +224,9 @@ pub(super) fn verify_native_root(
     if delivery.owner_handle.as_deref() != Some(root.owner.as_str()) {
         return Err(stale());
     }
-    root.root.validate()?;
+    root.anchor()?.validate()?;
     let actual = Anchor::open(Path::new(cwd))?;
-    if actual.identity()? != root.root.identity()? {
+    if actual.identity()? != root.anchor()?.identity()? {
         return Err(stale());
     }
     Ok(Some(actual.identity()?))
@@ -240,11 +248,11 @@ pub(super) fn check_native_root(
     if delivery.owner_handle.as_deref() != Some(root.owner.as_str()) {
         return Err(stale());
     }
-    root.root.validate()?;
+    root.anchor()?.validate()?;
     if matches!(
         step,
         "thread/start" | "thread/resume" | "claude_prompt" | "cursor_prompt"
-    ) && verified != Some(root.root.identity()?.as_str())
+    ) && verified != Some(root.anchor()?.identity()?.as_str())
     {
         return Err(stale());
     }
@@ -301,12 +309,22 @@ async fn prepare(
     let s = stamp.clone();
     let o = owner.clone();
     let t = thread.clone();
+    let is_discard = kind == "isolatedDiscard";
     let (op, source_root, root) = inner
         .read_db(move |db| {
             let op = commit::operation(db, &s)?;
             let core = lookup.lock();
             check(&core, &s, &o, &op)?;
             if !allowed(&op) {
+                return Err(stale());
+            }
+            if !is_discard
+                && core
+                    .prompt_preparations
+                    .roots
+                    .get(&(s.device.clone(), s.op_id.clone()))
+                    .is_some_and(|entry| entry.root.is_none())
+            {
                 return Err(stale());
             }
             let (source, root) = execution(db, &core, &s, &o, t.as_deref())?;
@@ -378,14 +396,23 @@ async fn prepare(
         let actual=execution(&tx,&core,&s,&o,t.as_deref())?;
         if actual.0!=source_copy || (!matches!(k.as_str(),"isolatedCreate"|"isolatedDiscard")&&Anchor::open(Path::new(&actual.1))?.identity()?!=Anchor::open(Path::new(&root_copy))?.identity()?){return Err(stale());}
         let discard=if k=="isolatedDiscard"{
-            if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|!steps.is_empty())||core.prompt_preparations.roots.get(&(s.device.clone(),s.op_id.clone())).is_none_or(|entry|entry.owner!=o||entry.thread.is_some()){return Err(stale());}
+            if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|!steps.is_empty())||core.prompt_preparations.roots.get(&(s.device.clone(),s.op_id.clone())).is_none_or(|entry|entry.owner!=o||entry.thread.is_some()||entry.root.is_none()){return Err(stale());}
             Some(saved(&tx,&s,"isolatedCreate")?.filter(|(_,state,_)|state=="done").ok_or_else(stale)?.2)
         }else{None};
         let id=uuid::Uuid::new_v4().to_string();
         tx.execute("INSERT INTO remote_prompt_preparations(device,op_id,op_seq,kind,preparation_id,state,payload_json,source_root,execution_root,thread_id)VALUES(?1,?2,?3,?4,?5,'started','{}',?6,?7,?8)",params![s.device,s.op_id,s.op_seq as i64,k,id,source_copy,root_copy,t]).map_err(|_|stale())?;
         let before_id=saved(&tx,&s,"checkpointBefore")?.filter(|(_,state,_)|state=="done").and_then(|(_,_,p)|p["checkpointId"].as_str().map(str::to_owned));
         let checkpoint=if k=="checkpointAfter"{Some(before_id.ok_or_else(stale)?)}else if k=="isolatedDiscard"{before_id}else{None};
-        tx.commit().map_err(|_|stale())?;Ok(Ok((id,checkpoint,discard)))
+        tx.commit().map_err(|_|stale())?;
+        if k=="isolatedDiscard"{
+            // Claim is durable and core still excludes provider dispatch. Drop
+            // the checkout's own no-DELETE-share anchor BEFORE Git removes it.
+            // Keep the tombstone even on failure; absence would disable the
+            // prepared-root gate and permit a canceled draft to start again.
+            let entry=core.prompt_preparations.roots.get_mut(&(s.device.clone(),s.op_id.clone())).ok_or_else(stale)?;
+            drop(entry.root.take());
+        }
+        Ok(Ok((id,checkpoint,discard)))
     })).await?;
     let (id, checkpoint, discard) = match claim {
         Err(replayed) => return Ok(replayed),
@@ -440,7 +467,8 @@ async fn prepare(
         if k=="isolatedDiscard"{
             if payload["folderRemoved"]!=true{return Err(uncertain());}
             tx.execute("UPDATE remote_prompt_preparations SET state='discarded' WHERE device=?1 AND op_id=?2 AND op_seq=?3 AND kind IN('isolatedCreate','checkpointBefore')",params![s.device,s.op_id,s.op_seq as i64]).map_err(|_|uncertain())?;
-            core.prompt_preparations.roots.remove(&(s.device.clone(),s.op_id.clone()));
+            // The tombstone stays until native owner retirement. A discarded
+            // root must never become an unrestricted/no-preparation root.
         }
         let result=reply(&tx,&s,&k,&id,&payload,false)?;tx.commit().map_err(|_|uncertain())?;Ok(result)
     })).await
@@ -523,7 +551,7 @@ async fn bind(
         let before=saved(&tx,&stamp,"checkpointBefore")?;
         if isolated.is_none()&&before.as_ref().is_none_or(|(_,state,_)|state!="done"){return Err(stale());}
         let source=source(&tx,&stamp)?;let mut trees=map(row(&tx,"kiwi.threadWorktrees")?)?;let mut bindings=map(row(&tx,"kiwi.threadProjects")?)?;
-        let entry=core.prompt_preparations.roots.get_mut(&(stamp.device.clone(),stamp.op_id.clone())).ok_or_else(stale)?;entry.root.validate()?;if entry.owner!=owner_handle||entry.thread.as_ref().is_some_and(|id|id!=&thread_id){return Err(stale());}
+        let entry=core.prompt_preparations.roots.get_mut(&(stamp.device.clone(),stamp.op_id.clone())).ok_or_else(stale)?;entry.anchor()?.validate()?;if entry.owner!=owner_handle||entry.thread.as_ref().is_some_and(|id|id!=&thread_id){return Err(stale());}
         if let Some((_,_,payload))=&isolated{
             if let Some(prior)=trees.get(&thread_id){if prior["path"]!=payload["path"]||prior["projectId"].as_str()!=stamp.workspace_id.as_deref(){return Err(stale());}}
             else{trees.insert(thread_id.clone(),json!({"threadId":thread_id,"projectId":stamp.workspace_id,"projectPath":source,"path":payload["path"],"branch":payload["branch"],"baseCommit":payload["baseCommit"],"gitDir":payload["gitDir"],"createdAt":crate::unix_timestamp_ms(),"status":"active"}));}

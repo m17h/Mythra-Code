@@ -35,6 +35,9 @@ export interface CheckpointRecord {
   worktreeThreadId?: string;
   worktreeBaseline?: string;
   overlappingRun?: boolean;
+  /** Made natively for another device's work. Its Git snapshots belong to that native
+   * step, so ordinary completion, cleanup and retention must never touch them. */
+  remotePrepared?: boolean;
   beforeCommit?: string;
   afterCommit?: string;
   fileCount?: number;
@@ -112,6 +115,10 @@ export const CHECKPOINT_RETENTION_MIN_AGE_MS = 7 * 24 * 60 * 60_000;
  * baseline/apply anchors, explicitly protected ids (current heads, active
  * runs), or anything newer than seven days.
  */
+export const runCheckpointLabel = (prompt: string): string => prompt.trim()
+  ? `Run: ${prompt.trim().replace(/\s+/g, " ").slice(0, 72)}`
+  : "Model run";
+
 export function partitionCheckpointsForRetention(
   records: CheckpointRecord[],
   protectedIds: ReadonlySet<string> = new Set(),

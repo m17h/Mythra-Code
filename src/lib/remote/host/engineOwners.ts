@@ -1,4 +1,5 @@
 import { nativeHostTransport, type HostTransport } from "./bridge";
+import { finishRemoteOwnerPreparations, forgetRemoteOwnerPreparations } from "./promptPreparation";
 /** Ephemeral native lifetimes. Never restore tokens from disk or a timeline. */
 export interface RemoteEngineOwner {
   generation: number; threadId: string; runId: string; kind: "parent" | "workflow" | "start"; ownerHandle: string;
@@ -44,6 +45,7 @@ export function remoteStartOwner(threadId: string): RemoteEngineOwner | undefine
   return owner?.kind === "start" ? owner : undefined;
 }
 function forget(handle: string): void {
+  forgetRemoteOwnerPreparations(handle);
   const entry = owners.get(handle); if (!entry) return;
   clearTimeout(entry.timer); entry.wake?.(); owners.delete(handle);
   if (threads.get(entry.owner.threadId) === handle) threads.delete(entry.owner.threadId);
@@ -58,6 +60,8 @@ export function finishRemoteEngineOwner(handle: string, transport: HostTransport
   const work = (async () => {
     for (let attempt = 0; attempt < 6 && owners.get(handle) === entry && !entry.retiring; attempt++) {
       try {
+        if (!entry.owner.local && !await finishRemoteOwnerPreparations(handle)) return false;
+        if (entry.retiring || owners.get(handle) !== entry) return false;
         const result = await transport.invoke<{ confirmed: boolean }>(entry.owner.local ? "remote_local_owner_finish" : "remote_work_owner_finish", { ...(entry.owner.local ? {} : { generation: entry.owner.generation }), ownerHandle: handle });
         if (result?.confirmed === true) { forget(handle); return true; }
       } catch { /* Lease loss/restart is not permission to kill or rerun a child. */ }

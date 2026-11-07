@@ -1,3 +1,4 @@
+import { remotePromptPreparation, settleRemotePromptPreparation, type RemotePromptPreparation } from "../lib/remote/host/promptPreparation";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { ReasoningEffort } from "../components/ModelPowerControl";
 import { respond, rpc, runtimeInstanceId, runtimeThreadState, type CodexRuntimeStatus } from "../lib/codex";
@@ -628,6 +629,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       || ctx.isExplicitChildStartCurrent?.(explicitThreadId, explicitAttemptId) !== false;
     let finishProviderPreparation: (() => void) | undefined;
     let finishRemoteStartAdmission: (() => void) | undefined;
+    let remotePreparation: RemotePromptPreparation | undefined;
     try {
     try {
       if (coordinationResume || ctx.effectiveSettings.provider === "openai" || ctx.effectiveSettings.provider === "claude") {
@@ -679,17 +681,11 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const effectiveSettings = childThread ? settingsWithoutChildDelegation(configuredSettings) : configuredSettings;
     const nativeDelegation = effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native";
     if (!text || !activeWorkspace) return false;
-    // Local preparation IPC has no remote commit-time grant fence. Do not let
-    // prompt.send implicitly execute Git hooks/filters or install tooling.
-    // Explicit checkpoint/worktree actions have their own stamped native path.
-    if (ctx.remoteDelivery && !activeThread && draftThreadIsolated && activeProject) {
-      throw new HostReadError("unsupported", "Create the isolated worktree on the host before sending. Remote draft preparation is not connected yet.");
-    }
     const initializeNewThreadGit = !ctx.remoteDelivery && !activeThread && !childThread && !activeWorkspace.isChat && effectiveSettings.automaticGitInitialization === true;
     const beginRunCheckpoint: TurnRunnerContext["beginRunCheckpoint"] = ctx.remoteDelivery
       ? async (threadId) => {
-        if (activeProject) noteCheckpointSkipped(threadId);
-        return undefined;
+        if (activeProject && !remotePreparation?.preparedCheckpointId) noteCheckpointSkipped(threadId);
+        return remotePreparation?.preparedCheckpointId;
       } : (threadId, ...details) => {
         // Someone at this machine took over, unless this is an automatic continuation.
         if (!ctx.coordinationResume) noteLocalWork(threadId);
@@ -736,7 +732,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       setError("This thread's isolated worktree is unavailable. Recreate it or explicitly continue in the shared project before sending another message.");
       return false;
     }
-    if (!activeThread && draftThreadIsolated && (!workspaceGitInfo?.isRepo || !workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit)) {
+    if (!ctx.remoteDelivery && !activeThread && draftThreadIsolated && (!workspaceGitInfo?.isRepo || !workspaceGitInfo.isRoot || !workspaceGitInfo.hasCommit)) {
       setError("Isolated threads require a Git repository root with at least one commit.");
       return false;
     }
@@ -1167,10 +1163,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         thread = { id: crypto.randomUUID(), name: null, preview: text.slice(0, 140), cwd: executionPath, updatedAt: Math.floor(Date.now() / 1000), modelProvider: provider };
         startedThreadId = thread.id;
         bindPendingFirstPrompt(ctx.firstPromptAttemptId, thread.id);
-        bindThreadToProject(thread.id, activeWorkspace.path);
+        if (!remotePreparation?.ownsNativeBinding) bindThreadToProject(thread.id, activeWorkspace.path);
         if (provisionalWorktree && activeProject) {
           const record = threadWorktreeRecord(thread.id, activeProject, provisionalWorktree);
-          persistThreadWorktrees((current) => ({ ...current, [thread!.id]: record }));
+          if (!remotePreparation) persistThreadWorktrees((current) => ({ ...current, [thread!.id]: record }));
           provisionalPersisted = true;
           setDraftThreadIsolated(false);
         }
@@ -1268,6 +1264,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       providerAccepted = true;
       if (ctx.remoteDelivery) {
         await ctx.remoteDelivery.accepted({ threadId: thread.id, turnId: result.turnId, messageId: sentMessageId });
+        await remotePreparation?.bind(thread.id);
       }
       trackNativeStartOwner(ctx, thread.id);
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
@@ -1320,6 +1317,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         if (!ctx.remoteDelivery.ownerHandle && ctx.remoteDelivery.openOwner) await ctx.remoteDelivery.openOwner("start", ctx.remoteDelivery.attemptId, activeThread?.id);
         // Existing threads already have a native-attested binding. Expose the
         // start owner before skills/checkpoints/RPC preparation can await.
+        if (activeProject) {
+          remotePreparation = remotePromptPreparation(ctx.remoteDelivery, activeWorkspace.id, activeThread?.id);
+          remotePreparation.hold();
+        }
         if (activeThread) trackNativeStartOwner(ctx, activeThread.id, true);
         finishRemoteStartAdmission?.();
       }
@@ -1366,8 +1367,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       const instructionsWithMemory = resolvedSystemPrompt;
       assertCanStart();
       let executionPath = activeWorkspace.path;
+      // Native gitInit currently has manual initialize+commit semantics. Do not
+      // substitute it for local automatic init (which never stages/commits).
       if (!activeThread && draftThreadIsolated && activeProject) {
-        provisionalWorktree = await createThreadWorktree(activeProject.path, text);
+        provisionalWorktree = remotePreparation ? await remotePreparation.isolatedCreate(text) : await createThreadWorktree(activeProject.path, text);
         executionPath = provisionalWorktree.path;
       } else if (activeThread) {
         executionPath = executionPathFor(activeThread.id, activeWorkspace.path);
@@ -1469,6 +1472,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         if (keptRun && !(parentRunReady && childBridge?.policy)) {
           useTaskStore.getState().updateParentRun(activeThread.id, (run) => run?.id === keptRun.id && run.ownerRunId === startedAgentRunId ? keptRun : run);
         } else { const opened = openParentRun(activeThread, executionPath); if (opened) await opened; }
+      }
+      if (remotePreparation) {
+        ownedCheckpointId = await remotePreparation.checkpointBefore(activeThread?.id, checkpointPrompt);
+        assertCanStart();
       }
       if (effectiveSettings.provider === "claude") {
         if (skillsFolder && !skillRuntimeRootRef.current) await refreshLocalSkills();
@@ -1583,10 +1590,11 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         threadId = startedThread.id;
         startedThreadId = threadId;
         bindPendingFirstPrompt(ctx.firstPromptAttemptId, threadId);
-        bindThreadToProject(startedThread.id, activeWorkspace.path);
+        if (remotePreparation?.ownsNativeBinding) await remotePreparation.bind(startedThread.id);
+        else bindThreadToProject(startedThread.id, activeWorkspace.path);
         if (provisionalWorktree && activeProject) {
           const record = threadWorktreeRecord(startedThread.id, activeProject, provisionalWorktree);
-          persistThreadWorktrees((current) => ({ ...current, [startedThread.id]: record }));
+          if (!remotePreparation) persistThreadWorktrees((current) => ({ ...current, [startedThread.id]: record }));
           provisionalPersisted = true;
           setDraftThreadIsolated(false);
         }
@@ -1739,7 +1747,13 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       }
       return true;
     } catch (reason) {
-      if (ctx.remoteDelivery) await ctx.remoteDelivery.failure(reason);
+      if (ctx.remoteDelivery) {
+        if (!providerAccepted && !explicitDispatched) {
+          try { await remotePreparation?.discard(); }
+          catch { if (startedThreadId ?? startingThreadId) noteCheckpointSkipped((startedThreadId ?? startingThreadId)!); }
+        }
+        await ctx.remoteDelivery.failure(reason);
+      }
       const cancelled = reason instanceof CancelledTurnStart || reason instanceof HostReadError && reason.code === "cancelled";
       if (reason instanceof SkillDependencyError) ctx.onSkillDependencyFailure?.(reason);
       setStartingDraftTurn(false);
@@ -1799,7 +1813,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       if (childBridge?.captured) {
         await releaseChildAgentSession(childBridge.policy.sessionId);
       }
-      if (provisionalWorktree && activeProject && !provisionalPersisted) {
+      if (!ctx.remoteDelivery && provisionalWorktree && activeProject && !provisionalPersisted) {
         void removeThreadWorktree(
           undefined,
           activeProject.path,
@@ -1872,6 +1886,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         delete next[entry[0]];
         return next;
       });
+      if (ctx.remoteDelivery) settleRemotePromptPreparation(ctx.remoteDelivery);
+      remotePreparation?.release();
+      if (!explicitThreadId && ctx.remoteDelivery?.result().state === "rejected") void remotePreparation?.finishRejectedDraft();
       finishRemoteStartAdmission?.();
       finishProviderPreparation?.();
       if (subagentPreparation) {

@@ -1,3 +1,4 @@
+import { configureRemotePreparationRoots } from "./promptPreparation.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
@@ -75,8 +76,8 @@ test("workflow native step admission refuses before preparation when the command
   } finally { clearRemoteEngineOwners(42); globalThis.window = oldWindow; }
 });
 
-for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"]) {
-  test(`real workflow hook: ${provider} carries owner and fresh step identities, then owner_finish`, async () => {
+for (const [provider, failCommand] of [...["openai", "openrouter", "lmstudio", "claude", "cursor"].map((id) => [id, false]), ["openai", true]]) {
+  test(`real workflow hook: ${provider} carries owner and fresh step identities, then owner_finish${failCommand ? " (failed command)" : ""}`, async () => {
     resetTaskStore();
     const unwatch = watchOwnerCompletion();
     const oldWindow = globalThis.window;
@@ -94,11 +95,14 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
       if (command === "remote_work_owner_open") return { ownerHandle: `owner-${provider}` };
       if (command === "remote_work_owner_bind") return { bound: true };
       if (command === "remote_work_owner_finish") return { confirmed: true };
+      if (command === "remote_studio_git_identity") return { isRoot: true };
+      if (command === "remote_prompt_prepare") return { preparationId: `prep-${calls.length}`, kind: args.kind, payload: {}, checkpointId: `checkpoint-${args.stamp.opId}`, replayed: false, opId: args.stamp.opId,
+        rows: [["kiwi.threadWorktrees", {}], ["kiwi.threadProjects", {}], ["kiwi.checkpoints", []], ["kiwi.checkpointHeads", {}]].map(([key, value]) => ({ key, value, revision: 1 })) };
       if (command === "remote_work_engine_step") return { state: "preparing", ownerTracked: true, delivery: { device, opId: `step-${++stepNumber}`, opSeq: 100 + stepNumber, attemptId: `attempt-${stepNumber}`, messageId: `message-${stepNumber}` } };
       if (command === "codex_rpc") {
         if (args.method === "thread/start") return { thread: { id: "thread", cwd: project.path, modelProvider: provider }, model: "model" };
         if (args.method === "turn/start") return makeTurn(args.params.threadId);
-        if (args.method === "command/exec") return { exitCode: 0, stdout: "host output", stderr: "" };
+        if (args.method === "command/exec") { if (failCommand) throw new Error("command never ran"); return { exitCode: 0, stdout: "host output", stderr: "" }; }
         return {};
       }
       if (command === "claude_turn_start" || command === "cursor_turn_start") return makeTurn(args.options.threadId);
@@ -112,6 +116,7 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
     const root = new RemoteDeliveryJournal({ generation: 42, identity: { device, opId: `root-${provider}`, opSeq: 1 }, workspaceId: project.id, permission: "ask",
       isCurrent: () => true, assertAllowed() {}, validateGrant() {} });
     const controller = createWorkflowExecution(sources, { context: { activeWorkspace: project, effectiveSettings: { permission: "ask" } }, generation: 42, identity: root.identity, delivery: root }, () => true);
+    const releaseRoots = configureRemotePreparationRoots(() => project.path);
     let engine;
     function Fixture() {
       engine = useWorkflowEngine({ workflows: [workflow], projects: [project], runtimeAvailable: true, chatGptConnected: true, claudeReady: true, cursorReady: true, openRouterReady: true, lmStudioReady: true,
@@ -124,10 +129,23 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
       await root.beforeCreate();
       renderToString(React.createElement(Fixture));
       const threadId = await engine.runWorkflow("workflow", "manual", {}, project.id, { remote: controller.execution });
+      if (failCommand) {
+        // A step that never settled can't take an after-snapshot, and mustn't wait for one.
+        assert.equal(runs.at(-1).status, "failed");
+        assert.deepEqual(calls.filter((call) => call.args?.kind === "checkpointAfter").map((call) => call.args.stamp.opId), ["step-2"]);
+        assert.ok(useTaskStore.getState().tasks[threadId].activities.some((activity) => activity.title === "Automatic checkpoint not created"));
+        return;
+      }
       assert.ok(threadId, errors.join("\n"));
       assert.deepEqual(errors, []);
       assert.equal(runs.at(-1).status, "completed");
-      assert.equal(useTaskStore.getState().tasks[threadId].activities.some((activity) => activity.title === "Automatic checkpoint not created"), true);
+      const preparing = calls.filter((call) => call.command === "remote_prompt_prepare");
+      assert.deepEqual(preparing.filter((call) => call.args.kind === "checkpointBefore").map((call) => call.args.stamp.opId), ["step-2", "step-3"], "each step checkpoints under its own receipt");
+      assert.deepEqual(preparing.filter((call) => call.args.kind === "checkpointAfter").map((call) => call.args.stamp.opId), ["step-2", "step-3"], "each step finishes at its own end");
+      const position = (test) => calls.findIndex(test);
+      assert.ok(position((call) => call.args?.kind === "checkpointAfter" && call.args.stamp.opId === "step-2") < position((call) => call.command === "remote_work_engine_step" && call.args.stepId?.includes("step-1")), "a step's after-snapshot lands before the next step starts");
+      assert.ok(preparing.every((call) => call.args.ownerHandle === `owner-${provider}` && call.args.stamp.grantRevision === grant.revision));
+      assert.ok(calls.findLastIndex((call) => call.command === "remote_prompt_prepare") < calls.findIndex((call) => call.command === "remote_work_owner_finish"), "after-snapshots land before the owner closes");
       const prompt = calls.find((call) => call.command === "claude_turn_start" || call.command === "cursor_turn_start" || call.command === "codex_rpc" && call.args.method === "turn/start");
       const params = prompt.args.options ?? prompt.args.params;
       assert.equal(params.remoteDelivery.ownerHandle, `owner-${provider}`);
@@ -136,12 +154,12 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
       assert.equal(command.args.params.remoteDelivery.opId, "step-3");
       assert.equal(command.args.params.remoteDelivery.ownerHandle, `owner-${provider}`);
       assert.equal(calls.filter((call) => call.command === "remote_work_owner_finish").length, 1);
-      const preparing = calls.find((call) => call.command === "remote_work_receipt" && call.args.opId === root.identity.opId);
-      assert.equal(preparing.args.permission, "ask");
+      const receipt = calls.find((call) => call.command === "remote_work_receipt" && call.args.opId === root.identity.opId);
+      assert.equal(receipt.args.permission, "ask");
       const steps = calls.filter((call) => call.command === "remote_work_engine_step");
       assert.deepEqual(steps.map((call) => call.args.kind), ["prompt", "prompt", "command"]);
       assert.ok(steps.every((call) => call.args.permission === "ask"));
-    } finally { unwatch(); clearRemoteEngineOwners(42); globalThis.window = oldWindow; }
+    } finally { releaseRoots(); unwatch(); clearRemoteEngineOwners(42); globalThis.window = oldWindow; }
   });
 }
 

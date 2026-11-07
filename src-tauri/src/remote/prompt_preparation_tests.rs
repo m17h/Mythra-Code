@@ -144,7 +144,10 @@ async fn isolated_preparation_joins_duplicates_fences_actual_root_and_never_acce
     drop(db);
     // Cleanup uses the exact native-created managed checkout, before provider input.
     let before = f.prepare("checkpointBefore").await.unwrap();
-    let discarded = f.prepare("isolatedDiscard").await.unwrap();
+    let discarded = f
+        .prepare("isolatedDiscard")
+        .await
+        .unwrap_or_else(|error| panic!("isolated draft discard failed: {error}"));
     let reference =
         crate::project_git::checkpoint_ref(before["checkpointId"].as_str().unwrap(), "before")
             .unwrap();
@@ -397,5 +400,112 @@ async fn canceled_ipc_keeps_serialization_until_its_blocking_git_worker_ends() {
         saved(&db, &f.stamp, "isolatedCreate").unwrap().unwrap().1,
         "started",
         "lost completion must remain uncertain, not silently repeat Git"
+    );
+}
+
+#[tokio::test]
+async fn discard_releases_checkout_pin_before_git_but_keeps_provider_dispatch_fenced() {
+    let f = Fixture::new(false);
+    let created = f.prepare("isolatedCreate").await.unwrap();
+    let path = std::path::PathBuf::from(created["worktree"]["path"].as_str().unwrap());
+    let delivery = meta(&f.stamp, &f.owner);
+    #[cfg(windows)]
+    let moved = path.with_file_name(format!("discard-pin-{}", uuid::Uuid::new_v4()));
+    #[cfg(windows)]
+    assert!(
+        std::fs::rename(&path, &moved).is_err(),
+        "positive control: the live prepared root pins this Windows checkout"
+    );
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let (release, worker_release) = std::sync::mpsc::channel();
+    f.inner.lock().prompt_preparations.worker_gate = Some((started, worker_release));
+    let (inner, data, stamp, owner) = (
+        f.inner.clone(),
+        f.data.clone(),
+        f.stamp.clone(),
+        f.owner.clone(),
+    );
+    let task = tokio::spawn(async move {
+        prepare(
+            inner,
+            data,
+            stamp,
+            owner,
+            "isolatedDiscard".into(),
+            None,
+            None,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    // The real production SQL claim has finished, but native Git has not run.
+    let (detached, verify_refused, dispatch_refused) = {
+        let core = f.inner.lock();
+        let detached = core
+            .prompt_preparations
+            .roots
+            .get(&(f.stamp.device.clone(), f.stamp.op_id.clone()))
+            .is_some_and(|entry| entry.root.is_none());
+        let verify_refused = verify_native_root(&core, &delivery, path.to_str().unwrap()).is_err();
+        let dispatch_refused = [
+            "thread/start",
+            "thread/resume",
+            "turn/start",
+            "claude_prompt",
+            "cursor_prompt",
+        ]
+        .iter()
+        .all(|step| check_native_root(&core, &delivery, step, None, None).is_err());
+        (detached, verify_refused, dispatch_refused)
+    };
+    #[cfg(windows)]
+    let rename_result = std::fs::rename(&path, &moved);
+    #[cfg(windows)]
+    let restore_result = if rename_result.is_ok() {
+        std::fs::rename(&moved, &path)
+    } else {
+        Ok(())
+    };
+    release.send(()).unwrap();
+    let discarded = task.await.unwrap();
+    #[cfg(windows)]
+    {
+        assert!(
+            rename_result.is_ok(),
+            "the claimed discard still holds a DELETE-denying checkout handle: {rename_result:?}"
+        );
+        assert!(
+            restore_result.is_ok(),
+            "could not restore fixture path: {restore_result:?}"
+        );
+    }
+    assert!(
+        detached && verify_refused && dispatch_refused,
+        "discard must drop the handle but retain a non-dispatchable tombstone"
+    );
+    let discarded =
+        discarded.unwrap_or_else(|error| panic!("claimed isolated draft discard failed: {error}"));
+    assert_eq!(discarded["payload"]["folderRemoved"], true);
+    assert!(!path.exists());
+    assert!(
+        f.prepare("gitInit").await.is_err(),
+        "discarded draft cannot resume Git preparation"
+    );
+    assert_eq!(
+        f.prepare("isolatedDiscard").await.unwrap()["replayed"],
+        true
+    );
+    let core = f.inner.lock();
+    assert!(core
+        .prompt_preparations
+        .roots
+        .get(&(f.stamp.device.clone(), f.stamp.op_id.clone()))
+        .is_some_and(|entry| entry.root.is_none()));
+    assert!(
+        check_native_root(&core, &delivery, "thread/start", None, None).is_err(),
+        "a finished discard cannot turn into an unrestricted native start"
     );
 }
