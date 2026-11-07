@@ -89,7 +89,7 @@ import { appendHostCommandOutput, hostCommandBusy } from "./lib/remote/host/comm
 import { HostReadError } from "./lib/remote/host/scope";
 import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
 import type { WireExecutionSettings } from "./lib/remote/wire";
-import { hostProviderCatalog, hostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
+import { hostProviderCatalog, hostWorkspaceGit, refreshHostWorkspaceGit, selectedHostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
 import { createHostParity } from "./lib/remote/hostParity";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
 import type { GitRoute, ProjectGitInspection, ProjectPullRequestAccess } from "./lib/projectGit";
@@ -9074,6 +9074,23 @@ export default function App() {
     automaticTitles, localTranscriptSaves, invalidateChildAgentGuidance, retryChildAgentGuidance, hasChildStartInFlight,
     newThread, loadThreads, activeWorkspace, childAgentPolicies, projectDefaultProvider, threadModels, effectiveSettings,
     projectActions, workflowRuns, threadHandoffs, mcpServers, beginRemoteAcceptance, stopRemoteWorker, scheduledPromptCounts,
+    // Live per-provider popover views, not whichever provider this host has selected.
+    getHeaderAccountUsage: () => {
+      const now = Date.now();
+      const openAiOwned = openAiUsageSnapshot?.accountKey === openAiAccountKey ? openAiUsageSnapshot : null;
+      const claudeOwned = claudeUsageSnapshot?.accountKey === claudeAccountKey ? claudeUsageSnapshot : null;
+      const openAiCurrent = currentAccountUsageSnapshot(openAiOwned, openAiAccountKey, now);
+      const claudeCurrent = currentAccountUsageSnapshot(claudeOwned, claudeAccountKey, now);
+      return (["openai", "claude"] as const).map((provider) => ({ provider, display: settings.usageDisplay,
+        view: providerAccountUsage(provider, {
+          openAiRateLimits: openAiCurrent?.limits ?? null, openAiRateLimitsRead: Boolean(openAiCurrent), openAiUpdatedAt: openAiOwned?.updatedAt,
+          openAiConnected: account?.type === "chatgpt", openAiApiKey: openAiBilling === "apiKey", openAiApiKeyReady: account?.type === "apiKey",
+          claudeStatus, claudeRateLimits: claudeCurrent?.limits ?? null, claudeUpdatedAt: claudeOwned?.updatedAt,
+          cursorStatus, openRouterReady, openRouterCredits, openRouterCreditsRead, openRouterCreditsError, lmStudioReady,
+          usageDisplay: settings.usageDisplay, now,
+        }),
+      }));
+    },
   };
   // How many providers a paired device could use here, for the host's own diagnostics.
   // Told when a lease attaches and when the count moves. It never polls.
@@ -9142,9 +9159,14 @@ export default function App() {
         return context;
       },
       getWorkspaceGitInfo: (workspaceId) => {
-        if (live.current.activeProject?.id === workspaceId) return live.current.workspaceGitInfo;
+        if (live.current.activeProject?.id === workspaceId) return selectedHostWorkspaceGit(hostGitCacheRef.current, workspaceId, live.current.workspaceGitInfo);
         const path = projectsRef.current.find((project) => project.id === workspaceId)?.path;
         return path ? hostWorkspaceGit(hostGitCacheRef.current, workspaceId, () => readWorkspaceGitInfo(path)) : null;
+      },
+      refreshWorkspaceGitInfo: async (workspaceId) => {
+        const path = projectsRef.current.find((project) => project.id === workspaceId)?.path;
+        if (path) await refreshHostWorkspaceGit(hostGitCacheRef.current, workspaceId, () => readWorkspaceGitInfo(path),
+          live.current.activeProject?.id === workspaceId ? live.current.workspaceGitInfo : undefined);
       },
       // The busy flag describes the worktree of the thread on screen.
       isWorktreeBusy: (threadId) => Boolean(threadId && threadId === live.current.activeThreadId && live.current.worktreeBusy),
@@ -9157,6 +9179,7 @@ export default function App() {
         openai: Boolean(live.current.childAgentReadiness.openAiSignedIn), claude: Boolean(live.current.childAgentReadiness.claudeReady), cursor: Boolean(live.current.childAgentReadiness.cursorReady),
         openrouter: Boolean(live.current.childAgentReadiness.openRouterReady), lmstudio: Boolean(live.current.childAgentReadiness.lmStudioReady),
       } }),
+      getHeaderAccountUsage: () => live.current.getHeaderAccountUsage(),
       getThreadCrew: (threadId) => {
         const policy = childAgentPolicyForThread(childAgentPoliciesRef.current, threadId);
         return policy ? { maxConcurrent: policy.pendingRecapture?.maxConcurrent ?? policy.maxConcurrent, targets: policy.pendingRecapture?.targets ?? policy.targets } : undefined;
@@ -10506,7 +10529,8 @@ export default function App() {
         </div>
         {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
           <remoteUi.RemoteConversation device={shownMachine} notifications={settings.notificationsEnabled} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarOpen} chatFont={activeChatFont} voiceInput={voiceInputConfig}
-            actions={paletteTrigger} onOpenTool={(tab, view) => { setStudioTab(tab); setRemoteStudioOpen(true); if (view) { gitRouteNonceRef.current += 1; setGitRoute({ view, nonce: gitRouteNonceRef.current }); } }}
+            actions={paletteTrigger} modelFavorites={modelFavorites} onToggleModelFavorite={toggleModelFavorite}
+            headerUsageWindows={headerUsageWindows} onHeaderUsageWindow={(provider, label) => setHeaderUsageWindows((current) => ({ ...current, [provider]: label }))} usageDisplay={settings.usageDisplay} onOpenTool={(tab, view) => { setStudioTab(tab); setRemoteStudioOpen(true); if (view) { gitRouteNonceRef.current += 1; setGitRoute({ view, nonce: gitRouteNonceRef.current }); } }}
             studioToggle={<button className={`workspace-tools-trigger studio-toggle ${remoteStudioOpen ? "active" : ""}`} onClick={() => setRemoteStudioOpen((open) => !open)} title={`Thread tools on ${remoteMachineName}`}>
               <PanelRight size={17} />
               <span>Thread tools</span>

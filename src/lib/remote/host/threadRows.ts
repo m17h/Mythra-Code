@@ -24,7 +24,7 @@ const settingsKeys = ["kiwi.threadModels", "kiwi.threadReasoning", "kiwi.threadS
 /** History changes go through the same native effect, with the same ownership. */
 export type ThreadEffectOperation = ThreadRowOperation | "thread.compact" | "thread.rollback";
 export function threadRowKeys(op: ThreadEffectOperation): readonly string[] {
-  return op === "thread.rollback" ? [...commonKeys, "kiwi.agentQuestions"] : op === "thread.fork" ? [...commonKeys, ...settingsKeys] : op === "thread.delete"
+  return op === "thread.rollback" ? [...commonKeys, "kiwi.agentQuestions"] : op === "thread.fork" ? [...commonKeys, "kiwi.checkpoints", ...settingsKeys] : op === "thread.delete"
     ? [...commonKeys, ...settingsKeys, "kiwi.pinnedThreads", "kiwi.queuedTurns", "kiwi.parentRuns", "kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.turnDurations", "kiwi.threadPullRequests",
       "kiwi.childAgentPolicies", "kiwi.childAgentLinks", "kiwi.nativeAgentLinks", "kiwi.childAgentMailbox", "kiwi.threadHandoffs", "kiwi.pendingHandoff", "kiwi.agentQuestions", "kiwi.turnContextReceipts"] : commonKeys;
 }
@@ -178,9 +178,15 @@ export async function executeThreadRow(op: ThreadEffectOperation, args: Readonly
       catch (reason) { if (missing(reason)) throw new HostReadError("unsupported", "This device has not installed stamped conversation effects yet."); throw nativeRefusal(reason); }
       if (snapshot.version !== 1) throw new HostReadError("unsupported", "This device uses a different conversation bookkeeping version.");
       exactRows(snapshot.rows, keys); check();
+      if (op === "thread.fork" && args.checkpointId !== undefined) {
+        const records = snapshot.rows.find((row) => row.key === "kiwi.checkpoints")?.value;
+        const checkpoint = Array.isArray(records) ? records.find((row) => row?.id === args.checkpointId && row.threadId === id) : undefined;
+        if (!checkpoint) throw new HostReadError("stale_target", "This checkpoint is no longer available for this conversation.");
+        if (typeof checkpoint.turnId !== "string" || !checkpoint.turnId) throw new HostReadError("checkpoint_turn_unavailable", "This older checkpoint has no saved conversation turn, so it cannot be forked. Choose a checkpoint with a saved turn or fork the latest conversation.");
+      }
       const context = operation.context, settings = context.effectiveSettings, modelProvider = runtimeModelProviderId(provider);
       const nativeArgs = op === "thread.rollback" ? { confirmed: true, numTurns: 1 } : op === "thread.rename" ? { name: String(args.name).trim() } : op === "thread.delete" ? { confirmed: true }
-        : op === "thread.fork" ? { model: settings.model, ...(modelProvider ? { modelProvider } : {}),
+        : op === "thread.fork" ? { ...(args.checkpointId !== undefined ? { checkpointId: idArg(args.checkpointId) } : {}), model: settings.model, ...(modelProvider ? { modelProvider } : {}),
           config: threadRuntimeConfig({ ...settings, subagentsEnabled: false }, { customAgents: context.customAgents,
             modelContextWindow: provider === "openrouter" ? context.openRouterModels.find((entry) => entry.id === settings.model)?.context_length
               : provider === "lmstudio" ? context.lmStudioModels?.find((entry) => entry.id === settings.model)?.maxContextLength : undefined }),

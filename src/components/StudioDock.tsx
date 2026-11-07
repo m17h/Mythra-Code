@@ -85,6 +85,8 @@ export interface AttachmentRecord {
   path: string;
   name: string;
   kind: "image" | "file";
+  /** Where it is shown to live, when `path` is only an id (a file kept on another device). */
+  displayPath?: string;
 }
 
 export interface TokenUsageView extends UsageEvidence {
@@ -194,7 +196,10 @@ export function AgentsPanel(props: AgentsPanelProps) {
 }
 
 export type CheckpointsPanelProps = Pick<StudioDockProps, "activeThread" | "checkpoints" | "checkpointHead" | "checkpointBusyId" | "checkpointPreview" | "onClose"
-  | "onCheckpoint" | "onFork" | "onCheckpointRestore" | "onCheckpointAccept" | "onCheckpointPreview" | "onCheckpointDelete" | "onRollback">;
+  | "onCheckpoint" | "onFork" | "onCheckpointRestore" | "onCheckpointAccept" | "onCheckpointPreview" | "onCheckpointDelete" | "onRollback"> & {
+  /** Offer "Fork conversation" on saved (non-legacy) checkpoints too. Off for local, where it is only for conversation-only ones. */
+  forkSavedCheckpoints?: boolean;
+};
 export function CheckpointsPanel(props: CheckpointsPanelProps) {
   const checkpointById = useMemo(
     () => new Map(props.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint])),
@@ -258,6 +263,7 @@ export function CheckpointsPanel(props: CheckpointsPanelProps) {
                         <button onClick={() => props.onCheckpointRestore(checkpoint, "after")} disabled={!canRestoreAfter || busy}><RotateCw size={12} /> {checkpoint.status === "restored-before" ? "Reapply run" : "Restore result"}</button>
                       </>}
                       {checkpoint.status !== "safety" && <button className={checkpoint.accepted ? "approved" : ""} onClick={() => props.onCheckpointAccept(checkpoint)} disabled={checkpoint.status === "running" || busy} title="Mark this run as reviewed. Nothing is committed, merged, or pushed."><Check size={12} /> {checkpoint.accepted ? "Undo accept" : "Accept"}</button>}
+                      {props.forkSavedCheckpoints && checkpoint.status !== "safety" && <button onClick={() => props.onFork(checkpoint)} disabled={checkpoint.status === "running" || busy} title="Start a new conversation from this point"><GitFork size={12} /> Fork conversation</button>}
                     </>}
                     <button className="danger-action icon-only" onClick={() => props.onCheckpointDelete(checkpoint)} disabled={checkpoint.status === "running" || busy} title={`Delete ${checkpoint.label}`} aria-label={`Delete ${checkpoint.label}`}><Trash2 size={12} /></button>
                   </div>

@@ -1,3 +1,6 @@
+import { loadStored } from "../../storage";
+import { reviewedWorkflowSnapshot, workflowChanged, workflowRecipeSnapshot } from "./workflowDigest";
+import { useRemoteDevices } from "../devices";
 import { buildParentNotice, parentRunProgress, wokenParentQuestions } from "../../parentRun";
 import { storedQueuedTurnsForThread, useTaskStore, adoptRemoteParentDismissal } from "../../taskStore";
 import type { Project } from "../../../types";
@@ -89,7 +92,10 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
           return result([{ id: skill.name, name: skill.name, text: (await readLocalSkill(folder, skill.path)).slice(0, 65536), enabled: skill.enabled }]);
         }
         const report = await analyzeSkillPrompts(String(args.query ?? ""), context.effectiveSettings.systemPrompt, folder, [...skills]);
-        return result(report.nodes.map((node, index) => ({ id: `dependency-${index}`, name: node.name, status: node.status, value: node.characterCount })));
+        // The full graph lets the viewer open the same inspector as local. Host
+        // absolute paths never leave the host: they become /host-skills/<relative>.
+        return { ...result(report.nodes.map((node, index) => ({ id: `dependency-${index}`, name: node.name, status: node.status, value: node.characterCount }))),
+          report: hostNeutralSkillReport(report, folder) };
       }
       return fallback.read(op, args, context);
     },
@@ -171,6 +177,15 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
         const engine = sources.getWorkflowEngine?.();
         if (!engine) throw new HostReadError("unsupported", "Workflows aren't ready on the other device yet.");
         const id = idArg(args.workflowId);
+        const resolveRecipe = () => (sources.getHostWorkflows?.()
+          ?? loadStored<import("../../workflows").WorkflowDefinition[]>("kiwi.workflows", [])).find((entry) => entry.id === id);
+        const hostName = useRemoteDevices.getState().snapshot?.deviceName ?? "the host";
+        const reviewed = args.digest === undefined ? undefined : await reviewedWorkflowSnapshot(resolveRecipe, String(args.digest), hostName);
+        operation.assertAllowed();
+        if (reviewed !== undefined) {
+          const latest = resolveRecipe();
+          if (!latest || workflowRecipeSnapshot(latest) !== reviewed) throw workflowChanged(hostName);
+        }
         if (workflows.has(id)) throw new HostReadError("busy", "This workflow already owns a run.");
         const variables = args.variables as Record<string, string> | undefined;
         const controller = createWorkflowExecution(sources, operation, isCurrent, variables);
@@ -239,4 +254,21 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
     },
   };
   return { adapter, dispose: () => { commands.dispose(); queue.dispose(); for (const controller of workflows.values()) controller.cancel(); workflows.clear(); } };
+}
+
+/** Rewrites host absolute paths in a skill dependency report to host-neutral
+ * pseudo-paths so the viewer's inspector can render the graph without learning
+ * where files live on the host. Blocked nodes keep their empty path. */
+export function hostNeutralSkillReport<T extends { nodes: { path: string }[]; issues: { sourcePath?: string; message: string }[] }>(report: T, folder: string): T {
+  const root = folder.replace(/[\\/]+$/, "");
+  const neutral = (path: string) => {
+    if (!path) return path;
+    const normalized = path.replace(/\\/g, "/"), base = root.replace(/\\/g, "/");
+    const relative = base && (normalized === base || normalized.startsWith(`${base}/`)) ? normalized.slice(base.length).replace(/^\/+/, "") : normalized.split("/").pop() ?? "";
+    return `/host-skills/${relative}`.replace(/\/+$/, "") || "/host-skills";
+  };
+  const scrub = (text: string) => root ? text.split(root).join("/host-skills") : text;
+  return { ...report,
+    nodes: report.nodes.map((node) => ({ ...node, path: neutral(node.path) })),
+    issues: report.issues.map((issue) => ({ ...issue, message: scrub(issue.message), ...(issue.sourcePath !== undefined ? { sourcePath: neutral(issue.sourcePath) } : {}) })) };
 }

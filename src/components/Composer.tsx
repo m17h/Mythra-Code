@@ -810,7 +810,7 @@ export const Composer = forwardRef<ComposerHandle, {
           {props.attachments.map((item) => (
             <span key={item.path} className={item.kind}>
               <Paperclip size={10} />
-              <em title={item.path}>{item.name}</em>
+              <em title={item.displayPath ?? item.path}>{item.name}</em>
               <button onClick={() => props.onRemoveAttachment(item.path)} title={`Remove ${item.name}`} aria-label={`Remove attachment ${item.name}`}><X size={11} /></button>
             </span>
           ))}

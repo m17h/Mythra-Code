@@ -1,3 +1,4 @@
+import { validSkillDependencyReport } from "../../skillDependencies";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import { useTaskStore } from "../../taskStore";
 import { flushPendingStateWrites } from "../../storage";
@@ -19,7 +20,7 @@ const writes: Record<string, readonly string[]> = {
   "thread.handoff.prepare": ["provider"], "thread.handoff.send": ["handoffId", "text"],
   "parent.continue": ["parentRunId"], "parent.dismiss": ["parentRunId"],
   "thread.archiveMany": ["threadIds"], "thread.deleteMany": ["threadIds", "confirmed"],
-  "workflows.start": ["workflowId", "variables", "userPrompt"], "workflows.stop": ["workflowId", "runId"],
+  "workflows.start": ["workflowId", "variables", "userPrompt", "digest"], "workflows.stop": ["workflowId", "runId"],
   "checkpoint.accept": ["checkpointId"], "agents.stop": ["agentId", "target"], "agents.accept": ["agentId", "target"], "agents.replace": ["agentId", "target", "targetId"],
   "actions.run": ["actionId"], "review.start": [], "git.suggestCommit": [],
   "projects.settings.set": ["name", "provider", "model", "effort"], "projects.instructions.set": ["prompt", "mode"],
@@ -84,6 +85,7 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
     || args.deliverAt <= Date.now() || args.deliverAt > Date.now() + 366 * 86400_000)) throw invalid();
   if (args.threadIds !== undefined && (!Array.isArray(args.threadIds) || !args.threadIds.length || args.threadIds.length > 100)) throw invalid();
   if (Array.isArray(args.threadIds)) { args.threadIds.forEach(idArg); if (new Set(args.threadIds).size !== args.threadIds.length) throw invalid(); }
+  if (args.digest !== undefined && (op !== "workflows.start" || typeof args.digest !== "string" || !/^[a-f0-9]{64}$/.test(args.digest))) throw invalid();
   if (args.variables !== undefined) {
     if (!args.variables || typeof args.variables !== "object" || Array.isArray(args.variables) || Object.keys(args.variables).length > 64) throw invalid();
     for (const [key, value] of Object.entries(args.variables)) { idArg(key); string(value, 8192); }
@@ -138,6 +140,10 @@ export function projectParityRead(raw: WireParityReadResult): WireParityReadResu
   }
   const result = { revision: idArg(raw.revision), rows, truncated: raw.truncated === true || raw.rows.length > 200,
     ...(raw.cursor ? { cursor: idArg(raw.cursor) } : {}), ...(raw.timezone ? { timezone: string(raw.timezone, 128) } : {}) };
+  // skills.analyze may carry the full dependency graph; only a fully valid,
+  // host-neutral report is forwarded, otherwise the viewer shows "unavailable".
+  const report = raw.report === undefined ? undefined : validSkillDependencyReport(raw.report);
+  if (report && report.nodes.every((node) => node.path === "" || node.path.startsWith("/host-skills"))) Object.assign(result, { report });
   if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 768 * 1024) throw new HostReadError("busy", "This page is too large. Request fewer rows.");
   return result;
 }

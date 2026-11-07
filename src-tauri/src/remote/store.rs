@@ -870,6 +870,13 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
         if let Some(value) = receipt.get(key).filter(|value| !value.is_null()) { result[key] = value.clone(); }
     }
     if next == "rejected" { result["error"] = serde_json::json!({"code":receipt.get("errorCode").and_then(Value::as_str).unwrap_or("internal"),"message":"The other device did not deliver this instruction."}); }
+    // Host identity is injected by remote_work_receipt, not an IPC argument.
+    // Preserve this allowlisted explanation across op.status and opId replay.
+    if receipt["op"] == "workflows.start" && next == "rejected" && receipt["errorCode"] == "workflow_changed" {
+        if let Some(host) = receipt.get("workflowChangedHost").and_then(Value::as_str) {
+            result["error"]["message"] = Value::String(super::work::workflow_changed_message(host));
+        }
+    }
     if native&&next=="accepted"{super::attachments::retain_instruction(&transaction,device,op_id,op_seq,&receipt)?;}
     save_result_inner(&transaction,device,op_id,op_seq,&result,true)?;
     transaction.execute("UPDATE remote_op_journal SET delivery_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64,receipt.to_string()])

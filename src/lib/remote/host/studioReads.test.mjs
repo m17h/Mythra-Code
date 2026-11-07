@@ -275,3 +275,23 @@ test("uppercase Windows workspace badges use the schedule producer's exact path 
   assert.deepEqual(result.workspaces[0].scheduled, { newConversations: 1, threadPrompts: 0 });
   assert.equal(Object.keys(counts.workspaces)[0], "C:/Users/Morgan/Project");
 });
+
+test("new isolated draft availability requires Work, Terminal, a repository root and a commit", () => {
+  const ready = { isRepo: true, isRoot: true, hasCommit: true };
+  let current = { ...grant, work: true, capabilities: { ...grant.capabilities, terminal: true } }, git = ready;
+  const sources = { getWorkspaces: () => [project], getKnownThreads: () => ({ t: thread }), getBindings: () => ({ t: project.path }), getOwnershipLinks: () => ({}),
+    getArchivedThreadIds: () => new Set(), getUnavailableThreadIds: () => new Set(), getRuntime: () => ({ available: true }), getGrant: () => current,
+    getSettings: () => DEFAULT_SETTINGS, getThreadModels: () => ({}), getThreadReasoning: () => ({}), getThreadSubagents: () => ({}), getRuntimeModels: () => [],
+    getBaseContext: () => ({}), getWorkspaceGitInfo: () => git, isWorktreeBusy: () => false, onRemoteCodexRuntimeOwned() {}, executionPathFor: (_id, root) => root,
+    getProviderCatalog: () => [], getPublicSkills: () => [], getPublicWorkflows: () => [] };
+  const read = () => hostContext(sources, { device: DEVICE, grant: current }, { workspaceId: "p" }).execution;
+  assert.equal(read().canCreateIsolated, true); assert.equal(read().isolationBlocked, undefined);
+  current = { ...current, capabilities: { ...current.capabilities, terminal: false } };
+  assert.equal(read().canCreateIsolated, false); assert.equal(read().isolationBlocked, "terminal");
+  current = { ...current, capabilities: { ...current.capabilities, terminal: true } };
+  for (const [field, reason] of [["isRepo", "repository"], ["isRoot", "root"], ["hasCommit", "commit"]]) {
+    git = { ...ready, [field]: false }; assert.equal(read().canCreateIsolated, false); assert.equal(read().isolationBlocked, reason);
+  }
+  git = null; assert.equal(read().canCreateIsolated, false);
+  git = ready; current = { ...current, work: false }; assert.equal(read().canCreateIsolated, false);
+});

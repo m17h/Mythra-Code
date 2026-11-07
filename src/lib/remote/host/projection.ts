@@ -1,3 +1,4 @@
+import { hostAttachmentMetadata } from "../hostSources";
 import type { Activity, ChatMessage, PendingApproval } from "../../../types";
 import { savedQuestionAnswers } from "../../agentQuestionRecords";
 import type { ThreadTaskState } from "../../taskStore";
@@ -26,6 +27,7 @@ export function projectMessage(threadId: string, message: ChatMessage, order: nu
   if (message.provenance === "mythra-notice") result.provenance = message.provenance;
   if (["sending", "accepted", "queued", "read", "unconfirmed"].includes(message.steerStatus ?? "")) result.steerStatus = message.steerStatus;
   if (message.attachments?.length) {
+    result.attachmentMetadata = hostAttachmentMetadata(message.attachments);
     result.attachmentNames = message.attachments.slice(0, 8).map((attachment) => fileName(attachment.name));
     const images = message.attachments.slice(0, 8).flatMap((attachment, index) => attachment.kind === "image" ? [index] : []);
     if (images.length) result.attachmentImages = images;

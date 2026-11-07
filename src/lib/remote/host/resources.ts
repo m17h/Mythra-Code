@@ -1,3 +1,4 @@
+import { workflowRecipeDigest } from "./workflowDigest";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import { childReviewToken } from "../../../hooks/useChildAgents";
 import { loadStored } from "../../storage";
@@ -210,13 +211,15 @@ export class HostResources {
       const runs = this.sources.getHostWorkflowRuns?.() ?? loadStored<WorkflowRunRecord[]>("kiwi.workflowRuns", []);
       let remaining = 96_000;
       const take = (value: unknown, maximum: number) => { const resultText = text(value, Math.min(maximum, remaining)); remaining -= resultText.length; if (typeof value === "string" && resultText.length < value.length) result.truncated = true; return resultText; };
-      result.workflows = selected.slice(0, Math.min(limit, 8)).map((entry) => ({ id: entry.id, name: take(entry.name, 256), description: take(entry.description, 2048), enabled: entry.enabled, provider: entry.run.provider, model: take(entry.run.model, 256),
+      const snapshots = selected.slice(0, Math.min(limit, 8)).map((entry) => structuredClone(entry));
+      const digests = await Promise.all(snapshots.map(workflowRecipeDigest));
+      result.workflows = snapshots.map((entry, index) => ({ digest: digests[index], id: entry.id, name: take(entry.name, 256), description: take(entry.description, 2048), enabled: entry.enabled, provider: entry.run.provider, model: take(entry.run.model, 256),
         variables: (entry.variables ?? []).slice(0, 64).map((row) => ({ id: row.id, name: take(row.name, 128), value: take(row.value, 8192), promptOnRun: row.promptOnRun })),
         steps: entry.steps.slice(0, 64).map((step) => ({ id: step.id, name: take(step.name, 256), type: step.type, continueOnError: step.continueOnError,
           ...(step.type === "agent" ? { prompt: take(step.prompt, 65536) } : { command: take(step.command, 4000) }) })),
         runs: runs.filter((run) => run.workflowId === entry.id && run.projectId === workspace.id).slice(-20).map((run) => ({ id: run.id, status: run.status, startedAt: run.startedAt, ...(finite(run.finishedAt) ? { finishedAt: run.finishedAt } : {}),
           ...(run.threadId && this.sources.getKnownThreads()[run.threadId] && threadWorkspace(this.sources, this.sources.getKnownThreads()[run.threadId])?.id === workspace.id ? { threadId: run.threadId } : {}) })),
-      })); result.truncated ||= selected.length > Math.min(limit, 8);
+      })); validate(); result.truncated ||= selected.length > Math.min(limit, 8);
     } else {
       if (!rootId) throw new HostReadError("thread_unavailable", "Select a conversation for these details.");
       const grant = currentGrant(this.sources, request.device, request.grant);

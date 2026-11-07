@@ -7,7 +7,7 @@ import {
   setNewThreadTarget, settleRemoteEcho, updateOutboxEntry, useRemoteOutbox, type OutboxEntry, type OutboxOperation,
 } from "./outbox";
 import { viewerErrorCode, viewerHostOperation, viewerRequest, viewerWork } from "./viewerBridge";
-import type { HostContextResult, RemoteRowOperation, RemoteWorkResult, ThreadSettingsSetArgs, WireWorkCapabilities } from "./wire";
+import type { HostContextResult, RemoteRowOperation, RemoteWorkResult, ThreadSettingsSetArgs, WireExecutionSettings, WireWorkCapabilities } from "./wire";
 import type { FoldersBrowseResult, ProjectCloneResult, ProjectCloneStatus, ProjectsAddResult } from "./wire-studio";
 
 /** Never a boolean: a lost acknowledgement is neither success nor failure. */
@@ -18,13 +18,15 @@ export type RemoteSendOutcome =
 
 export const UNCONFIRMED_TEXT = "We couldn't confirm whether this was sent. Check the conversation before sending it again.";
 /** Refused before anything ran. Any other failure might have reached the host. */
-const DEFINITE_REFUSALS = new Set(["forbidden", "busy", "rate_limited", "stale_target", "unsupported", "not_paired", "invalid", "thread_unavailable"]);
+const DEFINITE_REFUSALS = new Set(["forbidden", "busy", "rate_limited", "stale_target", "unsupported", "not_paired", "invalid", "thread_unavailable", "checkpoint_turn_unavailable", "workflow_changed"]);
 
 export function refusalText(code: string, name: string): string {
   switch (code) {
     case "forbidden": case "not_paired": return `${name} doesn't allow this device to do that.`;
     case "busy": case "rate_limited": return `${name} is busy. Try again in a moment.`;
     case "stale_target": return "That request has already ended.";
+    case "workflow_changed": return `This workflow changed on ${name} after you reviewed it. Review it again before running.`;
+    case "checkpoint_turn_unavailable": return "This older checkpoint has no saved conversation turn, so it cannot be forked. Choose a checkpoint with a saved turn or fork the latest conversation.";
     case "thread_unavailable": return `This conversation isn't available on ${name} anymore.`;
     case "unsupported": return `This version of Mythra Code on ${name} can't do that yet.`;
     default: return `${name} couldn't do that.`;
@@ -350,4 +352,73 @@ export function keepRemoteDevices(paired: readonly string[], online: readonly st
   forgetPanels(paired);
   for (const device of paired) if (!online.includes(device)) endRemoteTerminals(device);
   for (const device of Object.keys(useRemoteContext.getState().contexts)) if (!paired.includes(device)) forgetRemoteContext(device);
+}
+
+/** Returns an opaque host draft token. Sending it with sendRemotePrompt lets
+ * the prompt's owner/opId create and bind the checkout natively, exactly once.
+ * No worktree is created just by changing this choice. */
+export async function setRemoteDraftIsolation(device: string, name: string, workspaceId: string, isolated: boolean, draftHandle?: string): Promise<
+  { draftHandle: string; startTarget: string; settings: WireExecutionSettings } | { failure: string }
+> {
+  const uncertain = `We couldn't confirm this draft's settings on ${name}. Refresh them before sending.`;
+  try {
+    const result = await sequenced(device, () => undefined, (opSeq) => viewerHostOperation<RemoteWorkResult & {
+      draftHandle?: string; startTarget?: string; settings?: WireExecutionSettings;
+    }>(device, "draft.settings.set", { opId: crypto.randomUUID(), opSeq, workspaceId, isolated, ...(draftHandle ? { draftHandle } : {}) }));
+    if (result?.state === "accepted" && result.workspaceId === workspaceId && result.draftHandle && result.startTarget && result.settings?.isolated === isolated) {
+      return { draftHandle: result.draftHandle, startTarget: result.startTarget, settings: result.settings };
+    }
+    if (result?.state === "rejected") return { failure: result.error?.code === "forbidden" && isolated
+      ? "Isolated drafts need Terminal access. Enable it in the host device settings." : refusalText(result.error?.code ?? "", name) };
+    return { failure: uncertain };
+  } catch (reason) {
+    const code = viewerErrorCode(reason);
+    return { failure: code === "forbidden" && isolated ? "Isolated drafts need Terminal access. Enable it in the host device settings."
+      : DEFINITE_REFUSALS.has(code) ? refusalText(code, name) : uncertain };
+  }
+}
+
+/** Omit checkpointId for latest. A failed selected fork never falls back to
+ * latest and an unconfirmed provider effect is never automatically resent. */
+export async function forkRemoteThread(device: string, name: string, threadId: string, checkpointId?: string): Promise<{ threadId: string } | { failure: string }> {
+  const uncertain = `We couldn't confirm whether the conversation was forked on ${name}. Check the conversation list before trying again.`;
+  if (checkpointId !== undefined && (!checkpointId || checkpointId.length > 256 || /[\u0000-\u001f]/.test(checkpointId))) return { failure: "Choose an available checkpoint first." };
+  try {
+    const result = await sequenced(device, () => undefined, (opSeq) => viewerWork<RemoteWorkResult>(device, "thread.fork", {
+      opId: crypto.randomUUID(), opSeq, threadId, ...(checkpointId !== undefined ? { checkpointId } : {}),
+    }));
+    if (result?.state === "accepted" && result.threadId && result.threadId !== threadId) return { threadId: result.threadId };
+    return { failure: result?.state === "rejected" ? refusalText(result.error?.code ?? "", name) : uncertain };
+  } catch (reason) {
+    const code = viewerErrorCode(reason);
+    return { failure: DEFINITE_REFUSALS.has(code) ? refusalText(code, name) : uncertain };
+  }
+}
+
+/** Persisted steering identities reconciled with the original native Claude
+ * turn, never with whichever thread happens to be selected on the host. */
+export const listRemoteSteers = (device: string, workspaceId: string, threadId: string) =>
+  viewerHostOperation<import("./wire").RemoteSteerList>(device, "steer.list", { workspaceId, threadId });
+const steerDeliveryRequests = new Map<string, { opId: string; opSeq: number }>();
+/** A successful request is NOT evidence that Claude read it. Refresh steer.list
+ * until the lifecycle says "read". Repeated clicks retain the same op identity. */
+export async function deliverRemoteSteerNow(device: string, name: string, workspaceId: string, threadId: string, turnId: string, runtimeId: string): Promise<string | null> {
+  const key = JSON.stringify([device, workspaceId, threadId, turnId, runtimeId]);
+  const uncertain = "We couldn't confirm that delivery was requested. Check the message's delivery status before trying again.";
+  try {
+    const result = await sequenced(device, () => undefined, (opSeq) => {
+      let identity = steerDeliveryRequests.get(key);
+      if (!identity) {
+        if (steerDeliveryRequests.size >= 256) steerDeliveryRequests.delete(steerDeliveryRequests.keys().next().value!);
+        identity = { opId: crypto.randomUUID(), opSeq };
+        steerDeliveryRequests.set(key, identity);
+      }
+      return viewerHostOperation<RemoteWorkResult>(device, "steer.deliver", { ...identity, workspaceId, threadId, turnId, runtimeId });
+    });
+    if (result?.state === "accepted") return null;
+    return result?.state === "rejected" ? refusalText(result.error?.code ?? "", name) : uncertain;
+  } catch (reason) {
+    const code = viewerErrorCode(reason);
+    return DEFINITE_REFUSALS.has(code) ? refusalText(code, name) : uncertain;
+  }
 }

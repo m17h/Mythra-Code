@@ -1,3 +1,4 @@
+import { useRemoteDevices } from "../devices";
 import { invoke } from "@tauri-apps/api/core";
 import { markRemotePromptDelivered, settleRemotePromptPreparation } from "./promptPreparation";
 import { flushPendingStateWrites } from "../../storage";
@@ -163,7 +164,8 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
     settleRemotePromptPreparation(this);
     if (this.outcome.state === "accepted" || this.outcome.state === "uncertain" || this.outcome.error) return;
     this.outcome = { ...this.outcome, state: "rejected", error: { code,
-      message: code === "forbidden" ? "Remote access was removed before this instruction could run." : "The other device did not deliver this instruction." } };
+      message: code === "workflow_changed" ? `This workflow changed on ${useRemoteDevices.getState().snapshot?.deviceName ?? "the host"} after you reviewed it. Review it again before running.`
+        : code === "forbidden" ? "Remote access was removed before this instruction could run." : "The other device did not deliver this instruction." } };
     try { await this.save("rejected", { errorCode: code }); await this.mirror("rejected", code); }
     catch { await this.uncertain(); }
   }

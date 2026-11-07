@@ -104,6 +104,8 @@ fn environment(command: &mut Command) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never");
 }
+/// Repository connection writes keep transport/helper config inert too.
+pub(super) fn repository_environment(command: &mut Command) { environment(command); }
 /// Called only by bounded Git reads. Local callers take this exact no-op path.
 pub(crate) fn configure(command: &mut Command, repo: &Path, args: &[&str]) -> Result<(), String> {
     let Some(policy) = POLICY.with(|p| p.borrow().clone()) else {

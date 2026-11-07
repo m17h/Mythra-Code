@@ -36,7 +36,7 @@ pub(super) const READS: &[&str] = &[
 pub(super) fn mutation(op: &str) -> bool {
     matches!(
         op,
-        "attachment.reference" | "projects.clone" | "github.pr.create" | "github.pr.merge" | "github.pr.ready" | "github.pr.comment" | "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "worktree.continueShared" | "worktree.returnShared" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
+        "steer.deliver" | "attachment.reference" | "projects.clone" | "github.pr.create" | "github.pr.merge" | "github.pr.ready" | "github.pr.comment" | "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "worktree.continueShared" | "worktree.returnShared" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
             | "queue.edit.begin"
             | "queue.edit.finish"
             | "queue.retry"
@@ -91,6 +91,9 @@ pub(super) fn mutation(op: &str) -> bool {
 }
 pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
     Some(match op {
+        "steer.list" => (&["workspaceId","threadId"],false),
+        "steer.deliver" => (&["workspaceId","threadId","opId","opSeq","turnId","runtimeId"],true),
+        "terminal.attach" => (&["workspaceId","terminalId","limit"],false),
         "git.context" => (&["workspaceId","threadId","limit"],false),
         "agents.read"|"mail.read" => (&["workspaceId","threadId","agentId","limit"],false),
         "workflows.view" => (&["workspaceId","threadId","workflowId","limit"],false),
@@ -112,7 +115,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         "github.pr.list" => (&["workspaceId","search","state","limit"],false),
         "github.pr.find" => (&["workspaceId","threadId","branch"],false),
         "github.pr.context" => (&["workspaceId","threadId"],false),
-        "git.write" => (&["opId","opSeq","workspaceId","threadId","action","resourceId","revision","message","name","create","stagedOnly","confirmed","base"],true),
+        "git.write" => (&["opId","opSeq","workspaceId","threadId","action","resourceId","revision","message","name","create","stagedOnly","confirmed","base","url","visibility"],true),
         "checkpoint.list" | "worktree.status" | "agents.list" | "preview.links" => (&["workspaceId","threadId"],false),
         "checkpoint.diff" => (&["workspaceId","threadId","checkpointId"],false),
         "git.log" => (&["workspaceId","threadId","offset","limit","headOid"],false),
@@ -362,6 +365,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
                 "workflowId",
                 "variables",
                 "userPrompt",
+                "digest",
             ],
             true,
         ),
@@ -543,7 +547,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         "thread.rename" => (&["opId", "opSeq", "threadId", "name"], true),
         "thread.archive" => (&["opId", "opSeq", "threadId"], true),
         "thread.restore" => (&["opId", "opSeq", "threadId"], true),
-        "thread.fork" => (&["opId", "opSeq", "threadId"], true),
+        "thread.fork" => (&["opId", "opSeq", "threadId", "checkpointId"], true),
         "thread.delete" => (&["opId", "opSeq", "threadId", "confirmed"], true),
         "thread.pin" => (&["opId", "opSeq", "threadId", "pinned"], true),
         "projects.pin" => (&["opId", "opSeq", "workspaceId", "pinned"], true),
@@ -620,7 +624,8 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
     if !grant.view
         || (mutation(op)
             || manage
-            || shell && !matches!(op,"terminal.list"|"terminal.read"|"terminal.status")
+            || shell && !matches!(op,"terminal.list"|"terminal.read"|"terminal.status"|"terminal.attach")
+            || op == "steer.deliver"
             || op == "work.inspect"
             || op == "preview.links"
             || super::work::MUTATIONS.contains(&op))
@@ -685,7 +690,6 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
         "profileId",
         "target",
         "skillId",
-        "cursor",
         "folderId",
         "parentId",
         "fileId",
@@ -694,6 +698,11 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
     ] {
         id(args, key, false)?;
     }
+    if matches!(op,"terminal.read"|"terminal.status") {
+        if args.get("cursor").is_some_and(|v|!v.as_u64().is_some_and(|n|n<=super::timeline::MAX_SAFE_SEQ)) { return Err(invalid()); }
+    } else { id(args,"cursor",false)?; }
+    if op.starts_with("steer.") { id(args,"threadId",true)?; }
+    if op=="steer.deliver" { id(args,"turnId",true)?; id(args,"runtimeId",true)?; }
     if matches!(op,"agents.accept"|"agents.stop"|"agents.replace"){id(args,"agentId",true)?;id(args,"target",true)?;}
     if op=="agents.replace"{id(args,"targetId",true)?;}
     if op=="actions.run"{id(args,"actionId",true)?;}
@@ -749,7 +758,7 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
     if args.get("limit").is_some_and(|value| {
         !value
             .as_u64()
-            .is_some_and(|limit| (1..=200).contains(&limit))
+            .is_some_and(|limit| (1..=if matches!(op,"terminal.read"|"terminal.status"|"terminal.attach") {65536} else {200}).contains(&limit))
     }) {
         return Err(invalid());
     }
@@ -834,10 +843,12 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
         if let Some(sub)=args.get("subagents"){let object=sub.as_object().ok_or_else(invalid)?;if object.keys().any(|key|!["enabled","engine","maxConcurrent","autoCompactTokens","nativeOptions","crew"].contains(&key.as_str()))||!sub.get("enabled").is_some_and(Value::is_boolean)||!matches!(sub.get("engine").and_then(Value::as_str),Some("mythra"|"native"))||!sub.get("maxConcurrent").and_then(Value::as_u64).is_some_and(|n|(1..=24).contains(&n))||serde_json::to_vec(sub).map_or(true,|b|b.len()>16384){return Err(invalid());}}
         if args.get("isolated").is_some_and(|value|!value.is_boolean()){return Err(invalid());}
     }
+    if op=="workflows.start" && args.get("digest").is_some_and(|value| !value.as_str().is_some_and(|s| s.len()==64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))) { return Err(invalid()); }
+    if op=="thread.fork"{id(args,"checkpointId",false)?;}
     if op=="thread.pullRequest.set"{id(args,"workspaceId",true)?;id(args,"threadId",true)?;}
     if op=="thread.pullRequest.set"&&!args.get("reference").is_some_and(|v|v.is_null()||v.as_str().is_some_and(|text|!text.trim().is_empty()&&text.len()<=2048&&!text.chars().any(char::is_control))){return Err(invalid());}
     if op=="prompt.cancel"{id(args,"startTarget",true)?;}
-    if op=="git.write"&&!matches!(args.get("action").and_then(Value::as_str),Some("init"|"stage"|"unstage"|"commit"|"branch"|"push"|"pull"|"fetch"|"update"|"revert"|"revertAll")){return Err(invalid());}
+    if op=="git.write"&&!matches!(args.get("action").and_then(Value::as_str),Some("init"|"stage"|"unstage"|"commit"|"branch"|"push"|"pull"|"fetch"|"update"|"revert"|"revertAll"|"attachRemote"|"createRepository")){return Err(invalid());}
     if matches!(op,"checkpoint.restore"|"checkpoint.delete"|"worktree.apply"|"worktree.remove"|"worktree.continueShared"|"worktree.returnShared")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}
     if args.get("force").is_some_and(|value|!value.is_boolean()){return Err(invalid());}
     if op=="git.write"&&args.get("base").is_some_and(|base|!base.as_str().is_some_and(|text|!text.is_empty()&&text.len()<=256&&!text.contains('\0'))){return Err(invalid());}

@@ -1,3 +1,4 @@
+import type { HostHeaderSources } from "../hostSources";
 import { invoke } from "@tauri-apps/api/core";
 import { useTaskStore } from "../../taskStore";
 import { usageForThread } from "../../usageLedger";
@@ -12,8 +13,10 @@ import type { ChildAgentTarget } from "../../../types";
 import type { HostResourceSources } from "./resources";
 
 export const wireEfforts = new Set<WireEffort>(["low", "medium", "high", "xhigh", "max"]);
-export interface HostContextSources extends ExecutionSources, HostResourceSources {
+export interface HostContextSources extends ExecutionSources, HostResourceSources, HostHeaderSources {
   settleRemoteCheckpoint?(id: string, error: string): void;
+  /** Refresh host-owned eligibility after confirmed Git initialization/snapshot. */
+  refreshWorkspaceGitInfo?(workspaceId: string): Promise<void>;
   /** Must inspect all execution scopes, not just the selected Run/Checks UI.
    * Local start handlers also consult hostCommandBusy before dispatch. */
   isLocalCommandRunning?(root: string, kind: "run" | "checks"): boolean;
@@ -83,8 +86,14 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
       subagents: { enabled: ctx.effectiveSettings.subagentsEnabled, engine: ctx.effectiveSettings.subagentEngine === "native" ? "native" : "mythra",
         maxConcurrent: capturedCrew?.maxConcurrent ?? ctx.effectiveSettings.nativeSubagentMax ?? 6, crew: publicCrew(capturedCrew?.targets ?? ctx.effectiveSettings.childAgents.targets) },
       ...(threadId ? { isolated: normalizedHostPath(sources.executionPathFor(threadId, workspace.path)) !== normalizedHostPath(workspace.path) } : {}),
-      ...(() => { const git = ctx.workspaceGitInfo, blocked = threadId || workspace.isChat || !git ? undefined : !git.isRepo ? "repository" as const : !git.isRoot ? "root" as const : !git.hasCommit ? "commit" as const : undefined;
-        return blocked ? { isolationBlocked: blocked } : {}; })() },
+      ...(() => {
+        if (threadId) return {};
+        const git = ctx.workspaceGitInfo;
+        const blocked = !capability.terminal ? "terminal" as const : workspace.isChat ? "repository" as const : !git ? undefined
+          : !git.isRepo ? "repository" as const : !git.isRoot ? "root" as const : !git.hasCommit ? "commit" as const : undefined;
+        return { canCreateIsolated: grant.work === true && capability.terminal === true && !workspace.isChat && !!git?.isRepo && git.isRoot && git.hasCommit,
+          ...(blocked ? { isolationBlocked: blocked } : {}) };
+      })() },
     selected: { provider: ctx.effectiveSettings.provider, model: text(ctx.effectiveSettings.model, 256), effort },
     ...(threadId ? { saved: { ...(savedModel ? { model: text(savedModel, 256) } : {}), ...(savedEffort ? { effort: savedEffort === "ultra" ? "max" : savedEffort } : {}) } } : {}),
     projectPrompt: text(workspace.overrides?.systemPrompt, 65536), projectPromptMode: workspace.overrides?.systemPromptMode === "append" ? "append" : "replace",

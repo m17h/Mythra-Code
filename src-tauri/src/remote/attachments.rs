@@ -143,7 +143,7 @@ pub(super) async fn put(inner: &Arc<Inner>, stamp: Stamp, args: Value) -> Result
         let core=worker.lock();stamp.check(&core,"attachment.put")?;anchor.validate()?;
         match phase{
             "chunk"=>{let data=STANDARD.decode(args["data"].as_str().ok_or_else(invalid)?).map_err(|_|invalid())?;if data.is_empty()||data.len()>65536||args["offset"].as_i64()!=Some(offset)||offset+data.len() as i64>size{return Err(invalid());}let mut file=fs_guard::append_file(&anchor,&leaf)?;if file.metadata().map_err(|_|failed())?.len()!=offset as u64{return Err(failed());}file.write_all(&data).map_err(|_|failed())?;file.sync_data().map_err(|_|failed())?;tx.execute("UPDATE remote_uploads SET offset=?2,expires=?3 WHERE id=?1",params![id,offset+data.len() as i64,now+15*60000]).map_err(|_|failed())?;result["uploadId"]=json!(id);result["nextOffset"]=json!(offset+data.len() as i64);},
-            "finish"=>{if !final_hash.as_deref().zip(args["sha256"].as_str()).is_some_and(|(a,b)|a.eq_ignore_ascii_case(b)){return Err(invalid());}tx.execute("UPDATE remote_uploads SET complete=1 WHERE id=?1",[id]).map_err(|_|failed())?;result["attachmentId"]=json!(id);result["name"]=json!(name);result["kind"]=json!(kind);result["size"]=json!(size);},
+            "finish"=>{if !final_hash.as_deref().zip(args["sha256"].as_str()).is_some_and(|(a,b)|a.eq_ignore_ascii_case(b)){return Err(invalid());}tx.execute("UPDATE remote_uploads SET complete=1 WHERE id=?1",[id]).map_err(|_|failed())?;result["attachmentId"]=json!(id);result["name"]=json!(name);result["kind"]=json!(kind);result["size"]=json!(size);result["originalHostPath"]=json!(dir.join(&leaf).to_string_lossy());},
             "cancel"=>{let referenced:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM remote_attachment_refs WHERE attachment_id=?1)",[id],|r|r.get(0)).map_err(|_|failed())?;if referenced{return Err(invalid());}std::fs::remove_file(dir.join(&leaf)).map_err(|_|failed())?;tx.execute("DELETE FROM remote_uploads WHERE id=?1",[id]).map_err(|_|failed())?;},_=>return Err(invalid())}
         commit::complete(&tx,&stamp,"attachment.put",&result,false)?;tx.commit().map_err(|_|failed())?;drop(core);Ok(result)
     });
@@ -230,6 +230,13 @@ fn copy_project_file(
     }
 }
 
+/// Display/copy metadata only. Validation does not open the source file or
+/// create a handle accepted by any content-read operation.
+fn original_host_path(root: &std::path::Path, relative: &str) -> Result<String, String> {
+    fs_guard::relative(relative, false)?;
+    Ok(root.join(relative).to_string_lossy().into_owned())
+}
+
 /// Attaches a file already in the shared project without sending it over the
 /// network. Uploads and this share one table, one set of limits and one expiry, so
 /// everything after here is an ordinary attachment.
@@ -259,6 +266,7 @@ pub(crate) async fn remote_attachment_copy(
     }
     let id = uuid::Uuid::new_v4().to_string();
     let (images, files) = (directory(&inner, "image")?, directory(&inner, "file")?);
+    let original_host_path = original_host_path(std::path::Path::new(&root), &path)?;
     let (copy_root, copy_id) = (root.clone(), id.clone());
     let task = tauri::async_runtime::spawn_blocking(move || {
         copy_project_file(std::path::Path::new(&copy_root), &path, &images, &files, &copy_id)
@@ -293,7 +301,7 @@ pub(crate) async fn remote_attachment_copy(
             params![id, s.device, workspace, s.generation as i64, s.grant_revision as i64, name, kind, size as i64, leaf, crate::unix_timestamp_ms() + 15 * 60000],
         )
         .map_err(|_| failed())?;
-        let result = json!({"opId":s.op_id,"state":"accepted","attachmentId":id,"name":name,"kind":kind,"size":size});
+        let result = json!({"opId":s.op_id,"state":"accepted","attachmentId":id,"name":name,"kind":kind,"size":size,"originalHostPath":original_host_path});
         commit::complete(&tx, &s, "attachment.reference", &result, false)?;
         tx.commit().map_err(|_| failed())?;
         drop(core);
@@ -362,6 +370,15 @@ mod copy_tests {
         let (root, store) = (base.join("project"), base.join("store"));
         fs::create_dir_all(root.join("src")).expect("project");
         (root, store)
+    }
+
+    #[test]
+    fn original_host_path_is_metadata_only_and_rejects_uncontained_input() {
+        let (root, _store) = folders();
+        let path = original_host_path(&root,"src/document-that-does-not-exist.pdf").unwrap();
+        assert_eq!(path, root.join("src/document-that-does-not-exist.pdf").to_string_lossy());
+        assert!(!std::path::Path::new(&path).exists());
+        for path in ["../outside.pdf","/etc/hosts",".git/config","docs/evil\n.txt"] { assert!(original_host_path(&root,path).is_err()); }
     }
 
     #[test]

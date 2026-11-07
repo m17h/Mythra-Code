@@ -29,6 +29,7 @@ pub(crate) mod attachments;
 pub(crate) mod clone;
 pub(crate) mod preview;
 pub(crate) mod terminal;
+pub(crate) mod session_catalog;
 pub(crate) mod upload_source;
 pub(crate) mod domain;
 pub(crate) mod prompt_preparation;
@@ -44,6 +45,8 @@ mod instructions;
 pub(crate) mod thread_batch;
 pub(crate) mod discovery_work;
 pub(crate) mod github;
+pub(crate) mod repository;
+pub(crate) mod host_context;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, windows))]

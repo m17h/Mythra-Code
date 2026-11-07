@@ -39,6 +39,16 @@ export function XtermPanel({
   const cursorRef = useRef(0);
   const generationRef = useRef(0);
   const [notice, setNotice] = useState<LinkNotice | null>(null);
+  // Callers may pass new handlers on every render. The terminal reads the
+  // latest ones through refs, so it is never torn down (and its screen never
+  // blanked) just because a parent re-rendered.
+  const onInputRef = useRef(onInput);
+  const onResizeRef = useRef(onResize);
+  onInputRef.current = onInput;
+  onResizeRef.current = onResize;
+  // Bumped whenever a terminal instance is created, so replay always repaints
+  // the retained output into the instance that is actually on screen.
+  const [terminalEpoch, setTerminalEpoch] = useState(0);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -94,7 +104,7 @@ export function XtermPanel({
     terminal.loadAddon(fit);
     terminal.open(hostRef.current);
     fit.fit();
-    const data = terminal.onData((value) => onInput(value));
+    const data = terminal.onData((value) => onInputRef.current(value));
     const links = terminal.registerLinkProvider({
       provideLinks(line, callback) {
         const found = linksAtBufferRow(terminal.buffer.active, line - 1);
@@ -120,10 +130,11 @@ export function XtermPanel({
       if (terminal.cols === lastCols && terminal.rows === lastRows) return;
       lastCols = terminal.cols;
       lastRows = terminal.rows;
-      onResize(terminal.cols, terminal.rows);
+      onResizeRef.current(terminal.cols, terminal.rows);
     });
     resize.observe(hostRef.current);
     terminalRef.current = terminal;
+    setTerminalEpoch((epoch) => epoch + 1);
     return () => {
       resize.disconnect();
       links.dispose();
@@ -131,7 +142,7 @@ export function XtermPanel({
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [onInput, onResize]);
+  }, []);
 
   useEffect(() => {
     if (notice?.kind !== "error") return;
@@ -161,7 +172,9 @@ export function XtermPanel({
       cursorRef.current = cursor;
       if (!text) return;
       if (placeholderShown) {
-        terminal.reset();
+        // Through the write queue, so it lands after the queued placeholder
+        // rather than before it (reset() is immediate; writes are not).
+        terminal.write("\x1bc");
         placeholderShown = false;
       }
       terminal.write(text.replace(/\n/g, "\r\n"));
@@ -175,7 +188,7 @@ export function XtermPanel({
     }
     sync();
     return outputStore.subscribe(sync);
-  }, [outputStore, placeholder]);
+  }, [outputStore, placeholder, terminalEpoch]);
 
   useEffect(() => {
     if (running) terminalRef.current?.focus();

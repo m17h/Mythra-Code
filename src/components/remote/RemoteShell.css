@@ -7,6 +7,8 @@
 .remote-timeline > .timeline-shell { flex: 1; min-height: 0; }
 .remote-empty { margin: auto; padding: var(--s-4); color: var(--muted); text-align: center; }
 .remote-note { color: var(--muted); font-size: var(--fs-meta); }
+.remote-copy-path { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 3px; padding: 0; border: 0; border-radius: var(--r-xs); color: var(--muted); background: transparent; vertical-align: -3px; cursor: pointer; }
+.remote-copy-path:hover { color: var(--text); background: var(--line); }
 .remote-question { padding: 10px 0; }
 .remote-question p { margin: 6px 0; }
 .remote-question dl { margin: 8px 0; }
@@ -63,3 +65,9 @@
 .remote-guide-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s-2); margin-top: var(--s-2); }
 .thread-empty-state > .remote-guide { margin: 0 auto var(--s-3); }
 .remote-folder-note { margin: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; }
+/* The local "still running" strip, made selectable for another device's sessions. */
+.terminal-session-row { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.terminal-session-row:hover { background: var(--line); }
+.terminal-session-row.selected { background: color-mix(in srgb, var(--cyan, #64ddf2) 10%, transparent); }
+.terminal-session-row.exited .terminal-status-dot { border-color: var(--muted-2); }
+.terminal-session-row code { font-family: var(--font-mono); }

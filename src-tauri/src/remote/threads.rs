@@ -32,6 +32,7 @@ pub(super) fn keys(op: &str) -> Result<Vec<&'static str>, String> {
         => {},
         "thread.rollback"=>k.push("kiwi.agentQuestions"),
         "thread.fork" => k.extend([
+            "kiwi.checkpoints",
             "kiwi.threadModels",
             "kiwi.threadReasoning",
             "kiwi.threadSubagentSettings",
@@ -206,6 +207,28 @@ fn binding(db: &Connection, stamp: &Stamp, provider: &str, root: &str) -> Result
     }
     Ok(record)
 }
+/// Resolve checkpoint selection from host-owned metadata, never a viewer path.
+/// Local App::forkThread uses exactly this record's turnId as lastTurnId.
+fn fork_turn(db: &Connection, stamp: &Stamp, root: &str, args: &Value) -> Result<Option<String>, String> {
+    let Some(checkpoint) = args.get("checkpointId") else { return Ok(None); };
+    let valid_id = |id: &str| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control);
+    let checkpoint = checkpoint.as_str().filter(|id| valid_id(id)).ok_or_else(stale)?;
+    let records = array(value(db, "kiwi.checkpoints")?)?;
+    let mut matches = records.iter().filter(|row| row["id"] == checkpoint);
+    let record = matches.next().ok_or_else(stale)?;
+    if matches.next().is_some() || record["threadId"].as_str() != stamp.thread_id.as_deref() {
+        return Err(stale());
+    }
+    // An older checkpoint without a proven turn must NOT silently fork latest.
+    let turn = record["turnId"].as_str().filter(|id| valid_id(id)).ok_or_else(|| {
+        format!("{} This older checkpoint has no saved conversation turn, so it cannot be forked. Choose a checkpoint with a saved turn or fork the latest conversation.", work::refused("checkpoint_turn_unavailable"))
+    })?;
+    if !record["workspacePath"].as_str().is_some_and(|path| path_eq(path, root)) {
+        return Err(stale());
+    }
+    Ok(Some(turn.into()))
+}
+
 pub(super) fn eligibility(
     db: &Connection,
     stamp: &Stamp,
@@ -215,6 +238,7 @@ pub(super) fn eligibility(
     args: &Value,
 ) -> Result<Value, String> {
     let record = binding(db, stamp, provider, root)?;
+    if op == "thread.fork" { fork_turn(db, stamp, root, args)?; }
     let id = stamp.thread_id.as_deref().ok_or_else(stale)?;
     let archived = array(value(db, "kiwi.archivedThreads")?)?
         .iter()
@@ -400,6 +424,14 @@ pub(super) async fn execute(
     let r = root.clone();
     let a = args.clone();
     let b = book.clone();
+    let mut provider_args = args.clone();
+    if op == "thread.fork" {
+        // Only host checkpoint metadata may select a history boundary.
+        provider_args.as_object_mut().ok_or_else(stale)?.remove("lastTurnId");
+        let s = stamp.clone(); let r = root.clone(); let a = args.clone();
+        let turn = inner.read_db(move |db| fork_turn(db, &s, &r, &a)).await?;
+        if let Some(turn) = turn { provider_args["lastTurnId"] = json!(turn); }
+    }
     let proof_meta = proof.as_ref().map(|p| p.metadata()).transpose()?;
     let saved = super::finish_write(inner.enqueue_write(false, move |db| {
         if let Some(result) = commit::prior(db, &s)? {
@@ -444,7 +476,7 @@ pub(super) async fn execute(
         return Ok(result);
     }
     let effect = if let Some(proof) = &proof {
-        crate::remote_thread_provider_apply(&app, proof, stamp.meta(), &op, &root, &args).await?
+        crate::remote_thread_provider_apply(&app, proof, stamp.meta(), &op, &root, &provider_args).await?
     } else {
         Value::Null
     };
@@ -1242,3 +1274,7 @@ pub(in crate::remote) mod tests {
             .is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "checkpoint_fork_tests.rs"]
+mod checkpoint_fork_tests;

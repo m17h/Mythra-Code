@@ -204,7 +204,9 @@ export interface WireExecutionSettings {
   provider?: WireProvider; model?: string; effort?: WireEffort; permission?: "read-only" | "ask" | "full";
   serviceTier?: "standard" | "fast" | null; subagents?: WireSubagents; isolated?: boolean;
   /** Why a new draft here can't use an isolated worktree. Absent when it can, or when the host doesn't know yet. */
-  isolationBlocked?: "repository" | "root" | "commit";
+  isolationBlocked?: "repository" | "root" | "commit" | "terminal";
+  /** Host-confirmed eligibility for a NEW isolated draft; not a saved thread's checkout mode. */
+  canCreateIsolated?: boolean;
   /** A saved thread's crew. A draft carries it in `subagents.crew`. */
   crew?: WireCrewTarget[];
 }
@@ -221,12 +223,17 @@ export type RemoteRowOperation = "thread.rename" | "thread.archive" | "thread.re
   | "projects.pin" | "projects.remove" | "projects.reorder";
 export interface ThreadRenameArgs { opId: string; opSeq: number; threadId: string; name: string }
 export interface ThreadRowArgs { opId: string; opSeq: number; threadId: string }
+/** Host resolves this checkpoint to its own saved turn; no paths or RPC parameters. */
+export interface ThreadForkArgs extends ThreadRowArgs { checkpointId?: string }
 export interface ThreadDeleteArgs extends ThreadRowArgs { confirmed: true }
 export interface ThreadPinArgs extends ThreadRowArgs { pinned: boolean }
 export interface ProjectRowArgs { opId: string; opSeq: number; workspaceId: string }
 export interface ProjectRemoveArgs extends ProjectRowArgs { confirmed: true }
 export interface ProjectPinArgs extends ProjectRowArgs { pinned: boolean }
 export interface ProjectReorderArgs extends ProjectRowArgs { relativeTo: string; position: "before" | "after" }
+
+/** Digest is returned by workflows.view, never computed by the viewer. */
+export interface WorkflowStartArgs { opId: string; opSeq: number; workspaceId: string; threadId?: string; revision: string; workflowId: string; digest?: string; variables?: Record<string, string>; userPrompt?: string }
 
 /** Extended non-Studio parity operations. All mutations are journaled. */
 export type ParityReadOperation = "queue.read" | "schedules.read" | "workflows.list" | "workflows.read"
@@ -265,7 +272,7 @@ export interface WireParityRow {
   variables?: { id: string; label: string; required: boolean; default?: string }[];
   steps?: { id: string; type: "agent" | "command" | "wait"; name: string; prompt?: string; command?: string; provider?: WireProvider; model?: string }[];
 }
-export interface WireParityReadResult { revision: string; rows: WireParityRow[]; cursor?: string; truncated: boolean; timezone?: string }
+export interface WireParityReadResult { revision: string; rows: WireParityRow[]; cursor?: string; truncated: boolean; timezone?: string; /** skills.analyze only: full graph with host-neutral /host-skills/ paths. */ report?: unknown }
 
 // Domain presentation is deliberately separate from host filesystem records.
 export type NativeTerminalOperation = "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close";
@@ -273,3 +280,19 @@ export interface TerminalOpenArgs { opId: string; opSeq: number; workspaceId: st
 /** Studio uses one shared presentation contract and one opaque-handle namespace. */
 export type WireDomainReadResult = import("./wire-studio").CheckpointListResult | import("./wire-studio").WorktreeStatusResult
   | import("./wire-studio").RevertPreviewResult;
+
+/** Native session inventory. Host paths, process ids and runtime instances are omitted. */
+export interface RemoteTerminalStatus {
+  terminalId: string; command: string; startedAt: number; running: boolean; state: string;
+  exitCode: number | null; elapsedMs: number; owned: boolean; attachable: boolean; seq: number; threadId?: string;
+}
+export interface RemoteTerminalOutput extends RemoteTerminalStatus {
+  deltaBase64: string; cursor: number; truncated: boolean; hasMore: boolean; finished?: boolean;
+}
+export interface RemoteTerminalList { terminals: RemoteTerminalStatus[]; truncated: boolean }
+export interface WireQueuedSteer {
+  messageId: string | null; turnId: string | null; runtimeId: string | null;
+  status: "sending" | "accepted" | "queued" | "read" | "unconfirmed";
+  deliveryRequested: boolean; canDeliver: boolean;
+}
+export interface RemoteSteerList { threadId: string; steers: WireQueuedSteer[]; truncated: boolean }

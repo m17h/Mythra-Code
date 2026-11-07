@@ -89,7 +89,7 @@ function fixture(op = "thread.rename", provider = "openai", options = {}) {
     } });
   return { work, lifecycle, calls, events, state: () => state, reserved: () => reserved, sources, thread, evidence, setArchived: (value) => { archived = value; },
     async run() { return work.dispatch({ requestId: "request", generation: 7, device, grant, op, opId: `op-${op}`, opSeq: 1,
-      args: { opId: `op-${op}`, opSeq: 1, threadId: id, ...(op === "thread.rename" ? { name: "After" } : {}), ...(op === "thread.delete" ? { confirmed: true } : {}), ...(op === "thread.compact" || op === "thread.rollback" ? { workspaceId: "p", revision: "r", ...(op === "thread.rollback" ? { confirmed: true } : {}) } : {}) } }); },
+      args: { opId: `op-${op}`, opSeq: 1, threadId: id, ...(op === "thread.rename" ? { name: "After" } : {}), ...(op === "thread.delete" ? { confirmed: true } : {}), ...(op === "thread.compact" || op === "thread.rollback" ? { workspaceId: "p", revision: "r", ...(op === "thread.rollback" ? { confirmed: true } : {}) } : {}), ...(options.args ?? {}) } }); },
     close() { work.dispose(); globalThis.window = previousWindow; },
   };
 }
@@ -337,4 +337,30 @@ for (const provider of ["claude", "cursor"]) for (const op of ["thread.compact",
 test("delete exact bookkeeping includes all eight child/question/handoff cleanup keys", () => {
   for (const key of ["childAgentPolicies", "childAgentLinks", "nativeAgentLinks", "childAgentMailbox", "threadHandoffs", "pendingHandoff", "agentQuestions", "turnContextReceipts"])
     assert.ok(threadRowKeys("thread.delete").includes(`kiwi.${key}`));
+});
+
+for (const provider of ["openai", "openrouter", "lmstudio"]) test(`${provider} selected checkpoint goes through stamped fork, not latest or raw RPC`, async () => {
+  const f = fixture("thread.fork", provider, { args: { checkpointId: "selected" } });
+  f.state()["kiwi.checkpoints"] = [{ id: "selected", threadId: "t", workspacePath: workspace.path, turnId: "earlier-turn" }];
+  try {
+    const result = await f.run(); assert.equal(result.state, "accepted", JSON.stringify(result));
+    const call = f.calls.find((entry) => entry.command === "remote_thread_execute");
+    assert.equal(call.args.args.checkpointId, "selected");
+    assert.ok(call.args.bookkeeping.rows.some((row) => row.key === "kiwi.checkpoints"));
+    assert.equal(Object.hasOwn(call.args.args, "lastTurnId"), false, "native resolves the host checkpoint boundary");
+    assert.equal(f.calls.some((entry) => entry.command === "codex_rpc"), false);
+  } finally { f.close(); }
+});
+
+test("old checkpoint without turn and another conversation's checkpoint cannot fork latest", async () => {
+  for (const record of [{ id: "selected", threadId: "t", workspacePath: workspace.path }, { id: "selected", threadId: "other", turnId: "foreign" }]) {
+    const f = fixture("thread.fork", "openai", { args: { checkpointId: "selected" } });
+    f.state()["kiwi.checkpoints"] = [record];
+    try {
+      const result = await f.run(); assert.equal(result.state, "rejected");
+      assert.equal(result.error.code, record.threadId === "t" ? "checkpoint_turn_unavailable" : "stale_target");
+      assert.equal(f.calls.some((entry) => entry.command === "remote_thread_execute"), false);
+      assert.equal(f.reserved(), false);
+    } finally { f.close(); }
+  }
 });

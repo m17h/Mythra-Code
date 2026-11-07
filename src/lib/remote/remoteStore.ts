@@ -113,6 +113,16 @@ function message(value: unknown): WireMessage {
   if (v.provenance === "mythra-notice") result.provenance = v.provenance;
   if (["sending", "accepted", "queued", "read", "unconfirmed"].includes(String(v.steerStatus))) result.steerStatus = v.steerStatus as WireMessage["steerStatus"];
   if (v.attachmentNames !== undefined) result.attachmentNames = rows(v.attachmentNames, (entry) => text(entry, 512), 100);
+  if (Array.isArray(v.attachmentMetadata)) result.attachmentMetadata = v.attachmentMetadata.slice(0, 8).flatMap((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.index !== "number" || !Number.isSafeInteger(entry.index) || entry.index < 0 || entry.index > 7
+      || typeof entry.name !== "string" || entry.name.length > 512 || /[\u0000-\u001f\u007f]/.test(entry.name)
+      || entry.kind !== "image" && entry.kind !== "file") return [];
+    const path = entry.originalHostPath;
+    return [{ index: entry.index, name: entry.name, kind: entry.kind,
+      ...(typeof path === "string" && path.length > 0 && path.length <= 8192 && !/[\u0000-\u001f\u007f]/.test(path) ? { originalHostPath: path } : {}) }];
+  });
   if (v.attachmentImages !== undefined) result.attachmentImages = rows(v.attachmentImages, (entry) => {
     if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0 || entry > 7) throw new Error("Invalid image reference");
     return entry;

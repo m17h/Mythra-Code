@@ -1210,6 +1210,8 @@ async fn handle_request(inner: &Arc<Inner>, link: &Arc<Link>, id: u64, op: &str,
     let result = match op {
         "preview.list" | "preview.open" | "preview.ready" | "preview.http" | "preview.close" | "preview.ws.open" | "preview.ws.write" | "preview.stream.read" | "preview.stream.close" => return Reply::Done(super::preview::handle_request(inner,link,op,args).await),
         "terminal.ack" => return Reply::Done(super::terminal::ack(inner,link,&args)),
+        "terminal.list" | "terminal.status" | "terminal.read" | "terminal.attach" => return Reply::Done(super::terminal::catalog(inner,link,op,args).await),
+        "steer.list" | "steer.deliver" => return Reply::Done(super::session_catalog::steer(inner,link,op,args).await),
         op if super::work::is_mutation(op) => return Reply::Done(super::work::handle_request(inner,link,op,args).await),
         op if super::manifest::fields(op).is_some()=>return Reply::Done(super::hostbridge::request_value(inner,link,op,args,None).await),
         "access.request" | "access.answer" | "access.cancel" | "access.reverse" => return super::access::handle(inner,link,op,args).await,

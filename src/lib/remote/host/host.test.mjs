@@ -784,3 +784,228 @@ test("plain feedback prompt routes only its authored prefix to host skill resolu
     assert.deepEqual(captured, ["Check @typed-skill", "Check @typed-skill"]);
   } finally { work.dispose(); globalThis.window = old; }
 });
+
+// Round 14: repository connection uses the guarded native adapter even when an
+// unborn checkout cannot provide a Git status/HEAD baseline.
+test("repository attach/private/public creation dispatch only minimal stamped host arguments without a baseline", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const device = "a".repeat(64), allowed = { ...grant, capabilities: { ...grant.capabilities, terminal: true, gitWrite: true } };
+  const calls = [], host = { ...sources(), getGrant: () => allowed, executionPathFor: () => "/host/isolated-checkout" };
+  const transport = { invoke: async (command, args) => {
+    calls.push({ command, args });
+    assert.equal(command, "remote_repository_execute", "no unguarded local Git/gh or baseline read");
+    return { opId: args.stamp.opId, state: "accepted", workspaceId: "p", threadId: "t",
+      repository: { url: "https://github.com/owner/new-repo", attached: true, repository: "owner/new-repo" } };
+  } };
+  const domains = new HostDomains(host, 7, () => true, { revision: () => "r" }, transport);
+  const actions = [{ action: "attachRemote", url: "git@github.com:owner/existing.git" },
+    { action: "createRepository", name: "new-repo", visibility: "private" }, { action: "createRepository", name: "new-repo", visibility: "public" }];
+  try {
+    for (const [index, action] of actions.entries()) {
+      const identity = { device, opId: `repository-${index}`, opSeq: index + 1 };
+      const result = await domains.mutate({ op: "git.write", generation: 7, device, grant: allowed },
+        { workspaceId: "p", threadId: "t", revision: "r", ...action }, identity);
+      assert.equal(result.repository.url, "https://github.com/owner/new-repo");
+      assert.deepEqual(calls[index].args, { root: "/host/isolated-checkout", stamp: { generation: 7, ...identity, grantRevision: 1, workspaceId: "p", threadId: "t" }, action });
+    }
+    assert.equal(calls.length, actions.length);
+  } finally { domains.dispose(); }
+});
+
+test("repository connection refuses extra fields, oversize inputs, stale revisions, busy threads and missing grants before native dispatch", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  resetTaskStore();
+  const device = "a".repeat(64), allowed = { ...grant, capabilities: { ...grant.capabilities, terminal: true, gitWrite: true } };
+  let live = allowed, busy = false;
+  const calls = [], host = { ...sources(), getGrant: () => live, isWorktreeBusy: () => busy };
+  const domains = new HostDomains(host, 1, () => true, { revision: () => "r" }, { invoke: async (...args) => { calls.push(args); assert.fail("refused before native work"); } });
+  const identity = { device, opId: "connect-refused", opSeq: 1 }, request = () => ({ op: "git.write", generation: 1, device, grant: live });
+  const base = { workspaceId: "p", threadId: "t", revision: "r", action: "attachRemote", url: "https://github.com/owner/repo.git" };
+  try {
+    for (const bad of [{ ...base, cwd: "/outside" }, { ...base, resourceId: "unrelated-file" }, { ...base, url: "x".repeat(4097) },
+      { ...base, action: "createRepository", url: undefined, name: "repo", visibility: "internal" },
+      { workspaceId: "p", threadId: "t", revision: "r", action: "createRepository", name: "x".repeat(101), visibility: "private" }]) {
+      await assert.rejects(domains.mutate(request(), bad, identity), (error) => error.code === "unsupported");
+    }
+    await assert.rejects(domains.mutate(request(), { ...base, revision: "old" }, identity), (error) => error.code === "stale_target");
+    busy = true;
+    await assert.rejects(domains.mutate(request(), base, identity), (error) => error.code === "busy");
+    busy = false;
+    for (const denied of [{ ...allowed, work: false }, { ...allowed, capabilities: { ...allowed.capabilities, terminal: false } },
+      { ...allowed, capabilities: { ...allowed.capabilities, gitWrite: false } }]) {
+      live = denied;
+      await assert.rejects(domains.mutate(request(), base, identity), (error) => error.code === "forbidden");
+    }
+    assert.equal(calls.length, 0);
+  } finally { domains.dispose(); }
+});
+
+test("repository connection preserves native host-named errors and created-but-unattached recovery URLs", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const device = "a".repeat(64), allowed = { ...grant, capabilities: { ...grant.capabilities, terminal: true, gitWrite: true } };
+  const host = { ...sources(), getGrant: () => allowed };
+  let reply = { opId: "connect", state: "rejected", error: { code: "repository_failed", message: "GitHub CLI isn't signed in on Test host." } };
+  const domains = new HostDomains(host, 1, () => true, { revision: () => "r" }, { invoke: async () => reply });
+  const args = { workspaceId: "p", revision: "r", action: "createRepository", name: "repo", visibility: "private" };
+  try {
+    assert.deepEqual(await domains.mutate({ op: "git.write", generation: 1, device, grant: allowed }, args, { device, opId: "connect", opSeq: 1 }), reply);
+    reply = { opId: "connect", state: "accepted", repository: { url: "https://github.com/owner/repo", attached: false, message: "Created on Test host; attach origin to finish." } };
+    assert.deepEqual(await domains.mutate({ op: "git.write", generation: 1, device, grant: allowed }, args, { device, opId: "connect", opSeq: 1 }), reply);
+  } finally { domains.dispose(); }
+});
+
+test("host.context dispatch projects both providers' live quota windows and target read-only/busy/timeout policy", async () => {
+  resetTaskStore();
+  const { acquirePullRequestMutation, releasePullRequestMutation } = await import("../../pullRequestOperations.ts");
+  const { hostQuotaAccountView } = await import("../remoteActions.ts");
+  const { selectedUsageWindow } = await import("../../providerUsage.ts");
+  const readOnly = { ...grant, work: false }, src = sources(), root = "/host/context-tree";
+  let liveViews = [
+    { provider: "openai", display: "remaining", view: { label: "OpenAI subscription", summary: "Quota", updatedAt: 123,
+      accountKey: "MUST-STAY-HOME", selectedWindow: "must-not-transfer", windows: [
+        { label: "5h", percent: 80, percentLabel: "80% left", resetsAt: 1200, resetLabel: "12:00" },
+        { label: "Weekly", percent: 50, percentLabel: "50% left", resetsAt: 2400, resetLabel: "Friday" }] } },
+    { provider: "claude", display: "consumed", view: { label: "Claude subscription", summary: "Quota", planLabel: "Pro", windows: [
+      { label: "5h", percent: 30, percentLabel: "30% used", resetsAt: 1600, resetLabel: "13:00" }] } },
+  ];
+  Object.assign(src, { getGrant: () => readOnly, getSettings: () => ({ ...DEFAULT_SETTINGS, provider: "cursor", permission: "read-only", terminalTimeoutMinutes: 19 }),
+    getProviderCatalog: () => [], getPublicSkills: () => [], getPublicWorkflows: () => [], executionPathFor: () => root,
+    getHeaderAccountUsage: () => liveViews, isLocalCommandRunning: (path, kind) => { assert.equal(path, root); return kind === "run"; } });
+  const lock = acquirePullRequestMutation(root);
+  const work = createRemoteWork({ generation: 1, sources: src, isCurrent: () => true, findThread: () => thread, ensureHydrated: async () => {}, stop: {}, getRunner: () => assert.fail("read must not launch a provider") });
+  try {
+    const request = { generation: 1, device: "d", grant: readOnly, op: "host.context", args: { workspaceId: "p" } };
+    const result = await work.dispatch(request);
+    assert.equal(result.selected.provider, "cursor", "host-selected provider is not a quota filter");
+    assert.deepEqual(result.quotas.map((q) => [q.provider, q.windows.map((w) => [w.label, w.usedPercent, w.resetsAt])]), [
+      ["openai", [["5h", 20, 1200], ["Weekly", 50, 2400]]], ["claude", [["5h", 30, 1600]]] ]);
+    assert.equal(result.quotas[0].updatedAt, 123);
+    assert.equal(result.quotas[1].planLabel, "Pro");
+    assert.equal(JSON.stringify(result).includes("MUST-STAY-HOME"), false);
+    assert.equal(JSON.stringify(result).includes("must-not-transfer"), false);
+    assert.equal(selectedUsageWindow(hostQuotaAccountView(result.quotas[0]).windows, "Weekly").label, "Weekly");
+    assert.equal(selectedUsageWindow(hostQuotaAccountView(result.quotas[1]).windows, "obsolete").label, "5h");
+    assert.equal(result.processPolicy.readOnly, true);
+    assert.match(result.processPolicy.readOnlyReason, /without permission to write/);
+    assert.equal(result.processPolicy.terminalBusy, true);
+    assert.equal(result.processPolicy.checksBusy, false);
+    assert.equal(result.processPolicy.repositoryBusy, true);
+    assert.equal(result.processPolicy.processPolicyReason, "This action requires Terminal access.");
+    assert.equal(result.processPolicy.terminalTimeoutMs, null);
+    assert.equal(result.processPolicy.runTimeoutMs, null);
+    assert.equal(result.processPolicy.checksTimeoutMs, 300000);
+    assert.equal(result.processPolicy.configuredTerminalTimeoutMinutes, 19);
+    liveViews = [{ ...liveViews[1], view: { ...liveViews[1].view, windows: [] } }];
+    assert.deepEqual((await work.dispatch(request)).quotas.map((q) => [q.provider, q.windows.length]), [["claude", 0]], "getter is live, not a captured provider/reading");
+  } finally { if (lock) releasePullRequestMutation(lock); work.dispose(); }
+});
+
+test("message attachment metadata projects host document/image copy paths only and bounds the first eight attachments", () => {
+  const attachments = [{ name: "C:\\source\\image.png", path: "C:\\host\\image.png", kind: "image", token: "MUST-STAY-HOME" },
+    { name: "/source/document.pdf", path: "/host/original/document.pdf", kind: "file", raw: "MUST-STAY-HOME" },
+    { name: "invalid.txt", path: "/host/bad\npath", kind: "file" }, ...Array.from({ length: 9 }, (_, index) => ({ name: `more-${index}`, path: `/host/more-${index}`, kind: "file" }))];
+  const projected = projectMessage("t", { id: "attachments", role: "user", text: "files", attachments }, 1);
+  assert.equal(projected.attachmentMetadata.length, 8);
+  assert.deepEqual(projected.attachmentMetadata.slice(0, 3), [
+    { index: 0, name: "image.png", kind: "image", originalHostPath: "C:\\host\\image.png" },
+    { index: 1, name: "document.pdf", kind: "file", originalHostPath: "/host/original/document.pdf" },
+    { index: 2, name: "invalid.txt", kind: "file" }]);
+  assert.equal(JSON.stringify(projected).includes("MUST-STAY-HOME"), false);
+  assert.deepEqual(projected.attachmentImages, [0]);
+});
+
+test("viewer message parser retains only bounded validated attachment metadata and never uses its paths as file handles", async () => {
+  const { readRemoteTranscript } = await import("../remoteStore.ts");
+  const previous = globalThis.window, device = "b".repeat(64), requests = [];
+  useRemoteStore.setState({ devices: { [device]: { timelines: new Map([["t", { messages: [], activities: [], history: { hasMore: true, cursor: "older" } }]]) } } });
+  const attachments = [
+    { index: 0, name: "document.pdf", kind: "file", originalHostPath: "/host/document.pdf", command: "never-run", secret: "MUST-STAY-HOME" },
+    { index: 1, name: "image.png", kind: "image", originalHostPath: "C:\\host\\image.png" },
+    { index: 2, name: "notes.txt", kind: "file", originalHostPath: "x".repeat(8193) },
+    { index: -1, name: "bad", kind: "file" }, { index: 1.5, name: "bad", kind: "file" },
+    { index: 4, name: "x".repeat(513), kind: "file" }, { index: 5, name: "bad", kind: "directory" },
+    { index: 6, name: "bounded-path.txt", kind: "file", originalHostPath: "/host/bad\npath" },
+    { index: 7, name: "ninth-must-be-dropped", kind: "file", originalHostPath: "/host/ninth" },
+  ];
+  globalThis.window = { __TAURI_INTERNALS__: { invoke: async (command, args) => {
+    requests.push({ command, args });
+    assert.equal(command, "remote_request"); assert.equal(args.op, "timeline.read");
+    assert.equal("path" in args.args, false);
+    return { messages: [{ ...message("files"), attachmentMetadata: attachments }], activities: [], history: { hasMore: false } };
+  } } };
+  try {
+    const result = await readRemoteTranscript(device, "t");
+    assert.equal(result.complete, true);
+    assert.deepEqual(result.messages[0].attachmentMetadata, [
+      { index: 0, name: "document.pdf", kind: "file", originalHostPath: "/host/document.pdf" },
+      { index: 1, name: "image.png", kind: "image", originalHostPath: "C:\\host\\image.png" },
+      { index: 2, name: "notes.txt", kind: "file" }, { index: 6, name: "bounded-path.txt", kind: "file" }]);
+    assert.equal(JSON.stringify(result).includes("MUST-STAY-HOME"), false);
+    assert.equal(requests.length, 1);
+  } finally { globalThis.window = previous; useRemoteStore.setState({ devices: {} }); }
+});
+
+test("repository native replies cannot substitute another opId or turn an unconfirmed state into acceptance", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const device = "a".repeat(64), allowed = { ...grant, capabilities: { ...grant.capabilities, terminal: true, gitWrite: true } };
+  const host = { ...sources(), getGrant: () => allowed };
+  for (const reply of [{ opId: "other", state: "accepted" }, { opId: "connect", state: "pending" }]) {
+    const domains = new HostDomains(host, 1, () => true, { revision: () => "r" }, { invoke: async () => reply });
+    try {
+      await assert.rejects(domains.mutate({ op: "git.write", generation: 1, device, grant: allowed },
+        { workspaceId: "p", revision: "r", action: "attachRemote", url: "https://github.com/owner/repo.git" },
+        { device, opId: "connect", opSeq: 1 }), (error) => error.code === "uncertain");
+    } finally { domains.dispose(); }
+  }
+});
+
+test("confirmed Git init or initial snapshot refreshes eligibility before the next host.context", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const { hostContext } = await import("./hostContext.ts");
+  const { hostWorkspaceGit, refreshHostWorkspaceGit } = await import("../hostSources.ts");
+  const device = "a".repeat(64), allowed = { ...grant, capabilities: { ...grant.capabilities, terminal: true, gitWrite: true } };
+  for (const isRepo of [false, true]) {
+    const old = { isRepo, isRoot: true, hasCommit: false }, ready = { isRepo: true, isRoot: true, hasCommit: true };
+    const cache = new Map([["p", old]]), calls = [];
+    let actual = old;
+    const host = { ...sources(), getGrant: () => allowed, getProviderCatalog: () => [], getPublicSkills: () => [], getPublicWorkflows: () => [],
+      getWorkspaceGitInfo: (id) => hostWorkspaceGit(cache, id, async () => actual),
+      refreshWorkspaceGitInfo: async (id) => { calls.push("refresh"); await refreshHostWorkspaceGit(cache, id, async () => actual); } };
+    const domains = new HostDomains(host, 1, () => true, { revision: () => "r" }, { invoke: async (command, args) => {
+      assert.equal(command, "remote_domain_execute"); assert.equal(args.action, "git.init");
+      calls.push("init"); actual = ready;
+      return { result: { opId: "init", state: "accepted" } };
+    } });
+    try {
+      const request = { op: "git.write", generation: 1, device, grant: allowed };
+      assert.equal(hostContext(host, request, { workspaceId: "p" }).execution.canCreateIsolated, false);
+      assert.equal((await domains.mutate(request, { workspaceId: "p", revision: "r", action: "init" }, { device, opId: "init", opSeq: 1 })).state, "accepted");
+      const next = hostContext(host, request, { workspaceId: "p" });
+      assert.equal(next.execution.canCreateIsolated, true); assert.equal(next.execution.isolationBlocked, undefined);
+      assert.deepEqual(calls, ["init", "refresh"]);
+    } finally { domains.dispose(); }
+  }
+});
+
+test("post-init eligibility refresh supersedes an older pending workspace read", async () => {
+  const { hostWorkspaceGit, refreshHostWorkspaceGit } = await import("../hostSources.ts");
+  const cache = new Map(); let release;
+  const old = new Promise((resolve) => { release = resolve; });
+  assert.equal(hostWorkspaceGit(cache, "p", () => old), null);
+  const ready = { isRepo: true, isRoot: true, hasCommit: true };
+  await refreshHostWorkspaceGit(cache, "p", async () => ready);
+  release({ isRepo: false, isRoot: false, hasCommit: false });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(cache.get("p"), ready);
+});
+
+test("remote init refresh overrides old selected-host facts without masking later local changes", async () => {
+  const { refreshHostWorkspaceGit, selectedHostWorkspaceGit } = await import("../hostSources.ts");
+  const cache = new Map(), old = { isRepo: false, isRoot: false, hasCommit: false }, ready = { isRepo: true, isRoot: true, hasCommit: true };
+  await refreshHostWorkspaceGit(cache, "p", async () => ready, old);
+  assert.equal(selectedHostWorkspaceGit(cache, "p", old), ready);
+  assert.equal(selectedHostWorkspaceGit(cache, "p", structuredClone(old)), ready);
+  const local = { ...ready, error: "Local project moved" };
+  assert.equal(selectedHostWorkspaceGit(cache, "p", local), local);
+  assert.equal(selectedHostWorkspaceGit(cache, "p", old), old, "no permanent override of local eligibility");
+});

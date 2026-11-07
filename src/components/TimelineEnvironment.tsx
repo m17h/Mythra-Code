@@ -23,6 +23,8 @@ export interface TimelineEnvironment {
     subscribe: (childId: string, listener: () => void) => () => void;
   };
   queuedSteerLabel?: string;
+  /** Shows a queued steer instead of the local runtime's status, for another device's thread. */
+  QueuedSteer?: ComponentType<{ message: ChatMessage }>;
   deliverSteerNow?: (threadId: string, turnId: string, runtimeId: string) => Promise<unknown>;
   Questions?: ComponentType<{ message: ChatMessage }>;
   MessageExtras?: ComponentType<{ message: ChatMessage }>;
@@ -36,6 +38,8 @@ export interface TimelineEnvironment {
   canEdit?: boolean;
   canApprove?: boolean;
   canOpenSkills?: boolean;
+  /** What a skill mention's link says it opens. Without it, Settings · Skills here. */
+  skillLinkTitle?: (name: string) => string;
 }
 
 // There is intentionally no local fallback. An unwrapped descendant can display

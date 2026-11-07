@@ -1962,6 +1962,9 @@ impl ClaudeTurn {
     }
 
     async fn deliver_steer_now(&self, steer_id: &str) -> Result<(), String> {
+        self.deliver_steer_now_checked(steer_id, None).await
+    }
+    async fn deliver_steer_now_checked(&self, steer_id: &str, fence: Option<&mut remote::session_catalog::SteerFence>) -> Result<(), String> {
         let mut input = self.stdin.lock().await;
         if !self.alive.load(Ordering::Acquire) {
             return Err("This Claude turn has finished.".into());
@@ -1987,11 +1990,16 @@ impl ClaudeTurn {
             "request_id": uuid::Uuid::new_v4().to_string(),
             "request": { "subtype": "interrupt", "send_now": true, "message_uuid": steer_id },
         });
-        let written = async {
+        let write = async {
             stdin.write_all(format!("{request}\n").as_bytes()).await
                 .map_err(|error| format!("Could not request Claude message delivery: {error}"))?;
             stdin.flush().await.map_err(|error| format!("Could not confirm Claude message delivery request: {error}"))
-        }.await;
+        };
+        tokio::pin!(write);
+        let written = if let Some(fence) = fence {
+            timeout(Duration::from_secs(10),std::future::poll_fn(|cx|fence.poll(cx,write.as_mut()))).await
+                .map_err(|_|"Could not confirm Claude message delivery request.".to_string()).and_then(|r|r)
+        } else { write.await };
         if written.is_err() {
             self.update_progress(|progress| { progress.delivery_requested.remove(steer_id); });
         }
@@ -2861,7 +2869,7 @@ impl AppServer {
             })
         }
         .await;
-        if let Some(command)=command_observation.as_ref(){remote::owners::command_finished(&self.app,command,replied);}
+        if let Some(command)=command_observation.as_ref(){remote::terminal::local_finished(&self.app,command,&result,replied);remote::owners::command_finished(&self.app,command,replied);}
         if let Some(id)=remote_request_id{self.pending.lock().await.remove(&id);}
         if let Some(activity_guard) = activity_guard {
             activity_guard.finish(result.is_ok(), dispatch_attempted && !replied);
@@ -7928,6 +7936,22 @@ async fn claude_turn_steer(
     Ok(steer_id)
 }
 
+/// Fixed-shape native catalog; no raw provider message or host path crosses LAN.
+pub(crate) async fn remote_claude_steers(app: &AppHandle, thread: &str) -> Value {
+    let state = app.state::<ClaudeState>();
+    let Some(turn) = state.turns.lock().await.get(thread).cloned() else { return json!({"steers":[]}); };
+    let progress = turn.progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let active = turn.alive.load(Ordering::Acquire) && !progress.stop_requested;
+    let rows: Vec<_> = progress.steers.iter().take(128).map(|(id,read)|json!({"runtimeId":id,"status":if *read {"read"} else if active {"queued"} else {"unconfirmed"},"deliveryRequested":progress.delivery_requested.contains(id)})).collect();
+    json!({"turnId":turn.turn_id,"supported":active && progress.send_now_supported,"steers":rows})
+}
+pub(crate) async fn remote_deliver_claude_steer(app: &AppHandle, thread: &str, expected_turn: &str, runtime: &str, fence: &mut remote::session_catalog::SteerFence) -> Result<(),String> {
+    let state = app.state::<ClaudeState>();
+    let turn = state.turns.lock().await.get(thread).cloned().ok_or("That Claude turn has ended.")?;
+    if turn.turn_id != expected_turn { return Err("Claude has moved to another turn.".into()); }
+    turn.deliver_steer_now_checked(runtime,Some(fence)).await
+}
+
 /// Request delivery of one queued steer. The CLI may background foreground
 /// work or interrupt its step; it rechecks the exact message before acting.
 #[tauri::command]
@@ -10788,6 +10812,8 @@ pub fn run() {
                     remote::prompt_preparation::remote_prompt_preparation_discard,
                     remote::github::remote_github_read,
                     remote::github::remote_github_execute,
+                    remote::repository::remote_repository_execute,
+                    remote::host_context::remote_host_execution_header,
                     remote::terminal::remote_terminal_start,
                     remote::terminal::remote_terminal_list,
                     remote::terminal::remote_terminal_action,
@@ -11122,7 +11148,7 @@ pub(crate) async fn remote_thread_provider_apply(app:&AppHandle,proof:&RemoteThr
  match op{
  "thread.rename"=>params["name"]=args["name"].clone(),
  "thread.rollback"=>params["numTurns"]=json!(1),
- "thread.fork"=>{for key in ["model","modelProvider","config","baseInstructions","developerInstructions"]{if let Some(v)=args.get(key){params[key]=v.clone();}}params["cwd"]=json!(root);params["runtimeWorkspaceRoots"]=json!([root]);},_=>{}}
+ "thread.fork"=>{for key in ["lastTurnId","model","modelProvider","config","baseInstructions","developerInstructions"]{if let Some(v)=args.get(key){params[key]=v.clone();}}params["cwd"]=json!(root);params["runtimeWorkspaceRoots"]=json!([root]);},_=>{}}
  let mut result=codex_rpc(app.clone(),app.state::<RuntimeState>(),method.into(),params).await?;
  if op=="thread.restore"{if !result.is_object(){result=json!({});}result["thread"]=proof.thread.clone();}
  if op=="thread.fork"{let fork=result.get("thread").ok_or_else(||remote::work::refused("stale_target"))?;let cwd=fork.get("cwd").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?;if std::fs::canonicalize(cwd).ok()!=std::fs::canonicalize(root).ok(){return Err(remote::work::refused("stale_target"));}}

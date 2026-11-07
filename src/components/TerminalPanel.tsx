@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { ChevronRight, Eraser, Play, ShieldCheck, Square } from "lucide-react";
 import { XtermPanel } from "./XtermPanel";
 import type { RunningTerminalCommand, TerminalOutputStore } from "../hooks/useTerminal";
@@ -16,7 +16,15 @@ export interface TerminalPanelProps {
   runningCommand: string;
   runningElsewhere: RunningTerminalCommand[];
   readOnly: boolean;
-  onRun: (command: string) => void;
+  /** Returning a promise keeps the typed command until the run is accepted. */
+  onRun: (command: string) => void | Promise<boolean>;
+  /** Another device's view: whether this person may start, type into or stop a command here. Local leaves these on. */
+  canRun?: boolean;
+  canControl?: boolean;
+  /** Why controls are off, shown on the disabled controls. */
+  controlReason?: string;
+  /** Replaces the "still running elsewhere" rows with a fuller, interactive list. */
+  sessionList?: ReactNode;
   onStop: () => void;
   onClear: () => void;
   onInput: (value: string) => void;
@@ -28,13 +36,22 @@ export interface TerminalPanelProps {
  * a top-level state field re-rendered the whole application, including the
  * conversation timeline.
  */
+const ignoreInput = () => undefined;
+
 function TerminalPanelInner(props: TerminalPanelProps) {
   const [command, setCommand] = useState("");
-  const canRun = !props.running && Boolean(command.trim());
+  const [starting, setStarting] = useState(false);
+  const allowedToRun = props.canRun !== false;
+  const allowedToControl = props.canControl !== false;
+  const canRun = allowedToRun && !starting && !props.running && Boolean(command.trim());
   const run = () => {
     if (!canRun) return;
-    props.onRun(command);
-    setCommand("");
+    const accepted = props.onRun(command);
+    if (!accepted) { setCommand(""); return; }
+    // Kept until the other side accepts it, so a refusal never loses what was typed.
+    const typed = command;
+    setStarting(true);
+    void accepted.then((ok) => { if (ok) setCommand((current) => current === typed ? "" : current); }).finally(() => setStarting(false));
   };
   return (
     <div className="terminal-panel">
@@ -61,7 +78,7 @@ function TerminalPanelInner(props: TerminalPanelProps) {
             <Eraser size={13} />
           </button>
         </div>
-        {props.runningElsewhere.map((entry) => (
+        {props.sessionList ?? props.runningElsewhere.map((entry) => (
           <div className="terminal-elsewhere" key={entry.scope}>
             <span className="terminal-status-dot" aria-hidden="true" />
             <span className="terminal-status-text">
@@ -74,7 +91,7 @@ function TerminalPanelInner(props: TerminalPanelProps) {
           outputStore={props.outputStore}
           placeholder={`MYTHRA CODE terminal ready — ${props.scopeLabel} (${props.shell ?? shellLabel()})\n`}
           running={props.running}
-          onInput={props.onInput}
+          onInput={allowedToControl ? props.onInput : ignoreInput}
           onResize={props.onResize}
         />
         <div className="terminal-input">
@@ -82,6 +99,8 @@ function TerminalPanelInner(props: TerminalPanelProps) {
           <input
             aria-label="Terminal command"
             value={command}
+            disabled={props.running ? !allowedToControl : !allowedToRun}
+            title={(props.running ? !allowedToControl : !allowedToRun) ? props.controlReason : undefined}
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
@@ -93,14 +112,14 @@ function TerminalPanelInner(props: TerminalPanelProps) {
               event.preventDefault();
               run();
             }}
-            placeholder={props.running ? "Type into the terminal above" : "Run a command"}
+            placeholder={props.running ? allowedToControl ? "Type into the terminal above" : "Watching this command" : "Run a command"}
           />
           {props.running ? (
-            <button type="button" className="terminal-run stop" onClick={props.onStop} aria-label="Stop terminal command" title="Stop">
+            <button type="button" className="terminal-run stop" onClick={props.onStop} disabled={!allowedToControl} aria-label="Stop terminal command" title={allowedToControl ? "Stop" : props.controlReason ?? "Only the device that started this command can stop it"}>
               <Square size={11} fill="currentColor" />
             </button>
           ) : (
-            <button type="button" className="terminal-run" onClick={run} disabled={!canRun} aria-label="Run terminal command" title="Run (Enter)">
+            <button type="button" className="terminal-run" onClick={run} disabled={!canRun} aria-busy={starting || undefined} aria-label="Run terminal command" title={allowedToRun ? "Run (Enter)" : props.controlReason ?? "Run (Enter)"}>
               <Play size={12} fill="currentColor" />
             </button>
           )}

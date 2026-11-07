@@ -99,3 +99,35 @@ export interface WireGitHubAccess {
   savedLink: { repository: string; number: number } | null;
 }
 export interface WireCiStatus { checks: WirePullRequest["checks"]; headOid: string; mergeStateStatus: string }
+
+/** Host paths here are display/copy metadata only, NEVER inputs to file reads. */
+export interface WireExecutionHeader {
+  projectName: string; projectPath: string; executionPath: string; branch: string | null;
+  checkout: "main" | "worktree"; worktreeStatus: string | null; exists: boolean;
+}
+export interface WireAttachmentMetadata { index: number; name: string; kind: "image" | "file"; originalHostPath?: string }
+export interface WireHostQuota {
+  provider: import("./wire").WireProvider; label: string; summary: string; planLabel?: string; updatedAt?: number;
+  /** All windows, with stable display labels; selection stays on the viewer. */
+  windows: { label: string; usedPercent: number; resetsAt: number | null; resetLabel: string }[];
+}
+export interface WireHostProcessPolicy {
+  readOnly: boolean; readOnlyReason: string | null;
+  terminalBusy: boolean; checksBusy: boolean; repositoryBusy: boolean;
+  runBlockedReason: string | null; checksBlockedReason: string | null; processPolicyReason: string | null;
+  /** null means no deadline. These describe remote dispatch, not viewer settings. */
+  terminalTimeoutMs: number | null; runTimeoutMs: number | null; checksTimeoutMs: number;
+  configuredTerminalTimeoutMinutes: number;
+}
+export type RepositoryWriteAction = { action: "attachRemote"; url: string } | { action: "createRepository"; name: string; visibility: "private" | "public" };
+export interface RepositoryWriteResult {
+  opId: string; state: "accepted" | "rejected"; workspaceId?: string; threadId?: string;
+  repository?: { url: string; remoteUrl?: string; repository: string | null; attached?: boolean; message?: string };
+  error?: { code: string; message: string };
+}
+/** Additive same-app public fields, without changing the base wire contract. */
+declare module "./wire" {
+  interface HostContextResult { header?: WireExecutionHeader; quotas?: WireHostQuota[]; processPolicy?: WireHostProcessPolicy }
+  interface WireMessage { attachmentMetadata?: WireAttachmentMetadata[] }
+  interface RemoteWorkResult { originalHostPath?: string }
+}

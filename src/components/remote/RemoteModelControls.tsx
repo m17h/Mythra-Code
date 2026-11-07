@@ -7,14 +7,18 @@ import { LMStudioModelControl } from "../LMStudioModelControl";
 import { ModelPowerControl, type ReasoningEffort, type RuntimeModel } from "../ModelPowerControl";
 import { OpenRouterModelControl } from "../OpenRouterModelControl";
 import { ThreadProviderControl } from "../ThreadProviderControl";
+import { favoriteModels, type ModelFavorites } from "../../lib/modelFavorites";
 
 const NO_MODELS: WireHostModel[] = [];
 const hostEffort = (effort: ReasoningEffort): WireEffort => effort === "ultra" ? "max" : effort;
 const noRefresh = () => undefined;
 
 /** The real pickers, filled with what the host offers. The host checks every
- * change, so nothing here decides what is allowed. */
-export function RemoteModelControls({ context, chosen, name, provider, running, threadStarted, onSettings, onDefaults, onNotice }: {
+ * change, so nothing here decides what is allowed.
+ *
+ * Stars are this person's own picker preference, so they are the same ones the
+ * local pickers use (per provider, by model id) and never change the host. */
+export function RemoteModelControls({ context, chosen, name, provider, running, threadStarted, favorites, onToggleFavorite, onSettings, onDefaults, onNotice }: {
   context: HostContextResult | undefined;
   /** A new thread's choices, not yet saved in a thread. */
   chosen?: { model?: string; effort?: WireEffort };
@@ -22,6 +26,8 @@ export function RemoteModelControls({ context, chosen, name, provider, running, 
   provider: Provider;
   running: boolean;
   threadStarted: boolean;
+  favorites?: ModelFavorites;
+  onToggleFavorite?: (provider: Provider, model: string) => void;
   onSettings: (change: { provider?: Provider; model?: string; effort?: WireEffort }) => void;
   onDefaults: () => void;
   onNotice: (message: string) => void;
@@ -33,7 +39,8 @@ export function RemoteModelControls({ context, chosen, name, provider, running, 
   const effort: ReasoningEffort = chosen?.effort ?? context?.selected.effort ?? "medium";
   const changeModel = (next: string) => onSettings({ model: next });
   const changeEffort = (next: ReasoningEffort) => onSettings({ effort: hostEffort(next) });
-  const shared = { model, effort, loading: !context, error: "", onModel: changeModel, onEffort: changeEffort, onRefresh: noRefresh };
+  const stars = favorites && onToggleFavorite ? { favorites: favoriteModels(favorites, provider), onToggleFavorite: (id: string) => onToggleFavorite(provider, id) } : {};
+  const shared = { model, effort, loading: !context, error: "", onModel: changeModel, onEffort: changeEffort, onRefresh: noRefresh, ...stars };
   const providerControl = <ThreadProviderControl
     provider={provider}
     defaultProvider={context?.selected.provider ?? provider}

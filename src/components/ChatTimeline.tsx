@@ -629,7 +629,7 @@ function MarkdownLink({ href, children, node }: { href?: string; children?: Reac
   if (typeof path === "string" && typeof name === "string") {
     if (missing) return <span className="message-skill-mention unavailable" title={`@${name} is unavailable in the selected skills folder`}>{children}</span>;
     return <a href="#skills" className="message-skill-mention"
-      title={`Open @${name} in Settings · Skills${disabled ? " (disabled)" : ""}`}
+      title={`${environment.skillLinkTitle?.(name) ?? `Open @${name} in Settings · Skills`}${disabled ? " (disabled)" : ""}`}
       onClick={(event) => { event.preventDefault(); if (canOpen) skillNavigation?.onOpenSkill?.(path); }}
     ><InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider></a>;
   }
@@ -889,6 +889,7 @@ function QueuedSteerStatus({ message }: { message: ChatMessage }) {
   const [delivering, setDelivering] = useState(false);
   const [requested, setRequested] = useState(false);
   const [failure, setFailure] = useState("");
+  if (environment.QueuedSteer) return <environment.QueuedSteer message={message} />;
   if (environment.queuedSteerLabel) return <div className="message-steer-status queued" role="status"><Clock size={11} aria-hidden="true" />{environment.queuedSteerLabel}</div>;
   if (!running) {
     return (

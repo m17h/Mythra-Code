@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notification";
-import { Archive, ArchiveRestore, Check, ChevronDown, Circle, Copy, Download, Folder, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, PanelLeftOpen, Paperclip, Pencil, Pin, PinOff, Settings, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, Check, ChevronDown, Circle, Clock, CornerUpRight, Copy, Download, Folder, Gauge, GitBranch, GitFork, LoaderCircle, MessageSquare, PanelLeftOpen, Paperclip, Pencil, Pin, PinOff, Settings, Trash2, X } from "lucide-react";
 import type { Activity, ChatFont, ChatMessage, Provider } from "../../types";
 import { TimelinePresentation } from "../ChatTimeline";
 import { AnimatedMythraLogo } from "../AnimatedMythraLogo";
@@ -31,16 +31,17 @@ import { listRemotePreviews, openRemotePreview } from "../../lib/remote/remotePr
 import { addRemoteEcho, newThreadDraftKey, newThreadTargetFor, removeOutboxEntry, removeRemoteEcho, setNewThreadTarget, threadDraftKey, useRemoteEchoes, useRemoteOutbox, type OutboxEntry, type RemoteEcho } from "../../lib/remote/outbox";
 import {
   clearRemoteCapabilities, alignRemoteDevice, reconcileRemoteOutbox, refreshRemoteCapabilities, refreshRemoteContext, remoteContextKey, retryRemotePrompt,
-  runRemoteRowAction, searchRemoteFiles, sendRemotePrompt, setRemoteThreadSettings, stopRemoteTurn, UNCONFIRMED_TEXT,
+  deliverRemoteSteerNow, forkRemoteThread, listRemoteSteers, runRemoteRowAction, setRemoteDraftIsolation, searchRemoteFiles, sendRemotePrompt, setRemoteThreadSettings, stopRemoteTurn, UNCONFIRMED_TEXT,
   useRemoteContext, useRemoteWork, type RemoteSendOutcome,
 } from "../../lib/remote/remoteWork";
 import { remoteFindNearby } from "../../lib/remote/client";
 import { acceptRemoteSnapshot, deviceHelp, deviceHelpOffersRetry, namingDevice, useRemoteDevices, startRemoteDevices } from "../../lib/remote/devices";
 import {
-  useRemoteStore, mountRemoteDevice, selectRemoteWorkspace, selectRemoteThread,
+  useRemoteStore, mountRemoteDevice, openRemoteThread, selectRemoteWorkspace, selectRemoteThread,
   loadRemoteThreads, loadRemoteEarlier, readRemoteTranscript, refreshRemoteDevice, watchRemoteThreads, type RemoteTimeline, type ViewState,
 } from "../../lib/remote/remoteStore";
 import type { WireResourceResult } from "../../lib/remote/wire-resources";
+import type { WireQueuedSteer } from "../../lib/remote/wire";
 import type { HostContextResult, RemoteRowOperation, WireApproval, WireExecutionSettings, WireMessage, WireActivity, WireParityReadResult, WireThread, WireWorkspace } from "../../lib/remote/wire";
 import type { SubAgentParentState } from "../../lib/subAgentParents";
 import type { QueuedTurn } from "../../lib/taskStore";
@@ -60,12 +61,19 @@ import { ScheduledCountBadge } from "../ScheduledCountBadge";
 import { remoteGuide, type RemoteGuide } from "../../lib/remote/firstRun";
 import { remotePullRequests } from "../../lib/remote/remotePullRequests";
 import type { GitView } from "../../lib/projectGit";
+import type { ModelFavorites } from "../../lib/modelFavorites";
+import { providerHeaderUsage, type HeaderUsageWindows } from "../../lib/providerUsage";
+import { hostQuotaAccountView } from "../../lib/remote/remoteActions";
+import type { UsageDisplayMode } from "../../types";
+import { UsagePopover } from "../UsagePopover";
 import type { PullRequest } from "../../lib/pullRequests";
 import { feedbackSkillInvocationText, formatFeedbackPrompt, isFeedbackAnchorStale, type FeedbackNote } from "../../lib/reviewFeedback";
 import { expectRemoteRun, remoteTerminal, remoteTerminalKey, useRemoteTerminals } from "../../lib/remote/remoteTerminal";
 import { removeRemoteFeedback, removeSentRemoteFeedback, setRemoteFeedbackScope, updateRemoteFeedback, useRemoteFeedback } from "../../lib/remote/remoteFeedback";
 import { useRemoteQueueEdit } from "./useRemoteQueueEdit";
 import { RemoteModelControls } from "./RemoteModelControls";
+import { useRemoteWorkflowLaunch } from "./RemoteWorkflowLaunch";
+import { hostSkillLinks, hostSkillName, RemoteSkillViewer, useRemoteSkillAnalyzer } from "./RemoteSkills";
 import { RemoteMessageQuestions, RemoteRequests, RemoteThreadContext, type RemoteThreadScope } from "./RemoteRequests";
 export { RemoteStudio } from "./RemoteStudio";
 export { RemoteNotices } from "./RemoteNotices";
@@ -207,11 +215,18 @@ function RemoteAttachments({ source }: { source: WireMessage }) {
   const scope = useContext(RemoteThreadContext);
   const names = source.attachmentNames ?? [];
   const images = scope?.workspaceId ? (source.attachmentImages ?? []).filter((index) => index < names.length) : [];
-  const others = names.filter((_, index) => !images.includes(index));
+  const others = names.map((name, index) => ({ name, index })).filter(({ index }) => !images.includes(index));
+  // Where each file sits on the host is shown and can be copied. It is never read from here.
+  const hostPath = (index: number) => source.attachmentMetadata?.find((entry) => entry.index === index)?.originalHostPath;
+  const [copied, setCopied] = useState<number | null>(null);
   return <>
     {scope?.workspaceId && images.length > 0 && <div className="message-image-previews" aria-label="Attached images">{images.map((index) => <RemoteImage key={index} name={names[index]}
       image={{ device: scope.device, workspaceId: scope.workspaceId!, threadId: scope.threadId, messageId: source.id, index }} />)}</div>}
-    {others.length > 0 && <p className="remote-note">Attachments on the host: {others.join(", ")}.</p>}
+    {others.length > 0 && <p className="remote-note">Attachments on the host: {others.map(({ name: file, index }, position) => {
+      const path = hostPath(index);
+      return <span key={index}>{position ? ", " : ""}<span title={path}>{file}</span>{path && <button type="button" className="remote-copy-path" aria-label={`Copy the path of ${file} on the host`} title={path}
+        onClick={() => { void navigator.clipboard.writeText(path).then(() => setCopied(index)).catch(() => undefined); }}>{copied === index ? <Check size={11} /> : <Copy size={11} />}</button>}</span>;
+    })}.</p>}
   </>;
 }
 function RemoteMessageExtras({ message }: { message: ChatMessage }) {
@@ -279,8 +294,40 @@ function RemoteActivityDetail({ activity, children }: { activity: Activity; chil
     {state === "reading" ? "Reading…" : state === "failed" ? `Couldn't read this from ${scope.name}. Try again.` : "Show full output"}
   </button></>;
 }
+/** The host's record of each queued steer, and the way to ask for it now. */
+const steerKey = (steer: Pick<WireQueuedSteer, "turnId" | "runtimeId">) => `${steer.turnId ?? ""}|${steer.runtimeId ?? ""}`;
+/** The host's record of each queued steer, and the way to ask for it now. */
+const RemoteSteers = createContext<{ steers: ReadonlyMap<string, WireQueuedSteer>; available: boolean; requested: ReadonlySet<string>; deliver: (steer: WireQueuedSteer) => Promise<string | null> } | null>(null);
+/** The local steer row, filled from the host's own status. Nothing here guesses that Claude read it. */
+function RemoteQueuedSteer({ message }: { message: ChatMessage }) {
+  const remote = useContext(RemoteSteers);
+  const name = useContext(RemoteMachineName);
+  const steer = remote?.steers.get(message.id);
+  const [delivering, setDelivering] = useState(false);
+  const [failure, setFailure] = useState("");
+  if (!remote?.available) return <div className="message-steer-status unconfirmed" role="status" title={`Mythra Code couldn't read this message's status from ${name}.`}>
+    <AlertTriangle size={11} aria-hidden="true" />Status unavailable from {name}</div>;
+  if (steer?.status === "read") return <div className="message-steer-status read" role="status" title="Claude confirmed reading this message."><Check size={11} aria-hidden="true" />Read by Claude</div>;
+  if (steer?.status === "accepted") return <div className="message-steer-status accepted" role="status" title="Runtime input delivery confirmed."><Check size={11} aria-hidden="true" />Steer delivered to runtime input</div>;
+  if (steer?.status === "unconfirmed") return <div className="message-steer-status unconfirmed" role="status" title="Claude has not confirmed reading this message in its original turn. Inspect the conversation before sending it again.">
+    <AlertTriangle size={11} aria-hidden="true" />Steer reading unconfirmed</div>;
+  if (steer?.status === "sending") return <div className="message-steer-status sending" role="status"><CornerUpRight size={11} aria-hidden="true" />Sending steer…</div>;
+  const requested = Boolean(steer && (steer.deliveryRequested || remote.requested.has(steerKey(steer))));
+  const label = delivering ? "Requesting delivery…" : requested ? "Delivery requested; waiting for Claude to read" : `Waiting for Claude's next step on ${name}`;
+  return <div className="message-steer-status queued" role="status" title="Claude reads new messages between steps. This message is queued for a later step.">
+    <Clock size={11} aria-hidden="true" />{label}
+    {steer?.canDeliver && !requested && <button type="button" className="message-steer-now" disabled={delivering} aria-busy={delivering}
+      title={`Interrupt Claude's current step on ${name} so it can read this message. Sub-agents may continue in the background.`}
+      onClick={() => {
+        setDelivering(true); setFailure("");
+        void remote.deliver(steer).then((problem) => { if (problem) setFailure(problem); }).finally(() => setDelivering(false));
+      }}>{failure ? "Retry send now" : "Send now"}</button>}
+    {failure && <span className="message-steer-error" role="alert">Could not request delivery: {failure}</span>}
+  </div>;
+}
 const REMOTE_ENVIRONMENT: TimelineEnvironment = Object.freeze({
-  Questions: RemoteQuestions, MessageExtras: RemoteMessageExtras, Feedback: RemoteMessageFeedback, ActivityDetail: RemoteActivityDetail, canApprove: true, queuedSteerLabel: "Queued on the other device",
+  Questions: RemoteQuestions, MessageExtras: RemoteMessageExtras, Feedback: RemoteMessageFeedback, ActivityDetail: RemoteActivityDetail, canApprove: true, queuedSteerLabel: "Queued on the other device", QueuedSteer: RemoteQueuedSteer,
+  canOpenSkills: true, skillLinkTitle: (skill: string) => `Open @${skill} on the other device`,
   openExternalUrl: (url: string) => isPublicWebLink(url) ? openUrl(url) : Promise.resolve(),
   canOpenLink: isPublicWebLink,
 });
@@ -552,8 +599,15 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
 }
 
 /** Sits over the local main pane, which stays mounted and laid out underneath. */
-export function RemoteConversation({ device, notifications, leaving, sidebarOpen, chatFont, voiceInput, actions, studioToggle, onShowSidebar, onManageDevices, onOpenTool }: {
+export function RemoteConversation({ device, notifications, leaving, sidebarOpen, chatFont, voiceInput, actions, studioToggle, modelFavorites, onToggleModelFavorite, headerUsageWindows, onHeaderUsageWindow, usageDisplay, onShowSidebar, onManageDevices, onOpenTool }: {
   device: string;
+  /** This person's chosen quota window per provider, the same choice the local header keeps. */
+  headerUsageWindows?: HeaderUsageWindows;
+  onHeaderUsageWindow?: (provider: "openai" | "claude", label: string) => void;
+  usageDisplay?: UsageDisplayMode;
+  /** This person's starred models, the same ones the local pickers show. */
+  modelFavorites?: ModelFavorites;
+  onToggleModelFavorite?: (provider: Provider, model: string) => void;
   /** The notifications setting on this device. */
   notifications: boolean;
   /** The user has already chosen another machine and this is on its way out. */
@@ -661,6 +715,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const timelineQuestions = useMemo(() => new Set(timeline?.messages.flatMap((message) => message.questions?.map((question) => question.id) ?? [])),
     [timeline?.messages]);
   const context = useHostContext(device, workspaceId, threadId);
+  const header = context?.header;
   const [uploads, setUploads] = useState<Record<string, AttachmentRecord[]>>({});
   const attachments = uploads[draftKey] ?? NO_ATTACHMENTS;
   const dropHover = useActiveMachine((state) => state.remoteDropHover);
@@ -683,8 +738,25 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const viewOnly = Boolean(threadId && capabilities === null);
   const canRun = Boolean(context?.capabilities.terminal);
   const blockedIsolation = context?.execution?.isolationBlocked;
-  const isolationReason = blockedIsolation === "repository" ? `Needs a Git repository on ${name}` : blockedIsolation === "root" ? "Open the repository root folder" : blockedIsolation === "commit" ? "Requires at least one Git commit" : undefined;
+  const isolationReason = blockedIsolation === "repository" ? `Needs a Git repository on ${name}` : blockedIsolation === "root" ? "Open the repository root folder" : blockedIsolation === "commit" ? "Requires at least one Git commit"
+    : blockedIsolation === "terminal" || context?.execution?.canCreateIsolated === false ? accessReason(name, "create worktrees", "Terminal") : undefined;
   const revision = context?.revision ?? "";
+  /** Same as the local new-thread choice: a project without a repository or a
+   * first commit offers to make one, on the host, instead of a worktree. */
+  const initChoice = blockedIsolation === "repository" ? "init" as const : blockedIsolation === "commit" ? "snapshot" as const : null;
+  const canGitWrite = Boolean(context?.capabilities.gitWrite && context.capabilities.terminal);
+  const [gitInitializing, setGitInitializing] = useState(false);
+  const initializeGit = async () => {
+    if (!workspaceId || gitInitializing) return;
+    if (!canGitWrite) { setNotice(accessReason(name, "set up Git", "Git changes and Terminal")); return; }
+    setGitInitializing(true);
+    const outcome = await hostWrite(device, name, "git.write", { ...parityTarget, revision, action: "init" });
+    setGitInitializing(false);
+    if (!outcome.ok) { setNotice(outcome.message); return; }
+    // The choice turning into "Isolated worktree" is the confirmation; this banner is for problems.
+    setNotice("");
+    void refreshRemoteContext(device, workspaceId, threadId);
+  };
   const parityTarget = useMemo(() => ({ ...(workspaceId ? { workspaceId } : {}), ...(threadId ? { threadId } : {}) }), [threadId, workspaceId]);
   const { handle: runHandle, latest: lastRun, set: setRunHandle } = useRemoteCommand(device, "run.status", parityTarget, connected);
   // Run prints where it does locally: into the Terminal tab of that project.
@@ -701,7 +773,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     if (!workspaceId) { setNotice(`Choose a workspace on ${name} first.`); return; }
     for (const file of files) {
       const result = await uploadToHost(device, name, workspaceId, file);
-      if (result.ok) setUploads((current) => ({ ...current, [draftKey]: [...(current[draftKey] ?? []), { path: result.id, name: result.name, kind: result.kind }] }));
+      if (result.ok) setUploads((current) => ({ ...current, [draftKey]: [...(current[draftKey] ?? []), { path: result.id, name: result.name, kind: result.kind, ...(result.originalHostPath ? { displayPath: result.originalHostPath } : {}) }] }));
       else setNotice(result.message);
     }
   }, [device, draftKey, name, workspaceId]);
@@ -805,6 +877,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     void Promise.all(paths.map((path) => readDroppedFile(path).catch((reason: unknown) => { setNotice(typeof reason === "string" ? reason : "Mythra Code couldn't read that file."); return null; })))
       .then((files) => upload(files.filter((file): file is File => file !== null)));
   }, [canWork, name, upload]);
+  /** Every launch is reviewed first, as it is here: the same dialog, with its inputs. */
+  const workflowProjects = useMemo(() => remote?.workspaces.filter((entry) => !entry.isChat) ?? [], [remote?.workspaces]);
+  const { review: reviewWorkflow, dialog: workflowDialog } = useRemoteWorkflowLaunch({ device, name, workspaceId, threadId, revision, projects: workflowProjects, onNotice: setNotice });
   useEffect(() => {
     if (leaving) return;
     setMachineActions({
@@ -812,22 +887,28 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
       stopTurn: () => { if (running || starting) stop(); },
       newThread: () => { if (workspaceId) setNewThreadTarget(device, newThreadTargetFor(workspaceId)); },
       forkThread: () => {
-        if (threadId) void runRemoteRowAction(device, name, "thread.fork", { threadId }).then((failure) => { if (failure) setNotice(failure); else refreshRemoteDevice(device); });
+        // Opens the new conversation, as a local fork does.
+        if (!threadId || !workspaceId) return;
+        const fromThread = threadId, fromWorkspace = workspaceId;
+        void forkRemoteThread(device, name, fromThread).then(async (result) => {
+          if ("failure" in result) { setNotice(result.failure); return; }
+          // Opened once the host lists it, and only if the person hasn't moved on.
+          const stillHere = () => { const view = useRemoteStore.getState().devices[device]; return view?.workspaceId === fromWorkspace && view.threadId === fromThread && !useRemoteOutbox.getState().compose[device]; };
+          await openRemoteThread(device, fromWorkspace, result.threadId, stillHere);
+        });
       },
       findInConversation: () => { if (threadId) { setFindOpen(true); requestAnimationFrame(() => findInput.current?.focus()); } },
       attachHostFile: (fileId) => {
         if (!canWork) { setNotice(WORK_SWITCH(name)); return; }
-        void hostWrite<{ attachmentId?: string; name?: string; kind?: "image" | "file" }>(device, name, "attachment.reference", { ...parityTarget, revision, fileId }).then((outcome) => {
-          const { attachmentId, name: fileName, kind } = outcome.result ?? {};
+        void hostWrite<{ attachmentId?: string; name?: string; kind?: "image" | "file"; originalHostPath?: string }>(device, name, "attachment.reference", { ...parityTarget, revision, fileId }).then((outcome) => {
+          const { attachmentId, name: fileName, kind, originalHostPath } = outcome.result ?? {};
           if (!outcome.ok || !attachmentId || !fileName || !kind) { setNotice(outcome.message); return; }
-          setUploads((current) => ({ ...current, [draftKey]: [...(current[draftKey] ?? []), { path: attachmentId, name: fileName, kind }] }));
+          setUploads((current) => ({ ...current, [draftKey]: [...(current[draftKey] ?? []), { path: attachmentId, name: fileName, kind, ...(originalHostPath ? { displayPath: originalHostPath } : {}) }] }));
           composerRef.current?.focus();
         });
       },
       exportTranscript: () => { void exportTranscript().catch(() => setNotice("Mythra Code couldn't save that file.")); },
-      runWorkflow: (id) => {
-        if (workspaceId) void hostWrite(device, name, "workflows.start", { ...parityTarget, revision, workflowId: id }).then(report);
-      },
+      runWorkflow: (id) => { void reviewWorkflow(id); },
       palette: () => {
         const view = useRemoteStore.getState().devices[device];
         return {
@@ -843,7 +924,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     });
     useActiveMachine.setState({ remoteRunning: running || starting, remoteThreadOpen: Boolean(threadId), remoteApprovals: timeline?.approvals.length ?? 0 });
     return () => { setMachineActions(null); useActiveMachine.setState({ remoteRunning: false, remoteThreadOpen: false, remoteApprovals: 0 }); };
-  }, [canWork, device, draftKey, dropFiles, exportTranscript, leaving, name, parityTarget, report, revision, running, starting, stop, threadId, timeline?.approvals.length, workspaceId]);
+  }, [canWork, device, draftKey, dropFiles, exportTranscript, leaving, name, parityTarget, report, reviewWorkflow, revision, running, starting, stop, threadId, timeline?.approvals.length, workspaceId]);
   const storeDraftToken = useCallback((key: string, token: DraftToken | null) => {
     const { [key]: _previous, ...rest } = draftTokenRef.current;
     draftTokenRef.current = token ? { ...rest, [key]: token } : rest;
@@ -851,24 +932,63 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   }, []);
   /** One at a time per draft, newest wins. A token always answers the choices last
    * shown, so a send can't start with an older model or permission. */
-  const requestDraft = useCallback((key: string, settings: RemoteSettingsChange) => {
+  /**
+   * One lane per draft. Every choice adds to what the draft should be; the lane
+   * sends whatever still differs from what the host last confirmed, in order,
+   * so no change is ever dropped because a later one arrived. The worktree
+   * choice goes through its own prepared check first.
+   */
+  const desiredDraft = useRef<Record<string, RemoteSettingsChange>>({});
+  const confirmedDraft = useRef<Record<string, RemoteSettingsChange>>({});
+  const [draftUnconfirmed, setDraftUnconfirmed] = useState<Record<string, boolean>>({});
+  const syncDraft = useCallback((key: string, change: RemoteSettingsChange = {}) => {
+    desiredDraft.current[key] = { ...desiredDraft.current[key], ...change };
     const slot = draftWork.current.get(key) ?? { generation: 0, tail: Promise.resolve<DraftToken | null>(null) };
     draftWork.current.set(key, slot);
-    const generation = ++slot.generation;
-    slot.tail = slot.tail.then(async () => {
-      if (generation !== slot.generation) return null;
-      const previous = draftTokenRef.current[key]?.handle;
-      const outcome = await hostWrite<{ draftHandle?: string; startTarget?: string }>(device, name, "draft.settings.set", { workspaceId, ...(previous ? { draftHandle: previous } : {}), ...settings });
-      const handle = outcome.result?.draftHandle;
-      if (!outcome.ok || !handle) {
-        if (!outcome.ok) setNotice(outcome.message);
-        // The old token no longer matches what's on screen.
-        storeDraftToken(key, null);
-        return null;
+    slot.generation += 1;
+    slot.tail = slot.tail.catch(() => null).then(async () => {
+      if (!workspaceId) return null;
+      for (let step = 0; step < 4; step += 1) {
+        const desired = desiredDraft.current[key] ?? {};
+        const confirmed = confirmedDraft.current[key] ?? {};
+        const token = draftTokenRef.current[key];
+        const isolation = desired.isolated !== undefined && desired.isolated !== (confirmed.isolated ?? false);
+        const others = (Object.keys(desired) as (keyof RemoteSettingsChange)[]).some((field) => field !== "isolated" && desired[field] !== confirmed[field]);
+        if (token && !isolation && !others) return token;
+        if (isolation) {
+          const result = await setRemoteDraftIsolation(device, name, workspaceId, Boolean(desired.isolated), token?.handle);
+          if ("failure" in result) {
+            setNotice(result.failure);
+            storeDraftToken(key, null);
+            if (/^We couldn't confirm/.test(result.failure)) {
+              // Unknown, not refused: the choice stays, marked, and is checked again on send.
+              setDraftUnconfirmed((current) => ({ ...current, [key]: true }));
+            } else {
+              // Refused: back to what the host last confirmed.
+              const previous = confirmed.isolated ?? false;
+              desiredDraft.current[key] = { ...desiredDraft.current[key], isolated: previous };
+              setDraftChoice((current) => ({ ...current, [key]: { ...current[key], isolated: previous } }));
+              setDraftUnconfirmed((current) => ({ ...current, [key]: false }));
+            }
+            return null;
+          }
+          confirmedDraft.current[key] = { ...confirmed, isolated: result.settings.isolated };
+          setDraftUnconfirmed((current) => current[key] ? { ...current, [key]: false } : current);
+          storeDraftToken(key, { handle: result.draftHandle, startTarget: result.startTarget });
+          continue;
+        }
+        const outcome = await hostWrite<{ draftHandle?: string; startTarget?: string }>(device, name, "draft.settings.set", { workspaceId, ...(token ? { draftHandle: token.handle } : {}), ...desired });
+        const handle = outcome.result?.draftHandle;
+        if (!outcome.ok || !handle) {
+          if (!outcome.ok) setNotice(outcome.message);
+          // The old token no longer matches what's on screen. What's wanted is kept for the next try.
+          storeDraftToken(key, null);
+          return null;
+        }
+        confirmedDraft.current[key] = { ...desired };
+        storeDraftToken(key, { handle, ...(outcome.result?.startTarget ? { startTarget: outcome.result.startTarget } : {}) });
       }
-      const token = { handle, ...(outcome.result?.startTarget ? { startTarget: outcome.result.startTarget } : {}) };
-      storeDraftToken(key, token);
-      return token;
+      return draftTokenRef.current[key] ?? null;
     });
     return slot.tail;
   }, [device, name, storeDraftToken, workspaceId]);
@@ -889,8 +1009,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     // Any change still on its way finishes first, and a send never goes without one.
     let draftHandle: string | undefined;
     if (!threadId) {
-      await draftWork.current.get(draftKey)?.tail;
-      draftHandle = (draftTokenRef.current[draftKey] ?? await requestDraft(draftKey, draftChoice[draftKey] ?? {}))?.handle;
+      // Anything chosen but not yet confirmed goes first; a send never uses older choices.
+      draftHandle = (await syncDraft(draftKey))?.handle;
       if (!draftHandle) { removeRemoteEcho(opId); return { status: "rejected", message: `Mythra Code couldn't set up this thread on ${name}. Your draft is saved. Try again.` }; }
     }
     const outcome = await sendRemotePrompt({ device, name, draftKey, text, mode, opId,
@@ -902,9 +1022,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
       if (notes.length) removeSentRemoteFeedback(draftKey, notes);
     }
     // A draft handle works for one send.
-    if (!threadId) storeDraftToken(draftKey, null);
+    if (!threadId) { storeDraftToken(draftKey, null); confirmedDraft.current[draftKey] = {}; }
     return outcome;
-  }, [capabilities, connected, device, draftChoice, draftKey, name, requestDraft, storeDraftToken, threadId, uploads, workspaceId]);
+  }, [capabilities, connected, device, draftKey, name, syncDraft, storeDraftToken, threadId, uploads, workspaceId]);
   // Only while this conversation is the one on screen.
   useEffect(() => {
     if (leaving) return;
@@ -927,16 +1047,67 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     hostRead<WireResourceResult>(device, "thread.handoff.lineage", { workspaceId, threadId }).then((result) => { if (current) setLineage(result.lineage); }, () => undefined);
     return () => { current = false; };
   }, [connected, device, threadId, workspaceId]);
+  // Queued steers are read from the host while any is waiting, as the local row follows its runtime.
+  // Everything is tagged with the conversation it belongs to, so one thread's answer never lands on another.
+  const steerScope = `${device}/${workspaceId ?? ""}/${threadId ?? ""}`;
+  const steerScopeRef = useRef(steerScope);
+  steerScopeRef.current = steerScope;
+  const [steerState, setSteerState] = useState<{ scope: string; steers: ReadonlyMap<string, WireQueuedSteer>; available: boolean; requested: ReadonlySet<string> }>(
+    () => ({ scope: steerScope, steers: new Map(), available: true, requested: new Set() }));
+  const steerWaiting = !compose && Boolean(timeline?.messages.some((message) => message.steerStatus === "queued"));
+  const steerInFlight = useRef(false);
+  const steerGeneration = useRef(0);
+  const readSteers = useCallback(() => {
+    const scope = steerScope;
+    if (!threadId || !workspaceId || !connected || steerInFlight.current) return;
+    steerInFlight.current = true;
+    const generation = steerGeneration.current;
+    const current = () => generation === steerGeneration.current && steerScopeRef.current === scope;
+    listRemoteSteers(device, workspaceId, threadId).then((list) => {
+      if (!current()) return;
+      setSteerState((state) => ({ scope, steers: new Map(list.steers.flatMap((steer) => steer.messageId ? [[steer.messageId, steer] as const] : [])), available: true,
+        requested: state.scope === scope ? state.requested : new Set() }));
+    }, () => { if (current()) setSteerState((state) => ({ ...(state.scope === scope ? state : { steers: new Map(), requested: new Set() }), scope, available: false })); })
+      .finally(() => { if (generation === steerGeneration.current) steerInFlight.current = false; });
+  }, [connected, device, steerScope, threadId, workspaceId]);
+  useEffect(() => {
+    steerGeneration.current += 1;
+    steerInFlight.current = false;
+    if (!steerWaiting) { setSteerState({ scope: steerScope, steers: new Map(), available: true, requested: new Set() }); return; }
+    readSteers();
+    const timer = setInterval(readSteers, 3_000);
+    return () => { clearInterval(timer); steerGeneration.current += 1; steerInFlight.current = false; };
+  }, [readSteers, steerScope, steerWaiting, timelineLength]);
+  const steerControls = useMemo(() => ({
+    steers: steerState.scope === steerScope ? steerState.steers : new Map<string, WireQueuedSteer>(),
+    available: steerState.scope !== steerScope || steerState.available,
+    requested: steerState.scope === steerScope ? steerState.requested : new Set<string>(),
+    deliver: async (steer: WireQueuedSteer) => {
+      const scope = steerScope;
+      if (!workspaceId || !threadId || !steer.turnId || !steer.runtimeId) return `This message can't be sent now from ${name}.`;
+      const problem = await deliverRemoteSteerNow(device, name, workspaceId, threadId, steer.turnId, steer.runtimeId);
+      // The host took the request for exactly this turn and runtime. That is not a read.
+      if (!problem && steerScopeRef.current === scope) setSteerState((state) => state.scope === scope ? { ...state, requested: new Set([...state.requested, steerKey(steer)]) } : state);
+      if (steerScopeRef.current === scope) readSteers();
+      return problem;
+    } }), [device, name, readSteers, steerScope, steerState, threadId, workspaceId]);
   // A reply that has since changed is marked. One that isn't loaded is unknown, so it isn't.
   const staleNotes = useMemo(() => notes.filter(({ anchor }) => {
     if (anchor.kind !== "assistant") return false;
     const message = projectedMessages.find((entry) => entry.id === anchor.messageId);
     return message ? isFeedbackAnchorStale(anchor, { message }) : false;
   }).map((note) => note.id), [notes, projectedMessages]);
-  const paletteWorkflows = useMemo(() => (context?.workflows ?? []).map((workflow) => ({ id: workflow.id, name: workflow.name, description: workflow.description, enabled: true, steps: [] })) as unknown as WorkflowDefinition[], [context?.workflows]);
+  const paletteWorkflows = useMemo(() => (context?.workflows ?? []).map((workflow) => ({ id: workflow.id, name: workflow.name, description: workflow.description, enabled: true, steps: [],
+    paletteDetail: `On ${name}${workflow.description ? ` · ${workflow.description}` : ""}` })) as unknown as WorkflowDefinition[], [context?.workflows, name]);
   const steerHandle = running && capabilities?.canSteer ? capabilities.steer?.handle : undefined;
   const search = useCallback((query: string) => workspaceId ? searchRemoteFiles(device, workspaceId, threadId, query) : Promise.resolve([]), [device, threadId, workspaceId]);
   const skills = useMemo(() => context?.skills.filter((skill) => skill.enabled).map((skill) => ({ name: skill.name, description: skill.description })), [context?.skills]);
+  // A skill named in a message opens the host's copy, as a mention opens Settings → Skills here.
+  const skillLinks = useMemo(() => hostSkillLinks(context?.skills), [context?.skills]);
+  const [viewingSkill, setViewingSkill] = useState<string | null>(null);
+  const openSkill = useCallback((id: string) => { const skill = hostSkillName(id); if (skill) setViewingSkill(skill); }, []);
+  useEffect(() => setViewingSkill(null), [device, workspaceId]);
+  const analyzeSkills = useRemoteSkillAnalyzer(device, name, parityTarget, context?.skills);
   const changeSettings = (change: RemoteSettingsChange) => {
     if (!workspaceId) return;
     // A started thread keeps its provider, as it does here: another one means a new thread.
@@ -954,7 +1125,10 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     }
     // A new thread's choices wait on the host until its first prompt.
     setDraftChoice((current) => ({ ...current, [draftKey]: { ...current[draftKey], ...change } }));
-    void requestDraft(draftKey, { ...draftChoice[draftKey], ...change });
+    // Choosing what is already chosen changes nothing.
+    const wanted = { ...draftChoice[draftKey], ...change };
+    if ((Object.keys(change) as (keyof RemoteSettingsChange)[]).every((field) => field === "isolated" ? Boolean(change.isolated) === Boolean(draftChoice[draftKey]?.isolated) : change[field] === draftChoice[draftKey]?.[field])) return;
+    void syncDraft(draftKey, wanted);
   };
   /** The same handoff as local: a confirmation, then a new thread with a briefing to edit and send. */
   const [handoffDrafts, setHandoffDrafts] = useState<Record<string, { from: Provider; to: Provider }>>({});
@@ -974,9 +1148,11 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     setHandoffDrafts((current) => ({ ...current, [key]: { from: thread?.provider ?? provider, to: provider } }));
     setNewThreadTarget(device, target);
     // The host keeps where this came from, so the new thread can name its source.
-    void requestDraft(key, { provider, ...(handoffHandle ? { handoffHandle } : {}) });
+    void syncDraft(key, { provider, ...(handoffHandle ? { handoffHandle } : {}) });
   };
   const copyWorktreePath = () => {
+    // The header already names this folder on the host; it is copied, never opened here.
+    if (header?.checkout === "worktree" && header.executionPath) { void navigator.clipboard.writeText(header.executionPath).catch(() => undefined); return; }
     hostRead<{ worktree?: { path?: string } | null }>(device, "worktree.status", parityTarget).then((result) => {
       if (result?.worktree?.path) void navigator.clipboard.writeText(result.worktree.path).catch(() => undefined);
       else setNotice(`${name} didn't share this path.`);
@@ -984,6 +1160,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   };
   const timelineEnvironment = useMemo<TimelineEnvironment>(() => ({
     ...REMOTE_ENVIRONMENT,
+    skillLinkTitle: (skill) => `Open @${skill} on ${name}`,
     // `localhost` here means the other machine, so it goes through a preview.
     canOpenLink: (url) => isPublicWebLink(url) || (canWork && hostLocalPort(url) !== null),
     openExternalUrl: async (url) => {
@@ -998,6 +1175,10 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     },
   }), [canWork, device, name, threadId, workspaceId]);
   const awaiting = timeline?.approvals.length ? timeline.approvals.some((entry) => entry.kind === "question") ? "input" as const : "approval" as const : null;
+  // The host's account windows in the local popover. Which window shows is this person's choice.
+  const quota = provider === "openai" || provider === "claude" ? context?.quotas?.find((entry) => entry.provider === provider) : undefined;
+  const quotaUsage = useMemo(() => quota ? hostQuotaAccountView(quota, usageDisplay) : null, [quota, usageDisplay]);
+  const quotaHeader = useMemo(() => quotaUsage ? providerHeaderUsage(provider, quotaUsage, { selectedWindow: provider === "openai" || provider === "claude" ? headerUsageWindows?.[provider] : undefined }) : null, [headerUsageWindows, provider, quotaUsage]);
   const contextPercent = context?.usage?.contextTokens && context.usage.contextWindow ? Math.round(context.usage.contextTokens / context.usage.contextWindow * 100) : null;
   const known = Boolean(compose || (thread && timeline?.baseline) || pending.length || echoes.length);
   const waiting = state === "removed" ? `This thread is not available from ${name}.` : thread ? "" : remote?.loading ? "" : `Choose a thread on ${name}, or start a new one.`;
@@ -1013,9 +1194,12 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
         {!sidebarOpen && <button className="icon-button" onClick={onShowSidebar} title="Show sidebar" aria-label="Show sidebar"><PanelLeftOpen size={18} /></button>}
         <div className="project-heading">
           <span>{workspace?.isChat ? "Normal chat" : workspace?.name ?? name}</span>
-          <small>{name}{compose ? " · New thread" : thread ? ` · ${thread.title || thread.preview || "New thread"}` : ""}</small>
+          {/* As here: an isolated thread names its branch and folder, a project with no thread its folder. Always on that machine. */}
+          <small title={header ? header.executionPath : undefined}>{name}{compose ? " · New thread"
+            : header?.checkout === "worktree" && header.worktreeStatus !== "removed" && thread ? ` · ${header.branch ? `${header.branch} · ` : ""}${header.executionPath}`
+            : thread ? ` · ${thread.title || thread.preview || "New thread"}` : header && !workspace?.isChat ? ` · ${header.projectPath}` : ""}</small>
         </div>
-        {thread && context?.execution?.isolated && <button className="isolation-chip" title="Copy path" onClick={copyWorktreePath}>
+        {thread && context?.execution?.isolated && <button className="isolation-chip" title={header?.checkout === "worktree" ? `${header.executionPath} · Copy path` : "Copy path"} onClick={copyWorktreePath}>
           <GitBranch size={12} /> <span>Isolated</span>
         </button>}
         {workspace && !workspace.isChat && workspaceId && <RemotePullRequestChip key={`${workspaceId}:${threadId ?? ""}`} device={device} name={name} target={parityTarget} connected={connected} onOpen={() => onOpenTool("git", "pulls")} />}
@@ -1037,6 +1221,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           run={context?.run ? { ...context.run, updatedAt: 0 } : undefined} running={Boolean(runHandle)}
           onRun={() => {
             if (!canRun) { setNotice(accessReason(name, "run this project", "Terminal")); return; }
+            // The host's own reason, e.g. read-only access or a run already going there.
+            const blocked = context?.processPolicy?.runBlockedReason ?? context?.processPolicy?.processPolicyReason;
+            if (blocked) { setNotice(blocked); return; }
             onOpenTool("terminal");
             void hostWrite<{ processHandle?: string }>(device, name, "run.start", { ...parityTarget, revision }).then((outcome) => { if (report(outcome) && workspaceId && outcome.result?.processHandle) expectRemoteRun(device, workspaceId, outcome.result.processHandle); });
           }}
@@ -1053,7 +1240,11 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           {running ? <LoaderCircle className="spin" size={13} /> : <Circle size={8} fill="currentColor" />}
           <span>{running ? "Working" : connected ? "Ready" : "Not connected"}</span>
         </div>
-        {contextPercent !== null && <button className="topbar-usage-chip" type="button" title={`Context used on ${name}`} onClick={() => onOpenTool("usage")}>
+        {quotaUsage && quotaHeader && (provider === "openai" || provider === "claude") ? <UsagePopover key={provider} provider={provider} usage={quotaUsage} header={{ ...quotaHeader, title: `${quotaHeader.title} · on ${name}` }}
+          selectedLabel={headerUsageWindows?.[provider]} onSelect={(label) => onHeaderUsageWindow?.(provider, label)}
+          onConnect={() => setNotice(`Sign in on ${name} to see its usage.`)} onDetails={() => onOpenTool("usage")}
+          onOpen={() => { if (connected && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); }} />
+        : contextPercent !== null && <button className="topbar-usage-chip" type="button" title={`Context used on ${name}`} onClick={() => onOpenTool("usage")}>
           <Gauge size={13} aria-hidden="true" /><span>{contextPercent}%</span>
         </button>}
         {studioToggle}
@@ -1091,17 +1282,22 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
             <button className={!chosen?.isolated ? "active" : ""} aria-pressed={!chosen?.isolated} onClick={() => changeSettings({ isolated: false })}>
               <Folder size={15} /><span><strong>Shared project</strong><small>Work directly in {workspace.name}</small></span>
             </button>
-            <button className={chosen?.isolated ? "active" : ""} aria-pressed={Boolean(chosen?.isolated)} disabled={!canRun || Boolean(isolationReason)}
+            {initChoice ? <button className="git-initialize-choice" onClick={() => void initializeGit()} disabled={gitInitializing || !canGitWrite} aria-busy={gitInitializing}
+              title={canGitWrite ? `Create a local Git repository and initial snapshot on ${name}. Nothing is pushed.` : accessReason(name, "set up Git", "Git changes and Terminal")}>
+              {gitInitializing ? <LoaderCircle className="spin" size={15} /> : <GitBranch size={15} />}
+              <span><strong>{initChoice === "snapshot" ? "Create initial Git snapshot" : "Initialize Git repository"}</strong>
+                <small>{gitInitializing ? "Preparing this project…" : "Local only; respects .gitignore"}</small></span>
+            </button> : <button className={chosen?.isolated ? "active" : ""} aria-pressed={Boolean(chosen?.isolated)} disabled={!canRun || Boolean(isolationReason)}
               title={!canRun ? accessReason(name, "create worktrees", "Terminal") : isolationReason} onClick={() => changeSettings({ isolated: true })}>
-              <GitBranch size={15} /><span><strong>Isolated worktree</strong><small>{isolationReason ?? `A separate branch and folder on ${name}`}</small></span>
-            </button>
+              <GitBranch size={15} /><span><strong>Isolated worktree</strong><small>{isolationReason ?? (chosen?.isolated && draftUnconfirmed[draftKey] ? `Not confirmed by ${name} yet · checked again when you send` : `A separate branch and folder on ${name}`)}</small></span>
+            </button>}
           </div>}
-        </div> : known ? <RemoteMachineName.Provider value={name}><RemoteThreadContext.Provider value={scope}><TimelinePresentation key={`${device}:${compose ? "new" : thread?.id}`} environment={timelineEnvironment}
+        </div> : known ? <RemoteMachineName.Provider value={name}><RemoteThreadContext.Provider value={scope}><RemoteSteers.Provider value={steerControls}><TimelinePresentation key={`${device}:${compose ? "new" : thread?.id}`} environment={timelineEnvironment}
           messages={projectedMessages} activities={projectedActivities} provider={thread?.provider ?? provider}
           running={running} activeTurnId={timeline?.activeTurnId ?? undefined} awaitingState={awaiting}
-          thinkingLabel={`Working on ${name}`} history={compose ? undefined : history}
+          thinkingLabel={`Working on ${name}`} history={compose ? undefined : history} skills={skillLinks} onOpenSkill={openSkill}
           searchQuery={findOpen ? findQuery : ""} searchActiveMatch={findIndex}
-          onLoadEarlier={!compose && !stale && !timeline?.historyLimited ? () => loadRemoteEarlier(device) : undefined} /></RemoteThreadContext.Provider></RemoteMachineName.Provider>
+          onLoadEarlier={!compose && !stale && !timeline?.historyLimited ? () => loadRemoteEarlier(device) : undefined} /></RemoteSteers.Provider></RemoteThreadContext.Provider></RemoteMachineName.Provider>
           : waiting && <p className="remote-empty" role="status">{waiting}</p>}
       </div>
       {timeline?.historyLimited && <p className="remote-banner" role="note">The earlier-history window is unavailable or full. Refresh to load a new recent window.</p>}
@@ -1126,11 +1322,9 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           queuedTurns={queuedTurns}
           searchFiles={search}
           skills={skills}
+          onAnalyzeSkillDependencies={analyzeSkills}
           workflows={context?.workflows}
-          onWorkflow={async (id, prompt) => {
-            const outcome = await hostWrite(device, name, "workflows.start", { ...parityTarget, revision, workflowId: id, ...(prompt ? { userPrompt: prompt } : {}) });
-            return report(outcome);
-          }}
+          onWorkflow={(id, prompt) => reviewWorkflow(id, prompt)}
           voiceInput={voiceInput}
           onRemoveAttachment={(path) => setUploads((current) => ({ ...current, [draftKey]: (current[draftKey] ?? []).filter((entry) => entry.path !== path) }))}
           onPasteImages={(items) => { void upload([...items].flatMap((item) => { const file = item.kind === "file" ? item.getAsFile() : null; return file ? [file] : []; })); }}
@@ -1164,6 +1358,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           onSteerQueued={(id) => { void hostWrite(device, name, "queue.steer", { ...parityTarget, revision, queueId: id, ...(steerHandle ? { target: steerHandle } : {}) }).then(report); }}
           onStop={stop}
           modelControls={<RemoteModelControls context={context} chosen={chosen} name={name} provider={provider} running={running} threadStarted={Boolean(threadId)}
+            {...(modelFavorites ? { favorites: modelFavorites } : {})} {...(onToggleModelFavorite ? { onToggleFavorite: onToggleModelFavorite } : {})}
             onSettings={changeSettings} onDefaults={() => setEditingProject(true)} onNotice={setNotice} />}
           controls={<>
             <RemoteComposerControls device={device} workspaceId={workspaceId} revision={revision} onOpenThread={(id) => { setNewThreadTarget(device, undefined); selectRemoteThread(device, id); }} context={context} chosen={chosen} name={name} provider={provider} running={running} threadId={threadId} scopeKey={draftKey}
@@ -1180,6 +1375,8 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
         {contextPercent !== null && <span className={`context-meter ${contextPercent > 80 ? "warn" : ""}`}>{" "}· Context {contextPercent}% used</span>}
       </div>
     </section>
+    {workflowDialog}
+    {viewingSkill && <RemoteSkillViewer device={device} name={name} skillName={viewingSkill} target={parityTarget} skills={context?.skills} onClose={() => setViewingSkill(null)} />}
     {editingProject && workspaceId && workspace && <RemoteProjectEditor device={device} name={name} workspaceId={workspaceId} projectName={workspace.name} context={context}
       onClose={() => setEditingProject(false)} onSaved={() => { setEditingProject(false); refreshRemoteDevice(device); void refreshRemoteContext(device, workspaceId, threadId); }} />}
   </section>;

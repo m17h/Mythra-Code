@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reconcileRemoteOutbox, sendRemotePrompt } from "./remoteWork.ts";
+import { forkRemoteThread, setRemoteDraftIsolation, reconcileRemoteOutbox, sendRemotePrompt } from "./remoteWork.ts";
 import { admitToOutbox, addRemoteEcho, newThreadDraftKey, removeOutboxEntry, setNewThreadTarget, useRemoteEchoes, useRemoteOutbox } from "./outbox.ts";
 
 const DEVICE = "a".repeat(64);
@@ -89,5 +89,65 @@ test("an accepted send keeps its copy until the thread shows it", async () => {
   await sendRemotePrompt({ device: DEVICE, name: "ZEDS-PC", draftKey: `${DEVICE}/t1`, text: "Yes", mode: "send", threadId: "t1", opId: "kept" });
   assert.equal(useRemoteOutbox.getState().entries.length, 0);
   assert.equal(useRemoteEchoes.getState().echoes[0].accepted, true);
+  delete globalThis.window;
+});
+
+test("isolated draft choice returns only the host token and sends no prompt or local worktree command", async () => {
+  const calls = host({ "host.info": {}, "draft.settings.set": (args) => ({ state: "accepted", workspaceId: args.workspaceId,
+    draftHandle: "isolated-token", startTarget: "cancel-target", settings: { isolated: args.isolated, model: "host-model" } }) });
+  const result = await setRemoteDraftIsolation(DEVICE, "Host", "p", true, "previous-token");
+  assert.deepEqual(result, { draftHandle: "isolated-token", startTarget: "cancel-target", settings: { isolated: true, model: "host-model" } });
+  const call = calls.find((entry) => entry.op === "draft.settings.set");
+  assert.equal(call.args.isolated, true); assert.equal(call.args.draftHandle, "previous-token");
+  assert.ok(call.args.opId); assert.ok(call.args.opSeq > 0);
+  assert.equal(calls.some((entry) => entry.op === "prompt.send" || entry.op === "worktree.create"), false);
+});
+
+test("isolated draft refuses plainly without Terminal and never falls back locally", async () => {
+  host({ "draft.settings.set": () => { throw { code: "forbidden" }; } });
+  assert.deepEqual(await setRemoteDraftIsolation(DEVICE, "Host", "p", true), {
+    failure: "Isolated drafts need Terminal access. Enable it in the host device settings.",
+  });
+});
+
+test("selected checkpoint fork preserves its selection and returns the fork identity", async () => {
+  const calls = host({ "thread.fork": { state: "accepted", threadId: "forked" } });
+  assert.deepEqual(await forkRemoteThread(DEVICE, "Host", "source", "selected"), { threadId: "forked" });
+  const call = calls.find((entry) => entry.op === "thread.fork");
+  assert.equal(call.args.checkpointId, "selected"); assert.equal(call.args.threadId, "source");
+  assert.ok(call.args.opId); assert.ok(call.args.opSeq > 0);
+  calls.length = 0;
+  await forkRemoteThread(DEVICE, "Host", "source");
+  assert.equal(Object.hasOwn(calls.find((entry) => entry.op === "thread.fork").args, "checkpointId"), false);
+});
+
+test("unconfirmed selected checkpoint fork is not retried as latest", async () => {
+  const calls = host({ "thread.fork": () => { throw { code: "host_unavailable" }; } });
+  const result = await forkRemoteThread(DEVICE, "Host", "source", "selected");
+  assert.match(result.failure, /couldn't confirm/);
+  assert.equal(calls.filter((entry) => entry.op === "thread.fork").length, 1);
+  assert.equal(calls.find((entry) => entry.op === "thread.fork").args.checkpointId, "selected");
+  calls.length = 0;
+  assert.ok("failure" in await forkRemoteThread(DEVICE, "Host", "source", ""));
+  assert.equal(calls.length, 0);
+  delete globalThis.window;
+});
+
+test("an old checkpoint with no saved turn has a clear viewer refusal", async () => {
+  host({ "thread.fork": { state: "rejected", error: { code: "checkpoint_turn_unavailable" } } });
+  const result = await forkRemoteThread(DEVICE, "Host", "source", "legacy-checkpoint");
+  assert.match(result.failure, /older checkpoint has no saved conversation turn/);
+  assert.match(result.failure, /cannot be forked/);
+  delete globalThis.window;
+});
+
+test("reviewed workflow helper passes host digest and displays the exact changed-recipe refusal", async () => {
+  const { startRemoteWorkflow } = await import("./remoteActions.ts");
+  const calls = host({ "workflows.start": { state: "rejected", error: { code: "workflow_changed" } } });
+  const result = await startRemoteWorkflow(DEVICE, "Fixture host", { workspaceId: "p", revision: "r", workflowId: "wf", digest: "a".repeat(64), variables: { INPUT: "value" } });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "workflow_changed");
+  assert.equal(result.message, "This workflow changed on Fixture host after you reviewed it. Review it again before running.");
+  assert.equal(calls.find((call) => call.op === "workflows.start").args.digest, "a".repeat(64));
   delete globalThis.window;
 });

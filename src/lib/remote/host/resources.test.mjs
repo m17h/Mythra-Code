@@ -261,3 +261,12 @@ test("review diff exports known-success stdout only; old caches and failures use
     assert.equal((await f.read("review.diff")).reviewDiff.text, "", "empty successful stdout is not a failed read");
   } finally { f.close(); }
 });
+
+test("workflow view carries the host's full canonical recipe digest", async () => {
+  const { workflowRecipeDigest } = await import("./workflowDigest.ts");
+  const f = fixture();
+  try {
+    const result = await f.read("workflows.view", { workflowId: "wf" });
+    assert.equal(result.workflows[0].digest, await workflowRecipeDigest(f.sources.getHostWorkflows()[0]));
+  } finally { f.close(); }
+});

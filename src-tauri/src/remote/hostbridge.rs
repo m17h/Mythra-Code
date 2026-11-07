@@ -568,7 +568,7 @@ pub(super) fn link_closed(inner: &Arc<Inner>, link: &Link) {
     super::preview::link_closed(inner,link);
     let mut core = inner.lock();
     let replacement = current_link(&core, &link.peer_fingerprint, link.role);
-    if replacement.is_none()&&link.role==Role::Host{super::terminal::invalidate(&mut core,Some(&link.peer_fingerprint));super::folders::invalidate(&mut core,Some(&link.peer_fingerprint));}
+    if replacement.is_none()&&link.role==Role::Host{super::terminal::disconnected(&mut core,&link.peer_fingerprint);super::folders::invalidate(&mut core,Some(&link.peer_fingerprint));}
     let keys: Vec<_> = core
         .bridge
         .timelines
@@ -1422,6 +1422,7 @@ pub(super) fn receive_event(
 /// this bridge; provider delivery is separately fenced at its native boundary.
 pub(super) async fn request_value(inner:&Arc<Inner>,link:&Arc<Link>,op:&str,args:Value,identity:Option<(&str,u64)>)->Result<Value,WireError>{
     let args=validate_args(op,args)?;
+    let context_target = (op == "host.context" && args["workspaceId"] != "openkiwi-normal-chats").then(|| args.clone());
     let (id,generation,receiver)={let mut core=inner.lock();let grant=authorize(&core,link)?;super::manifest::access(op,&grant)?;
         if !core.bridge.ready || !core.bridge.attached {return Err(unavailable());}
         if (super::work::is_mutation(op)||op=="work.inspect")&&!grant.work {return Err(WireError::new("forbidden","Work is off for this device. To turn it on, open Settings → Connections → Devices on the other device."));}
@@ -1434,6 +1435,17 @@ pub(super) async fn request_value(inner:&Arc<Inner>,link:&Arc<Link>,op:&str,args
         if let Some((op_id,op_seq))=identity{payload["opId"]=json!(op_id);payload["opSeq"]=json!(op_seq);}
         if !emit(inner,"remote-host-request",payload){core.bridge.pending.remove(&id);return Err(unavailable());}(id,generation,receiver)};
     let result=match timeout(REQUEST_WAIT,receiver).await{Ok(Ok(value))=>value,_=>Err(unavailable())};
+    // Only host-owned persisted targets supply these display paths. No new
+    // path input or file-content authority is introduced by header metadata.
+    let result = if let (Some(target), Ok(mut value)) = (context_target, result.clone()) {
+        let workspace = target["workspaceId"].as_str().ok_or_else(invalid)?.to_owned();
+        let thread = target["threadId"].as_str().map(str::to_owned);
+        let header = inner.read_db(move |db| super::host_context::header(db, &workspace, thread.as_deref())).await;
+        match header {
+            Ok(header) => { value.as_object_mut().ok_or_else(invalid)?.insert("header".into(), header); Ok(value) },
+            Err(_) => Err(WireError::new("stale_target", "This host execution folder changed. Refresh the conversation.")),
+        }
+    } else { result };
     let mut core=inner.lock();let Some(pending)=core.bridge.pending.remove(&id)else{return Err(result.err().unwrap_or_else(unavailable));};
     check_generation(&core,generation)?;let grant=authorize(&core,link)?;super::manifest::access(op,&grant)?;
     if !core.bridge.ready||grant.revision!=pending.grant.revision{return Err(unavailable());}

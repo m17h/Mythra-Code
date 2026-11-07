@@ -1,3 +1,4 @@
+import { hostContextSupplement } from "../hostSources";
 import { configureRemoteCheckpointSettlement, configureRemotePreparationRoots } from "./promptPreparation";
 import type { ChildAgentTarget } from "../../../types";
 import { invoke } from "@tauri-apps/api/core";
@@ -486,13 +487,14 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         if (!options.rows) throw new HostReadError("unsupported", "The other device has not enabled remote row actions yet.");
         const nativeThread = isThreadRowOperation(request.op);
         if (nativeThread ? !options.rows.threadLifecycle : !["thread.pin", "projects.pin", "projects.reorder"].includes(request.op) && !options.rows.nativeFenced?.includes(request.op as RemoteRowOperation)) throw new HostReadError("unsupported", "This action's shared lifecycle is not attached yet.");
-        const extra = request.op === "thread.rename" ? ["name"] : request.op.endsWith(".pin") ? ["pinned"] : request.op === "projects.reorder" ? ["relativeTo", "position"] : [];
+        const extra = request.op === "thread.fork" ? ["checkpointId"] : request.op === "thread.rename" ? ["name"] : request.op.endsWith(".pin") ? ["pinned"] : request.op === "projects.reorder" ? ["relativeTo", "position"] : [];
         strictKeys(args, [projectOp ? "workspaceId" : "threadId", ...extra, ...(request.op === "thread.delete" || request.op === "projects.remove" ? ["confirmed"] : [])]);
         if ((request.op === "thread.delete" || request.op === "projects.remove") && args.confirmed !== true) throw invalid();
         if (request.op === "thread.rename") {
           if (typeof args.name !== "string" || !args.name.trim() || args.name.length > 256 || /[\u0000-\u001f]/.test(args.name)) throw invalid();
           values.name = args.name.trim();
         }
+        if (request.op === "thread.fork" && args.checkpointId !== undefined) values.checkpointId = idArg(args.checkpointId);
         if (request.op.endsWith(".pin")) { if (typeof args.pinned !== "boolean") throw invalid(); values.pinned = args.pinned; }
         if (request.op === "projects.reorder") {
           const other = requireWorkspace(sources, idArg(args.relativeTo), currentWorkGrant(sources, id.device));
@@ -623,6 +625,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           if (typeof args.threadId === "string") remember(args.threadId);
           if (request.op === "files.search") return await searchHostFiles(sources, request, args, assertCurrent);
           const result = hostContext(sources, request, args);
+          Object.assign(result, hostContextSupplement(sources, result));
           if (parity) {
             const target = typeof args.threadId === "string" ? { threadId: args.threadId } : { workspaceId: idArg(args.workspaceId) };
             result.revision = idArg(parity.revision(resolveThreadExecutionContext(sources, target)));

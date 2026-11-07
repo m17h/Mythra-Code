@@ -39,6 +39,9 @@ fn unavailable() -> WireError {
         "The other device is recovering. Try again shortly.",
     )
 }
+pub(super) fn workflow_changed_message(host: &str) -> String {
+    format!("This workflow changed on {host} after you reviewed it. Review it again before running.")
+}
 pub(crate) fn refused(code: &str) -> String {
     format!("MYTHRA_REMOTE_REJECTED:{code}: This instruction was not delivered.")
 }
@@ -389,6 +392,7 @@ async fn execute(
                     "stale_target",
                     "not_paired",
                     "thread_unavailable",
+                    "workflow_changed",
                 ]
                 .contains(&error.code.as_str());
             json!({"opId":id,"state":if definitive{"rejected"}else{"uncertain"},"error":{"code":error.code,"message":"Check the conversation before sending again."}})
@@ -456,6 +460,9 @@ async fn execute(
         .filter(|text| text.len() <= 64)
     {
         safe["error"] = json!({"code":code,"message":"The other device couldn't confirm this instruction. Check the conversation."});
+        if op == "workflows.start" && code == "workflow_changed" {
+            safe["error"]["message"] = json!(workflow_changed_message(&super::device_name(&inner.lock())));
+        }
     }
     let saved = {
         let _core = inner.lock();
@@ -519,13 +526,16 @@ pub(crate) async fn remote_work_receipt(
     if !meta.valid() {
         return Err(invalid());
     }
-    let receipt = json!({"ownerHandle":owner_handle,"generation":generation,"device":device,"opId":op_id,"opSeq":op_seq,"disposition":disposition,"threadId":thread_id,"workspaceId":workspace_id,"queuedTurnId":queued_turn_id,"messageId":message_id,"attemptId":attempt_id,"startRequestId":start_request_id,"turnId":turn_id,"provider":provider,"permission":permission,"errorCode":error_code,"stopHandle":stop_handle});
+    let mut receipt = json!({"ownerHandle":owner_handle,"generation":generation,"device":device,"opId":op_id,"opSeq":op_seq,"disposition":disposition,"threadId":thread_id,"workspaceId":workspace_id,"queuedTurnId":queued_turn_id,"messageId":message_id,"attemptId":attempt_id,"startRequestId":start_request_id,"turnId":turn_id,"provider":provider,"permission":permission,"errorCode":error_code,"stopHandle":stop_handle});
     if serde_json::to_vec(&receipt).map_or(true, |bytes| bytes.len() > 16384) {
         return Err(invalid());
     }
     let saved = {
         let core = state.inner.lock();
         generation_check(&core, generation)?;
+        if receipt["errorCode"] == "workflow_changed" {
+            receipt["workflowChangedHost"] = json!(super::device_name(&core));
+        }
         if ["preparing", "queued", "dispatched"].contains(&disposition.as_str()) {
             authorize(
                 &core,
@@ -1276,3 +1286,7 @@ impl NativePermit {
         }Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "workflow_recipe_tests.rs"]
+mod workflow_recipe_tests;

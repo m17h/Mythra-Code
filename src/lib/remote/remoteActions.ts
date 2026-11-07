@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { displayedPercent, usagePercentLabel } from "../providerUsage";
 import { viewerErrorCode, viewerHostOperation } from "./viewerBridge";
 import { refusalText, sequenced } from "./remoteWork";
 import type { WireParityReadResult, WireParityRow } from "./wire";
@@ -18,7 +19,7 @@ export const hostRead = <T>(device: string, op: string, args: Record<string, unk
 export const hostRows = (result: { rows?: WireParityRow[] } | null | undefined): WireParityRow[] => Array.isArray(result?.rows) ? result.rows : [];
 
 const UNCONFIRMED = "We couldn't confirm that reached the other device. Check before trying again.";
-const DEFINITE = new Set(["forbidden", "busy", "rate_limited", "stale_target", "unsupported", "not_paired", "invalid", "thread_unavailable"]);
+const DEFINITE = new Set(["forbidden", "busy", "rate_limited", "stale_target", "unsupported", "not_paired", "invalid", "thread_unavailable", "workflow_changed"]);
 
 /** One journaled change on the host. A lost reply is reported as unknown, never
  * as a failure that is safe to repeat. */
@@ -45,7 +46,8 @@ export async function hostProjectWrite(device: string, name: string, workspaceId
 
 /** The sentence every switch-gated control shows. */
 export function accessReason(name: string, what: string, switchName: string): string {
-  return `To ${what} on ${name}, turn on ${switchName} for this device in Settings → Connections → Devices on ${name}.`;
+  // Names the host once: the switch lives in that machine's Settings.
+  return `To ${what} here, open Settings → Connections → Devices on ${name} and turn on ${switchName} for this device.`;
 }
 
 const UPLOAD_CHUNK_BYTES = 60_000;
@@ -55,9 +57,9 @@ function base64(bytes: Uint8Array): string {
   for (let index = 0; index < bytes.length; index += 8192) binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
   return btoa(binary);
 }
-export type HostUpload = { ok: true; id: string; name: string; kind: "image" | "file" } | { ok: false; message: string };
+export type HostUpload = { ok: true; id: string; name: string; kind: "image" | "file"; originalHostPath?: string } | { ok: false; message: string };
 /** Sends a file the user chose to the host. The host only ever hands back an
- * id, so nothing on this device learns where it was stored. */
+ * id plus display-only host path metadata, never a file-read handle. */
 const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff", heic: "image/heic" };
 let armGeneration = 0;
 /** Drops are only captured while a window shows another device. Local drops stay local. */
@@ -88,7 +90,40 @@ export async function uploadToHost(device: string, name: string, workspaceId: st
     }
   }
   const sha256 = hex(await crypto.subtle.digest("SHA-256", bytes));
-  const finish = await hostWrite<{ attachmentId?: string }>(device, name, "attachment.put", { workspaceId, phase: "finish", uploadId, sha256 });
+  const finish = await hostWrite<{ attachmentId?: string; originalHostPath?: string }>(device, name, "attachment.put", { workspaceId, phase: "finish", uploadId, sha256 });
   const id = finish.result?.attachmentId;
-  return finish.ok && id ? { ok: true, id, name: file.name, kind } : { ok: false, message: finish.message || `${name} didn't accept that file.` };
+  return finish.ok && id ? { ok: true, id, name: file.name, kind, ...(finish.result?.originalHostPath ? { originalHostPath: finish.result.originalHostPath } : {}) } : { ok: false, message: finish.message || `${name} didn't accept that file.` };
+}
+
+/** Repository URL/name only: target checkout and GitHub authentication belong
+ * to the host. opId/opSeq are supplied by the existing durable write client. */
+export async function writeHostRepository(device: string, hostName: string, workspaceId: string,
+  action: import("./wire-studio").RepositoryWriteAction, threadId?: string): Promise<HostWriteResult<import("./wire-studio").RepositoryWriteResult>> {
+  let revision: string | undefined;
+  try { revision = (await hostRead<import("./wire").HostContextResult>(device, "host.context", { workspaceId, ...(threadId ? { threadId } : {}) })).revision; }
+  catch { return { ok: false, message: `Mythra Code couldn't reach ${hostName}. Try again.` }; }
+  if (!revision) return { ok: false, message: "Refresh the host project before connecting a repository.", code: "stale_target" };
+  const reply = await hostWrite<import("./wire-studio").RepositoryWriteResult>(device, hostName, "git.write", { workspaceId, ...(threadId ? { threadId } : {}), revision, ...action });
+  if (reply.result?.state === "rejected" && reply.result.error?.code === "repository_failed") {
+    return { ...reply, ok: false, message: reply.result.error.message.slice(0, 1024), code: reply.result.error.code };
+  }
+  if (reply.ok && reply.result?.repository?.message) reply.message = reply.result.repository.message;
+  return reply;
+}
+
+/** Use the exact same local quota popover/header functions with a viewer-owned
+ * per-provider selected-window preference. No provider request on this device. */
+export function hostQuotaAccountView(quota: import("./wire-studio").WireHostQuota,
+  display: import("../../types").UsageDisplayMode = "remaining"): import("../providerUsage").AccountUsageView {
+  return { label: quota.label, summary: quota.summary, planLabel: quota.planLabel, updatedAt: quota.updatedAt,
+    windows: quota.windows.map((window) => {
+      const percent = displayedPercent(window.usedPercent, display);
+      return { label: window.label, percent, percentLabel: usagePercentLabel(window.usedPercent, display), resetLabel: window.resetLabel, resetsAt: window.resetsAt };
+    }) };
+}
+
+/** Starts only the reviewed host recipe; callers retain its digest with their
+ * launch identity. Unknown delivery is reported, never automatically retried. */
+export function startRemoteWorkflow(device: string, name: string, args: Omit<import("./wire").WorkflowStartArgs, "opId" | "opSeq">): Promise<HostWriteResult<import("./wire").RemoteWorkResult>> {
+  return hostWrite(device, name, "workflows.start", args);
 }

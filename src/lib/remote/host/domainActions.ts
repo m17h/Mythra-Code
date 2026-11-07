@@ -1,3 +1,4 @@
+import { executeHostRepositoryWrite } from "../hostSources";
 import type { CheckpointRecord } from "../../checkpoints";
 import type { GitWorkspaceSnapshot } from "../../gitWorkspace";
 import type { GitHubRepoStatus } from "../../github";
@@ -226,6 +227,9 @@ export class HostDomains {
     try {
       const raw = await this.transport.invoke<{ result: RemoteWorkResult }>("remote_domain_execute", { stamp: target.stamp, root: target.root, action: "git.init", args: {} });
       if (raw.result?.opId !== identity.opId || raw.result.state !== "accepted") throw new Error("Unconfirmed domain receipt");
+      // The effect is already confirmed. Refresh display eligibility without
+      // turning a failed optional read into a retry of the Git write.
+      await this.sources.refreshWorkspaceGitInfo?.(target.stamp.workspaceId).catch(() => undefined);
       return { opId: identity.opId, state: "accepted", workspaceId: target.stamp.workspaceId };
     } catch (reason) { throw nativeRefusal(reason); }
   }
@@ -250,8 +254,19 @@ export class HostDomains {
   }
   private async gitWrite(request: HostRequest, args: Record<string, unknown>, identity: RemoteOperationIdentity,
     target: ReturnType<typeof nativeTarget>, assertAllowed: () => void): Promise<RemoteWorkResult> {
-    strictNativeKeys(args, ["workspaceId", "threadId", "revision", "action", "resourceId", "message", "name", "create", "stagedOnly", "confirmed", "base"]);
+    strictNativeKeys(args, ["workspaceId", "threadId", "revision", "action", "resourceId", "message", "name", "create", "stagedOnly", "confirmed", "base", "url", "visibility"]);
     const action = bounded(args.action, 32);
+    if (action === "attachRemote" || action === "createRepository") {
+      // Connecting an unborn checkout needs no HEAD/status baseline. Retain the
+      // target revision/busy checks and native stamp/root/grant/replay fence.
+      strictNativeKeys(args, ["workspaceId", "threadId", "revision", "action", ...(action === "attachRemote" ? ["url"] : ["name", "visibility"])]);
+      if (action === "createRepository" && args.visibility !== "private" && args.visibility !== "public") throw invalid();
+      const typedAction = action === "attachRemote" ? { action, url: bounded(args.url, 4096) } as const
+        : { action, name: bounded(args.name, 100), visibility: args.visibility as "private" | "public" } as const;
+      assertAllowed();
+      try { return await executeHostRepositoryWrite(target, typedAction, this.transport); }
+      catch (reason) { throw nativeRefusal(reason); }
+    }
     if (action === "init") return this.gitInit(args, identity, target, assertAllowed);
     if (action === "update") return this.gitUpdate(request, args, identity, target, assertAllowed);
     if (!["stage", "unstage", "commit", "branch", "push", "pull", "fetch", "update", "revert", "revertAll"].includes(action)) throw invalid();

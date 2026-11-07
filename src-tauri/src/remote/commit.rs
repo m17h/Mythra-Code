@@ -90,6 +90,9 @@ pub(super) fn complete(
     queued: bool,
 ) -> Result<(), String> {
     let mut receipt = json!({"op":op,"device":stamp.device,"opId":stamp.op_id,"opSeq":stamp.op_seq,"generation":stamp.generation,"workspaceId":stamp.workspace_id,"threadId":stamp.thread_id,"disposition":if queued{"queued"}else{"accepted"},"nativeCommitted":true});
+    // Repository connection failures are native-authored, persisted replies.
+    // Preserve their safe host-named message against late renderer summaries.
+    if op == "git.write" && result["state"] == "rejected" { receipt["disposition"] = json!("rejected"); }
     for key in [
         "threadId",
         "workspaceId",

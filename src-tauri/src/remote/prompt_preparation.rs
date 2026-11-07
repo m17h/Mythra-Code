@@ -38,7 +38,7 @@ fn stale() -> String {
     work::refused("stale_target")
 }
 fn uncertain() -> String {
-    "MYTHRA_DELIVERY_UNCERTAIN: Git preparation could not be confirmed. Inspect the project on the host before trying again.".into()
+    "MYTHRA_DELIVERY_UNCERTAIN: Git preparation could not be confirmed. A worktree or checkpoint may already exist; inspect the project on the host before trying again.".into()
 }
 fn meta(stamp: &Stamp, owner: &str) -> work::RemoteDelivery {
     let mut meta = stamp.meta();
@@ -449,7 +449,7 @@ async fn prepare(
             "gitInit"=>serde_json::to_value(crate::project_git::initialize_workspace_git_sync(&run_root)?).map_err(|_|uncertain()),
             "checkpointBefore"=>{let snapshot=serde_json::to_value(crate::project_git::capture_checkpoint_snapshot(&run_id,&run_root,"before",&run_label)?).map_err(|_|uncertain())?;Ok(json!({"checkpointId":run_id,"snapshot":snapshot}))},
             "checkpointAfter"=>{let checkpoint=checkpoint.ok_or_else(stale)?;let snapshot=serde_json::to_value(crate::project_git::capture_checkpoint_snapshot(&checkpoint,&run_root,"after",&run_label)?).map_err(|_|uncertain())?;let before=crate::project_git::checkpoint_ref(&checkpoint,"before")?;let after=crate::project_git::checkpoint_ref(&checkpoint,"after")?;let repo=crate::project_git::checkpoint_repo(&run_root)?;let(changed,additions,deletions)=crate::project_git::checkpoint_diff_stats(&repo,&before,&after)?;Ok(json!({"checkpointId":checkpoint,"snapshot":snapshot,"changedFiles":changed,"additions":additions,"deletions":deletions}))},_=>Err(stale())}
-    })}).await.map_err(|_|uncertain())??;
+    })}).await.map_err(|_|uncertain())?.map_err(|_|uncertain())?;
     // Native Git may have run. A failed final commit stays started/uncertain:
     // never re-run helpers, accept the prompt, or silently use local fallback.
     let s = stamp.clone();
@@ -510,6 +510,16 @@ fn save_checkpoint(
             })
             .ok_or_else(stale)?;
         record["status"] = json!("ready");
+        // Match local checkpoint completion: preserve the provider turn so a
+        // later selected-checkpoint fork has an exact conversation boundary.
+        // It comes from this instruction's durable delivery, never a viewer.
+        if let Some(receipt) = store::delivery_receipt(db, &stamp.device, &stamp.op_id, stamp.op_seq)? {
+            if receipt["disposition"] == "accepted" && receipt["threadId"] == thread {
+                if let Some(turn) = receipt.get("turnId").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+                    record["turnId"] = json!(turn);
+                }
+            }
+        }
         record["afterCommit"] = payload["snapshot"]["commit"].clone();
         record["completedAt"] = json!(now);
         for field in ["changedFiles", "additions", "deletions"] {
@@ -521,7 +531,6 @@ fn save_checkpoint(
     }
     commit::write_value(db, "kiwi.checkpoints", &json!(records))?;
     commit::write_value(db, "kiwi.checkpointHeads", &json!(heads))?;
-    let _ = stamp;
     Ok(())
 }
 
@@ -605,3 +614,7 @@ pub(super) fn invalidate(core: &mut Core) {
 #[cfg(test)]
 #[path = "prompt_preparation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "isolated_draft_tests.rs"]
+mod isolated_draft_tests;

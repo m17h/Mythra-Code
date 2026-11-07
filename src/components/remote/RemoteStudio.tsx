@@ -23,16 +23,18 @@ import { parseDiffSections } from "../../lib/gitDiff";
 import type { GitChangeArea } from "../../lib/gitInspection";
 import { joinPath } from "../../lib/paths";
 import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../../lib/projectGit";
-import { accessReason, hostProjectWrite, hostRead, hostWrite } from "../../lib/remote/remoteActions";
-import { expectRemoteRun, remoteTerminal, remoteTerminalKey, useRemoteTerminals } from "../../lib/remote/remoteTerminal";
+import { accessReason, hostProjectWrite, hostRead, hostWrite, writeHostRepository } from "../../lib/remote/remoteActions";
+import { expectRemoteRun, remoteTerminal, remoteTerminalKey, useRemoteTerminals, type RemoteTerminalStatus } from "../../lib/remote/remoteTerminal";
+import { useRemoteWorkflowLaunch } from "./RemoteWorkflowLaunch";
+import { elapsedLabel, HostTerminalSessionList, useHostTerminalSessions, useHostTerminalViewer, useReattachOwnSession } from "./RemoteTerminalSessions";
 import { cachedPanel, panelKey, rememberPanel } from "../../lib/remote/panelCache";
 import { remotePullRequests } from "../../lib/remote/remotePullRequests";
-import { refreshRemoteContext, remoteContextKey, runRemoteRowAction, useRemoteContext } from "../../lib/remote/remoteWork";
+import { forkRemoteThread, refreshRemoteContext, remoteContextKey, runRemoteRowAction, useRemoteContext } from "../../lib/remote/remoteWork";
 import { viewerRequest } from "../../lib/remote/viewerBridge";
 import { useRemoteDevices } from "../../lib/remote/devices";
 import { machineActions } from "../../lib/remote/activeMachine";
-import { selectRemoteThread, useRemoteStore } from "../../lib/remote/remoteStore";
-import type { CheckpointDiffResult, CheckpointListResult, FilePreviewResult, FilesListResult, GitDiffResult, GitLogResult, GitStatusResult, RevertPreviewResult, StudioTarget, WireGitHubAccess, WireCheckpoint, WireGitChange, WorktreeStatusResult } from "../../lib/remote/wire-studio";
+import { openRemoteThread, selectRemoteThread, useRemoteStore } from "../../lib/remote/remoteStore";
+import type { CheckpointDiffResult, CheckpointListResult, FilePreviewResult, FilesListResult, GitDiffResult, GitLogResult, GitStatusResult, RepositoryWriteAction, RevertPreviewResult, WireHostProcessPolicy, StudioTarget, WireGitHubAccess, WireCheckpoint, WireGitChange, WorktreeStatusResult } from "../../lib/remote/wire-studio";
 import type { HostContextResult } from "../../lib/remote/wire";
 import type { WireResourceResult, WireUsageDetail } from "../../lib/remote/wire-resources";
 import { addRemoteFeedback } from "../../lib/remote/remoteFeedback";
@@ -195,11 +197,13 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
   }, result.status === "error" ? "Investigate why this check could not run, fix the cause, and rerun it." : "Investigate and fix this failed check, then rerun it to verify the fix.");
   return <>
     <PanelHeader icon={SearchCode} title="Review center" subtitle={`Inspect changes on ${name}`} onClose={onClose} />
+    {/* Read only still lets checks run, as it does here; it is a warning, not a block. */}
+    {canCheck && !context?.processPolicy?.checksBlockedReason && context?.processPolicy?.readOnly && <Reason text={context.processPolicy.readOnlyReason ?? `This thread is Read only on ${name}. Checks can still run.`} />}
     <div className="studio-actions wrap review-actions">
       <button onClick={refresh}><RefreshCw size={13} /> Refresh</button>
       <button onClick={review} disabled={!target.threadId || !context || reviewing} title={target.threadId ? `Ask the model on ${name} to review the working changes` : "Open a thread to request a review"}><Bot size={13} /> AI review</button>
       <ChecksControl command={context?.check?.command} running={Boolean(checking)} runningCommand={lastCheck?.command} startedAt={checking ? lastCheck?.createdAt ?? null : null} result={checkResult} onAddFeedback={addCheckNote}
-        disabledReason={canCheck ? undefined : accessReason(name, "run checks", "Terminal")}
+        disabledReason={!canCheck ? accessReason(name, "run checks", "Terminal") : context?.processPolicy?.checksBlockedReason ?? undefined}
         discovery={canCheck ? discovery : undefined} discoveryModelNote={`The model saved on ${name}${context?.discovery?.model ? ` · ${context.discovery.model}` : ""}`}
         onRun={() => { void hostWrite<{ processHandle?: string }>(device, name, "checks.start", checkRevision).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(outcome.result?.processHandle ?? "running"); }); }}
         onStop={() => { if (checking) void hostWrite(device, name, "checks.stop", { ...checkRevision, processHandle: checking }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(null); }); }}
@@ -222,25 +226,66 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
   </>;
 }
 
-function HostTerminal({ device, name, target, allowed, onClose }: { device: string; name: string; target: StudioTarget; allowed: boolean; onClose: () => void }) {
+function HostTerminal({ device, name, target, allowed, policy, onClose }: { device: string; name: string; target: StudioTarget; allowed: boolean; policy: WireHostProcessPolicy | undefined; onClose: () => void }) {
   const session = useMemo(() => remoteTerminal(device, target.workspaceId), [device, target.workspaceId]);
   const view = useRemoteTerminals((state) => state.views[remoteTerminalKey(device, target.workspaceId)]);
   const platform = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.platform);
-  // Other work on that machine, named so nobody starts a second copy by accident.
-  const { data: others } = useHostData(allowed ? () => hostRead<WireResourceResult>(device, "terminal.list", { ...target }) : null, panelKey(device, "terminal.list", target));
-  const elsewhere = useMemo(() => (others?.terminals ?? []).filter((entry) => !entry.owned && entry.state === "running").map((entry) => ({ scope: entry.terminalId, command: entry.command })), [others?.terminals]);
+  const connectionState = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.state);
+  // Each time the link comes back is a new chance to reconnect a command started here.
+  const [connection, setConnection] = useState(0);
+  const lastState = useRef(connectionState);
+  useEffect(() => { if (lastState.current !== "connected" && connectionState === "connected") setConnection((value) => value + 1); lastState.current = connectionState; }, [connectionState]);
+  const connected = connectionState === "connected";
+  const { list: sessions, error: listError, reload: reloadSessions } = useHostTerminalSessions(device, target.workspaceId, allowed && connected);
+  const { failure: reattachFailure, retry: retryReattach } = useReattachOwnSession(device, target.workspaceId, allowed && connected, String(connection));
+  // A session picked from the list: reattached when the host allows it, otherwise shown read-only.
+  const [watching, setWatching] = useState<string | null>(null);
+  const viewer = useHostTerminalViewer(device, target.workspaceId, watching);
+  const busy = Boolean(view?.running || view?.opening);
+  useEffect(() => { if (!busy) reloadSessions(); }, [busy, reloadSessions]);
+  const select = (entry: RemoteTerminalStatus) => {
+    if (watching === entry.terminalId) { setWatching(null); return; }
+    if (entry.attachable && entry.running && !busy) { setWatching(null); void session.attach(entry.terminalId).catch(() => reloadSessions()); return; }
+    setWatching(entry.terminalId);
+  };
+  // Starting, typing and stopping need Terminal access and a command this device may control.
+  // Read only (the sandbox) still allows safe commands, so it is only a warning.
+  const observer = Boolean(view?.readOnly);
+  const canRunHere = allowed && connected;
+  const canControl = canRunHere && !observer && !watching;
+  const controlReason = !allowed ? accessReason(name, "run commands", "Terminal")
+    : !connected ? `${name} isn't connected right now.`
+    : watching ? "This is a read-only view of that command. Choose it again to go back."
+    : observer ? `This command was started on ${name}, so only it can type into it or stop it. You can watch it here.` : undefined;
+  const reason = !allowed ? accessReason(name, "run commands", "Terminal")
+    : watching ? viewer.status?.notice || (viewer.status ? viewer.status.running ? `Watching a command on ${name}. Choose it again to go back.` : `That command has ended${viewer.status.exitCode === null ? "" : ` · exit ${viewer.status.exitCode}`} · ${elapsedLabel(viewer.status.elapsedMs)}.` : `Reading that command's output from ${name}…`)
+    : observer ? `This command was started on ${name}. You can watch it here.`
+    : policy?.processPolicyReason ?? (policy?.terminalBusy && !busy ? `A terminal command is already running on ${name}.` : null)
+    ?? (view?.notice || (view && !view.running && typeof view.exitCode === "number" && view.exitCode !== 0 ? `Stopped · exit ${view.exitCode}.` : ""));
+  const onInput = useCallback((data: string) => session.write(name, data), [name, session]);
+  const onResize = useCallback((columns: number, rows: number) => session.resize(name, columns, rows), [name, session]);
+  const onRun = useCallback(async (command: string) => {
+    await session.run(name, target.threadId, command);
+    const after = useRemoteTerminals.getState().views[remoteTerminalKey(device, target.workspaceId)];
+    reloadSessions();
+    return Boolean(after?.running || after?.terminalId);
+  }, [device, name, reloadSessions, session, target.threadId, target.workspaceId]);
+  const onStop = useCallback(() => session.stop(name), [name, session]);
+  const onClear = useCallback(() => session.clear(), [session]);
   return <>
     <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={`Runs on ${name}`} onClose={onClose} />
-    <Reason text={!allowed ? accessReason(name, "run commands", "Terminal") : view?.notice ?? ""} />
-    <TerminalPanelHost outputStore={session.store} scope={`${device}/${target.workspaceId}`} scopeLabel={name} shell={platform === "windows" ? "Command Prompt" : platform === "macos" ? "zsh" : "shell"} running={Boolean(view?.running || view?.opening)}
-      runningCommand={view?.command ?? ""} runningElsewhere={elsewhere} readOnly={!allowed}
-      onRun={(command) => { void session.run(name, target.threadId, command); }}
-      onStop={() => session.stop(name)}
-      onClear={() => session.clear()}
-      onInput={(data) => session.write(name, data)}
-      onResize={(columns, rows) => session.resize(name, columns, rows)} />
+    <Reason text={reason} />
+    {reattachFailure && <div className="worktree-note" role="alert"><ShieldCheck size={13} aria-hidden="true" /><span>{reattachFailure}</span>
+      <button type="button" className="secondary-button" onClick={retryReattach}>Retry</button></div>}
+    <TerminalPanelHost outputStore={watching ? viewer.store : session.store} scope={`${device}/${target.workspaceId}${watching ? `/${watching}` : ""}`} scopeLabel={name} shell={platform === "windows" ? "Command Prompt" : platform === "macos" ? "zsh" : "shell"}
+      running={watching ? Boolean(viewer.status?.running) : busy}
+      runningCommand={watching ? viewer.status?.command ?? "" : view?.command ?? ""} runningElsewhere={NO_ELSEWHERE} readOnly={Boolean(policy?.readOnly)}
+      canRun={canRunHere && !watching} canControl={canControl} {...(controlReason ? { controlReason } : {})}
+      sessionList={<HostTerminalSessionList sessions={sessions} name={name} selected={watching} ownId={view?.terminalId} error={listError} onSelect={select} />}
+      onRun={onRun} onStop={onStop} onClear={onClear} onInput={onInput} onResize={onResize} />
   </>;
 }
+const NO_ELSEWHERE: { scope: string; command: string }[] = [];
 
 const AREA_MARK: Partial<Record<GitChangeArea, string>> = { staged: "M ", unstaged: " M", untracked: "??" };
 const PUBLISH_RECHECK_MS = 15_000;
@@ -334,7 +379,39 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
     onChanged: reloadGitHub,
   }), [blocked, github, label, linkedNumber, linkedRepository, onAttach, pullRequests, reloadGitHub, target.threadId, updateLocal]);
   const signInHere = () => setOutput(`GitHub sign-in stays on ${name}. Connect it there in Settings → GitHub.`);
-  const connectHere = () => setOutput(`Connecting this project to GitHub happens on ${name}. There, open this project, then Git → Connect a GitHub repository.`);
+  /** The same Connect form as here. The host runs Git and GitHub in its own checkout, with its own sign-in. */
+  const [repositoryBusy, setRepositoryBusy] = useState(false);
+  /** A create whose answer never came back, or a repository made but not attached. Either is
+   * recovered by checking or attaching, never by creating again. */
+  const [recovery, setRecovery] = useState<{ kind: "unknown" } | { kind: "unattached"; url: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const changeRepository = useCallback(async (action: RepositoryWriteAction, success: string) => {
+    if (!allowed) { setOutput(reason); return; }
+    setRepositoryBusy(true); setOutput("");
+    const outcome = await writeHostRepository(device, name, target.workspaceId, action, target.threadId);
+    setRepositoryBusy(false);
+    const made = outcome.result?.repository;
+    if (action.action === "createRepository" && outcome.unknown) {
+      setRecovery({ kind: "unknown" });
+      setOutput(`We couldn't confirm whether the repository was created on ${name}. Check before trying again.`);
+      return;
+    }
+    if (outcome.ok && made && made.attached === false && made.url) {
+      setRecovery({ kind: "unattached", url: made.url });
+      setOutput(made.message || `The repository was created at ${made.url}, but ${name} couldn't attach it to this project.`);
+      reloadGitHub();
+      return;
+    }
+    setOutput(outcome.ok ? outcome.message || success : outcome.message);
+    if (outcome.ok) { setRecovery(null); reloadGitHub(); reloadCheckout(); reloadRepository(); }
+  }, [allowed, device, name, reason, reloadCheckout, reloadGitHub, reloadRepository, target.threadId, target.workspaceId]);
+  // The project now names a repository: whatever was in doubt is settled.
+  useEffect(() => { if (github?.repository && recovery) { setRecovery(null); setOutput(`This project is connected to ${github.repository} on ${name}.`); } }, [github?.repository, name, recovery]);
+  const checkRepository = () => {
+    setChecking(true);
+    reloadGitHub(); reloadCheckout();
+    void refreshRemoteContext(device, target.workspaceId, target.threadId).finally(() => setChecking(false));
+  };
   /** The host's latest suggestion. It changes when a turn on that machine writes a new one. */
   const threadScoped = Boolean(target.threadId);
   const { data: suggested, reload: reloadSuggestion } = useHostData(threadScoped ? () => hostRead<WireResourceResult>(device, "git.suggestion.read", { ...target }) : null, panelKey(device, "git.suggestion", target));
@@ -420,6 +497,14 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
   };
   return <>
     <PanelHeader icon={FolderGit2} title="Git" subtitle={`Changes on ${name}`} onClose={onClose} />
+    {recovery && <div className="worktree-note" role="alert"><ShieldCheck size={13} aria-hidden="true" />
+      {recovery.kind === "unknown"
+        ? <><span>We couldn't confirm whether the GitHub repository was created on {name}. Check this project before trying anything else.</span>
+          <button type="button" className="secondary-button" disabled={checking} onClick={checkRepository}>{checking ? "Checking…" : "Check again"}</button>
+          <button type="button" className="secondary-button" onClick={() => { setRecovery(null); setOutput(""); }} title="Only if you've checked on GitHub that it wasn't created">It wasn't created</button></>
+        : <><span>The repository <code>{recovery.url}</code> exists but isn't attached to this project on {name}.</span>
+          <button type="button" className="secondary-button" disabled={repositoryBusy} onClick={() => void changeRepository({ action: "attachRemote", url: recovery.url }, `GitHub repository attached on ${name}.`)}>Attach it</button></>}
+    </div>}
     <GitPanel repositoryState={repository?.repository === false ? "absent" : "ready"} gitInitializing={busy} gitOutput={output} gitCommitSuccess="" gitCommitBusy={busy} githubAuthenticated={github?.authenticated === true}
       githubRepoStatus={github ? { isRepo: true, repository: github.repository, branch: github.branch, upstream: github.upstream, ahead: github.ahead, behind: github.behind } : null}
       hasPullRequestWorkflow pullRequests={projectAccess}
@@ -432,7 +517,9 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
       readOnly={!allowed} readOnlyReason={reason} gitOperationBusy={busy} defaultRepositoryName="" inspection={inspection} workflow={workflow} draft={currentDraft} onDraftChange={onDraft}
       commitSuggestion={commitSuggestion} commitSuggestionBusy={threadBusy} readCommitContext={readCommitContext} onRegenerateCommitMessage={target.threadId && canWork ? regenerate : undefined} view={view} onViewChange={onView} focusRequest={route}
       onOpenTool={onTab} onPathAction={pathAction} onAction={panelAction}
-      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} onGitHubAttach={connectHere} onGitHubCreate={connectHere} onOpenGitHubSettings={signInHere} />
+      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} githubBusy={repositoryBusy || recovery?.kind === "unknown"}
+      onGitHubAttach={(url) => { if (url.trim()) void changeRepository({ action: "attachRemote", url: url.trim() }, `GitHub repository attached on ${name}.`); }}
+      onGitHubCreate={(repository, visibility) => { if (recovery) { setOutput("Finish checking the last repository first."); return; } if (repository.trim()) void changeRepository({ action: "createRepository", name: repository.trim(), visibility }, `${visibility === "private" ? "Private" : "Public"} GitHub repository created on ${name}.`); }} onOpenGitHubSettings={signInHere} />
   </>;
 }
 
@@ -457,7 +544,21 @@ function HostCheckpoints({ device, name, target, revision, threadOpen, allowed, 
     <Reason text={failed ? `Mythra Code couldn't read checkpoints on ${name}. Try again.` : notice} />
     <CheckpointsPanel activeThread={threadOpen} checkpoints={checkpoints} checkpointHead={data?.head} checkpointBusyId={busy} checkpointPreview={preview} onClose={onClose}
       onCheckpoint={() => run("manual", "checkpoint.create", { checkpointId: crypto.randomUUID(), label: "Manual checkpoint" })}
-      onFork={onFork}
+      forkSavedCheckpoints
+      onFork={(checkpoint) => {
+        if (!checkpoint) { onFork(); return; }
+        // From the chosen checkpoint's own conversation, as here. A refusal never falls back to the latest turn.
+        const fromThread = checkpoint.threadId, workspaceId = target.workspaceId, shownThread = target.threadId;
+        if (!fromThread) return;
+        setBusy(checkpoint.id); setNotice("");
+        void forkRemoteThread(device, name, fromThread, checkpoint.id).then(async (result) => {
+          setBusy(null);
+          if ("failure" in result) { setNotice(result.failure); return; }
+          // Opened once the host lists it, and only if the person is still where they started.
+          const stillHere = () => { const view = useRemoteStore.getState().devices[device]; return view?.workspaceId === workspaceId && (view.threadId ?? undefined) === shownThread; };
+          await openRemoteThread(device, workspaceId, result.threadId, stillHere);
+        });
+      }}
       onCheckpointRestore={(checkpoint, restore: CheckpointRestoreTarget) => {
         if (!allowed) { setNotice(accessReason(name, "restore checkpoints", "Restore checkpoints and Terminal")); return; }
         void confirmDialog(`Restore “${checkpoint.label}” on ${name}?\n\nA safety copy is saved first.`).then((confirmed) => { if (confirmed) run(checkpoint.id, "checkpoint.restore", { checkpointId: checkpoint.id, target: restore, confirmed: true }); });
@@ -592,7 +693,12 @@ function HostTools({ device, name, target, context, onOpenThread, onTab, onClose
   const finish = (outcome: { ok: boolean; message: string }) => { setNotice(outcome.message); if (outcome.ok) reloadWorkflows(); };
   const scoped = target ? { ...target, revision } : null;
   const skills = context?.skills ?? [];
+  // The same reviewed launch as the palette and composer: inputs first, then the host starts it.
+  const projectList = useRemoteStore((state) => state.devices[device]?.workspaces);
+  const projects = useMemo(() => projectList?.filter((entry) => !entry.isChat) ?? [], [projectList]);
+  const { review, dialog } = useRemoteWorkflowLaunch({ device, name, workspaceId: target?.workspaceId, threadId: target?.threadId, revision, projects, onNotice: setNotice });
   return <>
+    {dialog}
     <PanelHeader icon={Wrench} title="Tools & skills" subtitle={`Available on ${name}`} onClose={onClose} />
     <div className="studio-actions"><button onClick={() => { reloadWorkflows(); reloadActions(); reloadInventory(); if (target) void refreshRemoteContext(device, target.workspaceId, target.threadId); }}><RefreshCw size={13} /> Rescan</button></div>
     <Reason text={notice} />
@@ -602,7 +708,7 @@ function HostTools({ device, name, target, context, onOpenThread, onTab, onClose
       const asks = workflow.variables.some((variable) => variable.promptOnRun);
       return <div className="studio-list-row" key={workflow.id}><WorkflowIcon size={14} /><div><strong>{workflow.name}</strong><small>{workflow.steps.length} step{workflow.steps.length === 1 ? "" : "s"} · {latest?.status ?? "ready"}</small></div>
         {running ? <button className="danger-action" title="Stop workflow" aria-label={`Stop ${workflow.name}`} onClick={() => { if (scoped) void hostWrite(device, name, "workflows.stop", { ...scoped, workflowId: workflow.id, runId: latest.id }).then(finish); }}><CircleStop size={13} /></button>
-          : <button disabled={asks} title={asks ? "This workflow asks for details first. Start it from the composer." : "Run workflow"} aria-label={`Run ${workflow.name}`} onClick={() => { if (scoped) void hostWrite(device, name, "workflows.start", { ...scoped, workflowId: workflow.id }).then(finish); }}><Play size={13} /></button>}
+          : <button title={asks ? "Review this workflow's inputs, then run it" : "Run workflow"} aria-label={`Run ${workflow.name}`} onClick={() => { void review(workflow.id).then((started) => { if (started) reloadWorkflows(); }); }}><Play size={13} /></button>}
         {latest?.threadId && <button title="Open workflow thread" aria-label={`Open ${workflow.name} thread`} onClick={() => onOpenThread(latest.threadId!)}><ChevronRight size={13} /></button>}</div>;
     }) : <span className="tool-empty-line">{target ? `No agent workflows on ${name}.` : `Choose a project on ${name}.`}</span>}</div>
     <h3 className="panel-label">Project actions</h3><div className="studio-list compact">{actions?.actions?.length ? actions.actions.map((action) => <div className="studio-list-row" key={action.id}><Play size={14} /><div><strong>{action.name}</strong><small>{action.command}</small></div>
@@ -664,7 +770,7 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
     </>}
     {!target && tab !== "files" && tab !== "usage" && tab !== "tools" && <><PanelHeader icon={FolderGit2} title="Thread tools" subtitle={name} onClose={onClose} />{empty}</>}
     {target && tab === "review" && <HostChanges key={targetKey} device={device} name={name} target={target} context={context} onOpenGit={() => { setGitView("changes"); onTab("git"); }} onClose={onClose} />}
-    {target && tab === "terminal" && <HostTerminal key={`${device}:${target.workspaceId}`} device={device} name={name} target={target} allowed={Boolean(capabilities?.terminal)} onClose={onClose} />}
+    {target && tab === "terminal" && <HostTerminal key={`${device}:${target.workspaceId}`} device={device} name={name} target={target} allowed={Boolean(capabilities?.terminal)} policy={context?.processPolicy} onClose={onClose} />}
     {target && tab === "git" && <HostGit key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.gitWrite && capabilities.terminal)} canWork={Boolean(capabilities)} threadBusy={threadBusy} draft={gitDrafts[targetKey]} onDraft={saveGitDraft} view={gitView} route={gitRoute} onView={setGitView} onTab={onTab} onClose={onClose} />}
     {target && tab === "checkpoints" && <HostCheckpoints key={targetKey} device={device} name={name} target={target} revision={revision} threadOpen={Boolean(threadId)} allowed={Boolean(capabilities?.checkpointRestore && capabilities.terminal)} onFork={onFork} onClose={onClose} />}
     {target && tab === "worktrees" && <HostWorktrees key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.terminal)} onReview={() => onTab("review")} onFiles={() => onTab("files")} onClose={onClose} />}
