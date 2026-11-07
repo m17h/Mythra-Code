@@ -15,7 +15,8 @@ import {
   useRemoteDevices,
 } from "../../lib/remote/devices";
 import type { RemoteDevice } from "../../lib/remote/types";
-import { PairingSheets } from "./PairingSheets";
+import { PairingSheets, PendingFlow } from "./PairingSheets";
+import { LocalNetworkActions } from "./LocalNetworkActions";
 import "./MachineSwitcher.css";
 
 function StatusDot({ device }: { device: RemoteDevice }) {
@@ -75,9 +76,10 @@ export function MachineSwitcher({ onManageDevices, pairingBlocked = false }: { o
   const remoteActive = active !== LOCAL_MACHINE;
   const activeLabel = remoteActive ? device?.name ?? activeName ?? "Remote device" : local;
   // With nothing to switch to, the sidebar looks the way it always has.
-  const quiet = !remoteActive && paired.length === 0 && nearby.length === 0;
-  const looking = Boolean(snapshot?.browsing);
   const network = snapshot ? networkHelp(snapshot) : null;
+  // A Mac kept off the network would otherwise look like a quiet, empty switcher.
+  const quiet = !remoteActive && paired.length === 0 && nearby.length === 0 && !network?.localNetwork;
+  const looking = Boolean(snapshot?.browsing);
   const ready = initialization === "ready" && Boolean(snapshot?.ready);
 
   const findNearby = () => {
@@ -128,6 +130,7 @@ export function MachineSwitcher({ onManageDevices, pairingBlocked = false }: { o
         onClick={() => setOpen((current) => !current)}
       >
         {device && <StatusDot device={device} />}
+        {!device && network?.localNetwork && <span className="machine-dot unreachable" role="img" aria-label="Local network access is off" />}
         {!quiet && <span>{activeLabel}</span>}
         <ChevronDown size={13} aria-hidden="true" />
       </button>
@@ -178,13 +181,14 @@ export function MachineSwitcher({ onManageDevices, pairingBlocked = false }: { o
             <p className="machine-menu-note">Looking for nearby devices. On your other computer, turn on Allow access from nearby devices, then choose Pair a device.</p>
           ))}
 
-          {network && <p className="machine-menu-note">{network.text}</p>}
-          {network?.canRetry && (
+          {network && <p className="machine-menu-note" role={network.localNetwork ? "alert" : undefined}>{network.text}</p>}
+          {network?.localNetwork ? <LocalNetworkActions row retrying={searching} onRetry={findNearby} /> : network?.canRetry && (
             <button type="button" className="machine-row" disabled={searching} onClick={findNearby}>
               <RefreshCw size={14} aria-hidden="true" />
               <span className="machine-row-name">Try again</span>
             </button>
           )}
+          {snapshot?.flow && snapshot.flow.stage !== "done" && <PendingFlow flow={snapshot.flow} row onError={setError} />}
           {error && <p className="machine-menu-note error" role="alert">{error}</p>}
 
           <button type="button" className="machine-row subtle" onClick={() => { closeMenu(); onManageDevices(); }}>

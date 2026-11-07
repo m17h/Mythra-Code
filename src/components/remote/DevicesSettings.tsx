@@ -32,6 +32,8 @@ import {
 import type { DeviceGrant, RemoteDevice, RemoteSnapshot } from "../../lib/remote/types";
 import type { Project } from "../../types";
 import "./DevicesSettings.css";
+import { LocalNetworkActions } from "./LocalNetworkActions";
+import { PendingFlow } from "./PairingSheets";
 
 function Switch({ label, checked, disabled, describedBy, onChange }: {
   label: string;
@@ -506,12 +508,14 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
         </div>
         {snapshot.hostError && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>{snapshot.hostError}</span></p>}
         {network && (
-          <p className="settings-footnote" role="note">
+          <p className={`settings-footnote ${network.localNetwork ? "local-network-note" : ""}`} role={network.localNetwork ? "alert" : "note"}>
             <Info size={13} aria-hidden="true" />
             <span>{network.text}</span>
-            {network.canRetry && <button type="button" className="secondary-button" disabled={searching} onClick={findNearby}>Try again</button>}
+            {network.localNetwork ? <LocalNetworkActions retrying={searching} onRetry={findNearby} />
+              : network.canRetry && <button type="button" className="secondary-button" disabled={searching} onClick={findNearby}>Try again</button>}
           </p>
         )}
+        {snapshot.flow && snapshot.flow.stage !== "done" && <PendingFlow flow={snapshot.flow} onError={setError} />}
         {snapshot.refusedAdapters > 0 && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Windows wouldn't announce this device on every network it's connected to. Devices on those networks may not find it, but an invitation can still work.</span></p>}
         {snapshot.unsavedChanges && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>Your latest change is active, but Mythra Code hasn't saved it yet and is still trying. If you quit now, it could be undone.</span></p>}
         {error && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>{error}</span></p>}

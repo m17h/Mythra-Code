@@ -55,6 +55,8 @@ const REQUEST_WAIT: Duration = Duration::from_secs(10);
 /// Slightly longer than `PENDING_LIFETIME`, so the host's answer arrives first.
 const APPROVAL_WAIT: Duration = Duration::from_secs(75);
 const OFFER_LIMIT: Duration = Duration::from_secs(30);
+const VIEWER_DIAL_LIMIT: Duration = Duration::from_secs(30);
+const MAC_LOCAL_NETWORK_HELP:&str="macOS may be blocking Mythra Code from connecting to your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. If a permission prompt is open, choose Allow. Then choose Try again.";
 const INVITATION_PREFIX: &str = "mythra-invite:1:";
 const MAX_INVITATION_CHARS: usize = 2_048;
 const TOKEN_BYTES: usize = 16;
@@ -1067,6 +1069,7 @@ pub(super) enum FlowStage {
 
 pub(super) struct ViewerFlow {
     pub(super) id: u64,
+    connect_started: Instant,
     target: String,
     pub(super) stage: FlowStage,
     code: Option<String>,
@@ -1115,11 +1118,15 @@ fn begin_flow_locked(
     target: String,
     link: Option<Arc<Link>>,
 ) -> Result<(), String> {
+    if let Some(flow)=core.flow.as_mut().filter(|flow|flow.stage==FlowStage::Connecting&&flow.link.is_none()&&flow.connect_started.elapsed()>=VIEWER_DIAL_LIMIT){
+        flow.stage=FlowStage::Failed;flow.error=Some("The connection attempt timed out. Choose Try again.".into());
+    }
     if core.flow.as_ref().is_some_and(ViewerFlow::is_active) {
         return Err("Finish the pairing that is already in progress first.".into());
     }
     core.flow = Some(ViewerFlow {
         id,
+        connect_started:Instant::now(),
         target,
         stage: FlowStage::Connecting,
         code: None,
@@ -1155,21 +1162,25 @@ fn update_flow(inner: &Arc<Inner>, id: u64, change: impl FnOnce(&mut ViewerFlow)
 }
 
 fn fail_flow(inner: &Arc<Inner>, id: u64, message: String) {
-    let link = {
-        let mut core = inner.lock();
-        core.flow
-            .as_mut()
-            .filter(|flow| flow.id == id)
-            .and_then(|flow| flow.link.take())
-    };
-    if let Some(link) = link {
-        link.close(CloseReason::Finished);
-    }
-    update_flow(inner, id, |flow| {
-        flow.stage = FlowStage::Failed;
-        flow.code = None;
-        flow.error = Some(message);
-    });
+    let link={let mut core=inner.lock();let Some(flow)=core.flow.as_mut().filter(|flow|flow.id==id&&flow.is_active())else{return;};
+        flow.stage=FlowStage::Failed;flow.code=None;flow.error=Some(message);flow.decision=None;flow.link.take()};
+    if let Some(link)=link{link.close(CloseReason::Finished);}
+    super::diagnostics::record(super::diagnostics::Event::Link,0,0,id,0,"pair.connect","failed");
+    inner.changed();inner.wake.notify_one();
+}
+
+struct ConnectingAttempt{inner:Arc<Inner>,id:u64,armed:bool}
+impl Drop for ConnectingAttempt{fn drop(&mut self){if self.armed{fail_flow(&self.inner,self.id,"The connection attempt ended before pairing finished. Choose Try again.".into());}}}
+async fn viewer_dial_with_limit(
+    inner:&Arc<Inner>,id:u64,target:&str,limit:Duration,
+    dial:impl std::future::Future<Output=Result<Arc<Link>,DialError>>,
+)->Result<Arc<Link>,DialError>{
+    let mut guard=ConnectingAttempt{inner:inner.clone(),id,armed:true};
+    super::diagnostics::record(super::diagnostics::Event::Link,0,0,id,0,"pair.connect","out");
+    let result=tokio::time::timeout(limit,dial).await;
+    let result=match result{Ok(result)=>result,Err(_)=>{super::diagnostics::record(super::diagnostics::Event::Link,0,0,id,0,"pair.connect","timeout");Err(DialError::Unreachable)}};
+    if let Err(error)=&result{fail_flow(inner,id,explain_dial(inner,error,target));}
+    guard.armed=false;result
 }
 
 fn explain_refusal(error: &WireError, target: &str, approving: bool) -> String {
@@ -1191,10 +1202,10 @@ fn explain_refusal(error: &WireError, target: &str, approving: bool) -> String {
 fn explain_dial(inner: &Inner, error: &DialError, target: &str) -> String {
     let (denied, this_device) = {
         let core = inner.lock();
-        (core.denied_since.is_some(), super::device_name(&core))
+        (core.denied_since.is_some()||core.outgoing_denied_since.is_some_and(|at|at.elapsed()<Duration::from_secs(120)), super::device_name(&core))
     };
-    if denied && cfg!(target_os = "macos") {
-        return "Mythra Code can't access your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. Then choose Try again.".into();
+    if (denied && cfg!(target_os = "macos"))||matches!(error,DialError::LocalNetworkMayBeBlocked) {
+        return MAC_LOCAL_NETWORK_HELP.into();
     }
     match error {
         // Refused because the other side is newer, so this is the one to update.
@@ -1495,7 +1506,7 @@ pub(super) async fn start_nearby(inner: &Arc<Inner>, instance: &str) -> Result<(
     inner.changed();
     let inner = inner.clone();
     tauri::async_runtime::spawn(async move {
-        match dial_any(&inner, &addresses, ServerKeyPolicy::Capture, Role::Viewer).await {
+        match viewer_dial_with_limit(&inner,flow_id,&target,VIEWER_DIAL_LIMIT,dial_any(&inner, &addresses, ServerKeyPolicy::Capture, Role::Viewer)).await {
             Ok(link) => {
                 run_initiator(inner, flow_id, link, None, target, PairingMode::Nearby).await;
             }
@@ -1524,7 +1535,7 @@ pub(super) async fn start_invitation(inner: &Arc<Inner>, text: &str) -> Result<(
     let inner = inner.clone();
     tauri::async_runtime::spawn(async move {
         // The invitation pins the host's key, so only that device can answer.
-        match dial_any(&inner, &addresses, ServerKeyPolicy::Pinned(invitation.fp), Role::Viewer).await {
+        match viewer_dial_with_limit(&inner,flow_id,&target,VIEWER_DIAL_LIMIT,dial_any(&inner, &addresses, ServerKeyPolicy::Pinned(invitation.fp), Role::Viewer)).await {
             Ok(link) => {
                 let token = Some(invitation.token);
                 run_initiator(inner, flow_id, link, token, target, PairingMode::Invitation).await;
@@ -1712,3 +1723,7 @@ pub(super) fn test_open_window(inner: &Arc<Inner>, temporary: bool, lifetime: Du
 #[cfg(test)]
 #[path = "pairing_cancel_tests.rs"]
 mod cancellation_tests;
+
+#[cfg(test)]
+#[path="pairing_network_tests.rs"]
+mod network_tests;

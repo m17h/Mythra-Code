@@ -1,11 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { DeviceGrant, RemotePingResult, RemoteSnapshot } from "./types";
 
 export const remoteSnapshot = () => invoke<RemoteSnapshot>("remote_snapshot");
 export const remoteSetHosting = (enabled: boolean) => invoke<RemoteSnapshot>("remote_set_hosting", { enabled });
 export const remoteSetDeviceName = (name: string) => invoke<RemoteSnapshot>("remote_set_device_name", { name });
 export const remoteSetShareName = (shared: boolean) => invoke<RemoteSnapshot>("remote_set_share_name", { shared });
+/** The one settings page that grants Local Network access. Its scope allows nothing else. */
+export const LOCAL_NETWORK_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork";
+export const openLocalNetworkSettings = () => openUrl(LOCAL_NETWORK_SETTINGS);
 export const remoteFindNearby = () => invoke<RemoteSnapshot>("remote_find_nearby");
 export const remotePairingOpen = () => invoke<RemoteSnapshot>("remote_pairing_open");
 export const remotePairingClose = () => invoke<RemoteSnapshot>("remote_pairing_close");

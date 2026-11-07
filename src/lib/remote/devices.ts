@@ -119,11 +119,18 @@ export interface NetworkNotice {
   text: string;
   /** The wording asks the user to choose Try again. */
   canRetry: boolean;
+  /** macOS is keeping this app off the local network: offer its settings page. */
+  localNetwork?: boolean;
 }
 
 /** Notes about the network that apply to this whole device. */
 /** The wording for this device asks the user to choose Try again, so a button must be beside it. */
 export const deviceHelpOffersRetry = (device: RemoteDevice) => device.state === "unreachable" && device.platform === "macos";
+
+export const LOCAL_NETWORK_BLOCKED = "Mythra Code can't access your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. Then choose Try again.";
+/** True only on a Mac whose Local Network access is denied. */
+export const localNetworkBlocked = (snapshot: Pick<RemoteSnapshot, "platform" | "networkAccess"> | null | undefined) =>
+  snapshot?.platform === "macos" && snapshot.networkAccess === "blocked";
 
 export function networkHelp(snapshot: RemoteSnapshot): NetworkNotice | null {
   if (snapshot.networkAccess === "waiting") {
@@ -133,7 +140,7 @@ export function networkHelp(snapshot: RemoteSnapshot): NetworkNotice | null {
   }
   if (snapshot.networkAccess === "blocked") {
     return snapshot.platform === "macos"
-      ? { text: "Mythra Code can't access your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. Then choose Try again.", canRetry: true }
+      ? { text: LOCAL_NETWORK_BLOCKED, canRetry: true, localNetwork: true }
       : { text: `Windows may be blocking connections to Mythra Code on ${snapshot.deviceName}. On this PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`, canRetry: true };
   }
   if (snapshot.publicNetwork === true) {

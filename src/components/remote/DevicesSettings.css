@@ -64,3 +64,10 @@
 .app-shell[data-theme][data-color-scheme] .devices-grant-projects { display: flex; flex-direction: column; gap: 4px; max-height: 180px; margin: 0 0 8px; padding: 6px 8px; overflow-y: auto; color: var(--muted); font-size: 12px; }
 .app-shell[data-theme][data-color-scheme] .devices-grant-projects label { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .app-shell[data-theme][data-color-scheme] .devices-steps { margin: 0 0 8px; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+/* Local Network denial: the note and its two actions stay together, and wrap if they must. */
+.local-network-note { flex-wrap: wrap; align-items: center; }
+.local-network-note > span:first-of-type { flex: 1 1 60%; min-width: 0; }
+.local-network-note .secondary-button { display: inline-flex; align-items: center; gap: 6px; }
+.local-network-failed { flex-basis: 100%; color: var(--muted); }
+

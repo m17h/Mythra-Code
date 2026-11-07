@@ -956,6 +956,8 @@ fn wire_version(hello: &Hello) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DialError {
     Unreachable,
+    /// Outgoing LAN TCP was refused in a way consistent with macOS privacy.
+    LocalNetworkMayBeBlocked,
     /// A device proved a key the policy does not accept.
     KeyRejected(Option<String>),
     /// The peer's protocol is newer, so this device has to update.
@@ -1007,8 +1009,9 @@ pub(super) async fn dial(
     let name = tls::server_name().map_err(|_| DialError::Failed)?;
     let tcp=match timeout(CONNECT_LIMIT,TcpStream::connect(address)).await {
         Ok(Ok(tcp))=>tcp,
-        other=>{let outcome=match &other{Err(_)=>"timeout",Ok(Err(e))=>super::diagnostics::network_outcome(e),_=>"failed"};super::diagnostics::record(super::diagnostics::Event::Link,0,0,if address.is_ipv4(){4}else{6},0,"tcp.dial",outcome);return Err(DialError::Unreachable);}
+        other=>{let outcome=match &other{Err(_)=>"timeout",Ok(Err(e))=>super::diagnostics::network_outcome(e),_=>"failed"};super::diagnostics::record(super::diagnostics::Event::Link,0,0,if address.is_ipv4(){4}else{6},0,"tcp.dial",outcome);let likely=match &other{Ok(Err(error))=>inner.note_tcp_failure(address,error),_=>false};return Err(if likely{DialError::LocalNetworkMayBeBlocked}else{DialError::Unreachable});}
     };
+    inner.note_tcp_connected();
     let _ = tcp.set_nodelay(true);
     let handshake = timeout(HANDSHAKE_LIMIT, async {
         let mut stream = TlsConnector::from(config)

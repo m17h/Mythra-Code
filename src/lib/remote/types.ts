@@ -87,6 +87,8 @@ export interface PairingFlow {
   code: string | null;
   error: string | null;
   fingerprint: string | null;
+  /** The nearby device this flow dialed, so Try again can dial it again. Older hosts omit it. */
+  instance?: string | null;
 }
 
 export interface RemoteSnapshot {

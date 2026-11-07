@@ -2,11 +2,14 @@ import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode, 
 import { createPortal } from "react-dom";
 import { Link2 } from "lucide-react";
 import { safeErrorText } from "../../lib/errors";
-import { remotePairCancel, remotePairingCancelRequest, remotePairingRespond, remotePairOfferRespond } from "../../lib/remote/client";
+import { remoteFindNearby, remotePairCancel, remotePairingCancelRequest, remotePairingRespond, remotePairNearby, remotePairOfferRespond } from "../../lib/remote/client";
+import { LocalNetworkActions } from "./LocalNetworkActions";
 import { consumeEscapeUntilRelease } from "../../lib/remote/focus";
 import {
   acceptRemoteSnapshot,
   formatPairingCode,
+  LOCAL_NETWORK_BLOCKED,
+  localNetworkBlocked,
   useRemoteDevices,
   VIEW_ONLY_GRANT,
 } from "../../lib/remote/devices";
@@ -238,8 +241,34 @@ export function ViewerOfferSheet({ peerName, code, onRespond, returnFocusRef }: 
   </PairingDialog>;
 }
 
+/** Try again for a pairing that couldn't get out: dial the same device when native
+ * says which one it was, otherwise look again so the person can pick it. */
+async function retryPairing(flow: PairingFlow): Promise<void> {
+  acceptRemoteSnapshot(await remotePairCancel());
+  acceptRemoteSnapshot(flow.instance ? await remotePairNearby(flow.instance) : await remoteFindNearby());
+}
+
+/** A pairing still under way, for places the sheet may be hidden behind something else.
+ * Whatever stage it's stuck in, it can always be cancelled from here. */
+export function PendingFlow({ flow, row = false, onError }: { flow: PairingFlow; row?: boolean; onError: (message: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const failed = flow.stage === "failed";
+  const cancel = () => {
+    setBusy(true);
+    remotePairCancel().then(acceptRemoteSnapshot).catch((reason) => onError(safeErrorText(reason, "Mythra Code couldn't cancel pairing. Try again."))).finally(() => setBusy(false));
+  };
+  const text = failed ? `Pairing with ${flow.target} didn't finish.` : `Pairing with ${flow.target}…`;
+  const label = failed ? "Close" : "Cancel pairing";
+  return row ? <>
+    <p className="machine-menu-note" role="status">{text}</p>
+    <button type="button" className="machine-row" disabled={busy} onClick={cancel}><span className="machine-row-name">{label}</span></button>
+  </> : <p className="settings-footnote" role="status"><span>{text}</span>
+    <button type="button" className="secondary-button" disabled={busy} onClick={cancel}>{label}</button></p>;
+}
+
 /** Viewer-side pairing progress; native state owns the in-flight operation. */
 function FlowSheet({ flow, onManageDevices, returnFocusRef }: { flow: PairingFlow; onManageDevices: () => void; returnFocusRef?: ReturnFocusRef }) {
+  const blocked = useRemoteDevices((state) => localNetworkBlocked(state.snapshot));
   const [closing, setClosing] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState("");
@@ -257,6 +286,26 @@ function FlowSheet({ flow, onManageDevices, returnFocusRef }: { flow: PairingFlo
       setError(safeErrorText(reason, "Mythra Code couldn't close pairing. Try again."));
     }
   };
+  const retry = async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setClosing(true);
+    setError("");
+    try { await retryPairing(flow); }
+    catch (reason) { setError(safeErrorText(reason, "Mythra Code couldn't try again. Try again in a moment.")); }
+    // The new attempt must start with its own Cancel working.
+    finally { pending.current = false; setClosing(false); }
+  };
+  if (blocked && (flow.stage === "connecting" || flow.stage === "failed")) {
+    return <PairingDialog title="Turn on Local Network for Mythra Code" alert announcement={LOCAL_NETWORK_BLOCKED} busy={closing} returnFocusRef={returnFocusRef}
+      onEscape={() => void close()} actions={<>
+        <button type="button" className="secondary-button" disabled={closing} onClick={() => void close()}>Cancel</button>
+        <LocalNetworkActions retrying={closing} onRetry={() => void retry()} />
+      </>}>
+      <p>{LOCAL_NETWORK_BLOCKED}</p>
+      {error && <p className="confirm-dialog-footnote" role="alert">{error}</p>}
+    </PairingDialog>;
+  }
   const finished = flow.stage === "done" || flow.stage === "failed";
   const title = flow.stage === "done"
     ? `Paired with ${flow.target}`
@@ -306,6 +355,6 @@ export function PairingSheets({ onManageDevices, blocked, returnFocusRef }: {
   if (flow?.stage === "offered" && flow.code) {
     return createPortal(<ViewerOfferSheet key={flow.id} peerName={flow.target} code={flow.code} onRespond={respondToOffer} returnFocusRef={returnFocusRef} />, host);
   }
-  if (flow) return createPortal(<FlowSheet flow={flow} onManageDevices={onManageDevices} returnFocusRef={returnFocusRef} />, host);
+  if (flow) return createPortal(<FlowSheet key={flow.id} flow={flow} onManageDevices={onManageDevices} returnFocusRef={returnFocusRef} />, host);
   return null;
 }

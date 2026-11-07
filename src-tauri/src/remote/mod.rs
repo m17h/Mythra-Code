@@ -277,6 +277,9 @@ struct Core {
     /// When the OS first refused local network access. DNS-SD policy denial is
     /// the only evidence that counts; macOS has no way to ask directly.
     denied_since: Option<Instant>,
+    /// DNS-SD found this LAN peer, but outgoing TCP got host/network-unreachable.
+    /// This is a hint, not proof: inbound links and Bonjour cannot clear it.
+    outgoing_denied_since: Option<Instant>,
     discovery_error: Option<String>,
     #[cfg(target_os = "macos")]
     activity: Option<macos_activity::HostingActivity>,
@@ -366,6 +369,7 @@ impl Default for Core {
             edits: SettingEdits::default(),
             host_error: None,
             denied_since: None,
+            outgoing_denied_since: None,
             discovery_error: None,
             #[cfg(target_os = "macos")]
             activity: None,
@@ -510,6 +514,7 @@ fn wants_listener(core: &Core) -> bool {
 }
 
 fn network_access(core: &Core) -> &'static str {
+    if core.outgoing_denied_since.is_some_and(|at|at.elapsed()<Duration::from_secs(120)){return "blocked";}
     match core.denied_since {
         None => "ok",
         Some(since) if since.elapsed() < PROMPT_GRACE => "waiting",
@@ -911,7 +916,7 @@ impl Inner {
                 }
             }
             addresses.truncate(MAX_ADDRESSES);
-            (addresses, entry.name.clone())
+            (addresses, entry.name.clone(), entry.id)
         };
         let (addresses, name) = if known.0.is_empty() {
             let name = instance.to_string();
@@ -921,9 +926,13 @@ impl Inner {
             .await
             .map_err(|_| GONE.to_string())?
             .map_err(|_| GONE.to_string())?;
-            (usable_addresses(resolved), known.1)
+            let addresses=usable_addresses(resolved);
+            if let Some(entry)=self.lock().nearby.get_mut(instance).filter(|entry|entry.id==known.2){
+                entry.addresses=addresses.clone();entry.resolved_at=Some(Instant::now());entry.resolve_failures=0;
+            }
+            (addresses, known.1)
         } else {
-            known
+            (known.0,known.1)
         };
         if addresses.is_empty() {
             return Err(GONE.into());
@@ -2296,6 +2305,7 @@ pub(crate) async fn remote_find_nearby(state: State<'_, RemoteState>) -> Result<
         }
         // A fresh grace period, in case the user has only just allowed access.
         core.denied_since = None;
+        core.outgoing_denied_since = None;
     }
     reconcile(&inner).await;
     inner.changed();
@@ -2635,3 +2645,28 @@ pub(crate) async fn remote_device_ping(
     })
 }
 
+
+fn outgoing_privacy_hint(core:&Core,address:SocketAddr,error:&std::io::Error,macos:bool)->bool{
+    if !macos||!matches!(error.kind(),std::io::ErrorKind::NetworkUnreachable|std::io::ErrorKind::HostUnreachable){return false;}
+    let address=discovery::types::canonical_socket(address);
+    let lan=match address.ip(){IpAddr::V4(ip)=>ip.is_private()||ip.is_link_local(),IpAddr::V6(ip)=>ip.is_unique_local()};
+    lan&&core.nearby.values().any(|entry|entry.resolve_failures==0&&entry.resolved_at.is_some_and(|at|at.elapsed()<Duration::from_secs(120))&&entry.addresses.iter().any(|peer|discovery::types::canonical_socket(*peer)==address))
+}
+impl Inner{
+    fn note_tcp_failure(&self,address:SocketAddr,error:&std::io::Error)->bool{
+        let mut core=self.lock();
+        let likely=outgoing_privacy_hint(&core,address,error,macos_local_network_privacy_available());
+        if likely{core.outgoing_denied_since=Some(Instant::now());self.dirty.store(true,Ordering::Release);self.wake.notify_one();}
+        likely
+    }
+    fn note_tcp_connected(&self){
+        if self.lock().outgoing_denied_since.take().is_some(){self.dirty.store(true,Ordering::Release);self.wake.notify_one();}
+    }
+}
+
+fn macos_local_network_privacy_available()->bool{
+    #[cfg(target_os="macos")]
+    {static AVAILABLE:OnceLock<bool>=OnceLock::new();*AVAILABLE.get_or_init(||objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion().majorVersion>=15)}
+    #[cfg(not(target_os="macos"))]
+    {false}
+}

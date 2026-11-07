@@ -40,6 +40,7 @@ fn operation(value: &str) -> &'static str {
         "tls.accept" => "tls.accept",
         "tls.dial" => "tls.dial",
         "tcp.dial" => "tcp.dial",
+        "pair.connect" => "pair.connect",
         "host" => "host",
         "viewer" => "viewer",
         "pair.request" => "pair.request",
