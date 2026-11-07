@@ -155,6 +155,8 @@ PR availability and merge methods depend on repository permissions and branch ru
 
 ## Work on another computer
 
+> **Use your other computers.** Turn on *Let my other computers use this one* on the computer you want to use. On the computer in front of you, open the machine picker at the top of the sidebar, choose the other computer, and choose *Request access*. Allow it on the other computer and you are connected, both ways if you left the box ticked. Both need Mythra Code open and the same network.
+
 Mythra Code can use another computer on the same network as if you were sitting at it: the same sidebar, conversation, composer, and Workspace, filled with that computer's projects, threads, models, and files. Prompts, model calls, and file changes all happen on the computer you select, with its accounts and its copy of the code. The computer in front of you only shows the work. Switching between them never interrupts what's running on either one.
 
 This is off by default. Until you turn it on, Mythra Code doesn't listen for connections or look for nearby devices. There's no cloud relay and no account: the two computers talk directly over your network, encrypted, and only after you pair them. Both need Mythra Code open and the same network. The computer being used can be minimized, but work can't reach it once Mythra Code quits.

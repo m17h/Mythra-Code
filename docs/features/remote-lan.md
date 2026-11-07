@@ -162,6 +162,42 @@ Error codes: `expired`, `not_paired`, `pairing_closed`, `forbidden`, `stale_targ
 `thread_unavailable`, `busy`, `unsupported`, `host_unavailable`, `rate_limited`,
 `internal`.
 
+## Connecting your computers
+
+This replaces the pairing window flow below for everything the user sees. Real
+two-machine testing showed pairing windows, invitations and blocking code checks were
+too confusing.
+
+Each computer has one switch, *Let my other computers use this one* (in the machine
+picker and Settings → Connections → Devices). It is off by default. Turning it on lets
+your other computers on the same network ask to use this one, and shows this
+computer's name on the network. Nothing is shared until you allow it.
+
+To use another computer, open the machine picker, choose it under *Nearby computers*,
+and choose *Request access*. *Let ZEDS-PC use this Mac too* is ticked by default, so one
+Allow on the other computer sets up both directions; ticking it also turns on this
+computer's switch. The request shows *Waiting for ZEDS-PC to accept* until it is
+answered, with Cancel, and survives restarts.
+
+The other computer shows a card, *MacBook wants to use this computer*, with the name
+that computer gave itself and a short code, and three answers: **Allow full use** (it
+can open your projects and run commands here), **View only**, and **Decline**. A badge
+on the machine picker and one desktop notification announce each new request. Requests
+wait until answered, up to 7 days, five at a time.
+
+A Decline can be undone right away and stays under *Declined requests* for 7 days, where
+it can still be allowed. The requester sees *ZEDS-PC declined. You can ask again later.*
+and connects by itself if it is allowed afterwards. A Decline also withdraws that
+computer's own pending offer of access to the requester. Fine-grained access for each
+connected computer is under Devices → *More*.
+
+The code is informational: a first request is trust-on-first-use, so names are shown
+as self-reported. TLS key pinning protects every later connection. Requests are bound to
+the requester's proven key, rate-limited per source and key, capped, and expire;
+cancellations and history are bounded and pruned after 7 days. When a viewer's outgoing
+connections are blocked (for example by macOS Local Network privacy), the host opens the
+connection back over an existing authenticated link.
+
 ## Pairing
 
 Pairing needs an open **pairing window** on the host: the user chooses **Pair a

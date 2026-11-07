@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { isWindowsPlatform } from "../platform";
 import { listenRemoteChanged, remoteSnapshot } from "./client";
-import type { DeviceGrant, RemoteDevice, RemoteSnapshot } from "./types";
+import type { AccessDecision, DeviceGrant, AccessRequest, OutgoingAccessRequest, RemoteDevice, RemotePlatform, RemoteSnapshot } from "./types";
 
 /**
  * This installation's devices and links, as reported by the native host. It
@@ -19,40 +19,96 @@ export const useRemoteDevices = create<RemoteDevicesState>(() => ({
   initializationError: null,
 }));
 
-/** Settings is deliberately not a blocker: pairing is shown above it. */
-export function hasPairingSheet(state: RemoteDevicesState): boolean {
-  return Boolean(state.snapshot?.pairing?.request || state.snapshot?.flow);
+const NO_INCOMING: readonly AccessRequest[] = [];
+const NO_OUTGOING: readonly OutgoingAccessRequest[] = [];
+const allIncoming = (snapshot: RemoteSnapshot | null | undefined) => snapshot?.accessRequests ?? NO_INCOMING;
+const NO_IDS: ReadonlySet<string> = new Set();
+interface IncomingLists { pending: readonly AccessRequest[]; declined: readonly AccessRequest[] }
+const incomingLists = new WeakMap<readonly AccessRequest[], WeakMap<ReadonlySet<string>, IncomingLists>>();
+function requestLists(snapshot: RemoteSnapshot | null | undefined, reopened: ReadonlySet<string>): IncomingLists {
+  const rows = allIncoming(snapshot);
+  let cache = incomingLists.get(rows);
+  if (!cache) { cache = new WeakMap(); incomingLists.set(rows, cache); }
+  const found = cache.get(reopened); if (found) return found;
+  const pending = rows.filter((request) => request.status !== "declined" || reopened.has(request.requestId));
+  const declined = rows.filter((request) => request.status === "declined" && !reopened.has(request.requestId));
+  const result = { pending: pending.length === rows.length ? rows : pending.length ? pending : NO_INCOMING,
+    declined: declined.length === rows.length ? rows : declined.length ? declined : NO_INCOMING };
+  cache.set(reopened, result); return result;
+}
+/** Undo only reopens the native card; it cannot change its answer or grant. */
+export const incomingRequests = (snapshot: RemoteSnapshot | null | undefined, reopened: ReadonlySet<string> = NO_IDS) => requestLists(snapshot, reopened).pending;
+export const declinedRequests = (snapshot: RemoteSnapshot | null | undefined, reopened: ReadonlySet<string> = NO_IDS) => requestLists(snapshot, reopened).declined;
+export const outgoingRequests = (snapshot: RemoteSnapshot | null | undefined) => snapshot?.outgoingRequests ?? NO_OUTGOING;
+/** What people call this kind of computer, for "this Mac" and "this PC". */
+export const computerWord = (platform: RemotePlatform | null | undefined) => platform === "macos" ? "Mac" : platform === "windows" ? "PC" : "computer";
+/** "just now", "5 min ago", "2 hours ago", "3 days ago". */
+export function timeAgo(at: number, now = Date.now()): string {
+  const minutes = Math.max(0, Math.floor((now - at) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-export function acceptRemoteSnapshot(next: RemoteSnapshot): void {
+/** A delayed command reply may never restore an answered/cancelled card or an
+ * old device grant over a newer event. Equal generations are duplicate state. */
+export function acceptRemoteSnapshot(next: RemoteSnapshot): boolean {
+  if (!next || !Number.isSafeInteger(next.generation) || next.generation < 0) return false;
   const current = useRemoteDevices.getState().snapshot;
-  if (current && next.generation < current.generation) return;
-  useRemoteDevices.setState({ snapshot: next });
+  if (current && next.generation <= current.generation) return false;
+  // Older native builds may retain the old modal handshake. It has no place in
+  // this store: new incoming/outgoing requests are persistent, non-modal cards.
+  const { pairing: _pairing, flow: _flow, ...snapshot } = next as RemoteSnapshot & { pairing?: unknown; flow?: unknown };
+  useRemoteDevices.setState({ snapshot: { ...snapshot,
+    accessRequests: Array.isArray(next.accessRequests) ? next.accessRequests : [],
+    outgoingRequests: Array.isArray(next.outgoingRequests) ? next.outgoingRequests : [],
+  } });
+  return true;
 }
 
-let initialized = false;
-let starting: Promise<void> | null = null;
-let stopListening: Awaited<ReturnType<typeof listenRemoteChanged>> | null = null;
-
-/** Subscribe before reading so a change during startup cannot be missed.
- * Failed steps remain retryable; successful subscriptions are reused. */
-export function startRemoteDevices(): void {
-  if (initialized || starting) return;
-  useRemoteDevices.setState({ initialization: "loading", initializationError: null });
-  starting = Promise.resolve().then(async () => {
-    try {
-      stopListening ??= await listenRemoteChanged(acceptRemoteSnapshot);
-      acceptRemoteSnapshot(await remoteSnapshot());
-      initialized = true;
-      useRemoteDevices.setState({ initialization: "ready", initializationError: null });
-    } catch {
-      useRemoteDevices.setState({
-        initialization: "failed",
-        initializationError: "Mythra Code couldn't load your devices. Choose Try again.",
-      });
-    }
-  }).finally(() => { starting = null; });
+type InitializationUpdate = Pick<RemoteDevicesState, "initialization" | "initializationError">;
+interface DeviceSyncHooks {
+  subscribe(receive: (snapshot: RemoteSnapshot) => void): Promise<() => void>;
+  read(): Promise<RemoteSnapshot>;
+  accept(snapshot: RemoteSnapshot): boolean;
+  status(update: InitializationUpdate): void;
 }
+/** One installation-wide subscription, shared by picker/settings. Kept separate
+ * from React lifetimes so toggling either surface never drops pending answers. */
+export function createRemoteDevicesSync(hooks: DeviceSyncHooks): { start(): Promise<void> } {
+  let initialized = false;
+  let starting: Promise<void> | null = null;
+  let stopListening: (() => void) | null = null;
+  const ready = () => {
+    if (initialized) return;
+    initialized = true;
+    hooks.status({ initialization: "ready", initializationError: null });
+  };
+  const receive = (snapshot: RemoteSnapshot) => { if (hooks.accept(snapshot)) ready(); };
+  return { start() {
+    if (starting) return starting;
+    if (initialized) return Promise.resolve();
+    hooks.status({ initialization: "loading", initializationError: null });
+    starting = Promise.resolve().then(async () => {
+      try {
+        stopListening ??= await hooks.subscribe(receive);
+        const snapshot = await hooks.read();
+        if (!snapshot || !Number.isSafeInteger(snapshot.generation) || snapshot.generation < 0) throw new Error("Invalid device state");
+        hooks.accept(snapshot); ready();
+      } catch {
+        // An authoritative event can win while a stale initial read fails.
+        if (!initialized) hooks.status({ initialization: "failed", initializationError: "Mythra Code couldn't load your devices. Choose Try again." });
+      }
+    }).finally(() => { starting = null; });
+    return starting;
+  } };
+}
+const devicesSync = createRemoteDevicesSync({ subscribe: listenRemoteChanged, read: remoteSnapshot, accept: acceptRemoteSnapshot,
+  status: (state) => useRemoteDevices.setState(state) });
+export function startRemoteDevices(): void { void devicesSync.start(); }
 
 export function localMachineLabel(snapshot: RemoteSnapshot | null): string {
   const windows = snapshot ? snapshot.platform === "windows" : isWindowsPlatform();
@@ -91,13 +147,13 @@ export function deviceHelp(device: RemoteDevice, snapshot: RemoteSnapshot): stri
     case "incompatible":
       return update;
     case "accessRemoved":
-      return `Your access to ${name} was removed. Your draft is saved. Ask someone at ${name} to pair this device again.`;
+      return `Your access to ${name} was removed. Your draft is saved. Request access again from the machine picker.`;
     case "stale":
       return `Connection lost. This conversation may be out of date. Your draft is saved. Work already started on ${name} may still be running.`;
     case "unreachable":
       if (device.platform === "windows") return `Windows may be blocking connections to Mythra Code on ${name}. On that PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`;
       {
-        const reach = `${name} may be asleep, or Mythra Code may be closed there. This network may keep devices apart. Connect both computers to the same non-guest network, or ask the network owner to allow devices to connect. An invitation won't bypass this restriction.`;
+        const reach = `${name} may be asleep, or Mythra Code may be closed there. This network may keep devices apart. Connect both computers to the same non-guest network, or ask the network owner to allow devices to connect. Requesting access can't bypass this restriction.`;
         // Bonjour can still find a Mac whose firewall refuses incoming connections.
         return device.platform === "macos"
           ? `${reach} Its firewall may also be blocking connections. On that Mac, open System Settings → Network → Firewall → Options and allow incoming connections for Mythra Code. Then choose Try again.`
@@ -139,6 +195,8 @@ export function networkHelp(snapshot: RemoteSnapshot): NetworkNotice | null {
       : { text: "Waiting for permission to use the network.", canRetry: false };
   }
   if (snapshot.networkAccess === "blocked") {
+    // The other computer is connecting back, so whatever is blocked isn't stopping anything.
+    if (snapshot.platform === "macos" && outgoingRequests(snapshot).some((request) => isPendingAccessRequest(request) && request.reverseConnecting === true)) return null;
     return snapshot.platform === "macos"
       ? { text: LOCAL_NETWORK_BLOCKED, canRetry: true, localNetwork: true }
       : { text: `Windows may be blocking connections to Mythra Code on ${snapshot.deviceName}. On this PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`, canRetry: true };
@@ -151,10 +209,20 @@ export function networkHelp(snapshot: RemoteSnapshot): NetworkNotice | null {
     : null;
 }
 
-export const VIEW_ONLY_GRANT: DeviceGrant = {
-  scope: { kind: "all" },
-  view: true,
-  work: false,
-  capabilities: { fullAccess: false, gitWrite: false, checkpointRestore: false, terminal: false, manageProjects: false },
-  revision: 0,
-};
+/** Presets are immutable templates. Editing More always starts with a fresh copy. */
+export const VIEW_ONLY_GRANT: DeviceGrant = Object.freeze({
+  scope: Object.freeze({ kind: "all" as const }), view: true, work: false,
+  capabilities: Object.freeze({ fullAccess: false, gitWrite: false, checkpointRestore: false, terminal: false, manageProjects: false }), revision: 0,
+});
+export const FULL_CONTROL_GRANT: DeviceGrant = Object.freeze({
+  scope: Object.freeze({ kind: "all" as const }), view: true, work: true,
+  capabilities: Object.freeze({ fullAccess: true, gitWrite: true, checkpointRestore: true, terminal: true, manageProjects: true }), revision: 0,
+});
+export function accessGrantPreset(decision: Exclude<AccessDecision, "decline">): DeviceGrant {
+  if (decision !== "allow" && decision !== "viewOnly") throw new Error("Choose Full control or View only.");
+  const preset = decision === "allow" ? FULL_CONTROL_GRANT : VIEW_ONLY_GRANT;
+  return { ...preset, scope: { kind: "all" }, capabilities: { ...preset.capabilities } };
+}
+/** The picker badge is the inbox, not unanswered requests sent to other people. */
+export const pendingRequestCount = (snapshot: RemoteSnapshot | null | undefined, reopened: ReadonlySet<string> = NO_IDS): number => incomingRequests(snapshot, reopened).length;
+export const isPendingAccessRequest = (request: OutgoingAccessRequest): boolean => request.state === "connecting" || request.state === "waiting";

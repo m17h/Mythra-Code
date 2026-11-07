@@ -17,6 +17,7 @@ pub(crate) mod folders;
 #[cfg(target_os = "macos")]
 mod macos_activity;
 mod pairing;
+mod access;
 mod session;
 pub(crate) mod store;
 mod tls;
@@ -245,6 +246,7 @@ struct Core {
     nearby: HashMap<String, NearbyEntry>,
     pairing: Option<PairingWindow>,
     flow: Option<ViewerFlow>,
+    access: access::Registry,
     listener: Option<ListenerHandle>,
     advertiser: Option<Advertisement>,
     advertised: Option<AdvertiseRequest>,
@@ -349,6 +351,7 @@ impl Default for Core {
             nearby: HashMap::new(),
             pairing: None,
             flow: None,
+            access: access::Registry::default(),
             listener: None,
             advertiser: None,
             advertised: None,
@@ -399,6 +402,7 @@ impl Default for RemoteState {
                 #[cfg(test)]
                 test_block_outgoing: AtomicBool::new(false),
                 lifecycle: Mutex::new(()),
+                access_serial: Mutex::new(()),
                 generation: AtomicU64::new(0),
                 unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED)),
                 unauthenticated_by_ip: StdMutex::new(HashMap::new()),
@@ -427,6 +431,7 @@ struct Inner {
     test_block_outgoing: AtomicBool,
     /// One reconcile at a time, so switch changes and the supervisor agree.
     lifecycle: Mutex<()>,
+    access_serial: Mutex<()>,
     generation: AtomicU64,
     unauthenticated: Arc<Semaphore>,
     /// Its own lock, because guards can drop while `core` is held.
@@ -502,7 +507,7 @@ fn app_version(core: &Core) -> String {
 /// Paired viewers keep a receive-only listener for reverse reconnects.
 /// A one-off, unpaired offer window is still not a stable saved address.
 fn advertised_port(core: &Core) -> Option<u16> {
-    (core.settings.hosting || core.devices.values().any(|device| device.they_host && !device.access_removed))
+    (core.settings.hosting || core.devices.values().any(|device| device.they_host && !device.access_removed) || core.access.receive())
         .then(|| core.listener.as_ref().map(|listener| listener.port))
         .flatten()
 }
@@ -514,6 +519,7 @@ fn authenticated_links(core: &Core) -> usize {
 /// Hosting, a paired viewer needing reverse reconnects, or an offer window.
 fn wants_listener(core: &Core) -> bool {
     core.settings.hosting
+        || core.access.receive()
         || core.devices.values().any(|device| device.they_host && !device.access_removed)
         || core
             .pairing
@@ -567,6 +573,7 @@ fn role_for_peer(core: &Core, fingerprint: &str) -> Option<Role> {
 fn should_browse(core: &Core) -> bool {
     core.settings.hosting
         || !core.devices.is_empty()
+        || core.access.demand()
         || core.search_until.is_some_and(|until| Instant::now() < until)
 }
 
@@ -742,17 +749,10 @@ impl Inner {
         core: &Core,
         fingerprint: &str,
     ) -> oneshot::Receiver<Result<(), String>> {
-        match core.devices.get(fingerprint).cloned() {
-            Some(record) => {
-                self.enqueue_write(false, move |connection| store::save_device(connection, &record))
-            }
-            None => {
-                let fingerprint = fingerprint.to_string();
-                self.enqueue_write(false, move |connection| {
-                    store::delete_device(connection, &fingerprint)
-                })
-            }
-        }
+        let record=core.devices.get(fingerprint).cloned();
+        let requests=core.access.narrowing(fingerprint,core.relationship(fingerprint));
+        let peer=fingerprint.to_string();
+        self.enqueue_write(false,move|connection|requests.save(connection,&peer,record.as_ref()))
     }
 
     /// Queues details only, never a grant. See `store::update_device_details`.
@@ -1078,6 +1078,8 @@ pub(crate) struct RemoteSnapshot {
     unsaved_changes: bool,
     pairing: Option<PairingWindowView>,
     flow: Option<FlowView>,
+    access_requests: Vec<access::RequestView>,
+    outgoing_requests: Vec<access::OutgoingView>,
     devices: Vec<DeviceView>,
     nearby: Vec<NearbyView>,
 }
@@ -1165,7 +1167,9 @@ fn build_snapshot(core: &Core, generation: u64, fingerprint: Option<String>) -> 
         })
         .collect();
     nearby.sort_by(|left, right| left.name.cmp(&right.name).then(left.instance.cmp(&right.instance)));
+    let (access_requests, outgoing_requests) = core.access.views();
     RemoteSnapshot {
+        access_requests, outgoing_requests,
         generation,
         ready: core.loaded && !core.load_failed,
         platform: platform_name(),
@@ -1934,18 +1938,15 @@ fn retry_unsaved(inner: &Arc<Inner>) {
         let write_undos = viewer_undos.clone();
         let hosting = std::mem::take(&mut unsaved.hosting);
         let share_name = std::mem::take(&mut unsaved.share_name);
-        let records: Vec<(String, Option<DeviceRecord>)> = devices
+        let records: Vec<(String, Option<DeviceRecord>,access::Narrowing)> = devices
             .iter()
-            .map(|fingerprint| (fingerprint.clone(), core.devices.get(fingerprint).cloned()))
+            .map(|fingerprint| (fingerprint.clone(), core.devices.get(fingerprint).cloned(),core.access.narrowing(fingerprint,core.relationship(fingerprint))))
             .collect();
         let hosting_value = hosting.then_some(core.settings.hosting);
         let share_value = share_name.then_some(core.settings.share_name);
         let saved = inner.enqueue_write(false, move |connection| {
-            for (fingerprint, record) in &records {
-                match record {
-                    Some(record) => store::save_device(connection, record)?,
-                    None => store::delete_device(connection, fingerprint)?,
-                }
+            for (fingerprint, record, requests) in &records {
+                requests.save(connection,fingerprint,record.as_ref())?;
             }
             for undo in &write_undos {
                 store::undo_pairing_viewer(connection, undo)?;
@@ -1988,7 +1989,8 @@ async fn load(inner: &Arc<Inner>) {
         .read_db(|connection| {
             let settings = store::load_settings(connection).map_err(|error| error.to_string())?;
             let devices = store::load_devices(connection).map_err(|error| error.to_string())?;
-            Ok((settings, devices))
+            let access = access::load(connection)?;
+            Ok((settings, devices, access))
         })
         .await;
     let version = inner
@@ -2001,9 +2003,12 @@ async fn load(inner: &Arc<Inner>) {
     core.app_version = version;
     core.loaded = true;
     match loaded {
-        Ok((settings, devices)) => {
+        Ok((settings, devices, access)) => {
             core.settings = settings;
             core.devices = devices;
+            core.relationships=access.fences.clone();
+            core.next_id=core.next_id.max(core.relationships.values().copied().max().unwrap_or(0).saturating_add(1));
+            core.access = access;
         }
         Err(_) => core.load_failed = true,
     }
@@ -2027,6 +2032,7 @@ async fn supervise(inner: Arc<Inner>) {
             }
             schedule_resolves(&inner);
             schedule_dials(&inner);
+            access::schedule(&inner);
             schedule_probes(&inner);
             let _ = timeout(SUPERVISOR_TICK, inner.wake.notified()).await;
         } else {
@@ -2167,11 +2173,15 @@ pub(crate) async fn remote_set_hosting(
     let (edit, saved) = {
         let mut core = inner.lock();
         core.edits.hosting = core.take_id();
+        if enabled { core.edits.share_name=core.edits.hosting; }
         if !enabled {
             core.settings.hosting = false;
         }
         let saved = inner.enqueue_write(false, move |connection| {
-            store::set_hosting(connection, enabled).map_err(|error| error.to_string())
+            let tx=connection.transaction().map_err(|error|error.to_string())?;
+            store::set_hosting(&tx, enabled).map_err(|error|error.to_string())?;
+            if enabled {store::set_share_name(&tx,true).map_err(|error|error.to_string())?;}
+            tx.commit().map_err(|error|error.to_string())
         });
         (core.edits.hosting, saved)
     };
@@ -2190,6 +2200,7 @@ pub(crate) async fn remote_set_hosting(
         let current = core.edits.hosting == edit;
         if current {
             core.settings.hosting = true;
+            if core.edits.share_name==edit { core.settings.share_name=true; }
         }
         current
     };
@@ -2500,6 +2511,7 @@ pub(crate) async fn remote_device_revoke(
             core.dials.remove(&fingerprint);
         }
         core.end_relationship(&fingerprint);
+        core.access.retire(&fingerprint);
         hostbridge::retire_device_locked(&inner, &mut core, &fingerprint);
         inner.enqueue_device_state(&core, &fingerprint)
     };
@@ -2531,6 +2543,7 @@ pub(crate) async fn remote_device_forget(
         }
         core.dials.remove(&fingerprint);
         core.end_relationship(&fingerprint);
+        core.access.retire(&fingerprint);
         hostbridge::forget_viewer_locked(&inner, &mut core, &fingerprint);
         inner.enqueue_device_state(&core, &fingerprint)
     };
@@ -2696,4 +2709,22 @@ fn macos_local_network_privacy_available()->bool{
     {static AVAILABLE:OnceLock<bool>=OnceLock::new();*AVAILABLE.get_or_init(||objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion().majorVersion>=15)}
     #[cfg(not(target_os="macos"))]
     {false}
+}
+
+#[tauri::command]
+pub(crate) async fn remote_access_request(state: State<'_, RemoteState>, instance: String, reciprocal: bool) -> Result<RemoteSnapshot,String> {
+    let inner=state.inner.clone();ready(&inner).await?;access::request(&inner,&instance,reciprocal).await?;Ok(current_snapshot(&inner))
+}
+#[tauri::command]
+pub(crate) async fn remote_access_respond(state: State<'_, RemoteState>, fingerprint:String, request_id:String, decision:String) -> Result<RemoteSnapshot,String> {
+    let inner=state.inner.clone();ready(&inner).await?;require_fingerprint(&fingerprint)?;access::respond(&inner,&fingerprint,&request_id,&decision).await?;Ok(current_snapshot(&inner))
+}
+#[tauri::command]
+pub(crate) async fn remote_access_cancel(state: State<'_, RemoteState>,request_id:String)->Result<RemoteSnapshot,String>{
+    let inner=state.inner.clone();ready(&inner).await?;access::cancel(&inner,&request_id).await?;Ok(current_snapshot(&inner))
+}
+
+#[tauri::command]
+pub(crate) async fn remote_access_retry(state: State<'_, RemoteState>,request_id:String)->Result<RemoteSnapshot,String>{
+    let inner=state.inner.clone();ready(&inner).await?;access::retry(&inner,&request_id).await?;Ok(current_snapshot(&inner))
 }

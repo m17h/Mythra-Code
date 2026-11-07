@@ -463,7 +463,7 @@ fn close_if_spent(core: &mut Core) {
 
 /// Requests per source address per minute. The table cannot grow without limit:
 /// when full, the entry that started longest ago is dropped.
-fn rate_limited(core: &mut Core, ip: IpAddr) -> bool {
+pub(super) fn rate_limited(core: &mut Core, ip: IpAddr) -> bool {
     let now = Instant::now();
     core.rate.retain(|_, (started, _)| now.duration_since(*started) < RATE_PERIOD);
     if core.rate.len() >= MAX_RATE_ENTRIES && !core.rate.contains_key(&ip) {
@@ -1752,7 +1752,7 @@ pub(super) fn test_open_window(inner: &Arc<Inner>, temporary: bool, lifetime: Du
 
 #[cfg(test)]
 #[path = "pairing_cancel_tests.rs"]
-mod cancellation_tests;
+pub(super) mod cancellation_tests;
 
 #[cfg(test)]
 #[path="pairing_network_tests.rs"]

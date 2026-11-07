@@ -42,10 +42,11 @@ import { MythraMark } from "./components/MythraMark";
 import { confirmDialog, useConfirmStore } from "./lib/confirmDialog";
 import { ConfirmDialogModal } from "./components/ConfirmDialogModal";
 import { MachineSwitcher } from "./components/remote/MachineSwitcher";
+import { useAccessNotifications } from "./components/remote/AccessRequests";
 import { startProjectPointerDrag } from "./lib/projectPointerDrag";
 import { ConversationSearchBar } from "./components/ConversationSearchBar";
 import { ChatsRow, ThreadRenameInput, ThreadSearch, ThreadsSection, WorkspaceRow, WorkspacesSection } from "./components/SidebarLists";
-import { hasPairingSheet, localMachineLabel, useRemoteDevices } from "./lib/remote/devices";
+import { localMachineLabel, useRemoteDevices } from "./lib/remote/devices";
 import { PermissionPicker, permissionLabel } from "./components/PermissionPicker";
 import { isRemoteMachineActive, LOCAL_MACHINE, machineActions, machineSwitchGeneration, useActiveMachine } from "./lib/remote/activeMachine";
 import { SpellingMenu } from "./components/SpellingMenu";
@@ -713,7 +714,6 @@ export default function App() {
   useLayoutEffect(() => useTaskStore.subscribe(recordParentRunTransitions), []);
   useInputModality();
   const voiceSession = useVoiceInputLock((state) => state.session);
-  const pairingModalOpen = useRemoteDevices(hasPairingSheet);
   const activeMachine = useActiveMachine((state) => state.machine);
   const remoteActive = activeMachine !== LOCAL_MACHINE;
   const remoteFeedbackScope = useRemoteFeedback((state) => state.scope);
@@ -868,6 +868,8 @@ export default function App() {
     setActiveFirstPrompt(null);
   }, []);
   const [settings, persistSettings, settingsRef] = usePersistedStateRef<AppSettings>("kiwi.settings", DEFAULT_SETTINGS, { init: () => initialSettings });
+  // Someone asking to use this computer gets a desktop notification, even with the menu closed.
+  useAccessNotifications(settings.notificationsEnabled);
   // Parents read model notes from the saved settings at their next real turn.
   // Publishing during render keeps queued starts from racing a later effect.
   setSavedSubagentModelGuidance(settings.subagentModelGuidance);
@@ -9019,7 +9021,7 @@ export default function App() {
     escapeStopsRun: settings.escapeStopsRun,
     // Hidden local work must not answer keys meant for the machine on screen.
     running: remoteActive ? remoteRunning : Boolean((running || childrenRunning) && activeThread),
-    modalOpen: pairingModalOpen || Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
+    modalOpen: Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || settingsOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen,
     commandPaletteOpen,
     threadOpen: remoteActive ? remoteThreadOpen : Boolean(activeThreadId),
     workspaceOpen: remoteActive ? remoteStudioOpen : studioOpen && Boolean(activeProject),
@@ -9851,8 +9853,7 @@ export default function App() {
             <MythraMark />
           </div>
           <span>Mythra Code</span>
-          <MachineSwitcher onManageDevices={() => openSettings("devices")}
-            pairingBlocked={Boolean(voiceSession) || spellingMenuOpen || confirmationOpen || onboardingOpen || commandPaletteOpen || Boolean(workflowLaunch) || runtimeSetupOpen || authRequiredOpen || Boolean(pendingApproval) || permissionOpen} />
+          <MachineSwitcher onManageDevices={() => openSettings("devices")} />
           <button className="icon-button subtle collapse-button" onClick={() => setSidebarOpen(false)} title="Hide sidebar" aria-label="Hide sidebar">
             <PanelLeftClose size={17} />
           </button>

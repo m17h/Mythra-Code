@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { DeviceGrant, RemotePingResult, RemoteSnapshot } from "./types";
+import type { AccessDecision, DeviceGrant, RemotePingResult, RemoteSnapshot } from "./types";
 
 export const remoteSnapshot = () => invoke<RemoteSnapshot>("remote_snapshot");
 export const remoteSetHosting = (enabled: boolean) => invoke<RemoteSnapshot>("remote_set_hosting", { enabled });
@@ -11,17 +11,24 @@ export const remoteSetShareName = (shared: boolean) => invoke<RemoteSnapshot>("r
 export const LOCAL_NETWORK_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork";
 export const openLocalNetworkSettings = () => openUrl(LOCAL_NETWORK_SETTINGS);
 export const remoteFindNearby = () => invoke<RemoteSnapshot>("remote_find_nearby");
-export const remotePairingOpen = () => invoke<RemoteSnapshot>("remote_pairing_open");
-export const remotePairingClose = () => invoke<RemoteSnapshot>("remote_pairing_close");
-export const remotePairingCancelRequest = () => invoke<RemoteSnapshot>("remote_pairing_cancel_request");
-export const remotePairingRespond = (requestId: string, approve: boolean, grant?: DeviceGrant) =>
-  invoke<RemoteSnapshot>("remote_pairing_respond", { requestId, approve, grant: grant ?? null });
-export const remotePairNearby = (instance: string) => invoke<RemoteSnapshot>("remote_pair_nearby", { instance });
-export const remotePairInvitation = (invitation: string) => invoke<RemoteSnapshot>("remote_pair_invitation", { invitation });
-export const remotePairOffer = (instance: string) => invoke<RemoteSnapshot>("remote_pair_offer", { instance });
-export const remotePairOfferRespond = (flowId: number, accept: boolean) =>
-  invoke<RemoteSnapshot>("remote_pair_offer_respond", { flowId, accept });
-export const remotePairCancel = () => invoke<RemoteSnapshot>("remote_pair_cancel");
+/** With `reciprocal`, native also turns this computer's own switch on. */
+/** The checked reciprocal choice durably enables local hosting natively, but
+ * grants nothing until the pinned peer accepts. No optimistic renderer grant. */
+export const remoteAccessRequest = (instance: string, reciprocal = true) =>
+  invoke<RemoteSnapshot>("remote_access_request", { instance, reciprocal });
+/** Exact outgoing request only; cancellation never revokes an independent grant. */
+export const remoteAccessCancel = (requestId: string) =>
+  invoke<RemoteSnapshot>("remote_access_cancel", { requestId });
+/** Asks the exact computer this request already reached again. Never by name. */
+export const remoteAccessRetry = (requestId: string) =>
+  invoke<RemoteSnapshot>("remote_access_retry", { requestId });
+/** Both identities are required so a late card cannot answer its replacement. */
+export function remoteAccessRespond(fingerprint: string, requestId: string, decision: AccessDecision): Promise<RemoteSnapshot> {
+  if (!fingerprint || !requestId || !["allow", "viewOnly", "decline"].includes(decision)) {
+    return Promise.reject(new Error("This access request is no longer available. Refresh Devices and try again."));
+  }
+  return invoke<RemoteSnapshot>("remote_access_respond", { fingerprint, requestId, decision });
+}
 export const remoteDeviceRevoke = (fingerprint: string) => invoke<RemoteSnapshot>("remote_device_revoke", { fingerprint });
 export const remoteDeviceForget = (fingerprint: string) => invoke<RemoteSnapshot>("remote_device_forget", { fingerprint });
 export const remoteDeviceSetGrant = (fingerprint: string, grant: DeviceGrant, expectedRevision: number) =>

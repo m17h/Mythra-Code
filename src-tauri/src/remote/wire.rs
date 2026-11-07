@@ -45,6 +45,9 @@ pub(crate) enum Refusal {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HelloExtras {
+    /// Setup-only link: both ends remain unpaired; no work/data authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) access_only: Option<bool>,
     /// `paired`, `port` and `platform` go only to a peer whose key is already
     /// paired. An unknown peer never receives them.
     #[serde(default, skip_serializing_if = "Option::is_none")]

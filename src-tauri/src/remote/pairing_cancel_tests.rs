@@ -14,13 +14,13 @@ use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 use tokio_rustls::TlsAcceptor;
 
 const WAIT: Duration = Duration::from_secs(15);
-pub(super) struct Node {
-    pub(super) inner: Arc<Inner>,
-    pub(super) identity: Arc<DeviceIdentity>,
+pub(in crate::remote) struct Node {
+    pub(in crate::remote) inner: Arc<Inner>,
+    pub(in crate::remote) identity: Arc<DeviceIdentity>,
     accept: JoinHandle<()>,
 }
 impl Node {
-    pub(super) async fn new() -> Self {
+    pub(in crate::remote) async fn new() -> Self {
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let key = rustls::crypto::ring::default_provider()
             .key_provider

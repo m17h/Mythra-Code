@@ -71,3 +71,11 @@
 .local-network-note .secondary-button { display: inline-flex; align-items: center; gap: 6px; }
 .local-network-failed { flex-basis: 100%; color: var(--muted); }
 
+
+/* Less-used settings stay folded away under More. */
+.devices-more > summary { padding: 9px 14px; color: var(--muted); font-size: 12px; cursor: pointer; list-style: none; }
+.devices-more > summary::before { content: "›"; display: inline-block; margin-right: 6px; transition: transform var(--lm-d-1, 120ms); }
+.devices-more[open] > summary::before { transform: rotate(90deg); }
+.devices-more > summary:hover { color: var(--text); }
+.access-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.devices-settings .access-nearby + .access-nearby, .devices-settings .access-nearby + .set-row { border-top: 1px solid var(--line); }

@@ -49,46 +49,48 @@ export interface RemoteDevice {
   appVersion: string | null;
 }
 
+/** Exact host answer; arbitrary grants never arrive from an unpaired peer. */
+export type AccessDecision = "allow" | "viewOnly" | "decline";
+
+/** TLS-proven incoming request, persisted natively until answered or expired. */
+export interface AccessRequest {
+  requestId: string;
+  fingerprint: string;
+  name: string;
+  platform: RemotePlatform | null;
+  /** Epoch milliseconds. Expiration is native-owned, never a renderer timer. */
+  createdAt: number;
+  expiresAt: number;
+  reciprocal: boolean;
+  code: string;
+  /** Declined ones stay for 7 days so a mistaken Decline can still be turned into a yes. Absent means pending. */
+  status?: "pending" | "declined";
+}
+/** Existing UI import name; the protocol shape is AccessRequest, not a second model. */
+export type IncomingAccessRequest = AccessRequest;
+
+export type OutgoingAccessState = "connecting" | "waiting" | "allowed" | "viewOnly" | "declined" | "cancelled" | "expired" | "failed";
+/** Durable request/result, including while offline or after a renderer restart. */
+export interface OutgoingAccessRequest {
+  requestId: string;
+  fingerprint: string | null;
+  name: string;
+  platform: RemotePlatform | null;
+  createdAt: number;
+  expiresAt: number;
+  reciprocal: boolean;
+  code: string | null;
+  state: OutgoingAccessState;
+  error: string | null;
+  /** Reverse TCP fallback is ordinary connection progress, not OS denial. */
+  reverseConnecting?: boolean;
+  /** Epoch ms when asking again is allowed (set after a Decline), otherwise null. */
+  retryAfter?: number | null;
+}
+
 export interface NearbyDevice {
   instance: string;
   name: string;
-}
-
-export interface PairingRequest {
-  id: string;
-  name: string | null;
-  code: string;
-  invited: boolean;
-  /** The user approved. Waiting for the other device, or for the save. */
-  approved: boolean;
-}
-
-export interface PairingWindow {
-  /** `null` once spent, and always in a temporary window. */
-  invitation: string | null;
-  expiresAt: number;
-  /** Hosting is off, so this window only receives offers from other devices. */
-  temporary: boolean;
-  nearbyStopped: boolean;
-  invitationSpent: boolean;
-  /** Someone holds the one pending slot. The host can cancel them. */
-  waiting: boolean;
-  request: PairingRequest | null;
-}
-
-/** `offered`: another device offers access, and this device's user decides. */
-export type PairingFlowStage = "connecting" | "offered" | "comparing" | "done" | "failed";
-
-export interface PairingFlow {
-  /** Names this flow when answering an offer. */
-  id: number;
-  target: string;
-  stage: PairingFlowStage;
-  code: string | null;
-  error: string | null;
-  fingerprint: string | null;
-  /** The nearby device this flow dialed, so Try again can dial it again. Older hosts omit it. */
-  instance?: string | null;
 }
 
 export interface RemoteSnapshot {
@@ -112,8 +114,9 @@ export interface RemoteSnapshot {
   refusedAdapters: number;
   /** A change is in force but not on disk yet. Quitting now could undo it. */
   unsavedChanges: boolean;
-  pairing: PairingWindow | null;
-  flow: PairingFlow | null;
+  /** Older native builds omit these. */
+  accessRequests?: AccessRequest[];
+  outgoingRequests?: OutgoingAccessRequest[];
   devices: RemoteDevice[];
   nearby: NearbyDevice[];
 }

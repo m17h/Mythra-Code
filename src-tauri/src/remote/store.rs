@@ -124,7 +124,7 @@ impl DeviceGrant {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct DeviceRecord {
     pub(crate) fingerprint: String,
     pub(crate) spki: Vec<u8>,
@@ -240,6 +240,7 @@ pub(crate) fn init(connection: &Connection) -> rusqlite::Result<()> {
     )?;
     connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS remote_engine_step ON remote_op_journal(device_fingerprint,engine_root,engine_step) WHERE engine_root IS NOT NULL;")?;
     super::attachments::init(connection)?;
+    super::access::init(connection)?;
     // A row still pending after a restart has an unknown outcome. It is never
     // retried automatically; the viewer asks `op.status`.
     connection.execute(
@@ -384,6 +385,15 @@ pub(super) fn save_pairing_viewer(
 fn save_device_direction(
     connection: &mut Connection, device: &DeviceRecord, direction: u8, viewer_token: Option<&str>,
 ) -> Result<(), String> {
+    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    save_device_fields(&transaction, device, direction, viewer_token)?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+/// Used by access requests to commit their result and exactly the authorized
+/// device direction(s) in the SAME transaction. Caller owns the transaction.
+pub(super) fn save_device_fields(
+    connection: &Connection, device: &DeviceRecord, direction: u8, viewer_token: Option<&str>,
+) -> Result<(), String> {
     let grant = device
         .grant
         .as_ref()
@@ -392,8 +402,7 @@ fn save_device_direction(
         .map_err(|error| error.to_string())?;
     let addresses =
         serde_json::to_string(&device.addresses).map_err(|error| error.to_string())?;
-    let transaction = connection.transaction().map_err(|error| error.to_string())?;
-    transaction
+    connection
         .execute(
             "INSERT INTO remote_devices
                (fingerprint, spki, name, platform, addresses, they_host, access_removed,
@@ -422,23 +431,23 @@ fn save_device_direction(
         )
         .map_err(|error| error.to_string())?;
     if direction!=2{match grant {
-        Some(grant) => transaction.execute(
+        Some(grant) => connection.execute(
             "INSERT INTO remote_grants (fingerprint, grant_json, updated_at)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(fingerprint) DO UPDATE SET
                grant_json = excluded.grant_json, updated_at = excluded.updated_at",
             params![device.fingerprint, grant, crate::unix_timestamp_ms() as i64],
         ),
-        None => transaction.execute(
+        None => connection.execute(
             "DELETE FROM remote_grants WHERE fingerprint = ?1",
             params![device.fingerprint],
         ),
     }
     .map_err(|error| error.to_string())?;
-    reject_queued_for_grant(&transaction,&device.fingerprint,device.grant.as_ref())?;
+    reject_queued_for_grant(&connection,&device.fingerprint,device.grant.as_ref())?;
     }
     if let Some(token) = viewer_token {
-        transaction.execute(
+        connection.execute(
             "INSERT INTO remote_viewer_pairing_saves (fingerprint,token) VALUES (?1,?2)
              ON CONFLICT(fingerprint) DO UPDATE SET token=excluded.token",
             params![device.fingerprint, token],
@@ -446,10 +455,10 @@ fn save_device_direction(
     } else if direction == 0 {
         // Explicit full-state decisions (including revoke/forget) supersede any
         // pending viewer undo. Host-only pairing deliberately does not.
-        transaction.execute("DELETE FROM remote_viewer_pairing_saves WHERE fingerprint=?1",
+        connection.execute("DELETE FROM remote_viewer_pairing_saves WHERE fingerprint=?1",
             params![device.fingerprint]).map_err(|error| error.to_string())?;
     }
-    transaction.commit().map_err(|error| error.to_string())
+    Ok(())
 }
 
 pub(super) fn undo_pairing_viewer(connection: &mut Connection, undo: &ViewerPairingUndo) -> Result<(), String> {
@@ -504,16 +513,20 @@ pub(crate) fn update_device_details(
 
 pub(crate) fn delete_device(connection: &mut Connection, fingerprint: &str) -> Result<(), String> {
     let transaction = connection.transaction().map_err(|error| error.to_string())?;
-    reject_queued_for_grant(&transaction,fingerprint,None)?;
+    delete_device_fields(&transaction, fingerprint)?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+pub(super) fn delete_device_fields(connection:&Connection,fingerprint:&str)->Result<(),String>{
+    reject_queued_for_grant(&connection,fingerprint,None)?;
     for table in ["remote_devices", "remote_grants", "remote_viewer_pairing_saves"] {
-        transaction
+        connection
             .execute(
                 &format!("DELETE FROM {table} WHERE fingerprint = ?1"),
                 params![fingerprint],
             )
             .map_err(|error| error.to_string())?;
     }
-    transaction.commit().map_err(|error| error.to_string())
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]

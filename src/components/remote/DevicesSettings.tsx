@@ -1,18 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, Copy, Info, LoaderCircle, Radar } from "lucide-react";
+import { Info, LoaderCircle, Radar } from "lucide-react";
 import { confirmDialog } from "../../lib/confirmDialog";
 import { safeErrorText } from "../../lib/errors";
 import {
-  remotePairingCancelRequest,
   remoteDeviceForget,
   remoteDeviceRevoke,
   remoteDeviceSetGrant,
   remoteFindNearby,
-  remotePairInvitation,
-  remotePairNearby,
-  remotePairOffer,
-  remotePairingClose,
-  remotePairingOpen,
   remoteSetDeviceName,
   remoteSetHosting,
   remoteSetShareName,
@@ -23,8 +17,10 @@ import {
   deviceDotState,
   deviceHelp,
   deviceHelpOffersRetry,
+  declinedRequests,
   deviceStateLabel,
-  localMachineLabel,
+  FULL_CONTROL_GRANT,
+  incomingRequests,
   networkHelp,
   startRemoteDevices,
   useRemoteDevices,
@@ -33,7 +29,9 @@ import type { DeviceGrant, RemoteDevice, RemoteSnapshot } from "../../lib/remote
 import type { Project } from "../../types";
 import "./DevicesSettings.css";
 import { LocalNetworkActions } from "./LocalNetworkActions";
-import { PendingFlow } from "./PairingSheets";
+import { askableNearby, DeclinedRow, DeclineUndo, HOSTING_LABEL, IncomingRequestCard, NearbyRow, OutgoingRequestCard, showsLocalNetwork, useDeclines, visibleOutgoing } from "./AccessRequests";
+
+export const HOSTING_HELP = "Your other computers on the same network can then ask to use this one. Nothing is shared until you allow it here. Turning this on also shows this computer's name on your network.";
 
 function Switch({ label, checked, disabled, describedBy, onChange }: {
   label: string;
@@ -61,11 +59,6 @@ function lastSeenLabel(device: RemoteDevice): string {
   return `Offline, last seen ${new Date(device.lastSeenAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`;
 }
 
-function minutesAndSeconds(milliseconds: number): string {
-  const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
 const CAPABILITIES: ReadonlyArray<{ key: keyof DeviceGrant["capabilities"]; label: string }> = [
   { key: "fullAccess", label: "Full access: tasks it starts can act without asking first. With this off, they ask." },
   { key: "terminal", label: "Terminal: run any command on this computer. Run, Checks and worktrees need this too." },
@@ -75,11 +68,8 @@ const CAPABILITIES: ReadonlyArray<{ key: keyof DeviceGrant["capabilities"]; labe
 ];
 /** The most project IDs one grant can hold, the same as MAX_GRANT_PROJECTS in Rust. */
 const MAX_PICKED_PROJECTS = 1000;
-/** A shortcut for your own machines. It sets the same switches, nothing more. */
-const FULL_CONTROL = {
-  scope: { kind: "all" as const }, view: true, work: true,
-  capabilities: { fullAccess: true, gitWrite: true, checkpointRestore: true, terminal: true, manageProjects: true },
-};
+/** A shortcut for your own machines: the same preset an Allow gives. */
+const FULL_CONTROL = { scope: FULL_CONTROL_GRANT.scope, view: FULL_CONTROL_GRANT.view, work: FULL_CONTROL_GRANT.work, capabilities: FULL_CONTROL_GRANT.capabilities };
 
 function ProjectScope({ device, grant, projects, saving, onChange }: { device: RemoteDevice; grant: DeviceGrant; projects: readonly Project[]; saving: boolean; onChange: (grant: DeviceGrant) => void }) {
   const picked = grant.scope.kind === "projects" ? grant.scope.projectIds : null;
@@ -181,7 +171,7 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
   const revoke = async () => {
     if (grantPending.current) return;
     const confirmed = await confirmDialog(
-      `Remove ${device.name}'s access?\n\nIt disconnects now and can't reach this device until you pair again. Work it already started here keeps running.`,
+      `Remove ${device.name}'s access?\n\nIt disconnects now and can't use this computer again unless it asks and you allow it. Work it already started here keeps running.`,
       { confirmLabel: "Remove access", cancelLabel: "Cancel" },
     );
     if (confirmed) await remoteDeviceRevoke(device.fingerprint).then(acceptRemoteSnapshot).catch(fail("Mythra Code couldn't remove that access. Try again."));
@@ -189,7 +179,7 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
   const forget = async () => {
     if (grantPending.current) return;
     const confirmed = await confirmDialog(
-      `Forget ${device.name}?\n\nThis device stops using it, and you'll need to pair again to go back. Nothing changes on ${device.name}.`,
+      `Forget ${device.name}?\n\nThis computer stops using it. To go back, ask ${device.name} for access again. Nothing changes on ${device.name}.`,
       { confirmLabel: "Forget", cancelLabel: "Cancel" },
     );
     if (confirmed) await remoteDeviceForget(device.fingerprint).then(acceptRemoteSnapshot).catch(fail("Mythra Code couldn't remove that device. Try again."));
@@ -229,12 +219,13 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
           <strong><span className={`machine-dot ${deviceDotState(device)}`} aria-hidden="true" /><span className="devices-name" title={device.name}>{device.name}</span></strong>
           <small>
             {lastSeenLabel(device)}
-            {device.grant && device.canView ? " · You can use each other" : device.grant ? " · It can use this device" : " · This device can use it"}
+            {device.grant && device.canView ? " · You can use each other" : device.grant ? " · It can use this computer" : " · This computer can use it"}
+            {device.grant && ` · ${grantSummary(device.grant)}`}
           </small>
           <small className="devices-fingerprint" title={device.fingerprint}>ID {device.shortFingerprint}</small>
         </div>
         <div className="set-control devices-row-actions">
-          {device.grant && <button type="button" className="secondary-button" aria-expanded={showAccess} onClick={() => setShowAccess((current) => !current)}>Access</button>}
+          {device.grant && <button type="button" className="secondary-button" aria-expanded={showAccess} title={`Choose exactly what ${device.name} can do here`} onClick={() => setShowAccess((current) => !current)}>More</button>}
           {device.grant && <button type="button" className="secondary-button devices-danger" aria-label={`Remove ${device.name}'s access`} disabled={savingGrant} onClick={() => void revoke()}>Remove access</button>}
           {device.canView && <button type="button" className="secondary-button devices-danger" aria-label={`Forget ${device.name}`} disabled={savingGrant} onClick={() => void forget()}>Forget</button>}
         </div>
@@ -246,165 +237,12 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
   );
 }
 
-function PairingPanel({ snapshot, onError }: { snapshot: RemoteSnapshot; onError: (message: string) => void }) {
-  const window_ = snapshot.pairing;
-  const [now, setNow] = useState(Date.now());
-  const [copied, setCopied] = useState(false);
-  const [invitation, setInvitation] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [offering, setOffering] = useState<string | null>(null);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const inviteHelpId = useId();
-
-  useEffect(() => {
-    if (!window_) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [window_]);
-  useEffect(() => () => clearTimeout(copiedTimer.current), []);
-
-  const fail = (fallback: string) => (reason: unknown) => onError(safeErrorText(reason, fallback));
-  const open = () => {
-    onError("");
-    void remotePairingOpen().then(acceptRemoteSnapshot).catch(fail("Mythra Code couldn't start pairing. Try again."));
-  };
-  const close = () => {
-    void remotePairingClose().then(acceptRemoteSnapshot).catch(() => undefined);
-  };
-  const cancelRequest = () => {
-    void remotePairingCancelRequest().then(acceptRemoteSnapshot).catch(() => undefined);
-  };
-  const copy = () => {
-    if (!window_?.invitation) return;
-    navigator.clipboard.writeText(window_.invitation).then(() => {
-      setCopied(true);
-      clearTimeout(copiedTimer.current);
-      copiedTimer.current = setTimeout(() => setCopied(false), 2000);
-    }).catch(() => onError("Mythra Code couldn't copy the invitation. Select it and copy it by hand."));
-  };
-  const useInvitation = () => {
-    onError("");
-    setBusy(true);
-    remotePairInvitation(invitation)
-      .then((next) => {
-        acceptRemoteSnapshot(next);
-        setInvitation("");
-      })
-      .catch(fail("Mythra Code couldn't use that invitation. Try again."))
-      .finally(() => setBusy(false));
-  };
-  const offer = (instance: string) => {
-    onError("");
-    setOffering(instance);
-    remotePairOffer(instance)
-      .then(acceptRemoteSnapshot)
-      .catch(fail("Mythra Code couldn't reach that device. Try again."))
-      .finally(() => setOffering(null));
-  };
-
-  return (
-    <div className="set-group">
-      <h4>Add a device</h4>
-      <div className="set-card">
-        <div className="set-row">
-          <div className="set-copy">
-            <strong>Pair a device</strong>
-            <small>
-              {window_
-                ? window_.temporary
-                  ? `Waiting for ${minutesAndSeconds(window_.expiresAt - now)}. On the other device, choose Pair a device, then Offer access. Nothing on this device is shared.`
-                  : `Open for ${minutesAndSeconds(window_.expiresAt - now)}. On your other device, open Settings → Connections → Devices, choose Find nearby devices, then pick this one.`
-                : snapshot.hosting
-                  ? "Lets one new device ask to pair for the next 5 minutes. You approve it here."
-                  : "To let another device use this one, turn on Allow access from nearby devices first. With it off, this only waits for another device to offer you access, and nothing here is shared."}
-            </small>
-          </div>
-          <div className="set-control">
-            {window_
-              ? <button type="button" className="secondary-button" onClick={close}>Stop</button>
-              : <button type="button" className="secondary-button" onClick={open}>Pair a device</button>}
-          </div>
-        </div>
-        {window_?.waiting && !window_.request && (
-          <div className="set-body devices-offer">
-            <div className="devices-offer-row">
-              <span>A device is asking to pair.</span>
-              <button type="button" className="secondary-button" onClick={cancelRequest}>Cancel request</button>
-            </div>
-          </div>
-        )}
-        {window_?.nearbyStopped && <div className="set-body devices-offer"><span>Too many requests from nearby devices failed, so they've stopped for now. Choose Stop, then Pair a device, to try again.</span></div>}
-        {window_?.invitationSpent && <div className="set-body devices-offer"><span>This invitation can't be used anymore. Choose Stop, then Pair a device, to make a new one.</span></div>}
-        {window_?.invitation && (
-          <div className="set-body devices-invitation">
-            <span>If the other device can't find this one, copy this invitation and paste it into Devices settings there. It works once.</span>
-            <div className="key-input-row">
-              <input readOnly value={window_.invitation} aria-label="Invitation" onFocus={(event) => event.target.select()} />
-              <button type="button" className="secondary-button" onClick={copy}>
-                {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}
-              </button>
-            </div>
-          </div>
-        )}
-        {window_ && !window_.temporary && snapshot.nearby.length > 0 && (
-          <div className="set-body devices-offer">
-            <span>If the other device can't connect to this one, offer access from here. Start Pair a device on it first.</span>
-            {snapshot.nearby.map((device) => (
-              <div className="devices-offer-row" key={device.instance}>
-                <span className="devices-name" title={device.name}>{device.name}</span>
-                <button type="button" className="secondary-button" disabled={offering !== null} onClick={() => offer(device.instance)}>
-                  {offering === device.instance ? <LoaderCircle size={13} className="spin" /> : <Radar size={13} />} Offer access
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="set-body devices-invitation">
-          <label htmlFor={inviteHelpId}>Have an invitation from another device? Paste it here.</label>
-          <div className="key-input-row">
-            <input
-              id={inviteHelpId}
-              value={invitation}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="mythra-invite:1:…"
-              onChange={(event) => setInvitation(event.target.value)}
-            />
-            <button type="button" className="secondary-button" disabled={busy || !invitation.trim()} onClick={useInvitation}>Connect</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function NearbyDevices({ snapshot, onError }: { snapshot: RemoteSnapshot; onError: (message: string) => void }) {
-  const [pairing, setPairing] = useState<string | null>(null);
-  const pair = (instance: string) => {
-    onError("");
-    setPairing(instance);
-    remotePairNearby(instance)
-      .then(acceptRemoteSnapshot)
-      .catch((reason) => onError(safeErrorText(reason, "Mythra Code couldn't start pairing. Try again.")))
-      .finally(() => setPairing(null));
-  };
-  return (
-    <div className="set-group">
-      <h4>Nearby devices</h4>
-      <div className="set-card">
-        {snapshot.nearby.map((device) => (
-          <div className="set-row" key={device.instance}>
-            <div className="set-copy"><strong><span className="devices-name" title={device.name}>{device.name}</span></strong></div>
-            <div className="set-control">
-              <button type="button" className="secondary-button" disabled={pairing !== null} onClick={() => pair(device.instance)}>
-                {pairing === device.instance ? <LoaderCircle size={13} className="spin" /> : <Radar size={13} />} Pair
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+/** What an access setting adds up to, in the words of the two answers. */
+function grantSummary(grant: DeviceGrant): string {
+  if (!grant.view) return "No access";
+  if (!grant.work) return "View only";
+  const all = grant.scope.kind === "all" && Object.values(grant.capabilities).every(Boolean);
+  return all ? "Full use" : "Custom access";
 }
 
 export function DevicesSettings({ projects }: { projects: readonly Project[] }) {
@@ -459,21 +297,37 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
       .finally(() => setSearching(false));
   };
 
-  const network = networkHelp(snapshot);
+  const rawNetwork = networkHelp(snapshot);
+  const network = rawNetwork?.localNetwork && visibleOutgoing(snapshot).some(showsLocalNetwork) ? null : rawNetwork;
+  const reopened = useDeclines((state) => state.reopened);
+  const incoming = incomingRequests(snapshot, reopened);
+  const declined = declinedRequests(snapshot, reopened);
+  const outgoing = visibleOutgoing(snapshot);
+  const nearby = askableNearby(snapshot);
   return (
     <section className="settings-section devices-settings">
-      <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Changes here take effect immediately, and apply to {localMachineLabel(snapshot)}.</span></p>
+      <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Changes on this page take effect right away. There's nothing to save.</span></p>
       <div className="set-group">
-        <h4>This device</h4>
+        <h4>This computer</h4>
         <div className="set-card">
           <div className="set-row">
             <div className="set-copy">
-              <strong>Device name</strong>
-              <small id={nameHelpId}>How this device appears on your other devices.</small>
+              <strong>{HOSTING_LABEL}</strong>
+              <small id={hostingHelpId}>{HOSTING_HELP}</small>
+            </div>
+            <div className="set-control">
+              {changing && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
+              <Switch label={HOSTING_LABEL} describedBy={hostingHelpId} checked={snapshot.hosting} disabled={changing} onChange={setHosting} />
+            </div>
+          </div>
+          <div className="set-row">
+            <div className="set-copy">
+              <strong>Name</strong>
+              <small id={nameHelpId}>How this computer appears on your other computers.</small>
             </div>
             <div className="set-control key-input-row">
               <input
-                aria-label="Device name"
+                aria-label="Name"
                 aria-describedby={nameHelpId}
                 maxLength={64}
                 value={name ?? snapshot.deviceName}
@@ -486,25 +340,18 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
               />
             </div>
           </div>
-          <div className="set-row">
-            <div className="set-copy">
-              <strong>Allow access from nearby devices</strong>
-              <small id={hostingHelpId}>Lets devices you've paired use this one while Mythra Code is open, even minimized. Their prompts run here, with this device's accounts and files. Nothing is shared until you approve a device.</small>
+          <details className="devices-more">
+            <summary>More</summary>
+            <div className="set-row">
+              <div className="set-copy">
+                <strong>Show this name to nearby computers</strong>
+                <small id={shareHelpId}>When this is off, your other computers see a plain network name until they're connected.</small>
+              </div>
+              <div className="set-control">
+                <Switch label="Show this name to nearby computers" describedBy={shareHelpId} checked={snapshot.shareName} onChange={setShare} />
+              </div>
             </div>
-            <div className="set-control">
-              {changing && <LoaderCircle size={14} className="spin" aria-hidden="true" />}
-              <Switch label="Allow access from nearby devices" describedBy={hostingHelpId} checked={snapshot.hosting} disabled={changing} onChange={setHosting} />
-            </div>
-          </div>
-          <div className="set-row">
-            <div className="set-copy">
-              <strong>Show this name to nearby devices</strong>
-              <small id={shareHelpId}>When this is off, Mythra Code doesn't announce this name, and devices see it after pairing. Your computer's own network name can still show up on the network.</small>
-            </div>
-            <div className="set-control">
-              <Switch label="Show this name to nearby devices" describedBy={shareHelpId} checked={snapshot.shareName} onChange={setShare} />
-            </div>
-          </div>
+          </details>
         </div>
         {snapshot.hostError && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>{snapshot.hostError}</span></p>}
         {network && (
@@ -515,50 +362,59 @@ export function DevicesSettings({ projects }: { projects: readonly Project[] }) 
               : network.canRetry && <button type="button" className="secondary-button" disabled={searching} onClick={findNearby}>Try again</button>}
           </p>
         )}
-        {snapshot.flow && snapshot.flow.stage !== "done" && <PendingFlow flow={snapshot.flow} onError={setError} />}
-        {snapshot.refusedAdapters > 0 && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Windows wouldn't announce this device on every network it's connected to. Devices on those networks may not find it, but an invitation can still work.</span></p>}
-        {snapshot.unsavedChanges && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>Your latest change is active, but Mythra Code hasn't saved it yet and is still trying. If you quit now, it could be undone.</span></p>}
+        {snapshot.refusedAdapters > 0 && <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Windows wouldn't announce this computer on every network it's connected to. Computers on those networks may not find it.</span></p>}
+        {snapshot.unsavedChanges && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>Your latest change is active, but Mythra Code hasn't saved it yet and is still trying. If you quit now, it may be undone.</span></p>}
         {error && <p className="settings-footnote devices-error" role="alert"><Info size={13} aria-hidden="true" /><span>{error}</span></p>}
       </div>
 
-      {snapshot.devices.length === 0 && (
+      {incoming.length > 0 && (
         <div className="set-group">
-          <h4>Use another computer</h4>
-          <ol className="devices-steps">
-            <li>On the computer you want to use, turn on Allow access from nearby devices, then choose Pair a device.</li>
-            <li>On the computer in front of you, choose Find nearby devices below, then pick the other computer.</li>
-            <li>Check that both computers show the same code, then approve it on the computer you want to use.</li>
-          </ol>
-          <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Both computers need Mythra Code open and the same network. Once paired, switch between them from the menu next to Mythra Code at the top of the sidebar.</span></p>
+          <h4>Asking to use this computer</h4>
+          <div className="access-list">{incoming.map((request) => <IncomingRequestCard key={request.requestId} request={request} />)}</div>
+        </div>
+      )}
+      <DeclineUndo />
+
+      <div className="set-group">
+        <h4>Use another computer</h4>
+        {outgoing.length > 0 && <div className="access-list">{outgoing.map((request) => <OutgoingRequestCard key={request.requestId} request={request} />)}</div>}
+        <div className="set-card">
+          {nearby.map((device) => <NearbyRow key={device.instance} device={device} snapshot={snapshot} onError={setError} />)}
+          {nearby.length === 0 && (
+            <div className="set-row">
+              <div className="set-copy">
+                <strong>{snapshot.browsing ? "Looking for your other computers…" : "No other computers found"}</strong>
+                <small>On the other computer, open Mythra Code and turn on {HOSTING_LABEL}. It shows up here, and you can ask to use it.</small>
+              </div>
+              {!snapshot.browsing && (
+                <div className="set-control">
+                  <button type="button" className="secondary-button" disabled={searching} onClick={findNearby}>
+                    {searching ? <LoaderCircle size={13} className="spin" /> : <Radar size={13} />} Look again
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Both computers need Mythra Code open and the same network. Once you're connected, switch between them from the menu at the top of the sidebar.</span></p>
+      </div>
+
+      {declined.length > 0 && (
+        <div className="set-group">
+          <h4>Declined requests</h4>
+          <div className="set-card">{declined.map((request) => <DeclinedRow key={request.requestId} request={request} />)}</div>
+          <p className="settings-footnote" role="note"><Info size={13} aria-hidden="true" /><span>Kept for 7 days, in case you change your mind.</span></p>
         </div>
       )}
 
-      <PairingPanel snapshot={snapshot} onError={setError} />
-
-      {snapshot.nearby.length > 0 && !snapshot.pairing && <NearbyDevices snapshot={snapshot} onError={setError} />}
-
-      <div className="set-group">
-        <div className="set-group-head"><h4>Paired devices</h4></div>
-        {snapshot.devices.length > 0 ? (
+      {snapshot.devices.length > 0 && (
+        <div className="set-group">
+          <div className="set-group-head"><h4>Connected computers</h4></div>
           <div className="set-card">
             {snapshot.devices.map((device) => <PairedDeviceRow key={device.fingerprint} device={device} snapshot={snapshot} projects={projects} onError={setError} />)}
           </div>
-        ) : (
-          <div className="set-card"><div className="set-row">
-            <div className="set-copy">
-              <strong>No paired devices yet</strong>
-              <small>{snapshot.browsing && snapshot.nearby.length === 0 ? "Looking for nearby devices. Make sure the other computer has Allow access from nearby devices turned on." : "Paired devices stay listed here, even when they're offline."}</small>
-            </div>
-            {!snapshot.browsing && (
-              <div className="set-control">
-                <button type="button" className="secondary-button" disabled={searching} onClick={findNearby}>
-                  {searching ? <LoaderCircle size={13} className="spin" /> : <Radar size={13} />} Find nearby devices
-                </button>
-              </div>
-            )}
-          </div></div>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   );
 }

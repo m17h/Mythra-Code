@@ -153,6 +153,7 @@ pub(super) struct Link {
     write_failed: AtomicBool,
     last_received_ms: AtomicU64,
     pub(super) pairing_started: AtomicBool,
+    access_only: bool,
     pub(super) exporter: Exporter,
     pub(super) peer_name: StdMutex<Option<String>>,
     pub(super) peer_version: String,
@@ -430,10 +431,15 @@ pub(super) fn test_start_link<S: AsyncRead + AsyncWrite + Send + 'static>(inner:
 /// Registers the link and starts its tasks. `None` when it may not exist: the
 /// table is full, or something changed since the hello, so everything that
 /// allowed it is decided again here, under the lock that registers it.
+#[cfg(test)]
 fn start_link<S>(inner: &Arc<Inner>, stream: S, setup: LinkSetup) -> Option<Arc<Link>>
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
+    start_link_kind(inner,stream,setup,false)
+}
+fn start_link_kind<S>(inner:&Arc<Inner>,stream:S,setup:LinkSetup,access_only:bool)->Option<Arc<Link>>
+where S:AsyncRead+AsyncWrite+Send+'static {
     let (outgoing, outgoing_rx) = mpsc::channel(OUTGOING_QUEUE);
     let (closed, _) = watch::channel(None);
     let link = Arc::new(Link {
@@ -448,6 +454,7 @@ where
         write_failed: AtomicBool::new(false),
         last_received_ms: AtomicU64::new(wire_clock_ms()),
         pairing_started: AtomicBool::new(false),
+        access_only,
         exporter: setup.exporter,
         peer_name: StdMutex::new(setup.peer_name),
         peer_version: setup.peer_version,
@@ -476,7 +483,8 @@ where
         if setup.listener.is_some() && setup.listener != listener {
             return None;
         }
-        if link.role == Role::Host && !core.settings.hosting {
+        if link.role == Role::Host && !core.settings.hosting
+            && !(access_only && !setup.paired && core.access.control_peer(&link.peer_fingerprint)) {
             return None;
         }
         if setup.paired {
@@ -791,6 +799,7 @@ fn local_hello(core: &Core, role: Role, peer_known: bool, peer_paired: Option<bo
         name: (peer_known || core.settings.share_name).then(|| super::device_name(core)),
         extras: if peer_known {
             HelloExtras {
+                access_only: None,
                 paired: peer_paired,
                 port: super::advertised_port(core),
                 platform: Some(platform_name().to_string()),
@@ -863,14 +872,16 @@ pub(super) async fn accept(
             let mut core = inner.lock();
             let device = core.devices.get(&fingerprint);
             let known = device.is_some();
-            let paired = device.is_some_and(|device| match hello.role {
+            let access_only=hello.extras.access_only==Some(true);
+            let paired = !access_only && device.is_some_and(|device| match hello.role {
                 Role::Viewer => device.grant.is_some(),
                 Role::Host => device.they_host,
             });
             // With hosting off this is a temporary listener. It takes pairing
             // offers and paired reverse links, and nobody can ask to view this
             // device through it.
-            let hosting_refused = local_role == Role::Host && !core.settings.hosting;
+            let hosting_refused = local_role == Role::Host && !core.settings.hosting
+                && !(access_only && core.access.control_peer(&fingerprint));
             let retired = inner.exiting.load(Ordering::Acquire)
                 || core.listener.as_ref().map(|listener| listener.generation) != Some(listener);
             let refusal = if hello.proto > PROTO {
@@ -895,6 +906,7 @@ pub(super) async fn accept(
             }
             let mut reply = local_hello(&core, local_role, known, known.then_some(paired));
             reply.extras.refused = refusal;
+            reply.extras.access_only=access_only.then_some(true);
             let relationship = core.relationship(&fingerprint);
             (reply, paired, refusal, relationship, recorded)
         };
@@ -915,9 +927,10 @@ pub(super) async fn accept(
         super::diagnostics::record(super::diagnostics::Event::Link,0,0,0,0,"tls.accept","failed");
         return;
     };
+    let access_only=hello.extras.access_only==Some(true);
     let peer_name = read_peer_name(&hello);
     let peer_port = peer_listener_address(peer, &hello);
-    let link = start_link(
+    let link = start_link_kind(
         &inner,
         stream,
         LinkSetup {
@@ -933,6 +946,7 @@ pub(super) async fn accept(
             relationship,
             listener: Some(listener),
         },
+        access_only,
     );
     if let Some(link) = link {
         if paired {
@@ -945,6 +959,7 @@ pub(super) async fn accept(
                 link.role == Role::Viewer,
             );
         }
+        super::access::connected(&inner, &link);
         inner.changed();
     }
 }
@@ -993,6 +1008,8 @@ pub(super) enum DialPurpose {
     Paired,
     /// Reach a device to pair with, taking this role.
     Pairing(Role),
+    /// Authenticated setup only, even if one direction already has a grant.
+    Access(Role),
 }
 
 pub(super) async fn dial(
@@ -1048,7 +1065,7 @@ pub(super) async fn dial(
             let mut core = inner.lock();
             let known = core.devices.contains_key(&fingerprint);
             let role = match purpose {
-                DialPurpose::Pairing(role) => role,
+                DialPurpose::Pairing(role) | DialPurpose::Access(role) => role,
                 DialPurpose::Paired => match super::role_for_peer(&core, &fingerprint) {
                     Some(role) => role,
                     None => return Err(DialError::NotNeeded(fingerprint)),
@@ -1066,6 +1083,8 @@ pub(super) async fn dial(
             let relationship = core.relationship(&fingerprint);
             (local_hello(&core, role, known, None), role, relationship, reservation)
         };
+        let mut hello=hello;
+        if matches!(purpose,DialPurpose::Access(_)){hello.extras.access_only=Some(true);}
         let encoded = encode(&Frame::Hello(hello)).map_err(|_| DialError::Failed)?;
         stream.write_all(&encoded).await.map_err(|_| DialError::Failed)?;
         stream.flush().await.map_err(|_| DialError::Failed)?;
@@ -1096,6 +1115,7 @@ pub(super) async fn dial(
     if let Err(error)=&handshake{super::diagnostics::record(super::diagnostics::Event::Link,0,0,0,0,"tls.dial",if matches!(error,DialError::KeyRejected(_)){"key_rejected"}else{"failed"});}
     let (stream, spki, reply, role, exporter, relationship, _reservation) = handshake?;
 
+    if matches!(purpose,DialPurpose::Access(_)) && reply.extras.access_only!=Some(true){return Err(DialError::PeerUpdateRequired);}
     let peer_paired = reply.extras.paired == Some(true);
     if matches!(purpose, DialPurpose::Paired) && !peer_paired {
         // The pinned key itself said no. As a viewer that means this device
@@ -1110,7 +1130,7 @@ pub(super) async fn dial(
     let platform = reply.extras.platform.clone();
     let paired = matches!(purpose, DialPurpose::Paired);
     let fingerprint = fingerprint_of(&spki);
-    let link = start_link(
+    let link = start_link_kind(
         inner,
         stream,
         LinkSetup {
@@ -1126,6 +1146,7 @@ pub(super) async fn dial(
             relationship,
             listener: None,
         },
+        matches!(purpose,DialPurpose::Access(_)),
     )
     .ok_or(DialError::Failed)?;
     if paired {
@@ -1138,6 +1159,7 @@ pub(super) async fn dial(
             role == Role::Viewer,
         );
     }
+    super::access::connected(inner, &link);
     inner.changed();
     Ok(link)
 }
@@ -1182,11 +1204,15 @@ fn authorize_paired_operation(inner: &Arc<Inner>, link: &Link) -> Result<(), Wir
 }
 
 async fn handle_request(inner: &Arc<Inner>, link: &Arc<Link>, id: u64, op: &str, args: Value) -> Reply {
+    if link.access_only && !matches!(op,"access.request"|"access.answer"|"access.cancel"|"access.reverse") {
+        return Reply::Done(Err(WireError::new("not_paired","This connection is only for access requests.")));
+    }
     let result = match op {
         "preview.list" | "preview.open" | "preview.ready" | "preview.http" | "preview.close" | "preview.ws.open" | "preview.ws.write" | "preview.stream.read" | "preview.stream.close" => return Reply::Done(super::preview::handle_request(inner,link,op,args).await),
         "terminal.ack" => return Reply::Done(super::terminal::ack(inner,link,&args)),
         op if super::work::is_mutation(op) => return Reply::Done(super::work::handle_request(inner,link,op,args).await),
         op if super::manifest::fields(op).is_some()=>return Reply::Done(super::hostbridge::request_value(inner,link,op,args,None).await),
+        "access.request" | "access.answer" | "access.cancel" | "access.reverse" => return super::access::handle(inner,link,op,args).await,
         "link.reverse" | "pair.reverse" => return pairing::handle_reverse_control(inner,link,op,args),
         "pair.offer" => return pairing::handle_offer(inner, link,args),
         "pair.request" => return pairing::handle_request(inner, link, args),
