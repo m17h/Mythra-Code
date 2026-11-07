@@ -69,7 +69,7 @@ export function RemoteProjectEditor({ device, name, workspaceId, projectName, co
           </select>
         </label>
       </fieldset>
-      <fieldset disabled={!canManage || !canShell || saving} title={canShell ? undefined : accessReason(name, "save commands", "Use the terminal")}>
+      <fieldset disabled={!canManage || !canShell || saving} title={canShell ? undefined : accessReason(name, "save commands", "Terminal")}>
         <label><span>Run command</span><input value={run} onChange={(event) => setRun(event.target.value)} spellCheck={false} /></label>
         <label><span>Setup command</span><input value={setup} onChange={(event) => setSetup(event.target.value)} spellCheck={false} /></label>
         <label><span>Check command</span><input value={check} onChange={(event) => setCheck(event.target.value)} spellCheck={false} /></label>

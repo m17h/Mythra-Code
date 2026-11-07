@@ -27,3 +27,13 @@ export function hostLocalPort(href: string): number | null {
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   return host === "localhost" || host === "::1" || host === "0.0.0.0" || /^127(\.\d{1,3}){3}$/.test(host) ? Number(url.port) : null;
 }
+
+/** The page a host link points at, as a tunnel request line. No fragment: browsers
+ * never send one, and the host refuses it. */
+export function hostLinkPath(href: string): string | undefined {
+  try {
+    const url = new URL(href);
+    const path = `${url.pathname}${url.search}`;
+    return path === "/" || path.length > 8192 || path.startsWith("//") || path.includes("\\") ? undefined : path;
+  } catch { return undefined; }
+}

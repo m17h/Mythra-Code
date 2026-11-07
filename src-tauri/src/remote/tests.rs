@@ -357,8 +357,9 @@ async fn five_bad_tokens_void_invitation_without_occupying_nearby_slot() {
     let host = Node::new(true).await;
     let viewer = Node::new(false).await;
     host.window(false, Duration::from_secs(60));
-    for _ in 0..5 {
+    for attempt in 0..5 {
         let link = viewer.connect(&host, Role::Viewer).await;
+        let inbound = host.inner.lock().links.values().next().cloned();
         let error = link
             .request(
                 "pair.request",
@@ -367,7 +368,7 @@ async fn five_bad_tokens_void_invitation_without_occupying_nearby_slot() {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.code, "forbidden");
+        assert_eq!(error.code, "forbidden", "attempt={attempt} viewer={:?} host={:?}", link.test_trace(), inbound.map(|link|link.test_trace()));
         assert_eq!(snapshot(&host.inner)["pairing"]["waiting"], false);
         link.close(CloseReason::Finished);
         until(|| host.inner.lock().links.is_empty()).await;
@@ -1943,4 +1944,125 @@ async fn preview_deep_path_preserves_path_and_query_but_refuses_url_or_fragment(
         .unwrap()
         .starts_with(&format!("GET {path} HTTP/1.1\r\n")));
     backend.await.unwrap();
+}
+
+
+/// Reproduce a late Ping/Pong failing after a peer has flushed its final
+/// refusal. Read gating makes the scheduling race deterministic over real TCP.
+#[tokio::test]
+async fn failed_reverse_write_does_not_discard_the_peers_flushed_refusal() {
+    use std::{
+        pin::Pin,
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    struct Gated {
+        stream: TcpStream,
+        gate: Option<tokio::sync::oneshot::Receiver<()>>,
+        fail: Arc<AtomicBool>,
+    }
+    impl AsyncRead for Gated {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if let Some(gate) = self.gate.as_mut() {
+                if std::future::Future::poll(Pin::new(gate), cx).is_pending() {
+                    return Poll::Pending;
+                }
+                self.gate = None;
+            }
+            Pin::new(&mut self.stream).poll_read(cx, buf)
+        }
+    }
+    impl AsyncWrite for Gated {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.fail.load(Ordering::Acquire) {
+                return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+            }
+            Pin::new(&mut self.stream).poll_write(cx, buf)
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.stream).poll_shutdown(cx)
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stream, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+    let stream = stream.unwrap();
+    let (mut peer, _) = accepted.unwrap();
+    let inner = RemoteState::default().inner;
+    inner.lock().loaded = true;
+    let fail = Arc::new(AtomicBool::new(false));
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let link = session::test_start_link(
+        &inner,
+        Gated {
+            stream,
+            gate: Some(gate),
+            fail: fail.clone(),
+        },
+        session::LinkSetup {
+            peer_spki: vec![7; 32],
+            peer_addr: address,
+            role: Role::Viewer,
+            dialed: true,
+            paired: false,
+            exporter: [0; 32],
+            peer_name: None,
+            peer_version: "test".into(),
+            unauth: None,
+            relationship: 0,
+            listener: None,
+        },
+    );
+    let asker = link.clone();
+    let mut request =
+        tokio::spawn(async move { asker.request("pair.request", json!({}), WAIT).await });
+    let id = loop {
+        let bytes = wire::read_frame(&mut peer, PREAUTH_MAX_FRAME, WAIT)
+            .await
+            .unwrap();
+        if let wire::Decoded::Frame(Frame::Req { id, .. }) = wire::decode(&bytes).unwrap() {
+            break id;
+        }
+    };
+    peer.write_all(
+        &wire::encode(&Frame::Res {
+            id,
+            ok: false,
+            result: None,
+            error: Some(wire::WireError::new("forbidden", "Test refusal.")),
+        })
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    peer.flush().await.unwrap();
+    fail.store(true, Ordering::Release);
+    assert!(link.send(&Frame::Ping { t: 0 }));
+    until(|| link.test_trace().contains(&"writer_error")).await;
+    // The reader cannot receive the flushed response yet. A write failure must
+    // NOT destroy pending requests while those bytes are waiting to be read.
+    let premature = timeout(Duration::from_millis(20), &mut request).await;
+    let _ = release.send(());
+    let outcome = match premature {
+        Ok(done) => done.unwrap(),
+        Err(_) => request.await.unwrap(),
+    };
+    let trace = link.test_trace();
+    link.close(CloseReason::Finished);
+    assert_eq!(outcome.unwrap_err().code, "forbidden", "{trace:?}");
 }

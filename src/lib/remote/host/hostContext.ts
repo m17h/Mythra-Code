@@ -5,11 +5,15 @@ import type { HostContextResult, HostRequest, FilesSearchResult, WireEffort, Wir
 import { remotePermission, resolveThreadExecutionContext, type ExecutionSources } from "./executionContext";
 import { currentGrant, HostReadError, idArg, normalizedHostPath, requireThread, requireWorkspace } from "./scope";
 import { publicCrew } from "./executionPreferences";
+import { hostDiscoveryPreferences } from "./discoverySettings";
 import type { LocalSkill } from "../../skills";
 import type { ChildAgentTarget } from "../../../types";
 
 export const wireEfforts = new Set<WireEffort>(["low", "medium", "high", "xhigh", "max"]);
 export interface HostContextSources extends ExecutionSources {
+  /** Must inspect all execution scopes, not just the selected Run/Checks UI.
+   * Local start handlers also consult hostCommandBusy before dispatch. */
+  isLocalCommandRunning?(root: string, kind: "run" | "checks"): boolean;
   /** Host engine instance, with remote-only delivery hooks; never selected-UI actions. */
   getParentObligations?(run: import("../../parentRun").ParentRun): readonly import("../../parentRun").ParentObligation[];
   getWorkflowEngine?(): import("./workflowExecution").RemoteWorkflowEngine;
@@ -62,6 +66,7 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
   const effort = ctx.effectiveSettings.reasoningEffort === "ultra" ? "max" : ctx.effectiveSettings.reasoningEffort;
   const rawSkills = sources.getPublicSkills(), rawWorkflows = sources.getPublicWorkflows(workspaceId);
   const run = workspace.overrides?.run, check = workspace.overrides?.check;
+  const discovery = hostDiscoveryPreferences();
   const capability = grant.capabilities as typeof grant.capabilities & { manageProjects?: boolean };
   const nativeEngine = ctx.effectiveSettings.subagentEngine === "native";
   const capturedCrew = threadId && !nativeEngine ? sources.getThreadCrew?.(threadId) : undefined;
@@ -78,6 +83,7 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
     workflows: rawWorkflows.slice(0, 128).map((w) => ({ id: text(w.id, 256), name: text(w.name, 256), description: text(w.description, 1024) })),
     ...(run ? { run: { command: text(run.command, 4000), ...(run.setupCommand ? { setupCommand: text(run.setupCommand, 4000) } : {}), ...(run.label ? { label: text(run.label, 80) } : {}) } } : {}),
     ...(check ? { check: { command: text(check.command, 4000) } } : {}), usage: usage(threadId),
+    discovery: { provider: discovery.provider, model: text(discovery.model, 256), effort: wireEfforts.has(discovery.effort as WireEffort) ? discovery.effort as WireEffort : "default", fast: discovery.fast },
     capabilities: { fullAccess: capability.fullAccess === true, gitWrite: capability.gitWrite === true,
       checkpointRestore: capability.checkpointRestore === true, terminal: capability.terminal === true, manageProjects: capability.manageProjects === true },
     truncated: rawSkills.length > 256 || rawWorkflows.length > 128 || (workspace.overrides?.systemPrompt?.length ?? 0) > 65536 || sources.getProviderCatalog().some((p) => p.models.length > 128),

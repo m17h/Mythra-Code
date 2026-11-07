@@ -8,8 +8,10 @@ import { sanitizeProjectPromptProfileOverrides } from "../../projectPromptProfil
 import type { HostContextSources } from "./hostContext";
 import type { HostParityActions } from "./parityActions";
 import { invoke } from "@tauri-apps/api/core";
+import { createHostCommandActions, hostCommandRows } from "./commandActions";
+import { setHostDiscoverySettings } from "./discoverySettings";
 import { createWorkflowExecution } from "./workflowExecution";
-import { markRemoteEngineRetiring } from "./engineOwners";
+import { markRemoteEngineRetiring, remoteEngineOwner, remoteEngineStopped } from "./engineOwners";
 import { nativeRefusal } from "./nativeActions";
 import { commitHostState, operationStamp } from "./stateCommit";
 import { createHostQueueActions } from "./queueActions";
@@ -20,6 +22,7 @@ import { getOpenRouterCredits, rpc } from "../../codex";
 /** Concrete shared-state adapters wrap App's domain/lifecycle extraction. */
 export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void, isCurrent: () => boolean = () => true, getRunner?: () => import("./workTypes").RemoteTurnRunner) {
   const queue = createHostQueueActions(pump);
+  const commands = createHostCommandActions(sources, isCurrent);
   const workflows = new Map<string, ReturnType<typeof createWorkflowExecution>>();
   const queueOps = new Set(["queue.edit.begin", "queue.edit.finish", "queue.remove", "queue.retry", "prompt.schedule", "schedules.edit", "schedules.reschedule", "schedules.release", "schedules.remove"]);
   const projectOps = new Set(["projects.settings.set", "projects.instructions.set", "projects.profiles.save", "projects.profiles.delete", "projects.profiles.select", "projects.run.set", "projects.check.set"]);
@@ -27,6 +30,7 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
     revision: fallback.revision,
     async read(op, args, context) {
       const result = (rows: WireParityRow[]) => ({ revision: fallback.revision(context), rows, truncated: rows.length > 200 });
+      if (op === "run.status" || op === "checks.read" || op === "checks.status") return result(hostCommandRows(op === "run.status" ? "run" : "checks", context));
       if ((op === "queue.read" || op === "schedules.read") && context.activeThread) {
         const entries = storedQueuedTurnsForThread(context.activeThread.id);
         return result(entries.filter((entry) => op !== "schedules.read" || entry.deliverAt !== undefined).slice(0, 200).map((entry) => ({
@@ -79,6 +83,8 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       return fallback.read(op, args, context);
     },
     async execute(op, args, operation) {
+      if (op === "discovery.settings.set") { await setHostDiscoverySettings(sources, args, operation); return { state: "accepted" }; }
+      if (op === "run.start" || op === "run.stop" || op === "checks.start" || op === "checks.stop") return commands.execute(op, args, operation);
       if (op === "parent.continue" || op === "parent.dismiss") {
         const id = operation.context.activeThread?.id, run = id ? useTaskStore.getState().parentRuns[id] : undefined;
         if (!id || !run || run.id !== args.parentRunId || run.phase !== "paused") throw new HostReadError("stale_target", "This parent run is no longer paused.");
@@ -117,18 +123,21 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       }
       if (op === "workflows.stop") {
         const id = idArg(args.workflowId), runId = idArg(args.runId), controller = workflows.get(id), engine = sources.getWorkflowEngine?.();
-        if (!engine || !controller?.execution.ownerHandle || controller.execution.ownerRunId !== runId) throw new HostReadError("stale_target", "This workflow has no matching native execution owner.");
+        const threadId = operation.context.activeThread?.id;
+        const local = threadId ? remoteEngineOwner(threadId, undefined, runId) : undefined;
+        const ownerHandle = controller?.execution.ownerRunId === runId ? controller.execution.ownerHandle : local?.local ? local.ownerHandle : undefined;
+        if (!engine || !ownerHandle || !controller && (!threadId || useTaskStore.getState().workflowOwners[threadId]?.workflowId !== id)) throw new HostReadError("stale_target", "This workflow has no matching native execution owner.");
         operation.assertAllowed();
-        markRemoteEngineRetiring(controller.execution.ownerHandle);
-        controller.cancel();
+        markRemoteEngineRetiring(ownerHandle);
+        controller?.cancel();
         const stopped = await engine.stopWorkflowRun(id, runId, async () => {
           let cutoff: { confirmed: boolean };
-          try { cutoff = await invoke("remote_work_owner_retire", { stamp: operationStamp(operation), ownerHandle: controller.execution.ownerHandle }); }
+          try { cutoff = await invoke("remote_work_owner_retire", { stamp: operationStamp(operation), ownerHandle }); }
           catch (reason) { throw nativeRefusal(reason); }
           if (cutoff.confirmed !== true) throw new HostReadError("uncertain", "The other device couldn't confirm the workflow stopped. Check the conversation.");
         });
         if (!stopped) throw new HostReadError("stale_target", "This workflow run ended before Stop.");
-        controller.retired(); workflows.delete(id);
+        controller?.retired(); remoteEngineStopped(ownerHandle); workflows.delete(id);
         return { state: "accepted", workflowRunId: runId };
       }
       if (queueOps.has(op)) return queue.execute(op, args, operation);
@@ -167,5 +176,5 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       return { state: "accepted" };
     },
   };
-  return { adapter, dispose: () => { queue.dispose(); for (const controller of workflows.values()) controller.cancel(); workflows.clear(); } };
+  return { adapter, dispose: () => { commands.dispose(); queue.dispose(); for (const controller of workflows.values()) controller.cancel(); workflows.clear(); } };
 }

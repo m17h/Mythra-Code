@@ -5,20 +5,24 @@ import { FileBrowser, type FileBrowserSource } from "../FileBrowser";
 import { ChecksControl } from "../ChecksControl";
 import type { GitPathAction } from "../GitChangesView";
 import { GitPanel, type GitPanelAction } from "../GitPanel";
+import { ThreadPullRequestPanel } from "../ThreadPullRequestPanel";
+import { useSessionThreadPullRequest } from "../../hooks/useThreadPullRequest";
+import { RemotePullRequestActivity } from "./RemotePullRequestActivity";
 import { AgentsPanel, CheckpointsPanel, Empty, PanelHeader, StudioDockFrame, TerminalPanelHost, WorktreesPanel, type AgentRecord, type StudioTab } from "../StudioDock";
 import { confirmDialog } from "../../lib/confirmDialog";
 import type { CheckpointRecord, CheckpointRestoreTarget } from "../../lib/checkpoints";
 import { parseDiffSections } from "../../lib/gitDiff";
 import type { GitChangeArea } from "../../lib/gitInspection";
 import { joinPath } from "../../lib/paths";
-import type { GitRoute, GitView, ProjectGitInspection } from "../../lib/projectGit";
+import type { GitRoute, GitView, ProjectGitInspection, ProjectPullRequestAccess } from "../../lib/projectGit";
 import { accessReason, hostRead, hostWrite } from "../../lib/remote/remoteActions";
 import { remoteTerminal, remoteTerminalKey, useRemoteTerminals } from "../../lib/remote/remoteTerminal";
+import { remotePullRequests } from "../../lib/remote/remotePullRequests";
 import { remoteContextKey, useRemoteContext } from "../../lib/remote/remoteWork";
 import { viewerRequest } from "../../lib/remote/viewerBridge";
 import { useRemoteDevices } from "../../lib/remote/devices";
 import { selectRemoteThread, useRemoteStore } from "../../lib/remote/remoteStore";
-import type { AgentsListResult, CheckpointDiffResult, CheckpointListResult, FilePreviewResult, FilesListResult, GitDiffResult, GitLogResult, GitStatusResult, RevertPreviewResult, StudioTarget, WireCheckpoint, WireGitChange, WorktreeStatusResult } from "../../lib/remote/wire-studio";
+import type { AgentsListResult, CheckpointDiffResult, CheckpointListResult, FilePreviewResult, FilesListResult, GitDiffResult, GitLogResult, GitStatusResult, RevertPreviewResult, StudioTarget, WireGitHubAccess, WireCheckpoint, WireGitChange, WorktreeStatusResult } from "../../lib/remote/wire-studio";
 import type { HostContextResult } from "../../lib/remote/wire";
 import type { ThreadWorktreeRecord } from "../../lib/worktrees";
 
@@ -108,7 +112,7 @@ function HostChanges({ device, name, target, context, onClose }: { device: strin
     <div className="studio-actions wrap review-actions">
       <button onClick={reload}><RefreshCw size={13} /> Refresh</button>
       <ChecksControl command={context?.check?.command} running={Boolean(checking)} result={null} onAddFeedback={noop}
-        disabledReason={canCheck ? undefined : accessReason(name, "run checks", "Use the terminal")}
+        disabledReason={canCheck ? undefined : accessReason(name, "run checks", "Terminal")}
         onRun={() => { void hostWrite<{ processHandle?: string }>(device, name, "checks.start", checkRevision).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(outcome.result?.processHandle ?? "running"); }); }}
         onStop={() => { if (checking) void hostWrite(device, name, "checks.stop", { ...checkRevision, processHandle: checking }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(null); }); }}
         onSave={(command) => { void hostWrite(device, name, "projects.check.set", { ...checkRevision, command }).then((outcome) => setNotice(outcome.message)); }} />
@@ -133,7 +137,7 @@ function HostTerminal({ device, name, target, allowed, onClose }: { device: stri
   const platform = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.platform);
   return <>
     <PanelHeader icon={TerminalSquare} title="Terminal" subtitle={`Runs on ${name}`} onClose={onClose} />
-    <Reason text={!allowed ? accessReason(name, "run commands", "Use the terminal") : view?.notice ?? ""} />
+    <Reason text={!allowed ? accessReason(name, "run commands", "Terminal") : view?.notice ?? ""} />
     <TerminalPanelHost outputStore={session.store} scope={`${device}/${target.workspaceId}`} scopeLabel={name} shell={platform === "windows" ? "Command Prompt" : platform === "macos" ? "zsh" : "shell"} running={Boolean(view?.running || view?.opening)}
       runningCommand={view?.command ?? ""} runningElsewhere={[]} readOnly={!allowed}
       onRun={(command) => { void session.run(name, target.threadId, command); }}
@@ -159,7 +163,7 @@ function HostGit({ device, name, target, revision, allowed, view, route, onView,
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const changeIds = useRef(new Map<string, string>());
-  const reason = accessReason(name, "change Git", "Change Git history and Use the terminal");
+  const reason = accessReason(name, "change Git", "Git changes and Terminal");
   const inspection = useMemo<ProjectGitInspection>(() => ({
     cwd: `${device}/${target.workspaceId}/${target.threadId ?? ""}`,
     getChanges: async () => {
@@ -178,6 +182,28 @@ function HostGit({ device, name, target, revision, allowed, view, route, onView,
     getHistory: (_cwd, offset, limit, headOid) => hostRead<GitLogResult>(device, "git.log", { ...target, offset, limit, ...(headOid ? { headOid } : {}) }),
   }), [device, target]);
   const { data: repository, reload: reloadRepository } = useHostData(() => hostRead<GitLogResult>(device, "git.log", { ...target, limit: 1 }), `${device}:${JSON.stringify(target)}`);
+  const label = `remote:${device}/${target.workspaceId}/${target.threadId ?? ""}`;
+  const revisionRef = useRef(revision);
+  revisionRef.current = revision;
+  const pullRequests = useMemo(() => remotePullRequests({ device, name, target, revision: () => revisionRef.current }), [device, name, target]);
+  const { data: github, reload: reloadGitHub } = useHostData<WireGitHubAccess>(() => pullRequests.access(), `${device}:github:${JSON.stringify(target)}`);
+  const blocked = allowed ? null : reason;
+  const threadPullRequest = useSessionThreadPullRequest({
+    threadId: target.threadId ? `${device}/${target.threadId}` : null, cwd: label, projectPath: label, isolated: github?.isolated === true,
+    enabled: Boolean(target.threadId && github?.authenticated && github.repository), visible: true,
+    mutationBlockedReason: blocked, checkMutationAllowed: () => null, backend: pullRequests, onChanged: reloadGitHub,
+  });
+  const { onAttach, linked, pullRequest } = threadPullRequest;
+  const linkedRepository = linked ? pullRequest?.repository ?? null : null, linkedNumber = linked ? pullRequest?.number ?? null : null;
+  const projectAccess = useMemo<ProjectPullRequestAccess>(() => ({
+    ...pullRequests, cwd: label, projectPath: label, repository: github?.repository ?? null, authenticated: github?.authenticated === true,
+    threadActive: Boolean(target.threadId), isolated: github?.isolated === true, mutationBlockedReason: blocked, checkMutationAllowed: () => null,
+    list: (_cwd, _repository, query) => pullRequests.list(query),
+    ...(target.threadId ? { attachToThread: onAttach } : {}),
+    threadLink: linkedRepository && linkedNumber ? { repository: linkedRepository, number: linkedNumber } : null,
+    onChanged: reloadGitHub,
+  }), [blocked, github, label, linkedNumber, linkedRepository, onAttach, pullRequests, reloadGitHub, target.threadId]);
+  const signInHere = () => setOutput(`GitHub sign-in stays on ${name}. Connect it there in Settings → GitHub.`);
   const write = async (action: HostGitAction, extra: Record<string, unknown> = {}) => {
     if (!allowed) { setOutput(reason); return false; }
     setBusy(true);
@@ -211,15 +237,23 @@ function HostGit({ device, name, target, revision, allowed, view, route, onView,
         void write("commit", { ...(message ? { message } : {}), stagedOnly }).then((saved) => { if (saved && action.endsWith("Push")) void write("push"); });
         return;
       }
+      case "comments": case "ci": case "pr": onView("pulls"); return;
       default: setOutput(NOT_HERE_YET("That", name));
     }
   };
   return <>
     <PanelHeader icon={FolderGit2} title="Git" subtitle={`Changes on ${name}`} onClose={onClose} />
-    <GitPanel repositoryState={repository?.repository === false ? "absent" : "ready"} gitInitializing={busy} gitOutput={output} gitCommitSuccess="" gitCommitBusy={busy} githubAuthenticated={false} githubRepoStatus={null}
+    <GitPanel repositoryState={repository?.repository === false ? "absent" : "ready"} gitInitializing={busy} gitOutput={output} gitCommitSuccess="" gitCommitBusy={busy} githubAuthenticated={github?.authenticated === true}
+      githubRepoStatus={github?.repository ? { isRepo: true, repository: github.repository, ahead: github.context?.ahead ?? 0, behind: github.context?.behind ?? 0 } : null}
+      hasPullRequestWorkflow pullRequests={projectAccess}
+      pullRequestPanel={target.threadId && github?.repository && github.authenticated ? <>
+        <ThreadPullRequestPanel {...threadPullRequest} threadId={`${device}/${target.threadId}`} isolated={github.isolated} mutationBlockedReason={blocked}
+          onOpenWorktrees={() => onTab("worktrees")} onOpenGitHubSettings={signInHere} />
+        {linked && pullRequest && <RemotePullRequestActivity pullRequests={pullRequests} pullRequest={pullRequest} allowed={allowed} reason={reason} name={name} />}
+      </> : undefined}
       readOnly={!allowed} readOnlyReason={reason} gitOperationBusy={busy} defaultRepositoryName="" inspection={inspection} view={view} onViewChange={onView} focusRequest={route}
       onOpenTool={onTab} onPathAction={pathAction} onAction={panelAction}
-      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} onGitHubAttach={noop} onGitHubCreate={noop} onOpenGitHubSettings={noop} />
+      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} onGitHubAttach={signInHere} onGitHubCreate={signInHere} onOpenGitHubSettings={signInHere} />
   </>;
 }
 
@@ -246,7 +280,7 @@ function HostCheckpoints({ device, name, target, revision, threadOpen, allowed, 
       onCheckpoint={() => run("manual", "checkpoint.create", { checkpointId: crypto.randomUUID(), label: "Manual checkpoint" })}
       onFork={onFork}
       onCheckpointRestore={(checkpoint, restore: CheckpointRestoreTarget) => {
-        if (!allowed) { setNotice(accessReason(name, "restore checkpoints", "Restore checkpoints and Use the terminal")); return; }
+        if (!allowed) { setNotice(accessReason(name, "restore checkpoints", "Restore checkpoints and Terminal")); return; }
         void confirmDialog(`Restore “${checkpoint.label}” on ${name}?\n\nA safety copy is saved first.`).then((confirmed) => { if (confirmed) run(checkpoint.id, "checkpoint.restore", { checkpointId: checkpoint.id, target: restore, confirmed: true }); });
       }}
       onCheckpointAccept={(checkpoint) => run(checkpoint.id, "checkpoint.accept", { checkpointId: checkpoint.id })}
@@ -270,21 +304,21 @@ function HostWorktrees({ device, name, target, revision, allowed, onReview, onCl
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const worktree = useMemo<ThreadWorktreeRecord | undefined>(() => data?.worktree ? { ...data.worktree, status: data.worktree.status as ThreadWorktreeRecord["status"], projectId: "", projectPath: "", gitDir: "" } : undefined, [data?.worktree]);
-  const run = (op: "worktree.apply" | "worktree.merge" | "worktree.remove" | "worktree.recreate", confirmText: string | null) => {
+  const run = (op: "worktree.apply" | "worktree.merge" | "worktree.remove" | "worktree.recreate" | "worktree.continueShared" | "worktree.returnShared", confirmText: string | null) => {
     void (confirmText ? confirmDialog(confirmText) : Promise.resolve(true)).then((confirmed) => {
       if (!confirmed) return;
       setBusy(true);
       void hostWrite(device, name, op, { ...target, revision, ...(op === "worktree.recreate" ? { label: worktree?.branch ?? "" } : { confirmed: true }) }).then((outcome) => { setBusy(false); setNotice(outcome.message); if (outcome.ok) reload(); });
     });
   };
-  const notYet = () => setNotice(NOT_HERE_YET("That", name));
   return <>
-    <Reason text={failed ? `Worktrees on ${name} aren't available here yet.` : !allowed ? accessReason(name, "copy or merge worktree changes", "Use the terminal") : notice} />
+    <Reason text={failed ? `Worktrees on ${name} aren't available here yet.` : !allowed ? accessReason(name, "copy or merge worktree changes", "Terminal") : notice} />
     <WorktreesPanel worktree={worktree} worktreeStatus={data?.status ?? undefined} worktreeBusy={busy} gitActionsReadOnly={!allowed} revealLabel="Copy path" onClose={onClose}
       onWorktreeReview={onReview} onWorktreeApply={() => run("worktree.apply", `Copy this worktree's changes into the shared project on ${name}?`)} onWorktreeMerge={() => run("worktree.merge", `Merge this branch into the shared project on ${name}?`)}
       onWorktreeReveal={() => { if (worktree) void navigator.clipboard.writeText(worktree.path).catch(noop); }}
       onWorktreeRefresh={reload} onWorktreeRemove={() => run("worktree.remove", `Remove this worktree and its branch on ${name}?`)} onWorktreeRecreate={() => run("worktree.recreate", null)}
-      onWorktreeContinueShared={notYet} onWorktreeReturnShared={notYet} />
+      onWorktreeContinueShared={() => run("worktree.continueShared", `Continue this conversation in the shared project on ${name}?\n\nThe worktree's folder and branch stay as they are.`)}
+      onWorktreeReturnShared={() => run("worktree.returnShared", `Remove the finished worktree and return to the shared project on ${name}?\n\nIts branch is deleted too. If it holds unsaved work, ${name} keeps it and refuses.`)} />
   </>;
 }
 

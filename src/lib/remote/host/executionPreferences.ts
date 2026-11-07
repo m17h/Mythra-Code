@@ -67,6 +67,11 @@ export function validateExecutionSettings(value: unknown, sources?: HostContextS
   return result;
 }
 function invalid() { return new HostReadError("unsupported", "The other device does not offer these execution settings."); }
+/** What the local pickers show for a thread a paired device changed. */
+export function sharedThreadPreferences(settings: AppSettings, prefs: WireExecutionSettings): Pick<AppSettings, "permission" | "serviceTier"> {
+  const { permission, serviceTier } = applyHostExecutionPreferences(settings, prefs);
+  return { permission, serviceTier };
+}
 export function applyHostExecutionPreferences(settings: AppSettings, prefs?: WireExecutionSettings): AppSettings {
   if (!prefs) return settings;
   const rank = { "read-only": 0, ask: 1, full: 2 };

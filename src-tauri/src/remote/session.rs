@@ -145,11 +145,14 @@ pub(super) struct Link {
     /// True when this side opened the TCP connection.
     pub(super) dialed: bool,
     paired: AtomicBool,
+    write_failed: AtomicBool,
     pub(super) pairing_started: AtomicBool,
     pub(super) exporter: Exporter,
     pub(super) peer_name: StdMutex<Option<String>>,
     pub(super) peer_version: String,
     pub(super) rtt_ms: AtomicU32,
+    #[cfg(test)]
+    trace: StdMutex<Vec<&'static str>>,
     frames_left: AtomicU32,
     next_request: AtomicU64,
     outgoing: mpsc::Sender<Outbound>,
@@ -169,6 +172,15 @@ impl Link {
         self.paired.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
+    pub(super) fn test_trace(&self) -> Vec<&'static str> {
+        self.trace.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+    #[cfg(test)]
+    fn trace(&self, event: &'static str) {
+        let mut trace = self.trace.lock().unwrap_or_else(PoisonError::into_inner);
+        if trace.len() < 96 { trace.push(event); }
+    }
     pub(super) fn close_reason(&self) -> Option<CloseReason> {
         *self.closed.borrow()
     }
@@ -176,7 +188,7 @@ impl Link {
     pub(super) fn closed(&self) -> watch::Receiver<Option<CloseReason>> { self.closed.subscribe() }
 
     pub(super) fn is_open(&self) -> bool {
-        self.closed.borrow().is_none()
+        !self.write_failed.load(Ordering::Acquire) && self.closed.borrow().is_none()
     }
 
     pub(super) fn set_paired(&self) {
@@ -201,6 +213,7 @@ impl Link {
     }
 
     pub(super) fn close(&self, reason: CloseReason) {
+        #[cfg(test)] self.trace(match reason { CloseReason::Dead=>"close_dead", CloseReason::Refused=>"close_refused", _=>"close_other" });
         let changed=self.closed.send_if_modified(|current| {
             if current.is_none() {
                 *current = Some(reason);
@@ -319,6 +332,7 @@ impl Link {
     }
 
     fn resolve_request(&self, id: u64, result: Result<Value, WireError>) {
+        #[cfg(test)] self.trace("resolve_response");
         let sender = self
             .pending
             .lock()
@@ -331,6 +345,7 @@ impl Link {
     }
 
     fn fail_pending(&self) {
+        #[cfg(test)] self.trace("fail_pending");
         let pending = self
             .pending
             .lock()
@@ -378,6 +393,11 @@ fn arbitrate(core: &Core, fingerprint: &str, role: Role, dialed: bool) -> Result
     Ok(replaced)
 }
 
+#[cfg(test)]
+pub(super) fn test_start_link<S: AsyncRead + AsyncWrite + Send + 'static>(inner: &Arc<Inner>, stream: S, setup: LinkSetup) -> Arc<Link> {
+    start_link(inner, stream, setup).expect("test link admission")
+}
+
 /// Registers the link and starts its tasks. `None` when it may not exist: the
 /// table is full, or something changed since the hello, so everything that
 /// allowed it is decided again here, under the lock that registers it.
@@ -396,11 +416,13 @@ where
         role: setup.role,
         dialed: setup.dialed,
         paired: AtomicBool::new(false),
+        write_failed: AtomicBool::new(false),
         pairing_started: AtomicBool::new(false),
         exporter: setup.exporter,
         peer_name: StdMutex::new(setup.peer_name),
         peer_version: setup.peer_version,
         rtt_ms: AtomicU32::new(0),
+        #[cfg(test)] trace: StdMutex::new(Vec::new()),
         frames_left: AtomicU32::new(UNPAIRED_FRAME_BUDGET),
         next_request: AtomicU64::new(1),
         outgoing,
@@ -503,21 +525,23 @@ async fn reader_task<S: AsyncRead>(inner: Arc<Inner>, link: Arc<Link>, mut reade
     loop {
         let limit = if link.is_paired() { MAX_FRAME } else { PREAUTH_MAX_FRAME };
         let frame = tokio::select! {
-            _ = wait_closed(&link) => return,
+            _ = wait_closed(&link) => { #[cfg(test)] link.trace("reader_cancelled"); return; },
             read = read_frame(&mut reader, limit, LINK_DEAD_AFTER) => read,
         };
         let bytes = match frame {
-            Ok(bytes) => bytes,
+            Ok(bytes) => { #[cfg(test)] link.trace("reader_frame"); bytes },
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 link.close(CloseReason::Protocol);
                 return;
             }
             Err(_) => {
+                #[cfg(test)] link.trace("reader_error");
                 link.close(CloseReason::Dead);
                 return;
             }
         };
-        link.confirm_replacement();
+        // A one-way failed link is not proof it can replace a healthy one.
+        if link.is_open() { link.confirm_replacement(); }
         if !link.is_paired()
             && link
                 .frames_left
@@ -539,8 +563,12 @@ async fn reader_task<S: AsyncRead>(inner: Arc<Inner>, link: Arc<Link>, mut reade
 }
 
 fn dispatch(inner: &Arc<Inner>, link: &Arc<Link>, frame: Frame) {
+    // A failed writer cannot start work, deliver events, or answer a ping. Only
+    // finish requests whose final response may already be on the read half.
+    if link.write_failed.load(Ordering::Acquire) && !matches!(&frame, Frame::Res { .. }) { return; }
     match frame {
         Frame::Ping { t } => {
+            #[cfg(test)] link.trace("reader_ping");
             link.send(&Frame::Pong { t });
         }
         Frame::Pong { t } => {
@@ -599,13 +627,13 @@ async fn writer_task<S: AsyncWrite>(
             item = outgoing.recv() => item,
         };
         let (bytes, _permit) = match item {
-            Some(Outbound::Frame(bytes)) => (bytes, None),
+            Some(Outbound::Frame(bytes)) => { #[cfg(test)] link.trace("writer_frame"); (bytes, None) },
             Some(Outbound::Stream(bytes, gate, permit)) => {
                 let allowed = link.inner.upgrade().is_some_and(|inner| super::hostbridge::delivery_allowed(&inner, &link, &gate));
                 if !allowed { continue; }
                 (bytes, Some(permit))
             }
-            Some(Outbound::Close(reason)) => { link.close(reason); break; }
+            Some(Outbound::Close(reason)) => { #[cfg(test)] link.trace("writer_ordered_close"); link.close(reason); break; }
             None => break,
         };
         let written = tokio::select! {
@@ -616,9 +644,19 @@ async fn writer_task<S: AsyncWrite>(
             }) => result,
         };
         if !matches!(written, Ok(Ok(()))) {
+            #[cfg(test)] link.trace("writer_error");
+            // TCP/TLS is duplex: a late keepalive write can fail after the peer
+            // flushed a final refusal/acknowledgement. Closing the read task now
+            // would erase that answer and report an incorrect unknown outcome.
+            // Disable new traffic immediately, but let pending replies drain for
+            // at most the bounded shutdown grace. Revocation/explicit close still
+            // cancels this wait immediately, and the queue remains owned here.
+            link.write_failed.store(true, Ordering::Release);
+            let _ = timeout(SHUTDOWN_LIMIT, wait_closed(&link)).await;
             link.close(CloseReason::Dead);
             break;
         }
+        #[cfg(test)] link.trace("writer_flushed");
     }
     let _ = timeout(SHUTDOWN_LIMIT, writer.shutdown()).await;
 }

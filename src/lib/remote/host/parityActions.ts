@@ -9,7 +9,7 @@ import { HostReadError, idArg } from "./scope";
 
 const reads = new Set<string>(["queue.read", "schedules.read", "workflows.list", "workflows.read", "projects.settings.read", "projects.instructions.read",
   "models.list", "models.refresh", "models.search", "skills.list", "skills.read", "skills.analyze", "usage.account.read", "usage.account.refresh",
-  "threads.search", "threads.archived", "parent.read", "checks.read", "checks.status", "discovery.run.status", "discovery.check.status"]);
+  "threads.search", "threads.archived", "parent.read", "run.status", "checks.read", "checks.status", "discovery.run.status", "discovery.check.status"]);
 const writes: Record<string, readonly string[]> = {
   "queue.edit.begin": ["queueId"], "queue.edit.finish": ["queueId", "editHandle", "text", "cancel"],
   "queue.retry": ["queueId"], "queue.steer": ["queueId", "target"], "queue.remove": ["queueId"],
@@ -45,7 +45,7 @@ export interface HostParityActions {
    */
   execute(op: HostParityOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext & {
     delivery: RemoteTurnDelivery;
-  }): Promise<{ state: "accepted" | "queued"; threadId?: string; queuedTurnId?: string; workflowRunId?: string; editHandle?: string }>;
+  }): Promise<{ state: "accepted" | "queued"; threadId?: string; queuedTurnId?: string; workflowRunId?: string; editHandle?: string; processHandle?: string }>;
 }
 export function assertParityAuthority(op: string, grant: DeviceGrant): void {
   if (!grant.view || !isParityRead(op) && !grant.work) throw new HostReadError("forbidden", "This action requires Work access.");
@@ -53,7 +53,7 @@ export function assertParityAuthority(op: string, grant: DeviceGrant): void {
   if (managing && (grant.scope.kind !== "all" || (grant.capabilities as { manageProjects?: boolean }).manageProjects !== true)) {
     throw new HostReadError("forbidden", "This needs Manage projects and access to all projects.");
   }
-  const shell = op.startsWith("run.") || op.startsWith("checks.") && !isParityRead(op)
+  const shell = (op.startsWith("run.") || op.startsWith("checks.")) && !isParityRead(op)
     || op.startsWith("discovery.") && !isParityRead(op) || op === "projects.run.set" || op === "projects.check.set";
   if (shell && !grant.capabilities.terminal) throw new HostReadError("forbidden", "This action requires Terminal access.");
 }
@@ -154,7 +154,7 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
     assertRevision();
     // A workflow must establish native ownership before ANY preparation latch.
     // Its remote engine owns admission/child dispatch, not the generic state adapter.
-    if (op !== "workflows.start" && op !== "parent.continue") await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
+    if (!["workflows.start", "parent.continue", "run.start", "checks.start", "discovery.run.start", "discovery.check.start"].includes(op)) await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
     assertRevision();
     const result = await actions.execute(op, args, { context, identity, generation, grantRevision, delivery, assertAllowed: assertRevision });
     if (result?.state === "queued" && result.threadId && result.queuedTurnId) {
@@ -164,6 +164,6 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
     if (result?.state !== "accepted") throw new HostReadError("uncertain", "The other device's action couldn't be confirmed.");
     await flushPendingStateWrites();
     await delivery.accepted({ threadId: result?.threadId ?? threadId });
-    return { ...delivery.result(), ...(result?.workflowRunId ? { workflowRunId: idArg(result.workflowRunId) } : {}), ...(result?.editHandle ? { editHandle: idArg(result.editHandle) } : {}) };
+    return { ...delivery.result(), ...(result?.workflowRunId ? { workflowRunId: idArg(result.workflowRunId) } : {}), ...(result?.editHandle ? { editHandle: idArg(result.editHandle) } : {}), ...(result?.processHandle ? { processHandle: idArg(result.processHandle) } : {}) };
   } catch (reason) { await delivery.failure(reason); return delivery.result(); }
 }

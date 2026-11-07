@@ -164,11 +164,14 @@ pub(crate) fn configure(command: &mut Command, repo: &Path, args: &[&str]) -> Re
     command
         .env("GIT_CONFIG_GLOBAL", null)
         .env("GIT_CONFIG_SYSTEM", null)
-        .env("GIT_DIR", &snapshot.path)
-        .env("GIT_COMMON_DIR", &snapshot.path)
+        .env("GIT_DIR", git_env_path(&snapshot.path)?)
+        .env("GIT_COMMON_DIR", git_env_path(&snapshot.path)?)
         .env("GIT_WORK_TREE", ".")
-        .env("GIT_INDEX_FILE", snapshot.path.join("index"))
-        .env("GIT_OBJECT_DIRECTORY", &snapshot.objects);
+        .env(
+            "GIT_INDEX_FILE",
+            git_env_path(&snapshot.path.join("index"))?,
+        )
+        .env("GIT_OBJECT_DIRECTORY", git_env_path(&snapshot.objects)?);
     // Callers also use these flags explicitly. Put them after the builtin, not
     // after a path separator, even if a future read adapter forgets them.
     if matches!(name, "diff" | "show" | "log") {
@@ -199,6 +202,38 @@ pub(crate) fn configure(command: &mut Command, repo: &Path, args: &[&str]) -> Re
         *command = safe;
     }
     Ok(())
+}
+// Rust canonicalization emits Windows verbatim paths. Git's own path parsing
+// needs normal drive/UNC syntax in environment variables; this is one path,
+// NOT an alternate-object-directory list (do not split a drive colon or quote).
+fn git_env_path(path: &Path) -> Result<std::ffi::OsString, String> {
+    #[cfg(windows)]
+    {
+        Ok(windows_git_path(path.to_str().ok_or_else(failure)?)?.into())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(path.as_os_str().to_owned())
+    }
+}
+#[cfg(any(windows, test))]
+fn windows_git_path(path: &str) -> Result<String, String> {
+    let normalized = path.replace('\\', "/");
+    if let Some(unc) = normalized.strip_prefix("//?/UNC/") {
+        return Ok(format!("//{unc}"));
+    }
+    if let Some(drive) = normalized.strip_prefix("//?/") {
+        let bytes = drive.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'/'
+        {
+            return Err(failure());
+        }
+        return Ok(drive.to_owned());
+    }
+    Ok(normalized)
 }
 fn probe(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -262,7 +297,9 @@ fn copy(
     limit: usize,
 ) -> Result<(), String> {
     let mut file = anchor.regular(name)?;
-    let size = file.metadata().map_err(|_| failure())?.len();
+    let metadata = file.metadata().map_err(|_| failure())?;
+    let modified = metadata.modified().map_err(|_| failure())?;
+    let size = metadata.len();
     if size > limit as u64 || *total + size as usize > 64 * 1024 * 1024 {
         return Err(failure());
     }
@@ -281,7 +318,13 @@ fn copy(
         .create_new(true)
         .open(to)
         .map_err(|_| failure())?;
-    out.write_all(&data).map_err(|_| failure())
+    out.write_all(&data).map_err(|_| failure())?;
+    // An index mtime is the cutoff for Git's racily-clean content check, not
+    // just cosmetic metadata. Advancing it while copying the old stat cache
+    // can hide same-size edits made in the original index's timestamp tick.
+    // Preserve it from the SAME opened source as the bytes (also sharedindex).
+    out.set_times(fs::FileTimes::new().set_modified(modified))
+        .map_err(|_| failure())
 }
 fn refs(
     from: &Anchor,
@@ -485,6 +528,111 @@ mod tests {
         );
     }
     #[test]
+    fn git_environment_paths_keep_windows_drives_unc_spaces_and_unicode() {
+        for (native, git) in [
+            (
+                r"\\?\C:\Users\Native test\é repo\.git\objects",
+                "C:/Users/Native test/é repo/.git/objects",
+            ),
+            (
+                r"\\?\UNC\server\share\é repo\objects",
+                "//server/share/é repo/objects",
+            ),
+            (r"C:\repo\objects", "C:/repo/objects"),
+            (r"\\server\share\objects", "//server/share/objects"),
+        ] {
+            assert_eq!(windows_git_path(native).unwrap(), git);
+        }
+        assert!(windows_git_path(r"\\?\Volume{not-a-drive}\objects").is_err());
+    }
+    #[test]
+    fn copied_index_keeps_racy_clean_detection_and_staging() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        for (split, version) in [(false, "2"), (true, "2"), (false, "4")] {
+            let repo = Repo(
+                std::env::temp_dir()
+                    .join(format!("mythra-racy-index-é repo-{}", uuid::Uuid::new_v4())),
+            );
+            fs::create_dir(&repo.0).unwrap();
+            git(&repo.0, &["init", "-q"]);
+            git(&repo.0, &["config", "index.version", version]);
+            if split {
+                git(&repo.0, &["config", "core.splitIndex", "true"]);
+            }
+            git(&repo.0, &["config", "user.name", "Native test"]);
+            git(&repo.0, &["config", "user.email", "native@example.invalid"]);
+            // Model a coarse-stat filesystem deterministically: same size + cached
+            // mtime, without ctime/nanoseconds rescuing Git's stat-cache shortcut.
+            git(&repo.0, &["config", "core.trustctime", "false"]);
+            git(&repo.0, &["config", "core.checkStat", "minimal"]);
+            let timestamp = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+            let set_mtime = |path: &Path, time: SystemTime| {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(time))
+                    .unwrap()
+            };
+            let tracked = repo.0.join("tracked.txt");
+            fs::write(&tracked, "old\n").unwrap();
+            set_mtime(&tracked, timestamp);
+            fs::write(repo.0.join("staged.txt"), "before\n").unwrap();
+            git(&repo.0, &["add", "."]);
+            git(&repo.0, &["commit", "-qm", "baseline"]);
+            fs::write(repo.0.join("staged.txt"), "staged version\n").unwrap();
+            git(&repo.0, &["add", "staged.txt"]);
+            let index = repo.0.join(".git/index");
+            set_mtime(&index, timestamp);
+            fs::write(&tracked, "new\n").unwrap();
+            set_mtime(&tracked, timestamp);
+            let original = fs::read(&index).unwrap();
+            let original_mtime = fs::metadata(&index).unwrap().modified().unwrap();
+            let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+            let source = crate::process_launch::background_std_command("git")
+                .current_dir(&repo.0)
+                .env("GIT_CONFIG_GLOBAL", null)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["--no-optional-locks", "status", "--porcelain=v1"])
+                .output()
+                .unwrap();
+            assert!(source.status.success());
+            assert!(
+                String::from_utf8_lossy(&source.stdout).contains(" M tracked.txt"),
+                "fixture must be detected by the original index"
+            );
+            let _anchor = Anchor::open(&repo.0).unwrap();
+            let _guard = enter();
+            let read = crate::project_git::GitReadOperation::new();
+            let status = read.output(&repo.0, &["status", "--porcelain=v1"]).unwrap();
+            assert!(
+                status.status.success(),
+                "{}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&status.stdout).contains(" M tracked.txt"),
+                "copying the index must not turn a racily-clean modified file into clean: {}",
+                String::from_utf8_lossy(&status.stdout)
+            );
+            assert!(String::from_utf8_lossy(&status.stdout).contains("M  staged.txt"));
+            let diff = read
+                .output(&repo.0, &["diff", "--", "tracked.txt"])
+                .unwrap();
+            assert!(String::from_utf8_lossy(&diff.stdout).contains("+new"));
+            let staged = read
+                .output(&repo.0, &["diff", "--cached", "--", "staged.txt"])
+                .unwrap();
+            assert!(String::from_utf8_lossy(&staged.stdout).contains("+staged version"));
+            assert_eq!(fs::read(&index).unwrap(), original);
+            assert_eq!(
+                fs::metadata(&index).unwrap().modified().unwrap(),
+                original_mtime,
+                "remote reads never refresh the real index"
+            );
+        }
+    }
+    #[test]
     fn real_repo_filters_lfs_and_fsmonitor_never_execute() {
         let repo = Repo(
             std::env::temp_dir().join(format!("mythra-safe-read-test-{}", uuid::Uuid::new_v4())),
@@ -535,7 +683,7 @@ mod tests {
         git(&repo.0, &["config", "diff.external", &broken]);
         fs::write(repo.0.join("a.bin"), "new bytes\n").unwrap();
         fs::write(repo.0.join("a.lfs"),"version https://git-lfs.github.com/spec/v1\noid sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nsize 42\n").unwrap();
-        let _root_anchor=Anchor::open(&repo.0).unwrap();
+        let _root_anchor = Anchor::open(&repo.0).unwrap();
         let _guard = enter();
         let read = crate::project_git::GitReadOperation::new();
         let status = read

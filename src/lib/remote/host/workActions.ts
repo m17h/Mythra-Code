@@ -21,6 +21,7 @@ import { validateExecutionSettings } from "./executionPreferences";
 import { createHostSettingsActions } from "./settingsActions";
 import type { AttachmentRecord } from "../../../components/StudioDock";
 import { createHostEngineAdapters } from "./engineAdapters";
+import { hostDiscoveryPreferences, resolveDiscoverySettings } from "./discoverySettings";
 import { executeTerminal, isTerminalMutation } from "./nativeActions";
 import { HostDomains, isDomainMutation, isDomainRead } from "./domainActions";
 import { clearRemoteEngineOwners } from "./engineOwners";
@@ -266,7 +267,8 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         }
       };
       assertAllowed();
-      if (args.provider !== undefined || args.model !== undefined || args.effort !== undefined) {
+      if (request.op === "discovery.settings.set") resolveDiscoverySettings(sources, hostDiscoveryPreferences(), args);
+      else if (args.provider !== undefined || args.model !== undefined || args.effort !== undefined) {
         const provider = args.provider ?? ctx.effectiveSettings.provider;
         const model = args.model ?? ctx.effectiveSettings.model;
         const entry = sources.getProviderCatalog().find((p) => p.id === provider)?.models.find((m) => m.id === model);

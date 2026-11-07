@@ -82,8 +82,11 @@ import type { ChildAgentModelCatalogs } from "./components/subAgentModelOptions"
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
-import type { HostContextSources, HostParityActions, HostRowActions, HostSettingsActions, StopActionSources } from "./lib/remote/host";
+import type { HostContextSources, HostParityActions, HostRowActions, StopActionSources } from "./lib/remote/host";
+import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences } from "./lib/remote/host/executionPreferences";
 import { HostReadError } from "./lib/remote/host/scope";
+import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
+import type { WireExecutionSettings } from "./lib/remote/wire";
 import { hostProviderCatalog, hostWorkspaceGit, synthesizedArchivedThread } from "./lib/remote/hostSources";
 import { createHostParity } from "./lib/remote/hostParity";
 import { isStudioTab, type StudioTab } from "./lib/studioTabs";
@@ -870,6 +873,8 @@ export default function App() {
     init: (load) => sanitizeHeaderUsageWindows(load()),
   });
   const [threadModels, setThreadModels, threadModelsRef] = usePersistedStateRef<Record<string, string>>("kiwi.threadModels", {});
+  // Saved by a paired device for one thread. Its rows arrive through remote state adoption.
+  const [threadExecutionPreferences, setThreadExecutionPreferences] = usePersistedState<Record<string, WireExecutionSettings>>(EXECUTION_PREFERENCES_KEY, {});
   const [threadReasoning, setThreadReasoning, threadReasoningRef] = usePersistedStateRef<Record<string, ThreadReasoning>>("kiwi.threadReasoning", {}, {
     init: (load) => sanitizeThreadReasoningRecords(load()),
   });
@@ -1349,8 +1354,11 @@ export default function App() {
     const providerPrompt = activeProvider === "openai" || activeProvider === "claude"
       ? subscriptionSystemPrompts[activeProvider]
       : resolveSystemPrompt(projectSettings.systemPrompt, activeProject?.overrides?.systemPrompt, activeProject?.overrides?.systemPromptMode);
+    const hostPreferences = activeThreadId && threadExecutionPreferences[activeThreadId] ? getHostThreadPreferences(activeThreadId) : undefined;
     const resolved = {
       ...settingsForThreadSubagents(projectSettings, activeThreadId, threadSubagentSettings, draftSubagentSettings),
+      // Only what the pickers show for this thread. The crew stays in its captured policy.
+      ...(hostPreferences ? sharedThreadPreferences(projectSettings, hostPreferences) : {}),
       provider: activeProvider,
       model: followsLatestSol ? latestOpenAiSol : modelForProvider(activeProvider, threadModel ?? projectSettings.model),
       systemPrompt: providerPrompt,
@@ -1361,7 +1369,7 @@ export default function App() {
     return activeThread && isSubAgentThread(activeThread, childThreadLinks, childThreadRootIds)
       ? settingsWithoutChildDelegation(resolved)
       : resolved;
-  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, latestOpenAiSol, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings]);
+  }, [activeProject, activeProvider, activeThread, activeThreadId, childThreadLinks, childThreadRootIds, draftThreadModel, draftSubagentSettings, latestOpenAiSol, projectSettings, selectedFirstPrompt?.model, subscriptionSystemPrompts, threadModels, threadReasoning, threadSubagentSettings, threadExecutionPreferences]);
   // Destructive Git confirmations recheck the permission visible when they finish.
   const gitPermissionRef = useRef(effectiveSettings.permission);
   gitPermissionRef.current = effectiveSettings.permission;
@@ -2243,8 +2251,15 @@ export default function App() {
   const persistComposerPermission = useCallback(
     (permission: PermissionMode) => {
       persistSettings({ ...settings, permission });
+      // Choosing here replaces what a paired device saved for this thread, or the picker couldn't go back up.
+      if (activeThreadId && threadExecutionPreferences[activeThreadId]?.permission !== undefined) {
+        setThreadExecutionPreferences((current) => {
+          const { permission: _replaced, ...kept } = current[activeThreadId] ?? {};
+          return { ...current, [activeThreadId]: kept };
+        });
+      }
     },
-    [persistSettings, settings],
+    [activeThreadId, persistSettings, setThreadExecutionPreferences, settings, threadExecutionPreferences],
   );
 
   /**
@@ -6109,6 +6124,8 @@ export default function App() {
   const turnRunnerContextRef = useRef<TurnRunnerContext | null>(null);
   const turnRunnerRef = useRef<ReturnType<typeof useTurnRunner> | null>(null);
   const remoteHostRef = useRef<ReturnType<typeof import("./lib/remote/host").createRemoteHost> | null>(null);
+  // While this device hosts, local work records its native owners so a paired device can stop it.
+  const hostingOn = useRemoteDevices((state) => Boolean(state.snapshot?.ready && state.snapshot.hosting));
   const useRecordedTurnRunner = (context: TurnRunnerContext) => {
     turnRunnerContextRef.current = context;
     const runner = useTurnRunner(context);
@@ -6124,6 +6141,7 @@ export default function App() {
     beginEditNewThreadPrompt, finishEditNewThreadPrompt, rescheduleNewThreadPrompt, sendNewThreadPromptNow, removeNewThreadPrompt,
     stopTurn, resumeParentTurn, hasParentRunDelivery, parentRunFolderBusy,
   } = useRecordedTurnRunner({
+    trackNativeOwners: hostingOn,
     parentExecutionCurrent,
     activeThread,
     activeWorkspace,
@@ -9036,16 +9054,17 @@ export default function App() {
 
   // Serving other devices starts with the Allow access switch and ends with it,
   // so nobody who leaves it off loads or runs any of this.
-  const hostingOn = useRemoteDevices((state) => Boolean(state.snapshot?.ready && state.snapshot.hosting));
   // Everything the host reads or runs, current as of this render. Host requests
   // arrive at any time, so nothing below captures state from one render.
   const remoteHostValues = {
     chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
     runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
-    renameThread, archiveThreadRecord, unarchiveThread, deleteThreadRecord, forkThreadFor, setProjects, setPinnedThreadIds, persistThreadModel, persistThreadReasoning,
+    renameThread, archiveThreadRecord, unarchiveThread, deleteThreadRecord, forkThreadFor, setProjects,
     captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent, stageDelegationCrew,
+    parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels,
   };
-  const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined });
+  const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined,
+    runWorkflow: undefined as RemoteWorkflowEngine["runWorkflow"] | undefined });
   Object.assign(remoteHostLive.current, remoteHostValues);
   const hostGitCacheRef = useRef(new Map<string, WorkspaceGitInfo | null>());
   useEffect(() => {
@@ -9126,6 +9145,21 @@ export default function App() {
         if (!dryRun) live.current.stageDelegationCrew(policy, next.maxConcurrent, next.targets);
         return "staged";
       },
+      getParentObligations: (run) => live.current.parentRunObligations(run),
+      // The engine itself, not the screen's launch wrappers: a remote run must not navigate here.
+      getWorkflowEngine: () => {
+        const { runWorkflow, stopWorkflowRun } = live.current;
+        if (!runWorkflow || !stopWorkflowRun) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
+        return { runWorkflow, stopWorkflowRun };
+      },
+      getLocalSkills: () => live.current.skills,
+      refreshProviderCatalog: async (provider) => {
+        const { refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels } = live.current;
+        if (provider === "claude") await refreshClaudeModels();
+        else if (provider === "cursor") await refreshCursorModels();
+        else if (provider === "openrouter") await refreshOpenRouterModels();
+        else if (provider === "openai") await refreshModels();
+      },
       getStudioReads: () => ({
         getCheckpoints: () => live.current.checkpoints,
         getCheckpointHead: (root) => live.current.checkpointHeads[normalizedProjectPath(root)],
@@ -9177,23 +9211,9 @@ export default function App() {
             await live.current.deleteThreadRecord(threadId, label, false, true);
             return { state: "accepted", threadId };
           }
-          case "thread.pin":
-            operation.assertAllowed();
-            live.current.setPinnedThreadIds((current) => args.pinned === true
-              ? (current.includes(threadId) ? current : [...current, threadId]) : current.filter((id) => id !== threadId));
-            return { state: "accepted", threadId };
           case "thread.fork":
             operation.assertAllowed();
             return { state: "accepted", threadId: await live.current.forkThreadFor(requireThread(), operation.context) };
-          case "projects.pin":
-            operation.assertAllowed();
-            live.current.setProjects((current) => Boolean(current.find((project) => project.id === workspaceId)?.pinned) === (args.pinned === true)
-              ? current : toggleProjectPinned(current, workspaceId));
-            return { state: "accepted", workspaceId };
-          case "projects.reorder":
-            operation.assertAllowed();
-            live.current.setProjects((current) => reorderProjects(current, workspaceId, String(args.relativeTo), args.position === "before" ? "before" : "after"));
-            return { state: "accepted", workspaceId };
           case "projects.remove": {
             const project = projectsRef.current.find((entry) => entry.id === workspaceId);
             if (!project) throw new HostReadError("thread_unavailable", "This project is unavailable.");
@@ -9212,14 +9232,6 @@ export default function App() {
           }
           default: throw new HostReadError("unsupported", "This action isn't available.");
         }
-      },
-    };
-    const settings: HostSettingsActions = {
-      set: async (threadId, values, operation) => {
-        operation.assertAllowed();
-        if (values.model !== undefined) live.current.persistThreadModel(threadId, values.model);
-        if (values.effort !== undefined) live.current.persistThreadReasoning(threadId, { reasoningEffort: values.effort as ReasoningEffort, ultra: false });
-        return { state: "accepted" };
       },
     };
     const parity: HostParityActions = createHostParity({
@@ -9274,7 +9286,7 @@ export default function App() {
     void import("./lib/remote/host").then(({ createRemoteHost, createRemoteWork }) => {
       if (disposed) return;
       sources.createWork = (lease) => createRemoteWork({
-        ...lease, sources, stop, rows, settings, parity,
+        ...lease, sources, stop, rows, parity,
         getRunner: () => {
           const runner = turnRunnerRef.current;
           if (!runner) throw new HostReadError("host_unavailable", "Mythra Code is still starting.");
@@ -9319,6 +9331,7 @@ export default function App() {
   openWorkflowThreadRef.current = openAgent;
 
   const { runWorkflow, stopWorkflow, stopWorkflowRun } = useWorkflowEngine({
+    trackNativeOwners: hostingOn,
     workflows,
     projects,
     automaticGitInitialization: settings.automaticGitInitialization === true,
@@ -9375,6 +9388,7 @@ export default function App() {
   });
   stopWorkflowRef.current = stopWorkflow;
   remoteHostLive.current.stopWorkflowRun = stopWorkflowRun;
+  remoteHostLive.current.runWorkflow = runWorkflow;
 
   useEffect(() => {
     if (pendingWorkflowOpen && (localInputBlocked() || pendingWorkflowOpen.voiceGeneration !== localInputGeneration())) {

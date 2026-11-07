@@ -12,6 +12,7 @@ import {
   markPullRequestReady,
   parsePullRequestReference,
   type CreatePullRequestInput,
+  type CreatePullRequestResult,
   type PullRequest,
   type PullRequestContext,
   type PullRequestMergeMethod,
@@ -19,6 +20,22 @@ import {
 } from "../lib/pullRequests";
 import { usePersistedStateRef } from "./usePersistedState";
 import { createPullRequestCreationDraftStore } from "../lib/pullRequestCreationDrafts";
+
+/** Where pull request work happens. Another machine supplies its own, and its
+ * `cwd` values are only labels: that machine resolves the checkout itself. */
+export interface PullRequestBackend {
+  context: (cwd: string) => Promise<PullRequestContext>;
+  find: (cwd: string, repository: string, branch: string) => Promise<PullRequest | null>;
+  view: (cwd: string, repository: string, number: number) => Promise<PullRequest>;
+  create: (cwd: string, repository: string, input: CreatePullRequestInput) => Promise<CreatePullRequestResult>;
+  merge: (cwd: string, repository: string, number: number, method: PullRequestMergeMethod, expectedHeadOid: string, auto: boolean) => Promise<PullRequest>;
+  ready: (cwd: string, repository: string, number: number, expectedHeadOid: string) => Promise<PullRequest>;
+  createBranch: (cwd: string, name: string, expectedHeadOid: string) => Promise<void>;
+}
+const LOCAL_BACKEND: PullRequestBackend = {
+  context: getPullRequestContext, find: findPullRequest, view: getPullRequest, create: createPullRequest,
+  merge: mergePullRequest, ready: markPullRequestReady, createBranch: createPullRequestBranch,
+};
 
 const REFRESH_MS = 60_000;
 const CACHE_LIMIT = 64;
@@ -55,7 +72,7 @@ function cacheKey(cwd: string, repository: string, number: number) {
   return `${normalizedProjectPath(cwd)}\0${repository.toLowerCase()}#${number}`;
 }
 
-async function cachedPullRequest(cwd: string, repository: string, number: number, force = false) {
+async function cachedPullRequest(cwd: string, repository: string, number: number, force = false, backend = LOCAL_BACKEND) {
   const key = cacheKey(cwd, repository, number);
   const cached = viewCache.get(key);
   if (!force && cached && Date.now() - cached.at < REFRESH_MS) return cached.value;
@@ -66,7 +83,7 @@ async function cachedPullRequest(cwd: string, repository: string, number: number
   viewGenerations.set(key, generationState);
   const generation = generationState.generation;
   generationState.active += 1;
-  const request = getPullRequest(cwd, repository, number).then((value) => {
+  const request = backend.view(cwd, repository, number).then((value) => {
     if (generationState.generation !== generation) throw new Error("Pull request status changed while this read was running.");
     viewCache.delete(key);
     viewCache.set(key, { value, at: Date.now() });
@@ -101,6 +118,7 @@ export interface UseThreadPullRequestOptions {
   checkArchiveAllowed?: (threadId: string) => string | null;
   archiveThread?: (threadId: string) => Promise<void>;
   onChanged?: () => void;
+  backend?: PullRequestBackend;
 }
 
 interface Scoped<T> { scope: string; value: T }
@@ -113,10 +131,28 @@ interface RefreshSnapshot {
   visible: boolean;
 }
 
+type PullRequestLinks = ReturnType<typeof usePersistedStateRef<Record<string, ThreadPullRequestLink>>>;
+
 export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
+  return usePullRequestWorkflow(options, usePersistedStateRef<Record<string, ThreadPullRequestLink>>("kiwi.threadPullRequests", {}));
+}
+
+/** For a conversation on another machine: links last for this session and never reach storage. */
+export function useSessionThreadPullRequest(options: UseThreadPullRequestOptions) {
+  const [links, setValue] = useState<Record<string, ThreadPullRequestLink>>({});
+  const linksRef = useRef(links);
+  const setLinks = useCallback<PullRequestLinks[1]>((update) => {
+    const next = typeof update === "function" ? (update as (current: Record<string, ThreadPullRequestLink>) => Record<string, ThreadPullRequestLink>)(linksRef.current) : update;
+    linksRef.current = next;
+    setValue(next);
+  }, []);
+  return usePullRequestWorkflow(options, [links, setLinks, linksRef] as PullRequestLinks);
+}
+
+function usePullRequestWorkflow(options: UseThreadPullRequestOptions, [links, setLinks, linksRef]: PullRequestLinks) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
-  const [links, setLinks, linksRef] = usePersistedStateRef<Record<string, ThreadPullRequestLink>>("kiwi.threadPullRequests", {});
+  const backend = () => optionsRef.current.backend ?? LOCAL_BACKEND;
   const [contextState, setContextState] = useState<Scoped<PullRequestContext | null> | null>(null);
   const [candidateState, setCandidateState] = useState<Scoped<PullRequest | null> | null>(null);
   const [loadingState, setLoadingState] = useState<Scoped<boolean> | null>(null);
@@ -206,7 +242,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         const paths = [snapshot.cwd, snapshot.projectPath].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
         if (!paths.length) return;
         const contextRequest = snapshot.cwd
-          ? getPullRequestContext(snapshot.cwd).then((context) => {
+          ? backend().context(snapshot.cwd).then((context) => {
             if (readRevisionsRef.current.get(snapshot.threadId) === readRevision) rememberContext(uiScope, context);
           }).catch(() => undefined)
           : Promise.resolve();
@@ -214,7 +250,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         let failure: unknown;
         for (const path of paths) {
           try {
-            result = await cachedPullRequest(path, currentLink.repository, currentLink.number, force);
+            result = await cachedPullRequest(path, currentLink.repository, currentLink.number, force, backend());
             break;
           } catch (error) {
             failure = error;
@@ -230,13 +266,13 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
         return;
       }
       if (!snapshot.cwd) return;
-      const context = await getPullRequestContext(snapshot.cwd);
+      const context = await backend().context(snapshot.cwd);
       if (readRevisionsRef.current.get(snapshot.threadId) !== readRevision) return;
       rememberContext(uiScope, context);
       const previousCandidate = candidateCacheRef.current.get(uiScope);
       if (previousCandidate && (previousCandidate.repository.toLowerCase() !== context.repository.toLowerCase()
         || previousCandidate.headRefName !== context.branch)) rememberCandidate(uiScope, null);
-      const candidate = await findPullRequest(snapshot.cwd, context.repository, context.branch);
+      const candidate = await backend().find(snapshot.cwd, context.repository, context.branch);
       if (readRevisionsRef.current.get(snapshot.threadId) !== readRevision || linksRef.current[snapshot.threadId]) return;
       rememberCandidate(uiScope, candidate);
     } catch (error) {
@@ -386,7 +422,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     setBusyState({ scope: uiScope, value: true });
     setErrorState({ scope: uiScope, value: null });
     try {
-      const pullRequest = await cachedPullRequest(nativeCwd, parsed.repository, parsed.number, true);
+      const pullRequest = await cachedPullRequest(nativeCwd, parsed.repository, parsed.number, true, backend());
       if (persistLink(snapshot.threadId!, pullRequest, revision)) {
         setNoticeState({ scope: uiScope, value: `Attached pull request #${pullRequest.number}.` });
         snapshot.onChanged?.();
@@ -440,7 +476,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     const cwd = snapshot.cwd;
     const capturedRepository = repository;
     await runMutation(id, cwd, async (revision) => {
-      const pullRequest = await createPullRequest(cwd, capturedRepository, { ...input });
+      const pullRequest = await backend().create(cwd, capturedRepository, { ...input });
       if (!persistLink(id, pullRequest, revision)) return;
       const creationOutcome = "creationOutcome" in pullRequest ? pullRequest.creationOutcome : "created";
       const notice = creationOutcome === "existing"
@@ -451,7 +487,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       setNoticeState({ scope: uiScope, value: notice });
       snapshot.onChanged?.();
       try {
-        const refreshed = await cachedPullRequest(cwd, pullRequest.repository, pullRequest.number, true);
+        const refreshed = await cachedPullRequest(cwd, pullRequest.repository, pullRequest.number, true, backend());
         persistLink(id, refreshed, revision);
       } catch {
         // The create result remains the durable snapshot when the follow-up
@@ -487,7 +523,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
       }
       invalidatePullRequest(nativeCwd, stored.repository, stored.number);
       if (nativeCwd !== cwd) invalidatePullRequest(cwd, stored.repository, stored.number);
-      const result = await mergePullRequest(nativeCwd, stored.repository, stored.number, method, stored.snapshot.headOid, auto);
+      const result = await backend().merge(nativeCwd, stored.repository, stored.number, method, stored.snapshot.headOid, auto);
       if (archive && (result.repository !== stored.repository || result.number !== stored.number)) {
         throw new Error("GitHub returned a different pull request. Refresh its status before trying again.");
       }
@@ -533,7 +569,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     await runMutation(id, cwd, async (revision) => {
       invalidatePullRequest(nativeCwd, stored.repository, stored.number);
       if (nativeCwd !== cwd) invalidatePullRequest(cwd, stored.repository, stored.number);
-      const result = await markPullRequestReady(nativeCwd, stored.repository, stored.number, stored.snapshot.headOid);
+      const result = await backend().ready(nativeCwd, stored.repository, stored.number, stored.snapshot.headOid);
       if (!persistLink(id, result, revision)) return;
       setNoticeState({ scope: uiScope, value: `Pull request #${result.number} is ready for review.` });
       snapshot.onChanged?.();
@@ -548,7 +584,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
     const currentContext = contextForScope(uiScope);
     if (!currentContext) throw new Error("Refresh pull request status before creating a branch.");
     await runMutation(snapshot.threadId, snapshot.cwd, async () => {
-      await createPullRequestBranch(snapshot.cwd!, name, currentContext.headOid);
+      await backend().createBranch(snapshot.cwd!, name, currentContext.headOid);
       setNoticeState({ scope: uiScope, value: `Created branch ${name}.` });
       snapshot.onChanged?.();
     });

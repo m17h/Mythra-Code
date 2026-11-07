@@ -8,12 +8,24 @@ import { resetTaskStore, useTaskStore } from "../../taskStore.ts";
 import { RemoteDeliveryJournal } from "./deliveryJournal.ts";
 import { createWorkflowExecution } from "./workflowExecution.ts";
 import { rememberRemoteEngineOwner, finishRemoteEngineOwner, markRemoteEngineRetiring, remoteEngineStopped,
-  isLiveRemoteEngineOwner, clearRemoteEngineOwners } from "./engineOwners.ts";
+  isLiveRemoteEngineOwner, clearRemoteEngineOwners, remoteEngineOwner, remoteEngineOwnerThreads, finishRemoteThreadOwner } from "./engineOwners.ts";
 
 const project = { id: "project", path: "/host/project", name: "Project" };
 const device = "a".repeat(64);
 const grant = { revision: 1, view: true, work: true, scope: { kind: "all" }, capabilities: { fullAccess: false, terminal: true } };
 const owner = (handle) => ({ generation: 42, threadId: handle, runId: "run", kind: "workflow", ownerHandle: handle });
+// Drive the real completion seam on the same store writes as useTurnRunner's
+// mounted watcher (SSR renders the real workflow hook but does not run effects).
+function watchOwnerCompletion() {
+  return useTaskStore.subscribe((state, previous) => {
+    if (state.tasks === previous.tasks) return;
+    for (const threadId of remoteEngineOwnerThreads()) {
+      const task = state.tasks[threadId];
+      if (task !== previous.tasks[threadId] && task?.status !== "starting" && task?.status !== "running")
+        void finishRemoteThreadOwner(threadId, Boolean(state.parentRuns[threadId]), state.workflowOwners[threadId]?.runId);
+    }
+  });
+}
 
 test("normal owner_finish retains an unconfirmed owner and releases it only after native completion", async () => {
   rememberRemoteEngineOwner(owner("finishing"));
@@ -66,6 +78,7 @@ test("workflow native step admission refuses before preparation when the command
 for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"]) {
   test(`real workflow hook: ${provider} carries owner and fresh step identities, then owner_finish`, async () => {
     resetTaskStore();
+    const unwatch = watchOwnerCompletion();
     const oldWindow = globalThis.window;
     const calls = [], runs = [], errors = [];
     let stepNumber = 0;
@@ -127,7 +140,7 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
       const steps = calls.filter((call) => call.command === "remote_work_engine_step");
       assert.deepEqual(steps.map((call) => call.args.kind), ["prompt", "prompt", "command"]);
       assert.ok(steps.every((call) => call.args.permission === "ask"));
-    } finally { clearRemoteEngineOwners(42); globalThis.window = oldWindow; }
+    } finally { unwatch(); clearRemoteEngineOwners(42); globalThis.window = oldWindow; }
   });
 }
 
@@ -195,4 +208,202 @@ test("a native uncertain child cannot be downgraded to rejected before a rendere
     assert.equal(receipts.at(-1).disposition, "uncertain");
     assert.equal(receipts.some((receipt) => receipt.disposition === "rejected"), false);
   } finally { globalThis.window = before; }
+});
+
+test("local-tracked workflow Stop uses its actual native owner, not a remote-start controller", async () => {
+  const { createHostEngineAdapters } = await import("./engineAdapters.ts");
+  resetTaskStore();
+  rememberRemoteEngineOwner({ generation: 0, local: true, kind: "workflow", threadId: "local-thread", runId: "local-run", ownerHandle: "local-workflow-owner" });
+  useTaskStore.getState().setWorkflowOwner("local-thread", { workflowId: "workflow", runId: "local-run" });
+  const before = globalThis.window, calls = [];
+  globalThis.window = { __TAURI_INTERNALS__: { invoke: async (command, args) => { calls.push({ command, args }); return { confirmed: true }; } } };
+  const engine = { stopWorkflowRun: async (workflowId, runId, stopRoot) => { assert.equal(workflowId, "workflow"); assert.equal(runId, "local-run"); await stopRoot(); return true; } };
+  const actions = createHostEngineAdapters({ getWorkflowEngine: () => engine }, { revision: () => "r" }, () => {});
+  try {
+    const result = await actions.adapter.execute("workflows.stop", { workflowId: "workflow", runId: "local-run" }, { generation: 42, grantRevision: 1,
+      identity: { device, opId: "stop-local", opSeq: 9 }, context: { activeThread: { id: "local-thread" }, activeWorkspace: project }, assertAllowed() {} });
+    assert.equal(result.state, "accepted");
+    assert.equal(calls[0].command, "remote_work_owner_retire");
+    assert.equal(calls[0].args.ownerHandle, "local-workflow-owner");
+    assert.equal(calls[0].args.stamp.opId, "stop-local");
+    assert.equal(calls.some((call) => call.command === "codex_rpc"), false);
+  } finally { actions.dispose(); remoteEngineStopped("local-workflow-owner"); globalThis.window = before; }
+});
+
+test("Run/Checks commands resolve the host recipe and report exact native acceptance; Stop fences its owner", async () => {
+  const { appendHostCommandOutput, createHostCommandActions, hostCommandRows, useHostCommands } = await import("./commandActions.ts");
+  const before = globalThis.window, calls = [];
+  let complete;
+  useHostCommands.setState({ records: new Map() });
+  const hostProject = { ...project, overrides: { check: { command: "host-check", updatedAt: 1 } } };
+  const sources = { getWorkspaces: () => [hostProject], getGrant: () => grant, isLocalCommandRunning: () => false, executionPathFor: () => "/host/isolated" };
+  globalThis.window = { __TAURI_INTERNALS__: { invoke: async (command, args = {}) => {
+    calls.push({ command, args });
+    if (command === "remote_work_grant") return grant;
+    if (command === "remote_work_owner_open") return { ownerHandle: "checks-owner" };
+    if (command === "remote_work_engine_step") return { state: "preparing", delivery: { device, opId: "checks-child", opSeq: 1, attemptId: "checks-attempt", messageId: "checks-message" } };
+    if (command === "codex_rpc") return new Promise((resolve) => { complete = resolve; });
+    if (command === "remote_work_recover") return { disposition: "accepted" };
+    if (command === "remote_work_owner_retire") { complete({ exitCode: 130, stdout: "", stderr: "" }); return { confirmed: true }; }
+    if (command === "remote_work_owner_finish") return { confirmed: true };
+    return null;
+  } } };
+  const root = new RemoteDeliveryJournal({ generation: 42, identity: { device, opId: "start-checks", opSeq: 1 }, workspaceId: project.id, threadId: "thread", permission: "ask", provider: "claude",
+    isCurrent: () => true, assertAllowed() {}, validateGrant() {} });
+  const context = { activeWorkspace: hostProject, activeThread: { id: "thread" }, effectiveSettings: { permission: "ask" } };
+  const operation = { generation: 42, grantRevision: 1, identity: root.identity, context, delivery: root, assertAllowed() {} };
+  const actions = createHostCommandActions(sources, () => true);
+  try {
+    await root.beforeCreate();
+    const result = await actions.execute("checks.start", {}, operation);
+    assert.ok(result.processHandle);
+    const native = calls.find((call) => call.command === "codex_rpc");
+    assert.equal(native.args.method, "command/exec");
+    assert.equal(native.args.params.cwd, "/host/isolated");
+    assert.ok(native.args.params.command.includes("host-check"));
+    assert.equal(native.args.params.remoteDelivery.opId, "checks-child");
+    assert.equal(native.args.params.remoteDelivery.ownerHandle, "checks-owner");
+    assert.equal(useHostCommands.getState().records.get(result.processHandle).status, "running");
+    assert.equal(appendHostCommandOutput("unowned", "some-local-process"), false);
+    assert.equal(appendHostCommandOutput("A", `remote-command-${result.processHandle}`), true);
+    assert.equal(appendHostCommandOutput("B", `remote-command-${result.processHandle}`), true);
+    assert.equal(hostCommandRows("checks", context)[0].text, "AB");
+    assert.deepEqual(hostCommandRows("checks", { ...context, activeThread: { id: "other" } }), []);
+    appendHostCommandOutput("x".repeat(20000), `remote-command-${result.processHandle}`);
+    assert.ok(hostCommandRows("checks", context)[0].text.length <= 12000);
+    assert.equal("root" in hostCommandRows("checks", context)[0], false);
+    await assert.rejects(actions.execute("checks.stop", { processHandle: result.processHandle }, { ...operation, context: { ...context, activeThread: { id: "other" } } }), (error) => error.code === "stale_target");
+    const stopped = await actions.execute("checks.stop", { processHandle: result.processHandle }, { ...operation, identity: { device, opId: "stop-checks", opSeq: 2 } });
+    assert.equal(stopped.state, "accepted");
+    assert.equal(useHostCommands.getState().records.get(result.processHandle).status, "interrupted");
+    assert.equal(calls.filter((call) => call.command === "codex_rpc").length, 1);
+    assert.equal(calls.find((call) => call.command === "remote_work_owner_retire").args.stamp.opId, "stop-checks");
+  } finally { actions.dispose(); remoteEngineStopped("checks-owner"); globalThis.window = before; }
+});
+
+test("real local command-only workflow exposes its owner before the first command and remote Stop never resurrects it", async () => {
+  const { createHostEngineAdapters } = await import("./engineAdapters.ts");
+  resetTaskStore();
+  const unwatch = watchOwnerCompletion();
+  const before = globalThis.window, calls = [], errors = [];
+  let complete, ready;
+  const commandReady = new Promise((resolve) => { ready = resolve; });
+  globalThis.window = { setTimeout, clearTimeout, __TAURI_INTERNALS__: { invoke: async (command, args = {}) => {
+    calls.push({ command, args });
+    if (command === "remote_local_owner_open") return { ownerHandle: "local-command-owner" };
+    if (command === "codex_rpc" && args.method === "thread/start") return { thread: { id: "local-command-thread", cwd: project.path, modelProvider: "openai" }, model: "model" };
+    if (command === "codex_rpc" && args.method === "command/exec") return new Promise((resolve) => { complete = resolve; ready(); });
+    if (command === "remote_work_owner_retire") { complete({ exitCode: 130, stdout: "", stderr: "" }); return { confirmed: true }; }
+    if (command === "remote_local_owner_finish") return { confirmed: true };
+    return null;
+  } } };
+  const run = { ...DEFAULT_SETTINGS, provider: "openai", model: "model", permission: "ask", subagentsEnabled: false };
+  const workflow = { id: "local-command-recipe", name: "Local fixture", projectId: project.id, enabled: false, trigger: { type: "manual" }, skillNames: [], variables: [], run,
+    steps: [{ id: "command", name: "Command", type: "command", command: "echo local", continueOnError: false }], createdAt: 1, updatedAt: 1 };
+  let engine;
+  function Fixture() {
+    engine = useWorkflowEngine({ workflows: [workflow], projects: [project], trackNativeOwners: true, runtimeAvailable: true, chatGptConnected: true,
+      customAgents: [], ensureSkillRoots: async () => {}, resolveSkillPrompt: async (text) => text, bindThreadToProject() {},
+      beginRunCheckpoint: async () => undefined, finalizeRunCheckpoint: async () => {}, discardRunCheckpoint() {}, updateWorkflow() {},
+      recordRun() {}, onThreadStarted() {}, onError: (reason) => errors.push(reason) });
+    return React.createElement("span");
+  }
+  let actions;
+  try {
+    renderToString(React.createElement(Fixture));
+    const running = engine.runWorkflow(workflow.id, "manual", {}, project.id);
+    await commandReady;
+    const runId = useTaskStore.getState().workflowOwners["local-command-thread"].runId;
+    assert.equal(remoteEngineOwner("local-command-thread", undefined, runId)?.ownerHandle, "local-command-owner");
+    assert.equal(calls.find((call) => call.command === "codex_rpc" && call.args.method === "command/exec").args.params.localOwnerHandle, "local-command-owner");
+    actions = createHostEngineAdapters({ getWorkflowEngine: () => engine }, { revision: () => "r" }, () => {});
+    const stopped = await actions.adapter.execute("workflows.stop", { workflowId: workflow.id, runId }, {
+      generation: 42, grantRevision: 1, identity: { device, opId: "remote-stop-local-command", opSeq: 8 },
+      context: { activeWorkspace: project, activeThread: { id: "local-command-thread" } }, assertAllowed() {} });
+    assert.equal(stopped.state, "accepted");
+    await running;
+    assert.deepEqual(errors, []);
+    assert.equal(remoteEngineOwner("local-command-thread", undefined, runId), undefined);
+    assert.equal(useTaskStore.getState().workflowOwners["local-command-thread"], undefined);
+    assert.equal(calls.some((call) => call.command === "codex_rpc" && call.args.method === "command/exec/terminate"), false);
+    assert.equal(calls.some((call) => call.command === "remote_local_owner_finish"), false);
+  } finally { unwatch(); actions?.dispose(); remoteEngineStopped("local-command-owner"); globalThis.window = before; }
+});
+
+test("two viewers cannot reserve the same checkout command while owner_open is awaiting", async () => {
+  const { createHostCommandActions, useHostCommands } = await import("./commandActions.ts");
+  const { HostReadError } = await import("./scope.ts");
+  useHostCommands.setState({ records: new Map() });
+  const hostProject = { ...project, overrides: { run: { command: "host-run", updatedAt: 1 } } };
+  const sources = { getWorkspaces: () => [hostProject], getGrant: () => grant, isLocalCommandRunning: () => false, executionPathFor: () => project.path };
+  let rejectOwner, ownersOpened = 0;
+  const operation = { generation: 42, identity: { device, opId: "reservation", opSeq: 1 }, context: { activeWorkspace: hostProject, effectiveSettings: { permission: "ask" } },
+    delivery: { assertAllowed() {}, childStep() {}, openOwner() { ownersOpened++; return new Promise((_, reject) => { rejectOwner = reject; }); } } };
+  const a = createHostCommandActions(sources, () => true), b = createHostCommandActions(sources, () => true);
+  try {
+    const first = a.execute("run.start", {}, operation);
+    await assert.rejects(b.execute("run.start", {}, operation), (error) => error.code === "busy");
+    assert.equal(ownersOpened, 1);
+    rejectOwner(new HostReadError("forbidden", "Grant revoked before admission"));
+    await assert.rejects(first, (error) => error.code === "forbidden");
+    operation.delivery.openOwner = async () => { ownersOpened++; throw new HostReadError("unsupported", "Native alias not installed"); };
+    await assert.rejects(b.execute("run.start", {}, operation), (error) => error.code === "unsupported");
+    assert.equal(ownersOpened, 2); // Refusal released the reservation.
+    assert.equal(useHostCommands.getState().records.size, 0);
+  } finally { a.dispose(); b.dispose(); }
+});
+
+test("discovery settings use the saved discovery catalog choice, not the thread model", async () => {
+  const { resolveDiscoverySettings } = await import("./discoverySettings.ts");
+  const { assertParityAuthority } = await import("./parityActions.ts");
+  const sources = { getProviderCatalog: () => [
+    { id: "openai", models: [{ id: "thread-model", efforts: ["low"] }] },
+    { id: "claude", models: [{ id: "discovery-model", efforts: ["low", "high"], defaultEffort: "low" }] },
+  ] };
+  const saved = { provider: "claude", model: "discovery-model", effort: "low", fast: false };
+  const next = resolveDiscoverySettings(sources, saved, { effort: "high" });
+  assert.equal(next.provider, "claude"); assert.equal(next.model, "discovery-model"); assert.equal(next.effort, "high"); assert.equal(next.fast, false);
+  assert.throws(() => resolveDiscoverySettings(sources, saved, { model: "viewer-invented-model" }), (error) => error.code === "unsupported");
+  assert.throws(() => resolveDiscoverySettings(sources, saved, { effort: "max" }), (error) => error.code === "unsupported");
+  const switched = resolveDiscoverySettings(sources, saved, { provider: "openai" });
+  assert.equal(switched.model, "thread-model"); assert.equal(switched.effort, "low");
+  assert.equal(switched.models.claude, "discovery-model");
+  assert.doesNotThrow(() => assertParityAuthority("run.status", { view: true, work: false, capabilities: { terminal: false } }));
+  assert.throws(() => assertParityAuthority("run.start", { view: true, work: true, capabilities: { terminal: false } }), (error) => error.code === "forbidden");
+});
+
+test("a recovery refusal cannot downgrade a native-latched command child into a retryable root rejection", async () => {
+  const { createHostCommandActions, useHostCommands } = await import("./commandActions.ts");
+  const before = globalThis.window;
+  let complete;
+  useHostCommands.setState({ records: new Map() });
+  const hostProject = { ...project, overrides: { check: { command: "host-check", updatedAt: 1 } } };
+  const sources = { getWorkspaces: () => [hostProject], getGrant: () => grant, isLocalCommandRunning: () => false, executionPathFor: () => project.path };
+  globalThis.window = { __TAURI_INTERNALS__: { invoke: async (command, args = {}) => {
+    if (command === "remote_work_grant") return grant;
+    if (command === "remote_work_owner_open") return { ownerHandle: "uncertain-command-owner" };
+    if (command === "remote_work_engine_step") return { state: "preparing", delivery: { device, opId: "uncertain-command-child", opSeq: 1, attemptId: "attempt", messageId: "message" } };
+    if (command === "codex_rpc") return new Promise((resolve) => { complete = resolve; });
+    if (command === "remote_work_recover") throw "MYTHRA_REMOTE_REJECTED:forbidden";
+    // Simulate native input already latched: it will not persist a rejection
+    // of a child which may have executed, even if a later read loses authority.
+    if (command === "remote_work_receipt" && args.opId === "uncertain-command-child" && args.disposition === "rejected") throw "Cannot reject a native-latched receipt";
+    if (command === "remote_work_owner_finish") return { confirmed: true };
+    return null;
+  } } };
+  const root = new RemoteDeliveryJournal({ generation: 42, identity: { device, opId: "uncertain-command-root", opSeq: 1 }, workspaceId: project.id, permission: "ask", provider: "openai",
+    isCurrent: () => true, assertAllowed() {}, validateGrant() {} });
+  const actions = createHostCommandActions(sources, () => true);
+  try {
+    await root.beforeCreate();
+    const operation = { generation: 42, identity: root.identity, context: { activeWorkspace: hostProject, effectiveSettings: { permission: "ask" } }, delivery: root };
+    let failure;
+    try { await actions.execute("checks.start", {}, operation); } catch (reason) { failure = reason; }
+    assert.equal(failure?.code, "uncertain");
+    await root.failure(failure);
+    assert.equal(root.result().state, "uncertain");
+    assert.equal([...useHostCommands.getState().records.values()][0].status, "uncertain");
+    complete({ exitCode: 0, stdout: "done", stderr: "" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally { actions.dispose(); remoteEngineStopped("uncertain-command-owner"); globalThis.window = before; }
 });

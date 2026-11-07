@@ -36,3 +36,11 @@
 .remote-project-editor fieldset { display: flex; flex-direction: column; gap: var(--s-2); margin: 0; padding: 0; border: 0; }
 .remote-project-editor label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: var(--fs-meta); }
 .remote-project-editor input, .remote-project-editor textarea, .remote-project-editor select { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-control); color: var(--text); background: transparent; font: inherit; font-size: var(--fs-ui); }
+.app-shell[data-theme][data-color-scheme] .remote-pr-activity { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-activity header { display: flex; align-items: center; justify-content: space-between; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-checks { margin: 0; color: var(--muted); }
+.app-shell[data-theme][data-color-scheme] .remote-pr-comments { display: flex; flex-direction: column; gap: 8px; max-height: 280px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-comments small { color: var(--muted-2); }
+.app-shell[data-theme][data-color-scheme] .remote-pr-comments p { margin: 2px 0 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-compose { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea { width: 100%; resize: vertical; }

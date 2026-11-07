@@ -15,10 +15,11 @@ import { resolveThreadExecutionContext } from "./executionContext";
 import { nativeRefusal, nativeTarget, strictNativeKeys } from "./nativeActions";
 import type { HostParityActions } from "./parityActions";
 import { registerRemoteStateRecovery, type StampedRow } from "./stateCommit";
+import { HostGitHub, isGitHubRead, isGitHubWrite } from "./githubActions";
 
 const writes = new Set(["git.write", "checkpoint.create", "checkpoint.complete", "checkpoint.delete", "checkpoint.restore", "worktree.create", "worktree.recreate", "worktree.baseline", "worktree.apply", "worktree.merge", "worktree.remove", "worktree.continueShared", "worktree.returnShared"]);
-export const isDomainMutation = (op: string): boolean => writes.has(op);
-export const isDomainRead = (op: string): boolean => op === "git.status";
+export const isDomainMutation = (op: string): boolean => writes.has(op) || isGitHubWrite(op);
+export const isDomainRead = (op: string): boolean => op === "git.status" || isGitHubRead(op);
 interface GitBaseline {
   root: string; revision: string; expires: number; grantRevision: number;
   snapshot: GitWorkspaceSnapshot; remote?: GitHubRepoStatus;
@@ -37,13 +38,15 @@ export class HostDomains {
   private disposed = false;
   readonly studio: HostStudio;
   readonly studioReads: HostStudioReads;
+  private readonly github: HostGitHub;
   constructor(private readonly sources: HostContextSources, generation: number, private readonly isCurrent: () => boolean,
     private readonly parity?: Pick<HostParityActions, "revision">, private readonly transport: HostTransport = nativeHostTransport) {
     const catalog = { thread: (id: string) => sources.getKnownThreads()[id], ownership: () => sources.getOwnershipLinks() };
     this.studio = new HostStudio(sources, catalog, generation, isCurrent, transport);
     this.studioReads = new HostStudioReads(sources, catalog, this.studio, generation, isCurrent, sources.getStudioReads?.(), transport);
+    this.github = new HostGitHub(generation, transport);
   }
-  dispose(): void { this.disposed = true; this.studio.dispose(); this.studioReads.dispose(); this.git.clear(); }
+  dispose(): void { this.disposed = true; this.studio.dispose(); this.studioReads.dispose(); this.github.dispose(); this.git.clear(); }
   private check(request: HostRequest): void {
     if (this.disposed || !this.isCurrent()) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
     currentGrant(this.sources, request.device, request.grant);
@@ -62,6 +65,10 @@ export class HostDomains {
   async read(request: HostRequest, args: Record<string, unknown>): Promise<StudioResult> {
     const before = this.target(request, args);
     const validate = () => { const now = this.target(request, args); if (now.root !== before.root || now.workspace.path !== before.workspace.path) throw stale(); };
+    if (isGitHubRead(request.op)) {
+      const threadId = before.context.activeThread?.id;
+      return await this.github.read(request, args, { workspaceId: before.workspace.id, ...(threadId ? { threadId } : {}), root: before.root, isolated: before.root !== before.workspace.path }, validate) as StudioResult;
+    }
     if (request.op === "git.status") {
       const snapshot = await this.transport.invoke<GitWorkspaceSnapshot>("git_workspace_snapshot", { cwd: before.root });
       validate();
@@ -85,7 +92,7 @@ export class HostDomains {
     const target = nativeTarget(this.sources, request, args, identity, () => !this.disposed && this.isCurrent());
     const assertAllowed = () => {
       const grant = target.assertAllowed();
-      if (request.op === "git.write" && !grant.capabilities.gitWrite || request.op === "checkpoint.restore" && !grant.capabilities.checkpointRestore) throw new HostReadError("forbidden", "This device doesn't have that access anymore.");
+      if ((request.op === "git.write" || isGitHubWrite(request.op)) && !grant.capabilities.gitWrite || request.op === "checkpoint.restore" && !grant.capabilities.checkpointRestore) throw new HostReadError("forbidden", "This device doesn't have that access anymore.");
       if (!this.parity || this.parity.revision(target.context) !== args.revision) throw stale();
       if (target.context.activeThread) {
         const id = target.context.activeThread.id, store = useTaskStore.getState(), task = store.tasks[id];
@@ -95,6 +102,7 @@ export class HostDomains {
     };
     assertAllowed();
     if (request.op === "git.write") return this.gitWrite(request, args, identity, target, assertAllowed);
+    if (isGitHubWrite(request.op)) return this.github.write(request, args, identity, target.stamp, target.root, assertAllowed);
     const checkpoint = request.op.startsWith("checkpoint.");
     strictNativeKeys(args, ["workspaceId", "threadId", "revision", ...(checkpoint ? ["checkpointId", "label", "target", "confirmed"]
       : request.op === "worktree.create" || request.op === "worktree.recreate" ? ["label"] : request.op === "worktree.baseline" ? [] : ["confirmed"])]);

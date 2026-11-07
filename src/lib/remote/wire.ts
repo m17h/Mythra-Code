@@ -129,7 +129,7 @@ export interface RemoteWorkResult {
   state: "accepted" | "queued" | "rejected" | "uncertain";
   threadId?: string; turnId?: string; queuedTurnId?: string; messageId?: string; attemptId?: string;
   workspaceId?: string;
-  workflowRunId?: string; editHandle?: string;
+  workflowRunId?: string; editHandle?: string; processHandle?: string;
   terminalId?: string; output?: string;
   draftHandle?: string; startTarget?: string; settings?: WireExecutionSettings;
   error?: RemoteWireError;
@@ -172,6 +172,7 @@ export interface HostContextResult {
   skills: WireHostSkill[]; workflows: WireHostWorkflow[];
   run?: { command: string; setupCommand?: string; label?: string };
   check?: { command: string }; usage: WireHostUsage | null;
+  discovery?: { provider: WireProvider; model: string; effort: WireEffort | "default"; fast: boolean };
   capabilities: WireRemoteCapabilities; truncated: boolean;
 }
 export interface FilesSearchArgs { workspaceId: string; threadId?: string; query: string }
@@ -216,7 +217,7 @@ export interface ProjectReorderArgs extends ProjectRowArgs { relativeTo: string;
 export type ParityReadOperation = "queue.read" | "schedules.read" | "workflows.list" | "workflows.read"
   | "projects.settings.read" | "projects.instructions.read" | "models.list" | "models.refresh" | "models.search"
   | "skills.list" | "skills.read" | "skills.analyze" | "usage.account.read" | "usage.account.refresh"
-  | "threads.search" | "threads.archived" | "parent.read" | "checks.read" | "checks.status"
+  | "threads.search" | "threads.archived" | "parent.read" | "run.status" | "checks.read" | "checks.status"
   | "discovery.run.status" | "discovery.check.status";
 export type ParityMutationOperation = "queue.edit.begin" | "queue.edit.finish" | "queue.retry" | "queue.steer" | "queue.remove"
   | "prompt.schedule" | "prompt.scheduleNew" | "schedules.edit" | "schedules.reschedule" | "schedules.release" | "schedules.remove"

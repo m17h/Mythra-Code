@@ -25,7 +25,7 @@ import { exportTextFile } from "../../lib/codex";
 import { startProjectPointerDrag, type ProjectDropTarget } from "../../lib/projectPointerDrag";
 import { accessReason, hostRead, hostRows, hostWrite, readDroppedFile, uploadToHost } from "../../lib/remote/remoteActions";
 import { addRemoteNotice, machineActions, setMachineActions, useActiveMachine } from "../../lib/remote/activeMachine";
-import { hostLocalPort, isPublicWebLink } from "../../lib/remote/links";
+import { hostLinkPath, hostLocalPort, isPublicWebLink } from "../../lib/remote/links";
 import { listRemotePreviews, openRemotePreview } from "../../lib/remote/remotePreviews";
 import { newThreadDraftKey, newThreadTargetFor, removeOutboxEntry, setNewThreadTarget, threadDraftKey, useRemoteOutbox, type OutboxEntry } from "../../lib/remote/outbox";
 import {
@@ -700,7 +700,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
       try {
         const match = (await listRemotePreviews(device, workspaceId, threadId)).find((entry) => entry.port === port);
         if (!match) { setNotice(`That web app isn't available from ${name} right now.`); return; }
-        setNotice((await openRemotePreview(device, match.endpointId)).notice);
+        setNotice((await openRemotePreview(device, match.endpointId, hostLinkPath(url))).notice);
       } catch { setNotice(`Mythra Code couldn't open that preview from ${name}. Check that it's still running.`); }
     },
   }), [canWork, device, name, threadId, workspaceId]);
@@ -730,12 +730,12 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
         {workspace && !workspace.isChat && <ProjectRunControl key={`run-${workspaceId}`} projectName={workspace.name}
           run={context?.run ? { ...context.run, updatedAt: 0 } : undefined} running={Boolean(runHandle)}
           onRun={() => {
-            if (!canRun) { setNotice(accessReason(name, "run this project", "Use the terminal")); return; }
+            if (!canRun) { setNotice(accessReason(name, "run this project", "Terminal")); return; }
             void hostWrite<{ processHandle?: string }>(device, name, "run.start", { ...parityTarget, revision }).then((outcome) => { if (report(outcome)) setRunHandle(outcome.result?.processHandle ?? "running"); });
           }}
           onStop={() => { if (runHandle) void hostWrite(device, name, "run.stop", { ...parityTarget, revision, processHandle: runHandle }).then((outcome) => { if (report(outcome)) setRunHandle(null); }); }}
           onSave={(next) => {
-            if (!canRun) { setNotice(accessReason(name, "save this command", "Use the terminal")); return; }
+            if (!canRun) { setNotice(accessReason(name, "save this command", "Terminal")); return; }
             void hostWrite(device, name, "projects.run.set", { workspaceId, revision, command: next?.command ?? "", ...(next?.label ? { label: next.label } : {}), ...(next?.setupCommand ? { setupCommand: next.setupCommand } : {}) }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
           }} onDiscovered={() => undefined} />}
       </div>
@@ -775,7 +775,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
               <Folder size={15} /><span><strong>Shared project</strong><small>Work directly in {workspace.name}</small></span>
             </button>
             <button className={chosen?.isolated ? "active" : ""} aria-pressed={Boolean(chosen?.isolated)} disabled={!canRun}
-              title={canRun ? undefined : accessReason(name, "create worktrees", "Use the terminal")} onClick={() => changeSettings({ isolated: true })}>
+              title={canRun ? undefined : accessReason(name, "create worktrees", "Terminal")} onClick={() => changeSettings({ isolated: true })}>
               <GitBranch size={15} /><span><strong>Isolated worktree</strong><small>A separate branch and folder on {name}</small></span>
             </button>
           </div>}

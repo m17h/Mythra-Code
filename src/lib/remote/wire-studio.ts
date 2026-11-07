@@ -82,3 +82,10 @@ export interface AttachmentImageResult { tooLarge?: boolean; mime?: string; size
 /** Web apps a thread has named on the host. The port is what its links already show. */
 export interface WirePreviewLink { endpointId: string; name: string; port: number }
 export interface PreviewLinksResult { previews: WirePreviewLink[]; truncated: boolean }
+
+export type WirePullRequest = import("../pullRequests").PullRequest;
+export type WirePullRequestSummary = import("../pullRequests").PullRequestSummary;
+export type WirePullRequestContext = import("../pullRequests").PullRequestContext;
+export interface WirePullRequestComment { id: string; author: string; body: string; url: string; createdAt: string; updatedAt: string }
+export interface WireGitHubAccess { authenticated: boolean; repository: string | null; isolated: boolean; context: WirePullRequestContext | null }
+export interface WireCiStatus { checks: WirePullRequest["checks"]; headOid: string; mergeStateStatus: string }

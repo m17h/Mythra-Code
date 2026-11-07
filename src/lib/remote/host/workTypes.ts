@@ -17,7 +17,7 @@ export interface RemoteTurnDelivery {
   readonly ownerHandle?: string;
   readonly ownerRunId?: string;
   bindOwner?(threadId: string): Promise<void>;
-  childStep?(stepId: string, threadId: string): Promise<RemoteTurnDelivery>;
+  childStep?(stepId: string, threadId?: string, kind?: "prompt" | "command"): Promise<RemoteTurnDelivery>;
   assertAllowed(): void;
   beforeCreate(): Promise<void>;
   queued(threadId: string, queuedTurnId: string): Promise<void>;

@@ -18,8 +18,8 @@ export async function listRemotePreviews(device: string, workspaceId: string, th
 
 /** The native side opens the browser on a tunnel to that one host port. Nothing
  * here opens it again: if the browser didn't start, the address is shown instead. */
-export async function openRemotePreview(device: string, endpointId: string): Promise<PreviewOutcome> {
-  const result = await invoke<PreviewOpened>("remote_preview_open", { device, endpointId });
+export async function openRemotePreview(device: string, endpointId: string, path?: string): Promise<PreviewOutcome> {
+  const result = await invoke<PreviewOpened>("remote_preview_open", { device, endpointId, ...(path ? { path } : {}) });
   if (result?.opened) return { previewId: result.previewId, notice: "" };
   const reason = result?.reason ?? "Your browser didn't open.";
   const address = typeof result?.url === "string" && result.url.startsWith("http://127.0.0.1:") ? ` Open ${result.url} in a browser on this device.` : "";

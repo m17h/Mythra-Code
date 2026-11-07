@@ -1,4 +1,4 @@
-import { openLocalEngineOwner, rememberRemoteEngineOwner, finishRemoteEngineOwner, isLiveRemoteEngineOwner } from "../lib/remote/host/engineOwners";
+import { openLocalEngineOwner, rememberRemoteEngineOwner, finishRemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { useCallback, useEffect, useRef } from "react";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
@@ -354,7 +354,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     }
     active.waitController?.abort();
     const requests: Array<Promise<unknown>> = [];
-    if (active.processId && !(active.remote && stopRoot)) {
+    if (active.processId && !((active.remote || active.localOwnerHandle) && stopRoot)) {
       const processId = active.processId;
       requests.push(rpc("command/exec/terminate", { processId }).catch((error) => {
         if (active.processId === processId) throw error;
@@ -379,6 +379,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     const current = depsRef.current;
     const remote = invocation?.remote;
     let localOwnerHandle: string | undefined;
+    let localOwnerRegistered = false;
     let remotePreparation: RemoteTurnDelivery | undefined;
     const storedWorkflow = current.workflows.find((item) => item.id === workflowId);
     if (!storedWorkflow || runningRef.current.has(workflowId)) return undefined;
@@ -508,13 +509,21 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       }
       current.onThreadCreated?.(threadId);
       active.threadId = threadId;
-      if (remote) await remote.bindThread(threadId);
       if (active.stopRequested) throw new WorkflowStoppedError();
       current.bindThreadToProject(threadId, project.path);
       useTaskStore.getState().ensureTask(threadId, project.path);
       // Keep the entire recipe's thread reserved, including gaps after a turn
       // completes and command steps that do not change the task status.
       useTaskStore.getState().setWorkflowOwner(threadId, { workflowId: workflow.id, runId });
+      // Reserve the task BEFORE publishing its native lifetime: ensureTask's
+      // idle write must not let the ordinary turn-completion watcher close a
+      // workflow owner while its first command/turn is still preparing.
+      if (remote) await remote.bindThread(threadId);
+      if (localOwnerHandle) {
+        rememberRemoteEngineOwner({ generation: 0, local: true, kind: "workflow", threadId, runId, ownerHandle: localOwnerHandle });
+        localOwnerRegistered = true;
+      }
+      if (active.stopRequested) throw new WorkflowStoppedError();
       if (localProvider) await persistLocalThread();
       else await rpc("thread/name/set", { threadId, name: `Workflow: ${workflow.name}` }).catch(() => {});
       if (active.stopRequested) throw new WorkflowStoppedError();
@@ -990,7 +999,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       return threadId;
     } finally {
       active.waitController?.abort();
-      if (localOwnerHandle && !isLiveRemoteEngineOwner(localOwnerHandle)) rememberRemoteEngineOwner({ generation: 0, local: true, kind: "workflow", threadId: threadId ?? `preparing:${runId}`, runId, ownerHandle: localOwnerHandle });
+      // A completed stamped Stop may already have forgotten this owner while
+      // checkpoint finalization was awaiting. Never resurrect that lifetime.
+      if (localOwnerHandle && !localOwnerRegistered) rememberRemoteEngineOwner({ generation: 0, local: true, kind: "workflow", threadId: threadId ?? `preparing:${runId}`, runId, ownerHandle: localOwnerHandle });
       const ownerFinished = remote ? await remote.finish() : localOwnerHandle ? await finishRemoteEngineOwner(localOwnerHandle) : true;
       if ((remote || localOwnerHandle) && !ownerFinished && !active.stopRequested) {
         active.deliveryUncertain = true;
