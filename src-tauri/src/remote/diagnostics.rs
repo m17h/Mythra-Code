@@ -41,6 +41,8 @@ fn operation(value: &str) -> &'static str {
         "tls.dial" => "tls.dial",
         "tcp.dial" => "tcp.dial",
         "pair.connect" => "pair.connect",
+        "pair.reverse" => "pair.reverse",
+        "link.reverse" => "link.reverse",
         "host" => "host",
         "viewer" => "viewer",
         "pair.request" => "pair.request",

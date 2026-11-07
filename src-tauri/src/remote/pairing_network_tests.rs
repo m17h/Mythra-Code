@@ -5,9 +5,14 @@ use crate::remote::{network_access, outgoing_privacy_hint, NearbyEntry, RemoteSt
 async fn all_failed_dials_end_flow_and_allow_an_immediate_new_attempt() {
     let inner = RemoteState::default().inner;
     let id = begin_flow(&inner, "PC".into()).unwrap();
-    let result = viewer_dial_with_limit(&inner, id, "PC", Duration::from_secs(1), async {
-        Err(DialError::Unreachable)
-    })
+    let result = viewer_dial_with_limit(
+        &inner,
+        id,
+        "PC",
+        Duration::from_secs(1),
+        async { Err(DialError::Unreachable) },
+        None,
+    )
     .await;
     assert_eq!(result.err(), Some(DialError::Unreachable));
     {
@@ -29,6 +34,7 @@ async fn stalled_and_aborted_dial_futures_cannot_leave_connecting_active() {
         "PC",
         Duration::from_millis(5),
         std::future::pending(),
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -46,6 +52,7 @@ async fn stalled_and_aborted_dial_futures_cannot_leave_connecting_active() {
                 let _ = ready.send(());
                 std::future::pending().await
             },
+            None,
         )
         .await
     });

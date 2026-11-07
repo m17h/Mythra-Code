@@ -122,7 +122,7 @@ const NEARBY_FALLBACK_NAME: &str = "Nearby device";
 
 struct ListenerHandle {
     port: u16,
-    /// Started for a pairing window with hosting off.
+    /// Receive-only: Hosting is off (paired reverse links or an offer window).
     temporary: bool,
     /// A connection accepted by an older listener cannot register.
     generation: u64,
@@ -171,6 +171,8 @@ struct DialState {
     update_on: Option<&'static str>,
     /// A link to view this device dropped and has not come back.
     lost: bool,
+    /// A paired viewer asked its host to open the missing reverse-role link.
+    reverse_requested: bool,
 }
 
 impl DialState {
@@ -181,6 +183,7 @@ impl DialState {
             in_flight: false,
             update_on: None,
             lost: false,
+            reverse_requested: false,
         }
     }
 }
@@ -393,6 +396,8 @@ impl Default for RemoteState {
                 writes: Arc::new(StdMutex::new(WriteQueue::default())),
                 #[cfg(test)]
                 test_database: OnceLock::new(),
+                #[cfg(test)]
+                test_block_outgoing: AtomicBool::new(false),
                 lifecycle: Mutex::new(()),
                 generation: AtomicU64::new(0),
                 unauthenticated: Arc::new(Semaphore::new(MAX_UNAUTHENTICATED)),
@@ -418,6 +423,8 @@ struct Inner {
     writes: Arc<StdMutex<WriteQueue>>,
     #[cfg(test)]
     test_database: OnceLock<Arc<StdMutex<Connection>>>,
+    #[cfg(test)]
+    test_block_outgoing: AtomicBool,
     /// One reconcile at a time, so switch changes and the supervisor agree.
     lifecycle: Mutex<()>,
     generation: AtomicU64,
@@ -492,10 +499,10 @@ fn app_version(core: &Core) -> String {
     core.app_version.clone()
 }
 
-/// A temporary listener is not a stable address, so peers never store it.
+/// Paired viewers keep a receive-only listener for reverse reconnects.
+/// A one-off, unpaired offer window is still not a stable saved address.
 fn advertised_port(core: &Core) -> Option<u16> {
-    core.settings
-        .hosting
+    (core.settings.hosting || core.devices.values().any(|device| device.they_host && !device.access_removed))
         .then(|| core.listener.as_ref().map(|listener| listener.port))
         .flatten()
 }
@@ -504,9 +511,10 @@ fn authenticated_links(core: &Core) -> usize {
     core.links.values().filter(|link| link.is_paired()).count()
 }
 
-/// Hosting, or a window that needs somewhere to receive an offer.
+/// Hosting, a paired viewer needing reverse reconnects, or an offer window.
 fn wants_listener(core: &Core) -> bool {
     core.settings.hosting
+        || core.devices.values().any(|device| device.they_host && !device.access_removed)
         || core
             .pairing
             .as_ref()
@@ -542,7 +550,11 @@ fn role_for_peer(core: &Core, fingerprint: &str) -> Option<Role> {
             && link.is_paired()
             && link.is_open()
     });
-    if device.they_host && !device.access_removed && !direct {
+    let missing_host = core.settings.hosting
+        && device.grant.as_ref().is_some_and(|grant| grant.view) && !linked(Role::Host);
+    if missing_host && core.dials.get(fingerprint).is_some_and(|dial| dial.reverse_requested) {
+        Some(Role::Host)
+    } else if device.they_host && !device.access_removed && !direct {
         Some(Role::Viewer)
     } else if core.settings.hosting && device.grant.is_some() && !linked(Role::Host) {
         Some(Role::Host)
@@ -1833,6 +1845,9 @@ fn schedule_dials(inner: &Arc<Inner>) {
                 }
             }
             inner.active_dials.fetch_sub(1, Ordering::AcqRel);
+            if matches!(outcome, Err(DialError::Unreachable | DialError::LocalNetworkMayBeBlocked)) {
+                pairing::request_reverse_link(&inner, &fingerprint).await;
+            }
             finish_dial(&inner, &fingerprint, outcome).await;
         });
     }
@@ -2103,6 +2118,17 @@ pub(crate) async fn remote_snapshot(state: State<'_, RemoteState>) -> Result<Rem
     Ok(state.inner.snapshot())
 }
 
+/// Hosting can stop without stopping a paired viewer's receive-only socket.
+fn retire_hosting(inner: &Arc<Inner>) {
+    let links = {
+        let mut core = inner.lock();
+        hostbridge::hosting_stopped_locked(inner, &mut core);
+        if let Some(listener) = core.listener.as_mut() { listener.temporary = true; }
+        core.links.values().filter(|link| link.role == Role::Host).cloned().collect::<Vec<_>>()
+    };
+    for link in links { link.close(session::CloseReason::HostingOff); }
+}
+
 /// Everything that follows a change to the hosting setting in memory.
 async fn apply_hosting(inner: &Arc<Inner>, enabled: bool) {
     let upgrade = {
@@ -2114,6 +2140,7 @@ async fn apply_hosting(inner: &Arc<Inner>, enabled: bool) {
     if upgrade {
         pairing::close_window(inner);
     }
+    if !enabled { retire_hosting(inner); }
     if enabled {
         // What was a temporary listener now serves hosting.
         if let Some(listener) = inner.lock().listener.as_mut() {

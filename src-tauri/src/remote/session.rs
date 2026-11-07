@@ -1002,6 +1002,8 @@ pub(super) async fn dial(
     policy: ServerKeyPolicy,
     purpose: DialPurpose,
 ) -> Result<Arc<Link>, DialError> {
+    #[cfg(test)]
+    if inner.test_block_outgoing.load(Ordering::Acquire){return Err(DialError::LocalNetworkMayBeBlocked);}
     let address = canonical_socket(address);
     let proven: tls::ProvenKey = Default::default();
     let config =
@@ -1185,7 +1187,8 @@ async fn handle_request(inner: &Arc<Inner>, link: &Arc<Link>, id: u64, op: &str,
         "terminal.ack" => return Reply::Done(super::terminal::ack(inner,link,&args)),
         op if super::work::is_mutation(op) => return Reply::Done(super::work::handle_request(inner,link,op,args).await),
         op if super::manifest::fields(op).is_some()=>return Reply::Done(super::hostbridge::request_value(inner,link,op,args,None).await),
-        "pair.offer" => return pairing::handle_offer(inner, link),
+        "link.reverse" | "pair.reverse" => return pairing::handle_reverse_control(inner,link,op,args),
+        "pair.offer" => return pairing::handle_offer(inner, link,args),
         "pair.request" => return pairing::handle_request(inner, link, args),
         "pair.reveal" => return pairing::handle_reveal(inner, link, args),
         "pair.await" => return pairing::handle_await(inner, link).await,

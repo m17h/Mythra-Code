@@ -203,6 +203,8 @@ impl PendingPair {
 
 pub(super) struct PairingWindow {
     id: u64,
+    /// An authenticated reverse request opens a window for THIS peer only.
+    allowed_peer: Option<String>,
     expires: Instant,
     expires_at_ms: i64,
     /// Hosting is off, so this window only receives offers. It has no
@@ -379,6 +381,7 @@ pub(super) async fn open_window(inner: &Arc<Inner>) -> Result<(), String> {
         }
         core.pairing = Some(PairingWindow {
             id,
+            allowed_peer: None,
             expires: Instant::now() + WINDOW_LIFETIME,
             expires_at_ms,
             temporary: !hosting,
@@ -565,6 +568,10 @@ fn admit(
     else {
         return (Err(closed_error()), None);
     };
+    if window.allowed_peer.as_deref().is_some_and(|peer| peer != link.peer_fingerprint) {
+        return (Err(closed_error()), None);
+    }
+    let known_name = core.devices.get(&link.peer_fingerprint).map(|device| device.name.clone());
     let mut preempted = None;
     let mode = if let Some(token) = args.token.as_deref() {
         let valid = window.invitation_usable()
@@ -602,7 +609,7 @@ fn admit(
         id: id.clone(),
         link: link.clone(),
         stage: PendingStage::AwaitingReveal { commit, nonce },
-        name: args.name.as_deref().and_then(clean_name),
+        name: args.name.as_deref().and_then(clean_name).or(known_name),
         mode,
     });
     (Ok(id), preempted)
@@ -1070,6 +1077,7 @@ pub(super) enum FlowStage {
 pub(super) struct ViewerFlow {
     pub(super) id: u64,
     connect_started: Instant,
+    reverse: Option<reverse::Expectation>,
     target: String,
     pub(super) stage: FlowStage,
     code: Option<String>,
@@ -1087,6 +1095,8 @@ pub(super) struct FlowView {
     id: u64,
     target: String,
     stage: FlowStage,
+    /// Outgoing TCP failed, but an authenticated peer is connecting back.
+    reverse_connecting: bool,
     code: Option<String>,
     error: Option<String>,
     fingerprint: Option<String>,
@@ -1098,6 +1108,7 @@ impl ViewerFlow {
             id: self.id,
             target: self.target.clone(),
             stage: self.stage,
+            reverse_connecting: self.reverse.is_some(),
             code: self.code.clone(),
             error: self.error.clone(),
             fingerprint: self.fingerprint.clone(),
@@ -1127,6 +1138,7 @@ fn begin_flow_locked(
     core.flow = Some(ViewerFlow {
         id,
         connect_started:Instant::now(),
+        reverse: None,
         target,
         stage: FlowStage::Connecting,
         code: None,
@@ -1163,7 +1175,7 @@ fn update_flow(inner: &Arc<Inner>, id: u64, change: impl FnOnce(&mut ViewerFlow)
 
 fn fail_flow(inner: &Arc<Inner>, id: u64, message: String) {
     let link={let mut core=inner.lock();let Some(flow)=core.flow.as_mut().filter(|flow|flow.id==id&&flow.is_active())else{return;};
-        flow.stage=FlowStage::Failed;flow.code=None;flow.error=Some(message);flow.decision=None;flow.link.take()};
+        flow.stage=FlowStage::Failed;flow.code=None;flow.error=Some(message);flow.decision=None;flow.reverse=None;flow.link.take()};
     if let Some(link)=link{link.close(CloseReason::Finished);}
     super::diagnostics::record(super::diagnostics::Event::Link,0,0,id,0,"pair.connect","failed");
     inner.changed();inner.wake.notify_one();
@@ -1174,12 +1186,22 @@ impl Drop for ConnectingAttempt{fn drop(&mut self){if self.armed{fail_flow(&self
 async fn viewer_dial_with_limit(
     inner:&Arc<Inner>,id:u64,target:&str,limit:Duration,
     dial:impl std::future::Future<Output=Result<Arc<Link>,DialError>>,
+    fallback: Option<(&[SocketAddr], Option<&str>)>,
 )->Result<Arc<Link>,DialError>{
     let mut guard=ConnectingAttempt{inner:inner.clone(),id,armed:true};
     super::diagnostics::record(super::diagnostics::Event::Link,0,0,id,0,"pair.connect","out");
     let result=tokio::time::timeout(limit,dial).await;
     let result=match result{Ok(result)=>result,Err(_)=>{super::diagnostics::record(super::diagnostics::Event::Link,0,0,id,0,"pair.connect","timeout");Err(DialError::Unreachable)}};
-    if let Err(error)=&result{fail_flow(inner,id,explain_dial(inner,error,target));}
+    if let Err(error) = &result {
+        // Stay Connecting while trying a trusted return path. Publishing a
+        // Failed state here would flash an error before the offer arrives.
+        let handled = if matches!(error, DialError::Unreachable | DialError::LocalNetworkMayBeBlocked) {
+            if let Some((addresses, pinned)) = fallback {
+                reverse::try_pair(inner, id, addresses, pinned).await
+            } else { false }
+        } else { false };
+        if !handled { fail_flow(inner, id, explain_dial(inner, error, target)); }
+    }
     guard.armed=false;result
 }
 
@@ -1506,14 +1528,11 @@ pub(super) async fn start_nearby(inner: &Arc<Inner>, instance: &str) -> Result<(
     inner.changed();
     let inner = inner.clone();
     tauri::async_runtime::spawn(async move {
-        match viewer_dial_with_limit(&inner,flow_id,&target,VIEWER_DIAL_LIMIT,dial_any(&inner, &addresses, ServerKeyPolicy::Capture, Role::Viewer)).await {
+        match viewer_dial_with_limit(&inner,flow_id,&target,VIEWER_DIAL_LIMIT,dial_any(&inner, &addresses, ServerKeyPolicy::Capture, Role::Viewer), Some((&addresses, None))).await {
             Ok(link) => {
                 run_initiator(inner, flow_id, link, None, target, PairingMode::Nearby).await;
             }
-            Err(error) => {
-                let message = explain_dial(&inner, &error, &target);
-                fail_flow(&inner, flow_id, message);
-            }
+            Err(_) => {} // The bounded connector ended the flow or arranged its return offer.
         }
     });
     Ok(())
@@ -1535,15 +1554,12 @@ pub(super) async fn start_invitation(inner: &Arc<Inner>, text: &str) -> Result<(
     let inner = inner.clone();
     tauri::async_runtime::spawn(async move {
         // The invitation pins the host's key, so only that device can answer.
-        match viewer_dial_with_limit(&inner,flow_id,&target,VIEWER_DIAL_LIMIT,dial_any(&inner, &addresses, ServerKeyPolicy::Pinned(invitation.fp), Role::Viewer)).await {
+        match viewer_dial_with_limit(&inner,flow_id,&target,VIEWER_DIAL_LIMIT,dial_any(&inner, &addresses, ServerKeyPolicy::Pinned(invitation.fp.clone()), Role::Viewer), Some((&addresses, Some(&invitation.fp)))).await {
             Ok(link) => {
                 let token = Some(invitation.token);
                 run_initiator(inner, flow_id, link, token, target, PairingMode::Invitation).await;
             }
-            Err(error) => {
-                let message = explain_dial(&inner, &error, &target);
-                fail_flow(&inner, flow_id, message);
-            }
+            Err(_) => {} // The bounded connector ended the flow or arranged its return offer.
         }
     });
     Ok(())
@@ -1584,9 +1600,23 @@ pub(super) async fn start_offer(inner: &Arc<Inner>, instance: &str) -> Result<()
 /// its own pairing window open, so a stranger cannot start anything here. An
 /// offer is one more pending attempt: it takes the one slot, counts against the
 /// source address, and a failed one spends the window's budget.
-pub(super) fn handle_offer(inner: &Arc<Inner>, link: &Arc<Link>) -> Reply {
+pub(super) fn handle_offer(inner: &Arc<Inner>, link: &Arc<Link>, args: Value) -> Reply {
     if link.role != Role::Viewer || link.is_paired() {
         return Reply::DoneThenClose(Err(refused_paired()));
+    }
+    if !args.is_null() {
+        return match reverse::claim_offer(inner, link, args) {
+            Ok((flow_id, target)) => {
+                link.pairing_started.store(true, Ordering::Release);
+                let inner = inner.clone();
+                let link = link.clone();
+                tauri::async_runtime::spawn(async move {
+                    run_initiator(inner, flow_id, link, None, target, PairingMode::Offer).await;
+                });
+                Reply::Done(Ok(Value::Null))
+            }
+            Err(error) => Reply::DoneThenClose(Err(error)),
+        };
     }
     let target = link
         .peer_name
@@ -1713,7 +1743,7 @@ pub(super) fn test_open_window(inner: &Arc<Inner>, temporary: bool, lifetime: Du
     }).unwrap();
     let id = core.take_id();
     core.pairing = Some(PairingWindow {
-        id, expires: Instant::now() + lifetime, expires_at_ms: crate::unix_timestamp_ms() + 300_000,
+        id, allowed_peer:None, expires: Instant::now() + lifetime, expires_at_ms: crate::unix_timestamp_ms() + 300_000,
         temporary, token, token_used: false, invitation: (!temporary).then(|| invitation.clone()),
         nearby_failures: 0, bad_tokens: 0, pending: None, close_requested: false,
     });
@@ -1727,3 +1757,12 @@ mod cancellation_tests;
 #[cfg(test)]
 #[path="pairing_network_tests.rs"]
 mod network_tests;
+
+#[path="pairing_reverse.rs"]
+mod reverse;
+pub(super) async fn request_reverse_link(inner: &Arc<Inner>, fingerprint: &str) {
+    reverse::request_link(inner, fingerprint).await;
+}
+pub(super) fn handle_reverse_control(inner: &Arc<Inner>, link: &Arc<Link>, op: &str, args: Value) -> Reply {
+    reverse::handle_control(inner, link, op, args)
+}
