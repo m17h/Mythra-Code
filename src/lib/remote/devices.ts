@@ -127,7 +127,7 @@ export interface NetworkNotice {
 /** The wording for this device asks the user to choose Try again, so a button must be beside it. */
 export const deviceHelpOffersRetry = (device: RemoteDevice) => device.state === "unreachable" && device.platform === "macos";
 
-export const LOCAL_NETWORK_BLOCKED = "Mythra Code can't access your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. Then choose Try again.";
+export const LOCAL_NETWORK_BLOCKED = "macOS may be blocking Mythra Code from connecting to your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. If a permission prompt is open, choose Allow. Then choose Try again.";
 /** True only on a Mac whose Local Network access is denied. */
 export const localNetworkBlocked = (snapshot: Pick<RemoteSnapshot, "platform" | "networkAccess"> | null | undefined) =>
   snapshot?.platform === "macos" && snapshot.networkAccess === "blocked";
