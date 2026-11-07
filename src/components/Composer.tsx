@@ -54,6 +54,9 @@ export function draftFor(key: string): string {
   return drafts()[key] ?? "";
 }
 
+/** Puts text in a draft that isn't on screen yet, as a handoff does. */
+export function seedComposerDraft(key: string, text: string): void { persistDraft(key, text); }
+
 function persistDraft(key: string, text: string, keepEmpty = false): void {
   const all = drafts();
   if (text || keepEmpty) all[key] = text;

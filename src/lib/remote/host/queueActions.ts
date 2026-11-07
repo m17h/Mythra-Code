@@ -22,7 +22,7 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
     // actual delivery still performs isolated, preserve-unread hydration.
     useTaskStore.getState().ensureTask(threadId, operation.context.activeWorkspace!.path);
     let editHandle: string | undefined, queuedTurnId: string | undefined;
-    const newPrompt = op === "prompt.schedule" || op === "queue.edit.finish" && !args.cancel || op === "schedules.edit" || op === "queue.retry";
+    const newPrompt = (op === "prompt.schedule" || op === "prompt.scheduleNew") || op === "queue.edit.finish" && !args.cancel || op === "schedules.edit" || op === "queue.retry";
     if (newPrompt) {
       // Native must advertise BOTH atomic queue-identity preservation and this
       // operation's provider-step gate. Never fall back to a local send.
@@ -44,7 +44,7 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
           throw new HostReadError("stale_target", "This instruction may already have been delivered; it cannot be retried or edited.");
         }
       };
-      if (op !== "prompt.schedule") editable();
+      if (op !== "prompt.schedule" && op !== "prompt.scheduleNew") editable();
       if (entry?.editing && op !== "queue.edit.finish" && op !== "queue.edit.begin") throw new HostReadError("busy", "This instruction is currently being edited.");
       if (newPrompt) {
         const text = op === "queue.retry" ? entry.text : String(args.text);
@@ -57,11 +57,11 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
           attemptId: operation.delivery.attemptId, messageId: operation.delivery.messageId, disposition: "queued" as const,
           ...(entry?.remoteDelivery?.attachmentIds ? { attachmentIds: entry.remoteDelivery.attachmentIds } : {}),
           ...(operation.delivery.ownerHandle ? { ownerHandle: operation.delivery.ownerHandle } : {}),
-          provenance: remoteProvenance(operation, op === "prompt.schedule" ? "schedule" : "queue-edit") };
+          provenance: remoteProvenance(operation, (op === "prompt.schedule" || op === "prompt.scheduleNew") ? "schedule" : "queue-edit") };
         const next: QueuedTurn = { ...(entry ?? {}), id: entry?.id ?? crypto.randomUUID(), threadId, text,
           attachments: entry?.attachments ?? [], status: "queued", createdAt: entry?.createdAt ?? Date.now(), remoteDelivery,
           editing: true, remoteAdmissionPending: true, remoteEdit: undefined, error: undefined,
-          ...(op === "prompt.schedule" ? { deliverAt: args.deliverAt as number } : {}) };
+          ...((op === "prompt.schedule" || op === "prompt.scheduleNew") ? { deliverAt: args.deliverAt as number } : {}) };
         queuedTurnId = next.id;
         if (index < 0) entries.push(next); else entries[index] = next;
       } else if (op === "queue.remove" || op === "schedules.remove") {

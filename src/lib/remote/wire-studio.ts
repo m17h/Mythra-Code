@@ -89,6 +89,8 @@ export type WirePullRequestContext = import("../pullRequests").PullRequestContex
 export interface WirePullRequestComment { id: string; author: string; body: string; url: string; createdAt: string; updatedAt: string }
 export interface WireGitHubAccess {
   authenticated: boolean; repository: string | null; isolated: boolean; context: WirePullRequestContext | null;
+  /** The checkout's branch and its tracked branch. */
+  branch: string | null; upstream: string | null; ahead: number; behind: number;
   /** Whether the host can archive a thread for this device yet. */
   canArchive: boolean;
   /** The pull request saved with this thread on the host. */

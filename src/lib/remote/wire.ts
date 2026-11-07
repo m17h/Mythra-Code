@@ -217,11 +217,11 @@ export interface ProjectReorderArgs extends ProjectRowArgs { relativeTo: string;
 export type ParityReadOperation = "queue.read" | "schedules.read" | "workflows.list" | "workflows.read"
   | "projects.settings.read" | "projects.instructions.read" | "models.list" | "models.refresh" | "models.search"
   | "skills.list" | "skills.read" | "skills.analyze" | "usage.account.read" | "usage.account.refresh"
-  | "threads.search" | "threads.archived" | "parent.read" | "run.status" | "checks.read" | "checks.status"
+  | "threads.search" | "threads.archived" | "parent.read" | "thread.handoff.read" | "run.status" | "checks.read" | "checks.status"
   | "discovery.run.status" | "discovery.check.status";
 export type ParityMutationOperation = "queue.edit.begin" | "queue.edit.finish" | "queue.retry" | "queue.steer" | "queue.remove"
   | "prompt.schedule" | "prompt.scheduleNew" | "schedules.edit" | "schedules.reschedule" | "schedules.release" | "schedules.remove"
-  | "thread.compact" | "thread.rollback" | "thread.handoff.prepare" | "thread.handoff.send" | "parent.continue" | "parent.dismiss"
+  | "thread.pullRequest.set" | "thread.compact" | "thread.rollback" | "thread.handoff.prepare" | "thread.handoff.send" | "parent.continue" | "parent.dismiss"
   | "thread.archiveMany" | "thread.deleteMany" | "workflows.start" | "workflows.stop"
   | "projects.settings.set" | "projects.instructions.set" | "projects.profiles.save" | "projects.profiles.delete" | "projects.profiles.select"
   | "projects.run.set" | "projects.check.set" | "run.start" | "run.stop" | "checks.start" | "checks.stop"
@@ -234,6 +234,9 @@ export interface ParityMutationArgs extends ParityTarget { opId: string; opSeq: 
 export interface QueueMutationArgs extends ParityMutationArgs {
   threadId: string; queueId: string; editHandle?: string; text?: string; cancel?: true; target?: string;
 }
+/** A new scheduled prompt uses a host-owned draft token, never provider options. */
+export interface PromptScheduleNewArgs extends ParityMutationArgs { text: string; deliverAt: number; draftHandle?: string }
+export interface ProviderHandoffReadArgs extends ParityTarget { threadId: string; provider: WireProvider }
 export interface WorkflowStartArgs extends ParityMutationArgs { workflowId: string; variables?: Record<string, string>; userPrompt?: string }
 export interface WorkflowStopArgs extends ParityMutationArgs { workflowId: string; runId: string }
 /** Shared allowlisted records for contextual controls, never raw persisted state. */

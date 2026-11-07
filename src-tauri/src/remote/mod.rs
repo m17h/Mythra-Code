@@ -32,8 +32,10 @@ pub(crate) mod domain;
 pub(crate) mod owners;
 pub(crate) mod bookkeeping;
 pub(crate) mod safe_git;
-mod git_objects;
 pub(crate) mod threads;
+mod instructions;
+pub(crate) mod thread_batch;
+pub(crate) mod discovery_work;
 pub(crate) mod github;
 #[cfg(test)]
 mod tests;
@@ -213,6 +215,7 @@ struct Core {
     devices: HashMap<String, DeviceRecord>,
     links: HashMap<u64, Arc<Link>>,
     terminals: terminal::Registry,
+    discovery_jobs: discovery_work::Registry,
     owners: owners::Registry,
     nearby: HashMap<String, NearbyEntry>,
     pairing: Option<PairingWindow>,
@@ -298,6 +301,7 @@ impl Default for Core {
             devices: HashMap::new(),
             links: HashMap::new(),
             terminals: terminal::Registry::default(),
+            discovery_jobs: discovery_work::Registry::default(),
             owners: owners::Registry::default(),
             nearby: HashMap::new(),
             pairing: None,

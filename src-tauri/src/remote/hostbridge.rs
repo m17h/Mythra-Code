@@ -253,6 +253,7 @@ pub(super) fn retire_device_locked(inner: &Inner, core: &mut Core, device: &str)
     super::owners::retire_device(core,device);
     super::preview::retire(inner,Some(device));
     super::terminal::invalidate(core,Some(device));
+    super::discovery_work::invalidate(core,Some(device));
     super::folders::invalidate(core,Some(device));
     let state = if core
         .devices
@@ -313,6 +314,7 @@ fn end_generation(inner: &Inner, core: &mut Core) {
     super::preview::retire(inner,None);
     super::terminal::invalidate(core,None);
     super::owners::invalidate(core);
+    super::discovery_work::invalidate(core,None);
     super::work::generation_ended(core);
     super::folders::invalidate(core,None);
     core.bridge.ready = false;
@@ -998,7 +1000,11 @@ pub(crate) fn remote_host_renew(
     generation: u64,
 ) -> Result<(), WireError> {
     window_is_host(&window)?;
-    let mut core = state.inner.lock();
+    renderer_renew(&state.inner, generation)
+}
+
+pub(super) fn renderer_renew(inner: &Inner, generation: u64) -> Result<(), WireError> {
+    let mut core = inner.lock();
     check_generation(&core, generation)?;
     core.bridge.lease_waiting = false;
     core.bridge.lease_misses = 0;

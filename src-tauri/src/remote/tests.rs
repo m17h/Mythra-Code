@@ -900,6 +900,7 @@ struct Renderer {
     seq: Arc<AtomicU64>,
     calls: Arc<std::sync::atomic::AtomicUsize>,
     epoch: String,
+    renew: Arc<AtomicBool>,
 }
 impl Drop for Renderer {
     fn drop(&mut self) {
@@ -907,16 +908,28 @@ impl Drop for Renderer {
     }
 }
 fn renderer(inner: &Arc<Inner>) -> Renderer {
+    renderer_at(inner, 1)
+}
+fn renderer_at(inner: &Arc<Inner>, generation: u64) -> Renderer {
     let mut rx = events(inner);
-    hostbridge::test_attach(inner, 1);
+    hostbridge::test_attach(inner, generation);
+    hostbridge::renderer_renew(inner, generation).unwrap();
     let target = inner.clone();
     let epoch = uuid::Uuid::new_v4().to_string();
     let seq = Arc::new(AtomicU64::new(0));
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let renew = Arc::new(AtomicBool::new(true));
+    let renderer_renew = renew.clone();
     let (renderer_epoch, renderer_seq, renderer_calls) =
         (epoch.clone(), seq.clone(), calls.clone());
     let task = tokio::spawn(async move {
         while let Some((event, payload)) = rx.recv().await {
+            if event == "remote-host-lease-check" {
+                if renderer_renew.load(Ordering::Acquire) {
+                    hostbridge::renderer_renew(&target, payload["generation"].as_u64().unwrap()).unwrap();
+                }
+                continue;
+            }
             if event != "remote-host-request" {
                 continue;
             }
@@ -959,6 +972,7 @@ fn renderer(inner: &Arc<Inner>) -> Renderer {
         seq,
         calls,
         epoch,
+        renew,
     }
 }
 async fn paired_nodes() -> (Node, Node, Arc<Link>) {
@@ -2331,4 +2345,594 @@ async fn phase3_prompt_native_acceptance_survives_lost_ack_without_second_dispat
         let _ = renderer.await;
         timeout(WAIT, provider).await.unwrap().unwrap();
     }
+}
+
+// A bounded encrypted-byte relay: TLS and the production endpoints are untouched.
+// Delay/drop/silence are controlled independently, so a blackhole never closes TCP.
+#[derive(Default)]
+struct SocketFaults {
+    latency_ms: AtomicU64,
+    slow_down_ms: AtomicU64,
+    blackhole: AtomicBool,
+    hold_down: AtomicBool,
+}
+struct AbortFixture(JoinHandle<()>);
+impl Drop for AbortFixture {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+struct FaultProxy {
+    address: SocketAddr,
+    faults: Arc<SocketFaults>,
+    breaks: watch::Sender<u64>,
+    accept: JoinHandle<()>,
+    connections: Arc<StdMutex<Vec<tokio::task::AbortHandle>>>,
+}
+impl Drop for FaultProxy {
+    fn drop(&mut self) {
+        self.accept.abort();
+        for task in self.connections.lock().unwrap().iter() {
+            task.abort();
+        }
+    }
+}
+impl FaultProxy {
+    async fn new(destination: SocketAddr) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let faults = Arc::new(SocketFaults::default());
+        let (breaks, _) = watch::channel(0);
+        let connections = Arc::new(StdMutex::new(Vec::new()));
+        let (cfg, stop, tasks) = (faults.clone(), breaks.clone(), connections.clone());
+        let accept = tokio::spawn(async move {
+            loop {
+                let (incoming, _) = listener.accept().await.unwrap();
+                let mut broken = stop.subscribe();
+                broken.borrow_and_update();
+                let cfg = cfg.clone();
+                let task = tokio::spawn(async move {
+                    let outgoing = TcpStream::connect(destination).await.unwrap();
+                    let (incoming_read, incoming_write) = incoming.into_split();
+                    let (outgoing_read, outgoing_write) = outgoing.into_split();
+                    tokio::select! {
+                        _ = broken.changed() => {},
+                        _ = fault_forward(incoming_read, outgoing_write, cfg.clone(), false) => {},
+                        _ = fault_forward(outgoing_read, incoming_write, cfg, true) => {},
+                    }
+                });
+                tasks.lock().unwrap().push(task.abort_handle());
+            }
+        });
+        Self {
+            address,
+            faults,
+            breaks,
+            accept,
+            connections,
+        }
+    }
+    fn cut(&self) {
+        self.breaks.send_modify(|epoch| *epoch += 1);
+    }
+}
+async fn fault_forward(
+    mut reader: tokio::net::tcp::OwnedReadHalf,
+    mut writer: tokio::net::tcp::OwnedWriteHalf,
+    faults: Arc<SocketFaults>,
+    down: bool,
+) {
+    // At most4MiB network buffering per direction, not an unbounded test relay.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    let _reader = AbortFixture(tokio::spawn(async move {
+        let mut bytes = [0; 16384];
+        loop {
+            let Ok(n) = reader.read(&mut bytes).await else {
+                break;
+            };
+            if n == 0 || tx.send(bytes[..n].to_vec()).await.is_err() {
+                break;
+            }
+        }
+    }));
+    while let Some(bytes) = rx.recv().await {
+        if faults.blackhole.load(Ordering::Acquire) {
+            continue;
+        }
+        while down
+            && faults.hold_down.load(Ordering::Acquire)
+            && !faults.blackhole.load(Ordering::Acquire)
+        {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let delay = faults.latency_ms.load(Ordering::Acquire)
+            + if down {
+                faults.slow_down_ms.load(Ordering::Acquire)
+            } else {
+                0
+            };
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        if faults.blackhole.load(Ordering::Acquire) {
+            continue;
+        }
+        if writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err() {
+            break;
+        }
+    }
+}
+async fn fault_dial(host: &Node, viewer: &Node, proxy: &FaultProxy, reverse: bool) -> Arc<Link> {
+    let (dialer, peer) = if reverse {
+        (host, viewer)
+    } else {
+        (viewer, host)
+    };
+    let link = session::dial(
+        &dialer.inner,
+        &dialer.identity,
+        proxy.address,
+        ServerKeyPolicy::Pinned(peer.identity.fingerprint.clone()),
+        DialPurpose::Paired,
+    )
+    .await
+    .unwrap();
+    if !reverse {
+        return link;
+    }
+    until(|| {
+        viewer
+            .inner
+            .lock()
+            .links
+            .values()
+            .any(|l| l.role == Role::Viewer && l.is_open())
+    })
+    .await;
+    let result = viewer
+        .inner
+        .lock()
+        .links
+        .values()
+        .find(|l| l.role == Role::Viewer && l.is_open())
+        .unwrap()
+        .clone();
+    result
+}
+async fn fault_pair(reverse: bool) -> (Node, Node, Arc<Link>, FaultProxy) {
+    let (host, viewer, direct) = paired_nodes().await;
+    direct.close(CloseReason::Finished);
+    until(|| host.inner.lock().links.is_empty() && viewer.inner.lock().links.is_empty()).await;
+    let proxy = FaultProxy::new(if reverse {
+        viewer.address
+    } else {
+        host.address
+    })
+    .await;
+    let link = fault_dial(&host, &viewer, &proxy, reverse).await;
+    (host, viewer, link, proxy)
+}
+async fn viewer_state_event(
+    rx: &mut tokio::sync::mpsc::Receiver<TestEvent>,
+    state: &str,
+    wait: Duration,
+) -> Value {
+    timeout(wait, async {
+        while let Some((name, value)) = rx.recv().await {
+            if name == "remote-viewer-state" && value["state"] == state {
+                return value;
+            }
+        }
+        panic!("viewer event sink closed");
+    })
+    .await
+    .expect("expected viewer state missing")
+}
+async fn subscribe_fault_viewer(host: &Node, viewer: &Node) -> Value {
+    hostbridge::viewer_request(
+        &viewer.inner,
+        host.identity.fingerprint.clone(),
+        "timeline.subscribe".into(),
+        json!({"threadId":"thread"}),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn adverse_200ms_latency_one_percent_cut_recovers_without_double_dispatch() {
+    let (host, viewer, link, proxy) = fault_pair(false).await;
+    proxy.faults.latency_ms.store(200, Ordering::Release);
+    let fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    let initial = subscribe_fault_viewer(&host, &viewer).await;
+    assert!(initial["snapshot"].is_object());
+    // 100 operation boundaries: 99 liveness probes and one prompt, with exactly
+    // one injected link cut after acceptance. This is 1% link-boundary loss,
+    // not packet loss (TCP would retransmit packets).
+    for batch in 0..10 {
+        let mut probes = Vec::new();
+        for offset in 0..10 {
+            if batch * 10 + offset == 73 {
+                continue;
+            }
+            let link = if batch < 8 {
+                link.clone()
+            } else {
+                viewer
+                    .inner
+                    .lock()
+                    .links
+                    .values()
+                    .find(|l| l.role == Role::Viewer && l.is_open())
+                    .unwrap()
+                    .clone()
+            };
+            probes.push(tokio::spawn(async move {
+                link.request("ping", json!({}), WAIT).await.unwrap()
+            }));
+        }
+        for probe in probes {
+            assert_eq!(probe.await.unwrap()["ok"], true);
+        }
+        if batch == 7 {
+            proxy.faults.hold_down.store(true, Ordering::Release);
+            let args =
+                json!({"opId":"cut-73","opSeq":1,"workspaceId":"project","text":"execute once"});
+            let (source, device, copy) = (
+                viewer.inner.clone(),
+                host.identity.fingerprint.clone(),
+                args.clone(),
+            );
+            let pending = tokio::spawn(async move {
+                hostbridge::viewer_request(&source, device, "prompt.send".into(), copy).await
+            });
+            timeout(WAIT, async {
+                loop {
+                    let device = viewer.identity.fingerprint.clone();
+                    let accepted = host
+                        .inner
+                        .read_db(move |db| {
+                            store::op_status(db, &device, "cut-73", Some(1))
+                                .map(|r| r.state == "accepted")
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap();
+                    if accepted {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            proxy.cut();
+            viewer_state_event(&mut received, "stale", Duration::from_secs(3)).await;
+            assert!(timeout(WAIT, pending).await.unwrap().unwrap().is_err());
+            until(|| host.inner.lock().links.is_empty() && viewer.inner.lock().links.is_empty())
+                .await;
+            proxy.faults.hold_down.store(false, Ordering::Release);
+            let _restored = fault_dial(&host, &viewer, &proxy, false).await;
+            let replay = hostbridge::viewer_request(
+                &viewer.inner,
+                host.identity.fingerprint.clone(),
+                "prompt.send".into(),
+                args,
+            )
+            .await
+            .unwrap();
+            assert_eq!(replay["state"], "accepted");
+            subscribe_fault_viewer(&host, &viewer).await;
+        }
+    }
+    assert_eq!(*proxy.breaks.borrow(), 1);
+    assert_eq!(fake.calls.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn adverse_silent_open_tcp_goes_stale_in_fifteen_seconds_and_recovers() {
+    let (host, viewer, link, proxy) = fault_pair(true).await;
+    let _fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    subscribe_fault_viewer(&host, &viewer).await;
+    //Relay keeps both TCP sockets open and drains/discards bytes: no FIN/RST,
+    //no write error, and small heartbeats continue to fit into the TCP buffers.
+    proxy.faults.blackhole.store(true, Ordering::Release);
+    let start = Instant::now();
+    viewer_state_event(&mut received, "stale", Duration::from_secs(19)).await;
+    let noticed = start.elapsed();
+    eprintln!("silent-open-TCP stale after {noticed:?}");
+    assert!(noticed >= Duration::from_secs(13) && noticed <= Duration::from_secs(18));
+    assert_eq!(link.close_reason(), Some(CloseReason::Dead));
+    proxy.cut();
+    until(|| host.inner.lock().links.is_empty() && viewer.inner.lock().links.is_empty()).await;
+    proxy.faults.blackhole.store(false, Ordering::Release);
+    let _restored = fault_dial(&host, &viewer, &proxy, true).await;
+    assert!(subscribe_fault_viewer(&host, &viewer).await["snapshot"].is_object());
+    viewer_state_event(&mut received, "live", WAIT).await;
+}
+
+#[tokio::test]
+async fn adverse_near_two_mib_frame_keeps_slow_active_viewer_alive() {
+    let (host, viewer, link, proxy) = fault_pair(false).await;
+    let _fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    subscribe_fault_viewer(&host, &viewer).await;
+    //A maximum wire frame is2MiB; timeline projections intentionally cap1MiB.
+    //Use an unknown stream to exercise actual framing/TLS at the wire ceiling.
+    let mut frame = Frame::Evt {
+        stream: "transport-probe".into(),
+        epoch: "test".into(),
+        seq: 1,
+        data: json!(""),
+    };
+    let overhead = wire::encode(&frame).unwrap().len() - 4;
+    if let Frame::Evt { data, .. } = &mut frame {
+        *data = json!("x".repeat(MAX_FRAME - overhead));
+    }
+    assert_eq!(wire::encode(&frame).unwrap().len(), MAX_FRAME + 4);
+    let host_link = host
+        .inner
+        .lock()
+        .links
+        .values()
+        .find(|l| l.role == Role::Host && l.is_open())
+        .unwrap()
+        .clone();
+    proxy.faults.slow_down_ms.store(145, Ordering::Release);
+    let start = Instant::now();
+    assert!(host_link.send(&frame));
+    timeout(Duration::from_secs(29), async {
+        loop {
+            assert!(
+                link.is_open(),
+                "healthy byte progress was treated as silence: {:?}",
+                link.test_trace()
+            );
+            if link.test_trace().contains(&"probe_frame") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    eprintln!(
+        "maximum wire frame completed with slow viewer after {:?}",
+        start.elapsed()
+    );
+    assert!(
+        start.elapsed() > Duration::from_secs(15),
+        "frame was not slow enough to exercise progress tracking"
+    );
+    assert!(link.is_open());
+    proxy.faults.slow_down_ms.store(0, Ordering::Release);
+    assert_eq!(
+        link.request("ping", json!({}), WAIT).await.unwrap()["ok"],
+        true
+    );
+    assert!(timeout(
+        Duration::from_millis(30),
+        viewer_state_event(&mut received, "stale", WAIT)
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn adverse_renderer_lease_lost_midstream_recovers_with_fresh_snapshot() {
+    let (host, viewer, link, _proxy) = fault_pair(false).await;
+    let fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    let initial = subscribe_fault_viewer(&host, &viewer).await;
+    fake.renew.store(false, Ordering::Release);
+    let (native, epoch, sequence) = (host.inner.clone(), fake.epoch.clone(), fake.seq.clone());
+    let publisher = tokio::spawn(async move {
+        for seq in 1..100 {
+            sequence.store(seq, Ordering::Release);
+            if hostbridge::renderer_publish(
+                &native,
+                1,
+                "thread".into(),
+                epoch.clone(),
+                vec![timeline::PublishedFrame {
+                    seq,
+                    frame: json!({"text":"live"}),
+                }],
+            )
+            .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    });
+    let start = Instant::now();
+    viewer_state_event(&mut received, "recovering", Duration::from_secs(24)).await;
+    let noticed = start.elapsed();
+    eprintln!("renderer lease loss noticed after {noticed:?}");
+    assert!(noticed >= Duration::from_secs(14) && noticed <= Duration::from_secs(23));
+    assert!(
+        link.is_open(),
+        "native heartbeat should survive a renderer lease loss"
+    );
+    assert!(hostbridge::renderer_publish(
+        &host.inner,
+        1,
+        "thread".into(),
+        fake.epoch.clone(),
+        vec![timeline::PublishedFrame {
+            seq: 100,
+            frame: json!({"text":"old"})
+        }]
+    )
+    .is_err());
+    drop(fake);
+    let replacement = renderer_at(&host.inner, 2);
+    let snapshot = hostbridge::viewer_request(
+        &viewer.inner,
+        host.identity.fingerprint.clone(),
+        "timeline.subscribe".into(),
+        json!({"threadId":"thread","epoch":initial["epoch"],"afterSeq":initial["seq"]}),
+    )
+    .await
+    .unwrap();
+    assert!(snapshot["snapshot"].is_object());
+    assert_eq!(snapshot["epoch"], replacement.epoch);
+    viewer_state_event(&mut received, "live", WAIT).await;
+    publisher.await.unwrap();
+}
+
+#[tokio::test]
+async fn adverse_partial_two_mib_frame_then_silence_stales_without_waiting_thirty_seconds() {
+    let (host, viewer, link, proxy) = fault_pair(false).await;
+    let _fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    subscribe_fault_viewer(&host, &viewer).await;
+    let mut frame = Frame::Evt {
+        stream: "transport-probe".into(),
+        epoch: "test".into(),
+        seq: 1,
+        data: json!(""),
+    };
+    let overhead = wire::encode(&frame).unwrap().len() - 4;
+    if let Frame::Evt { data, .. } = &mut frame {
+        *data = json!("x".repeat(MAX_FRAME - overhead));
+    }
+    let host_link = host
+        .inner
+        .lock()
+        .links
+        .values()
+        .find(|l| l.role == Role::Host && l.is_open())
+        .unwrap()
+        .clone();
+    proxy.faults.slow_down_ms.store(100, Ordering::Release);
+    let before = link.test_last_receive_ms();
+    assert!(host_link.send(&frame));
+    until(|| link.test_last_receive_ms() > before).await;
+    assert!(!link.test_trace().contains(&"probe_frame"));
+    proxy.faults.blackhole.store(true, Ordering::Release);
+    let start = Instant::now();
+    viewer_state_event(&mut received, "stale", Duration::from_secs(19)).await;
+    let noticed = start.elapsed();
+    eprintln!("partial-frame silent-open-TCP stale after {noticed:?}");
+    assert!(noticed >= Duration::from_secs(13) && noticed <= Duration::from_secs(18));
+    assert_eq!(link.close_reason(), Some(CloseReason::Dead));
+    assert!(!link.test_trace().contains(&"probe_frame"));
+    proxy.cut();
+}
+
+#[tokio::test]
+async fn adverse_two_mib_timeline_stream_is_ordered_for_slow_viewer_then_replays() {
+    let (host, viewer, link, proxy) = fault_pair(false).await;
+    let fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    subscribe_fault_viewer(&host, &viewer).await;
+    proxy.faults.slow_down_ms.store(140, Ordering::Release);
+    // Eight individually valid projection frames, exactly 2MiB of model text.
+    // They traverse native publication gates, stream byte permits and the viewer
+    // subscription, not just the raw framing probe used by the ceiling test.
+    let text = "x".repeat(256 * 1024);
+    let start = Instant::now();
+    for seq in 1..=8 {
+        fake.seq.store(seq, Ordering::Release);
+        hostbridge::renderer_publish(
+            &host.inner,
+            1,
+            "thread".into(),
+            fake.epoch.clone(),
+            vec![timeline::PublishedFrame {
+                seq,
+                frame: json!({"text":text}),
+            }],
+        )
+        .unwrap();
+    }
+    timeout(Duration::from_secs(28), async {
+        let mut expected = 1;
+        while expected <= 8 {
+            let (name, value) = received.recv().await.unwrap();
+            if name == "remote-viewer-state" {
+                assert!(!["stale", "recovering"].contains(&value["state"].as_str().unwrap()));
+            }
+            if name != "remote-viewer-frame" {
+                continue;
+            }
+            assert_eq!(value["seq"], expected);
+            assert_eq!(value["frame"]["text"].as_str().unwrap().len(), text.len());
+            expected += 1;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(link.is_open());
+    eprintln!(
+        "2MiB timeline stream (8 frames) completed after {:?}",
+        start.elapsed()
+    );
+    proxy.faults.slow_down_ms.store(0, Ordering::Release);
+    proxy.cut();
+    viewer_state_event(&mut received, "stale", WAIT).await;
+    until(|| host.inner.lock().links.is_empty() && viewer.inner.lock().links.is_empty()).await;
+    fake.seq.store(9, Ordering::Release);
+    hostbridge::renderer_publish(
+        &host.inner,
+        1,
+        "thread".into(),
+        fake.epoch.clone(),
+        vec![timeline::PublishedFrame {
+            seq: 9,
+            frame: json!({"text":"missed"}),
+        }],
+    )
+    .unwrap();
+    let _restored = fault_dial(&host, &viewer, &proxy, false).await;
+    let replay = hostbridge::viewer_request(
+        &viewer.inner,
+        host.identity.fingerprint.clone(),
+        "timeline.subscribe".into(),
+        json!({"threadId":"thread","epoch":fake.epoch,"afterSeq":8}),
+    )
+    .await
+    .unwrap();
+    assert!(replay.get("snapshot").is_none());
+    assert_eq!(replay["frames"].as_array().unwrap().len(), 1);
+    assert_eq!(replay["frames"][0]["seq"], 9);
+    viewer_state_event(&mut received, "live", WAIT).await;
+}
+#[tokio::test]
+async fn adverse_ten_second_hiccup_keeps_same_link_and_pings_resume() {
+    let (host, viewer, link, proxy) = fault_pair(false).await;
+    let _fake = renderer(&host.inner);
+    let mut received = events(&viewer.inner);
+    subscribe_fault_viewer(&host, &viewer).await;
+    // Hold rather than discard encrypted bytes: a recoverable delay must keep
+    // the TLS record sequence intact. No FIN/RST or artificial timer changes.
+    proxy.faults.hold_down.store(true, Ordering::Release);
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert!(link.is_open(), "brief silence must not kill a healthy link");
+    proxy.faults.hold_down.store(false, Ordering::Release);
+    assert_eq!(
+        link.request("ping", json!({}), WAIT).await.unwrap()["ok"],
+        true
+    );
+    assert_eq!(
+        viewer
+            .inner
+            .lock()
+            .links
+            .values()
+            .filter(|l| l.role == Role::Viewer && l.is_open())
+            .map(|l| l.id)
+            .collect::<Vec<_>>(),
+        vec![link.id]
+    );
+    assert!(timeout(
+        Duration::from_millis(30),
+        viewer_state_event(&mut received, "stale", WAIT)
+    )
+    .await
+    .is_err());
 }

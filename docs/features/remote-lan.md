@@ -131,7 +131,9 @@ dialed the TCP connection (see "Reverse links").
 - Framing: 4-byte big-endian length then UTF-8 JSON. Frames over 2 MiB close
   the link, or over 16 KiB before a peer is authenticated. Unknown message kinds are ignored; a higher major `proto` is
   refused with a clear "update Mythra Code" state.
-- Keepalive: `ping` every 15 s, link dead after 45 s without traffic.
+- Keepalive: `ping` every 5 s. A viewer treats a link as stale after 15 s with no
+  incoming bytes, including during a partly received frame, so slow healthy streams
+  stay live. A host drops a link after 45 s, so a slow viewer isn't cut off.
 
 ```jsonc
 { "k": "hello", "proto": 1, "role": "viewer", "appVersion": "1.32.0", "name": "ZEDS-PC" }
@@ -722,6 +724,15 @@ Acceptance scenarios from the brief: discover and pair without entering an
 address; a prompt changes only the selected host's checkout; switch machines
 during a live stream; revoke access while connected; drop the network just after
 the host accepts a send and recover without sending twice.
+
+## Threat model boundary
+
+Network peers and paired viewers are outside the trust boundary. A viewer must
+never run a repository-configured program without `terminal`, and never read
+outside its scope through this feature. Someone who can already write to the host's
+files is out of scope, because a View viewer cannot do that and a Work viewer can
+already run commands. Defenses against `.git` being rewritten during a read are not
+worth their cost to speed.
 
 ## Verification policy
 

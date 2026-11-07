@@ -179,6 +179,7 @@ fn key_allowed(op: &str, key: &str) -> bool {
                 | "kiwi.threadReasoning"
         ),
         "thread.pin" => key == "kiwi.pinnedThreads",
+        "thread.pullRequest.set" => key == "kiwi.threadPullRequests",
         "thread.archive" | "thread.restore" | "thread.archiveMany" => key == "kiwi.archivedThreads",
         "thread.delete" | "thread.deleteMany" => matches!(
             key,

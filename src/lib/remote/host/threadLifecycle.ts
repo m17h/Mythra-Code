@@ -7,7 +7,7 @@ import { activeThreadArchiveBlockedReason } from "../../threadArchive";
 import { providerFromThread } from "../../threadProvider";
 import type { ThreadWorktreeRecord } from "../../worktrees";
 import { useTaskStore } from "../../taskStore";
-import type { ThreadRowChange, ThreadRowLifecycle, ThreadRowOperation } from "./threadRows";
+import type { ThreadEffectOperation, ThreadRowChange, ThreadRowLifecycle } from "./threadRows";
 import { HostReadError } from "./scope";
 
 /** Live refs/functions shared with the sidebar. None is a replacement provider
@@ -18,7 +18,7 @@ export interface ThreadLifecycleSources {
     childLinks: Record<string, ChildAgentLink>; nativeLinks: Record<string, NativeAgentLink>; childStartInFlight: boolean;
   };
   /** Joins the same local removal/row ownership, returning an exact-token guard. */
-  reserve(op: ThreadRowOperation, threadId: string): { assertOwned(): void; release(): void };
+  reserve(op: ThreadEffectOperation, threadId: string): { assertOwned(): void; release(): void };
   cancelTitle(threadId: string): Promise<unknown>;
   joinRenames(threadId: string): Promise<unknown>;
   waitPreparation(threadId: string): Promise<unknown>;
@@ -30,7 +30,7 @@ export interface ThreadLifecycleSources {
 /** This is the sidebar's actual policy composition: native unknown activity,
  * managed children awaiting settlement, pending child starts, workflows and
  * isolated deletion/fork guards all remain effective for a background target. */
-export function threadRowBlockedReason(op: ThreadRowOperation, thread: Thread, sources: ThreadLifecycleSources): string | null {
+export function threadRowBlockedReason(op: ThreadEffectOperation, thread: Thread, sources: ThreadLifecycleSources): string | null {
   const id = thread.id, evidence = sources.evidence(id), state = useTaskStore.getState(), task = state.tasks[id];
   if (evidence.deleted) throw new HostReadError("stale_target", "This conversation was deleted.");
   if (op === "thread.restore" ? !evidence.archived : evidence.archived) throw new HostReadError("stale_target", "This conversation's archive state changed.");
@@ -54,7 +54,7 @@ export function createThreadRowLifecycle(sources: ThreadLifecycleSources): Threa
         check();
         if (op === "thread.rename" || op === "thread.archive" || op === "thread.delete") { await sources.cancelTitle(thread.id); check(); }
         await sources.joinRenames(thread.id); check();
-        if (op === "thread.fork" || op === "thread.restore") { await sources.waitPreparation(thread.id); check(); }
+        if (op === "thread.fork" || op === "thread.restore" || op === "thread.compact" || op === "thread.rollback") { await sources.waitPreparation(thread.id); check(); }
         const provider = providerFromThread(thread, "openai");
         if ((provider === "claude" || provider === "cursor") && useTaskStore.getState().tasks[thread.id]?.transcriptDirty) { await sources.flushTranscript(thread.id); check(); }
         if (op === "thread.delete") sources.cancelTranscriptSave(thread.id);

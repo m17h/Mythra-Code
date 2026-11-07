@@ -10,7 +10,7 @@ import { ConversationSearchBar } from "../ConversationSearchBar";
 import { ProjectPromptControl } from "../ProjectPromptControl";
 import { ProjectRunControl } from "../ProjectRunControl";
 import { SubAgentParentGroup } from "../SubAgentParentGroup";
-import { Composer } from "../Composer";
+import { Composer, seedComposerDraft } from "../Composer";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { PinnedWorkspaceGroup } from "../PinnedWorkspaceGroup";
 import { RowMenu } from "../RowMenu";
@@ -285,7 +285,6 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
   const projects = remote?.workspaces.filter((entry) => !entry.isChat) ?? [];
   const context = useHostContext(device, remote?.workspaceId, undefined);
   const addAllowed = Boolean(context?.capabilities.manageProjects);
-  const revision = context?.revision ?? "";
   // Names and previews filter at once; the host searches conversation content.
   useEffect(() => {
     const words = query.trim();
@@ -312,22 +311,31 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
     for (const thread of shown) if (kind === "subagents") groups.set(thread.parentThreadId ?? "", [...(groups.get(thread.parentThreadId ?? "") ?? []), thread]);
     return groups;
   }, [kind, shown]);
+  /** One at a time and each on its own record, as the local loop does. A failure
+   * leaves the rest of the list as it is and says how many were left. */
+  const eachThread = async (ids: readonly string[], op: "thread.archive" | "thread.delete", done: string, extra: Record<string, unknown> = {}) => {
+    let failed = 0, reason: string | null = null;
+    for (const threadId of ids) {
+      const failure = await runRemoteRowAction(device, name, op, { threadId, ...extra });
+      if (failure) { failed += 1; reason = failure; }
+    }
+    refreshRemoteDevice(device);
+    if (failed) setError(`${failed} ${failed === 1 ? "thread" : "threads"} couldn't be ${done}. ${reason}`);
+  };
   const archiveAll = () => {
     const ids = shown.map((thread) => thread.id);
     if (!ids.length || !remote?.workspaceId) return;
-    const workspaceId = remote.workspaceId;
     void confirmDialog(`Archive ${ids.length} ${kind === "subagents" ? "sub-agent" : "main"} thread${ids.length === 1 ? "" : "s"} on ${name}?\n\nYou can restore them from Archived.`).then((confirmed) => {
       if (!confirmed) return;
-      void hostWrite(device, name, "thread.archiveMany", { workspaceId, revision, threadIds: ids }).then((outcome) => { if (outcome.ok) refreshRemoteDevice(device); else setError(outcome.message); });
+      void eachThread(ids, "thread.archive", "archived");
     });
   };
   const deleteAllArchived = () => {
     const ids = archived.map((thread) => thread.id);
     if (!ids.length || !remote?.workspaceId) return;
-    const workspaceId = remote.workspaceId;
     void confirmDialog(`Permanently delete all ${ids.length} archived threads on ${name}?\n\nThis can't be undone.`).then((confirmed) => {
       if (!confirmed) return;
-      void hostWrite(device, name, "thread.deleteMany", { workspaceId, revision, threadIds: ids, confirmed: true }).then((outcome) => { if (outcome.ok) refreshRemoteDevice(device); else setError(outcome.message); });
+      void eachThread(ids, "thread.delete", "deleted", { confirmed: true });
     });
   };
   const manageReason = addAllowed ? undefined : `On ${name}, turn on Work with all projects and Manage projects for this device in Settings → Connections → Devices.`;
@@ -752,11 +760,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
     if (!workspaceId) return;
     // A started thread keeps its provider, as it does here: another one means a new thread.
     if (threadId && change.provider && change.provider !== thread?.provider) {
-      const target = newThreadTargetFor(workspaceId);
-      const key = newThreadDraftKey(device, target);
-      setDraftChoice((current) => ({ ...current, [key]: { provider: change.provider } }));
-      setNewThreadTarget(device, target);
-      void requestDraft(key, { provider: change.provider });
+      void handOff(change.provider);
       return;
     }
     if (threadId) {
@@ -771,11 +775,28 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
     setDraftChoice((current) => ({ ...current, [draftKey]: { ...current[draftKey], ...change } }));
     void requestDraft(draftKey, { ...draftChoice[draftKey], ...change });
   };
+  /** The same handoff as local: a confirmation, then a new thread with a briefing to edit and send. */
+  const handOff = async (provider: Provider) => {
+    if (!workspaceId || !threadId) return;
+    if (running) { setNotice("Stop the running task before starting a thread with another provider."); return; }
+    if (context?.execution?.isolated) { setNotice("Provider handoff is unavailable while this conversation owns an isolated worktree. Apply or merge its changes, remove the worktree, then continue in the shared project."); return; }
+    if (!await confirmDialog(`Hand off this thread on ${name}?\n\nA separate thread starts in the same workspace, with a briefing of this conversation to review before you send it.`)) return;
+    let prompt: string | undefined;
+    try { prompt = hostRows(await hostRead<WireParityReadResult>(device, "thread.handoff.read", { ...parityTarget, provider }))[0]?.prompt; }
+    catch { setNotice(`Mythra Code couldn't prepare the handoff on ${name}. Try again.`); return; }
+    if (!prompt) { setNotice(`${name} didn't prepare a handoff for this thread.`); return; }
+    const target = newThreadTargetFor(workspaceId);
+    const key = newThreadDraftKey(device, target);
+    setDraftChoice((current) => ({ ...current, [key]: { provider } }));
+    seedComposerDraft(key, prompt);
+    setNewThreadTarget(device, target);
+    void requestDraft(key, { provider });
+  };
   const copyWorktreePath = () => {
     hostRead<{ worktree?: { path?: string } | null }>(device, "worktree.status", parityTarget).then((result) => {
       if (result?.worktree?.path) void navigator.clipboard.writeText(result.worktree.path).catch(() => undefined);
       else setNotice(`${name} didn't share this path.`);
-    }, () => setNotice(`The worktree's path on ${name} can't be copied from here yet.`));
+    }, () => setNotice(`Mythra Code couldn't read the worktree's path on ${name}. Try again.`));
   };
   const timelineEnvironment = useMemo<TimelineEnvironment>(() => ({
     ...REMOTE_ENVIRONMENT,

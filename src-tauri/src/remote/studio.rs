@@ -144,7 +144,7 @@ fn status(
             "--porcelain=v1",
             "-z",
             "--untracked-files=all",
-            "--ignore-submodules=all",
+            "--ignore-submodules=dirty",
         ],
         2 * 1024 * 1024,
     )?;
@@ -285,21 +285,99 @@ pub(crate) async fn remote_studio_git_diff(
     if !["staged", "unstaged", "untracked"].contains(&area.as_str()) {
         return Err(failed());
     }
-    blocking(move||{let root=Anchor::open(Path::new(&root))?;let read=crate::project_git::GitReadOperation::new();git_root(&read,&root)?;let current=status(&read,&root,2000)?;let row=current["rows"].as_array().and_then(|rows|rows.iter().find(|row|row["path"]==path&&row["area"]==area)).ok_or_else(failed)?;
-        let original=row.get("originalPath").and_then(Value::as_str).unwrap_or(&path);
-        let (before,old_truncated)=if area=="untracked"{(Vec::new(),false)}else{blob(&read,&root,original,area!="staged")?};
-        let (after,new_truncated)=if area=="staged"{blob(&read,&root,&path,true)?}else{
-            // A deletion is a Git-owned fact, not any arbitrary failed open.
-            if row["status"].as_str().is_some_and(|status|status.contains('D')){(Vec::new(),false)}else{root.read(&path,128*1024)?}
-        };
-        let binary=before.contains(&0)||after.contains(&0)||std::str::from_utf8(&before).is_err()||std::str::from_utf8(&after).is_err();let mut truncated=old_truncated||new_truncated;
-        let mut text=String::new();if !binary{let old=std::str::from_utf8(&before).map_err(|_|failed())?;let new=std::str::from_utf8(&after).map_err(|_|failed())?;
-            // Full-file unified hunks avoid invoking external diff/textconv or
-            // Git's racy worktree/filter reads. Both inputs are already bounded.
-            if old!=new || original!=path {text=format!("diff --git a/{original} b/{path}\n--- a/{original}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n",old.lines().count(),new.lines().count());
-            for (prefix,body)in[("-",old),("+",new)]{for line in body.lines(){if text.len()+line.len()+2>128*1024{truncated=true;break;}text.push_str(prefix);text.push_str(line);text.push('\n');}if !body.is_empty()&&!body.ends_with('\n'){text.push_str("\\ No newline at end of file\n");}}}
-        }root.validate()?;Ok(json!({"path":path,"area":area,"text":text,"binary":binary,"truncated":truncated}))}).await
+    blocking(move || git_diff(&root, &path, &area)).await
 }
+fn git_diff(root: &str, path: &str, area: &str) -> Result<Value, String> {
+    let root = Anchor::open(Path::new(&root))?;
+    let read = crate::project_git::GitReadOperation::new();
+    git_root(&read, &root)?;
+    let current = status(&read, &root, 2000)?;
+    let row = current["rows"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row["path"] == path && row["area"] == area)
+        })
+        .ok_or_else(failed)?;
+    let original = row
+        .get("originalPath")
+        .and_then(Value::as_str)
+        .unwrap_or(path);
+    let (entry, _) = git(
+        &read,
+        &root,
+        &["ls-files", "--stage", "-z", "--", path],
+        16384,
+    )?;
+    if entry.starts_with(b"160000 ") {
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--submodule=short",
+            "--ignore-submodules=dirty",
+        ];
+        if area == "staged" {
+            args.push("--cached");
+        }
+        args.extend(["--", path]);
+        let (bytes, truncated) = git(&read, &root, &args, 128 * 1024)?;
+        root.validate()?;
+        return Ok(
+            json!({"path":path,"area":area,"text":String::from_utf8_lossy(&bytes),"binary":false,"truncated":truncated}),
+        );
+    }
+    let (before, old_truncated) = if area == "untracked" {
+        (Vec::new(), false)
+    } else {
+        blob(&read, &root, original, area != "staged")?
+    };
+    let (after, new_truncated) = if area == "staged" {
+        blob(&read, &root, &path, true)?
+    } else {
+        // A deletion is a Git-owned fact, not any arbitrary failed open.
+        if row["status"]
+            .as_str()
+            .is_some_and(|status| status.contains('D'))
+        {
+            (Vec::new(), false)
+        } else {
+            root.read(path, 128 * 1024)?
+        }
+    };
+    let binary = before.contains(&0)
+        || after.contains(&0)
+        || std::str::from_utf8(&before).is_err()
+        || std::str::from_utf8(&after).is_err();
+    let mut truncated = old_truncated || new_truncated;
+    let mut text = String::new();
+    if !binary {
+        let old = std::str::from_utf8(&before).map_err(|_| failed())?;
+        let new = std::str::from_utf8(&after).map_err(|_| failed())?;
+        // Full-file unified hunks avoid invoking external diff/textconv or
+        // Git's racy worktree/filter reads. Both inputs are already bounded.
+        if old != new || original != path {
+            text=format!("diff --git a/{original} b/{path}\n--- a/{original}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n",old.lines().count(),new.lines().count());
+            for (prefix, body) in [("-", old), ("+", new)] {
+                for line in body.lines() {
+                    if text.len() + line.len() + 2 > 128 * 1024 {
+                        truncated = true;
+                        break;
+                    }
+                    text.push_str(prefix);
+                    text.push_str(line);
+                    text.push('\n');
+                }
+                if !body.is_empty() && !body.ends_with('\n') {
+                    text.push_str("\\ No newline at end of file\n");
+                }
+            }
+        }
+    }
+    root.validate()?;
+    Ok(json!({"path":path,"area":area,"text":text,"binary":binary,"truncated":truncated}))
+}
+
 pub(super) fn check_scope(
     state: &RemoteState,
     generation: u64,
@@ -407,6 +485,25 @@ pub(crate) async fn remote_studio_file_preview(
     .await
 }
 
+/// Identity checks around a status read must not scan/copy the full Git index
+/// and branch list twice. Write previews still use the full guarded snapshot.
+#[tauri::command]
+pub(crate) async fn remote_studio_git_identity(
+    window: WebviewWindow,
+    root: String,
+) -> Result<Value, String> {
+    main(&window)?;
+    blocking(move || git_identity(&root)).await
+}
+fn git_identity(path: &str) -> Result<Value, String> {
+    let root = Anchor::open(Path::new(path))?;
+    let read = crate::project_git::GitReadOperation::new();
+    git_root(&read, &root)?;
+    let (head, branch) = super::safe_git::live_head_identity(&root.git_cwd())?;
+    root.validate()?;
+    Ok(json!({"headOid":head,"branch":branch,"isRoot":true}))
+}
+
 /// Host-only baselines for remote writes. Never call the unrestricted local
 /// snapshot/metadata commands from a View request.
 #[tauri::command]
@@ -501,10 +598,95 @@ mod baseline_tests {
             assert_eq!(snapshot["upstreamRemote"], "origin");
             assert_eq!(snapshot["ahead"], 1);
             assert_eq!(snapshot["behind"], 0);
+            let identity = git_identity(path.to_str().unwrap()).unwrap();
+            assert_eq!(identity["branch"], snapshot["branch"]);
+            assert_eq!(identity["headOid"], snapshot["headOid"]);
             let metadata = git_baseline(path.to_str().unwrap(), true).unwrap();
             assert_eq!(metadata["repository"], "native-test/example");
             assert!(!marker.exists());
         }
         std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod performance_measurement {
+    use super::*;
+    /// Opt-in real-data measurement. Never writes the selected repository.
+    #[test]
+    #[ignore]
+    fn real_repository_remote_git_latency() {
+        let path = std::env::var("MYTHRA_GIT_BENCH_ROOT").expect("set MYTHRA_GIT_BENCH_ROOT");
+        let diff = std::env::var("MYTHRA_GIT_BENCH_DIFF")
+            .unwrap_or_else(|_| "src-tauri/src/remote/studio.rs".into());
+        let mut identity_totals = Vec::new();
+        let mut totals = Vec::new();
+        let mut statuses = Vec::new();
+        let mut diffs = Vec::new();
+        let mut baselines = Vec::new();
+        for _ in 0..10 {
+            let start = Instant::now();
+            let first = {
+                let _p = super::super::safe_git::enter();
+                let t = Instant::now();
+                let v = git_baseline(&path, false).unwrap();
+                baselines.push(t.elapsed().as_secs_f64() * 1000.);
+                v
+            };
+            {
+                let _p = super::super::safe_git::enter();
+                let t = Instant::now();
+                let root = Anchor::open(Path::new(&path)).unwrap();
+                let read = crate::project_git::GitReadOperation::new();
+                git_root(&read, &root).unwrap();
+                let _v = status(&read, &root, 200).unwrap();
+                statuses.push(t.elapsed().as_secs_f64() * 1000.);
+            }
+            let last = {
+                let _p = super::super::safe_git::enter();
+                git_baseline(&path, false).unwrap()
+            };
+            assert_eq!(first["headOid"], last["headOid"]);
+            totals.push(start.elapsed().as_secs_f64() * 1000.);
+            {
+                let _p = super::super::safe_git::enter();
+                let t = Instant::now();
+                let _v = git_diff(&path, &diff, "unstaged").unwrap();
+                diffs.push(t.elapsed().as_secs_f64() * 1000.);
+            }
+        }
+        for _ in 0..10 {
+            let start = Instant::now();
+            let before = {
+                let _p = super::super::safe_git::enter();
+                git_identity(&path).unwrap()
+            };
+            {
+                let _p = super::super::safe_git::enter();
+                let root = Anchor::open(Path::new(&path)).unwrap();
+                let read = crate::project_git::GitReadOperation::new();
+                git_root(&read, &root).unwrap();
+                status(&read, &root, 200).unwrap();
+            }
+            let after = {
+                let _p = super::super::safe_git::enter();
+                git_identity(&path).unwrap()
+            };
+            assert_eq!(before, after);
+            identity_totals.push(start.elapsed().as_secs_f64() * 1000.);
+        }
+        for (name, mut values) in [
+            ("wire_status_native_sequence", totals),
+            ("identity_status_sequence", identity_totals),
+            ("studio_status", statuses),
+            ("guarded_baseline", baselines),
+            ("studio_diff", diffs),
+        ] {
+            values.sort_by(f64::total_cmp);
+            println!(
+                "{name}: median_ms={:.2} min_ms={:.2} max_ms={:.2}",
+                values[5], values[0], values[9]
+            );
+        }
     }
 }

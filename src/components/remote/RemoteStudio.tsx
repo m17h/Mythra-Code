@@ -12,6 +12,7 @@ import { useRemoteCommand } from "./useRemoteCommand";
 import { AgentsPanel, CheckpointsPanel, Empty, PanelHeader, StudioDockFrame, TerminalPanelHost, WorktreesPanel, type AgentRecord, type StudioTab } from "../StudioDock";
 import { confirmDialog } from "../../lib/confirmDialog";
 import type { CheckpointRecord, CheckpointRestoreTarget } from "../../lib/checkpoints";
+import type { ProjectCheckResult } from "../../lib/projectChecks";
 import { parseDiffSections } from "../../lib/gitDiff";
 import type { GitChangeArea } from "../../lib/gitInspection";
 import { joinPath } from "../../lib/paths";
@@ -93,7 +94,13 @@ function Reason({ text }: { text: string | null | undefined }) {
 
 function HostChanges({ device, name, target, context, onClose }: { device: string; name: string; target: StudioTarget; context: HostContextResult | undefined; onClose: () => void }) {
   const connected = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.state === "connected");
-  const { handle: checking, set: setChecking } = useRemoteCommand(device, "checks.status", target, connected);
+  const { handle: checking, latest: lastCheck, set: setChecking } = useRemoteCommand(device, "checks.status", target, connected);
+  // The host's last finished run, in the shape the real control shows.
+  const checkResult = useMemo<ProjectCheckResult | null>(() => !lastCheck?.command || !lastCheck.updatedAt ? null : {
+    id: lastCheck.id, projectId: target.workspaceId, threadId: target.threadId ?? null, cwd: "", command: lastCheck.command, head: null,
+    startedAt: lastCheck.createdAt ?? lastCheck.updatedAt, finishedAt: lastCheck.updatedAt, exitCode: lastCheck.value ?? null, output: lastCheck.text ?? "", outputTruncated: false,
+    status: lastCheck.status === "interrupted" ? "cancelled" : lastCheck.status === "completed" && !lastCheck.value ? "passed" : lastCheck.status === "uncertain" ? "error" : "failed",
+  }, [lastCheck, target.threadId, target.workspaceId]);
   const [notice, setNotice] = useState("");
   const canCheck = Boolean(context?.capabilities.terminal);
   const checkRevision = { workspaceId: target.workspaceId, ...(target.threadId ? { threadId: target.threadId } : {}), revision: context?.revision ?? "" };
@@ -114,7 +121,7 @@ function HostChanges({ device, name, target, context, onClose }: { device: strin
     <PanelHeader icon={SearchCode} title="Review center" subtitle={`Inspect changes on ${name}`} onClose={onClose} />
     <div className="studio-actions wrap review-actions">
       <button onClick={reload}><RefreshCw size={13} /> Refresh</button>
-      <ChecksControl command={context?.check?.command} running={Boolean(checking)} result={null} onAddFeedback={noop}
+      <ChecksControl command={context?.check?.command} running={Boolean(checking)} result={checkResult} onAddFeedback={() => { setNotice(`Feedback notes stay on the device they were written on, so these results can't be added on ${name}.`); return false; }}
         disabledReason={canCheck ? undefined : accessReason(name, "run checks", "Terminal")}
         onRun={() => { void hostWrite<{ processHandle?: string }>(device, name, "checks.start", checkRevision).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(outcome.result?.processHandle ?? "running"); }); }}
         onStop={() => { if (checking) void hostWrite(device, name, "checks.stop", { ...checkRevision, processHandle: checking }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) setChecking(null); }); }}
@@ -211,7 +218,21 @@ function HostGit({ device, name, target, revision, allowed, view, route, onView,
     setOutput(outcome.ok ? `The shared project on ${name} is updated to ${base}.` : outcome.message);
     if (!outcome.ok) throw new Error(outcome.message);
   }, [allowed, device, name, reason, target]);
-  const { onAttach, linked, pullRequest } = threadPullRequest;
+  const { onAttach: attachHere, onDetach: detachHere, linked, pullRequest } = threadPullRequest;
+  /** The link belongs to the thread on the host, so it outlasts this session. */
+  const saveLink = useCallback((reference: string | null) => {
+    void hostWrite(device, name, "thread.pullRequest.set", { ...target, revision: revisionRef.current, reference }).then((outcome) => {
+      if (outcome.ok) reloadGitHub(); else setOutput(outcome.message);
+    });
+  }, [device, name, reloadGitHub, target]);
+  const onAttach = attachHere;
+  const onDetach = useCallback(() => { detachHere(); saveLink(null); }, [detachHere, saveLink]);
+  // Attach and create both end here, and a saved link that came from the host doesn't go back.
+  const linkedUrl = linked ? pullRequest?.url ?? null : null;
+  const savedNumber = github?.savedLink?.number, linkedNumberNow = linked ? pullRequest?.number : undefined;
+  useEffect(() => {
+    if (linkedUrl && github && linkedNumberNow !== savedNumber) saveLink(linkedUrl);
+  }, [github, linkedNumberNow, linkedUrl, saveLink, savedNumber]);
   const linkedRepository = linked ? pullRequest?.repository ?? null : null, linkedNumber = linked ? pullRequest?.number ?? null : null;
   const projectAccess = useMemo<ProjectPullRequestAccess>(() => ({
     ...pullRequests, cwd: label, projectPath: label, repository: github?.repository ?? null, authenticated: github?.authenticated === true,
@@ -263,10 +284,10 @@ function HostGit({ device, name, target, revision, allowed, view, route, onView,
   return <>
     <PanelHeader icon={FolderGit2} title="Git" subtitle={`Changes on ${name}`} onClose={onClose} />
     <GitPanel repositoryState={repository?.repository === false ? "absent" : "ready"} gitInitializing={busy} gitOutput={output} gitCommitSuccess="" gitCommitBusy={busy} githubAuthenticated={github?.authenticated === true}
-      githubRepoStatus={github?.repository ? { isRepo: true, repository: github.repository, ahead: github.context?.ahead ?? 0, behind: github.context?.behind ?? 0 } : null}
+      githubRepoStatus={github ? { isRepo: true, repository: github.repository, branch: github.branch, upstream: github.upstream, ahead: github.ahead, behind: github.behind } : null}
       hasPullRequestWorkflow pullRequests={projectAccess}
       pullRequestPanel={target.threadId && github?.repository && github.authenticated ? <>
-        <ThreadPullRequestPanel {...threadPullRequest} threadId={`${device}/${target.threadId}`} isolated={github.isolated} mutationBlockedReason={blocked}
+        <ThreadPullRequestPanel {...threadPullRequest} onDetach={onDetach} threadId={`${device}/${target.threadId}`} isolated={github.isolated} mutationBlockedReason={blocked}
           onUpdateLocal={threadPullRequest.pullRequest?.state === "MERGED" ? () => updateLocal(threadPullRequest.pullRequest!.baseRefName) : undefined}
           onOpenWorktrees={() => onTab("worktrees")} onOpenGitHubSettings={signInHere} />
         {linked && pullRequest && <RemotePullRequestActivity pullRequests={pullRequests} pullRequest={pullRequest} allowed={allowed} reason={reason} name={name} />}
@@ -295,7 +316,7 @@ function HostCheckpoints({ device, name, target, revision, threadOpen, allowed, 
     });
   };
   return <>
-    <Reason text={failed ? `Checkpoints from ${name} aren't available here yet.` : notice} />
+    <Reason text={failed ? `Mythra Code couldn't read checkpoints on ${name}. Try again.` : notice} />
     <CheckpointsPanel activeThread={threadOpen} checkpoints={checkpoints} checkpointHead={data?.head} checkpointBusyId={busy} checkpointPreview={preview} onClose={onClose}
       onCheckpoint={() => run("manual", "checkpoint.create", { checkpointId: crypto.randomUUID(), label: "Manual checkpoint" })}
       onFork={onFork}
@@ -351,7 +372,7 @@ function HostWorktrees({ device, name, target, revision, allowed, onReview, onCl
     }, () => { setBusy(false); setNotice(`Mythra Code couldn't check this worktree on ${name}. Refresh and try again.`); });
   };
   return <>
-    <Reason text={failed ? `Worktrees on ${name} aren't available here yet.` : !allowed ? accessReason(name, "copy or merge worktree changes", "Terminal") : notice} />
+    <Reason text={failed ? `Mythra Code couldn't read worktrees on ${name}. Try again.` : !allowed ? accessReason(name, "copy or merge worktree changes", "Terminal") : notice} />
     <WorktreesPanel worktree={worktree} worktreeStatus={data?.status ?? undefined} worktreeBusy={busy} gitActionsReadOnly={!allowed} revealLabel="Copy path" onClose={onClose}
       onWorktreeReview={onReview} onWorktreeApply={() => run("worktree.apply", `Copy this worktree's changes into the shared project on ${name}?`)} onWorktreeMerge={() => run("worktree.merge", `Merge this branch into the shared project on ${name}?`)}
       onWorktreeReveal={() => { if (worktree) void navigator.clipboard.writeText(worktree.path).catch(noop); }}
@@ -365,21 +386,33 @@ function HostAgents({ device, name, target, revision, onClose }: { device: strin
   const { data, failed, reload } = useHostData(target.threadId ? () => hostRead<AgentsListResult>(device, "agents.list", { ...target }) : null, panelKey(device, "agents.list", target));
   const [notice, setNotice] = useState("");
   return <>
-    <Reason text={failed ? `Agent details from ${name} aren't available here yet.` : notice} />
+    <Reason text={failed ? `Mythra Code couldn't read agent details on ${name}. Try again.` : notice} />
     <AgentsPanel agents={(Array.isArray(data?.agents) ? data.agents : []) as AgentRecord[]} onClose={onClose} onOpenAgent={(id) => selectRemoteThread(device, id)}
       onStopAgent={(id) => { void hostWrite(device, name, "agents.stop", { ...target, revision, agentId: id }).then((outcome) => { setNotice(outcome.message); if (outcome.ok) reload(); }); }} />
   </>;
 }
 
-function HostUsage({ context, name, onClose }: { context: HostContextResult | undefined; name: string; onClose: () => void }) {
+function HostUsage({ device, target, context, name, provider, busy, onClose }: { device: string; target: StudioTarget | null; context: HostContextResult | undefined; name: string; provider?: string; busy: boolean; onClose: () => void }) {
+  const [notice, setNotice] = useState("");
+  const [compacting, setCompacting] = useState(false);
+  // Claude and Cursor manage their own context, here as they do locally.
+  const canCompact = Boolean(target?.threadId && context?.capabilities) && provider !== "claude" && provider !== "cursor";
+  const compact = () => {
+    if (!target) return;
+    setCompacting(true);
+    setNotice("");
+    void hostWrite(device, name, "thread.compact", { ...target, revision: context?.revision ?? "" }).then((outcome) => { setCompacting(false); setNotice(outcome.message); });
+  };
   return <>
     <PanelHeader icon={Gauge} title="Thread usage" subtitle={`As reported by ${name}`} onClose={onClose} />
+    <Reason text={notice} />
     {context?.usage ? <div className="metric-grid">
       <div><strong>{context.usage.totalTokens.toLocaleString()}</strong><span>Total tokens</span></div>
       <div><strong>{context.usage.inputTokens.toLocaleString()}</strong><span>Input</span></div>
       <div><strong>{context.usage.outputTokens.toLocaleString()}</strong><span>Output</span></div>
       <div><strong>{context.usage.cachedInputTokens.toLocaleString()}</strong><span>Cached</span></div>
     </div> : <Empty icon={Gauge} title="No usage yet" text="Usage appears after a turn finishes." />}
+    {canCompact && <div className="studio-actions wrap"><button type="button" disabled={busy || compacting} title="Summarize earlier turns to free up context" onClick={compact}>Compact context</button></div>}
   </>;
 }
 
@@ -400,6 +433,8 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
   const workspaceId = useRemoteStore((state) => state.devices[device]?.workspaceId ?? null);
   const threadId = useRemoteStore((state) => state.devices[device]?.threadId ?? undefined);
   const workspaceName = useRemoteStore((state) => state.devices[device]?.workspaces.find((entry) => entry.id === workspaceId)?.name);
+  const threadProvider = useRemoteStore((state) => state.devices[device]?.lists.get(workspaceId ?? "")?.threads.find((entry) => entry.id === threadId)?.provider);
+  const threadBusy = useRemoteStore((state) => { const status = state.devices[device]?.timelines.get(threadId ?? "")?.status; return status === "running" || status === "starting"; });
   const name = useRemoteDevices((state) => state.snapshot?.devices.find((entry) => entry.fingerprint === device)?.name) ?? "the other device";
   const context = useRemoteContext((state) => workspaceId ? state.contexts[device]?.get(remoteContextKey(workspaceId, threadId)) ?? state.contexts[device]?.get(remoteContextKey(workspaceId)) : undefined);
   const target = useMemo<StudioTarget | null>(() => workspaceId ? { workspaceId, ...(threadId ? { threadId } : {}) } : null, [threadId, workspaceId]);
@@ -423,7 +458,7 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
     {target && tab === "checkpoints" && <HostCheckpoints key={targetKey} device={device} name={name} target={target} revision={revision} threadOpen={Boolean(threadId)} allowed={Boolean(capabilities?.checkpointRestore && capabilities.terminal)} onFork={onFork} onClose={onClose} />}
     {target && tab === "worktrees" && <HostWorktrees key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.terminal)} onReview={() => onTab("review")} onClose={onClose} />}
     {target && tab === "agents" && <HostAgents key={targetKey} device={device} name={name} target={target} revision={revision} onClose={onClose} />}
-    {tab === "usage" && <HostUsage context={context} name={name} onClose={onClose} />}
+    {tab === "usage" && <HostUsage device={device} target={target} context={context} name={name} provider={threadProvider} busy={threadBusy} onClose={onClose} />}
     {tab === "tools" && <>
       <PanelHeader icon={Wrench} title="Tools & skills" subtitle={`Available on ${name}`} onClose={onClose} />
       <div className="studio-list">{context?.skills.map((skill) => <div className="studio-list-row" key={skill.id}>

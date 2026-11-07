@@ -14,13 +14,17 @@ import { createWorkflowExecution } from "./workflowExecution";
 import { markRemoteEngineRetiring, remoteEngineOwner, remoteEngineStopped } from "./engineOwners";
 import { nativeRefusal } from "./nativeActions";
 import { commitHostState, operationStamp } from "./stateCommit";
+import { scheduleNewPrompt } from "./scheduledStart";
 import { createHostQueueActions } from "./queueActions";
 import { HostReadError, idArg } from "./scope";
+import { executeThreadRow, type ThreadRowLifecycle } from "./threadRows";
+import { resolvePullRequestLink } from "./githubActions";
+import { nativeHostTransport } from "./bridge";
 import type { WireParityRow } from "../wire";
 import { getOpenRouterCredits, rpc } from "../../codex";
 
 /** Concrete shared-state adapters wrap App's domain/lifecycle extraction. */
-export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void, isCurrent: () => boolean = () => true, getRunner?: () => import("./workTypes").RemoteTurnRunner) {
+export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void, isCurrent: () => boolean = () => true, getRunner?: () => import("./workTypes").RemoteTurnRunner, getLifecycle?: () => ThreadRowLifecycle | undefined, steerQueued?: HostParityActions["execute"]) {
   const queue = createHostQueueActions(pump);
   const commands = createHostCommandActions(sources, isCurrent);
   const workflows = new Map<string, ReturnType<typeof createWorkflowExecution>>();
@@ -83,8 +87,33 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       return fallback.read(op, args, context);
     },
     async execute(op, args, operation) {
+      // The old App callbacks issue untagged provider stops/blind state saves.
+      // A journal admission is not a commit-time grant or ownership fence.
+      if (op === "agents.stop" || op === "checkpoint.accept") throw new HostReadError("unsupported", op === "agents.stop"
+        ? "Use the exact conversation Stop control until child cutoff ownership is attached."
+        : "This device has not attached stamped checkpoint acceptance yet.");
+      if (op === "prompt.scheduleNew") return scheduleNewPrompt(args, operation, queue.execute);
+      if (op === "queue.steer") {
+        if (!steerQueued) throw new HostReadError("unsupported", "Queued steering is not attached.");
+        return steerQueued(op, args, operation);
+      }
       // A batch root is not a receipt for several independent provider writes.
       // Do not bypass the typed single-thread boundary via App's old loop.
+      if (op === "thread.pullRequest.set") {
+        const context = operation.context, id = context.activeThread?.id, workspace = context.activeWorkspace;
+        if (!id || !workspace) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
+        const link = args.reference === null ? null : await resolvePullRequestLink({ ...operation, workspaceId: workspace.id, root: sources.executionPathFor(id, workspace.path) }, String(args.reference), nativeHostTransport);
+        await commitHostState(operation, ["kiwi.threadPullRequests"], (rows) => {
+          const { [id]: _replaced, ...rest } = (rows[0].value && typeof rows[0].value === "object" ? rows[0].value : {}) as Record<string, unknown>;
+          return { "kiwi.threadPullRequests": link ? { ...rest, [id]: link } : rest };
+        });
+        return { state: "accepted", threadId: id };
+      }
+      if (op === "thread.compact" || op === "thread.rollback") {
+        const lifecycle = getLifecycle?.(), threadId = operation.context.activeThread?.id;
+        if (!lifecycle || !threadId) throw new HostReadError("unsupported", "This device can't change this conversation's history yet.");
+        return executeThreadRow(op, { ...args, threadId }, operation, sources, lifecycle);
+      }
       if (op === "thread.archiveMany" || op === "thread.deleteMany") throw new HostReadError("unsupported", "Change these conversations individually until this device supports stamped batches.");
       if (op === "discovery.settings.set") { await setHostDiscoverySettings(sources, args, operation); return { state: "accepted" }; }
       if (op === "run.start" || op === "run.stop" || op === "checks.start" || op === "checks.stop") return commands.execute(op, args, operation);

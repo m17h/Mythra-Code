@@ -421,6 +421,7 @@ async fn execute(
             safe[key] = json!(value);
         }
     }
+    for key in ["completedThreadIds","remainingThreadIds"]{if let Some(ids)=result.get(key).and_then(Value::as_array).filter(|ids|ids.len()<=100&&ids.iter().all(|id|id.as_str().is_some_and(|s|!s.is_empty()&&s.len()<=256))){safe[key]=json!(ids);}}
     for key in ["nextOffset","size"] {if let Some(n)=result.get(key).and_then(Value::as_u64).filter(|n|*n<=50*1024*1024){safe[key]=json!(n);}}
     if op=="draft.settings.set"{if let Some(settings)=result.get("settings").filter(|v|v.is_object()){
         let mut check=settings.clone();check["opId"]=json!(id);check["opSeq"]=json!(seq);check["workspaceId"]=result.get("workspaceId").cloned().unwrap_or(json!("draft"));

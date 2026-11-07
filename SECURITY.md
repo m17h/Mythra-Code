@@ -29,4 +29,6 @@ You should receive an acknowledgement within a few days. Because Mythra Code is 
 
 In scope: pairing or code-comparison bypass, a device exceeding its grant, a viewer-supplied path or command reaching the host, preview tunnels reaching anything but their one port, and host data or secrets leaving outside the allowlisted wire shapes.
 
+The nearby-device threat model assumes an attacker cannot already change files on the host. Attacks that require replacing the host's project files or Git metadata are outside this boundary: View access cannot write those files, while Work can ask a model to run commands under the host's permissions and the device's granted capabilities. This does not excuse a network peer bypassing pairing, approvals or grants, or turning a View request into a write or command; those remain security issues.
+
 Not vulnerabilities: a device with Work doing what its grant allows, a model reaching outside a granted project at a permission the grant allows, and the computer's `.local` hostname being visible on the network.

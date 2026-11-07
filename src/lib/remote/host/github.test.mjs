@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { HostGitHub, isGitHubRead, isGitHubWrite, wirePullRequest } from "./githubActions.ts";
+import { HostGitHub, isGitHubRead, isGitHubWrite, resolvePullRequestLink, wirePullRequest } from "./githubActions.ts";
 import { isDomainMutation, isDomainRead } from "./domainActions.ts";
 
 const HEAD = "a".repeat(40), LATER = "b".repeat(40), OP = "op-1";
@@ -70,6 +70,13 @@ test("a project with no GitHub repository says so instead of guessing", async ()
   assert.equal(access.repository, null);
   assert.equal(calls.some((entry) => entry.command === "remote_github_read"), false);
   await assert.rejects(github.read(request("github.pr.view"), { number: 7 }, target, fine), { code: "unsupported" });
+});
+
+test("the Git panel learns the branch and its tracking, never the remote address", async () => {
+  const { github } = host({ repo: { repository: "me/app", branch: "fix", upstream: "origin/fix", ahead: 2, behind: 1, remoteUrl: "https://token@github.com/me/app" } });
+  const access = await github.read(request("github.pr.context"), {}, target, fine);
+  assert.deepEqual([access.branch, access.upstream, access.ahead, access.behind], ["fix", "origin/fix", 2, 1]);
+  assert.equal(JSON.stringify(access).includes("token@"), false);
 });
 
 test("comments and checks stay inside their shapes", async () => {
@@ -147,4 +154,17 @@ test("what the host can archive, and the link it saved, travel with the context"
   assert.equal(access.canArchive, true);
   assert.equal(access.savedLink, null);
   assert.equal((await new HostGitHub(1, transport).read(request("github.pr.context"), {}, target, fine)).canArchive, false);
+});
+
+test("a saved link is built by the host, for this project's repository only", async () => {
+  const { calls, github } = host();
+  github.dispose();
+  const transport = { invoke: async (command, args) => { calls.push({ command, args }); return command === "remote_studio_git_metadata" ? { repository: "me/app" } : pullRequest; } };
+  const operation = { generation: 1, identity: { device: "d1" }, grantRevision: 3, workspaceId: "w", root: "/host/project" };
+  const link = await resolvePullRequestLink(operation, "#7", transport);
+  assert.deepEqual([link.repository, link.number, link.url], ["me/app", 7, pullRequest.url]);
+  assert.equal(JSON.stringify(link.snapshot).includes("a@b.c"), false, "only the allowlisted fields are kept");
+  await assert.rejects(resolvePullRequestLink(operation, "https://github.com/them/other/pull/7", transport), { code: "unsupported" });
+  await assert.rejects(resolvePullRequestLink(operation, "not a reference", transport), { code: "unsupported" });
+  await assert.rejects(resolvePullRequestLink(operation, "#7", { invoke: async () => ({ repository: null }) }), { code: "unsupported" });
 });

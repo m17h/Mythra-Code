@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS } from "../../appConfig.ts";
 import { resetTaskStore, useTaskStore } from "../../taskStore.ts";
 import { loadStored, deferUntilRemoteStateAdopted } from "../../storage.ts";
 import { createRemoteWork } from "./workActions.ts";
-import { threadRowKeys } from "./threadRows.ts";
+import { executeThreadRow, threadRowKeys } from "./threadRows.ts";
 import { createThreadRowLifecycle, threadRowBlockedReason } from "./threadLifecycle.ts";
 import { reconcileRemoteStateCommits } from "./stateCommit.ts";
 import { createHostEngineAdapters } from "./engineAdapters.ts";
@@ -23,6 +23,8 @@ function fixture(op = "thread.rename", provider = "openai", options = {}) {
     "kiwi.threadSubagentSettings": {}, "kiwi.threadExecutionPreferences": {}, "kiwi.pinnedThreads": [id, "other"],
     "kiwi.queuedTurns": { [id]: [{ id: "queue", threadId: id, text: "old", attachments: [], createdAt: 1, status: "queued" }], other: [] },
     "kiwi.parentRuns": {}, "kiwi.checkpoints": [], "kiwi.checkpointHeads": {}, "kiwi.turnDurations": {}, "kiwi.threadPullRequests": {},
+    "kiwi.childAgentPolicies": {}, "kiwi.childAgentLinks": {}, "kiwi.nativeAgentLinks": {}, "kiwi.childAgentMailbox": {},
+    "kiwi.threadHandoffs": {}, "kiwi.pendingHandoff": null, "kiwi.agentQuestions": {}, "kiwi.turnContextReceipts": {},
   };
   const evidence = () => ({ deleted: removed, archived, childLinks: {}, nativeLinks: {}, childStartInFlight: false, ...options.evidence?.() });
   const lifecycle = createThreadRowLifecycle({ evidence, reserve(_op, target) { assert.equal(target, id); assert.equal(reserved, false); reserved = true; events.push("reserve"); return {
@@ -55,6 +57,7 @@ function fixture(op = "thread.rename", provider = "openai", options = {}) {
     calls.push({ command, args });
     if (command === "remote_work_grant") return sources.getGrant();
     if (command === "remote_work_receipt") return null;
+    if (command === "runtime_thread_state") return { instance: "runtime", loaded: true };
     if (command === "remote_thread_snapshot") {
       events.push("snapshot"); if (options.missing) throw "Command remote_thread_snapshot not found";
       return { version: 1, rows: options.badRows ? rows().slice(1) : rows() };
@@ -69,23 +72,24 @@ function fixture(op = "thread.rename", provider = "openai", options = {}) {
       if (op === "thread.delete") { delete after["kiwi.knownThreads"][id]; delete after["kiwi.queuedTurns"][id]; after["kiwi.pinnedThreads"] = ["other"]; }
       if (op === "thread.fork") { after["kiwi.knownThreads"].fork = { ...thread, id: "fork", turns: [] }; after["kiwi.threadProjects"].fork = workspace.path; }
       return { result: { opId: args.stamp.opId, state: "accepted", threadId: target, workspaceId: workspace.id },
-        rows: threadRowKeys(op).map((key) => ({ key, value: after[key], revision: 2 })), replayed: Boolean(options.uncertain), thread: op === "thread.fork" ? after["kiwi.knownThreads"].fork : null };
+        rows: threadRowKeys(op).map((key) => ({ key, value: after[key], revision: 2 })), replayed: Boolean(options.uncertain), thread: op === "thread.fork" ? after["kiwi.knownThreads"].fork : op === "thread.rollback" ? { ...thread, turns: [] } : null, ...(options.replyThread ? { thread: options.replyThread } : {}) };
     }
     if (command === "remote_work_recover") return { disposition: "dispatched" };
+    if (command === "runtime_thread_state") return { instance: "runtime" };
     if (command === "state_write" || command === "state_delete") return null;
     assert.fail(`Unexpected native call: ${command}`);
   } } };
   const work = createRemoteWork({ sources, generation: 7, isCurrent: () => true, findThread: (target) => known[target], ensureHydrated: async () => {},
-    getRunner: () => ({}), stop: {}, rows: { threadLifecycle: lifecycle,
+    getRunner: () => ({}), stop: {}, parity: { revision: () => "r", read: async () => ({ revision: "r", rows: [] }), execute: async () => assert.fail("History cannot reach raw App fallback") }, rows: { threadLifecycle: lifecycle,
       archivedThread: () => {
         events.push("archive-read"); const target = archived ? { thread, workspaceId: workspace.id } : null;
         return options.readArchived ? options.readArchived(target) : target;
       },
       execute: async () => assert.fail("Stamped effect must not repeat the raw App sidebar mutation"),
     } });
-  return { work, calls, events, state: () => state, reserved: () => reserved, sources, thread, evidence, setArchived: (value) => { archived = value; },
+  return { work, lifecycle, calls, events, state: () => state, reserved: () => reserved, sources, thread, evidence, setArchived: (value) => { archived = value; },
     async run() { return work.dispatch({ requestId: "request", generation: 7, device, grant, op, opId: `op-${op}`, opSeq: 1,
-      args: { opId: `op-${op}`, opSeq: 1, threadId: id, ...(op === "thread.rename" ? { name: "After" } : {}), ...(op === "thread.delete" ? { confirmed: true } : {}) } }); },
+      args: { opId: `op-${op}`, opSeq: 1, threadId: id, ...(op === "thread.rename" ? { name: "After" } : {}), ...(op === "thread.delete" ? { confirmed: true } : {}), ...(op === "thread.compact" || op === "thread.rollback" ? { workspaceId: "p", revision: "r", ...(op === "thread.rollback" ? { confirmed: true } : {}) } : {}) } }); },
     close() { work.dispose(); globalThis.window = previousWindow; },
   };
 }
@@ -215,4 +219,81 @@ test("bulk rows cannot escape typed provider fencing through the old App parity 
     for (const op of ["thread.archiveMany", "thread.deleteMany"]) await assert.rejects(engines.adapter.execute(op, {}, {}), (reason) => reason.code === "unsupported");
     assert.equal(fellBack, false);
   } finally { engines.dispose(); }
+});
+
+const history = (f, op, provider) => executeThreadRow(op, { threadId: "t", ...(op === "thread.rollback" ? { confirmed: true } : {}) }, { context: { activeThread: f.thread, activeWorkspace: workspace, effectiveSettings: { provider } },
+  generation: 7, grantRevision: 1, identity: { device, opId: `op-${op}`, opSeq: 1 }, assertAllowed() {} }, f.sources, f.lifecycle);
+for (const provider of ["openai", "openrouter", "lmstudio"]) {
+  test(`${provider} compact goes through the stamped effect with nothing to repeat`, async () => {
+    const f = fixture("thread.compact", provider);
+    try {
+      const result = await history(f, "thread.compact", provider);
+      assert.equal(result.state, "accepted");
+      const native = f.calls.find((call) => call.command === "remote_thread_execute").args;
+      assert.deepEqual(native.args, {});
+      assert.deepEqual(native.bookkeeping.rows.map((row) => row.key), threadRowKeys("thread.compact"));
+      assert.ok(f.events.includes("preparation"));
+      assert.equal(f.events.at(-1), "release");
+      assert.equal(f.calls.some((call) => call.command === "codex_rpc" || call.command === "state_write"), false);
+    } finally { f.close(); }
+  });
+  test(`${provider} rollback removes one turn and hands back the provider's history`, async () => {
+    let change;
+    const turns = [{ id: "turn", items: [] }];
+    const f = fixture("thread.rollback", provider, { replyThread: { id: "t", name: "Before", preview: "", cwd: workspace.path, updatedAt: 2, modelProvider: provider, turns }, committed: (value) => { change = value; } });
+    try {
+      await history(f, "thread.rollback", provider);
+      assert.deepEqual(f.calls.find((call) => call.command === "remote_thread_execute").args.args, { confirmed: true, numTurns: 1 });
+      assert.deepEqual(change.history.turns, turns);
+    } finally { f.close(); }
+  });
+}
+for (const provider of ["claude", "cursor"]) for (const op of ["thread.compact", "thread.rollback"]) test(`${provider} ${op} is refused as it is locally`, async () => {
+  const f = fixture(op, provider);
+  try {
+    await assert.rejects(history(f, op, provider), { code: "unsupported" });
+    assert.equal(f.calls.some((call) => call.command === "remote_thread_snapshot"), false);
+  } finally { f.close(); }
+});
+test("history can't change under a thread that's still working", async () => {
+  const f = fixture("thread.rollback", "openai");
+  try {
+    useTaskStore.getState().ensureTask("t", workspace.path);
+    useTaskStore.setState((state) => ({ tasks: { ...state.tasks, t: { ...state.tasks.t, status: "running" } } }));
+    await assert.rejects(history(f, "thread.rollback", "openai"), { code: "busy" });
+    assert.equal(f.calls.some((call) => call.command === "remote_thread_execute"), false);
+  } finally { f.close(); }
+});
+test("delete names the same rows native returns", () => {
+  const keys = threadRowKeys("thread.delete");
+  for (const key of ["kiwi.childAgentPolicies", "kiwi.childAgentLinks", "kiwi.nativeAgentLinks", "kiwi.childAgentMailbox", "kiwi.threadHandoffs", "kiwi.pendingHandoff", "kiwi.agentQuestions", "kiwi.turnContextReceipts"]) assert.ok(keys.includes(key), key);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+for (const provider of ["openai", "openrouter", "lmstudio"]) for (const op of ["thread.compact", "thread.rollback"]) {
+  test(`${provider} ${op}: real parity adapter uses exact native history effect and shared preparation`, async () => {
+    const f = fixture(op, provider);
+    try {
+      const store = useTaskStore.getState(); store.ensureTask("t", workspace.path);
+      useTaskStore.setState((state) => ({ tasks: { ...state.tasks, t: { ...state.tasks.t, unread: true,
+        messages: [{ id: "removed-question", role: "assistant", text: "old", questions: [{ id: "q", title: "Deleted?", options: [] }] }] } } }));
+      const result = await f.run(); assert.equal(result.state, "accepted", JSON.stringify(result));
+      const call = f.calls.find((call) => call.command === "remote_thread_execute");
+      assert.deepEqual(call.args.args, op === "thread.rollback" ? { confirmed: true, numTurns: 1 } : {});
+      assert.ok(f.events.includes("preparation")); assert.equal(useTaskStore.getState().activeThreadId, null);
+      assert.equal(useTaskStore.getState().tasks.t.unread, true);
+      if (op === "thread.rollback") assert.deepEqual(useTaskStore.getState().tasks.t.messages, []);
+    } finally { f.close(); }
+  });
+}
+for (const provider of ["claude", "cursor"]) for (const op of ["thread.compact", "thread.rollback"]) {
+  test(`${provider} ${op}: same provider history restriction as local`, async () => {
+    const f = fixture(op, provider);
+    try { assert.equal((await f.run()).error.code, "unsupported"); assert.equal(f.calls.some((call) => call.command.startsWith("remote_thread_")), false); }
+    finally { f.close(); }
+  });
+}
+test("delete exact bookkeeping includes all eight child/question/handoff cleanup keys", () => {
+  for (const key of ["childAgentPolicies", "childAgentLinks", "nativeAgentLinks", "childAgentMailbox", "threadHandoffs", "pendingHandoff", "agentQuestions", "turnContextReceipts"])
+    assert.ok(threadRowKeys("thread.delete").includes(`kiwi.${key}`));
 });

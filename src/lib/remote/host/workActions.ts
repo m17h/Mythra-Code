@@ -20,6 +20,7 @@ import { DraftTokens, type DraftToken } from "./draftTokens";
 import { validateExecutionSettings } from "./executionPreferences";
 import { createHostSettingsActions } from "./settingsActions";
 import type { AttachmentRecord } from "../../../components/StudioDock";
+import { executeQueueSteer } from "./queueSteer";
 import { createHostEngineAdapters } from "./engineAdapters";
 import { hostDiscoveryPreferences, resolveDiscoverySettings } from "./discoverySettings";
 import { executeTerminal, isTerminalMutation } from "./nativeActions";
@@ -106,7 +107,20 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
             && (local.capabilities as { manageProjects?: boolean }).manageProjects === true } };
     },
   };
-  const engines = options.parity ? createHostEngineAdapters(sources, options.parity, (id) => options.getRunner().pumpRemoteQueue(id), current, options.getRunner) : undefined;
+  const engines = options.parity ? createHostEngineAdapters(sources, options.parity, (id) => options.getRunner().pumpRemoteQueue(id), current, options.getRunner, () => options.rows?.threadLifecycle,
+    async (_op, args, operation) => {
+      const ctx = operation.context, threadId = ctx.activeThread!.id;
+      const owned = targets.resolve(idArg(args.target), operation.identity.device, threadId);
+      if (!owned.stop?.turnId || owned.provider !== ctx.effectiveSettings.provider || owned.workspaceId !== ctx.activeWorkspace!.id
+        || !sameStop(owned.stop, options.getRunner().getThreadStopTarget(threadId))) throw stale();
+      return executeQueueSteer(args, operation, async (entry) => {
+        if (!sameStop(owned.stop!, options.getRunner().getThreadStopTarget(threadId))) throw stale();
+        const result = await options.getRunner().steerThread({ ...ctx, remoteDelivery: operation.delivery,
+          attachments: [], skillInvocationText: entry.skillInvocationText,
+          ...(entry.resolveSkillMentions === false ? { resolveSkillMentions: false, resolveSkillPrompt: async (text: string) => text } : {}) }, entry.text, owned.stop!);
+        targets.consume(owned); return result;
+      });
+    }) : undefined;
   const parity = engines?.adapter;
   const domains = new HostDomains(sources, options.generation, current, parity);
   const navigation = new HostProjectNavigation(sources, options.generation, current, createHostProjectRegistration());
@@ -261,7 +275,11 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       const actions = parity;
       if (!actions) throw new HostReadError("unsupported", "This action is not connected yet.");
       const target = typeof args.threadId === "string" ? { threadId: args.threadId } : { workspaceId: idArg(args.workspaceId) };
-      const ctx = context(target, id.device);
+      const base = context(target, id.device);
+      const scheduledDraft = request.op === "prompt.scheduleNew" && args.draftHandle !== undefined
+        ? drafts.get(idArg(args.draftHandle), id.device, base.activeWorkspace!.id) : undefined;
+      if (scheduledDraft) drafts.claim(scheduledDraft, id);
+      const ctx = scheduledDraft ? context(target, id.device, scheduledDraft.settings) : base;
       if (ctx.activeWorkspace!.id !== args.workspaceId) throw stale();
       const assertAllowed = () => {
         assertTarget(target, id.device, ctx);
@@ -279,7 +297,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         const entry = sources.getProviderCatalog().find((p) => p.id === provider)?.models.find((m) => m.id === model);
         if (!entry || args.effort !== undefined && !entry.efforts.includes(args.effort as never)) throw invalid();
       }
-      const delivery = journal(id, target, ctx);
+      const delivery = journal(id, target, ctx, undefined, request.op === "queue.steer" ? idArg(args.target) : undefined, scheduledDraft);
       return executeParityMutation(request.op, args, actions, ctx, id, options.generation, delivery, assertAllowed, currentWorkGrant(sources, id.device).revision);
     }
     if (request.op.startsWith("thread.") || request.op.startsWith("projects.")) return rowMutation(request, args, id);
@@ -600,11 +618,17 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
             }
           };
           validate();
-          const revision = parity.revision(ctx);
-          const raw = await parity.read(request.op, args, ctx);
-          validate();
-          if (parity.revision(ctx) !== revision || raw.revision !== revision) throw stale();
-          return projectParityRead(raw);
+          const release = request.op === "thread.handoff.read" ? pinTaskTranscript(ctx.activeThread!.id) : undefined;
+          try {
+            // A cold/background source must produce the same briefing as an
+            // opened local conversation, without selecting or marking it read.
+            if (request.op === "thread.handoff.read") { await options.ensureHydrated(ctx.activeThread!.id, validate); validate(); }
+            const revision = parity.revision(ctx);
+            const raw = await parity.read(request.op, args, ctx);
+            validate();
+            if (parity.revision(ctx) !== revision || raw.revision !== revision) throw stale();
+            return projectParityRead(raw);
+          } finally { release?.(); }
         }
         const id = identity(request, args), key = `${id.device}:${id.opId}`;
         const existing = inflight.get(key);

@@ -82,7 +82,7 @@ import type { ChildAgentModelCatalogs } from "./components/subAgentModelOptions"
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
-import type { HostContextSources, HostParityActions, HostRowActions, StopActionSources } from "./lib/remote/host";
+import type { HostContextSources, HostParityActions, HostRowActions, StopActionSources, ThreadLifecycleSources } from "./lib/remote/host";
 import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences } from "./lib/remote/host/executionPreferences";
 import { appendHostCommandOutput, hostCommandBusy } from "./lib/remote/host/commandActions";
 import { HostReadError } from "./lib/remote/host/scope";
@@ -1010,6 +1010,8 @@ export default function App() {
   const [archivedThreads, persistArchivedThreads, archivedThreadsRef] = usePersistedStateRef<ArchivedThread[]>("kiwi.archivedThreads", []);
   const archivingThreadIdsRef = useRef(new Set<string>());
   const deletedThreadIdsRef = useRef(new Set<string>());
+  /** Threads a paired device is changing, which local archive and delete wait out. */
+  const hostRowReservationsRef = useRef(new Map<string, symbol>());
   const [threadAvailabilityRevision, setThreadAvailabilityRevision] = useState(0);
   const autoArchiveCompletionRef = useRef<(completedThreadId: string) => void>(() => undefined);
   const [threadHandoffs, persistThreadHandoffs] = usePersistedState<Record<string, ThreadHandoff>>("kiwi.threadHandoffs", {});
@@ -7136,7 +7138,7 @@ export default function App() {
     }
     // Archiving is reversible from the Archived list, so it runs without a
     // confirmation dialog. Only permanent deletion asks first.
-    if (archivingThreadIdsRef.current.has(thread.id)) {
+    if (archivingThreadIdsRef.current.has(thread.id) || hostRowReservationsRef.current.has(thread.id)) {
       if (strict) throw new HostReadError("busy", "This conversation is already being archived.");
       return false;
     }
@@ -7326,7 +7328,7 @@ export default function App() {
         : "openai";
     const localSubscription = provider === "claude" || provider === "cursor";
     if (confirmDelete && !await confirmDialog(`Permanently delete “${label}”?\n\nThis removes the conversation from ${localSubscription ? "Mythra Code" : "the Codex runtime"} and cannot be undone.`)) return false;
-    if (archivingThreadIdsRef.current.has(threadId)) return strict ? refuse("This conversation is already being removed.") : false;
+    if (archivingThreadIdsRef.current.has(threadId) || hostRowReservationsRef.current.has(threadId)) return strict ? refuse("This conversation is already being removed.") : false;
     archivingThreadIdsRef.current.add(threadId);
     setThreadAvailabilityRevision((revision) => revision + 1);
     invalidatePendingThreadSelection(threadId);
@@ -7635,25 +7637,6 @@ export default function App() {
   };
 
   /** Fork for a host request: same bookkeeping, no navigation, failures thrown. */
-  const forkThreadFor = async (thread: Thread, context: TurnRunnerContext): Promise<string> => {
-    const worktree = threadWorktreesRef.current[thread.id];
-    if (worktree && worktree.status !== "removed") throw new HostReadError("busy", "Isolated conversations can't be forked yet.");
-    if (isLocalSubscriptionThread(thread)) throw new HostReadError("unsupported", "This provider's conversations can't be forked.");
-    await waitForThreadPreparation(thread.id);
-    await ensureSkillRoots();
-    const settingsFor = context.effectiveSettings;
-    const workspacePath = context.activeWorkspace?.path;
-    const modelProvider = runtimeModelProviderId(settingsFor.provider);
-    const forkParams = { threadId: thread.id, cwd: workspacePath, runtimeWorkspaceRoots: workspacePath ? [workspacePath] : undefined, model: settingsFor.model, ...(modelProvider ? { modelProvider } : {}), config: threadRuntimeConfig({ ...settingsFor, subagentsEnabled: false }, { customAgents, modelContextWindow: settingsFor.provider === "openrouter" ? openRouterModels.find((entry) => entry.id === settingsFor.model)?.context_length : settingsFor.provider === "lmstudio" ? lmStudioModels.find((entry) => entry.id === settingsFor.model)?.maxContextLength : undefined }), baseInstructions: "", developerInstructions: mythraCodeDeveloperInstructions(false) };
-    const result = await rpc<{ thread: Thread }>("thread/fork", forkParams);
-    persistThreadSubagentSettings((current) => ({ ...current, [result.thread.id]: { ...DEFAULT_THREAD_SUBAGENT_SETTINGS, autoCompactTokens: settingsFor.autoCompactTokens } }));
-    if (workspacePath) bindThreadToProject(result.thread.id, workspacePath);
-    rememberThread(sidebarThread(result.thread));
-    persistThreadModel(result.thread.id, settingsFor.model);
-    persistThreadReasoning(result.thread.id, { reasoningEffort: settingsFor.reasoningEffort, ultra: settingsFor.ultra });
-    return result.thread.id;
-  };
-
   const rollbackTurn = async () => {
     if (localInputBlocked()) return;
     const voiceGeneration = localInputGeneration();
@@ -9065,9 +9048,11 @@ export default function App() {
   const remoteHostValues = {
     chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
     runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
-    renameThread, archiveThreadRecord, unarchiveThread, deleteThreadRecord, forkThreadFor, setProjects,
+    archiveThreadRecord, deleteThreadRecord, setProjects,
     captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent, stageDelegationCrew,
     parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels, terminal, checks,
+    automaticTitles, localTranscriptSaves, invalidateChildAgentGuidance, retryChildAgentGuidance, hasChildStartInFlight,
+    newThread, loadThreads, activeWorkspace, childAgentPolicies, projectDefaultProvider, threadModels, effectiveSettings,
   };
   const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined,
     runWorkflow: undefined as RemoteWorkflowEngine["runWorkflow"] | undefined });
@@ -9186,41 +9171,17 @@ export default function App() {
       archivedThread: (threadId) => {
         const record = archivedRecord(threadId);
         const workspaceId = record ? projectIdForPath(record.path) : null;
-        return record && workspaceId ? { thread: synthesizedArchivedThread(record), workspaceId } : null;
+        if (!record || !workspaceId) return null;
+        if (record.provider) return { thread: synthesizedArchivedThread(record), workspaceId };
+        // An old record names no provider. The transcript says, exactly as local restore and delete find out.
+        return (async () => {
+          const local = (await loadClaudeTranscript(record.id)) ?? (await loadCursorTranscript(record.id));
+          return { thread: local?.thread ?? synthesizedArchivedThread(record), workspaceId };
+        })();
       },
       execute: async (op, args, operation) => {
-        const threadId = typeof args.threadId === "string" ? args.threadId : "";
         const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId : "";
-        const thread = threadId ? knownThreadsRef.current?.[threadId] : undefined;
-        const requireThread = () => {
-          if (!thread) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
-          return thread;
-        };
         switch (op) {
-          case "thread.rename":
-            operation.assertAllowed();
-            await live.current.renameThread(requireThread(), String(args.name), true);
-            return { state: "accepted", threadId };
-          case "thread.archive":
-            operation.assertAllowed();
-            await live.current.archiveThreadRecord(requireThread(), false, false, true);
-            return { state: "accepted", threadId };
-          case "thread.restore": {
-            const record = archivedRecord(threadId);
-            if (!record) throw new HostReadError("stale_target", "This conversation is no longer archived.");
-            operation.assertAllowed();
-            await live.current.unarchiveThread(record, true);
-            return { state: "accepted", threadId };
-          }
-          case "thread.delete": {
-            const label = archivedRecord(threadId)?.label ?? thread?.name ?? thread?.preview ?? "this conversation";
-            operation.assertAllowed();
-            await live.current.deleteThreadRecord(threadId, label, false, true);
-            return { state: "accepted", threadId };
-          }
-          case "thread.fork":
-            operation.assertAllowed();
-            return { state: "accepted", threadId: await live.current.forkThreadFor(requireThread(), operation.context) };
           case "projects.remove": {
             const project = projectsRef.current.find((entry) => entry.id === workspaceId);
             if (!project) throw new HostReadError("thread_unavailable", "This project is unavailable.");
@@ -9238,6 +9199,107 @@ export default function App() {
             return { state: "accepted", workspaceId };
           }
           default: throw new HostReadError("unsupported", "This action isn't available.");
+        }
+      },
+    };
+    /** Sidebar ownership for one remote row change. Native has done the provider
+     * work and the saves, so `committed` only brings this device's memory and screen level. */
+    const lifecycleSources: ThreadLifecycleSources = {
+      evidence: (threadId) => ({
+        deleted: deletedThreadIdsRef.current.has(threadId),
+        archived: archivedThreadsRef.current.some((record) => record.id === threadId),
+        worktree: threadWorktreesRef.current[threadId],
+        worktreeBusy: live.current.activeThreadId === threadId && live.current.worktreeBusy,
+        childLinks: childAgentLinksRef.current,
+        nativeLinks: nativeAgentLinksRef.current,
+        childStartInFlight: live.current.hasChildStartInFlight(threadId),
+      }),
+      reserve: (op, threadId) => {
+        if (hostRowReservationsRef.current.has(threadId) || archivingThreadIdsRef.current.has(threadId)) throw new HostReadError("busy", "Another action is changing this conversation.");
+        const token = Symbol(threadId);
+        const removal = op === "thread.archive" || op === "thread.delete";
+        hostRowReservationsRef.current.set(threadId, token);
+        if (removal) {
+          archivingThreadIdsRef.current.add(threadId);
+          setThreadAvailabilityRevision((revision) => revision + 1);
+          invalidatePendingThreadSelection(threadId);
+        }
+        return {
+          assertOwned: () => {
+            if (hostRowReservationsRef.current.get(threadId) !== token) throw new HostReadError("stale_target", "This conversation changed.");
+            if (!removal && archivingThreadIdsRef.current.has(threadId)) throw new HostReadError("busy", "This conversation is being removed.");
+          },
+          release: () => {
+            if (hostRowReservationsRef.current.get(threadId) === token) hostRowReservationsRef.current.delete(threadId);
+            if (!removal) return;
+            archivingThreadIdsRef.current.delete(threadId);
+            setThreadAvailabilityRevision((revision) => revision + 1);
+            live.current.retryChildAgentGuidance(threadId);
+          },
+        };
+      },
+      cancelTitle: (threadId) => live.current.automaticTitles.cancel(threadId),
+      joinRenames: async (threadId) => { await threadRenameWritesRef.current.get(threadId)?.promise.catch(() => undefined); },
+      waitPreparation: (threadId) => waitForThreadPreparation(threadId),
+      flushTranscript: (threadId) => live.current.localTranscriptSaves.flush(threadId),
+      cancelTranscriptSave: (threadId) => live.current.localTranscriptSaves.cancel(threadId),
+      committed: async ({ op, previous, threadId, thread, rows: committedRows, history }) => {
+        const row = (key: string) => committedRows.find((entry) => entry.key === key)?.value;
+        const known = row("kiwi.knownThreads"), bindings = row("kiwi.threadProjects");
+        if (known && typeof known === "object") knownThreadsRef.current = known as ThreadSidebarIndex;
+        if (bindings && typeof bindings === "object") threadProjectBindingsRef.current = bindings as Record<string, string>;
+        const id = previous.id, provider = providerFromThread(thread ?? previous, live.current.projectDefaultProvider);
+        const releaseChildren = async (reason: string, deleted: boolean) => {
+          live.current.invalidateChildAgentGuidance(id, reason);
+          await live.current.cancelChildAgentsFor(id).catch(() => undefined);
+          await releaseChildAgentSessions(live.current.childAgentPolicies, id, childAgentLinksRef.current, Boolean(nativeAgentLinksRef.current[id])).catch(() => undefined);
+          cancelQueuedForChild(id, reason);
+          if (deleted) { forgetChildMailbox(id); forgetSubagentCapabilities(id); }
+        };
+        const leaveThread = () => {
+          if (useTaskStore.getState().activeThreadId === id) live.current.newThread();
+          forgetRuntimePerformanceProvider(id);
+          forgetTurnContext(id);
+          forgetQueuedDeliveries(id);
+          setThreads((current) => current.filter((entry) => entry.id !== id));
+        };
+        switch (op) {
+          case "thread.rename": {
+            markThreadNameSaved(id);
+            const name = thread?.name ?? null;
+            setThreads((entries) => entries.map((entry) => entry.id === id ? { ...entry, name } : entry));
+            setActiveThread((entry) => entry?.id === id ? { ...entry, name } : entry);
+            return;
+          }
+          case "thread.archive":
+            await releaseChildren("The conversation was archived.", false);
+            leaveThread();
+            return;
+          case "thread.delete":
+            // Before any await: this ID is gone for everything from here on.
+            deletedThreadIdsRef.current.add(id);
+            delete cursorSessionIdsRef.current[id];
+            await releaseChildren("The conversation was deleted.", true);
+            leaveThread();
+            forgetQuestionRecords(id);
+            setAttachmentDrafts((current) => forgetAttachmentDraft(current, id));
+            return;
+          case "thread.restore":
+            if (provider === "cursor") {
+              const transcript = await loadCursorTranscript(id).catch(() => null);
+              if (transcript?.cursorSessionId) cursorSessionIdsRef.current[id] = transcript.cursorSessionId;
+            }
+            void live.current.loadThreads(live.current.activeWorkspace);
+            return;
+          case "thread.fork":
+            registerRuntimePerformanceProvider(threadId, provider);
+            void live.current.loadThreads(live.current.activeWorkspace);
+            return;
+          case "thread.rollback":
+            // The timeline was already replaced with the provider's history. This is the sidebar's copy.
+            if (history) setActiveThread((entry) => entry?.id === id ? sidebarThread(history) : entry);
+            return;
+          default: return;
         }
       },
     };
@@ -9289,9 +9351,29 @@ export default function App() {
       deleteThread: async (threadId) => { await live.current.deleteThreadRecord(threadId, archivedRecord(threadId)?.label ?? "this conversation", false, true); },
       stopWorkflow: (workflowId, runId) => live.current.stopWorkflowRun?.(workflowId, runId) ?? Promise.resolve(false),
       pumpQueue: (threadId) => turnRunnerRef.current?.pumpRemoteQueue(threadId),
+      // The checks and the briefing a local handoff uses, for the thread that was asked about.
+      handoffPrompt: async (context) => {
+        const thread = context.activeThread;
+        if (!thread) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
+        const isolation = threadWorktreesRef.current[thread.id];
+        if (isolation && isolation.status !== "removed") throw new HostReadError("busy", "Provider handoff is unavailable while this conversation owns an isolated worktree.");
+        const task = useTaskStore.getState().tasks[thread.id];
+        if (task?.status === "starting" || task?.status === "running") throw new HostReadError("busy", "Stop the running task before starting a thread with another provider.");
+        const { buildProviderHandoffPrompt } = await import("./lib/providerHandoffPrompt");
+        return buildProviderHandoffPrompt({
+          title: thread.name || thread.preview || "Untitled task",
+          sourceProvider: providerFromThread(thread, live.current.projectDefaultProvider),
+          sourceModel: live.current.threadModels[thread.id] ?? context.effectiveSettings.model,
+          workspaceName: context.activeWorkspace?.name ?? "Workspace",
+          workspacePath: context.activeWorkspace?.path ?? thread.cwd,
+          messages: task?.messages ?? [],
+        });
+      },
     });
-    void import("./lib/remote/host").then(({ createRemoteHost, createRemoteWork }) => {
+    void import("./lib/remote/host").then(({ createRemoteHost, createRemoteWork, createThreadRowLifecycle }) => {
       if (disposed) return;
+      rows.threadLifecycle = createThreadRowLifecycle(lifecycleSources);
+      sources.canArchiveThreads = () => Boolean(rows.threadLifecycle);
       sources.createWork = (lease) => createRemoteWork({
         ...lease, sources, stop, rows, parity,
         getRunner: () => {

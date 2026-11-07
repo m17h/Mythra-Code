@@ -25,6 +25,7 @@ pub(super) const READS: &[&str] = &[
     "threads.search",
     "threads.archived",
     "parent.read",
+    "thread.handoff.read",
     "checks.read",
     "checks.status",
     "run.status",
@@ -73,6 +74,7 @@ pub(super) fn mutation(op: &str) -> bool {
             | "discovery.check.stop"
             | "discovery.settings.set"
             | "thread.settings.set"
+            | "thread.pullRequest.set"
             | "thread.rename"
             | "thread.archive"
             | "thread.restore"
@@ -87,6 +89,7 @@ pub(super) fn mutation(op: &str) -> bool {
 }
 pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
     Some(match op {
+        "thread.pullRequest.set" => (&["opId","opSeq","workspaceId","threadId","revision","reference"],true),
         "draft.settings.set" => (&["opId","opSeq","workspaceId","draftHandle","provider","model","effort","permission","serviceTier","subagents","isolated"],true),
         "prompt.cancel" => (&["opId","opSeq","workspaceId","startTarget"],true),
         "github.pr.create" => (&["opId","opSeq","workspaceId","threadId","head","base","title","body","draft","commitMessage","commitAll","revision"],true),
@@ -795,6 +798,8 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
         if let Some(sub)=args.get("subagents"){let object=sub.as_object().ok_or_else(invalid)?;if object.keys().any(|key|!["enabled","engine","maxConcurrent","autoCompactTokens","nativeOptions","crew"].contains(&key.as_str()))||!sub.get("enabled").is_some_and(Value::is_boolean)||!matches!(sub.get("engine").and_then(Value::as_str),Some("mythra"|"native"))||!sub.get("maxConcurrent").and_then(Value::as_u64).is_some_and(|n|(1..=24).contains(&n))||serde_json::to_vec(sub).map_or(true,|b|b.len()>16384){return Err(invalid());}}
         if args.get("isolated").is_some_and(|value|!value.is_boolean()){return Err(invalid());}
     }
+    if op=="thread.pullRequest.set"{id(args,"workspaceId",true)?;id(args,"threadId",true)?;}
+    if op=="thread.pullRequest.set"&&!args.get("reference").is_some_and(|v|v.is_null()||v.as_str().is_some_and(|text|!text.trim().is_empty()&&text.len()<=2048&&!text.chars().any(char::is_control))){return Err(invalid());}
     if op=="prompt.cancel"{id(args,"startTarget",true)?;}
     if op=="git.write"&&!matches!(args.get("action").and_then(Value::as_str),Some("init"|"stage"|"unstage"|"commit"|"branch"|"push"|"pull"|"fetch"|"update"|"revert"|"revertAll")){return Err(invalid());}
     if matches!(op,"checkpoint.restore"|"checkpoint.delete"|"worktree.apply"|"worktree.remove"|"worktree.continueShared"|"worktree.returnShared")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}

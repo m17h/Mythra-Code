@@ -32,7 +32,10 @@ use super::{pairing, Core, DialState, Inner};
 const HANDSHAKE_LIMIT: Duration = Duration::from_secs(10);
 const CONNECT_LIMIT: Duration = Duration::from_secs(5);
 const WRITE_LIMIT: Duration = Duration::from_secs(10);
-const KEEPALIVE_EVERY: Duration = Duration::from_secs(15);
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(5);
+const VIEWER_SILENCE_LIMIT: Duration = Duration::from_secs(15);
+// Host-side tolerance stays longer for a slow viewer; the interactive viewer
+// must stop offering a seemingly live session after three missed heartbeats.
 const LINK_DEAD_AFTER: Duration = Duration::from_secs(45);
 const SHUTDOWN_LIMIT: Duration = Duration::from_secs(1);
 /// An unpaired peer has this long after `hello` to begin pairing.
@@ -146,6 +149,7 @@ pub(super) struct Link {
     pub(super) dialed: bool,
     paired: AtomicBool,
     write_failed: AtomicBool,
+    last_received_ms: AtomicU64,
     pub(super) pairing_started: AtomicBool,
     pub(super) exporter: Exporter,
     pub(super) peer_name: StdMutex<Option<String>>,
@@ -173,6 +177,10 @@ impl Link {
     }
 
     #[cfg(test)]
+    pub(super) fn test_last_receive_ms(&self) -> u64 {
+        self.last_received_ms.load(Ordering::Acquire)
+    }
+    #[cfg(test)]
     pub(super) fn test_trace(&self) -> Vec<&'static str> {
         self.trace.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
@@ -189,6 +197,14 @@ impl Link {
 
     pub(super) fn is_open(&self) -> bool {
         !self.write_failed.load(Ordering::Acquire) && self.closed.borrow().is_none()
+    }
+
+    fn receive_idle(&self) -> Duration {
+        if self.role == Role::Viewer {
+            VIEWER_SILENCE_LIMIT
+        } else {
+            LINK_DEAD_AFTER
+        }
     }
 
     pub(super) fn set_paired(&self) {
@@ -417,6 +433,7 @@ where
         dialed: setup.dialed,
         paired: AtomicBool::new(false),
         write_failed: AtomicBool::new(false),
+        last_received_ms: AtomicU64::new(wire_clock_ms()),
         pairing_started: AtomicBool::new(false),
         exporter: setup.exporter,
         peer_name: StdMutex::new(setup.peer_name),
@@ -521,12 +538,35 @@ async fn wait_closed(link: &Link) {
     let _ = closed.wait_for(Option::is_some).await;
 }
 
-async fn reader_task<S: AsyncRead>(inner: Arc<Inner>, link: Arc<Link>, mut reader: ReadHalf<S>) {
+// Count actual plaintext progress, including partial large frames. A healthy
+// slow stream is not silence, but a frame that stalls halfway must still go stale.
+struct Receiving<R> {
+    io: R,
+    link: Arc<Link>,
+}
+impl<R: AsyncRead + Unpin> AsyncRead for Receiving<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let result = std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
+        if matches!(&result, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.link
+                .last_received_ms
+                .store(wire_clock_ms(), Ordering::Release);
+        }
+        result
+    }
+}
+async fn reader_task<S: AsyncRead>(inner: Arc<Inner>, link: Arc<Link>, reader: ReadHalf<S>) {
+    let mut reader = Receiving { io: reader, link: link.clone() };
     loop {
         let limit = if link.is_paired() { MAX_FRAME } else { PREAUTH_MAX_FRAME };
         let frame = tokio::select! {
             _ = wait_closed(&link) => { #[cfg(test)] link.trace("reader_cancelled"); return; },
-            read = read_frame(&mut reader, limit, LINK_DEAD_AFTER) => read,
+            read = read_frame(&mut reader, limit, link.receive_idle()) => read,
         };
         let bytes = match frame {
             Ok(bytes) => { #[cfg(test)] link.trace("reader_frame"); bytes },
@@ -610,7 +650,13 @@ fn dispatch(inner: &Arc<Inner>, link: &Arc<Link>, frame: Frame) {
                 }
             });
         }
-        Frame::Evt { stream, epoch, seq, data } => {if !super::preview::receive_event(inner,link,&stream,&data){super::hostbridge::receive_event(inner, link, stream, epoch, seq, data)}},
+        Frame::Evt { stream, epoch, seq, data } => {
+            #[cfg(test)]
+            if stream == "transport-probe" { link.trace("probe_frame"); }
+            if !super::preview::receive_event(inner,link,&stream,&data) {
+                super::hostbridge::receive_event(inner, link, stream, epoch, seq, data)
+            }
+        },
         Frame::Hello(_) => {}
     }
 }
@@ -668,12 +714,28 @@ fn wire_clock_ms() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+async fn wait_silent(link: &Link) {
+    loop {
+        let elapsed = Duration::from_millis(
+            wire_clock_ms().saturating_sub(link.last_received_ms.load(Ordering::Acquire)),
+        );
+        let Some(remaining) = link
+            .receive_idle()
+            .checked_sub(elapsed)
+            .filter(|d| !d.is_zero())
+        else {
+            return;
+        };
+        tokio::time::sleep(remaining).await;
+    }
+}
 async fn keepalive_task(link: Arc<Link>) {
     let mut ticks = interval(KEEPALIVE_EVERY);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = wait_closed(&link) => return,
+            _ = wait_silent(&link) => { link.close(CloseReason::Dead); return; }
             _ = ticks.tick() => {
                 if !link.send(&Frame::Ping { t: wire_clock_ms() }) {
                     return;

@@ -43,4 +43,5 @@
 .app-shell[data-theme][data-color-scheme] .remote-pr-comments small { color: var(--muted-2); }
 .app-shell[data-theme][data-color-scheme] .remote-pr-comments p { margin: 2px 0 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .app-shell[data-theme][data-color-scheme] .remote-pr-compose { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea { width: 100%; resize: vertical; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: transparent; font: inherit; resize: vertical; outline: none; }
+.app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea:focus-visible { border-color: var(--accent); }

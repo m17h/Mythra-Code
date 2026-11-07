@@ -2,6 +2,7 @@ import type { GitHubAccountStatus, GitHubRepoStatus } from "../../github";
 import type { RemoteWorkResult, HostRequest, RemoteOperationIdentity } from "../wire";
 import type { WireGitHubAccess, WirePullRequest, WirePullRequestComment, WirePullRequestContext, WirePullRequestSummary } from "../wire-studio";
 import type { HostTransport } from "./bridge";
+import { parsePullRequestReference, type ThreadPullRequestLink } from "../../pullRequests";
 import { loadStored } from "../../storage";
 import { nativeRefusal } from "./nativeActions";
 import { HostReadError } from "./scope";
@@ -72,6 +73,21 @@ function wireComment(value: unknown): WirePullRequestComment {
   return { id: typeof row.id === "number" || typeof row.id === "string" ? String(row.id).slice(0, 64) : "", author: text(row.author, 256), body: text(row.body, 65536), url: link(row.url), createdAt: text(row.createdAt, 64), updatedAt: text(row.updatedAt, 64) };
 }
 
+/** The local attach, resolved here: the host names the repository and reads the pull
+ * request, so a link can only ever point at this project's own repository. */
+export async function resolvePullRequestLink(operation: { generation: number; identity: { device: string }; grantRevision: number; workspaceId: string; root: string }, reference: string, transport: HostTransport): Promise<ThreadPullRequestLink> {
+  const { generation, identity: { device }, grantRevision, workspaceId, root } = operation;
+  const status = await transport.invoke<GitHubRepoStatus>("remote_studio_git_metadata", { root });
+  const repository = typeof status?.repository === "string" ? status.repository : null;
+  if (!repository) throw noRepository();
+  const parsed = parsePullRequestReference(reference, repository);
+  if (!parsed || parsed.repository.toLowerCase() !== repository.toLowerCase()) throw new HostReadError("unsupported", "Enter a GitHub pull request URL or a number for this repository.");
+  let snapshot: WirePullRequest;
+  try { snapshot = wirePullRequest(await transport.invoke("remote_github_read", { generation, device, grantRevision, workspaceId, root, action: "github.pr.view", args: { repository, number: parsed.number } })); }
+  catch (reason) { if (reason instanceof HostReadError) throw reason; throw nativeRefusal(reason); }
+  return { repository: snapshot.repository, number: snapshot.number, url: snapshot.url, attachedAt: Date.now(), snapshot };
+}
+
 interface Target { workspaceId: string; threadId?: string; root: string; isolated: boolean }
 interface Baseline { head: string; grantRevision: number; expires: number }
 interface Stamp { workspaceId?: string | null; threadId?: string | null }
@@ -79,7 +95,7 @@ interface Stamp { workspaceId?: string | null; threadId?: string | null }
 /** Typed GitHub operations. The host chooses the repository and the head a change
  * is measured against: a viewer names a pull request, and nothing more. */
 export class HostGitHub {
-  private repositories = new Map<string, { repository: string | null; expires: number }>();
+  private repositories = new Map<string, { repository: string | null; status: GitHubRepoStatus | null; expires: number }>();
   private heads = new Map<string, Baseline>();
   /** Branches GitHub named to this device, the only ones an update may follow. */
   private bases = new Map<string, Set<string>>();
@@ -115,8 +131,13 @@ export class HostGitHub {
     const status = await this.transport.invoke<GitHubRepoStatus>("remote_studio_git_metadata", { root });
     while (this.repositories.size >= MAX_ENTRIES) this.repositories.delete(this.repositories.keys().next().value!);
     const repository = typeof status?.repository === "string" ? status.repository : null;
-    this.repositories.set(root, { repository, expires: Date.now() + REPOSITORY_MS });
+    this.repositories.set(root, { repository, status: status ?? null, expires: Date.now() + REPOSITORY_MS });
     return repository;
+  }
+  /** Where the checkout stands, for the Git panel's own push and pull rules. Never the remote address. */
+  private tracking(root: string): Pick<WireGitHubAccess, "branch" | "upstream" | "ahead" | "behind"> {
+    const status = this.repositories.get(root)?.status;
+    return { branch: typeof status?.branch === "string" ? status.branch.slice(0, 256) : null, upstream: typeof status?.upstream === "string" ? status.upstream.slice(0, 256) : null, ahead: count(status?.ahead), behind: count(status?.behind) };
   }
   private headKey(device: string, target: { workspaceId?: string | null; threadId?: string | null }, number: number | "checkout"): string {
     return JSON.stringify([device, target.workspaceId ?? null, target.threadId ?? null, number]);
@@ -147,7 +168,7 @@ export class HostGitHub {
       let authenticated = false;
       try { authenticated = (await this.transport.invoke<GitHubAccountStatus>("github_status")).authenticated === true; } catch { /* No GitHub CLI there. */ }
       assertCurrent();
-      const access: WireGitHubAccess = { authenticated, repository, isolated: target.isolated, context: null, canArchive: this.canArchive(), savedLink: this.savedLink(target.threadId, repository) };
+      const access: WireGitHubAccess = { authenticated, repository, isolated: target.isolated, ...this.tracking(target.root), context: null, canArchive: this.canArchive(), savedLink: this.savedLink(target.threadId, repository) };
       if (!repository || !authenticated) return access;
       try { access.context = wireContext(await this.call(request, target, request.op, { repository })); } catch (reason) { throw nativeRefusal(reason); }
       assertCurrent();

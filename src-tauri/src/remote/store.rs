@@ -756,7 +756,7 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
         if previous == "accepted" && next != "accepted" { return Ok(()); }
         if previous=="rejected"&&next!="rejected"&&!(native&&next=="accepted"){return Err("A rejected instruction cannot be reopened.".into());}
         if ["dispatched","uncertain","accepted","rejected"].contains(&previous) && ["preparing","queued"].contains(&next) { return Err("That delivery cannot be queued again.".into()); }
-        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","grantRevision","threadEffectStarted","nativeThreadRoot","nativeThreadProvider","nativeThreadProof"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
+        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","grantRevision","batchStarted","threadEffectStarted","nativeThreadRoot","nativeThreadProvider","nativeThreadProof"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
         // Native dispatch latches may only be added, never cleared by IPC.
         if let Some(steps) = old.get("nativeSteps") { receipt["nativeSteps"] = steps.clone(); }
     }

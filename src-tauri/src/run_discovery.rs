@@ -122,6 +122,7 @@ struct DiscoveryRegistry {
 
 #[derive(Default)]
 struct DiscoveryRequest {
+    remote: StdMutex<Option<std::sync::Weak<crate::remote::discovery_work::Route>>>,
     identity: StdMutex<Option<ManagedProcessIdentity>>,
     /// An uncertain cutoff keeps its process and billing admission owned.
     /// No worker polls indefinitely: cancellation can retry a parked owner.
@@ -2840,6 +2841,9 @@ async fn await_or_cancel<T>(
 }
 
 
+enum DiscoverySendError{Transport(reqwest::Error),Authority(String)}
+impl DiscoverySendError{fn is_timeout(&self)->bool{match self{Self::Transport(e)=>e.is_timeout(),Self::Authority(e)=>e.to_ascii_lowercase().contains("timed out")}}}
+impl std::fmt::Display for DiscoverySendError{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{match self{Self::Transport(e)=>e.fmt(f),Self::Authority(e)=>e.fmt(f)}}}
 async fn send_http_request_with_usage<T>(
     provider: &str,
     request: &DiscoveryRequest,
@@ -2858,7 +2862,11 @@ async fn send_http_request_with_usage<T>(
         _ = &mut notified => return Err("Run command discovery was cancelled.".into()),
         response = async {
             if let Some(usage) = usage { usage.begin(); usage.outcome("failed"); }
-            builder.send().await
+            if let Some(route)=request.remote_route().map_err(DiscoverySendError::Authority)? {
+                let mut input=route.input("http-input").await.map_err(DiscoverySendError::Authority)?;
+                let result=input.write(async{builder.send().await.map_err(|e|e.to_string())}).await;
+                input.finish(result.is_ok()).await.map_err(DiscoverySendError::Authority)?;result.map_err(DiscoverySendError::Authority)
+            }else{builder.send().await.map_err(DiscoverySendError::Transport)}
         } => response.map_err(|error| {
             if let Some(usage) = usage { usage.outcome(if error.is_timeout() { "timed-out" } else { "failed" }); }
             format!("{provider} could not discover a run command: {error}")
@@ -3150,9 +3158,9 @@ async fn execute_native_request<T>(
     #[cfg(unix)]
     command.process_group(0);
 
-    let child = command
-        .spawn()
-        .map_err(|error| format!("Could not start run command discovery: {error}"))?;
+    let mut spawn_admission=if let Some(route)=guard.request.remote_route()?{Some(route.input("native-spawn").await?)}else{None};
+    let mut spawn=||command.spawn().map_err(|error|format!("Could not start run command discovery: {error}"));
+    let child=if let Some(input)=spawn_admission.as_mut(){input.spawn(spawn)?}else{spawn()?};
     let identity = child.id().map(managed_identity_for);
     let mut child = NativeHelperProcess {
         owned: Some(RetiredNativeHelper { child, identity, _billing_admission: billing_admission }),
@@ -3166,6 +3174,8 @@ async fn execute_native_request<T>(
         .identity
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = identity;
+    // Exact identity/retirement ownership exists before the first await after spawn.
+    if let Some(input)=spawn_admission{input.finish(true).await?;}
 
     if guard.request.cancelled.load(Ordering::Acquire) {
         child.stop().await?;
@@ -3260,7 +3270,16 @@ async fn execute_native_request<T>(
     } else {
         prompt.as_bytes().into()
     };
-    match timeout(Duration::from_secs(30), stdin.write_all(&input)).await {
+    let remote_input=guard.request.remote_route()?;
+    let write=async{
+        if let Some(route)=remote_input{
+            let mut admission=route.input("native-input").await.map_err(std::io::Error::other)?;
+            let result=admission.write(async{stdin.write_all(&input).await.map_err(|e|e.to_string())}).await;
+            admission.finish(result.is_ok()).await.map_err(std::io::Error::other)?;
+            result.map_err(std::io::Error::other)
+        }else{stdin.write_all(&input).await}
+    };
+    match timeout(Duration::from_secs(30), write).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             let stopped = child.stop().await;
@@ -3354,6 +3373,9 @@ pub(crate) async fn run_discovery_start(
 ) -> Result<RunDiscoveryResult, String> {
     let cwd = validate_options(&mut options)?;
     let guard = discovery_state.reserve(&options.request_id)?;
+    discovery_registered(app,runtime_state,options,guard,cwd).await
+}
+async fn discovery_registered(app:AppHandle,runtime_state:State<'_,RuntimeState>,options:RunDiscoveryOptions,guard:DiscoveryGuard,cwd:PathBuf)->Result<RunDiscoveryResult,String>{
     let workspace = DiscoveryWorkspace::create(guard.request.clone())?;
     set_request_workspace(&guard.request, Some(workspace.path.clone()));
     let result = if matches!(options.provider.as_str(), "openrouter" | "lmstudio") {
@@ -3374,10 +3396,10 @@ pub(crate) async fn run_discovery_start(
                 Err("The provider requested inspection instead of using its project tools. Please retry discovery.".into())
             })
     };
-    let result = result.and_then(|result| match options.purpose {
+    let result = result.and_then(|result| guard.request.inspect_remote(||match options.purpose {
         DiscoveryPurpose::Run => project_relative_result(result, Path::new(&options.cwd)),
         DiscoveryPurpose::Checks => project_relative_check_result(result, Path::new(&options.cwd)),
-    });
+    }));
     let cleanup = workspace.cleanup_after_request(&guard.request);
     match (result, cleanup) {
         (Ok(result), Ok(())) => Ok(result),
@@ -3396,6 +3418,10 @@ async fn cancel_request(state: &RunDiscoveryState, request_id: &str) -> Result<(
     let Some(request) = state.cancel_or_tombstone(request_id) else {
         return Ok(());
     };
+    cancel_exact(state,request_id,request).await
+}
+async fn cancel_exact(state:&RunDiscoveryState,request_id:&str,request:Arc<DiscoveryRequest>)->Result<(),String>{
+    request.cancelled.store(true,Ordering::Release);request.cancellation.notify_one();
     retry_native_retirement(state, request_id, &request);
     let identity = *request
         .identity
@@ -3884,4 +3910,47 @@ pub(crate) async fn generate_thread_title(
         (Ok(title), Ok(())) if title_script_matches_request(&original_prompt, &title) => Ok(title),
         _ => Err("Could not generate the thread title. The existing title was kept.".into()),
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct RemoteWorker{state:RunDiscoveryState,request_id:String,request:Arc<DiscoveryRequest>}
+impl RemoteWorker{
+ pub(crate) fn confirmed_finished(&self)->bool{self.request.done.load(Ordering::Acquire)&&request_completion_result(&self.request).is_ok()}
+ pub(crate) fn cancel(&self){self.request.cancelled.store(true,Ordering::Release);self.request.cancellation.notify_one();}
+ pub(crate) async fn stop(&self)->Result<(),String>{cancel_exact(&self.state,&self.request_id,self.request.clone()).await}
+}
+pub(crate) struct PreparedRemote{guard:DiscoveryGuard,options:RunDiscoveryOptions,cwd:PathBuf}
+impl PreparedRemote{
+ pub(crate) fn worker(&self)->RemoteWorker{RemoteWorker{state:self.guard.state.clone(),request_id:self.guard.request_id.clone(),request:self.guard.request.clone()}}
+ pub(crate) async fn execute(self,app:AppHandle)->Result<RunDiscoveryResult,String>{discovery_registered(app.clone(),app.state::<RuntimeState>(),self.options,self.guard,self.cwd).await}
+}
+pub(crate) fn remote_prepare(app:&AppHandle,root:&str,op:&str,mut options:Value,route:Arc<crate::remote::discovery_work::Route>)->Result<PreparedRemote,String>{
+ if !options.is_object()||serde_json::to_vec(&options).map_or(true,|b|b.len()>128*1024){return Err("The discovery options are not valid.".into());}
+ options["cwd"]=json!(root);options["requestId"]=json!(uuid::Uuid::new_v4().to_string());options["purpose"]=json!(if op=="discovery.run.start"{"run"}else{"checks"});
+ let mut options:RunDiscoveryOptions=serde_json::from_value(options).map_err(|_|"The discovery options are not valid.".to_string())?;
+ let cwd=validate_options(&mut options)?;let guard=app.state::<RunDiscoveryState>().reserve(&options.request_id)?;
+ *guard.request.remote.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(Arc::downgrade(&route));
+ Ok(PreparedRemote{guard,options,cwd})
+}
+impl DiscoveryRequest{
+ fn remote_route(&self)->Result<Option<Arc<crate::remote::discovery_work::Route>>,String>{
+  match self.remote.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){None=>Ok(None),Some(weak)=>weak.upgrade().map(Some).ok_or_else(||"Discovery was stopped.".into())}
+ }
+ fn inspect_remote<T>(&self,work:impl FnOnce()->Result<T,String>)->Result<T,String>{if let Some(route)=self.remote_route()?{route.inspect(work)}else{work()}}
+}
+#[cfg(test)]
+mod remote_worker_tests{
+ use super::*;
+ #[tokio::test]
+ async fn stopping_an_old_worker_never_cancels_a_new_local_worker_with_the_same_id(){
+  let state=RunDiscoveryState::default();let first=state.reserve("reused-id").unwrap();let old=RemoteWorker{state:state.clone(),request_id:"reused-id".into(),request:first.request.clone()};drop(first);assert!(old.confirmed_finished());
+  let later=state.reserve("reused-id").unwrap();old.cancel();old.stop().await.unwrap();
+  assert!(!later.request.cancelled.load(Ordering::Acquire));assert!(!later.request.done.load(Ordering::Acquire));
+  assert!(state.registry.lock().unwrap().active.get("reused-id").is_some_and(|r|Arc::ptr_eq(r,&later.request)));
+ }
+ #[test]
+ fn a_lost_remote_authority_never_falls_back_to_unrestricted_local_inspection(){
+  let request=DiscoveryRequest::default();assert_eq!(request.inspect_remote(||Ok(7)).unwrap(),7);
+  *request.remote.lock().unwrap()=Some(std::sync::Weak::new());let called=AtomicBool::new(false);assert!(request.inspect_remote(||{called.store(true,Ordering::Release);Ok(())}).is_err());assert!(!called.load(Ordering::Acquire));
+ }
 }

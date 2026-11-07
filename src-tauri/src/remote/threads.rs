@@ -17,10 +17,10 @@ fn uncertain() -> String {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Book {
-    version: u32,
-    rows: Vec<Value>,
+    pub(super) version: u32,
+    pub(super) rows: Vec<Value>,
 }
-fn keys(op: &str) -> Result<Vec<&'static str>, String> {
+pub(super) fn keys(op: &str) -> Result<Vec<&'static str>, String> {
     let mut k = vec![
         "kiwi.knownThreads",
         "kiwi.threadProjects",
@@ -61,10 +61,10 @@ fn keys(op: &str) -> Result<Vec<&'static str>, String> {
     };
     Ok(k)
 }
-fn rows(db: &Connection, op: &str) -> Result<Vec<Value>, String> {
+pub(super) fn rows(db: &Connection, op: &str) -> Result<Vec<Value>, String> {
     keys(op)?.iter().map(|k| commit::state_row(db, k)).collect()
 }
-fn verify(db: &Connection, op: &str, book: &Book) -> Result<(), String> {
+pub(super) fn verify(db: &Connection, op: &str, book: &Book) -> Result<(), String> {
     let keys = keys(op)?;
     if book.version != 1
         || book.rows.len() != keys.len()
@@ -166,9 +166,16 @@ fn binding(db: &Connection, stamp: &Stamp, provider: &str, root: &str) -> Result
         return Err(stale());
     }
     let bindings = object(value(db, "kiwi.threadProjects")?)?;
+    let worktrees = object(value(db, "kiwi.threadWorktrees")?)?;
     let bound = bindings
         .get(id)
         .and_then(Value::as_str)
+        .or_else(|| {
+            worktrees
+                .get(id)
+                .and_then(|row| row.get("projectPath"))
+                .and_then(Value::as_str)
+        })
         .or_else(|| {
             record
                 .get("cwd")
@@ -176,7 +183,6 @@ fn binding(db: &Connection, stamp: &Stamp, provider: &str, root: &str) -> Result
                 .and_then(Value::as_str)
         })
         .ok_or_else(stale)?;
-    let worktrees = object(value(db, "kiwi.threadWorktrees")?)?;
     let execution = worktrees
         .get(id)
         .filter(|r| r.get("status").and_then(Value::as_str) != Some("removed"))
@@ -199,7 +205,7 @@ fn binding(db: &Connection, stamp: &Stamp, provider: &str, root: &str) -> Result
     }
     Ok(record)
 }
-fn eligibility(
+pub(super) fn eligibility(
     db: &Connection,
     stamp: &Stamp,
     provider: &str,
@@ -298,7 +304,7 @@ pub(crate) async fn remote_thread_execute(
     .await
     .map_err(|_| uncertain())?
 }
-async fn execute(
+pub(super) async fn execute(
     app: AppHandle,
     inner: std::sync::Arc<super::Inner>,
     stamp: Stamp,
@@ -556,6 +562,19 @@ fn adopt_effect(
             archived.insert(0,json!({"id":id,"label":previous.get("name").or_else(||previous.get("preview")).and_then(Value::as_str).unwrap_or("Untitled thread"),"path":object(value(db,"kiwi.threadProjects")?)?.get(id).and_then(Value::as_str).unwrap_or(root),"provider":provider,"archivedAt":crate::unix_timestamp_ms()}));
         }
         "thread.restore" => {
+            let trees = object(value(db, "kiwi.threadWorktrees")?)?;
+            let logical = archived
+                .iter()
+                .find(|row| row["id"] == id)
+                .and_then(|r| r["path"].as_str())
+                .or_else(|| trees.get(id).and_then(|row| row["projectPath"].as_str()))
+                .or_else(|| previous.get("path").and_then(Value::as_str))
+                .unwrap_or(root);
+            let mut bindings = object(value(db, "kiwi.threadProjects")?)?;
+            if !bindings.contains_key(id) {
+                bindings.insert(id.into(), json!(logical));
+                commit::write_value(db, "kiwi.threadProjects", &json!(bindings))?;
+            }
             archived.retain(|r| r["id"] != id);
             if !known.contains_key(id) {
                 let actual = if let Some(thread) = effect.get("thread").filter(|v| v["id"] == id) {
@@ -1129,6 +1148,7 @@ mod tests {
             &json!([{"id":"t","label":"old label","path":f.path,"provider":"claude"}]),
         )
         .unwrap();
+        commit::write_value(&f.db, "kiwi.threadProjects", &json!({})).unwrap();
         let expected = book(&f, "thread.restore");
         finish_thread(
             &mut f.db,
@@ -1148,6 +1168,10 @@ mod tests {
             "before"
         );
         assert_eq!(value(&f.db, "kiwi.archivedThreads").unwrap(), json!([]));
+        assert_eq!(
+            value(&f.db, "kiwi.threadProjects").unwrap()["t"],
+            json!(f.path)
+        );
     }
     #[test]
     fn removed_checkout_delete_requires_that_exact_threads_saved_lineage() {

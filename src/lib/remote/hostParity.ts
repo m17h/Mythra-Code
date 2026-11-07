@@ -33,6 +33,8 @@ export interface HostParityDeps {
   /** Whether this checkpoint is shown for this target, then flips its Accepted mark. */
   acceptCheckpoint(context: TurnRunnerContext, checkpointId: string): boolean;
   stopAgent(parentThreadId: string, agentId: string): Promise<void>;
+  /** The same briefing a local handoff drafts, from the transcript this device holds. */
+  handoffPrompt(context: TurnRunnerContext): Promise<string>;
 }
 
 /** Reads and the writes this app can do against a supplied target. Anything that
@@ -112,6 +114,7 @@ export function createHostParity(deps: HostParityDeps): HostParityActions {
           const found = await deps.searchThreads(context, query);
           return respond(context, found.map((thread) => ({ id: thread.id, threadId: thread.id, name: thread.name ?? thread.preview, description: thread.preview })));
         }
+        case "thread.handoff.read": return respond(context, [{ id: String(args.provider), prompt: await deps.handoffPrompt(context) }]);
         case "parent.read": {
           const run = useTaskStore.getState().parentRuns[threadId(context)];
           return respond(context, run ? [{ id: run.id, runId: run.id, status: run.phase }] : []);

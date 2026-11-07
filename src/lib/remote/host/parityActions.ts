@@ -9,13 +9,13 @@ import { HostReadError, idArg } from "./scope";
 
 const reads = new Set<string>(["queue.read", "schedules.read", "workflows.list", "workflows.read", "projects.settings.read", "projects.instructions.read",
   "models.list", "models.refresh", "models.search", "skills.list", "skills.read", "skills.analyze", "usage.account.read", "usage.account.refresh",
-  "threads.search", "threads.archived", "parent.read", "run.status", "checks.read", "checks.status", "discovery.run.status", "discovery.check.status"]);
+  "threads.search", "threads.archived", "parent.read", "thread.handoff.read", "run.status", "checks.read", "checks.status", "discovery.run.status", "discovery.check.status"]);
 const writes: Record<string, readonly string[]> = {
   "queue.edit.begin": ["queueId"], "queue.edit.finish": ["queueId", "editHandle", "text", "cancel"],
   "queue.retry": ["queueId"], "queue.steer": ["queueId", "target"], "queue.remove": ["queueId"],
-  "prompt.schedule": ["text", "deliverAt"], "prompt.scheduleNew": ["text", "deliverAt"],
+  "prompt.schedule": ["text", "deliverAt"], "prompt.scheduleNew": ["text", "deliverAt", "draftHandle"],
   "schedules.edit": ["scheduleId", "text"], "schedules.reschedule": ["scheduleId", "deliverAt"], "schedules.release": ["scheduleId"], "schedules.remove": ["scheduleId"],
-  "thread.compact": [], "thread.rollback": ["messageId", "confirmed"],
+  "thread.compact": [], "thread.rollback": ["confirmed"], "thread.pullRequest.set": ["reference"],
   "thread.handoff.prepare": ["provider"], "thread.handoff.send": ["handoffId", "text"],
   "parent.continue": ["parentRunId"], "parent.dismiss": ["parentRunId"],
   "thread.archiveMany": ["threadIds"], "thread.deleteMany": ["threadIds", "confirmed"],
@@ -63,13 +63,13 @@ function string(value: unknown, maximum: number): string {
 }
 export function validateParityArgs(op: string, args: Record<string, unknown>): void {
   const common = ["workspaceId", "threadId"];
-  const allowed = reads.has(op) ? [...common, "query", "cursor", "limit", "workflowId", "skillId"]
+  const allowed = reads.has(op) ? [...common, ...(op === "thread.handoff.read" ? ["provider"] : []), "query", "cursor", "limit", "workflowId", "skillId"]
     : [...common, "opId", "opSeq", "revision", ...(writes[op] ?? [])];
   if (Object.keys(args).some((key) => !allowed.includes(key))) throw invalid();
   idArg(args.workspaceId);
   if (args.threadId !== undefined) idArg(args.threadId);
   if (!reads.has(op)) idArg(args.revision);
-  for (const key of ["checkpointId", "agentId", "queueId", "editHandle", "scheduleId", "workflowId", "runId", "parentRunId", "messageId", "handoffId", "processHandle", "profileId", "target", "skillId", "cursor"]) {
+  for (const key of ["checkpointId", "agentId", "queueId", "editHandle", "draftHandle", "scheduleId", "workflowId", "runId", "parentRunId", "messageId", "handoffId", "processHandle", "profileId", "target", "skillId", "cursor"]) {
     if (args[key] !== undefined) idArg(args[key]);
   }
   for (const key of ["text", "prompt", "userPrompt"]) if (args[key] !== undefined) string(args[key], 65536);
@@ -88,10 +88,11 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
     for (const [key, value] of Object.entries(args.variables)) { idArg(key); string(value, 8192); }
   }
   if (args.limit !== undefined && (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 200)) throw invalid();
-  const threadOp = op.startsWith("queue.") || op.startsWith("parent.") || op === "thread.compact" || op === "thread.rollback"
+  const threadOp = op.startsWith("queue.") || op.startsWith("parent.") || op === "thread.compact" || op === "thread.rollback" || op === "thread.pullRequest.set"
     || op.startsWith("thread.handoff.") || op === "prompt.schedule";
   if (threadOp && args.threadId === undefined) throw invalid();
   if (op === "thread.rollback" || op === "thread.deleteMany") { if (args.confirmed !== true) throw invalid(); }
+  if (op === "thread.pullRequest.set" && args.reference !== null && (typeof args.reference !== "string" || !args.reference.trim() || args.reference.length > 2048)) throw invalid();
   if (op.startsWith("queue.") && op !== "queue.read") idArg(args.queueId);
   if (op === "queue.steer") idArg(args.target);
   if (op === "queue.edit.finish") {
@@ -101,8 +102,7 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
   if (op.startsWith("schedules.") && op !== "schedules.read") idArg(args.scheduleId);
   if (op === "schedules.reschedule" && args.deliverAt === undefined) throw invalid();
   if (op === "schedules.edit" && (typeof args.text !== "string" || !args.text.trim())) throw invalid();
-  if (op === "thread.rollback") idArg(args.messageId);
-  if (op === "thread.handoff.prepare" && args.provider === undefined) throw invalid();
+  if ((op === "thread.handoff.prepare" || op === "thread.handoff.read") && args.provider === undefined) throw invalid();
   if (op === "thread.handoff.send") idArg(args.handoffId);
   if (op === "run.stop" || op === "checks.stop") idArg(args.processHandle);
   if (op === "prompt.schedule" || op === "prompt.scheduleNew") { if (typeof args.text !== "string" || !args.text.trim() || args.deliverAt === undefined) throw invalid(); }
@@ -154,7 +154,7 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
     assertRevision();
     // A workflow must establish native ownership before ANY preparation latch.
     // Its remote engine owns admission/child dispatch, not the generic state adapter.
-    if (!["workflows.start", "parent.continue", "run.start", "checks.start", "discovery.run.start", "discovery.check.start"].includes(op)) await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
+    if (!["workflows.start", "parent.continue", "run.start", "checks.start", "discovery.run.start", "discovery.check.start", "thread.compact", "thread.rollback", "queue.steer", "prompt.scheduleNew", "thread.handoff.prepare", "thread.handoff.send", "thread.archiveMany", "thread.deleteMany", "agents.stop", "checkpoint.accept"].includes(op)) await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
     assertRevision();
     const result = await actions.execute(op, args, { context, identity, generation, grantRevision, delivery, assertAllowed: assertRevision });
     if (result?.state === "queued" && result.threadId && result.queuedTurnId) {

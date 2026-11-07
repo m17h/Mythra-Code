@@ -1,5 +1,8 @@
 import type { Thread } from "../../../types";
 import { recoverRemoteStateRows, withRemoteStateCommit } from "../../storage";
+import { rpc, runtimeThreadState } from "../../codex";
+import { timelineFromTurns } from "../../threadTimeline";
+import { drainTaskDeltas } from "../../taskStore";
 import { sidebarThread } from "../../threadList";
 import { providerFromThread } from "../../threadProvider";
 import { runtimeModelProviderId } from "../../providerIds";
@@ -18,12 +21,17 @@ const operations = new Set<string>(["thread.rename", "thread.archive", "thread.r
 export const isThreadRowOperation = (op: string): op is ThreadRowOperation => operations.has(op);
 const commonKeys = ["kiwi.knownThreads", "kiwi.threadProjects", "kiwi.archivedThreads", "kiwi.threadWorktrees"];
 const settingsKeys = ["kiwi.threadModels", "kiwi.threadReasoning", "kiwi.threadSubagentSettings", "kiwi.threadExecutionPreferences"];
-export function threadRowKeys(op: ThreadRowOperation): readonly string[] {
+/** History changes go through the same native effect, with the same ownership. */
+export type ThreadEffectOperation = ThreadRowOperation | "thread.compact" | "thread.rollback";
+export function threadRowKeys(op: ThreadEffectOperation): readonly string[] {
   return op === "thread.fork" ? [...commonKeys, ...settingsKeys] : op === "thread.delete"
-    ? [...commonKeys, ...settingsKeys, "kiwi.pinnedThreads", "kiwi.queuedTurns", "kiwi.parentRuns", "kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.turnDurations", "kiwi.threadPullRequests"] : commonKeys;
+    ? [...commonKeys, ...settingsKeys, "kiwi.pinnedThreads", "kiwi.queuedTurns", "kiwi.parentRuns", "kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.turnDurations", "kiwi.threadPullRequests",
+      "kiwi.childAgentPolicies", "kiwi.childAgentLinks", "kiwi.nativeAgentLinks", "kiwi.childAgentMailbox", "kiwi.threadHandoffs", "kiwi.pendingHandoff", "kiwi.agentQuestions", "kiwi.turnContextReceipts"] : commonKeys;
 }
 export interface ThreadRowChange {
-  op: ThreadRowOperation; previous: Thread; threadId: string; thread?: Thread;
+  op: ThreadEffectOperation; previous: Thread; threadId: string; thread?: Thread;
+  /** The provider's rolled-back thread with its turns, for this machine's own timeline. */
+  history?: Thread;
   /** Already committed/adopted native rows, for host-only refs and presentation. */
   rows: readonly StampedRow[];
 }
@@ -37,7 +45,7 @@ export interface ThreadRowLease {
 }
 export interface ThreadRowLifecycle {
   /** Synchronous reservation, before title cancellation or any native await. */
-  begin(op: ThreadRowOperation, thread: Thread, operation: HostMutationContext): ThreadRowLease;
+  begin(op: ThreadEffectOperation, thread: Thread, operation: HostMutationContext): ThreadRowLease;
 }
 interface NativeResult {
   result: { opId: string; state: string; threadId?: string; workspaceId?: string };
@@ -52,14 +60,17 @@ function missing(reason: unknown): boolean { return typeof reason === "string" &
 /** Provider effect uses the installed typed native wrapper for the exact same
  * sidebar operations (name/set, archive, unarchive, delete, fork and local
  * transcript metadata). The journal is a latch, never an RPC retry permission. */
-export async function executeThreadRow(op: ThreadRowOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext,
+export async function executeThreadRow(op: ThreadEffectOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext,
   sources: HostContextSources, lifecycle: ThreadRowLifecycle, transport: HostTransport = nativeHostTransport): Promise<{ state: "accepted"; threadId: string; workspaceId: string }> {
   const previous = operation.context.activeThread, workspace = operation.context.activeWorkspace;
   if (!previous || !workspace || previous.id !== args.threadId) throw new HostReadError("stale_target", "This conversation is no longer available.");
   const id = previous.id, provider = providerFromThread(previous, operation.context.effectiveSettings.provider);
   if (op === "thread.rename" && (typeof args.name !== "string" || !args.name.trim() || args.name.length > 256 || /[\u0000-\u001f]/.test(args.name))) throw new HostReadError("unsupported", "A valid conversation name is required.");
   if (op === "thread.delete" && args.confirmed !== true) throw new HostReadError("unsupported", "Permanent deletion must be confirmed.");
-  if (op === "thread.fork" && (provider === "claude" || provider === "cursor")) throw new HostReadError("unsupported", "This provider's conversations cannot be forked.");
+  if ((op === "thread.fork" || op === "thread.compact" || op === "thread.rollback") && (provider === "claude" || provider === "cursor")) throw new HostReadError("unsupported", "This provider manages its own history; this action is not supported.");
+  if (op === "thread.rollback" && args.confirmed !== true) throw new HostReadError("unsupported", "Undoing the last turn must be confirmed.");
+  const expectedMessageId = args.messageId;
+  if (expectedMessageId !== undefined && useTaskStore.getState().tasks[id]?.messages.at(-1)?.id !== expectedMessageId) throw new HostReadError("stale_target", "The last exchange changed.");
   if (active.has(id)) throw new HostReadError("busy", "Another row action is changing this conversation.");
   operation.assertAllowed();
   active.add(id);
@@ -74,6 +85,10 @@ export async function executeThreadRow(op: ThreadRowOperation, args: Readonly<Re
       if (op !== "thread.rename" && (task?.status === "starting" || task?.status === "running" || useTaskStore.getState().workflowOwners[id])) throw new HostReadError("busy", "Finish or stop this conversation before changing it.");
     };
     check(); await lease.prepare(); check();
+    if (op === "thread.compact") {
+      const runtime = await runtimeThreadState(id); check();
+      sources.onRemoteCodexRuntimeOwned(id, runtime.instance);
+    }
     if (op === "thread.fork") { await operation.context.ensureSkillRoots(); check(); }
     const keys = threadRowKeys(op), stamp = operationStamp(operation);
     return await withRemoteStateCommit(keys, async (adopt) => {
@@ -84,7 +99,7 @@ export async function executeThreadRow(op: ThreadRowOperation, args: Readonly<Re
       if (snapshot.version !== 1) throw new HostReadError("unsupported", "This device uses a different conversation bookkeeping version.");
       exactRows(snapshot.rows, keys); check();
       const context = operation.context, settings = context.effectiveSettings, modelProvider = runtimeModelProviderId(provider);
-      const nativeArgs = op === "thread.rename" ? { name: String(args.name).trim() } : op === "thread.delete" ? { confirmed: true }
+      const nativeArgs = op === "thread.rollback" ? { confirmed: true, numTurns: 1 } : op === "thread.rename" ? { name: String(args.name).trim() } : op === "thread.delete" ? { confirmed: true }
         : op === "thread.fork" ? { model: settings.model, ...(modelProvider ? { modelProvider } : {}),
           config: threadRuntimeConfig({ ...settings, subagentsEnabled: false }, { customAgents: context.customAgents,
             modelContextWindow: provider === "openrouter" ? context.openRouterModels.find((entry) => entry.id === settings.model)?.context_length
@@ -100,11 +115,28 @@ export async function executeThreadRow(op: ThreadRowOperation, args: Readonly<Re
         const known = reply.rows.find((row) => row.key === "kiwi.knownThreads")?.value as Record<string, Thread> | null;
         const thread = known?.[threadId] ?? (reply.thread?.id === threadId ? reply.thread : undefined);
         if ((op === "thread.rename" || op === "thread.restore" || op === "thread.fork") && (!thread || thread.id !== threadId)) throw new HostReadError("uncertain", "The committed conversation identity was missing.");
+        // Rollback is authoritative replacement, not a paged history merge:
+        // removed questions and optimistic rows must not reappear from cache.
+        let rolledBack: Thread | undefined;
+        if (op === "thread.rollback") {
+          rolledBack = reply.thread?.id === id && Array.isArray(reply.thread.turns) ? reply.thread
+            : (await rpc<{ thread: Thread }>("thread/read", { threadId: id, includeTurns: true })).thread;
+          if (rolledBack.id !== id || !Array.isArray(rolledBack.turns)) throw new HostReadError("uncertain", "The changed conversation history could not be loaded.");
+          // Do not overwrite a locally started turn while reconciling a reply.
+          const live = useTaskStore.getState().tasks[id];
+          if (live?.status === "running" || live?.status === "starting") throw new HostReadError("uncertain", "This conversation started again while its history was being reconciled.");
+        }
         if (!recover) for (const row of reply.rows) adopt(row.key, row.value);
         if (op === "thread.delete") {
           adoptRemoteQueuedTurns(reply.rows.find((row) => row.key === "kiwi.queuedTurns")?.value);
         }
-        await lease!.committed({ op, previous, threadId, ...(thread ? { thread: sidebarThread(thread) } : {}), rows: reply.rows });
+        if (rolledBack) {
+          drainTaskDeltas();
+          const history = timelineFromTurns(rolledBack.turns, { includeContextCompaction: provider === "openai" });
+          useTaskStore.getState().hydrateTask(id, history.messages, history.activities, root,
+            { nextCursor: null, hasMore: false, loading: false, paginated: false }, undefined, { preserveUnread: true, replaceTimeline: true });
+        }
+        await lease!.committed({ op, previous, threadId, ...(thread ? { thread: sidebarThread(thread) } : {}), ...(rolledBack ? { history: rolledBack } : {}), rows: reply.rows });
         // Match local deletion order: invalidate identity/release child routes
         // while their resident records still exist, then discard the task.
         if (op === "thread.delete") adoptRemoteThreadRemoval(id);

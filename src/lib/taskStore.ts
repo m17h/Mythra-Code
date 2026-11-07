@@ -397,6 +397,8 @@ export interface HistoryHydrationOptions {
   source?: "local";
   /** Background readers must not acknowledge the host user's unread output. */
   preserveUnread?: boolean;
+  /** Confirmed, stopped native rollback only; never preserve deleted timeline rows. */
+  replaceTimeline?: boolean;
 }
 
 const transcriptPins = new Map<string, number>();
@@ -1050,7 +1052,14 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
     };
   }),
   hydrateTask: (threadId, messages, activities, workspacePath, history, readBoundary, options) => set((state) => {
-    const existing = state.tasks[threadId];
+    let existing = state.tasks[threadId];
+    const removedApprovals = Boolean(options?.replaceTimeline && existing?.approvals.length);
+    if (options?.replaceTimeline && existing) {
+      if (existing.status === "starting" || existing.status === "running") throw new Error("Cannot replace the history of a live turn.");
+      pendingDeltas.delete(threadId); clearReasoningBuffers(threadId);
+      existing = { ...existing, messages: [], activities: [], approvals: [], activeTurnId: undefined, lastCompletedTurnId: undefined };
+      state = { ...state, tasks: { ...state.tasks, [threadId]: existing } };
+    }
     const local = options?.source === "local";
     if (local) localTranscriptThreads.add(threadId);
     else localTranscriptThreads.delete(threadId);
@@ -1125,7 +1134,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       .filter((entry) => entry.turnStatus === "interrupted" && entry.turnId
         && representedTurnIds.has(entry.turnId) && !authoritativeTerminalTurnIds.has(entry.turnId))
       .map((entry) => entry.turnId!));
-    const restoredMessages = restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
+    const restoredMessages = options?.replaceTimeline ? messages : restoreQuestionRequests(threadId, messages, activities, !history?.hasMore);
     const reconciled = reconcileUserMessages(restoredMessages, existing?.messages ?? []);
     const hydratedMessages = reconciled.messages.map((message) => {
       const previous = existingMessagesById.get(message.id);
@@ -1242,7 +1251,7 @@ export const useTaskStore = create<TaskStoreState>((set, get) => ({
       ? { ...state.statuses, [threadId]: "idle" as const }
       : state.statuses;
     const evictedTasks = evictColdTranscripts({ ...state, tasks: nextTasks, statuses }, state.activeThreadId);
-    return { tasks: evictedTasks ?? nextTasks, statuses };
+    return { tasks: evictedTasks ?? nextTasks, statuses, ...(removedApprovals ? { approvalQueryToken: {} } : {}) };
   }),
   setHistory: (threadId, patch) => set((state) => {
     const task = state.tasks[threadId];
