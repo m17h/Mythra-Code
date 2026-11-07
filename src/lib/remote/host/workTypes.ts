@@ -14,10 +14,12 @@ export interface RemoteTurnDelivery {
   messageId: string;
   /** Native lifetime for all children of an orchestration, not permission to replay a step. */
   openOwner?(kind: "parent" | "workflow" | "start", runId: string, threadId?: string): Promise<string>;
+  /** Only after native atomically detached an empty queued preparation. */
+  adoptDetachedOwner?(): void;
   readonly ownerHandle?: string;
   readonly ownerRunId?: string;
   bindOwner?(threadId: string): Promise<void>;
-  childStep?(stepId: string, threadId?: string, kind?: "prompt" | "command"): Promise<RemoteTurnDelivery>;
+  childStep?(stepId: string, threadId?: string, kind?: "prompt" | "command", targetHandle?: string): Promise<RemoteTurnDelivery>;
   assertAllowed(): void;
   beforeCreate(): Promise<void>;
   queued(threadId: string, queuedTurnId: string): Promise<void>;

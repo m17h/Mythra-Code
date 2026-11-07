@@ -37,7 +37,7 @@ import type { StudioTab } from "../lib/studioTabs";
 import { commitPlan, fileCount, relativeAge, type CommitPlan } from "../lib/gitChanges";
 import { useProjectGitChanges } from "../hooks/useProjectGitChanges";
 import { useProjectGitHistory } from "../hooks/useProjectGitHistory";
-import { getCommitMessageContext, type CommitMessageSuggestion } from "../lib/commitMessages";
+import { getCommitMessageContext, type CommitMessageContext, type CommitMessageSuggestion } from "../lib/commitMessages";
 
 // Pull requests load their own code the first time the view opens.
 const ProjectPullRequestsView = lazy(() => import("./ProjectPullRequestsView"));
@@ -92,6 +92,8 @@ export interface GitPanelProps {
   commitSuggestion?: CommitMessageSuggestion;
   onRegenerateCommitMessage?: () => void;
   commitSuggestionBusy?: boolean;
+  /** Where the suggestion's freshness comes from when the folder is on another machine. */
+  readCommitContext?: () => Promise<Pick<CommitMessageContext, "stagedToken" | "changesToken">>;
   /**
    * True when the app supplies a pull request workflow. Only "Draft PR" and
    * "CI checks" retire then; "Review comments" stays, because nothing else in
@@ -417,12 +419,12 @@ function GitPanelInner(props: GitPanelProps) {
     const suggestion = props.commitSuggestion;
     let message = commitMessage;
     if (!draft.commitMessageEdited && draft.commitMessageSuggestionId) {
-      if (!suggestion || !props.selectedFolder) return;
+      if (!suggestion || !props.selectedFolder && !props.readCommitContext) return;
       preparingCommitRef.current = true;
       setPreparingCommit(true);
       setCommitDraftNotice("");
       try {
-        const context = await getCommitMessageContext(props.selectedFolder);
+        const context = await (props.readCommitContext?.() ?? getCommitMessageContext(props.selectedFolder!));
         const latest = commitContextRef.current;
         if (!mountedRef.current || latest.blocked || latest.folder !== captured.folder || latest.branch !== captured.branch
           || latest.head !== captured.head || latest.draft !== captured.draft) return;

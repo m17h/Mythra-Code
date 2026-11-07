@@ -9,7 +9,7 @@ use super::{
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -110,27 +110,15 @@ pub(super) fn git(
     Ok((output.stdout, truncated))
 }
 pub(super) fn git_root(
-    read: &crate::project_git::GitReadOperation,
+    _read: &crate::project_git::GitReadOperation,
     root: &Anchor,
 ) -> Result<(), String> {
-    let (bytes, truncated) = git(read, root, &["rev-parse", "--show-toplevel"], 8192)?;
-    if truncated {
-        return Err(failed());
-    }
-    let path = PathBuf::from(
-        std::str::from_utf8(&bytes)
-            .map_err(|_| failed())?
-            .trim_end(),
-    );
-    let actual = Anchor::open(&path)?;
-    if actual.identity()? != root.identity()? {
-        return Err("Open the repository's own root folder to inspect Git remotely.".into());
-    }
-    // Every read is independently isolated from executable repository config;
-    // LFS and custom drivers are never executed, including under config races.
-
+    super::git_metadata::locations(&root.path).map_err(|_| {
+        "Open the repository's own root folder to inspect Git remotely.".to_string()
+    })?;
     root.validate()
 }
+
 fn status(
     read: &crate::project_git::GitReadOperation,
     root: &Anchor,
@@ -580,6 +568,8 @@ mod baseline_tests {
         git(&["branch", "--set-upstream-to=origin/main", "main"]);
         std::fs::write(path.join("file"), "ahead\n").unwrap();
         git(&["commit", "-am", "ahead", "-q"]);
+        std::fs::write(path.join("file"), "fresh context\n").unwrap();
+        let local_context=crate::commit_message::read_context(path.to_str().unwrap()).unwrap();
         let marker = path.join("PROGRAM-RAN");
         let target = marker
             .to_string_lossy()
@@ -603,6 +593,8 @@ mod baseline_tests {
             assert_eq!(identity["headOid"], snapshot["headOid"]);
             let metadata = git_baseline(path.to_str().unwrap(), true).unwrap();
             assert_eq!(metadata["repository"], "native-test/example");
+            let anchor=Anchor::open(&path).unwrap();let guarded_context=crate::commit_message::read_context(anchor.git_cwd().to_str().unwrap()).unwrap();assert_eq!(guarded_context.token,local_context.token);assert_eq!(guarded_context.staged_token,local_context.staged_token);assert_eq!(guarded_context.changes_token,local_context.changes_token);
+
             assert!(!marker.exists());
         }
         std::fs::remove_dir_all(path).unwrap();
@@ -612,81 +604,108 @@ mod baseline_tests {
 #[cfg(test)]
 mod performance_measurement {
     use super::*;
-    /// Opt-in real-data measurement. Never writes the selected repository.
+    fn read<T>(f: impl FnOnce() -> T) -> (T, u64) {
+        let _p = super::super::safe_git::enter();
+        let value = f();
+        (value, super::super::safe_git::spawn_count())
+    }
+    fn changes(path: &str) -> Value {
+        let root = Anchor::open(Path::new(path)).unwrap();
+        let op = crate::project_git::GitReadOperation::new();
+        git_root(&op, &root).unwrap();
+        status(&op, &root, 200).unwrap()
+    }
+    /// Explicit real-data benchmark. Optional Git locks disabled: never updates the source index.
     #[test]
     #[ignore]
     fn real_repository_remote_git_latency() {
         let path = std::env::var("MYTHRA_GIT_BENCH_ROOT").expect("set MYTHRA_GIT_BENCH_ROOT");
         let diff = std::env::var("MYTHRA_GIT_BENCH_DIFF")
             .unwrap_or_else(|_| "src-tauri/src/remote/studio.rs".into());
-        let mut identity_totals = Vec::new();
-        let mut totals = Vec::new();
-        let mut statuses = Vec::new();
-        let mut diffs = Vec::new();
-        let mut baselines = Vec::new();
-        for _ in 0..10 {
-            let start = Instant::now();
-            let first = {
-                let _p = super::super::safe_git::enter();
-                let t = Instant::now();
-                let v = git_baseline(&path, false).unwrap();
-                baselines.push(t.elapsed().as_secs_f64() * 1000.);
-                v
-            };
-            {
-                let _p = super::super::safe_git::enter();
-                let t = Instant::now();
-                let root = Anchor::open(Path::new(&path)).unwrap();
-                let read = crate::project_git::GitReadOperation::new();
-                git_root(&read, &root).unwrap();
-                let _v = status(&read, &root, 200).unwrap();
-                statuses.push(t.elapsed().as_secs_f64() * 1000.);
-            }
-            let last = {
-                let _p = super::super::safe_git::enter();
-                git_baseline(&path, false).unwrap()
-            };
-            assert_eq!(first["headOid"], last["headOid"]);
-            totals.push(start.elapsed().as_secs_f64() * 1000.);
-            {
-                let _p = super::super::safe_git::enter();
-                let t = Instant::now();
-                let _v = git_diff(&path, &diff, "unstaged").unwrap();
-                diffs.push(t.elapsed().as_secs_f64() * 1000.);
-            }
-        }
-        for _ in 0..10 {
-            let start = Instant::now();
-            let before = {
-                let _p = super::super::safe_git::enter();
-                git_identity(&path).unwrap()
-            };
-            {
-                let _p = super::super::safe_git::enter();
-                let root = Anchor::open(Path::new(&path)).unwrap();
-                let read = crate::project_git::GitReadOperation::new();
-                git_root(&read, &root).unwrap();
-                status(&read, &root, 200).unwrap();
-            }
-            let after = {
-                let _p = super::super::safe_git::enter();
-                git_identity(&path).unwrap()
-            };
-            assert_eq!(before, after);
-            identity_totals.push(start.elapsed().as_secs_f64() * 1000.);
-        }
-        for (name, mut values) in [
-            ("wire_status_native_sequence", totals),
-            ("identity_status_sequence", identity_totals),
-            ("studio_status", statuses),
-            ("guarded_baseline", baselines),
-            ("studio_diff", diffs),
+        super::super::git_metadata::invalidate(Path::new(&path));
+        let cold = Instant::now();
+        let (_, count) = read(|| changes(&path));
+        println!(
+            "cold_studio_status: ms={:.2} git_spawns={count}",
+            cold.elapsed().as_secs_f64() * 1000.
+        );
+        for name in [
+            "plain_local_status_no_optional_locks",
+            "wire_status_native_sequence",
+            "identity_status_sequence",
+            "studio_status",
+            "guarded_baseline",
+            "studio_diff",
         ] {
-            values.sort_by(f64::total_cmp);
+            let mut times = Vec::new();
+            let mut counts = Vec::new();
+            for _ in 0..10 {
+                let start = Instant::now();
+                let count = match name {
+                    "plain_local_status_no_optional_locks" => {
+                        let output = crate::process_launch::background_std_command("git")
+                            .current_dir(&path)
+                            .env("GIT_OPTIONAL_LOCKS", "0")
+                            .args([
+                                "status",
+                                "--porcelain=v1",
+                                "-z",
+                                "--untracked-files=all",
+                                "--ignore-submodules=dirty",
+                            ])
+                            .output()
+                            .unwrap();
+                        assert!(output.status.success(), "plain local status failed");
+                        1
+                    }
+                    "wire_status_native_sequence" => {
+                        let (a, n) = read(|| git_baseline(&path, false).unwrap());
+                        let (_, m) = read(|| changes(&path));
+                        let (b, p) = read(|| git_baseline(&path, false).unwrap());
+                        assert_eq!(a["headOid"], b["headOid"]);
+                        n + m + p
+                    }
+                    "identity_status_sequence" => {
+                        let (a, n) = read(|| git_identity(&path).unwrap());
+                        let (_, m) = read(|| changes(&path));
+                        let (b, p) = read(|| git_identity(&path).unwrap());
+                        assert_eq!(a, b);
+                        n + m + p
+                    }
+                    "studio_status" => read(|| changes(&path)).1,
+                    "guarded_baseline" => read(|| git_baseline(&path, false).unwrap()).1,
+                    _ => read(|| git_diff(&path, &diff, "unstaged").unwrap()).1,
+                };
+                times.push(start.elapsed().as_secs_f64() * 1000.);
+                counts.push(count);
+            }
+            times.sort_by(f64::total_cmp);
+            counts.sort();
             println!(
-                "{name}: median_ms={:.2} min_ms={:.2} max_ms={:.2}",
-                values[5], values[0], values[9]
+                "{name}: median_ms={:.2} min_ms={:.2} max_ms={:.2} git_spawns={}..{}",
+                times[5], times[0], times[9], counts[0], counts[9]
             );
         }
     }
+}
+
+#[tauri::command]
+pub(crate) async fn remote_studio_commit_context(window:WebviewWindow,root:String)->Result<Value,String>{
+ main(&window)?;blocking(move||{let anchor=Anchor::open(Path::new(&root))?;let read=crate::project_git::GitReadOperation::new();git_root(&read,&anchor)?;let result=crate::commit_message::read_context(anchor.git_cwd().to_str().ok_or_else(failed)?)?;anchor.validate()?;serde_json::to_value(result).map_err(|_|failed())}).await
+}
+#[cfg(all(test,windows))]
+mod windows_release_tests{
+ use super::*;
+ use super::super::windows_tests::{git,TempRoot};
+ #[tokio::test]
+ async fn completed_studio_reads_release_repository_handles_while_config_cache_stays_warm(){
+  let temp=TempRoot::new("completed reads release handles");let root=temp.0.join("repository");std::fs::create_dir(&root).unwrap();git(&root,&["init","-q","-b","main"]);std::fs::write(root.join("file"),"initial\n").unwrap();git(&root,&["add","file"]);git(&root,&["-c","user.name=Release test","-c","user.email=test@example.invalid","commit","-qm","initial"]);
+  for iteration in 0..3{
+   let path=root.to_string_lossy().into_owned();blocking(move||git_baseline(&path,false)).await.unwrap();
+   // Use the SAME production wrapper as native Studio commands, with no
+   // external Anchor and no cache invalidation, retry, sleep, or process kill.
+   let moved=temp.0.join(format!("moved-{iteration}"));std::fs::rename(&root,&moved).expect("no completed remote read may retain a repository delete lock");std::fs::rename(&moved,&root).unwrap();
+  }
+  std::fs::remove_dir_all(&root).expect("warm inert config cache must contain no file handles");
+ }
 }

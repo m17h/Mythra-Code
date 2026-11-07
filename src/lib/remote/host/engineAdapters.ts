@@ -14,17 +14,24 @@ import { createWorkflowExecution } from "./workflowExecution";
 import { markRemoteEngineRetiring, remoteEngineOwner, remoteEngineStopped } from "./engineOwners";
 import { nativeRefusal } from "./nativeActions";
 import { commitHostState, operationStamp } from "./stateCommit";
+import { executeHostAgentControl } from "./agentControl";
+import type { WorkTargets } from "./targetHandles";
+import { acceptHostAgent } from "./agentActions";
+import type { HostResources } from "./resources";
+import { acceptCheckpoint, executeHostRecipe } from "./recipeActions";
 import { scheduleNewPrompt } from "./scheduledStart";
 import { createHostQueueActions } from "./queueActions";
 import { HostReadError, idArg } from "./scope";
-import { executeThreadRow, type ThreadRowLifecycle } from "./threadRows";
+import { executeThreadBatch, executeThreadRow, type ThreadRowLifecycle } from "./threadRows";
+import { createHostDiscovery } from "./discoveryActions";
 import { resolvePullRequestLink } from "./githubActions";
 import { nativeHostTransport } from "./bridge";
 import type { WireParityRow } from "../wire";
 import { getOpenRouterCredits, rpc } from "../../codex";
 
 /** Concrete shared-state adapters wrap App's domain/lifecycle extraction. */
-export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void, isCurrent: () => boolean = () => true, getRunner?: () => import("./workTypes").RemoteTurnRunner, getLifecycle?: () => ThreadRowLifecycle | undefined, steerQueued?: HostParityActions["execute"]) {
+export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void, isCurrent: () => boolean = () => true, getRunner?: () => import("./workTypes").RemoteTurnRunner, getLifecycle?: () => ThreadRowLifecycle | undefined, steerQueued?: HostParityActions["execute"], getResources?: () => HostResources, agentControl?: { targets: WorkTargets; ensureHydrated(threadId: string, assertCurrent: () => void): Promise<void> }) {
+  const discovery = createHostDiscovery(sources);
   const queue = createHostQueueActions(pump);
   const commands = createHostCommandActions(sources, isCurrent);
   const workflows = new Map<string, ReturnType<typeof createWorkflowExecution>>();
@@ -89,9 +96,30 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
     async execute(op, args, operation) {
       // The old App callbacks issue untagged provider stops/blind state saves.
       // A journal admission is not a commit-time grant or ownership fence.
-      if (op === "agents.stop" || op === "checkpoint.accept") throw new HostReadError("unsupported", op === "agents.stop"
-        ? "Use the exact conversation Stop control until child cutoff ownership is attached."
-        : "This device has not attached stamped checkpoint acceptance yet.");
+      if (op === "checkpoint.accept") return acceptCheckpoint(args, operation);
+      if (op === "git.autoPublish.set" || op === "git.autoPublish.retry") {
+        const workspace = operation.context.activeWorkspace;
+        if (!workspace || workspace.isChat) throw new HostReadError("unsupported", "Open a project first.");
+        if (operation.context.effectiveSettings.permission === "read-only") throw new HostReadError("forbidden", "Switch this thread to Ask or Full access before changing automatic publishing.");
+        if (!sources.setAutoPublish || !sources.retryAutoPublish) throw new HostReadError("unsupported", "Automatic publishing isn't available on this device yet.");
+        operation.assertAllowed();
+        if (op === "git.autoPublish.retry") sources.retryAutoPublish(workspace.id);
+        else await sources.setAutoPublish(workspace.id, workspace.path, args.enabled === true);
+        return { state: "accepted" };
+      }
+      if (op === "agents.accept") {
+        const resources = getResources?.(); if (!resources) throw new HostReadError("unsupported", "The shared sub-agent details are not attached.");
+        return acceptHostAgent(args, operation, sources, resources);
+      }
+      if (op === "agents.stop" || op === "agents.replace") {
+        const resources = getResources?.(), runner = getRunner?.();
+        if (!resources || !runner || !agentControl) throw new HostReadError("unsupported", "The sub-agent execution source is not ready.");
+        return executeHostAgentControl(op, args, operation, { sources, resources, runner, ...agentControl });
+      }
+      if (op === "review.start" || op === "git.suggestCommit") {
+        const runner = getRunner?.(); if (!runner) throw new HostReadError("host_unavailable", "The host runner is not ready.");
+        return executeHostRecipe(op, sources, operation, runner);
+      }
       if (op === "prompt.scheduleNew") return scheduleNewPrompt(args, operation, queue.execute);
       if (op === "queue.steer") {
         if (!steerQueued) throw new HostReadError("unsupported", "Queued steering is not attached.");
@@ -114,9 +142,21 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
         if (!lifecycle || !threadId) throw new HostReadError("unsupported", "This device can't change this conversation's history yet.");
         return executeThreadRow(op, { ...args, threadId }, operation, sources, lifecycle);
       }
-      if (op === "thread.archiveMany" || op === "thread.deleteMany") throw new HostReadError("unsupported", "Change these conversations individually until this device supports stamped batches.");
+      if (op === "thread.archiveMany" || op === "thread.deleteMany") {
+        const lifecycle = getLifecycle?.();
+        if (!lifecycle) throw new HostReadError("unsupported", "This device can't change these conversations yet.");
+        const known = sources.getKnownThreads();
+        const threads = await Promise.all((args.threadIds as string[]).map(async (threadId) => {
+          const thread = op === "thread.deleteMany" ? (await sources.resolveArchivedThread?.(threadId))?.thread ?? known[threadId] : known[threadId];
+          if (!thread) throw new HostReadError("stale_target", "A conversation is no longer available.");
+          return thread;
+        }));
+        return executeThreadBatch(op, threads, operation, sources, lifecycle);
+      }
+      if (op === "discovery.run.start" || op === "discovery.check.start") return discovery.start(operation);
+      if (op === "discovery.run.stop" || op === "discovery.check.stop") return discovery.stop(operation, idArg(args.runId));
       if (op === "discovery.settings.set") { await setHostDiscoverySettings(sources, args, operation); return { state: "accepted" }; }
-      if (op === "run.start" || op === "run.stop" || op === "checks.start" || op === "checks.stop") return commands.execute(op, args, operation);
+      if (op === "actions.run" || op === "run.start" || op === "run.stop" || op === "checks.start" || op === "checks.stop") return commands.execute(op, args, operation);
       if (op === "parent.continue" || op === "parent.dismiss") {
         const id = operation.context.activeThread?.id, run = id ? useTaskStore.getState().parentRuns[id] : undefined;
         if (!id || !run || run.id !== args.parentRunId || run.phase !== "paused") throw new HostReadError("stale_target", "This parent run is no longer paused.");

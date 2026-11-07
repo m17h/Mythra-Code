@@ -34,7 +34,9 @@ export const STUDIO_RESULT_BYTES = 256 * 1024;
 export const STUDIO_TEXT_BYTES = 128 * 1024;
 
 // Phase 4 project navigation. This handle namespace cannot select file contents.
-export type ProjectNavigationOperation = "folders.browse" | "projects.add";
+export type ProjectNavigationOperation = "folders.browse" | "projects.add" | "projects.clone" | "projects.clone.status";
+export interface ProjectCloneResult { opId: string; state: "accepted" | "uncertain"; processHandle?: string; name?: string }
+export interface ProjectCloneStatus { state: "running" | "completed" | "failed" | "timedOut" }
 export interface FoldersBrowseArgs { folderId?: string; cursor?: string; limit?: number }
 export interface ProjectsAddArgs { folderId: string; opId: string; opSeq: number }
 export interface WireFolder { id: string; name: string; canAdd: boolean }
@@ -46,7 +48,7 @@ export interface ProjectsAddResult {
   opId: string; state: "accepted" | "uncertain";
   workspace?: { id: string; name: string; isChat: false };
 }
-export type ProjectNavigationResult = FoldersBrowseResult | ProjectsAddResult;
+export type ProjectNavigationResult = FoldersBrowseResult | ProjectsAddResult | ProjectCloneResult | ProjectCloneStatus;
 
 /** Studio reads beyond files and status. Replies never carry a native path
  * except the worktree's own, which is what Copy path copies. */

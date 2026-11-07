@@ -8,7 +8,7 @@
 pub(crate) mod discovery;
 pub(crate) mod hostbridge;
 mod identity;
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod manifest;
 pub(crate) mod fs_guard;
 pub(crate) mod studio;
@@ -25,6 +25,7 @@ mod wire;
 pub(crate) mod work;
 pub(crate) mod commit;
 pub(crate) mod attachments;
+pub(crate) mod clone;
 pub(crate) mod preview;
 pub(crate) mod terminal;
 pub(crate) mod upload_source;
@@ -32,6 +33,10 @@ pub(crate) mod domain;
 pub(crate) mod owners;
 pub(crate) mod bookkeeping;
 pub(crate) mod safe_git;
+mod git_metadata;
+pub(crate) mod queue;
+pub(crate) mod agent_actions;
+pub(crate) mod pending;
 pub(crate) mod threads;
 mod instructions;
 pub(crate) mod thread_batch;
@@ -39,6 +44,8 @@ pub(crate) mod discovery_work;
 pub(crate) mod github;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -1184,6 +1191,7 @@ fn spawn_accept_loop(
             };
             match accepted {
                 Ok((tcp, peer)) => {
+                    diagnostics::record(diagnostics::Event::Link,0,0,0,1,"tls.accept","tcp_received");
                     tauri::async_runtime::spawn(session::accept(
                         inner.clone(),
                         acceptor.clone(),
@@ -1203,7 +1211,8 @@ async fn start_listener(inner: &Arc<Inner>, identity: &Arc<DeviceIdentity>) -> R
     const FAILED: &str = "Mythra Code couldn't open a network port. Close anything that might be blocking it, then try again.";
     let preferred = inner.lock().settings.port;
     let config = tls::server_config(identity)?;
-    let (v4, v6, port) = bind_listeners(preferred).map_err(|_| FAILED.to_string())?;
+    let (v4, v6, port) = bind_listeners(preferred).map_err(|error|{diagnostics::record(diagnostics::Event::Start,0,0,0,0,"listener",diagnostics::network_outcome(&error));FAILED.to_string()})?;
+    diagnostics::record(diagnostics::Event::Start,0,0,0,if v6.is_some(){2}else{1},"listener","listening");
     let (stop, stopped) = watch::channel(false);
     let generation = {
         let mut core = inner.lock();

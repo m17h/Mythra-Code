@@ -20,7 +20,9 @@ const writes: Record<string, readonly string[]> = {
   "parent.continue": ["parentRunId"], "parent.dismiss": ["parentRunId"],
   "thread.archiveMany": ["threadIds"], "thread.deleteMany": ["threadIds", "confirmed"],
   "workflows.start": ["workflowId", "variables", "userPrompt"], "workflows.stop": ["workflowId", "runId"],
-  "checkpoint.accept": ["checkpointId"], "agents.stop": ["agentId"],
+  "checkpoint.accept": ["checkpointId"], "agents.stop": ["agentId", "target"], "agents.accept": ["agentId", "target"], "agents.replace": ["agentId", "target", "targetId"],
+  "actions.run": ["actionId"], "review.start": [], "git.suggestCommit": [],
+  "git.autoPublish.set": ["enabled"], "git.autoPublish.retry": [],
   "projects.settings.set": ["name", "provider", "model", "effort"], "projects.instructions.set": ["prompt", "mode"],
   "projects.profiles.save": ["profileId", "name", "prompt", "mode"], "projects.profiles.delete": ["profileId"], "projects.profiles.select": ["profileId"],
   "projects.run.set": ["command", "setupCommand", "label"], "projects.check.set": ["command"],
@@ -54,8 +56,9 @@ export function assertParityAuthority(op: string, grant: DeviceGrant): void {
     throw new HostReadError("forbidden", "This needs Manage projects and access to all projects.");
   }
   const shell = (op.startsWith("run.") || op.startsWith("checks.")) && !isParityRead(op)
-    || op.startsWith("discovery.") && !isParityRead(op) || op === "projects.run.set" || op === "projects.check.set";
+    || (op.startsWith("discovery.") || op === "actions.run") && !isParityRead(op) || op === "projects.run.set" || op === "projects.check.set";
   if (shell && !grant.capabilities.terminal) throw new HostReadError("forbidden", "This action requires Terminal access.");
+  if (op.startsWith("git.autoPublish.") && !isParityRead(op) && !(grant.capabilities.gitWrite && grant.capabilities.terminal)) throw new HostReadError("forbidden", "This action requires Git changes and Terminal access.");
 }
 function string(value: unknown, maximum: number): string {
   if (typeof value !== "string" || new TextEncoder().encode(value).byteLength > maximum) throw invalid();
@@ -69,7 +72,7 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
   idArg(args.workspaceId);
   if (args.threadId !== undefined) idArg(args.threadId);
   if (!reads.has(op)) idArg(args.revision);
-  for (const key of ["checkpointId", "agentId", "queueId", "editHandle", "draftHandle", "scheduleId", "workflowId", "runId", "parentRunId", "messageId", "handoffId", "processHandle", "profileId", "target", "skillId", "cursor"]) {
+  for (const key of ["checkpointId", "agentId", "queueId", "editHandle", "draftHandle", "scheduleId", "workflowId", "runId", "parentRunId", "messageId", "handoffId", "processHandle", "profileId", "target", "targetId", "actionId", "skillId", "cursor"]) {
     if (args[key] !== undefined) idArg(args[key]);
   }
   for (const key of ["text", "prompt", "userPrompt"]) if (args[key] !== undefined) string(args[key], 65536);
@@ -89,7 +92,7 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
   }
   if (args.limit !== undefined && (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 200)) throw invalid();
   const threadOp = op.startsWith("queue.") || op.startsWith("parent.") || op === "thread.compact" || op === "thread.rollback" || op === "thread.pullRequest.set"
-    || op.startsWith("thread.handoff.") || op === "prompt.schedule";
+    || op.startsWith("thread.handoff.") || op === "prompt.schedule" || op.startsWith("agents.") || op === "review.start" || op === "git.suggestCommit";
   if (threadOp && args.threadId === undefined) throw invalid();
   if (op === "thread.rollback" || op === "thread.deleteMany") { if (args.confirmed !== true) throw invalid(); }
   if (op === "thread.pullRequest.set" && args.reference !== null && (typeof args.reference !== "string" || !args.reference.trim() || args.reference.length > 2048)) throw invalid();
@@ -109,6 +112,10 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
   if (op.startsWith("parent.") && op !== "parent.read") idArg(args.parentRunId);
   if (op.startsWith("workflows.") && op !== "workflows.list") idArg(args.workflowId);
   if (op === "workflows.stop") idArg(args.runId);
+  if (op.startsWith("agents.")) { idArg(args.agentId); idArg(args.target); }
+  if (op === "agents.replace") idArg(args.targetId);
+  if (op === "git.autoPublish.set" && typeof args.enabled !== "boolean") throw invalid();
+  if (op === "actions.run") idArg(args.actionId);
   if (op === "projects.instructions.set" && (typeof args.prompt !== "string" || args.mode === undefined)) throw invalid();
 }
 /** Rebuild every public field, including nested workflow fields. No spreads of host records. */
@@ -116,7 +123,7 @@ export function projectParityRead(raw: WireParityReadResult): WireParityReadResu
   const rows: WireParityRow[] = [];
   for (const row of raw.rows.slice(0, 200)) {
     const next: WireParityRow = { id: idArg(row.id) };
-    for (const key of ["name", "description", "text", "status", "model", "threadId", "parentThreadId", "runId", "queueId", "command", "setupCommand", "prompt", "mode"] as const) {
+    for (const key of ["name", "description", "text", "status", "model", "threadId", "parentThreadId", "runId", "queueId", "command", "setupCommand", "prompt", "mode", "handoffHandle"] as const) {
       if (typeof row[key] === "string") next[key] = row[key]!.slice(0, key === "text" || key === "prompt" ? 65536 : key === "command" || key === "setupCommand" ? 4000 : 2048);
     }
     for (const key of ["enabled", "pinned", "archived", "editing"] as const) if (typeof row[key] === "boolean") next[key] = row[key];
@@ -154,7 +161,7 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
     assertRevision();
     // A workflow must establish native ownership before ANY preparation latch.
     // Its remote engine owns admission/child dispatch, not the generic state adapter.
-    if (!["workflows.start", "parent.continue", "run.start", "checks.start", "discovery.run.start", "discovery.check.start", "thread.compact", "thread.rollback", "queue.steer", "prompt.scheduleNew", "thread.handoff.prepare", "thread.handoff.send", "thread.archiveMany", "thread.deleteMany", "agents.stop", "checkpoint.accept"].includes(op)) await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
+    if (!["workflows.start", "parent.continue", "run.start", "checks.start", "discovery.run.start", "discovery.check.start", "thread.compact", "thread.rollback", "queue.steer", "prompt.scheduleNew", "thread.handoff.prepare", "thread.handoff.send", "thread.archiveMany", "thread.deleteMany", "agents.stop", "agents.accept", "agents.replace", "checkpoint.accept", "actions.run", "review.start", "git.suggestCommit"].includes(op)) await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
     assertRevision();
     const result = await actions.execute(op, args, { context, identity, generation, grantRevision, delivery, assertAllowed: assertRevision });
     if (result?.state === "queued" && result.threadId && result.queuedTurnId) {

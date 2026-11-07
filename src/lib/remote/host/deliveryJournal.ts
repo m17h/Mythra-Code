@@ -31,15 +31,16 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
   private outcome: RemoteWorkResult;
   private dispatched = false;
   private owner?: { kind: string; runId: string; handle: string; threadId?: string };
+  adoptDetachedOwner(): void { this.owner = undefined; delete this.receipt.ownerHandle; }
   get ownerHandle(): string | undefined { return this.owner?.handle; }
   get ownerRunId(): string | undefined { return this.owner?.runId; }
-  async childStep(stepId: string, threadId?: string, kind: "prompt" | "command" = "prompt"): Promise<RemoteTurnDelivery> {
+  async childStep(stepId: string, threadId?: string, kind: "prompt" | "command" = "prompt", targetHandle?: string): Promise<RemoteTurnDelivery> {
     if (!this.owner || !this.options.permission || !this.options.provider) throw new HostReadError("unsupported", "This engine has no captured native execution policy.");
     await this.refreshGrant();
-    const provider = kind === "command" || this.options.provider === "openrouter" || this.options.provider === "lmstudio" ? "openai" : this.options.provider;
+    const provider = kind === "command" || !targetHandle && (this.options.provider === "openrouter" || this.options.provider === "lmstudio") ? "openai" : this.options.provider;
     type Step = { state: string; delivery: RemoteOperationIdentity & { attemptId: string; messageId: string } };
     let reply: Step;
-    try { reply = await invoke("remote_work_engine_step", { generation: this.options.generation, ownerHandle: this.owner.handle, stepId, kind, threadId, provider, permission: this.options.permission }); }
+    try { reply = await invoke("remote_work_engine_step", { generation: this.options.generation, ownerHandle: this.owner.handle, stepId, kind, threadId, provider, permission: this.options.permission, ...(targetHandle ? { targetHandle } : {}) }); }
     catch (reason) {
       if (typeof reason === "string" && /not found|unknown command/i.test(reason)) throw new HostReadError("unsupported", "The other device cannot admit a fresh parent continuation yet.");
       throw reason;
@@ -47,7 +48,7 @@ export class RemoteDeliveryJournal implements RemoteTurnDelivery {
     this.assertAllowed();
     const id = reply.delivery;
     if (reply.state !== "preparing" || !id || id.device !== this.identity.device || !id.opId || !Number.isSafeInteger(id.opSeq) || id.opSeq < 1 || !id.attemptId || !id.messageId) throw new HostReadError("uncertain", "This parent continuation may already have run; it will not be replayed.");
-    return new RemoteDeliveryJournal({ ...this.options, ...(kind === "command" ? { provider: "openai" } : {}), identity: id, threadId, queuedTurnId: undefined, targetHandle: undefined,
+    return new RemoteDeliveryJournal({ ...this.options, ...(kind === "command" ? { provider: "openai" } : {}), identity: id, threadId, queuedTurnId: undefined, targetHandle,
       attemptId: id.attemptId, messageId: id.messageId, owner: { ...this.owner, threadId } });
   }
   async bindOwner(threadId: string): Promise<void> {

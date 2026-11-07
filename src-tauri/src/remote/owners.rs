@@ -66,14 +66,15 @@ pub(crate) async fn remote_work_owner_open(
     let inner = state.inner.clone();
     super::finish_write(state.inner.enqueue_write(false,move|db|{
         let op=commit::operation(db,&stamp)?;
-        if (kind=="workflow"&&op!="workflows.start")||(kind!="workflow"&&!matches!(op.as_str(),"prompt.send"|"prompt.queue"|"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit"|"thread.handoff.send"|"parent.continue"|"run.start"|"checks.start")){return Err(stale());}
+        if (kind=="workflow"&&op!="workflows.start")||(kind!="workflow"&&!matches!(op.as_str(),"prompt.send"|"prompt.queue"|"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit"|"thread.handoff.send"|"parent.continue"|"run.start"|"checks.start"|"actions.run"|"review.start"|"git.suggestCommit"|"agents.replace")){return Err(stale());}
         let mut receipt=super::store::delivery_receipt(db,&stamp.device,&stamp.op_id,stamp.op_seq)?.unwrap_or_else(||json!({"generation":stamp.generation,"device":stamp.device,"opId":stamp.op_id,"opSeq":stamp.op_seq,"workspaceId":stamp.workspace_id,"threadId":stamp.thread_id,"disposition":"preparing","op":op}));
         let mut core=inner.lock();stamp.check(&core,&op)?;
+        if op=="agents.replace"&&!receipt["agentCutoffConfirmed"].is_string(){return Err(stale());}
         if let Some(handle)=receipt.get("engineOwnerHandle").and_then(Value::as_str){return if core.owners.owners.get(handle).is_some_and(|owner|!owner.closed&&owner.kind==kind&&owner.run==run_id){Ok(json!({"ownerHandle":handle}))}else{Err(stale())};}
-        if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|!steps.is_empty())||(matches!(receipt.get("disposition").and_then(Value::as_str),Some("uncertain"|"rejected"))||(receipt.get("disposition").and_then(Value::as_str)==Some("dispatched")&&!matches!(op.as_str(),"thread.handoff.send"|"prompt.scheduleNew")))||(kind!="workflow"&&!matches!(op.as_str(),"run.start"|"checks.start"|"parent.continue")&&receipt.get("disposition").and_then(Value::as_str)==Some("accepted")){return Err(stale());}
+        if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|!steps.is_empty())||(matches!(receipt.get("disposition").and_then(Value::as_str),Some("uncertain"|"rejected"))||(receipt.get("disposition").and_then(Value::as_str)==Some("dispatched")&&!matches!(op.as_str(),"thread.handoff.send"|"prompt.scheduleNew"|"agents.replace")))||(kind!="workflow"&&!matches!(op.as_str(),"run.start"|"checks.start"|"actions.run"|"review.start"|"git.suggestCommit"|"parent.continue")&&receipt.get("disposition").and_then(Value::as_str)==Some("accepted")){return Err(stale());}
         if core.owners.owners.len()>=256||core.owners.bindings.len()>=4096{return Err(work::refused("busy"));}
         if core.owners.owners.values().any(|o|o.stamp.generation==stamp.generation&&o.stamp.device==stamp.device&&o.kind==kind&&o.run==run_id){return Err(stale());}
-        let handle=uuid::Uuid::new_v4().to_string();receipt["ownerHandle"]=json!(handle);receipt["engineOwnerHandle"]=json!(handle);
+        let handle=uuid::Uuid::new_v4().to_string();if op=="prompt.scheduleNew"&&receipt["preparationDetached"]==true{receipt["preparationDetached"]=json!(false);}receipt["ownerHandle"]=json!(handle);receipt["engineOwnerHandle"]=json!(handle);
         db.execute("UPDATE remote_op_journal SET delivery_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",rusqlite::params![stamp.device,stamp.op_id,stamp.op_seq as i64,receipt.to_string()]).map_err(|_|stale())?;
         core.owners.bindings.insert((stamp.device.clone(),stamp.op_id.clone()),handle.clone());let thread=if op=="thread.handoff.send"{None}else{stamp.thread_id.clone()};core.owners.owners.insert(handle.clone(),Owner{local:false,stamp,kind,prepared_threads:HashSet::new(),thread,run:run_id,closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});Ok(json!({"ownerHandle":handle}))
     })).await
@@ -766,6 +767,7 @@ pub(crate) async fn remote_work_engine_step(
     thread_id: Option<String>,
     provider: String,
     permission: String,
+    target_handle: Option<String>,
 ) -> Result<Value, String> {
     hostbridge::window_is_host(&window).map_err(|_| stale())?;
     if step_id.is_empty()
@@ -817,6 +819,9 @@ pub(crate) async fn remote_work_engine_step(
             owner.stamp.op_seq,
         )?
         .ok_or_else(stale)?;
+        if op=="agents.replace"&&!root["agentCutoffConfirmed"].is_string(){return Err(stale());}
+        if let Some(handle)=target_handle.as_deref(){if kind!="prompt"||op!="agents.replace"{return Err(stale());}let target=work::target_locked(&core,&owner.stamp.meta(),handle)?;if target.kind!="turn"||target.thread_id!=owner.thread||target.thread_id!=thread_id||target.workspace_id!=owner.stamp.workspace_id||target.provider.as_deref()!=Some(provider.as_str()){return Err(stale());}}
+
         let ceiling = root
             .get("permissionCeiling")
             .or_else(|| root.get("permission"))
@@ -848,6 +853,7 @@ pub(crate) async fn remote_work_engine_step(
             &workspace,
             generation,
             revision,
+            target_handle.as_deref(),
         )?;
         let id = result["delivery"]["opId"]
             .as_str()
@@ -881,13 +887,15 @@ fn engine_step_record(
     workspace: &Option<String>,
     generation: u64,
     revision: u64,
+    target:Option<&str>,
 ) -> Result<Value, String> {
     use rusqlite::{params, OptionalExtension};
     let digest = super::store::request_digest(
         "engine.step",
-        &json!({"owner":owner,"step":step,"kind":kind,"thread":thread,"provider":provider,"permission":permission}),
+        &json!({"owner":owner,"step":step,"kind":kind,"thread":thread,"provider":provider,"permission":permission,"target":target}),
     );
     let old:Option<(String,String,String)>=db.query_row("SELECT op_id,request_digest,delivery_json FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2 AND engine_step=?3",params![device,root,step],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|_|stale())?;
+    if target.is_some(){let op:String=db.query_row("SELECT op FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2",params![device,root],|r|r.get(0)).map_err(|_|stale())?;let proof=super::store::delivery_receipt(db,device,root,db.query_row("SELECT op_seq FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2",params![device,root],|r|r.get::<_,u64>(0)).map_err(|_|stale())?)?.ok_or_else(stale)?;if op!="agents.replace"||kind!="prompt"||!proof["agentCutoffConfirmed"].is_string()||proof["threadId"].as_str()!=thread{return Err(stale());}}
     let (id, receipt) = if let Some((id, previous, source)) = old {
         if previous != digest {
             return Err(stale());
@@ -903,7 +911,8 @@ fn engine_step_record(
         let now = crate::unix_timestamp_ms();
         // Internal child sequences are fixed at 1 in their own reserved ID
         // namespace, never claim/increment/evict a viewer's monotonic sequence.
-        let receipt = json!({"generation":generation,"device":device,"opId":id,"opSeq":1,"op":if kind=="prompt"{"engine.prompt"}else{"engine.command"},"engineKind":kind,"ownerHandle":owner,"threadId":thread,"workspaceId":workspace,"provider":provider,"permission":permission,"permissionCeiling":permission,"grantRevision":revision,"attemptId":uuid::Uuid::new_v4().to_string(),"messageId":uuid::Uuid::new_v4().to_string(),"disposition":"preparing"});
+        let mut receipt = json!({"generation":generation,"device":device,"opId":id,"opSeq":1,"op":if kind=="prompt"{"engine.prompt"}else{"engine.command"},"engineKind":kind,"engineSteer":target.is_some(),"steerTarget":target,"ownerHandle":owner,"threadId":thread,"workspaceId":workspace,"provider":provider,"permission":permission,"permissionCeiling":permission,"grantRevision":revision,"attemptId":uuid::Uuid::new_v4().to_string(),"messageId":uuid::Uuid::new_v4().to_string(),"disposition":"preparing"});
+        if let Some(text)=db.query_row("SELECT delivery_json FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2",params![device,root],|r|r.get::<_,Option<String>>(0)).map_err(|_|stale())?{let root_receipt:Value=serde_json::from_str(&text).map_err(|_|stale())?;if let Some(proof)=root_receipt.get("agentCutoffProof"){receipt["engineCutoffProof"]=proof.clone();}}
         db.execute("INSERT INTO remote_op_journal(device_fingerprint,op_id,op_seq,op,request_digest,state,created_at,updated_at,engine_root,engine_step,delivery_json)VALUES(?1,?2,1,?3,?4,'pending',?5,?5,?6,?7,?8)",params![device,id,receipt["op"].as_str(),digest,now,root,step,receipt.to_string()]).map_err(|_|stale())?;
         (id, receipt)
     };
@@ -942,6 +951,7 @@ mod tests {
                 &Some("workspace".into()),
                 7,
                 1,
+                None,
             )
             .unwrap()
         };
@@ -965,7 +975,8 @@ mod tests {
             "full",
             &Some("workspace".into()),
             7,
-            1
+            1,
+            None
         )
         .is_err());
         let id = first["delivery"]["opId"].as_str().unwrap();
@@ -1329,18 +1340,90 @@ mod command_tests {
         assert!(!command_owned(&core, &command));
         core.owners.commands.get_mut(&key).unwrap().remove(&2);
         assert!(command_owned(&core, &command));
+        assert_eq!(command_state(&command),"running");command.started.store(false,std::sync::atomic::Ordering::Release);assert_eq!(command_state(&command),"starting");command.started.store(true,std::sync::atomic::Ordering::Release);assert_eq!(command_state(&command),"running");
         command
             .ambiguous
             .store(true, std::sync::atomic::Ordering::Release);
         assert!(!command_owned(&core, &command));
+        assert_eq!(command_state(&command),"uncertain");
         command
             .ambiguous
             .store(false, std::sync::atomic::Ordering::Release);
         command
             .finished
             .store(true, std::sync::atomic::Ordering::Release);
-        assert!(!command_owned(&core, &command));
+        assert!(!command_owned(&core, &command));assert_eq!(command_state(&command),"completed");
     }
 }
 
 pub(super) fn thread_busy(core:&Core,thread:&str)->bool{core.owners.owners.values().any(|o|!o.closed&&(o.thread.as_deref()==Some(thread)||o.children.values().any(|c|matches!(c,Child::Native(t) if t.thread_id.as_deref()==Some(thread)))))}
+
+/// Empty schedule preparation is not a running engine. Validate before SQL,
+/// retire after its queued transaction commits while holding the same Core lock.
+pub(super) fn validate_schedule_preparation(core:&Core,db:&rusqlite::Connection,stamp:&Stamp,thread:&str)->Result<String,String>{
+ let receipt=super::store::delivery_receipt(db,&stamp.device,&stamp.op_id,stamp.op_seq)?.ok_or_else(stale)?;
+ let handle=receipt.get("engineOwnerHandle").or_else(||receipt.get("ownerHandle")).and_then(Value::as_str).ok_or_else(stale)?;
+ let owner=core.owners.owners.get(handle).filter(|o|!o.local&&!o.closed&&o.kind=="start"&&o.stamp.device==stamp.device&&o.stamp.op_id==stamp.op_id&&o.stamp.generation==stamp.generation&&o.stamp.workspace_id==stamp.workspace_id).ok_or_else(stale)?;
+ if !owner.pending.is_empty()||!owner.children.is_empty()||receipt["queueAuthorized"]!=true||receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|a|a.iter().any(|s|!matches!(s.as_str(),Some("thread/start"|"thread/resume")))){return Err(stale());}
+ if !owner.prepared_threads.contains(thread){
+  use rusqlite::OptionalExtension;
+  let value:Option<String>=db.query_row("SELECT thread_json FROM local_transcript_meta WHERE provider IN ('claude','cursor') AND thread_id=?1",[thread],|r|r.get(0)).optional().map_err(|_|stale())?;
+  let value:Value=serde_json::from_str(&value.ok_or_else(stale)?).map_err(|_|stale())?;if value["id"]!=thread{return Err(stale());}
+  let cwd=value["cwd"].as_str().ok_or_else(stale)?;let workspace=stamp.workspace_id.as_deref().ok_or_else(stale)?;
+  let projects=super::commit::state_row(db,"kiwi.projects")?;let trees=super::commit::state_row(db,"kiwi.threadWorktrees")?;
+  let same=|p:&str|match(std::fs::canonicalize(p),std::fs::canonicalize(cwd)){(Ok(a),Ok(b))=>a==b,_=>false};
+  let project_ok=projects["value"].as_array().is_some_and(|p|p.iter().any(|p|p["id"]==workspace&&p["path"].as_str().is_some_and(same)));
+  let tree_ok=trees["value"].get(thread).is_some_and(|r|r["projectId"]==workspace&&r["status"]!="removed"&&r["path"].as_str().is_some_and(same));
+  let normal_ok=workspace=="openkiwi-normal-chats"&&super::commit::state_row(db,"kiwi.threadProjects")?["value"].get(thread).and_then(Value::as_str).is_some_and(same);
+  if !project_ok&&!tree_ok&&!normal_ok{return Err(stale());}
+  let count:i64=db.query_row("SELECT COUNT(*) FROM local_transcript_chunks WHERE provider IN ('claude','cursor') AND thread_id=?1 AND json_array_length(entries_json)>0",[thread],|r|r.get(0)).map_err(|_|stale())?;if count!=0{return Err(stale());}
+ }
+ Ok(handle.to_owned())
+}
+pub(super) fn detach_schedule_preparation(core:&mut Core,handle:&str){
+ if let Some(owner)=core.owners.owners.remove(handle){owner.signal.notify_waiters();}
+ core.owners.bindings.retain(|_,bound|bound!=handle);
+}
+
+pub(super) fn command_state(command:&EngineCommand)->&'static str{use std::sync::atomic::Ordering;if command.finished.load(Ordering::Acquire){"completed"}else if command.ambiguous.load(Ordering::Acquire){"uncertain"}else if command.started.load(Ordering::Acquire){"running"}else{"starting"}}
+
+/// Only empty native preparation may cross the queued admission boundary.
+pub(super) fn schedule_admissible(db:&rusqlite::Connection,stamp:&Stamp)->Result<bool,String>{
+ let r=super::store::delivery_receipt(db,&stamp.device,&stamp.op_id,stamp.op_seq)?.ok_or_else(stale)?;
+ Ok(r["nativeCommitted"]!=true&&r["queueAuthorized"]==true&&matches!(r["disposition"].as_str(),Some("preparing"|"dispatched"))&&r.get("nativeSteps").and_then(Value::as_array).is_none_or(|a|a.iter().all(|s|matches!(s.as_str(),Some("thread/start"|"thread/resume")))))
+}
+#[cfg(test)]
+mod schedule_tests{
+ use super::*;
+ fn preparation(f:&mut super::super::threads::tests::Fixture){
+  f.db.execute("UPDATE remote_op_journal SET delivery_json=json_set(delivery_json,'$.disposition','preparing')",[]).unwrap();
+  let receipt=json!({"op":"prompt.scheduleNew","generation":1,"device":"device","opId":"op","opSeq":1,"workspaceId":"p","threadId":"t","provider":"openai","disposition":"preparing","queueAuthorized":true,"ownerHandle":"prep","engineOwnerHandle":"prep","permission":"ask","permissionCeiling":"ask","attemptId":"a","messageId":"m"});super::super::store::save_delivery_receipt(&mut f.db,"device","op",1,&receipt).unwrap();super::super::store::claim_native_step(&mut f.db,"device","op",1,"thread/start").unwrap();
+  let mut core=f.inner.lock();core.owners.owners.insert("prep".into(),Owner{local:false,stamp:f.stamp.clone(),kind:"start".into(),prepared_threads:HashSet::from(["t".into()]),thread:Some("t".into()),run:"run".into(),closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});core.owners.bindings.insert(("device".into(),"op".into()),"prep".into());
+ }
+ #[test]
+ fn schedule_admission_atomically_detaches_only_empty_preparation_and_replays(){
+  let mut f=super::super::threads::tests::fixture("prompt.scheduleNew");preparation(&mut f);assert!(super::super::commit::prior(&f.db,&f.stamp).is_err());assert!(schedule_admissible(&f.db,&f.stamp).unwrap());
+  let mut writes=vec![super::super::commit::StateWrite{key:"kiwi.queuedTurns".into(),expected_revision:None,value:json!({"t":[{"id":"q","threadId":"t","text":"later","attachments":[],"remoteDelivery":{"device":"device","opId":"op","opSeq":1,"workspaceId":"p","ownerHandle":"prep","attemptId":"a","messageId":"m","disposition":"queued"}}]})}];
+  let result=super::super::commit::commit_state(&mut f.db,&f.inner,&f.stamp,&mut writes,&[],true,None).unwrap();assert!(result["rows"][0]["value"]["t"][0]["remoteDelivery"].get("ownerHandle").is_none());assert!(!f.inner.lock().owners.owners.contains_key("prep"));assert!(f.inner.lock().owners.bindings.is_empty());
+  let r=super::super::store::delivery_receipt(&f.db,"device","op",1).unwrap().unwrap();assert_eq!(r["preparationDetached"],true);assert_eq!(r["preparationSteps"],json!(["thread/start"]));assert!(r.get("nativeSteps").is_none());assert_eq!(r["queuedTurnId"],"q");
+  // A late renderer preparation save cannot revive its dead owner or its latch.
+  let mut late=r.clone();late["ownerHandle"]=json!("prep");late["nativeSteps"]=json!(["thread/start"]);super::super::store::save_delivery_receipt(&mut f.db,"device","op",1,&late).unwrap();let r=super::super::store::delivery_receipt(&f.db,"device","op",1).unwrap().unwrap();assert!(r.get("ownerHandle").is_none());assert!(r.get("nativeSteps").is_none());assert!(r["nativeCommitted"]==true);
+  assert_eq!(super::super::commit::commit_state(&mut f.db,&f.inner,&f.stamp,&mut writes,&[],true,None).unwrap()["replayed"],true);
+  super::super::hostbridge::test_attach(&f.inner,2);assert!(!r["ownerHandle"].is_string());assert_eq!(r["disposition"],"queued");
+ }
+ #[test]
+ fn schedule_refuses_pending_or_paid_preparation_without_changing_queue(){
+  let mut f=super::super::threads::tests::fixture("prompt.scheduleNew");preparation(&mut f);f.inner.lock().owners.owners.get_mut("prep").unwrap().pending.insert("pending-write".into());assert!(validate_schedule_preparation(&f.inner.lock(),&f.db,&f.stamp,"t").is_err());f.inner.lock().owners.owners.get_mut("prep").unwrap().pending.clear();assert!(validate_schedule_preparation(&f.inner.lock(),&f.db,&f.stamp,"t").is_ok());
+  f.db.execute("UPDATE remote_op_journal SET delivery_json=json_set(delivery_json,'$.nativeSteps',json('[\"turn/start\"]'))",[]).unwrap();assert!(!schedule_admissible(&f.db,&f.stamp).unwrap());assert!(validate_schedule_preparation(&f.inner.lock(),&f.db,&f.stamp,"t").is_err());assert!(f.inner.lock().owners.owners.contains_key("prep"));
+ }
+}
+#[cfg(test)]
+mod replacement_tests{
+ use super::*;
+ #[test]
+ fn replacement_steering_receipt_is_distinct_and_cannot_also_start_a_turn(){
+  let mut db=rusqlite::Connection::open_in_memory().unwrap();super::super::store::init(&db).unwrap();super::super::store::claim_operation(&mut db,"device","root",1,"agents.replace","root").unwrap();let mut r=json!({"threadId":"parent","disposition":"dispatched"});super::super::store::save_delivery_receipt(&mut db,"device","root",1,&r).unwrap();
+  let make=|db:&rusqlite::Connection,target:Option<&str>|engine_step_record(db,"device","root","owner","replacement-input","prompt",Some("parent"),"claude","ask",&Some("p".into()),1,1,target);
+  assert!(make(&db,Some("target")).is_err());r["agentCutoffConfirmed"]=json!("child");super::super::store::save_delivery_receipt(&mut db,"device","root",1,&r).unwrap();let step=make(&db,Some("target")).unwrap();assert_eq!(make(&db,Some("target")).unwrap(),step);assert!(make(&db,Some("different")).is_err());assert!(make(&db,None).is_err());let id=step["delivery"]["opId"].as_str().unwrap();assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"turn/start").is_err());assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"cursor_turn_steer").is_err());super::super::store::claim_native_step(&mut db,"device",id,1,"claude_turn_steer").unwrap();assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"claude_turn_steer").is_err());assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"claude_prompt").is_err());
+ }
+}

@@ -67,6 +67,25 @@ function unique<T extends { id: string }>(entries: T[]): T[] {
   if (new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new Error("Duplicate identity");
   return entries;
 }
+function threadRow(entry: unknown, workspaceId: string): WireThread {
+  const v = object(entry);
+  if (v.workspaceId !== workspaceId || typeof v.provider !== "string" || !PROVIDERS.has(v.provider) || typeof v.status !== "string" || !STATUSES.has(v.status)) throw new Error("Invalid thread");
+  return { id: id(v.id), workspaceId, provider: v.provider as WireProvider, title: text(v.title, 512), preview: text(v.preview, 16000), updatedAt: measure(v.updatedAt), status: v.status as WireTaskStatus,
+    ...(v.archived === true ? { archived: true } : {}), ...(v.child === true ? { child: true } : {}), ...(v.pinned === true ? { pinned: true } : {}),
+    ...(v.unread === true ? { unread: true } : {}), ...(v.waiting === true ? { waiting: true } : {}), ...(v.parentThreadId === undefined ? {} : { parentThreadId: id(v.parentThreadId) }) };
+}
+/** What happened between two looks at a list, for telling someone about it. */
+export interface RemoteThreadChange { thread: WireThread; kind: "finished" | "waiting" }
+export function threadChanges(before: readonly WireThread[], after: readonly WireThread[]): RemoteThreadChange[] {
+  const earlier = new Map(before.map((thread) => [thread.id, thread]));
+  return after.flatMap((thread): RemoteThreadChange[] => {
+    const was = earlier.get(thread.id);
+    if (!was) return [];
+    if (thread.waiting && !was.waiting) return [{ thread, kind: "waiting" }];
+    const active = (status: string) => status === "running" || status === "starting";
+    return active(was.status) && !active(thread.status) && thread.status !== "error" && thread.status !== "interrupted" ? [{ thread, kind: "finished" }] : [];
+  });
+}
 function turn(value: unknown): WireMessage["turnStatus"] {
   if (value === null) return null;
   if (typeof value !== "string" || !TURNS.has(value)) throw new Error("Invalid turn");
@@ -319,6 +338,22 @@ class ViewerSession {
       else this.selectThread(null);
     } catch (error) { if (this.alive && generation === this.catalogToken) this.fail(error); }
   }
+  /** A quiet look at the first page, which keeps pages already loaded and what's selected. */
+  async watchThreads(): Promise<RemoteThreadChange[]> {
+    const workspaceId = this.view?.workspaceId;
+    const token = this.listToken;
+    if (!this.alive || !workspaceId || this.view?.lists.get(workspaceId)?.loading) return [];
+    const raw = object(await viewerRequest<unknown>(this.device, "threads.list", { workspaceId, limit: REMOTE_DEFAULT_ROWS }));
+    const fresh = unique(rows(raw.threads, (entry) => threadRow(entry, workspaceId)));
+    if (!this.alive || token !== this.listToken || this.view?.workspaceId !== workspaceId) return [];
+    const known = this.view.lists.get(workspaceId);
+    if (!known) return [];
+    const byId = new Map(fresh.map((thread) => [thread.id, thread]));
+    const kept = new Set(known.threads.map((thread) => thread.id));
+    const next = [...fresh.filter((thread) => !kept.has(thread.id)), ...known.threads.map((thread) => byId.get(thread.id) ?? thread)].slice(0, 1000);
+    changeDevice(this.device, (current) => ({ ...current, lists: cacheList(current.lists, workspaceId, { ...known, threads: next }) }));
+    return threadChanges(known.threads, next);
+  }
   async loadThreads(workspaceId: string, more: boolean) {
     if (!this.alive || this.view?.workspaceId !== workspaceId) return;
     const generation = ++this.listToken;
@@ -328,13 +363,7 @@ class ViewerSession {
     changeDevice(this.device, (current) => ({ ...current, lists: cacheList(current.lists, workspaceId, { threads: existing?.threads ?? [], cursor: existing?.cursor, loading: true }) }));
     try {
       const raw = object(await viewerRequest<unknown>(this.device, "threads.list", { workspaceId, ...(cursor ? { cursor } : {}), limit: REMOTE_DEFAULT_ROWS }));
-      const threads = unique(rows(raw.threads, (entry): WireThread => {
-        const v = object(entry);
-        if (v.workspaceId !== workspaceId || typeof v.provider !== "string" || !PROVIDERS.has(v.provider) || typeof v.status !== "string" || !STATUSES.has(v.status)) throw new Error("Invalid thread");
-        return { id: id(v.id), workspaceId, provider: v.provider as WireProvider, title: text(v.title, 512), preview: text(v.preview, 16000), updatedAt: measure(v.updatedAt), status: v.status as WireTaskStatus,
-          ...(v.archived === true ? { archived: true } : {}), ...(v.child === true ? { child: true } : {}), ...(v.pinned === true ? { pinned: true } : {}),
-          ...(v.unread === true ? { unread: true } : {}), ...(v.parentThreadId === undefined ? {} : { parentThreadId: id(v.parentThreadId) }) };
-      }));
+      const threads = unique(rows(raw.threads, (entry) => threadRow(entry, workspaceId)));
       if (!this.alive || generation !== this.listToken || this.view?.workspaceId !== workspaceId) return;
       const next = more ? [...new Map([...(existing?.threads ?? []), ...threads].map((thread) => [thread.id, thread])).values()] : threads;
       const nextCursor = raw.cursor === undefined || raw.cursor === null ? undefined : text(raw.cursor, 4096);
@@ -544,5 +573,25 @@ export async function openRemoteThread(device: string, workspaceId: string, thre
   if (wanted() && controller.view?.lists.get(workspaceId)?.threads.some((thread) => thread.id === threadId)) controller.selectThread(threadId);
 }
 export const loadRemoteThreads = (device: string) => { const controller = controllers.get(device); if (controller?.view?.workspaceId) void controller.loadThreads(controller.view.workspaceId, true); };
+export const watchRemoteThreads = (device: string): Promise<RemoteThreadChange[]> => controllers.get(device)?.watchThreads() ?? Promise.resolve([]);
+const MOST_EXPORT_PAGES = 500;
+/** Everything the host keeps for a thread, for saving to a file. It reads past the
+ * window on screen and changes nothing there. `complete` is false if it had to stop. */
+export async function readRemoteTranscript(device: string, threadId: string): Promise<{ messages: WireMessage[]; activities: WireActivity[]; complete: boolean }> {
+  const shown = useRemoteStore.getState().devices[device]?.timelines.get(threadId);
+  let messages = shown?.messages ?? [], activities = shown?.activities ?? [];
+  let before = shown?.history.hasMore ? shown.history.cursor ?? undefined : undefined;
+  for (let page = 0; before && page < MOST_EXPORT_PAGES; page += 1) {
+    try {
+      const raw = object(await viewerRequest<ThreadReadResult>(device, "timeline.read", { threadId, before, limit: REMOTE_DEFAULT_ROWS }));
+      messages = mergeRows(unique(rows(raw.messages, message)), messages);
+      activities = mergeRows(unique(rows(raw.activities, activity)), activities);
+      const next = history(raw.history);
+      before = next.hasMore ? next.cursor ?? undefined : undefined;
+    } catch { break; }
+  }
+  return { messages, activities, complete: !before };
+}
+
 export const loadRemoteEarlier = (device: string) => { void controllers.get(device)?.loadEarlier(); };
 export const refreshRemoteDevice = (device: string) => { const controller = controllers.get(device); if (controller) { controller.retry = 0; void controller.refresh(); } };

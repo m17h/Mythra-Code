@@ -15,6 +15,7 @@ pub(super) enum Event {
     Publish,
     Lease,
     Grant,
+    Readiness,
 }
 fn event(event: Event) -> &'static str {
     match event {
@@ -30,10 +31,12 @@ fn event(event: Event) -> &'static str {
         Event::Publish => "publish",
         Event::Lease => "lease",
         Event::Grant => "grant",
+        Event::Readiness => "readiness",
     }
 }
 fn operation(value: &str) -> &'static str {
     match value {
+        "listener"=>"listener", "providers"=>"providers",
         "tls.accept" => "tls.accept",
         "tls.dial" => "tls.dial",
         "tcp.dial" => "tcp.dial",
@@ -75,6 +78,8 @@ fn operation(value: &str) -> &'static str {
 }
 fn outcome(value: &str) -> &'static str {
     match value {
+        "listening"=>"listening", "tcp_received"=>"tcp_received", "permission_denied"=>"permission_denied", "address_in_use"=>"address_in_use", "connection_refused"=>"connection_refused", "network_unreachable"=>"network_unreachable",
+        "no_catalog_requests"=>"no_catalog_requests", "no_thread_requests"=>"no_thread_requests", "no_subscribe"=>"no_subscribe", "subscribe_requested"=>"subscribe_requested", "ready_reported"=>"ready_reported", "none_reported"=>"none_reported",
         "ok" => "ok",
         "accepted" => "accepted",
         "queued" => "queued",
@@ -355,4 +360,23 @@ mod enabled {
             fs::remove_dir_all(root).unwrap();
         }
     }
+}
+
+/// Numeric/error-kind classification only. Never record formatted OS errors,
+/// addresses or claim that a timeout by itself proves a firewall block.
+pub(super) fn network_outcome(error:&std::io::Error)->&'static str{match error.kind(){std::io::ErrorKind::PermissionDenied=>"permission_denied",std::io::ErrorKind::ConnectionRefused=>"connection_refused",std::io::ErrorKind::AddrInUse=>"address_in_use",std::io::ErrorKind::NetworkUnreachable|std::io::ErrorKind::HostUnreachable=>"network_unreachable",std::io::ErrorKind::TimedOut=>"timeout",_=>"failed"}}
+#[tauri::command]
+pub(crate) fn remote_host_provider_status(state:tauri::State<'_,super::RemoteState>,window:tauri::WebviewWindow,generation:u64,ready_providers:u8,total_providers:u8)->Result<(),super::wire::WireError>{
+ super::hostbridge::window_is_host(&window)?;super::hostbridge::check_generation(&state.inner.lock(),generation)?;
+ if total_providers>5||ready_providers>total_providers{return Err(super::wire::WireError::new("invalid","That provider status isn't valid."));}
+ record(Event::Readiness,0,0,total_providers as u64,ready_providers as usize,"providers",if ready_providers==0{"none_reported"}else{"ready_reported"});Ok(())
+}
+#[cfg(test)]
+mod readiness_tests{
+ use super::*;
+ #[test]
+ fn readiness_and_network_classification_never_infers_firewall_or_formats_content(){
+  for(kind,expected)in[(std::io::ErrorKind::TimedOut,"timeout"),(std::io::ErrorKind::PermissionDenied,"permission_denied"),(std::io::ErrorKind::ConnectionRefused,"connection_refused"),(std::io::ErrorKind::AddrInUse,"address_in_use")]{let error=std::io::Error::new(kind,"SECRET path or address");assert_eq!(network_outcome(&error),expected);assert!(!network_outcome(&error).contains("SECRET"));}
+  assert_eq!(operation("providers"),"providers");assert_eq!(outcome("no_subscribe"),"no_subscribe");assert_eq!(outcome("firewall_blocked"),"other");assert_eq!(operation("SECRET"),"other");
+ }
 }

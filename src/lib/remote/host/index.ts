@@ -82,7 +82,7 @@ export function createRemoteHost(sources: HostSources, transport: HostTransport 
         let reconciliationTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
-            (async () => { await reconcileRemoteStateCommits(); await sources.reconcile(isCurrent); history.requestRecovery(await reconcilePendingRequests(generation, isCurrent));
+            (async () => { await reconcileRemoteStateCommits(); await sources.reconcile(isCurrent); await reconcilePendingRequests(generation, isCurrent, undefined, (ready, unavailable) => history.requestRecovery(ready, unavailable));
               if (isCurrent()) await remoteWork?.reconcileQueues(false); })(),
             new Promise<never>((_, reject) => { reconciliationTimer = setTimeout(() => reject(new Error("Host reconciliation timed out")), 15_000); }),
           ]);

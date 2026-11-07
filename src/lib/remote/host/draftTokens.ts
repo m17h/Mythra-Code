@@ -1,8 +1,10 @@
+import type { ThreadHandoff } from "../../../types";
 import type { WireExecutionSettings, RemoteOperationIdentity } from "../wire";
 import { HostReadError } from "./scope";
 export interface DraftToken {
   handle: string; startTarget: string; device: string; workspaceId: string; expires: number; settings: WireExecutionSettings;
   attemptId: string; cancelled: boolean; phase: "draft" | "preparing" | "dispatched" | "accepted";
+  handoff?: ThreadHandoff;
   original?: RemoteOperationIdentity; threadId?: string;
 }
 export class DraftTokens {
@@ -14,11 +16,12 @@ export class DraftTokens {
     if (!this.isCurrent() || !entry || entry.device !== device || entry.workspaceId !== workspaceId || entry.expires < Date.now()) throw new HostReadError("stale_target", "This draft expired. Refresh its settings.");
     return entry;
   }
-  set(device: string, workspaceId: string, settings: WireExecutionSettings, previous?: string): DraftToken {
+  set(device: string, workspaceId: string, settings: WireExecutionSettings, previous?: string, handoff?: ThreadHandoff): DraftToken {
     for (const [id, entry] of this.entries) if (entry.expires < Date.now() && entry.phase === "draft") this.entries.delete(id);
-    if (previous) { const old = this.get(previous, device, workspaceId); if (old.phase !== "draft") throw new HostReadError("stale_target", "This draft is already being sent."); this.entries.delete(previous); }
+    if (previous) { const old = this.get(previous, device, workspaceId); handoff ??= old.handoff; if (old.phase !== "draft") throw new HostReadError("stale_target", "This draft is already being sent."); this.entries.delete(previous); }
     if (this.entries.size >= 256 || [...this.entries.values()].filter((e) => e.device === device).length >= 32) throw new HostReadError("busy", "Close another remote draft first.");
     const entry: DraftToken = { device, workspaceId, settings: structuredClone(settings), handle: crypto.randomUUID(), startTarget: crypto.randomUUID(),
+      ...(handoff ? { handoff: { ...handoff, ...(settings.provider ? { targetProvider: settings.provider } : {}) } } : {}),
       attemptId: crypto.randomUUID(), expires: Date.now() + 30 * 60_000, cancelled: false, phase: "draft" };
     this.entries.set(entry.handle, entry); return entry;
   }

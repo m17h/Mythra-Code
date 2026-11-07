@@ -18,11 +18,15 @@ import type { RemoteStopSnapshot, RemoteTurnRunner, RemoteWorkAdapter } from "./
 import { assertParityAuthority, executeParityMutation, isParityOperation, isParityRead, projectParityRead, validateParityArgs, type HostParityActions } from "./parityActions";
 import { DraftTokens, type DraftToken } from "./draftTokens";
 import { validateExecutionSettings } from "./executionPreferences";
+import { commitHostState } from "./stateCommit";
 import { createHostSettingsActions } from "./settingsActions";
 import type { AttachmentRecord } from "../../../components/StudioDock";
 import { executeQueueSteer } from "./queueSteer";
+import { HostResources, isHostResourceOperation } from "./resources";
 import { createHostEngineAdapters } from "./engineAdapters";
 import { hostDiscoveryPreferences, resolveDiscoverySettings } from "./discoverySettings";
+import { promptInvocationText } from "./promptText";
+import { createHostDiscovery } from "./discoveryActions";
 import { executeTerminal, isTerminalMutation } from "./nativeActions";
 import { HostDomains, isDomainMutation, isDomainRead } from "./domainActions";
 import { clearRemoteEngineOwners } from "./engineOwners";
@@ -33,7 +37,7 @@ import { executeThreadRow, isThreadRowOperation, type ThreadRowLifecycle } from 
 
 const mutations = new Set(["draft.settings.set", "prompt.cancel", "prompt.send", "prompt.queue", "prompt.steer", "turn.stop", "approval.answer", "question.answer", "thread.settings.set",
   "thread.rename", "thread.archive", "thread.restore", "thread.delete", "thread.pin", "thread.fork", "projects.pin", "projects.remove", "projects.reorder"]);
-export function isRemoteWorkOperation(op: string): boolean { return isProjectNavigationOperation(op) || isDomainMutation(op) || isDomainRead(op) || isTerminalMutation(op) || mutations.has(op) || isParityOperation(op) || op === "work.inspect" || op === "host.context" || op === "files.search"; }
+export function isRemoteWorkOperation(op: string): boolean { return isHostResourceOperation(op) || isProjectNavigationOperation(op) || isDomainMutation(op) || isDomainRead(op) || isTerminalMutation(op) || mutations.has(op) || isParityOperation(op) || op === "work.inspect" || op === "host.context" || op === "files.search"; }
 const invalid = () => new HostReadError("unsupported", "This work request is not valid.");
 const stale = () => new HostReadError("stale_target", "This conversation or request changed. Refresh it before trying again.");
 export interface HostMutationContext {
@@ -90,6 +94,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
   // Source grants can be behind Rust's event snapshot. Both must still permit
   // work; the authoritative native check closes the final dispatch race.
   const sources: HostContextSources = { ...options.sources,
+    resolveArchivedThread: (threadId) => options.rows?.archivedThread(threadId) ?? null,
     getKnownThreads: () => ({ ...Object.fromEntries(learned), ...options.sources.getKnownThreads() }),
     getGrant: (device) => {
       const local = options.sources.getGrant(device);
@@ -107,6 +112,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
             && (local.capabilities as { manageProjects?: boolean }).manageProjects === true } };
     },
   };
+  const discovery = createHostDiscovery(sources);
   const engines = options.parity ? createHostEngineAdapters(sources, options.parity, (id) => options.getRunner().pumpRemoteQueue(id), current, options.getRunner, () => options.rows?.threadLifecycle,
     async (_op, args, operation) => {
       const ctx = operation.context, threadId = ctx.activeThread!.id;
@@ -120,8 +126,9 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           ...(entry.resolveSkillMentions === false ? { resolveSkillMentions: false, resolveSkillPrompt: async (text: string) => text } : {}) }, entry.text, owned.stop!);
         targets.consume(owned); return result;
       });
-    }) : undefined;
+    }, () => resources, { targets, ensureHydrated: async (id, check) => { remember(id); await options.ensureHydrated(id, check); } }) : undefined;
   const parity = engines?.adapter;
+  const resources = new HostResources(sources, options.generation, (ctx) => parity?.revision(ctx) ?? `r-${ctx.activeThread?.id ?? ctx.activeWorkspace?.id}`);
   const domains = new HostDomains(sources, options.generation, current, parity);
   const navigation = new HostProjectNavigation(sources, options.generation, current, createHostProjectRegistration());
   function remember(threadId: string): void {
@@ -247,14 +254,14 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       const delivery = journal(id, target, ctx);
       try {
         if (request.op === "draft.settings.set") {
-          strictKeys(args, ["workspaceId", "draftHandle", "provider", "model", "effort", "permission", "serviceTier", "subagents", "isolated"]);
+          strictKeys(args, ["workspaceId", "draftHandle", "handoffHandle", "provider", "model", "effort", "permission", "serviceTier", "subagents", "isolated"]);
           const previous = args.draftHandle === undefined ? undefined : idArg(args.draftHandle);
           const patch = Object.fromEntries(Object.entries(args).filter(([key]) => ["provider", "model", "effort", "permission", "serviceTier", "subagents", "isolated"].includes(key)));
           const settings = validateExecutionSettings({ ...(previous ? drafts.get(previous, id.device, workspaceId).settings : {}), ...patch }, sources, ctx.effectiveSettings);
           if (settings.permission && remotePermission(settings.permission, currentWorkGrant(sources, id.device)) !== settings.permission
             || settings.permission === "full" && ctx.effectiveSettings.permission !== "full") throw new HostReadError("forbidden", "Full access isn't allowed for this device. To change it, open Settings → Connections → Devices on the other device.");
           await delivery.beforeCreate();
-          const token = drafts.set(id.device, workspaceId, settings, previous);
+          const token = drafts.set(id.device, workspaceId, settings, previous, args.handoffHandle === undefined ? undefined : resources.handoff(idArg(args.handoffHandle), id.device, workspaceId));
           await delivery.accepted({});
           return { ...delivery.result(), draftHandle: token.handle, startTarget: token.startTarget, settings: token.settings };
         }
@@ -304,13 +311,13 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     const threadId = args.threadId === undefined ? undefined : idArg(args.threadId);
     let target: ExecutionTarget;
     if (request.op === "prompt.send") {
-      strictKeys(args, ["threadId", "workspaceId", "text", "draftHandle", "attachmentIds"]);
+      strictKeys(args, ["threadId", "workspaceId", "text", "draftHandle", "attachmentIds", "skillInvocationText"]);
       if (Boolean(threadId) === (args.workspaceId !== undefined)) throw invalid();
       target = threadId ? { threadId } : { workspaceId: idArg(args.workspaceId) };
     } else {
       if (!threadId) throw invalid();
       target = { threadId };
-      strictKeys(args, request.op === "prompt.queue" ? ["threadId", "workspaceId", "text", "draftHandle", "attachmentIds"] : request.op === "prompt.steer" ? ["threadId", "text", "target"]
+      strictKeys(args, request.op === "prompt.queue" ? ["threadId", "workspaceId", "text", "draftHandle", "attachmentIds", "skillInvocationText"] : request.op === "prompt.steer" ? ["threadId", "text", "target", "skillInvocationText"]
         : request.op === "turn.stop" ? ["threadId", "target"] : request.op === "approval.answer" ? ["threadId", "target", "decision"] : ["threadId", "target", "answers", "cancel"]);
     }
     const initial = context(target, id.device);
@@ -345,13 +352,26 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         delivery.accepted = async (info) => { draft.phase = "accepted"; await originalAccepted(info); };
         delivery.bindThread = async (threadId) => { draft.threadId = threadId; await bind(threadId); };
       }
-      ctx = { ...ctx, remoteDelivery: delivery };
+      ctx = { ...ctx, remoteDelivery: delivery,
+        ...(request.op.startsWith("prompt.") ? { skillInvocationText: promptInvocationText(prompt(args.text), args.skillInvocationText) } : {}) };
       if (request.op === "prompt.send" || request.op === "prompt.queue") {
         const resolved = await attachments(args.attachmentIds, id.device, ctx.activeWorkspace!.id);
         delivery.assertAllowed();
         ctx = { ...ctx, attachments: resolved.records, remoteAttachmentIds: resolved.ids };
       }
-      if (request.op === "prompt.send") return await options.getRunner().sendPromptTo(ctx, prompt(args.text));
+      if (request.op === "prompt.send") {
+        const result = await options.getRunner().sendPromptTo(ctx, prompt(args.text));
+        if (draft?.handoff && result.state === "accepted" && result.threadId) {
+          // Input is already confirmed. Metadata failure must NEVER invite a
+          // second send; its exact native operation can reconcile independently.
+          try { await commitHostState({ context: ctx, identity: id, generation: options.generation,
+            grantRevision: currentWorkGrant(sources, id.device).revision, assertAllowed: () => delivery!.assertAllowed() }, ["kiwi.threadHandoffs"], (rows) => {
+              const all = rows[0].value && typeof rows[0].value === "object" && !Array.isArray(rows[0].value) ? rows[0].value as Record<string, unknown> : {};
+              return { "kiwi.threadHandoffs": { ...all, [result.threadId!]: draft.handoff } };
+            }); } catch { /* Native receipt still proves this prompt was delivered; no resend. */ }
+        }
+        return result;
+      }
       if (request.op === "prompt.queue") return await options.getRunner().queuePromptTo(ctx, prompt(args.text), { ...delivery.queueRecord(), attachmentIds: ctx.remoteAttachmentIds });
       if (!owned) throw invalid();
       if (request.op === "prompt.steer") {
@@ -580,7 +600,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       active += 1;
       try {
         if (isProjectNavigationOperation(request.op)) {
-          if (request.op === "projects.add") { identity(request, args); await refresh(request.device); currentGrant(sources, request.device, request.grant); }
+          if (request.op === "projects.add" || request.op === "projects.clone") { identity(request, args); await refresh(request.device); currentGrant(sources, request.device, request.grant); }
           return await navigation.execute(request);
         }
         if (isDomainRead(request.op)) {
@@ -599,7 +619,24 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           }
           return result;
         }
+        if (isHostResourceOperation(request.op)) {
+          const target = typeof args.threadId === "string" ? { threadId: args.threadId } : { workspaceId: idArg(args.workspaceId) };
+          if (typeof args.threadId === "string") remember(args.threadId);
+          const ctx = resolveThreadExecutionContext(sources, target), path = targetPath(ctx);
+          const validate = () => {
+            assertCurrent(); const grant = currentGrant(sources, request.device, request.grant);
+            const workspace = requireWorkspace(sources, ctx.activeWorkspace!.id, grant);
+            if (workspace.id !== args.workspaceId || workspace.path !== ctx.activeWorkspace!.path) throw stale();
+            if (ctx.activeThread && requireThread(sources, sources.getKnownThreads()[ctx.activeThread.id], grant).workspace.id !== workspace.id) throw stale();
+            if (sources.executionPathFor(ctx.activeThread?.id ?? "", workspace.path) !== path) throw stale();
+          };
+          return await resources.read(request, args, ctx, validate);
+        }
         if (request.op === "work.inspect") return await inspect(request, args);
+        if (request.op === "discovery.run.status" || request.op === "discovery.check.status") {
+          currentGrant(options.sources, request.device, request.grant);
+          return await discovery.status(request, idArg(args.workspaceId), idArg(args.processHandle)) as unknown as RemoteWorkResult;
+        }
         if (isParityOperation(request.op) && isParityRead(request.op)) {
           validateParityArgs(request.op, args);
           if (!parity) throw new HostReadError("unsupported", "This context is not connected yet.");
@@ -625,6 +662,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
             if (request.op === "thread.handoff.read") { await options.ensureHydrated(ctx.activeThread!.id, validate); validate(); }
             const revision = parity.revision(ctx);
             const raw = await parity.read(request.op, args, ctx);
+            if (request.op === "thread.handoff.read" && raw.rows[0]) raw.rows[0].handoffHandle = resources.issueHandoff(ctx, request.device, args.provider as Thread["modelProvider"] as import("../../../types").Provider);
             validate();
             if (parity.revision(ctx) !== revision || raw.revision !== revision) throw stale();
             return projectParityRead(raw);
@@ -638,6 +676,6 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         try { return await work; } finally { inflight.delete(key); }
       } finally { active -= 1; }
     },
-    dispose() { disposed = true; clearRemoteEngineOwners(options.generation); navigation.dispose(); domains.dispose(); engines?.dispose(); drafts.clear(); targets.dispose(); unsubscribe?.(); nativeGrants.clear(); learned.clear(); for (const release of releases) release(); releases.clear(); },
+    dispose() { disposed = true; clearRemoteEngineOwners(options.generation); navigation.dispose(); resources.dispose(); domains.dispose(); engines?.dispose(); drafts.clear(); targets.dispose(); unsubscribe?.(); nativeGrants.clear(); learned.clear(); for (const release of releases) release(); releases.clear(); },
   };
 }

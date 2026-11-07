@@ -2406,8 +2406,8 @@ pub(crate) async fn remote_claim(app:&AppHandle,target:&crate::remote::work::Tar
     let _=process;crate::remote::work::claim_target(app,meta,handle)
 }
 
-pub(crate) async fn remote_pending_inventory(state:&CursorState)->Vec<Value>{
-    let turns:Vec<_>=state.turns.lock().await.iter().map(|(id,turn)|(id.clone(),turn.clone())).collect();let mut result=Vec::new();for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.server_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){if let(Some(request),Ok(id))=(requests.get(id),serde_json::from_str::<Value>(id)){result.push(json!({"id":id,"method":request["method"],"params":request["params"],"threadId":thread,"receivedAt":crate::unix_timestamp_ms()}));}}}result
+pub(crate) async fn remote_pending_inventory(state:&CursorState,result:&mut crate::remote::pending::Inventory){
+ let turns:Vec<_>=state.turns.lock().await.iter().map(|(id,turn)|(id.clone(),turn.clone())).collect();for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.server_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){if let(Some(request),Ok(id))=(requests.get(id),serde_json::from_str::<Value>(id)){if let Some(method)=request["method"].as_str(){result.push(id,method,&thread,&request["params"],turn.turn_id.as_deref(),request["params"]["itemId"].as_str(),crate::unix_timestamp_ms());}else{result.incomplete();}}else{result.incomplete();}}}
 }
 
 pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut crate::remote::work::Target)->Result<bool,String>{let stale=||crate::remote::work::refused("stale_target");let thread=target.thread_id.as_deref().ok_or_else(stale)?;let state=app.state::<CursorState>();
@@ -2417,7 +2417,7 @@ pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut crate::r
 
 pub(crate) fn remote_row_gate<T>(app:&AppHandle,thread:&str,op:&str,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{
  let state=app.state::<CursorState>();let turns=state.turns.try_lock().map_err(|_|crate::remote::work::refused("busy"))?;
- if op!="thread.rename"&&turns.get(thread).is_some_and(|p|p.alive.load(Ordering::Acquire)){return Err(crate::remote::work::refused("busy"));}
+ if op!="thread.rename"&&turns.get(thread).is_some_and(|p|p.alive.load(Ordering::Acquire)||op=="agents.accept"&&p.cutoff_uncertain.load(Ordering::Acquire)){return Err(crate::remote::work::refused("busy"));}
  state.starts.row_gate(thread,op,commit)
 }
 

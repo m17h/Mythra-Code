@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChildAgentTarget, ProjectSubagentSettings, Provider } from "../../types";
+import type { ChildAgentPreset, ChildAgentTarget, ProjectSubagentSettings, Provider } from "../../types";
+import { hostRead } from "../../lib/remote/remoteActions";
+import type { WireResourceResult } from "../../lib/remote/wire-resources";
 import type { ChildAgentReadiness } from "../../lib/childAgents";
 import type { HostContextResult, WireExecutionSettings, WireSubagents } from "../../lib/remote/wire";
 import { PermissionPicker } from "../PermissionPicker";
@@ -11,7 +13,9 @@ const DEFAULT_SUBAGENTS: WireSubagents = { enabled: false, engine: "mythra", max
 
 /** The real permission and sub-agent pickers. Each choice is sent to the host,
  * which checks it against what this device has been given. */
-export function RemoteComposerControls({ context, chosen, name, provider, running, threadId, scopeKey, onSettings, onNotice, onOpenSettings }: {
+export function RemoteComposerControls({ device, workspaceId, context, chosen, name, provider, running, threadId, scopeKey, onSettings, onNotice, onOpenSettings }: {
+  device: string;
+  workspaceId: string | undefined;
   context: HostContextResult | undefined;
   /** A new thread's choices, not yet saved in a thread. */
   chosen?: Pick<WireExecutionSettings, "permission" | "subagents">;
@@ -54,13 +58,25 @@ export function RemoteComposerControls({ context, chosen, name, provider, runnin
   }, [subagents]);
   const modelCatalogs = useMemo(() => Object.fromEntries((context?.providers ?? []).map((entry) => [entry.id,
     entry.models.map((model) => ({ id: model.id, name: model.name }))])) as ChildAgentModelCatalogs, [context?.providers]);
+  // Saved presets belong to the other machine. Applying one is an ordinary crew change there.
+  const [presets, setPresets] = useState<ChildAgentPreset[]>([]);
+  useEffect(() => {
+    setPresets([]);
+    if (!workspaceId) return;
+    let current = true;
+    hostRead<WireResourceResult>(device, "agents.presets.read", { workspaceId }).then((result) => {
+      if (current) setPresets((result.presets ?? []).map((preset) => ({ id: preset.id, name: preset.name,
+        policy: { enabled: preset.subagents.enabled, maxConcurrent: preset.subagents.maxConcurrent, childAgents: { enabled: Boolean(preset.subagents.crew?.length), targets: (preset.subagents.crew ?? []) as ChildAgentTarget[] } } })));
+    }, () => undefined);
+    return () => { current = false; };
+  }, [device, workspaceId]);
   const change = (next: Partial<WireSubagents>) => onSettings({ subagents: { ...subagents, ...next } });
   return <>
     <PermissionPicker value={permission} open={open} rootRef={root} description={description} onOpenChange={setOpen} onChange={(mode) => onSettings({ permission: mode })}
       disabledReason={(mode) => mode === "full" && !fullAccess ? `Full access is turned off for this device on ${name}. Turn it on in Devices on that device.` : undefined} />
     <SubAgentCommandCenter policy={policy} engine={subagents.engine} provider={provider} nativeMaxConcurrent={subagents.maxConcurrent} nativeOptions={subagents.nativeOptions}
       autoCompactTokens={subagents.autoCompactTokens} nativeDefaultModel={context?.selected.model}
-      contextKey={threadId ?? `new:${scopeKey}`} capturedPolicy={null} mode="open" readiness={readiness} workers={NO_WORKERS} parentActive={running}
+      presets={presets} contextKey={threadId ?? `new:${scopeKey}`} capturedPolicy={null} mode="open" readiness={readiness} workers={NO_WORKERS} parentActive={running}
       scopeLabel={threadId ? "this thread" : "this new thread"} projectOverride={false} modelCatalogs={modelCatalogs} onUnavailable={onNotice} onOpenSettings={onOpenSettings}
       onEngineChange={(engine) => change({ engine })}
       onNativeMaxConcurrentChange={(maxConcurrent) => change({ maxConcurrent })}

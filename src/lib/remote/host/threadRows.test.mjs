@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS } from "../../appConfig.ts";
 import { resetTaskStore, useTaskStore } from "../../taskStore.ts";
 import { loadStored, deferUntilRemoteStateAdopted } from "../../storage.ts";
 import { createRemoteWork } from "./workActions.ts";
-import { executeThreadRow, threadRowKeys } from "./threadRows.ts";
+import { executeThreadBatch, executeThreadRow, threadRowKeys } from "./threadRows.ts";
 import { createThreadRowLifecycle, threadRowBlockedReason } from "./threadLifecycle.ts";
 import { reconcileRemoteStateCommits } from "./stateCommit.ts";
 import { createHostEngineAdapters } from "./engineAdapters.ts";
@@ -212,13 +212,54 @@ test("archive membership changing during asynchronous legacy lookup refuses befo
   } finally { f.close(); }
 });
 
-test("bulk rows cannot escape typed provider fencing through the old App parity callback loop", async () => {
+test("bulk rows never fall back to the old App parity callback loop", async () => {
   let fellBack = false;
   const engines = createHostEngineAdapters({}, { revision: () => "r", execute: async () => { fellBack = true; return { state: "accepted" }; } }, () => {});
   try {
-    for (const op of ["thread.archiveMany", "thread.deleteMany"]) await assert.rejects(engines.adapter.execute(op, {}, {}), (reason) => reason.code === "unsupported");
+    for (const op of ["thread.archiveMany", "thread.deleteMany"]) await assert.rejects(engines.adapter.execute(op, { threadIds: ["t"] }, {}), (reason) => reason.code === "unsupported");
     assert.equal(fellBack, false);
   } finally { engines.dispose(); }
+});
+
+function batch(op, reply, options = {}) {
+  const single = op === "thread.archiveMany" ? "thread.archive" : "thread.delete", f = fixture(single, "openai", options);
+  const threads = [f.thread, { ...f.thread, id: "t2" }], calls = [];
+  const rows = () => threadRowKeys(single).map((key) => ({ key, value: {}, revision: 1 }));
+  const transport = { invoke: async (command, args) => {
+    calls.push({ command, args });
+    if (command === "remote_thread_batch_snapshot") return { version: 1, rows: rows() };
+    return reply(args, rows());
+  } };
+  const operation = { context: { activeThread: undefined, activeWorkspace: workspace, effectiveSettings: { provider: "openai" } }, generation: 7, grantRevision: 1, identity: { device, opId: "batch", opSeq: 1 }, assertAllowed() {} };
+  const taken = [];
+  const lifecycle = { begin: (_op, thread) => ({ prepare: async () => { taken.push(`prepare:${thread.id}`); }, assertAllowed() {}, committed: (change) => { taken.push(`committed:${change.threadId}`); }, release: () => { taken.push(`release:${thread.id}`); } }) };
+  return { f, threads, calls, taken, run: () => executeThreadBatch(op, threads, operation, f.sources, lifecycle, transport) };
+}
+for (const op of ["thread.archiveMany", "thread.deleteMany"]) {
+  test(`${op} sends one root, gives each thread its own lease and finishes all of them`, async () => {
+    const b = batch(op, (_args, rows) => ({ result: { opId: "batch", state: "accepted", workspaceId: workspace.id, completedThreadIds: ["t", "t2"], remainingThreadIds: [] }, rows }));
+    try {
+      assert.equal((await b.run()).state, "accepted");
+      const native = b.calls.find((call) => call.command === "remote_thread_batch_execute").args;
+      assert.deepEqual(native.targets.map((target) => [target.threadId, target.provider, target.root]), [["t", "openai", workspace.path], ["t2", "openai", workspace.path]]);
+      assert.deepEqual(native.args, op === "thread.deleteMany" ? { confirmed: true } : {});
+      for (const id of ["t", "t2"]) for (const step of ["prepare", "committed", "release"]) assert.ok(b.taken.includes(`${step}:${id}`), `${step}:${id}`);
+    } finally { b.f.close(); }
+  });
+}
+test("a partial batch finishes what finished and reports the rest as unknown", async () => {
+  const b = batch("thread.archiveMany", (_args, rows) => ({ result: { opId: "batch", state: "uncertain", workspaceId: workspace.id, completedThreadIds: ["t"], remainingThreadIds: ["t2"] }, rows }));
+  try {
+    await assert.rejects(b.run(), (reason) => reason.code === "uncertain" && /1 of these/.test(reason.message));
+    assert.ok(b.taken.includes("committed:t"));
+    assert.equal(b.taken.includes("committed:t2"), false);
+    assert.ok(b.taken.includes("release:t2"));
+  } finally { b.f.close(); }
+});
+test("a batch over the native limit is refused before anything happens", async () => {
+  const b = batch("thread.archiveMany", () => assert.fail("must not reach native"));
+  b.threads.push(...Array.from({ length: 100 }, (_, index) => ({ ...b.f.thread, id: `extra-${index}` })));
+  try { await assert.rejects(b.run(), { code: "unsupported" }); assert.equal(b.calls.length, 0); } finally { b.f.close(); }
 });
 
 const history = (f, op, provider) => executeThreadRow(op, { threadId: "t", ...(op === "thread.rollback" ? { confirmed: true } : {}) }, { context: { activeThread: f.thread, activeWorkspace: workspace, effectiveSettings: { provider } },

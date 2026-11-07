@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
+import { loadStored } from "../../storage";
+import type { ProjectAction } from "../../../types";
 import { rpc } from "../../codex";
 import { projectRunExecCommand, sanitizeProjectRunCommand } from "../../projectRun";
 import { checkOutputTail, sanitizeProjectCheckCommand } from "../../projectChecks";
@@ -89,7 +91,12 @@ export function createHostCommandActions(sources: HostContextSources, isCurrent:
       update(id, { status: "interrupted", finishedAt: Date.now() }); remoteEngineStopped(command.ownerHandle); owned.delete(id);
       return { state: "accepted", processHandle: id };
     }
-    const recipe = kind === "run" ? sanitizeProjectRunCommand(current().overrides?.run) : sanitizeProjectCheckCommand(current().overrides?.check);
+    const savedRecipe = () => {
+      if (op !== "actions.run") return kind === "run" ? sanitizeProjectRunCommand(current().overrides?.run) : sanitizeProjectCheckCommand(current().overrides?.check);
+      const action = (sources.getProjectActions?.() ?? loadStored<ProjectAction[]>("kiwi.projectActions", [])).find((entry) => entry.id === args.actionId);
+      return action ? sanitizeProjectRunCommand({ command: action.command, label: action.name }) : null;
+    };
+    const recipe = savedRecipe();
     if (!recipe) throw new HostReadError("unsupported", "No host command is saved for this action.");
     // The native token is a process cutoff proof, not a UI command-slot lock.
     // Do not start a second server/check beside an untracked local controller.
@@ -115,11 +122,13 @@ export function createHostCommandActions(sources: HostContextSources, isCurrent:
     let child: RemoteTurnDelivery | undefined;
     try {
       child = await operation.delivery.childStep("command", context.activeThread?.id, "command");
-      const project = current();
+      current();
       if (sources.isLocalCommandRunning(root, kind)) throw new HostReadError("busy", "A local command claimed this checkout before dispatch.");
-      if (JSON.stringify(kind === "run" ? sanitizeProjectRunCommand(project.overrides?.run) : sanitizeProjectCheckCommand(project.overrides?.check)) !== recipeIdentity) throw new HostReadError("stale_target", "This saved command changed before dispatch.");
+      if (JSON.stringify(savedRecipe()) !== recipeIdentity) throw new HostReadError("stale_target", "This saved command changed before dispatch.");
       await child.beforeDispatch({ threadId: context.activeThread?.id ?? "", messageId: child.messageId, provider: "openai", permission: context.effectiveSettings.permission });
       current();
+      if (sources.isLocalCommandRunning(root, kind)) throw new HostReadError("busy", "A local command claimed this checkout before input.");
+      if (JSON.stringify(savedRecipe()) !== recipeIdentity) throw new HostReadError("stale_target", "This saved command changed before input.");
       const completion = rpc<{ exitCode: number; stdout?: string; stderr?: string }>("command/exec", {
         command: kind === "run" ? projectRunExecCommand(recipe) : shellCommandWithWindowsQuotes(recipe.command), processId: `remote-command-${id}`, cwd: root,
         outputBytesCap: 65536, tty: kind === "run", streamStdoutStderr: kind === "run",

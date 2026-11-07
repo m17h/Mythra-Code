@@ -186,7 +186,7 @@ pub(super) fn invalidate(core: &mut Core, device: Option<&str>) {
         });
     }
 }
-fn binding(db: &rusqlite::Connection, stamp: &Stamp, root: &str) -> Result<(), String> {
+pub(super) fn binding(db: &rusqlite::Connection, stamp: &Stamp, root: &str) -> Result<(), String> {
     let projects = commit::state_row(db, "kiwi.projects")?["value"].clone();
     let Some(project) = projects.as_array().and_then(|rows| {
         rows.iter()

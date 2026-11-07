@@ -143,8 +143,13 @@ fn platform(url: &str) -> Value {
     unavailable()
 }
 #[cfg(windows)]
-fn platform(url: &str) -> Value {
-    use std::{ffi::c_void, path::PathBuf};
+fn windows_registry_string(
+    key: usize,
+    subkey: &str,
+    name: Option<&str>,
+    view: u32,
+) -> Option<String> {
+    use std::ffi::c_void;
     #[link(name = "advapi32")]
     extern "system" {
         fn RegGetValueW(
@@ -157,37 +162,47 @@ fn platform(url: &str) -> Value {
             bytes: *mut u32,
         ) -> i32;
     }
-    fn read(key: usize, subkey: &str, name: Option<&str>, view: u32) -> Option<String> {
-        let sub: Vec<_> = subkey.encode_utf16().chain(Some(0)).collect();
-        let name = name.map(|n| n.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
-        let mut buffer = vec![0u16; 32768];
-        let mut bytes = (buffer.len() * 2) as u32;
-        let mut kind = 0;
-        let rc = unsafe {
-            RegGetValueW(
-                key as isize as *mut c_void,
-                sub.as_ptr(),
-                name.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
-                2 | view,
-                &mut kind,
-                buffer.as_mut_ptr().cast(),
-                &mut bytes,
-            )
-        };
-        if rc != 0 || kind != 1 || bytes < 2 || bytes as usize > buffer.len() * 2 || bytes % 2 != 0
-        {
-            return None;
-        }
-        buffer.truncate(bytes as usize / 2);
-        if buffer.pop() != Some(0) || buffer.contains(&0) {
-            return None;
-        }
-        String::from_utf16(&buffer).ok()
+    let sub: Vec<_> = subkey.encode_utf16().chain(Some(0)).collect();
+    let name = name.map(|n| n.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
+    let mut buffer = vec![0u16; 32768];
+    let mut bytes = (buffer.len() * 2) as u32;
+    let mut kind = 0;
+    let rc = unsafe {
+        RegGetValueW(
+            key as isize as *mut c_void,
+            sub.as_ptr(),
+            name.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
+            2 | view,
+            &mut kind,
+            buffer.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if rc != 0 {
+        return None;
     }
+    windows_registry_value(buffer, bytes, kind)
+}
+
+#[cfg(windows)]
+fn windows_registry_value(mut buffer: Vec<u16>, bytes: u32, kind: u32) -> Option<String> {
+    if kind != 1 || bytes < 2 || bytes as usize > buffer.len() * 2 || bytes % 2 != 0 {
+        return None;
+    }
+    buffer.truncate(bytes as usize / 2);
+    if buffer.pop() != Some(0) || buffer.contains(&0) {
+        return None;
+    }
+    String::from_utf16(&buffer).ok()
+}
+
+#[cfg(windows)]
+fn platform(url: &str) -> Value {
+    use std::{ffi::c_void, path::PathBuf};
     // Pseudo-handles must be sign-extended on 64-bit Windows.
     let hkcu = 0x80000001u32 as i32 as isize as usize;
     let hklm = 0x80000002u32 as i32 as isize as usize;
-    let default = read(
+    let default = windows_registry_string(
         hkcu,
         r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
         Some("ProgId"),
@@ -254,7 +269,7 @@ fn platform(url: &str) -> Value {
         for key in [hkcu, hklm] {
             for view in [0x10000, 0x20000] {
                 let sub = format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe}");
-                let Some(path) = read(key, &sub, None, view).map(PathBuf::from) else {
+                let Some(path) = windows_registry_string(key, &sub, None, view).map(PathBuf::from) else {
                     continue;
                 };
                 if !path.is_absolute()
@@ -330,6 +345,61 @@ mod tests {
             "com.brave.Browser",
         ] {
             assert!(super::compatible(id));
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn windows_registry_decode_refuses_truncated_odd_and_invalid_utf16_values() {
+        use super::windows_registry_value as decode;
+        assert_eq!(decode(vec![0xe9, 0], 4, 1).as_deref(), Some("é"));
+        for (buffer, bytes, kind) in [
+            (vec![0xe9, 0], 3, 1),
+            (vec![0xe9, 0], 6, 1),
+            (vec![97], 2, 1),
+            (vec![97, 0, 98, 0], 8, 1),
+            (vec![0xd800, 0], 4, 1),
+            (vec![0xe9, 0], 4, 2),
+            (vec![], 0, 1),
+        ] {
+            assert!(decode(buffer, bytes, kind).is_none());
+        }
+    }
+
+    #[test]
+    fn windows_registry_reader_uses_valid_sign_extended_handles_without_a_browser() {
+        let hklm = 0x80000002u32 as i32 as isize as usize;
+        let path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+        let product = super::windows_registry_string(hklm, path, Some("ProductName"), 0)
+            .expect("read documented OS product string with a sign-extended HKEY_LOCAL_MACHINE");
+        assert!(!product.is_empty());
+        assert!(!product.contains('\0'));
+        assert!(
+            super::windows_registry_string(hklm, path, Some("InstallDate"), 0).is_none(),
+            "DWORD must not be interpreted as UTF-16"
+        );
+        assert!(
+            super::windows_registry_string(hklm, path, Some("MythraNonexistentTestValue"), 0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn windows_preview_rejects_non_gateway_urls_before_any_shell_or_browser_call() {
+        for url in [
+            "http://127.0.0.1:43210/",
+            "http://localhost:43210/",
+            "http://p-test.localhost/",
+            "https://p-test.localhost:43210/",
+            "http://p-test.localhost.attacker.invalid:43210/",
+            "file:///C:/fixture.html",
+            "javascript:alert(1)",
+            "--some-browser-option",
+            "not a URL",
+        ] {
+            assert_eq!(super::open(url)["opened"], false);
         }
     }
 }

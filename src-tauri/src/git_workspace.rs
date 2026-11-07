@@ -1684,6 +1684,7 @@ pub(super) fn spawn_scoped_git(
     crate::remote::domain::spawn_gate(||spawn_scoped_git_unfenced(command))
 }
 fn spawn_scoped_git_unfenced(command:&mut std::process::Command)->Result<(std::process::Child,GitProcessScope),String>{
+    crate::remote::safe_git::note_spawn();
     crate::remote::fs_guard::prepare_git_cwd(command)?;
     #[cfg(unix)]
     {

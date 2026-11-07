@@ -5,7 +5,7 @@
 //! model. Snapshot only executable configuration/index/refs, never pack contents.
 use super::fs_guard::Anchor;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     fs,
     io::{Read, Write},
@@ -14,6 +14,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+thread_local! {static SPAWNS:Cell<u64>=const{Cell::new(0)};}
 thread_local! {static POLICY:RefCell<Option<Arc<Mutex<Policy>>>>=const{RefCell::new(None)};}
 #[derive(Default)]
 struct Policy {
@@ -33,12 +34,14 @@ impl Drop for Snapshot {
 }
 pub(super) struct Guard {
     previous: Option<Arc<Mutex<Policy>>>,
+    previous_spawns: u64,
 }
 impl Drop for Guard {
     fn drop(&mut self) {
         POLICY.with(|p| {
             p.replace(self.previous.take());
         });
+        SPAWNS.with(|n| n.set(self.previous_spawns));
     }
 }
 pub(crate) fn active() -> bool {
@@ -46,7 +49,10 @@ pub(crate) fn active() -> bool {
 }
 pub(super) fn enter() -> Guard {
     let previous = POLICY.with(|p| p.replace(Some(Arc::new(Mutex::new(Policy::default())))));
-    Guard { previous }
+    Guard {
+        previous,
+        previous_spawns: SPAWNS.with(|n| n.replace(0)),
+    }
 }
 fn failure() -> String {
     "Remote Git could not safely inspect this repository. Refresh and try again.".into()
@@ -258,7 +264,7 @@ fn windows_git_path(path: &str) -> Result<String, String> {
     }
     Ok(normalized)
 }
-fn probe(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(super) fn probe(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut command = crate::project_git::git_command_for(
         repo,
@@ -278,12 +284,17 @@ fn probe(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    let limit = if args.first() == Some(&"config") {
+        512 * 1024
+    } else {
+        65536
+    };
     let (mut child, scope) = crate::git_workspace::spawn_scoped_git(&mut command)?;
     let mut out = child.stdout.take().ok_or_else(failure)?;
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let result = out.by_ref().take(65537).read_to_end(&mut bytes);
+        let result = out.by_ref().take(limit as u64 + 1).read_to_end(&mut bytes);
         let _ = sender.send((result, bytes));
     });
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -300,18 +311,16 @@ fn probe(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .map_err(|_| scope.stop(&mut child, failure()))?;
     result.map_err(|_| failure())?;
-    if bytes.len() > 65536 || !status.success() {
+    let no_matches = args.first() == Some(&"config")
+        && args.contains(&"--get-regexp")
+        && status.code() == Some(1)
+        && bytes.is_empty();
+    if bytes.len() > limit || !status.success() && !no_matches {
         return Err(failure());
     }
     Ok(bytes)
 }
-fn path(repo: &Path, bytes: Vec<u8>) -> Result<PathBuf, String> {
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| failure())?
-        .trim_end_matches(['\r', '\n']);
-    let p = PathBuf::from(text);
-    fs::canonicalize(if p.is_absolute() { p } else { repo.join(p) }).map_err(|_| failure())
-}
+
 fn copy(
     anchor: &Anchor,
     name: &str,
@@ -386,23 +395,9 @@ fn refs(
 impl Snapshot {
     fn create(repo: &Path) -> Result<Self, String> {
         let root_pin = Anchor::open(repo)?;
-        let locations = probe(
-            repo,
-            &[
-                "rev-parse",
-                "--absolute-git-dir",
-                "--git-common-dir",
-                "--show-object-format",
-            ],
-        )?;
-        let locations = std::str::from_utf8(&locations).map_err(|_| failure())?;
-        let mut lines = locations.lines();
-        let git_dir = path(repo, lines.next().ok_or_else(failure)?.as_bytes().to_vec())?;
-        let common = path(repo, lines.next().ok_or_else(failure)?.as_bytes().to_vec())?;
-        let sha256 = lines.next().ok_or_else(failure)? == "sha256";
-        if lines.next().is_some() {
-            return Err(failure());
-        }
+        let location = super::git_metadata::locations(repo)?;
+        let git_dir = location.git.clone();
+        let common = location.common.clone();
 
         let directory = std::env::temp_dir().join(format!("mythra-read-{}", uuid::Uuid::new_v4()));
         #[cfg(unix)]
@@ -428,19 +423,7 @@ impl Snapshot {
         copy(&own, "HEAD", &snapshot.path.join("HEAD"), &mut total, 4096)?;
         // A detached HEAD preserves the exact commit even when a valid local
         // ref name cannot be represented by our cross-platform file policy.
-        let expected_head = probe(repo, &["rev-parse", "--verify", "HEAD"])
-            .ok()
-            .map(|bytes| {
-                String::from_utf8(bytes)
-                    .map(|s| s.trim().to_owned())
-                    .map_err(|_| failure())
-            })
-            .transpose()?;
-        if expected_head.as_ref().is_some_and(|id| {
-            !matches!(id.len(), 40 | 64) || !id.bytes().all(|b| b.is_ascii_hexdigit())
-        }) {
-            return Err(failure());
-        }
+        let expected_head = super::git_metadata::head(&location)?.0;
         if git_dir.join("index").exists() {
             copy(
                 &own,
@@ -521,70 +504,8 @@ impl Snapshot {
                 }
             }
         }
-        let mut config=format!("[core]\n repositoryformatversion={}\n bare=false\n fsmonitor=false\n untrackedCache=false\n[diff]\n external=\n",if sha256{1}else{0});
-        if sha256 {
-            config.push_str("[extensions]\n objectformat=sha256\n");
-        }
-        // One bounded config read, then an exact inert-data allowlist. Never
-        // copy includes, drivers, helpers, commands, URLs or arbitrary config.
-        if let Ok(bytes) = probe(
-            repo,
-            &[
-                "config",
-                "--null",
-                "--get-regexp",
-                r"^(core\.(autocrlf|eol|ignorecase|filemode|symlinks|ignorestat|trustctime|checkstat|sparsecheckout|sparsecheckoutcone)|index\.sparse|branch\..*\.(remote|merge)|remote\..*\.fetch)$",
-            ],
-        ) {
-            for record in bytes.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-                let text = std::str::from_utf8(record).map_err(|_| failure())?;
-                let (key, value) = text.split_once('\n').ok_or_else(failure)?;
-                if matches!(
-                    key,
-                    "core.autocrlf"
-                        | "core.eol"
-                        | "core.ignorecase"
-                        | "core.filemode"
-                        | "core.symlinks"
-                        | "core.ignorestat"
-                        | "core.trustctime"
-                        | "core.checkstat"
-                        | "core.sparsecheckout"
-                        | "core.sparsecheckoutcone"
-                        | "index.sparse"
-                ) {
-                    if value.len() > 32
-                        || !value
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                    {
-                        return Err(failure());
-                    }
-                    let (section, key) = key.split_once('.').ok_or_else(failure)?;
-                    config.push_str(&format!("[{section}]\n {key}={value}\n"));
-                    continue;
-                }
-                let (prefix, field) = key.rsplit_once('.').ok_or_else(failure)?;
-                let (section, name) = prefix.split_once('.').ok_or_else(failure)?;
-                if !matches!(
-                    (section, field),
-                    ("branch", "remote" | "merge") | ("remote", "fetch")
-                ) || name.len() > 512
-                    || value.len() > 4096
-                    || name.chars().any(char::is_control)
-                    || value.chars().any(char::is_control)
-                {
-                    return Err(failure());
-                }
-                let quote = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-                config.push_str(&format!(
-                    "[{section} \"{}\"]\n {field}=\"{}\"\n",
-                    quote(name),
-                    quote(value)
-                ));
-            }
-        }
-        fs::write(snapshot.path.join("config"), config).map_err(|_| failure())?;
+        let config = super::git_metadata::config(repo, &location)?;
+        fs::write(snapshot.path.join("config"), config.as_bytes()).map_err(|_| failure())?;
         own.validate()?;
         shared.validate()?;
         Ok(snapshot)
@@ -616,6 +537,47 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    #[cfg(unix)]
+    #[test]
+    fn fsmonitor_fixture_really_executes_then_remote_suppresses_it() {
+        let repo = Repo(Path::new(env!("CARGO_MANIFEST_DIR")).join("target")
+            .join(format!("remote-fsmonitor-é & spaces-{}", uuid::Uuid::new_v4())));
+        fs::create_dir_all(&repo.0).unwrap();
+        let git = |args: &[&str]| {
+            let mut cmd = crate::process_launch::background_std_command("git");
+            for key in ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG",
+                "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR"] {
+                cmd.env_remove(key);
+            }
+            let out = cmd.current_dir(&repo.0).env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_ATTR_NOSYSTEM", "1").args(args).output().unwrap();
+            assert!(out.status.success(), "{:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+            out
+        };
+        git(&["init", "-q", "--template="]);
+        fs::write(repo.0.join("file.txt"), "committed fixture\n").unwrap();
+        git(&["add", "file.txt"]);
+        git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+        let marker = install_fsmonitor_test_hook(&repo.0);
+        git(&["config", "core.fsmonitorHookVersion", "2"]);
+        git(&["config", "core.fsmonitor", ".git/remote-fsmonitor-fixture.sh"]);
+        git(&["status", "--porcelain=v1"]);
+        let _ = fs::remove_file(&marker);
+        let positive = git(&["status", "--porcelain=v1"]);
+        assert!(marker.exists(), "real sh hook must fire; Git stderr: {}", String::from_utf8_lossy(&positive.stderr));
+        fs::remove_file(&marker).unwrap();
+        fs::write(repo.0.join("file.txt"), "working fixture\n").unwrap();
+        let _policy = enter();
+        let anchor = Anchor::open(&repo.0).unwrap();
+        let read = crate::project_git::GitReadOperation::new();
+        let status = read.output(&anchor.git_cwd(), &["status", "--porcelain=v1"]).unwrap();
+        assert!(status.status.success());
+        assert!(String::from_utf8_lossy(&status.stdout).contains("file.txt"));
+        assert!(!marker.exists(), "remote snapshot must not execute the proven live hook");
+    }
+
     #[test]
     fn git_environment_paths_keep_windows_drives_unc_spaces_and_unicode() {
         for (native, git) in [
@@ -1049,32 +1011,90 @@ mod compatibility_tests {
     }
 }
 
-/// Exact live checkout identity only. No arbitrary ref/flags and no worktree
-/// content conversion: these two builtins cannot run configured repo programs.
+/// Exact host-owned checkout metadata. No Git subprocess, arbitrary ref/flags
+/// or worktree conversion; no repository-configured program can run here.
 pub(super) fn live_head_identity(repo: &Path) -> Result<(Option<String>, Option<String>), String> {
-    let head = probe(repo, &["rev-parse", "--verify", "--quiet", "HEAD"])
-        .ok()
-        .map(|bytes| {
-            String::from_utf8(bytes)
-                .map(|s| s.trim().to_owned())
-                .map_err(|_| failure())
-        })
-        .transpose()?;
-    if head.as_ref().is_some_and(|id| {
-        !matches!(id.len(), 40 | 64) || !id.bytes().all(|b| b.is_ascii_hexdigit())
-    }) {
-        return Err(failure());
+    super::git_metadata::head(&super::git_metadata::locations(repo)?)
+}
+pub(crate) fn note_spawn() {
+    if active() {
+        SPAWNS.with(|n| n.set(n.get() + 1));
     }
-    let branch = probe(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
-        .ok()
-        .map(|bytes| {
-            String::from_utf8(bytes)
-                .map(|s| s.trim_end_matches(['\r', '\n']).to_owned())
-                .map_err(|_| failure())
-        })
-        .transpose()?;
-    if head.is_none() && branch.is_none() {
-        return Err(failure());
+}
+#[cfg(test)]
+pub(super) fn spawn_count() -> u64 {
+    SPAWNS.with(Cell::get)
+}
+
+/// Use a real sh hook with Git's version/token arguments, and return a proper
+/// fsmonitor v2 response. Both platforms use this exact fixture script.
+#[cfg(test)]
+fn install_fsmonitor_test_hook(root: &Path) -> PathBuf {
+    let hook=root.join(".git/remote-fsmonitor-fixture.sh");
+    fs::write(&hook, b"#!/bin/sh\ntest \"$1\" = 2 || exit 1\nprintf '%s' ran > FS-MONITOR-RAN || exit 1\nprintf 'fixture-token\\000/\\000'\n").unwrap();
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt;fs::set_permissions(&hook,fs::Permissions::from_mode(0o700)).unwrap(); }
+    root.join("FS-MONITOR-RAN")
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::super::windows_tests::{git, TempRoot};
+    use super::*;
+
+    #[test]
+    fn windows_verbatim_git_environment_paths_and_packed_objects_really_work() {
+        let temp = TempRoot::new("git-é & spaces");
+        let root = temp.0.join("é repository with spaces");
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-q", "--template="]);
+        fs::write(root.join("file.txt"), b"committed fixture\n").unwrap();
+        git(&root, &["add", "file.txt"]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=Windows test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        );
+        git(&root, &["repack", "-ad"]);
+        let marker = install_fsmonitor_test_hook(&root);
+        git(&root, &["config", "core.fsmonitorHookVersion", "2"]);
+        git(&root, &["config", "core.fsmonitor", ".git/remote-fsmonitor-fixture.sh"]);
+        // Prime any per-index token, then demand a FRESH invocation. Never let
+        // a dead hook turn the remote negative control into a vacuous pass.
+        git(&root, &["status", "--porcelain=v1"]);
+        let _ = fs::remove_file(&marker);
+        let positive=git(&root, &["status", "--porcelain=v1"]);
+        assert!(marker.exists(), "positive control did not run the real sh hook; Git stderr: {}", String::from_utf8_lossy(&positive.stderr));
+        fs::remove_file(&marker).unwrap();
+        fs::write(root.join("file.txt"), b"working fixture\n").unwrap();
+        {
+            let _policy = enter();
+            let anchor = Anchor::open(&root).unwrap();
+            let cwd = anchor.git_cwd();
+            assert!(cwd.to_string_lossy().starts_with(r"\\?\"));
+            let converted = git_env_path(&cwd).unwrap();
+            assert!(!converted.to_string_lossy().starts_with(r"\\?\"));
+            let read = crate::project_git::GitReadOperation::new();
+            let shown = read
+                .output(&cwd, &["show", "HEAD:file.txt"])
+                .expect("read packed objects through converted GIT_OBJECT_DIRECTORY");
+            assert!(shown.status.success());
+            assert_eq!(shown.stdout, b"committed fixture\n");
+            let status = read.output(&cwd, &["status", "--porcelain=v1"]).unwrap();
+            assert!(status.status.success());
+            assert!(String::from_utf8_lossy(&status.stdout).contains("file.txt"));
+            assert!(
+                !marker.exists(),
+                "remote snapshot must not execute live fsmonitor config"
+            );
+            anchor.validate().unwrap();
+        }
     }
-    Ok((head, branch))
 }

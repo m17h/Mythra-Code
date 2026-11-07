@@ -21,12 +21,46 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tokio::sync::Notify;
+/// Windows command/exec quotes argv using CRT rules, not CMD rules. Match the
+/// local shellCommandWithWindowsQuotes transport, leaving CMD's recipe intact.
+fn terminal_argv(command: &str) -> Result<Value, String> {
+    #[cfg(windows)]
+    {
+        windows_terminal_argv(command)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(json!(["/bin/zsh", "-lc", command]))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_terminal_argv(command: &str) -> Result<Value, String> {
+    if command.contains('\0') {
+        return Err(work::refused("invalid"));
+    }
+    let start = ";$start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$env:ComSpec;$start.Arguments='/d /s /c \"'+$command+'\"';$start.UseShellExecute=$false;$process=[Diagnostics.Process]::Start($start);$process.WaitForExit();exit $process.ExitCode";
+    let encode = |script: String| {
+        STANDARD.encode(script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>())
+    };
+    let direct = encode(format!("$ErrorActionPreference='Stop';$command='{}'{start}", command.replace('\'', "''")));
+    let nested = encode(format!("$ErrorActionPreference='Stop';$command=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}')){start}", STANDARD.encode(command.as_bytes())));
+    let encoded = if direct.len() <= nested.len() { direct } else { nested };
+    if encoded.len() > 30_000 {
+        return Err(work::refused("invalid"));
+    }
+    Ok(json!(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]))
+}
+
 #[derive(Default)]
 pub(super) struct Registry {
     routes: HashMap<String, Arc<Route>>,
+    local:HashMap<String,LocalSummary>,
 }
 pub(super) struct Route {
     id: String,
+    command:String,
+    started_at:i64,
     stamp: Stamp,
     server: Arc<crate::AppServer>,
     anchor: Anchor,
@@ -248,11 +282,14 @@ pub(crate) async fn remote_terminal_start(
     {
         return Err(stale());
     }
+    // Encoding/length failure is a definite pre-dispatch refusal: no route,
+    // provider startup or dispatched journal receipt may have been created yet.
+    let argv = terminal_argv(&command)?;
     let anchor = super::studio::blocking(move || Anchor::open(std::path::Path::new(&root))).await?;
     let server = crate::ensure_server(&app, &app.state::<crate::RuntimeState>()).await?;
     let id = format!("remote-terminal-{}", uuid::Uuid::new_v4());
     let route = Arc::new(Route {
-        id: id.clone(),
+        id: id.clone(),command:command.clone(),started_at:crate::unix_timestamp_ms(),
         stamp: stamp.clone(),
         server: server.clone(),
         anchor,
@@ -300,11 +337,6 @@ pub(crate) async fn remote_terminal_start(
             json!({"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":true,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false})
         }
         _ => json!({"type":"dangerFullAccess"}),
-    };
-    let argv = if cfg!(windows) {
-        json!(["cmd.exe", "/d", "/s", "/c", command])
-    } else {
-        json!(["/bin/zsh", "-lc", command])
     };
     let params = json!({"command":argv,"processId":id,"tty":true,"streamStdoutStderr":true,"streamStdin":true,"size":{"cols":columns,"rows":rows},"cwd":cwd,"disableTimeout":true,"sandboxPolicy":sandbox});
     crate::validate_rpc_params("command/exec", &params)?;
@@ -507,4 +539,124 @@ pub(super) async fn retire_exact(route: Arc<Route>) -> Result<(), String> {
 
 pub(super) fn is_finished(route: &Route) -> bool {
     route.finished.load(Ordering::Acquire)
+}
+
+struct LocalSummary{id:String,root_identity:String,command:String,started_at:i64,proof:Arc<super::owners::EngineCommand>}
+/// Tracking only. Invalid metadata/full registry never changes a local command.
+pub(crate) fn observe_local(app:&AppHandle,proof:Arc<super::owners::EngineCommand>,params:&Value){
+ if params["tty"]!=true||proof.process.starts_with("remote-terminal-"){return;}
+ let Some(cwd)=params["cwd"].as_str()else{return;};let Ok(anchor)=Anchor::open(std::path::Path::new(cwd))else{return;};let Ok(identity)=anchor.identity()else{return;};
+ let Some(argv)=params["command"].as_array()else{return;};
+ let label=if argv.len()>=3&&matches!(argv[0].as_str(),Some("/bin/zsh"|"/bin/bash"|"cmd.exe"|"powershell.exe")){argv.last().and_then(Value::as_str).unwrap_or("").to_owned()}else{argv.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")};
+ let state=app.state::<RemoteState>();let mut core=state.inner.lock();
+ if core.terminals.local.len()>=64{let old=core.terminals.local.iter().filter(|(_,s)|super::owners::command_state(&s.proof)=="completed").min_by_key(|(_,s)|s.started_at).map(|(k,_)|k.clone());if let Some(id)=old{core.terminals.local.remove(&id);}else{return;}}
+ let id=uuid::Uuid::new_v4().to_string();core.terminals.local.insert(id.clone(),LocalSummary{id,root_identity:identity,command:label.chars().take(512).collect(),started_at:crate::unix_timestamp_ms(),proof});
+}
+#[tauri::command]
+pub(crate) async fn remote_terminal_list(app:AppHandle,state:State<'_,RemoteState>,window:WebviewWindow,generation:u64,device:String,grant_revision:u64,workspace_id:String,root:String)->Result<Value,String>{
+ hostbridge::window_is_host(&window).map_err(|_|stale())?;super::studio::check_scope(&state,generation,&device,grant_revision,Some(&workspace_id),false)?;
+ let inner=state.inner.clone();let worker=inner.clone();
+ inner.read_db(move|db|{
+  let anchor=Anchor::open(std::path::Path::new(&root))?;let identity=anchor.identity()?;
+  let projects=commit::state_row(db,"kiwi.projects")?["value"].clone();let project=projects.as_array().and_then(|p|p.iter().find(|p|p["id"]==workspace_id));
+  let allowed=if workspace_id=="openkiwi-normal-chats"{crate::normal_chat::contains(&app,&root)?}else if let Some(project)=project{
+   let base=project["path"].as_str().ok_or_else(stale)?;
+   if Anchor::open(std::path::Path::new(base))?.identity()?==identity{true}else{
+    commit::state_row(db,"kiwi.threadWorktrees")?["value"].as_object().is_some_and(|rows|rows.values().any(|r|r["status"]!="removed"&&r["projectId"]==workspace_id&&r["path"].as_str().is_some_and(|p|std::fs::canonicalize(p).ok()==std::fs::canonicalize(&root).ok())))
+   }
+  }else{false};if !allowed{return Err(stale());}
+  let core=worker.lock();hostbridge::check_generation(&core,generation).map_err(|_|stale())?;let grant=work::grant_locked(&core,&device).filter(|g|g.view&&g.capabilities.terminal&&g.revision==grant_revision).ok_or_else(stale)?;
+  if let store::GrantScope::Projects{project_ids}=&grant.scope{if !project_ids.contains(&workspace_id){return Err(stale());}}
+  let mut terminals=Vec::new();
+  for route in core.terminals.routes.values().filter(|r|r.stamp.workspace_id.as_deref()==Some(&workspace_id)&&r.anchor.identity().is_ok_and(|id|id==identity)){
+   let owned=route.stamp.device==device&&route.stamp.generation==generation&&route.stamp.grant_revision==grant_revision;
+   terminals.push(json!({"terminalId":if owned{route.id.clone()}else{format!("read-only:{}",route.id)},"command":route.command.chars().take(512).collect::<String>(),"state":if route.finished.load(Ordering::Acquire){"completed"}else if !route.alive.load(Ordering::Acquire){"stopping"}else if route.started.load(Ordering::Acquire){"running"}else{"starting"},"startedAt":route.started_at,"threadId":route.stamp.thread_id,"seq":route.credit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).seq,"owned":owned}));
+  }
+  for summary in core.terminals.local.values().filter(|s|s.root_identity==identity){terminals.push(json!({"terminalId":summary.id,"command":summary.command,"state":super::owners::command_state(&summary.proof),"startedAt":summary.started_at,"owned":false}));}
+  terminals.sort_by_key(|r|std::cmp::Reverse(r["startedAt"].as_i64().unwrap_or(0)));let truncated=terminals.len()>32;terminals.truncate(32);anchor.validate()?;Ok(json!({"terminals":terminals,"truncated":truncated}))
+ }).await
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn windows_encoder_matches_local_recipe_transport_bytes() {
+        // SHA-256 of decoded scripts produced by the real
+        // src/lib/shellCommand.ts::shellCommandWithWindowsQuotes on these
+        // inputs, not another copy of the Rust algorithm. Cover BOTH branches.
+        for (command, expected, nested) in [
+            ("echo native-terminal && exit /b 7".to_owned(), "0b63392821f78bdbaaae8ef75a792c3e6cbb3557c94e042b3dc6fff01cd865ad", false),
+            ("cd /d \"é quoted & spaced\" && type \"file name.txt\" && exit /b 7".to_owned(), "0f88a40053de6cf8ddd06b94989e7b1d9ac42fc6d56579aa953e38d5f15e9b1b", false),
+            ("echo 'apostrophe' \"quote\" 😀\r\nexit /b 7".to_owned(), "626251440b9d6253e97456220bd75b1aea715326c105270a85fa959fe81e2c97", false),
+            ("'".repeat(4096), "33a3dc592238f02dd50fde6f4919a1b7471c130ce619c66ef3ee3cee4eba8b22", true),
+        ] {
+            let argv = windows_terminal_argv(&command).unwrap();
+            assert_eq!(argv.as_array().unwrap().len(), 5);
+            assert_eq!(argv[0], "powershell.exe");
+            assert_eq!(argv[1], "-NoProfile");
+            assert_eq!(argv[2], "-NonInteractive");
+            assert_eq!(argv[3], "-EncodedCommand");
+            let bytes = STANDARD.decode(argv[4].as_str().unwrap()).unwrap();
+            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), expected);
+            let script = String::from_utf16(&bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>()).unwrap();
+            assert_eq!(script.contains("FromBase64String"), nested);
+        }
+    }
+
+    #[test]
+    fn windows_encoder_refuses_nul_and_overlong_before_dispatch() {
+        assert!(windows_terminal_argv("hello\0").is_err());
+        assert!(windows_terminal_argv(&"x".repeat(32768)).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn local_unix_shell_argv_is_unchanged() {
+        let command = "echo 'quoted' \"text\" é 😀";
+        assert_eq!(terminal_argv(command).unwrap(), json!(["/bin/zsh", "-lc", command]));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::super::windows_tests::{run, TempRoot};
+    use super::*;
+    fn execute(command: &str, root: &std::path::Path) -> std::process::Output {
+        let argv = terminal_argv(command).expect("encode fixture recipe");
+        let values = argv.as_array().unwrap();
+        let mut process =
+            crate::process_launch::background_std_command(values[0].as_str().unwrap());
+        process.current_dir(root);
+        for value in &values[1..] {
+            process.arg(value.as_str().unwrap());
+        }
+        run(&mut process)
+    }
+    #[test]
+    fn windows_terminal_argv_runs_a_real_headless_shell_and_preserves_exit_code() {
+        let temp = TempRoot::new("terminal");
+        let result = execute("echo native-terminal && exit /b 7", &temp.0);
+        assert_eq!(result.status.code(), Some(7));
+        assert!(String::from_utf8_lossy(&result.stdout).contains("native-terminal"));
+    }
+    #[test]
+    fn windows_terminal_argv_preserves_quoted_setup_and_file_names() {
+        let temp = TempRoot::new("terminal-quotes");
+        let folder = temp.0.join("é quoted & spaced");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("file name.txt"), b"quoted fixture").unwrap();
+        let result = execute(
+            "cd /d \"é quoted & spaced\" && type \"file name.txt\" && exit /b 7",
+            &temp.0,
+        );
+        assert_eq!(
+            result.status.code(),
+            Some(7),
+            "test uses production terminal argv, not a hand-fixed CMD raw_arg"
+        );
+        assert_eq!(result.stdout, b"quoted fixture");
+    }
 }

@@ -1,4 +1,4 @@
-import type { Thread } from "../../../types";
+import type { ChatMessage, Thread } from "../../../types";
 import { recoverRemoteStateRows, withRemoteStateCommit } from "../../storage";
 import { rpc, runtimeThreadState } from "../../codex";
 import { timelineFromTurns } from "../../threadTimeline";
@@ -24,7 +24,7 @@ const settingsKeys = ["kiwi.threadModels", "kiwi.threadReasoning", "kiwi.threadS
 /** History changes go through the same native effect, with the same ownership. */
 export type ThreadEffectOperation = ThreadRowOperation | "thread.compact" | "thread.rollback";
 export function threadRowKeys(op: ThreadEffectOperation): readonly string[] {
-  return op === "thread.fork" ? [...commonKeys, ...settingsKeys] : op === "thread.delete"
+  return op === "thread.rollback" ? [...commonKeys, "kiwi.agentQuestions"] : op === "thread.fork" ? [...commonKeys, ...settingsKeys] : op === "thread.delete"
     ? [...commonKeys, ...settingsKeys, "kiwi.pinnedThreads", "kiwi.queuedTurns", "kiwi.parentRuns", "kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.turnDurations", "kiwi.threadPullRequests",
       "kiwi.childAgentPolicies", "kiwi.childAgentLinks", "kiwi.nativeAgentLinks", "kiwi.childAgentMailbox", "kiwi.threadHandoffs", "kiwi.pendingHandoff", "kiwi.agentQuestions", "kiwi.turnContextReceipts"] : commonKeys;
 }
@@ -60,6 +60,86 @@ function missing(reason: unknown): boolean { return typeof reason === "string" &
 /** Provider effect uses the installed typed native wrapper for the exact same
  * sidebar operations (name/set, archive, unarchive, delete, fork and local
  * transcript metadata). The journal is a latch, never an RPC retry permission. */
+interface BatchResult {
+  result: { opId: string; state: string; workspaceId?: string; completedThreadIds?: unknown; remainingThreadIds?: unknown };
+  rows: StampedRow[]; replayed?: boolean;
+}
+export const THREAD_BATCH_LIMIT = 100;
+/** Archive all and Delete all: one journal root, with native giving every thread its
+ * own receipt. What finished is shown as finished, and the rest stays where it was. */
+export async function executeThreadBatch(op: "thread.archiveMany" | "thread.deleteMany", threads: readonly Thread[], operation: HostMutationContext,
+  sources: HostContextSources, lifecycle: ThreadRowLifecycle, transport: HostTransport = nativeHostTransport): Promise<{ state: "accepted"; workspaceId: string }> {
+  const workspace = operation.context.activeWorkspace, single = op === "thread.archiveMany" ? "thread.archive" as const : "thread.delete" as const;
+  if (!workspace || !threads.length || threads.length > THREAD_BATCH_LIMIT) throw new HostReadError("unsupported", "Choose between 1 and 100 conversations.");
+  const ids = threads.map((thread) => thread.id);
+  if (ids.some((id) => active.has(id))) throw new HostReadError("busy", "Another row action is changing one of these conversations.");
+  operation.assertAllowed();
+  const leases = new Map<string, ThreadRowLease>();
+  let retain = false;
+  for (const id of ids) active.add(id);
+  try {
+    for (const thread of threads) leases.set(thread.id, lifecycle.begin(single, thread, operation));
+    const roots = new Map(threads.map((thread) => [thread.id, sources.executionPathFor(thread.id, workspace.path)]));
+    const check = () => {
+      operation.assertAllowed();
+      for (const thread of threads) {
+        leases.get(thread.id)!.assertAllowed();
+        if (sources.executionPathFor(thread.id, workspace.path) !== roots.get(thread.id)) throw new HostReadError("stale_target", "A conversation changed its checkout.");
+        const task = useTaskStore.getState().tasks[thread.id];
+        if (task?.status === "starting" || task?.status === "running" || useTaskStore.getState().workflowOwners[thread.id]) throw new HostReadError("busy", "Finish or stop these conversations first.");
+      }
+    };
+    for (const lease of leases.values()) await lease.prepare();
+    check();
+    const keys = threadRowKeys(single), stamp = operationStamp(operation);
+    const targets = threads.map((thread) => ({ threadId: thread.id, provider: providerFromThread(thread, operation.context.effectiveSettings.provider), root: roots.get(thread.id)! }));
+    const outcome = await withRemoteStateCommit(keys, async (adopt) => {
+      check();
+      let snapshot: { version: number; rows: StampedRow[] };
+      try { snapshot = await transport.invoke("remote_thread_batch_snapshot", { stamp }); }
+      catch (reason) { if (missing(reason)) throw new HostReadError("unsupported", "This device has not installed stamped batches yet."); throw nativeRefusal(reason); }
+      if (snapshot.version !== 1) throw new HostReadError("unsupported", "This device uses a different conversation bookkeeping version.");
+      exactRows(snapshot.rows, keys); check();
+      const invokeArgs = { stamp, targets, args: op === "thread.deleteMany" ? { confirmed: true } : {}, bookkeeping: { version: 1, rows: snapshot.rows } };
+      const apply = async (reply: BatchResult, recover: boolean) => {
+        if (reply.result?.opId !== stamp.opId || reply.result.workspaceId !== workspace.id) throw new HostReadError("uncertain", "This batch could not be confirmed.");
+        exactRows(reply.rows, keys);
+        const list = (value: unknown) => Array.isArray(value) ? value.filter((id): id is string => typeof id === "string" && leases.has(id)) : [];
+        const completed = list(reply.result.completedThreadIds), remaining = list(reply.result.remainingThreadIds);
+        if (!recover) for (const row of reply.rows) adopt(row.key, row.value);
+        if (op === "thread.deleteMany") adoptRemoteQueuedTurns(reply.rows.find((row) => row.key === "kiwi.queuedTurns")?.value);
+        for (const thread of threads) if (completed.includes(thread.id)) {
+          await leases.get(thread.id)!.committed({ op: single, previous: thread, threadId: thread.id, rows: reply.rows });
+          if (op === "thread.deleteMany") adoptRemoteThreadRemoval(thread.id);
+        }
+        if (recover) recoverRemoteStateRows(reply.rows);
+        return { accepted: reply.result.state === "accepted" && !remaining.length, remaining: remaining.length };
+      };
+      let attempted = false;
+      try {
+        check(); attempted = true;
+        return await apply(await transport.invoke<BatchResult>("remote_thread_batch_execute", invokeArgs), false);
+      } catch (reason) {
+        if (missing(reason)) throw new HostReadError("unsupported", "This device has not installed stamped batches yet.");
+        if (!attempted) throw reason instanceof HostReadError ? reason : nativeRefusal(reason);
+        retain = true;
+        registerRemoteStateRecovery(`${stamp.device}:${stamp.opId}`, async () => {
+          const replay = await transport.invoke<BatchResult>("remote_thread_batch_execute", invokeArgs);
+          if (replay.replayed !== true) throw new HostReadError("uncertain", "The original batch still needs reconciliation.");
+          await apply(replay, true);
+          for (const lease of leases.values()) lease.release();
+          for (const id of ids) active.delete(id);
+        });
+        throw Object.assign(new HostReadError("uncertain", "These conversations may already have changed. Check them before trying again."), { holdRemoteState: true });
+      }
+    });
+    if (!outcome.accepted) throw new HostReadError("uncertain", `${outcome.remaining} of these conversations may not have changed. Check them before trying again.`);
+    return { state: "accepted", workspaceId: workspace.id };
+  } finally {
+    if (!retain) { for (const lease of leases.values()) lease.release(); for (const id of ids) active.delete(id); }
+  }
+}
+
 export async function executeThreadRow(op: ThreadEffectOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext,
   sources: HostContextSources, lifecycle: ThreadRowLifecycle, transport: HostTransport = nativeHostTransport): Promise<{ state: "accepted"; threadId: string; workspaceId: string }> {
   const previous = operation.context.activeThread, workspace = operation.context.activeWorkspace;
@@ -133,7 +213,20 @@ export async function executeThreadRow(op: ThreadEffectOperation, args: Readonly
         if (rolledBack) {
           drainTaskDeltas();
           const history = timelineFromTurns(rolledBack.turns, { includeContextCompaction: provider === "openai" });
-          useTaskStore.getState().hydrateTask(id, history.messages, history.activities, root,
+          // RPC forms are not in provider history. Restore ONLY the question
+          // records in this native rollback's pruned rows, including on replay
+          // while the old local cache is still fenced awaiting adoption.
+          const records = reply.rows.find((row) => row.key === "kiwi.agentQuestions")?.value as Record<string, { threadId?: string; message?: ChatMessage }> | null;
+          const ids = new Set(history.messages.map((message) => message.id)), ends = new Map<string, number>();
+          let end = 0;
+          for (const entry of [...history.messages, ...history.activities]) {
+            end = Math.max(end, entry.timelineOrder ?? 0);
+            if (entry.turnId) ends.set(entry.turnId, Math.max(ends.get(entry.turnId) ?? 0, entry.timelineOrder ?? 0));
+          }
+          const missing = Object.values(records ?? {}).flatMap((record) => record.threadId === id && record.message && !ids.has(record.message.id) ? [record.message] : []);
+          const messages = [...history.messages, ...missing.map((message, index) => ({ ...message, timelineOrder: (ends.get(message.turnId ?? "") ?? end) + (index + 1) / (missing.length + 1) }))]
+            .sort((a, b) => (a.timelineOrder ?? 0) - (b.timelineOrder ?? 0));
+          useTaskStore.getState().hydrateTask(id, messages, history.activities, root,
             { nextCursor: null, hasMore: false, loading: false, paginated: false }, undefined, { preserveUnread: true, replaceTimeline: true });
         }
         await lease!.committed({ op, previous, threadId, ...(thread ? { thread: sidebarThread(thread) } : {}), ...(rolledBack ? { history: rolledBack } : {}), rows: reply.rows });

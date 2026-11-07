@@ -148,6 +148,8 @@ pub(super) struct Link {
     /// True when this side opened the TCP connection.
     pub(super) dialed: bool,
     paired: AtomicBool,
+    readiness: AtomicU64,
+    paired_at_ms:AtomicU64,
     write_failed: AtomicBool,
     last_received_ms: AtomicU64,
     pub(super) pairing_started: AtomicBool,
@@ -208,7 +210,7 @@ impl Link {
     }
 
     pub(super) fn set_paired(&self) {
-        self.paired.store(true, Ordering::Release);
+        if !self.paired.swap(true,Ordering::AcqRel){self.paired_at_ms.store(wire_clock_ms(),Ordering::Release);}
         // A paired device no longer occupies a place among strangers.
         let guard = self
             .unauth
@@ -300,6 +302,7 @@ impl Link {
         args: Value,
         wait: Duration,
     ) -> Result<Value, WireError> {
+        self.note_readiness(op);
         let lost = || WireError::new("host_unavailable", "The connection was lost.");
         let id = self.next_request.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
@@ -431,7 +434,7 @@ where
         peer_addr: setup.peer_addr,
         role: setup.role,
         dialed: setup.dialed,
-        paired: AtomicBool::new(false),
+        paired: AtomicBool::new(false),readiness:AtomicU64::new(0),paired_at_ms:AtomicU64::new(0),
         write_failed: AtomicBool::new(false),
         last_received_ms: AtomicU64::new(wire_clock_ms()),
         pairing_started: AtomicBool::new(false),
@@ -630,6 +633,7 @@ fn dispatch(inner: &Arc<Inner>, link: &Arc<Link>, frame: Frame) {
             link.resolve_request(id, outcome);
         }
         Frame::Req { id, op, args } => {
+            link.note_readiness(&op);
             super::diagnostics::record(super::diagnostics::Event::Request,link.id,id,args.get("opSeq").and_then(Value::as_u64).unwrap_or(0),0,&op,"in");
             let Ok(slot) = link.request_slots.clone().try_acquire_owned() else {
                 link.respond(id, Err(WireError::new("busy", "Too many requests at once.")));
@@ -737,6 +741,7 @@ async fn keepalive_task(link: Arc<Link>) {
             _ = wait_closed(&link) => return,
             _ = wait_silent(&link) => { link.close(CloseReason::Dead); return; }
             _ = ticks.tick() => {
+                link.report_readiness();
                 if !link.send(&Frame::Ping { t: wire_clock_ms() }) {
                     return;
                 }
@@ -992,7 +997,7 @@ pub(super) async fn dial(
     let name = tls::server_name().map_err(|_| DialError::Failed)?;
     let tcp=match timeout(CONNECT_LIMIT,TcpStream::connect(address)).await {
         Ok(Ok(tcp))=>tcp,
-        other=>{super::diagnostics::record(super::diagnostics::Event::Link,0,0,0,0,"tcp.dial",if other.is_err(){"timeout"}else{"failed"});return Err(DialError::Unreachable);}
+        other=>{let outcome=match &other{Err(_)=>"timeout",Ok(Err(e))=>super::diagnostics::network_outcome(e),_=>"failed"};super::diagnostics::record(super::diagnostics::Event::Link,0,0,if address.is_ipv4(){4}else{6},0,"tcp.dial",outcome);return Err(DialError::Unreachable);}
     };
     let _ = tcp.set_nodelay(true);
     let handshake = timeout(HANDSHAKE_LIMIT, async {
@@ -1255,3 +1260,8 @@ async fn op_status(inner: &Arc<Inner>, link: &Link, args: Value) -> Result<Value
     Ok(status)
 }
 
+
+impl Link{
+ fn note_readiness(&self,op:&str){let flag=match op{"workspaces.list"=>1,"threads.list"=>2,"timeline.subscribe"=>4,_=>0};if flag!=0{self.readiness.fetch_or(flag,Ordering::AcqRel);}}
+ fn report_readiness(&self){let began=self.paired_at_ms.load(Ordering::Acquire);if !self.is_paired()||wire_clock_ms().saturating_sub(began)<15_000{return;}let stages=self.readiness.fetch_or(8,Ordering::AcqRel);if stages&8!=0{return;}let outcome=if stages&1==0{"no_catalog_requests"}else if stages&2==0{"no_thread_requests"}else if stages&4==0{"no_subscribe"}else{"subscribe_requested"};super::diagnostics::record(super::diagnostics::Event::Readiness,self.id,0,stages&7,0,if self.role==Role::Viewer{"viewer"}else{"host"},outcome);}
+}

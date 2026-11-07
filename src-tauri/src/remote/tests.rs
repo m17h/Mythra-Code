@@ -2936,3 +2936,67 @@ async fn adverse_ten_second_hiccup_keeps_same_link_and_pings_resume() {
     .await
     .is_err());
 }
+
+#[test]
+fn local_mode_off_has_no_network_demand_and_shared_git_hooks_are_noops() {
+    let state = RemoteState::default();
+    let mut core = state.inner.lock();
+    core.loaded = true;
+    assert!(!feature_active(&core));
+    assert!(!wants_listener(&core));
+    assert!(!should_browse(&core));
+    assert!(core.listener.is_none() && core.browser.is_none() && core.advertiser.is_none());
+    assert!(state.inner.identity.get().is_none());
+    drop(core);
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir("local-mode-no-anchor")
+        .arg("status")
+        .env("LOCAL_SENTINEL", "same");
+    let before = format!("{command:?}");
+    assert!(!safe_git::active());
+    safe_git::configure(
+        &mut command,
+        std::path::Path::new("local-mode-no-anchor"),
+        &["status"],
+    )
+    .unwrap();
+    fs_guard::prepare_git_cwd(&mut command).unwrap();
+    assert_eq!(format!("{command:?}"), before);
+    assert_eq!(
+        domain::limit_timeout(Duration::from_secs(123)),
+        Duration::from_secs(123)
+    );
+    assert_eq!(domain::spawn_gate(|| Ok(42)).unwrap(), 42);
+}
+
+#[test]
+fn local_mode_remote_startup_sql_cost_on_a_fresh_temporary_wal_database() {
+    let dir = std::env::temp_dir().join(format!("mythra-local-review-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let db = Connection::open(dir.join("state.sqlite")).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        .unwrap();
+    let start = Instant::now();
+    store::init(&db).unwrap();
+    let first = start.elapsed();
+    let start = Instant::now();
+    for _ in 0..20 {
+        store::init(&db).unwrap();
+    }
+    let warm = start.elapsed() / 20;
+    let start = Instant::now();
+    assert!(!store::load_settings(&db).unwrap().hosting);
+    assert!(store::load_devices(&db).unwrap().is_empty());
+    let load = start.elapsed();
+    let tables: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'remote_%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    eprintln!("remote startup SQL only (not whole-app startup): {tables} tables; first init {first:?}; warm init average {warm:?}; empty settings/devices load {load:?}");
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}

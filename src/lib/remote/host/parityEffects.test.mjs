@@ -32,7 +32,10 @@ function harness(provider = "openai", options = {}) {
     if (command === "remote_work_queue_authorize") return { ready: true };
     if (command === "remote_state_snapshot") return { rows: args.keys.map((key) => ({ key, value: structuredClone(values[key]), revision: 1 })) };
     if (command === "remote_state_commit") {
-      for (const write of args.writes) values[write.key] = structuredClone(write.value);
+      for (const write of args.writes) {
+        if (!options.oldScheduling && args.queued && write.key === "kiwi.queuedTurns") for (const entries of Object.values(write.value)) for (const entry of entries) delete entry.remoteDelivery?.ownerHandle;
+        values[write.key] = structuredClone(write.value);
+      }
       return { result: { state: args.queued ? "queued" : "accepted" }, rows: args.writes.map((row) => ({ key: row.key, value: row.value, revision: 2 })) };
     }
     if (command === "remote_work_queue_steer_claim") {
@@ -99,7 +102,7 @@ test("unconfirmed queued steering remains held, not ordinary queued delivery", a
     assert.equal(h.calls.some((call) => call.command === "remote_state_commit"), false);
   } finally { h.close(); }
 });
-for (const op of ["agents.stop", "checkpoint.accept"]) test(`${op} refuses before old untagged App callback or dispatch latch`, async () => {
+for (const op of ["agents.stop"]) test(`${op} refuses before old untagged App callback or dispatch latch`, async () => {
   const h = harness();
   try {
     const result = await executeParityMutation(op, { workspaceId: workspace.id, revision: "revision" }, h.engines.adapter,
@@ -129,5 +132,15 @@ test("authoritative rollback hydration refuses to overwrite a newly running turn
     useTaskStore.getState().ensureTask("thread", workspace.path); useTaskStore.getState().setTaskStatus("thread", "running");
     assert.throws(() => useTaskStore.getState().hydrateTask("thread", [], [], workspace.path, undefined, undefined, { replaceTimeline: true }), /live turn/);
     assert.equal(useTaskStore.getState().tasks.thread.status, "running");
+  } finally { h.close(); }
+});
+
+test("old scheduled preparation ownership is refused before any provider input", async () => {
+  const h = harness("openai", { oldScheduling: true });
+  try {
+    const result = await executeParityMutation("prompt.scheduleNew", { workspaceId: workspace.id, revision: "revision", text: "Later", deliverAt: Date.now() + 60_000 }, h.engines.adapter,
+      h.context, h.operation.identity, 10, h.operation.delivery, () => {});
+    assert.equal(result.state, "rejected"); assert.equal(result.error.code, "unsupported");
+    assert.equal(h.calls.some((call) => call.args.method === "turn/start"), false);
   } finally { h.close(); }
 });

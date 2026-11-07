@@ -1,3 +1,5 @@
+import type { WireResourceResult } from "./wire-resources";
+export type * from "./wire-resources";
 import type { StudioResult, ProjectNavigationResult } from "./wire-studio";
 /** Phase 2 protocol. These are allowlists, never serialized local store objects. */
 import type { DeviceGrant } from "./types";
@@ -12,6 +14,8 @@ export interface WireThread {
   id: string; workspaceId: string; provider: WireProvider; title: string;
   preview: string; updatedAt: number; status: WireTaskStatus;
   archived?: boolean; child?: boolean; parentThreadId?: string; pinned?: boolean; unread?: boolean;
+  /** Stopped until someone answers an approval or question. */
+  waiting?: boolean;
 }
 export interface WireQuestion {
   id: string; title: string; secret: boolean; options: string[];
@@ -107,7 +111,7 @@ export interface HostPublish {
 }
 export interface HostResponse {
   generation: number; requestId: string;
-  result?: WorkspacesListResult | ThreadsListResult | ThreadReadResult | HostTimelineSubscribeResult | RemoteWorkResult | WireWorkCapabilities | HostContextResult | FilesSearchResult | WireParityReadResult | StudioResult | ProjectNavigationResult | WireDomainReadResult;
+  result?: WireResourceResult | WorkspacesListResult | ThreadsListResult | ThreadReadResult | HostTimelineSubscribeResult | RemoteWorkResult | WireWorkCapabilities | HostContextResult | FilesSearchResult | WireParityReadResult | StudioResult | ProjectNavigationResult | WireDomainReadResult;
   error?: RemoteWireError;
 }
 export interface RemoteViewerFrame { device: string; threadId: string; epoch: string; seq: number; frame: ThreadFrame }
@@ -200,7 +204,14 @@ export interface WireExecutionSettings {
   /** A saved thread's crew. A draft carries it in `subagents.crew`. */
   crew?: WireCrewTarget[];
 }
-export interface DraftSettingsSetArgs extends WireExecutionSettings { opId: string; opSeq: number; workspaceId: string; draftHandle?: string }
+export interface DraftSettingsSetArgs extends WireExecutionSettings { opId: string; opSeq: number; workspaceId: string; draftHandle?: string; handoffHandle?: string }
+/** Formatted evidence is not an invocation source. Persist this authored source
+ * with the outbox entry, including empty string for feedback-only prompts. */
+export interface RemotePromptArgs {
+  opId: string; opSeq: number; text: string; threadId?: string; workspaceId?: string;
+  draftHandle?: string; attachmentIds?: string[]; skillInvocationText?: string;
+  target?: string;
+}
 export interface PromptCancelArgs { opId: string; opSeq: number; workspaceId: string; startTarget: string }
 export type RemoteRowOperation = "thread.rename" | "thread.archive" | "thread.restore" | "thread.delete" | "thread.pin" | "thread.fork"
   | "projects.pin" | "projects.remove" | "projects.reorder";
@@ -226,7 +237,7 @@ export type ParityMutationOperation = "queue.edit.begin" | "queue.edit.finish" |
   | "projects.settings.set" | "projects.instructions.set" | "projects.profiles.save" | "projects.profiles.delete" | "projects.profiles.select"
   | "projects.run.set" | "projects.check.set" | "run.start" | "run.stop" | "checks.start" | "checks.stop"
   | "discovery.run.start" | "discovery.run.stop" | "discovery.check.start" | "discovery.check.stop" | "discovery.settings.set"
-  | "checkpoint.accept" | "agents.stop";
+  | "checkpoint.accept" | "agents.stop" | "agents.accept" | "agents.replace" | "actions.run" | "review.start" | "git.suggestCommit" | "git.autoPublish.set" | "git.autoPublish.retry";
 export type HostParityOperation = ParityReadOperation | ParityMutationOperation;
 /** Host-generated resource revision; never a timestamp supplied as authority. */
 export interface ParityTarget { workspaceId: string; threadId?: string }
@@ -241,7 +252,7 @@ export interface WorkflowStartArgs extends ParityMutationArgs { workflowId: stri
 export interface WorkflowStopArgs extends ParityMutationArgs { workflowId: string; runId: string }
 /** Shared allowlisted records for contextual controls, never raw persisted state. */
 export interface WireParityRow {
-  id: string; name?: string; description?: string; text?: string; status?: string;
+  id: string; name?: string; description?: string; text?: string; status?: string; handoffHandle?: string;
   provider?: WireProvider; model?: string; effort?: WireEffort;
   threadId?: string; parentThreadId?: string; runId?: string; queueId?: string;
   enabled?: boolean; pinned?: boolean; archived?: boolean; editing?: boolean;

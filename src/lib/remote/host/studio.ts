@@ -150,6 +150,11 @@ export class HostStudio {
     }
     return handle;
   }
+  /** The project-relative file behind a handle this viewer was given. */
+  resolveFile(request: HostRequest, args: Record<string, unknown>, resourceId: unknown): { path: string } {
+    const target = this.target(request, args);
+    return { path: this.handle(request, target, resourceId, "file").relative };
+  }
   /** Resolve only a handle issued to this viewer for this exact live checkout. */
   resolveGitChange(request: HostRequest, args: Record<string, unknown>, resourceId: unknown): { path: string; area: StudioGitArea } {
     const target = this.target(request, args);

@@ -35,6 +35,7 @@ export const DURABLE_STORAGE_KEYS = [
   "kiwi.workspaceDraftKeys",
   "kiwi.savedWorkspaceDraftKeys",
   "kiwi.reviewFeedback",
+  "kiwi.remoteReviewFeedback",
   "kiwi.agentQuestions",
   "kiwi.scheduleRuns",
   "kiwi.workflows",

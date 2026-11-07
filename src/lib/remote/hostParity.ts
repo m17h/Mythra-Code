@@ -31,7 +31,8 @@ export interface HostParityDeps {
   stopWorkflow(workflowId: string, runId: string): Promise<boolean>;
   pumpQueue(threadId: string): void;
   /** Whether this checkpoint is shown for this target, then flips its Accepted mark. */
-  acceptCheckpoint(context: TurnRunnerContext, checkpointId: string): boolean;
+  /** Only for tests: a live host records this through checkpoint.accept. */
+  acceptCheckpoint?(context: TurnRunnerContext, checkpointId: string): boolean;
   stopAgent(parentThreadId: string, agentId: string): Promise<void>;
   /** The same briefing a local handoff drafts, from the transcript this device holds. */
   handoffPrompt(context: TurnRunnerContext): Promise<string>;
@@ -157,7 +158,7 @@ export function createHostParity(deps: HostParityDeps): HostParityActions {
         }
         case "checkpoint.accept": {
           assertAllowed();
-          if (!deps.acceptCheckpoint(context, String(args.checkpointId))) throw new HostReadError("stale_target", "That checkpoint is no longer available.");
+          if (!deps.acceptCheckpoint?.(context, String(args.checkpointId))) throw new HostReadError("stale_target", "That checkpoint is no longer available.");
           return { state: "accepted" };
         }
         case "agents.stop": {

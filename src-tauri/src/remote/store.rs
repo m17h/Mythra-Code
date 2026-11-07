@@ -746,6 +746,7 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
     let state:String=transaction.query_row("SELECT state FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64],|row|row.get(0)).map_err(|_|"That delivery is no longer available.".to_string())?;
     if state=="rejected"&&next!="rejected"&&!(native&&next=="accepted"){return Err("A rejected instruction cannot be reopened.".into());}
     let mut receipt = receipt.clone();
+    if old.as_ref().is_some_and(|r|r["preparationDetached"]==true){if let Some(r)=receipt.as_object_mut(){r.remove("ownerHandle");r.remove("engineOwnerHandle");r.remove("nativeSteps");}}
     let native_op:String=transaction.query_row("SELECT op FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64],|row|row.get(0)).map_err(|_|"That delivery is no longer available.".to_string())?;
     receipt["op"]=Value::String(native_op);
     if let Some(old) = old {
@@ -756,7 +757,7 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
         if previous == "accepted" && next != "accepted" { return Ok(()); }
         if previous=="rejected"&&next!="rejected"&&!(native&&next=="accepted"){return Err("A rejected instruction cannot be reopened.".into());}
         if ["dispatched","uncertain","accepted","rejected"].contains(&previous) && ["preparing","queued"].contains(&next) { return Err("That delivery cannot be queued again.".into()); }
-        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","grantRevision","batchStarted","threadEffectStarted","nativeThreadRoot","nativeThreadProvider","nativeThreadProof"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
+        for key in ["nativeCommitted","handoffCommitted","queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","engineSteer","agentStopProof","stopTarget","stopTargetOwner","engineCutoffProof","agentCutoffProof","grantRevision","queueSteerClaim","steerTarget","agentCutoffConfirmed","preparationDetached","preparationSteps","preparationOwner","batchStarted","threadEffectStarted","nativeThreadRoot","nativeThreadProvider","nativeThreadProof"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
         // Native dispatch latches may only be added, never cleared by IPC.
         if let Some(steps) = old.get("nativeSteps") { receipt["nativeSteps"] = steps.clone(); }
     }
@@ -782,7 +783,7 @@ pub(super) fn claim_native_step(connection: &mut Connection, device: &str, op_id
     // provider action. Future parity engines need their own typed provenance
     // adapters before extending this explicit dispatch matrix.
     let operation:String=transaction.query_row("SELECT op FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64],|row|row.get(0)).map_err(|_|"That delivery is no longer available.".to_string())?;
-    let allowed=match step {
+    let allowed=if operation=="engine.prompt"&&receipt["engineSteer"]==true{let expected=match receipt["provider"].as_str(){Some("claude")=>"claude_turn_steer",Some("cursor")=>"cursor_turn_steer",Some("openai"|"openrouter"|"lmstudio")=>"codex_steer",_=>""};!expected.is_empty()&&step==expected&&receipt.get("nativeSteps").and_then(Value::as_array).is_none_or(Vec::is_empty)}else{match step {
         "thread/name/set"=>operation=="thread.rename",
         "thread/archive"=>operation=="thread.archive",
         "thread/unarchive"=>operation=="thread.restore",
@@ -791,7 +792,7 @@ pub(super) fn claim_native_step(connection: &mut Connection, device: &str, op_id
         "thread/compact/start"=>operation=="thread.compact",
         "thread/rollback"=>operation=="thread.rollback",
         "thread/start" if operation=="prompt.scheduleNew"=>true,
-        "thread/start"|"thread/resume"|"turn/start"|"claude_prompt"|"cursor_prompt"=>matches!(operation.as_str(),"prompt.send"|"prompt.queue"|"engine.prompt"|"parent.continue")||(matches!(operation.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit")&&receipt.get("queueAuthorized").and_then(Value::as_bool)==Some(true)&&receipt.get("queueAdmissionCommitted").and_then(Value::as_bool)==Some(true)),
+        "thread/start"|"thread/resume"|"turn/start"|"claude_prompt"|"cursor_prompt"=>matches!(operation.as_str(),"prompt.send"|"prompt.queue"|"engine.prompt"|"parent.continue"|"review.start"|"git.suggestCommit")||(matches!(operation.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit")&&receipt.get("queueAuthorized").and_then(Value::as_bool)==Some(true)&&receipt.get("queueAdmissionCommitted").and_then(Value::as_bool)==Some(true)),
         "claude_turn_steer"|"cursor_turn_steer"|"codex_steer"=>matches!(operation.as_str(),"prompt.steer"|"queue.steer"),
         "approval_answer"=>operation=="approval.answer",
         "question_answer"=>operation=="question.answer",
@@ -802,7 +803,7 @@ pub(super) fn claim_native_step(connection: &mut Connection, device: &str, op_id
         "command/exec/terminate"=>operation=="terminal.close",
         step if step.starts_with("owner_stop:")=>matches!(operation.as_str(),"turn.stop"|"workflows.stop"|"run.stop"|"checks.stop"),
         _=>false,
-    };
+    }};
     if !allowed{return Err("That instruction does not authorize this native action.".into());}
     let disposition=receipt.get("disposition").and_then(Value::as_str).unwrap_or("uncertain");
     if !["preparing","dispatched"].contains(&disposition) {return Err("This delivery cannot be dispatched again.".into());}

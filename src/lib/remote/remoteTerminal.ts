@@ -18,7 +18,7 @@ interface TerminalEvent { device: string; terminalId: string; seq: number; data:
 export interface RemoteTerminalView { running: boolean; opening: boolean; command: string; notice: string }
 const IDLE: RemoteTerminalView = { running: false, opening: false, command: "", notice: "" };
 
-export const useRemoteTerminals = create<{ views: Record<string, RemoteTerminalView> }>(() => ({ views: {} }));
+export const useRemoteTerminals = create<{ views: Record<string, RemoteTerminalView>; expected: Record<string, string> }>(() => ({ views: {}, expected: {} }));
 
 class Session {
   private text = "";
@@ -53,6 +53,34 @@ class Session {
     subscribe: (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; },
   };
   clear() { this.text = ""; this.dropped = 0; this.output += 1; this.notify(); }
+  private mirrored = { id: "", text: "", ended: false };
+  /** Run and project actions print into the host's own panel, and it reports a moving
+   * tail of that output. Shows each new piece here once, in the same terminal. */
+  mirror(id: string, command: string, output: string, ended: string | null, ours: boolean) {
+    if (id !== this.mirrored.id) {
+      // Something that ended before this view saw it is history, unless it was
+      // started from here and just finished between two looks.
+      if (ended && !ours) return;
+      this.mirrored = { id, text: "", ended: false };
+      this.append(`${this.text && !this.text.endsWith("\n") ? "\r\n" : ""}$ ${command}\r\n`);
+    }
+    const seen = this.mirrored.text;
+    let fresh = output;
+    if (output.startsWith(seen)) fresh = output.slice(seen.length);
+    else {
+      // The tail moved on. Find where the last thing shown now sits.
+      const longest = Math.min(seen.length, output.length);
+      for (let size = longest; size > 0; size -= 1) {
+        if (output.startsWith(seen.slice(-size))) { fresh = output.slice(size); break; }
+      }
+    }
+    this.mirrored.text = output;
+    if (fresh) this.append(fresh.replace(/\r?\n/g, "\r\n"));
+    if (ended && !this.mirrored.ended) {
+      this.mirrored.ended = true;
+      this.append(`${output.endsWith("\n") ? "" : "\r\n"}${ended}\r\n`);
+    }
+  }
   private append(next: string) {
     if (!next) return;
     this.text += next;
@@ -199,4 +227,9 @@ export const remoteTerminalKey = (device: string, workspaceId: string) => `${dev
 /** A lost link ends the terminal's route on the host, so no more output will come. */
 export function endRemoteTerminals(device: string) {
   for (const [key, session] of sessions) if (key.startsWith(`${device}/`)) session.lostConnection();
+}
+
+/** A Run or project action was started from this device, so its output is wanted here. */
+export function expectRemoteRun(device: string, workspaceId: string, processHandle: string) {
+  useRemoteTerminals.setState((state) => ({ expected: { ...state.expected, [remoteTerminalKey(device, workspaceId)]: processHandle } }));
 }

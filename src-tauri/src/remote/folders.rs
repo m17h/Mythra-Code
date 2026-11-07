@@ -45,7 +45,7 @@ pub(super) struct Registry {
 fn failed() -> String {
     "This folder is no longer available. Open the folder list again.".into()
 }
-fn check(state: &RemoteState, generation: u64, device: &str, revision: u64) -> Result<(), String> {
+pub(super) fn check(state: &RemoteState, generation: u64, device: &str, revision: u64) -> Result<(), String> {
     studio::check_scope(state, generation, device, revision, None, true)
 }
 pub(super) fn invalidate(core: &mut Core, device: Option<&str>) {

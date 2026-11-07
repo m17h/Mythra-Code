@@ -146,9 +146,9 @@ pub(super) fn validate_args(op: &str, args: &Value) -> Result<(), WireError> {
     let object = args.as_object().ok_or_else(invalid)?;
     if op=="prompt.send"&&args.get("draftHandle").is_some()&&args.get("workspaceId").is_none(){return Err(invalid());}
     let extra: &[&str] = match op {
-        "prompt.send" => &["threadId", "workspaceId", "text", "draftHandle", "attachmentIds"],
-        "prompt.queue" => &["threadId", "workspaceId", "text", "attachmentIds"],
-        "prompt.steer" => &["threadId", "handle", "target", "text"],
+        "prompt.send" => &["threadId", "workspaceId", "text", "draftHandle", "attachmentIds", "skillInvocationText"],
+        "prompt.queue" => &["threadId", "workspaceId", "text", "attachmentIds", "skillInvocationText"],
+        "prompt.steer" => &["threadId", "handle", "target", "text", "skillInvocationText"],
         "turn.stop" => &["threadId", "handle", "target"],
         "approval.answer" => &["threadId", "handle", "target", "decision"],
         "question.answer" => &["threadId", "handle", "target", "answers", "cancel"],
@@ -188,6 +188,7 @@ pub(super) fn validate_args(op: &str, args: &Value) -> Result<(), WireError> {
         return Err(invalid());
     }
     if let Some(ids)=args.get("attachmentIds"){let ids=ids.as_array().ok_or_else(invalid)?;let mut seen=std::collections::HashSet::new();if ids.len()>20||ids.iter().any(|id|!id.as_str().is_some_and(|id|uuid::Uuid::parse_str(id).is_ok()&&seen.insert(id))){return Err(invalid());}}
+    if args.get("skillInvocationText").is_some_and(|v|!v.as_str().is_some_and(|s|s.chars().count()<=256*1024)){return Err(invalid());}
     if op.starts_with("prompt.")
         && !args
             .get("text")
@@ -648,6 +649,7 @@ impl NativePermit {
         if core.work.tickets.get(&self.ticket) != Some(&false) {
             return Err(refused("stale_target"));
         }
+        if self.receipt.get("queueSteerClaim").is_some()&&self.target.as_deref()!=self.receipt.get("steerTarget").and_then(Value::as_str){return Err(refused("stale_target"));}
         if let Some(handle) = &self.target {
             let target = core
                 .work
@@ -803,7 +805,8 @@ pub(super) async fn prepare_native_inner(
     {
         return Err(refused("stale_target"));
     }
-    if receipt.get("engineKind").is_some(){let expected=match step{"claude_prompt"=>Some("claude"),"cursor_prompt"=>Some("cursor"),"turn/start"|"thread/start"|"thread/resume"|"command/exec"=>Some("openai"),_=>None};let actual=receipt.get("provider").and_then(Value::as_str).map(|p|if matches!(p,"openrouter"|"lmstudio"){"openai"}else{p});if expected!=actual{return Err(refused("stale_target"));}}
+    if receipt["engineSteer"]==true&&(receipt.get("steerTarget").and_then(Value::as_str)!=target.as_deref()||!matches!(step,"claude_turn_steer"|"cursor_turn_steer"|"codex_steer")){return Err(refused("stale_target"));}
+    if receipt.get("engineKind").is_some(){let expected=match step{"claude_prompt"|"claude_turn_steer"=>Some("claude"),"cursor_prompt"|"cursor_turn_steer"=>Some("cursor"),"turn/start"|"thread/start"|"thread/resume"|"command/exec"|"codex_steer"=>Some("openai"),_=>None};let actual=receipt.get("provider").and_then(Value::as_str).map(|p|if matches!(p,"openrouter"|"lmstudio"){"openai"}else{p});if expected!=actual{return Err(refused("stale_target"));}}
     if let Some(permission) = permission {
         let saved = receipt
             .get("permission")
@@ -832,7 +835,7 @@ pub(super) async fn prepare_native_inner(
             return Err(refused("busy"));
         }
         super::owners::attach(&mut core,&meta,receipt.get("workspaceId").and_then(Value::as_str),&ticket)?;
-        if meta.owner_handle.is_some(){if let Some(child)=target.as_ref().and_then(|handle|core.work.targets.get(handle)).filter(|child|child.owner_handle.is_none()&&matches!(child.kind.as_str(),"turn"|"start")).cloned(){super::owners::record(&mut core,&meta,child)?;}}
+        if meta.owner_handle.is_some()&&receipt["engineSteer"]!=true{if let Some(child)=target.as_ref().and_then(|handle|core.work.targets.get(handle)).filter(|child|child.owner_handle.is_none()&&matches!(child.kind.as_str(),"turn"|"start")).cloned(){super::owners::record(&mut core,&meta,child)?;}}
 
         core.work.tickets.insert(ticket.clone(), false);
     }
@@ -1008,7 +1011,7 @@ pub(crate) async fn remote_work_target_register(
     core.work.targets.insert(handle.clone(), target);
     Ok(json!({"handle":handle}))
 }
-fn target_locked(core: &Core, meta: &RemoteDelivery, handle: &str) -> Result<Target, String> {
+pub(super) fn target_locked(core: &Core, meta: &RemoteDelivery, handle: &str) -> Result<Target, String> {
     let target = core
         .work
         .targets
@@ -1093,6 +1096,7 @@ pub(crate) async fn remote_work_dispatch(
     action: String,
     args: Value,
     target_handle: Option<String>,
+    owner_handle: Option<String>,
 ) -> Result<Value, String> {
     hostbridge::window_is_host(&window).map_err(|_| refused("forbidden"))?;
     if ![
@@ -1109,7 +1113,7 @@ pub(crate) async fn remote_work_dispatch(
         return Err(refused("unsupported"));
     }
     let meta = RemoteDelivery {
-        owner_handle:None,
+        owner_handle,
         generation,
         device,
         op_id,
@@ -1247,5 +1251,15 @@ impl NativePermit{
 }
 
 impl NativePermit{
+ pub(crate) fn agent_cutoff_proof(&self)->Option<&Value>{self.receipt.get("engineCutoffProof")}
+ pub(crate) fn agent_stop_proof(&self)->Option<&Value>{self.receipt.get("agentStopProof")}
  pub(crate) fn thread_effect_proof(&self)->Option<(&str,&Value)>{self.receipt.get("op").and_then(Value::as_str).filter(|op|matches!(*op,"thread.rename"|"thread.archive"|"thread.restore"|"thread.delete"|"thread.fork"|"thread.compact"|"thread.rollback")).map(|op|(op,self.receipt.get("nativeThreadProof").unwrap_or(&Value::Null)))}
+}
+#[cfg(test)]
+mod round11_wire_tests{
+ use super::*;
+ #[test]
+ fn skill_invocation_text_is_authored_text_not_a_provider_override(){
+  for op in ["prompt.send","prompt.queue","prompt.steer"]{let mut args=json!({"opId":"op","opSeq":1,"text":"hello","skillInvocationText":""});if op=="prompt.send"{args["workspaceId"]=json!("p");}else{args["threadId"]=json!("t");}if op=="prompt.steer"{args["target"]=json!("opaque");}assert!(validate_args(op,&args).is_ok(),"{op}");args["skillInvocationText"]=json!(42);assert!(validate_args(op,&args).is_err());args["skillInvocationText"]=json!("hello");args["modelOverride"]=json!("not-permitted");assert!(validate_args(op,&args).is_err());}
+ }
 }

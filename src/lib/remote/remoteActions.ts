@@ -59,6 +59,12 @@ export type HostUpload = { ok: true; id: string; name: string; kind: "image" | "
 /** Sends a file the user chose to the host. The host only ever hands back an
  * id, so nothing on this device learns where it was stored. */
 const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff", heic: "image/heic" };
+let armGeneration = 0;
+/** Drops are only captured while a window shows another device. Local drops stay local. */
+export function captureDroppedFiles(armed: boolean): void {
+  armGeneration += 1;
+  void invoke("remote_upload_arm", { armed, generation: armGeneration }).catch(() => undefined);
+}
 /** A file dropped on the window. The drop gives a path on this device, and
  * the app's native side reads it only because that drop really happened. */
 export async function readDroppedFile(path: string): Promise<File> {

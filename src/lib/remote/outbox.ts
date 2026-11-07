@@ -31,6 +31,8 @@ export interface OutboxEntry {
   /** Host-issued choices for a new thread, kept with the prompt they belong to. */
   draftHandle?: string;
   attachmentIds?: string[];
+  /** What the person wrote, the only text allowed to invoke a skill. Empty for notes alone. */
+  skillInvocationText?: string;
   draftKey: string;
   text: string;
   state: OutboxState;

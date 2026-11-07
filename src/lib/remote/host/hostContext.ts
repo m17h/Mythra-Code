@@ -4,13 +4,15 @@ import { usageForThread } from "../../usageLedger";
 import type { HostContextResult, HostRequest, FilesSearchResult, WireEffort, WireHostProvider, WireHostUsage, WireProvider } from "../wire";
 import { remotePermission, resolveThreadExecutionContext, type ExecutionSources } from "./executionContext";
 import { currentGrant, HostReadError, idArg, normalizedHostPath, requireThread, requireWorkspace } from "./scope";
-import { publicCrew } from "./executionPreferences";
+import { publicCrew, wireServiceTier } from "./executionPreferences";
 import { hostDiscoveryPreferences } from "./discoverySettings";
 import type { LocalSkill } from "../../skills";
 import type { ChildAgentTarget } from "../../../types";
 
+import type { HostResourceSources } from "./resources";
+
 export const wireEfforts = new Set<WireEffort>(["low", "medium", "high", "xhigh", "max"]);
-export interface HostContextSources extends ExecutionSources {
+export interface HostContextSources extends ExecutionSources, HostResourceSources {
   /** Must inspect all execution scopes, not just the selected Run/Checks UI.
    * Local start handlers also consult hostCommandBusy before dispatch. */
   isLocalCommandRunning?(root: string, kind: "run" | "checks"): boolean;
@@ -28,8 +30,13 @@ export interface HostContextSources extends ExecutionSources {
   getPublicWorkflows(workspaceId: string): readonly { id: string; name: string; description?: string }[];
   /** The crew a started thread captured, with any change waiting for its next message. */
   getThreadCrew?(threadId: string): { maxConcurrent: number; targets: readonly ChildAgentTarget[] } | undefined;
+  /** The saved record of an archived thread, which the live list no longer holds. */
+  resolveArchivedThread?(threadId: string): { thread: import("../../../types").Thread; workspaceId: string } | null | Promise<{ thread: import("../../../types").Thread; workspaceId: string } | null>;
   /** True once archiving from another device has a native fence. */
   canArchiveThreads?(): boolean;
+  /** Publishing belongs to the project, so these never depend on what's selected here. */
+  setAutoPublish?(workspaceId: string, path: string, enabled: boolean): Promise<void>;
+  retryAutoPublish?(workspaceId: string): void;
   /** Applies a crew change exactly as the local picker does. */
   stageThreadCrew?(threadId: string, next: { maxConcurrent: number; targets: ChildAgentTarget[] }, dryRun: boolean): "none" | "staged" | "busy" | "not-ready";
 }
@@ -74,7 +81,7 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
   const capturedCrew = threadId && !nativeEngine ? sources.getThreadCrew?.(threadId) : undefined;
   const result: HostContextResult = { workspaceId, ...(threadId ? { threadId } : {}), providers: publicCatalog(sources),
     execution: { provider: ctx.effectiveSettings.provider, model: ctx.effectiveSettings.model, effort,
-      permission: remotePermission(ctx.effectiveSettings.permission, grant), serviceTier: ctx.effectiveSettings.serviceTier === "fast" ? "fast" : "standard",
+      permission: remotePermission(ctx.effectiveSettings.permission, grant), serviceTier: wireServiceTier(ctx.effectiveSettings.serviceTier),
       subagents: { enabled: ctx.effectiveSettings.subagentsEnabled, engine: ctx.effectiveSettings.subagentEngine === "native" ? "native" : "mythra",
         maxConcurrent: capturedCrew?.maxConcurrent ?? ctx.effectiveSettings.nativeSubagentMax ?? 6, crew: publicCrew(capturedCrew?.targets ?? ctx.effectiveSettings.childAgents.targets) },
       ...(threadId ? { isolated: normalizedHostPath(sources.executionPathFor(threadId, workspace.path)) !== normalizedHostPath(workspace.path) } : {}) },

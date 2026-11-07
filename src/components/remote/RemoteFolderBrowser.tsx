@@ -3,8 +3,16 @@ import { createPortal } from "react-dom";
 import { ChevronRight, Folder, FolderUp, LoaderCircle, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/useModalFocus";
 import { safeErrorText } from "../../lib/errors";
-import { addRemoteProject, browseRemoteFolders } from "../../lib/remote/remoteWork";
+import { parseGitHubCloneTarget } from "../../lib/github";
+import { addRemoteProject, browseRemoteFolders, readRemoteClone, startRemoteClone } from "../../lib/remote/remoteWork";
 import type { FoldersBrowseResult } from "../../lib/remote/wire-studio";
+
+const RECHECK_MS = 2_000;
+/** The host gives up at 15 minutes, so this only outlasts it. */
+const LONGEST_MS = 16 * 60_000;
+const MISSED_ANSWERS = 30;
+const MOST_FOLDER_PAGES = 20;
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Remote-only for a reason: a native folder dialog would open on the other
  * machine's screen, where the user can't see it. */
@@ -30,6 +38,54 @@ export function RemoteFolderBrowser({ device, name, onClose, onAdded }: {
       .finally(() => { if (current === request.current) setBusy(false); });
   }, [device, name]);
   useEffect(() => { open(); }, [open]);
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [cloning, setCloning] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  /** Clones into this folder, then adds the result the way Add project does. */
+  const clone = async () => {
+    const parent = listing?.folder;
+    const target = parseGitHubCloneTarget(cloneUrl);
+    if (!parent) return;
+    if (!target) { setError("Enter a valid GitHub repository address."); return; }
+    setCloning(true);
+    setError("");
+    const fail = (message: string) => { if (mounted.current) { setError(message); setCloning(false); } };
+    const started = await startRemoteClone(device, name, parent.id, target.url);
+    if ("failure" in started) { fail(started.failure); return; }
+    const deadline = Date.now() + LONGEST_MS;
+    let missed = 0;
+    for (;;) {
+      await wait(RECHECK_MS);
+      if (!mounted.current) return;
+      if (Date.now() > deadline) { fail(`This clone is taking too long. Check the folder on ${name}.`); return; }
+      try {
+        const { state } = await readRemoteClone(device, started.handle);
+        missed = 0;
+        if (state === "completed") break;
+        if (state === "timedOut") { fail(`This repository took too long to clone on ${name}. Try again.`); return; }
+        if (state === "failed") { fail(`${name} couldn't clone that repository. Check the address, and that GitHub is connected on ${name}.`); return; }
+      } catch {
+        missed += 1;
+        if (missed >= MISSED_ANSWERS) { fail(`Mythra Code lost track of this clone. Check the folder on ${name}.`); return; }
+      }
+    }
+    try {
+      let cursor: string | undefined;
+      for (let page = 0; page < MOST_FOLDER_PAGES; page += 1) {
+        const rows = await browseRemoteFolders(device, parent.id, cursor);
+        const made = rows.folders.find((folder) => folder.name === started.folder);
+        if (made) {
+          const failure = await addRemoteProject(device, name, made.id);
+          if (failure) fail(failure); else onAdded();
+          return;
+        }
+        cursor = rows.cursor;
+        if (!cursor) break;
+      }
+    } catch { /* Said below. */ }
+    fail(`The repository was cloned on ${name}, but it couldn't be added. Open its folder here to add it.`);
+  };
   const add = () => {
     const folder = listing?.folder;
     if (!folder?.canAdd) return;
@@ -55,10 +111,16 @@ export function RemoteFolderBrowser({ device, name, onClose, onAdded }: {
         {busy && !listing && <p role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /> Loading folders…</p>}
         {listing?.truncated && <p role="note">Only the first folders are shown.</p>}
       </div>
+      {listing?.folder && <div className="remote-folder-clone">
+        <input aria-label="GitHub repository address" placeholder="Clone a GitHub repository here: https://github.com/owner/name" value={cloneUrl} disabled={cloning} maxLength={2048} onChange={(event) => setCloneUrl(event.target.value)} />
+        <button type="button" className="secondary-button" disabled={cloning || !cloneUrl.trim()} onClick={() => void clone()}>
+          {cloning ? <><LoaderCircle size={13} className="spin" aria-hidden="true" /> Cloning…</> : "Clone here"}
+        </button>
+      </div>}
       {error && <p className="remote-composer-error" role="alert">{error}</p>}
       <footer>
         <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-        <button type="button" className="primary-button" disabled={busy || !listing?.folder?.canAdd} onClick={add}>Add project</button>
+        <button type="button" className="primary-button" disabled={busy || cloning || !listing?.folder?.canAdd} onClick={add}>Add project</button>
       </footer>
     </div>
   </div>, document.querySelector(".app-shell") ?? document.body);

@@ -329,6 +329,8 @@ export interface TurnRunnerContext {
   trackNativeOwners?: boolean;
   localOwnerHandle?: string;
   localOwnerRunId?: string;
+  /** Replacement instructions must refuse a concurrent start, never silently queue. */
+  remoteRequireIdle?: true;
   remoteStop?: (args: Record<string, unknown>) => Promise<void>;
   resolveRemoteQueuedDelivery?: (entry: QueuedTurn) => Promise<TurnRunnerContext>;
   remoteQueuesReady?: () => boolean;
@@ -632,7 +634,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       ctx.setError(friendlyError(reason));
       return false;
     }
-    if (explicitThreadId && explicitAttemptId) ctx.onExplicitChildStart?.(explicitThreadId, explicitAttemptId);
+    if (explicitThreadId && explicitAttemptId) {
+      try { ctx.onExplicitChildStart?.(explicitThreadId, explicitAttemptId); }
+      catch (reason) { finishProviderPreparation?.(); ctx.setError(friendlyError(reason)); return false; }
+    }
     const capturedAt = Date.now();
     const recordAuthoredPrompt = (threadId: string, messageId: string) => {
       // Generated reviews/handoffs explicitly disable mention resolution. A
@@ -2307,7 +2312,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     if (archiveOwnsThread(thread.id)) throw new HostReadError("thread_unavailable", "This conversation is unavailable.");
     const existing = useTaskStore.getState().tasks[thread.id]?.queuedTurns.find((entry) => entry.remoteDelivery?.device === delivery.device && entry.remoteDelivery.opId === delivery.opId);
     if (existing) return { opId: delivery.opId, state: existing.remoteDelivery?.disposition === "queued" ? "queued" : "uncertain", threadId: thread.id, queuedTurnId: existing.id };
-    const queued = useTaskStore.getState().enqueueTurn(thread.id, text, ctx.attachments, { remoteDelivery: { ...delivery, disposition: "uncertain" } });
+    const queued = useTaskStore.getState().enqueueTurn(thread.id, text, ctx.attachments, { remoteDelivery: { ...delivery, disposition: "uncertain" },
+      ...(ctx.resolveSkillMentions === false ? { resolveSkillMentions: false } : {}),
+      ...(ctx.skillInvocationText !== undefined ? { skillInvocationText: ctx.skillInvocationText } : {}) });
     try {
       await remote.queued(thread.id, queued.id);
       queueMicrotask(() => { void pumpQueuedThread(thread.id); });
@@ -2321,6 +2328,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const task = ctx.activeThread ? useTaskStore.getState().tasks[ctx.activeThread.id] : undefined;
     if (ctx.activeThread && (task?.status === "running" || task?.status === "starting" || hasEligibleQueuedTurns(task?.queuedTurns)
       || useTaskStore.getState().workflowOwners[ctx.activeThread.id])) {
+      if (ctx.remoteRequireIdle) { await remote.rejected("busy"); return remote.result(); }
       return queuePromptTo(ctx, text, { ...remote.identity, workspaceId: ctx.activeWorkspace!.id,
         attemptId: remote.attemptId, messageId: remote.messageId, disposition: "uncertain", attachmentIds: ctx.remoteAttachmentIds });
     }

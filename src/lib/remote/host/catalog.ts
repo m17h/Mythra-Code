@@ -113,6 +113,7 @@ export class HostCatalog {
       archived: this.sources.getArchivedThreadIds().has(thread.id), child: isSubAgentThread(thread, this.ownership()),
       pinned: this.sources.getPinnedThreadIds?.().has(thread.id) === true,
       unread: useTaskStore.getState().tasks[thread.id]?.unread === true,
+      waiting: (useTaskStore.getState().tasks[thread.id]?.approvals.length ?? 0) > 0,
     };
   }
 }

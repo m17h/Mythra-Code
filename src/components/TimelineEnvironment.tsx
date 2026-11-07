@@ -1,6 +1,6 @@
 import { createContext, useContext, type ComponentType, type ContextType, type ReactNode } from "react";
 import { useStore } from "zustand";
-import type { ChatMessage } from "../types";
+import type { Activity, ChatMessage } from "../types";
 import type { ThreadTaskState } from "../lib/taskStore";
 import type { ChildMailbox } from "../lib/childAgentMailbox";
 import type { SubAgentControls } from "./SubAgentControls";
@@ -27,6 +27,8 @@ export interface TimelineEnvironment {
   Questions?: ComponentType<{ message: ChatMessage }>;
   MessageExtras?: ComponentType<{ message: ChatMessage }>;
   Feedback?: ComponentType<{ message: ChatMessage; children: (open: MessageFeedbackOpener) => ReactNode }>;
+  /** Wraps a work-history step's shown output. Without it, the output is shown as is. */
+  ActivityDetail?: ComponentType<{ activity: Activity; children: ReactNode }>;
   Image?: ComponentType<{ path: string; name: string }>;
   openExternalUrl?: (url: string) => Promise<unknown>;
   /** False keeps a link as readable text, for addresses that mean another machine. */

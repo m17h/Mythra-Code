@@ -78,6 +78,7 @@ export interface AgentRecord extends NativeAgentReadout {
   /** Native operation identity distinguishes reactivation while turn IDs lag. */
   canOpen?: boolean;
   canStop?: boolean;
+  canAccept?: boolean;
 }
 
 export interface AttachmentRecord {
@@ -167,7 +168,12 @@ export function TerminalPanelHost(props: TerminalPanelProps) {
 }
 
 type StudioDockProps = Parameters<typeof StudioDock>[0];
-export type AgentsPanelProps = Pick<StudioDockProps, "agents" | "onClose" | "onOpenAgent" | "onStopAgent">;
+export type AgentsPanelProps = Pick<StudioDockProps, "agents" | "onClose" | "onOpenAgent" | "onStopAgent"> & {
+  /** Sign off a finished worker. Only offered where the agent's record allows it. */
+  onAcceptAgent?: (id: string) => void;
+  /** Extra detail for one worker, shown with its task and progress. */
+  agentDetail?: (id: string) => import("react").ReactNode;
+};
 /** The real panels are written once. Another machine supplies their data and actions. */
 export function AgentsPanel(props: AgentsPanelProps) {
   return <>
@@ -182,7 +188,8 @@ export function AgentsPanel(props: AgentsPanelProps) {
                 {agent.progress && <div><small>Latest reported progress</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.progress}</p></div>}
                 {agent.result && <div><small>Reported result</small><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{agent.result}</p></div>}
               </details>}
-            </div>{agent.canOpen !== false && agent.runtime !== "claude" && <button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button>}{agent.canStop !== false && agent.runtime !== "claude" && isActiveAgentRecord(agent.status) && <button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button>}</div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
+              {props.agentDetail?.(agent.id)}
+            </div>{agent.canAccept && props.onAcceptAgent && <button onClick={() => props.onAcceptAgent!(agent.id)} title="Sign off this work" aria-label={`Sign off sub-agent ${agent.id.slice(0, 8)}`}><Check size={14} /></button>}{agent.canOpen !== false && agent.runtime !== "claude" && <button onClick={() => props.onOpenAgent(agent.id)} title="Open child thread" aria-label={`Open sub-agent ${agent.id.slice(0, 8)}`}><ChevronRight size={14} /></button>}{agent.canStop !== false && agent.runtime !== "claude" && isActiveAgentRecord(agent.status) && <button onClick={() => props.onStopAgent(agent.id)} title="Stop child agent" aria-label={`Stop sub-agent ${agent.id.slice(0, 8)}`}><CircleStop size={14} /></button>}</div>) : <Empty icon={UsersRound} title="No sub-agents yet" text="When the model delegates, each child appears here." />}</div>
         </>;
 }
 

@@ -17,12 +17,12 @@ import type { HostParityActions } from "./parityActions";
 import { registerRemoteStateRecovery, type StampedRow } from "./stateCommit";
 import { HostGitHub, isGitHubRead, isGitHubWrite } from "./githubActions";
 
-const writes = new Set(["git.write", "checkpoint.create", "checkpoint.complete", "checkpoint.delete", "checkpoint.restore", "worktree.create", "worktree.recreate", "worktree.baseline", "worktree.apply", "worktree.merge", "worktree.remove", "worktree.continueShared", "worktree.returnShared"]);
+const writes = new Set(["attachment.reference", "git.write", "checkpoint.create", "checkpoint.complete", "checkpoint.delete", "checkpoint.restore", "worktree.create", "worktree.recreate", "worktree.baseline", "worktree.apply", "worktree.merge", "worktree.remove", "worktree.continueShared", "worktree.returnShared"]);
 export const isDomainMutation = (op: string): boolean => writes.has(op) || isGitHubWrite(op);
 export const isDomainRead = (op: string): boolean => op === "git.status" || isGitHubRead(op);
 interface GitBaseline {
   root: string; revision: string; expires: number; grantRevision: number;
-  snapshot: GitWorkspaceSnapshot; remote?: GitHubRepoStatus;
+  snapshot: Pick<GitWorkspaceSnapshot, "headOid" | "branch">; remote?: GitHubRepoStatus;
 }
 const stale = () => new HostReadError("stale_target", "This resource on the other device changed. Refresh before applying the action.");
 const invalid = () => new HostReadError("unsupported", "This action is not valid.");
@@ -74,6 +74,20 @@ export class HostDomains {
       throw reason;
     }
   }
+  /** Only which commit and branch: this is the one read a status does twice. */
+  private async guardedIdentity(request: HostRequest, root: string): Promise<Pick<GitWorkspaceSnapshot, "headOid" | "branch" | "isRoot">> {
+    this.check(request);
+    try {
+      const result = await this.transport.invoke<Pick<GitWorkspaceSnapshot, "headOid" | "branch" | "isRoot">>("remote_studio_git_identity", { root });
+      this.check(request);
+      if (result?.isRoot !== true || result.headOid !== null && typeof result.headOid !== "string"
+        || result.branch !== null && typeof result.branch !== "string") throw new HostReadError("uncertain", "The repository identity could not be confirmed.");
+      return result;
+    } catch (reason) {
+      if (typeof reason === "string" && /not found|unknown command/i.test(reason)) throw new HostReadError("unsupported", "This device has not installed guarded Git baseline reads yet.");
+      throw reason;
+    }
+  }
   async read(request: HostRequest, args: Record<string, unknown>): Promise<StudioResult> {
     const before = this.target(request, args);
     const validate = () => { const now = this.target(request, args); if (now.root !== before.root || now.workspace.path !== before.workspace.path) throw stale(); };
@@ -82,10 +96,10 @@ export class HostDomains {
       return await this.github.read(request, args, { workspaceId: before.workspace.id, ...(threadId ? { threadId } : {}), root: before.root, isolated: before.root !== before.workspace.path }, validate) as StudioResult;
     }
     if (request.op === "git.status") {
-      const snapshot = await this.guardedSnapshot(request, before.root);
+      const snapshot = await this.guardedIdentity(request, before.root);
       validate();
       const result = await this.studio.execute(request);
-      const after = await this.guardedSnapshot(request, before.root);
+      const after = await this.guardedIdentity(request, before.root);
       validate();
       if (snapshot.headOid !== after.headOid || snapshot.branch !== after.branch || !after.isRoot) throw stale();
       let remote: GitHubRepoStatus | undefined;
@@ -102,6 +116,16 @@ export class HostDomains {
   async mutate(request: HostRequest, args: Record<string, unknown>, identity: RemoteOperationIdentity): Promise<RemoteWorkResult> {
     this.check(request);
     const target = nativeTarget(this.sources, request, args, identity, () => !this.disposed && this.isCurrent());
+    // Naming a file for the next message doesn't touch the checkout, so it can
+    // happen while the thread is working, as attaching does locally.
+    if (request.op === "attachment.reference") {
+      strictNativeKeys(args, ["workspaceId", "threadId", "revision", "fileId"]);
+      const { path } = this.studio.resolveFile(request, args, args.fileId);
+      target.assertAllowed();
+      if (!this.parity || this.parity.revision(target.context) !== args.revision) throw stale();
+      try { return await this.transport.invoke<RemoteWorkResult>("remote_attachment_copy", { stamp: target.stamp, root: target.root, path }); }
+      catch (reason) { if (typeof reason === "string" && /not found|unknown command/i.test(reason)) throw new HostReadError("unsupported", "This device can't attach project files yet."); throw nativeRefusal(reason); }
+    }
     const assertAllowed = () => {
       const grant = target.assertAllowed();
       if ((request.op === "git.write" || isGitHubWrite(request.op)) && !grant.capabilities.gitWrite || request.op === "checkpoint.restore" && !grant.capabilities.checkpointRestore) throw new HostReadError("forbidden", "This device doesn't have that access anymore.");
@@ -233,7 +257,10 @@ export class HostDomains {
     if (!["stage", "unstage", "commit", "branch", "push", "pull", "fetch", "update", "revert", "revertAll"].includes(action)) throw invalid();
     const baseline = this.git.get(key(request, args));
     if (!baseline || baseline.root !== target.root || baseline.revision !== args.revision || baseline.expires < Date.now() || baseline.grantRevision !== request.grant.revision) throw stale();
-    const nativeArgs: Record<string, unknown> = { expectedHeadOid: baseline.snapshot.headOid, expectedBranch: baseline.snapshot.branch };
+    const fresh = await this.guardedSnapshot(request, target.root);
+    assertAllowed();
+    if (fresh.headOid !== baseline.snapshot.headOid || fresh.branch !== baseline.snapshot.branch) throw stale();
+    const nativeArgs: Record<string, unknown> = { expectedHeadOid: fresh.headOid, expectedBranch: fresh.branch };
     const reverting = action === "revert" || action === "revertAll";
     const change = args.resourceId === undefined || reverting ? undefined : this.studio.resolveGitChange(request, args, args.resourceId);
     if (change && !["stage", "unstage", "revert"].includes(action)) throw invalid();

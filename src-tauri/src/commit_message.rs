@@ -37,7 +37,7 @@ fn preview(text: &str) -> String {
     text[..end].to_owned()
 }
 
-fn read_context(cwd: &str) -> Result<CommitMessageContext, String> {
+pub(crate) fn read_context(cwd: &str) -> Result<CommitMessageContext, String> {
     // No index writes, external diff helpers, textconv filters or network.
     // Overflow is a refusal, never a token for partially inspected changes.
     let read = GitReadOperation::with_limits(Duration::from_secs(15), 2 * 1024 * 1024);

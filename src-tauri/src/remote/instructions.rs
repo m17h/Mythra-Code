@@ -17,7 +17,8 @@ pub(super) fn child(
     let root_op = commit::operation(db, root)?;
     if !matches!(
         (root_op.as_str(), op),
-        ("thread.archiveMany", "thread.archive")
+        ("agents.stop" | "agents.replace", "turn.stop")
+            | ("thread.archiveMany", "thread.archive")
             | ("thread.deleteMany", "thread.delete")
             | (
                 "discovery.run.start" | "discovery.check.start",

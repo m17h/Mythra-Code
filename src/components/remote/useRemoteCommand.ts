@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { hostRead, hostRows } from "../../lib/remote/remoteActions";
 import type { WireParityReadResult, WireParityRow } from "../../lib/remote/wire";
 
-const RECHECK_MS = 5_000;
+const RECHECK_MS = 2_500;
 const LIVE = new Set(["starting", "running"]);
 
 /** A Run or Checks process belongs to one target, and the host knows best whether it

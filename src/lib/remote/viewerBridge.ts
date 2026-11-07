@@ -5,7 +5,7 @@ import type { RemoteViewerFrame, RemoteViewerState, RemoteWorkOperation } from "
 /** Viewer-only bridge: no provider commands, paths or credentials. */
 export type ViewerOperation = "workspaces.list" | "threads.list" | "timeline.read" | "timeline.subscribe" | "timeline.unsubscribe" | "work.inspect" | "op.status" | "host.info" | "host.context" | "files.search" | "files.list" | "files.preview" | "git.status" | "git.diff" | "folders.browse";
 const VIEWER_OPERATIONS = new Set<ViewerOperation>(["workspaces.list", "threads.list", "timeline.read", "timeline.subscribe", "timeline.unsubscribe", "work.inspect", "op.status", "host.info", "host.context", "files.search", "files.list", "files.preview", "git.status", "git.diff", "folders.browse"]);
-const WORK_OPERATIONS = new Set<RemoteWorkOperation | "projects.add">(["prompt.send", "prompt.steer", "prompt.queue", "turn.stop", "approval.answer", "question.answer", "thread.settings.set", "thread.rename", "thread.archive", "thread.restore", "thread.delete", "thread.pin", "thread.fork", "projects.pin", "projects.remove", "projects.reorder", "projects.add"]);
+const WORK_OPERATIONS = new Set<RemoteWorkOperation | "projects.add" | "projects.clone">(["projects.clone", "prompt.send", "prompt.steer", "prompt.queue", "turn.stop", "approval.answer", "question.answer", "thread.settings.set", "thread.rename", "thread.archive", "thread.restore", "thread.delete", "thread.pin", "thread.fork", "projects.pin", "projects.remove", "projects.reorder", "projects.add"]);
 export function viewerRequest<T>(device: string, op: ViewerOperation, args: object = {}): Promise<T> {
   if (!/^[0-9a-f]{64}$/.test(device) || !VIEWER_OPERATIONS.has(op) || !args || Array.isArray(args)) {
     return Promise.reject({ code: "forbidden", message: "That viewer request is not valid." });
@@ -21,7 +21,7 @@ export function viewerHostOperation<T>(device: string, op: string, args: Record<
   return invoke<T>("remote_request", { device, op, args });
 }
 /** Mutations travel the same route, and every one carries a journal identity. */
-export function viewerWork<T>(device: string, op: RemoteWorkOperation | "projects.add", args: { opId?: unknown; opSeq?: unknown; [key: string]: unknown }): Promise<T> {
+export function viewerWork<T>(device: string, op: RemoteWorkOperation | "projects.add" | "projects.clone", args: { opId?: unknown; opSeq?: unknown; [key: string]: unknown }): Promise<T> {
   if (!/^[0-9a-f]{64}$/.test(device) || !WORK_OPERATIONS.has(op) || typeof args.opId !== "string" || typeof args.opSeq !== "number") {
     return Promise.reject({ code: "forbidden", message: "That request is not valid." });
   }

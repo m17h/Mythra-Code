@@ -4,6 +4,7 @@ import { subscribeRemoteStateAdoption } from "../../storage";
 import { HostReadError } from "./scope";
 import { commitHostState, operationStamp } from "./stateCommit";
 import type { HostParityActions } from "./parityActions";
+import { promptInvocationText } from "./promptText";
 import { remoteProvenance } from "./provenance";
 const KEY = "kiwi.queuedTurns";
 export function createHostQueueActions(pump: (threadId: string) => void) {
@@ -32,7 +33,7 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
       if (!ready) throw "MYTHRA_REMOTE_REJECTED:unsupported";
     }
     const reject: { device: string; opId: string; opSeq: number }[] = [];
-    await commitHostState(operation, [KEY], (rows) => {
+    const committed = await commitHostState(operation, [KEY], (rows) => {
       const raw = rows[0].value;
       const all = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, QueuedTurn[]> : {};
       const entries = [...(all[threadId] ?? [])];
@@ -59,6 +60,7 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
           ...(operation.delivery.ownerHandle ? { ownerHandle: operation.delivery.ownerHandle } : {}),
           provenance: remoteProvenance(operation, (op === "prompt.schedule" || op === "prompt.scheduleNew") ? "schedule" : "queue-edit") };
         const next: QueuedTurn = { ...(entry ?? {}), id: entry?.id ?? crypto.randomUUID(), threadId, text,
+          skillInvocationText: op === "queue.retry" && entry.skillInvocationText !== undefined ? entry.skillInvocationText : promptInvocationText(text),
           attachments: entry?.attachments ?? [], status: "queued", createdAt: entry?.createdAt ?? Date.now(), remoteDelivery,
           editing: true, remoteAdmissionPending: true, remoteEdit: undefined, error: undefined,
           ...((op === "prompt.schedule" || op === "prompt.scheduleNew") ? { deliverAt: args.deliverAt as number } : {}) };
@@ -82,6 +84,15 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
       return { [KEY]: { ...all, [threadId]: entries } };
     }, { rejectQueued: reject, queued: newPrompt });
     if (queuedTurnId) {
+      if (op === "prompt.scheduleNew") {
+        const value = committed.rows?.find((row) => row.key === KEY)?.value as Record<string, QueuedTurn[]> | undefined;
+        const entry = value?.[threadId]?.find((entry) => entry.id === queuedTurnId);
+        // Native queued CAS proves and retires ONLY the empty preparation
+        // lifetime in the same transaction. Older runtimes return its handle:
+        // refuse rather than claim a schedule can recover after host restart.
+        if (!entry || entry.remoteDelivery?.opId !== operation.identity.opId || entry.remoteDelivery.ownerHandle) throw new HostReadError("unsupported", "This device has not installed restart-safe scheduling admission yet.");
+        operation.delivery.adoptDetachedOwner?.();
+      }
       await operation.delivery.queued(threadId, queuedTurnId);
       releaseRemoteQueueAdmission(threadId, queuedTurnId, operation.delivery.attemptId);
     }

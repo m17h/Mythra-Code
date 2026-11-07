@@ -72,6 +72,15 @@ export function sharedThreadPreferences(settings: AppSettings, prefs: WireExecut
   const { permission, serviceTier } = applyHostExecutionPreferences(settings, prefs);
   return { permission, serviceTier };
 }
+/** An explicit local choice replaces what a paired device saved for that one setting. */
+export function withoutHostPreference(current: Record<string, WireExecutionSettings>, threadId: string, key: "permission" | "serviceTier"): Record<string, WireExecutionSettings> {
+  const { [key]: _replaced, ...kept } = current[threadId] ?? {};
+  return { ...current, [threadId]: kept };
+}
+/** The app and its providers say `priority`. Only the wire says `fast`, so a saved
+ * choice is translated here, at the edge, and never reaches provider parameters as is. */
+export const nativeServiceTier = (tier: WireExecutionSettings["serviceTier"]): string | null => tier === "fast" ? "priority" : null;
+export const wireServiceTier = (tier: string | null | undefined): "fast" | "standard" => tier === "priority" ? "fast" : "standard";
 export function applyHostExecutionPreferences(settings: AppSettings, prefs?: WireExecutionSettings): AppSettings {
   if (!prefs) return settings;
   const rank = { "read-only": 0, ask: 1, full: 2 };
@@ -79,7 +88,7 @@ export function applyHostExecutionPreferences(settings: AppSettings, prefs?: Wir
   const sub = prefs.subagents;
   const crew = sub?.crew ?? prefs.crew;
   return { ...settings, permission, ...(crew ? { childAgents: { enabled: crew.length > 0, targets: crew as ChildAgentTarget[] } } : {}), ...(prefs.model ? { model: prefs.model } : {}), ...(prefs.effort ? { reasoningEffort: prefs.effort, ultra: false } : {}),
-    ...(prefs.serviceTier !== undefined ? { serviceTier: prefs.serviceTier === "standard" ? null : prefs.serviceTier } : {}),
+    ...(prefs.serviceTier !== undefined ? { serviceTier: nativeServiceTier(prefs.serviceTier) } : {}),
     ...(sub ? { subagentsEnabled: sub.enabled, subagentEngine: sub.engine, nativeSubagentMax: sub.maxConcurrent,
       subagentMax: sub.maxConcurrent, nativeSubagentOptions: sub.nativeOptions, autoCompactTokens: sub.autoCompactTokens } : {}) };
 }

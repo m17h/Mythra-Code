@@ -573,3 +573,119 @@ mod spawn_tests {
         );
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::super::windows_tests::{git, junction, TempRoot};
+    use super::*;
+
+    #[test]
+    fn windows_anchor_reads_unicode_bounds_and_blocks_ancestor_rename() {
+        let temp = TempRoot::new("anchors");
+        let parent = temp.0.join("é parent & spaces");
+        let root = parent.join("project");
+        fs::create_dir_all(root.join("child")).unwrap();
+        fs::write(root.join("child").join("hello.txt"), b"approved").unwrap();
+        let expected = git(&root, &["hash-object", "--no-filters", "child/hello.txt"]).stdout;
+        let anchor = Anchor::open(&root).expect("open real Windows directory handles");
+        let retained = anchor.retained().unwrap();
+        assert_eq!(identity(&retained).unwrap(), anchor.identity().unwrap());
+        assert!(anchor.git_cwd().is_absolute());
+        anchor.validate().unwrap();
+        assert_eq!(
+            anchor.read("child/hello.txt", 4).unwrap(),
+            (b"appr".to_vec(), true)
+        );
+        assert!(
+            fs::rename(&root, parent.join("moved-project")).is_err(),
+            "root is held without DELETE sharing"
+        );
+        assert!(
+            fs::rename(&parent, temp.0.join("moved-parent")).is_err(),
+            "every ancestor is held too"
+        );
+        let worker = std::thread::spawn(move || {
+            let out = git(
+                &anchor.git_cwd(),
+                &["hash-object", "--no-filters", "child/hello.txt"],
+            );
+            assert!(out.status.success());
+            assert_eq!(out.stdout, expected);
+            anchor.validate().unwrap();
+        });
+        worker.join().unwrap();
+        drop(retained);
+        fs::rename(&root, parent.join("moved-project"))
+            .expect("rename works once anchor lifetime ends");
+    }
+
+    #[test]
+    fn windows_anchor_refuses_junction_children_and_alternate_data_streams() {
+        let temp = TempRoot::new("junctions");
+        let root = temp.0.join("project");
+        let outside = temp.0.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), b"outside fixture").unwrap();
+        let link = root.join("escape");
+        junction(&link, &outside);
+        let anchor = Anchor::open(&root).unwrap();
+        assert!(anchor.directory("escape").is_err());
+        assert!(anchor.read("escape/secret.txt", 1024).is_err());
+        assert!(!anchor.entries().unwrap().iter().any(|e| e.name == "escape"));
+        fs::write(root.join("base.txt"), b"base").unwrap();
+        fs::write(root.join("base.txt:hidden"), b"hidden fixture").expect("NTFS ADS fixture");
+        for path in [
+            "../outside/secret.txt",
+            "base.txt:hidden",
+            r"C:\Windows\win.ini",
+            r"\\server\share",
+            r"\\?\C:\Windows",
+            r"child\file",
+            "NUL",
+            "CON.txt",
+            "com1.txt",
+            "file.",
+            "file ",
+        ] {
+            assert!(
+                anchor.read(path, 1024).is_err(),
+                "untrusted non-relative or special path accepted"
+            );
+        }
+        drop(anchor);
+        fs::remove_dir(&link).expect("remove only the junction, not its target");
+        assert!(outside.join("secret.txt").exists());
+    }
+
+    #[test]
+    fn windows_private_upload_creation_is_exclusive_and_pins_append_handles() {
+        use std::io::Write;
+        let temp = TempRoot::new("private-writes");
+        let anchor = Anchor::open(&temp.0).unwrap();
+        let mut created = create_new(&anchor, "chunk.bin").unwrap();
+        created.write_all(b"one").unwrap();
+        drop(created);
+        assert!(create_new(&anchor, "chunk.bin").is_err());
+        let mut append = append_file(&anchor, "chunk.bin").unwrap();
+        append.write_all(b"two").unwrap();
+        assert!(fs::rename(temp.0.join("chunk.bin"), temp.0.join("other.bin")).is_err());
+        drop(append);
+        assert_eq!(anchor.read("chunk.bin", 32).unwrap().0, b"onetwo");
+        assert!(create_new(&anchor, "chunk.bin:ads").is_err());
+        assert!(append_file(&anchor, "../outside").is_err());
+    }
+
+    #[test]
+    fn windows_anchor_supports_verbatim_long_paths() {
+        let temp = TempRoot::new("long-path");
+        let mut path = fs::canonicalize(&temp.0).unwrap();
+        for _ in 0..10 {
+            path.push("long directory é segment");
+        }
+        fs::create_dir_all(&path).expect("create long path through Windows verbatim prefix");
+        fs::write(path.join("test.txt"), b"long").unwrap();
+        let anchor = Anchor::open(&path).expect("anchor long Windows path");
+        assert_eq!(anchor.read("test.txt", 16).unwrap().0, b"long");
+    }
+}

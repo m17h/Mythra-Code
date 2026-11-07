@@ -1,7 +1,8 @@
 import type { Project } from "../../../types";
 import type { HostRequest } from "../wire";
 import type { DeviceGrant } from "../types";
-import type { FoldersBrowseResult, ProjectNavigationOperation, ProjectNavigationResult, ProjectsAddResult, WireFolder } from "../wire-studio";
+import { nativeRefusal } from "./nativeActions";
+import type { FoldersBrowseResult, ProjectCloneResult, ProjectCloneStatus, ProjectNavigationOperation, ProjectNavigationResult, ProjectsAddResult, WireFolder } from "../wire-studio";
 import { STUDIO_MAX_ROWS, STUDIO_RESULT_BYTES } from "../wire-studio";
 import { nativeHostTransport, type HostTransport } from "./bridge";
 import { HostReadError, currentGrant, idArg, objectArgs, type HostSources } from "./scope";
@@ -57,7 +58,7 @@ function allowed(grant: DeviceGrant): boolean {
   return grant.view && grant.work && grant.scope.kind === "all" && capabilities.manageProjects === true;
 }
 export function isProjectNavigationOperation(op: string): op is ProjectNavigationOperation {
-  return op === "folders.browse" || op === "projects.add";
+  return op === "folders.browse" || op === "projects.add" || op === "projects.clone" || op === "projects.clone.status";
 }
 
 /** Folders only, no file/content API and no conversion into Studio file handles. */
@@ -117,13 +118,15 @@ export class HostProjectNavigation {
     this.check(request);
     if (!isProjectNavigationOperation(request.op)) throw invalid();
     const args = objectArgs(request.args);
-    const keys = request.op === "folders.browse" ? ["folderId", "cursor", "limit"] : ["folderId", "opId", "opSeq"];
+    const keys = request.op === "folders.browse" ? ["folderId", "cursor", "limit"] : request.op === "projects.clone" ? ["folderId", "url", "opId", "opSeq"]
+      : request.op === "projects.clone.status" ? ["processHandle"] : ["folderId", "opId", "opSeq"];
     if (Object.keys(args).some((key) => !keys.includes(key))) throw invalid();
     this.sweep();
     if (this.active >= 4) throw busy();
     this.active += 1;
     try {
-      const result = request.op === "folders.browse" ? await this.browse(request, args) : await this.add(request, args);
+      const result = request.op === "folders.browse" ? await this.browse(request, args) : request.op === "projects.clone" ? await this.clone(request, args)
+        : request.op === "projects.clone.status" ? await this.cloneStatus(request, args) : await this.add(request, args);
       this.check(request);
       if (encoder.encode(JSON.stringify(result)).byteLength > STUDIO_RESULT_BYTES) throw unavailable();
       return result;
@@ -159,6 +162,24 @@ export class HostProjectNavigation {
       result.cursor = this.remember(request, { kind: "cursor", token: next, parentToken: folder?.token ?? null });
     }
     return result;
+  }
+  /** Only starts it. Native checks the address and folder, and owns the process. */
+  private async clone(request: HostRequest, args: Record<string, unknown>): Promise<ProjectCloneResult> {
+    const folder = this.handle(request, args.folderId, "folder");
+    const opId = idArg(args.opId);
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(opId) || typeof args.opSeq !== "number" || !Number.isSafeInteger(args.opSeq) || args.opSeq < 1 || typeof args.url !== "string") throw invalid();
+    this.check(request);
+    try {
+      const raw = object(await this.transport.invoke("remote_projects_clone", { stamp: { generation: this.generation, device: request.device, opId, opSeq: args.opSeq, grantRevision: request.grant.revision },
+        folderToken: folder.token, url: args.url }));
+      if (raw.state !== "accepted") return { opId, state: "uncertain" };
+      return { opId, state: "accepted", processHandle: idArg(raw.processHandle), name: name(raw.name) };
+    } catch (reason) { if (typeof reason === "string" && /not found|unknown command/i.test(reason)) throw new HostReadError("unsupported", "This device can't clone repositories yet."); throw nativeRefusal(reason); }
+  }
+  private async cloneStatus(request: HostRequest, args: Record<string, unknown>): Promise<ProjectCloneStatus> {
+    const raw = await this.native(request, "remote_projects_clone_status", { processHandle: idArg(args.processHandle) });
+    if (raw.state !== "running" && raw.state !== "completed" && raw.state !== "failed" && raw.state !== "timedOut") throw unavailable();
+    return { state: raw.state };
   }
   private async add(request: HostRequest, args: Record<string, unknown>): Promise<ProjectsAddResult> {
     const folder = this.handle(request, args.folderId, "folder");

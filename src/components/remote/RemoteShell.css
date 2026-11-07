@@ -45,3 +45,13 @@
 .app-shell[data-theme][data-color-scheme] .remote-pr-compose { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: transparent; font: inherit; resize: vertical; outline: none; }
 .app-shell[data-theme][data-color-scheme] .remote-pr-compose textarea:focus-visible { border-color: var(--accent); }
+
+/* The header is tight beside an open dock. A chip gives way before it overlaps anything. */
+.remote-stage .topbar-left > .handoff-chip { flex: 0 1 auto; min-width: 26px; overflow: hidden; }
+.remote-stage .topbar-left > .handoff-chip > svg { flex: 0 0 auto; }
+.remote-stage .topbar-left > .handoff-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-stage .project-heading { flex: 0 1 auto; min-width: 64px; }
+@container chat-main (max-width: 720px) { .remote-stage .topbar-left > .handoff-chip > span { display: none; } }
+
+.remote-folder-clone { display: flex; gap: var(--s-2); align-items: center; }
+.remote-folder-clone input { flex: 1 1 auto; min-width: 0; }

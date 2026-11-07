@@ -83,7 +83,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals";
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import type { HostContextSources, HostParityActions, HostRowActions, StopActionSources, ThreadLifecycleSources } from "./lib/remote/host";
-import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences } from "./lib/remote/host/executionPreferences";
+import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences, withoutHostPreference } from "./lib/remote/host/executionPreferences";
 import { appendHostCommandOutput, hostCommandBusy } from "./lib/remote/host/commandActions";
 import { HostReadError } from "./lib/remote/host/scope";
 import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
@@ -175,6 +175,7 @@ import { useProjectChecks } from "./hooks/useProjectChecks";
 import { useCheckCommandDiscovery } from "./hooks/useCheckCommandDiscovery";
 import { sanitizeProjectCheckCommand, sanitizeProjectCheckOverrides, type ProjectCheckResult, type ProjectCheckCommand } from "./lib/projectChecks";
 import { useReviewFeedback } from "./hooks/useReviewFeedback";
+import { addRemoteFeedback, useRemoteFeedback } from "./lib/remote/remoteFeedback";
 import { feedbackSkillInvocationText, formatFeedbackPrompt, isFeedbackAnchorStale, feedbackScopeKey } from "./lib/reviewFeedback";
 import { useTerminal } from "./hooks/useTerminal";
 import { PANE_BOUNDS, usePaneResize } from "./hooks/usePaneResize";
@@ -715,12 +716,14 @@ export default function App() {
   const pairingModalOpen = useRemoteDevices(hasPairingSheet);
   const activeMachine = useActiveMachine((state) => state.machine);
   const remoteActive = activeMachine !== LOCAL_MACHINE;
+  const remoteFeedbackScope = useRemoteFeedback((state) => state.scope);
   const shownMachine = useActiveMachine((state) => state.shown);
   const shownRemote = shownMachine !== LOCAL_MACHINE;
   const machinePhase = useActiveMachine((state) => state.phase);
   const remoteRunning = useActiveMachine((state) => state.remoteRunning);
   const remoteThreadOpen = useActiveMachine((state) => state.remoteThreadOpen);
   const remoteApprovals = useActiveMachine((state) => state.remoteApprovals);
+  const remoteElsewhere = useActiveMachine((state) => state.remoteElsewhere);
   const shownMachineName = useActiveMachine((state) => state.shown === LOCAL_MACHINE ? null : state.name);
   const [remoteStudioOpen, setRemoteStudioOpen] = useState(false);
   // Loaded ahead of the first switch and held here, so a switch never paints a
@@ -833,8 +836,8 @@ export default function App() {
     if (!trayReady || !trayCounts) return;
     const [working, approvals] = trayCounts.split(":").map(Number);
     // This device, plus the machine on screen.
-    void updateTrayStatus((working ?? 0) + (remoteRunning ? 1 : 0), (approvals ?? 0) + remoteApprovals, shownMachineName).catch(() => undefined);
-  }, [remoteApprovals, remoteRunning, shownMachineName, trayCounts, trayReady]);
+    void updateTrayStatus((working ?? 0) + (remoteRunning ? 1 : 0) + remoteElsewhere.working, (approvals ?? 0) + remoteApprovals + remoteElsewhere.approvals, shownMachineName).catch(() => undefined);
+  }, [remoteApprovals, remoteElsewhere, remoteRunning, shownMachineName, trayCounts, trayReady]);
   const [projects, setProjects, projectsRef] = usePersistedStateRef<Project[]>("kiwi.projects", [], { init: () => initialProjects });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialProjects[0]?.id ?? null);
   const [workspaceMode, setWorkspaceMode] = usePersistedState<WorkspaceMode>("kiwi.workspaceMode", "chat", { init: () => initialWorkspaceMode });
@@ -2256,10 +2259,18 @@ export default function App() {
       persistSettings({ ...settings, permission });
       // Choosing here replaces what a paired device saved for this thread, or the picker couldn't go back up.
       if (activeThreadId && threadExecutionPreferences[activeThreadId]?.permission !== undefined) {
-        setThreadExecutionPreferences((current) => {
-          const { permission: _replaced, ...kept } = current[activeThreadId] ?? {};
-          return { ...current, [activeThreadId]: kept };
-        });
+        setThreadExecutionPreferences((current) => withoutHostPreference(current, activeThreadId, "permission"));
+      }
+    },
+    [activeThreadId, persistSettings, setThreadExecutionPreferences, settings, threadExecutionPreferences],
+  );
+
+  const persistComposerFast = useCallback(
+    (fast: boolean) => {
+      persistSettings({ ...settings, serviceTier: fast ? "priority" : null });
+      // Same as permission: a saved choice from a paired device would otherwise keep winning here.
+      if (activeThreadId && threadExecutionPreferences[activeThreadId]?.serviceTier !== undefined) {
+        setThreadExecutionPreferences((current) => withoutHostPreference(current, activeThreadId, "serviceTier"));
       }
     },
     [activeThreadId, persistSettings, setThreadExecutionPreferences, settings, threadExecutionPreferences],
@@ -6502,7 +6513,7 @@ export default function App() {
     archivedThreads.map((record) => record.id), projects.map((project) => [project.id, project.path])]),
   [archivedThreads, projects, threadAvailabilityRevision, worktreeBusy]);
 
-  const { acceptChildAgent, captureChildStopFrontier, cancelChildAgentsFor, continueParentRun, parentRunObligations, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
+  const { acceptChildAgent, beginRemoteAcceptance, stopRemoteWorker, captureChildStopFrontier, cancelChildAgentsFor, continueParentRun, parentRunObligations, getManagedSubagentV2LockedReason, hasChildStartInFlight, invalidateChildAgentGuidance, noteExplicitChildStart, settleExplicitChildStart, retryChildAgentGuidance, respondToSettingsProposal, stopChildAgent } = useChildAgents({
     parentRunEnvironmentRevision,
     parentRunFolderBusy,
     policies: childAgentPolicies,
@@ -7502,8 +7513,8 @@ export default function App() {
     { label: "Configured sub-agents", value: effectiveSettings.subagentsEnabled ? childAgentSummary : "off" },
     { label: "Skills", value: skillsFolder ? `${skills.filter((skill) => skill.enabled).length} enabled · local folder` : "no folder selected" },
     { label: "Permissions", value: permissionLabel(effectiveSettings.permission) },
-    { label: "Service tier", value: settings.serviceTier || "standard" },
-  ], [activeDelegationPolicy?.collaborationV2, activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.projectClaudeInstructionsEnabled, settings.serviceTier, skills, skillsFolder]);
+    { label: "Service tier", value: effectiveSettings.serviceTier || "standard" },
+  ], [activeDelegationPolicy?.collaborationV2, activeProject, childAgentSummary, effectiveSettings, settings.projectInstructionsEnabled, settings.projectClaudeInstructionsEnabled, skills, skillsFolder]);
 
   const startReview = async () => {
     if (!activeThread || !activeProject) return;
@@ -9053,6 +9064,7 @@ export default function App() {
     parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels, terminal, checks,
     automaticTitles, localTranscriptSaves, invalidateChildAgentGuidance, retryChildAgentGuidance, hasChildStartInFlight,
     newThread, loadThreads, activeWorkspace, childAgentPolicies, projectDefaultProvider, threadModels, effectiveSettings,
+    projectActions, workflowRuns, threadHandoffs, mcpServers, beginRemoteAcceptance, stopRemoteWorker,
   };
   const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined,
     runWorkflow: undefined as RemoteWorkflowEngine["runWorkflow"] | undefined });
@@ -9137,6 +9149,26 @@ export default function App() {
         return "staged";
       },
       getParentObligations: (run) => live.current.parentRunObligations(run),
+      getAutoPublish: (workspaceId) => {
+        const config = live.current.autoPublish.configs[workspaceId];
+        return { enabled: Boolean(config?.enabled), status: config?.status ?? "idle", message: config?.message ?? "Automatic publishing is off.",
+          ...(config?.binding.repository ? { repository: config.binding.repository } : {}) };
+      },
+      setAutoPublish: async (workspaceId, path, enabled) => {
+        if (enabled) await live.current.autoPublish.enable(workspaceId, path);
+        else live.current.autoPublish.disable(workspaceId);
+      },
+      retryAutoPublish: (workspaceId) => live.current.autoPublish.retry(workspaceId),
+      getProjectActions: () => live.current.projectActions,
+      getHostWorkflows: () => live.current.workflows,
+      getHostWorkflowRuns: () => live.current.workflowRuns,
+      getThreadHandoffs: () => live.current.threadHandoffs,
+      // Connected servers are only known for the project open on this machine.
+      getHostTools: (workspaceId) => workspaceId === live.current.activeWorkspace?.id ? live.current.mcpServers : undefined,
+      getAgentLifecycle: () => ({ beginAcceptance: (rootThreadId, worker) => {
+        try { return live.current.beginRemoteAcceptance(rootThreadId, worker); }
+        catch (reason) { throw new HostReadError("busy", reason instanceof Error ? reason.message : "This sub-agent can't be signed off right now."); }
+      }, stopWorker: (rootThreadId, worker, cutoff, assertAllowed) => live.current.stopRemoteWorker(rootThreadId, worker, cutoff, assertAllowed) }),
       // The engine itself, not the screen's launch wrappers: a remote run must not navigate here.
       getWorkflowEngine: () => {
         const { runWorkflow, stopWorkflowRun } = live.current;
@@ -9308,14 +9340,6 @@ export default function App() {
       updateProject: (workspaceId, change) => live.current.setProjects((current) => current.map((project) => project.id === workspaceId ? change(project) : project)),
       getWorkflows: () => live.current.workflows,
       getPublicSkills: sources.getPublicSkills,
-      acceptCheckpoint: (context, checkpointId) => {
-        const entry = live.current.checkpoints.find((record) => record.id === checkpointId);
-        const inWorkspace = entry && (entry.threadId === context.activeThread?.id
-          || normalizedProjectPath(entry.workspacePath ?? "") === normalizedProjectPath(context.activeWorkspace?.path ?? ""));
-        if (!entry || !inWorkspace) return false;
-        live.current.toggleCheckpointAccepted(entry);
-        return true;
-      },
       stopAgent: (parent, agentId) => live.current.stopChildAgent(childAgentLinksRef.current[agentId]?.rootThreadId ?? nativeAgentLinksRef.current[agentId]?.rootThreadId ?? parent, agentId),
       getArchived: (workspaceId) => archivedThreadsRef.current.filter((record) => projectIdForPath(record.path) === workspaceId)
         .map((record) => ({ id: record.id, label: record.label, archivedAt: record.archivedAt, provider: record.provider, child: Boolean(childThreadLinksRef.current[record.id]) })),
@@ -9770,7 +9794,7 @@ export default function App() {
     <div className="app-shell" data-machine-phase={machinePhase === "idle" ? undefined : machinePhase} onClickCapture={guardVoiceInteraction} onPointerDownCapture={guardVoiceInteraction} onContextMenuCapture={guardVoiceInteraction} onPasteCapture={guardVoiceInteraction} onCutCapture={guardVoiceInteraction} onDropCapture={guardVoiceInteraction} data-theme={activeTheme} data-color-scheme={themeColorScheme(activeTheme)} data-model-provider={effectiveSettings.provider} data-effort-slider={tourOwnsSliderPreview ? undefined : activeEffortSlider} data-onboarding-effort-slider={tourOwnsSliderPreview ? activeEffortSlider : undefined} data-chat-font={activeChatFont} data-openai-logo={settings.openAiLogo} data-claude-logo={settings.claudeLogo} data-cursor-logo={settings.cursorLogo} style={{ zoom: ((previewUiScale ?? settings.uiScale) || 100) / 100, "--ui-scale": ((previewUiScale ?? settings.uiScale) || 100) / 100, ...(activeChatFont.startsWith("custom:") ? { "--chat-font": chatFontCss(activeChatFont, customFonts) } : {}) } as CSSProperties}>
       <RendererLaunchCommitMarker />
       <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
-      <FeedbackProvider enabled={!remoteActive && Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
+      <FeedbackProvider enabled={(remoteActive ? Boolean(remoteFeedbackScope) : Boolean(activeThread)) && !settingsOpen && !onboardingOpen} scopeKey={remoteActive ? remoteFeedbackScope ?? "" : feedbackScope} onAdd={(anchor, comment) => remoteActive ? addRemoteFeedback(anchor, comment) : Boolean(feedback.addNote(anchor, comment))}>
       {remoteUi && <remoteUi.RemoteNotices />}
       {successToast && (
         <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
@@ -10354,7 +10378,7 @@ export default function App() {
                 onStop={() => void stopTurnAndChildren()}
                 modelControls={
                   <>
-                    {effectiveSettings.provider === "openai" && <ModelPowerControl signedIn={childAgentReadiness.openAiSignedIn} onSignInRequired={() => showToast(providerSignInIssue("openai", childAgentReadiness)!, "info")} providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={settings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={(fast) => persistSettings({ ...settings, serviceTier: fast ? "priority" : null })} />}
+                    {effectiveSettings.provider === "openai" && <ModelPowerControl signedIn={childAgentReadiness.openAiSignedIn} onSignInRequired={() => showToast(providerSignInIssue("openai", childAgentReadiness)!, "info")} providerControl={composerProviderControl} model={effectiveSettings.model || DEFAULT_OPENAI_MODEL} effort={effectiveSettings.reasoningEffort} fast={effectiveSettings.serviceTier === "priority"} runtimeModels={runtimeModels} loading={runtimeModelsLoading} error={runtimeModelsError} onRefresh={() => void refreshOpenAiModelsFromPicker()} favorites={favoriteModels(modelFavorites, "openai")} onToggleFavorite={(model) => toggleModelFavorite("openai", model)} onModel={persistComposerModel} onEffort={persistComposerReasoning} onFast={persistComposerFast} />}
                     {effectiveSettings.provider === "openrouter" && (
                       <OpenRouterModelControl
                         model={effectiveSettings.model}
@@ -10463,8 +10487,8 @@ export default function App() {
         )}
         </div>
         {shownRemote && remoteUi && <ErrorBoundary label="remote device" key={shownMachine}>
-          <remoteUi.RemoteConversation device={shownMachine} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarOpen} chatFont={activeChatFont} voiceInput={voiceInputConfig}
-            actions={paletteTrigger} onOpenTool={(tab) => { setStudioTab(tab); setRemoteStudioOpen(true); }}
+          <remoteUi.RemoteConversation device={shownMachine} notifications={settings.notificationsEnabled} leaving={activeMachine !== shownMachine} sidebarOpen={sidebarOpen} chatFont={activeChatFont} voiceInput={voiceInputConfig}
+            actions={paletteTrigger} onOpenTool={(tab, view) => { setStudioTab(tab); setRemoteStudioOpen(true); if (view) { gitRouteNonceRef.current += 1; setGitRoute({ view, nonce: gitRouteNonceRef.current }); } }}
             studioToggle={<button className={`workspace-tools-trigger studio-toggle ${remoteStudioOpen ? "active" : ""}`} onClick={() => setRemoteStudioOpen((open) => !open)} title={`Thread tools on ${remoteMachineName}`}>
               <PanelRight size={17} />
               <span>Thread tools</span>

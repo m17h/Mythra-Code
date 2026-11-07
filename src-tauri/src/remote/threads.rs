@@ -29,7 +29,8 @@ pub(super) fn keys(op: &str) -> Result<Vec<&'static str>, String> {
     ];
     match op {
         "thread.rename" | "thread.archive" | "thread.restore" | "thread.compact"
-        | "thread.rollback" => {}
+        => {},
+        "thread.rollback"=>k.push("kiwi.agentQuestions"),
         "thread.fork" => k.extend([
             "kiwi.threadModels",
             "kiwi.threadReasoning",
@@ -731,6 +732,17 @@ fn adopt_effect(
         }
         "thread.rollback" => {
             let actual = effect.get("thread").ok_or_else(uncertain)?;
+            let turns=actual.get("turns").and_then(Value::as_array).ok_or_else(uncertain)?;
+            let retained_turns:std::collections::HashSet<_>=turns.iter().filter_map(|t|t["id"].as_str()).collect();
+            let retained_items:std::collections::HashSet<_>=turns.iter().filter_map(|t|t["items"].as_array()).flatten().filter_map(|i|i["id"].as_str()).collect();
+            let mut questions=object(value(db,"kiwi.agentQuestions")?)?;
+            questions.retain(|key,record|{
+                if record["threadId"]!=id{return true;}
+                if record.pointer("/message/turnId").and_then(Value::as_str).is_some_and(|id|retained_turns.contains(id)){return true;}
+                if record.pointer("/message/id").and_then(Value::as_str).is_some_and(|id|retained_items.contains(id)){return true;}
+                serde_json::from_str::<Vec<String>>(key).ok().is_some_and(|parts|parts.len()==2&&parts[0]==id&&retained_items.contains(parts[1].as_str()))
+            });
+            commit::write_value(db,"kiwi.agentQuestions",&json!(questions))?;
             let record = known.get_mut(id).ok_or_else(stale)?;
             for key in [
                 "name",
@@ -846,26 +858,32 @@ fn finish_thread(
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::remote) mod tests {
     use super::*;
-    struct Fixture {
-        path: std::path::PathBuf,
-        db: Connection,
-        inner: std::sync::Arc<super::super::Inner>,
-        stamp: Stamp,
+    pub(in crate::remote) struct Fixture {
+        pub(in crate::remote) path: std::path::PathBuf,
+        pub(in crate::remote) db: Connection,
+        pub(in crate::remote) inner: std::sync::Arc<super::super::Inner>,
+        pub(in crate::remote) stamp: Stamp,
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
     }
-    fn fixture(op: &str) -> Fixture {
+
+    #[test]
+    fn rollback_prunes_removed_and_unproven_questions_from_the_native_retained_turns(){
+      let f=fixture("thread.rollback");let questions=json!({"keep":{"threadId":"t","message":{"id":"rpc","turnId":"kept"}},"removed":{"threadId":"t","message":{"id":"removed","turnId":"gone"}},"legacy":{"threadId":"t","answers":{"a":["b"]}},"other":{"threadId":"other","message":{"turnId":"gone"}},"[\"t\",\"native-item\"]":{"threadId":"t","answers":{"a":["b"]}}});commit::write_value(&f.db,"kiwi.agentQuestions",&questions).unwrap();let previous=value(&f.db,"kiwi.knownThreads").unwrap()["t"].clone();let effect=json!({"thread":{"id":"t","turns":[{"id":"kept","items":[{"id":"native-item"}]}]}});
+      adopt_effect(&f.db,&f.stamp,"claude",f.path.to_str().unwrap(),"thread.rollback",&json!({}),&previous,&effect).unwrap();let q=value(&f.db,"kiwi.agentQuestions").unwrap();assert!(q.get("keep").is_some());assert!(q.get("other").is_some());assert!(q.get("[\"t\",\"native-item\"]").is_some());assert!(q.get("removed").is_none());assert!(q.get("legacy").is_none());assert_eq!(keys("thread.rollback").unwrap().len(),5);
+    }
+    pub(in crate::remote) fn fixture(op: &str) -> Fixture {
         let path =
             std::env::temp_dir().join(format!("mythra-thread-row-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path).unwrap();
         let mut db = Connection::open_in_memory().unwrap();
         store::init(&db).unwrap();
-        db.execute_batch("CREATE TABLE app_state(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at INTEGER NOT NULL);CREATE TABLE local_transcript_meta(provider TEXT,thread_id TEXT,thread_json TEXT,updated_at INTEGER);CREATE TABLE local_transcript_chunks(provider TEXT,thread_id TEXT);CREATE TABLE local_transcript_tail_state(provider TEXT,thread_id TEXT);").unwrap();
+        db.execute_batch("CREATE TABLE app_state(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at INTEGER NOT NULL);CREATE TABLE local_transcript_meta(provider TEXT,thread_id TEXT,thread_json TEXT,updated_at INTEGER);CREATE TABLE local_transcript_chunks(provider TEXT,thread_id TEXT,entries_json TEXT);CREATE TABLE local_transcript_tail_state(provider TEXT,thread_id TEXT);").unwrap();
         let thread = json!({"id":"t","name":"before","cwd":path,"modelProvider":"claude"});
         commit::write_value(
             &db,

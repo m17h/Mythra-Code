@@ -6,9 +6,9 @@ import {
   admitToOutbox, markPromptRejected, MAX_PROMPT_CHARS, newThreadDraftKey, nextOperationSequence, outboxIsFull, removeOutboxEntry, removeRemoteEcho,
   setNewThreadTarget, settleRemoteEcho, updateOutboxEntry, useRemoteOutbox, type OutboxEntry, type OutboxOperation,
 } from "./outbox";
-import { viewerErrorCode, viewerRequest, viewerWork } from "./viewerBridge";
+import { viewerErrorCode, viewerHostOperation, viewerRequest, viewerWork } from "./viewerBridge";
 import type { HostContextResult, RemoteRowOperation, RemoteWorkResult, ThreadSettingsSetArgs, WireWorkCapabilities } from "./wire";
-import type { FoldersBrowseResult, ProjectsAddResult } from "./wire-studio";
+import type { FoldersBrowseResult, ProjectCloneResult, ProjectCloneStatus, ProjectsAddResult } from "./wire-studio";
 
 /** Never a boolean: a lost acknowledgement is neither success nor failure. */
 export type RemoteSendOutcome =
@@ -115,6 +115,7 @@ function promptArgs(entry: OutboxEntry): Record<string, unknown> {
     ...(entry.handle ? { handle: entry.handle } : {}),
     ...(entry.draftHandle ? { draftHandle: entry.draftHandle } : {}),
     ...(entry.attachmentIds?.length ? { attachmentIds: entry.attachmentIds } : {}),
+    ...(entry.skillInvocationText !== undefined ? { skillInvocationText: entry.skillInvocationText } : {}),
   };
 }
 
@@ -177,9 +178,9 @@ export async function sendRemotePrompt(request: {
   device: string; name: string; draftKey: string; text: string; mode: keyof typeof OPERATION_FOR_MODE;
   /** Chosen by the caller when something is already showing under this identity. */
   opId?: string;
-  threadId?: string; workspaceId?: string; handle?: string; draftHandle?: string; attachmentIds?: string[];
+  threadId?: string; workspaceId?: string; handle?: string; draftHandle?: string; attachmentIds?: string[]; skillInvocationText?: string;
 }): Promise<RemoteSendOutcome> {
-  const { device, name, draftKey, mode, threadId, workspaceId, handle, draftHandle, attachmentIds } = request;
+  const { device, name, draftKey, mode, threadId, workspaceId, handle, draftHandle, attachmentIds, skillInvocationText } = request;
   const text = request.text.trim();
   if (!text) return { status: "rejected", message: "Write a message first." };
   if (text.length > MAX_PROMPT_CHARS) return { status: "rejected", message: "That message is too long to send to another device." };
@@ -196,6 +197,7 @@ export async function sendRemotePrompt(request: {
         state: "sending", createdAt: Date.now(),
         ...(threadId ? { threadId } : {}), ...(workspaceId ? { workspaceId } : {}), ...(handle ? { handle } : {}),
         ...(draftHandle ? { draftHandle } : {}), ...(attachmentIds?.length ? { attachmentIds } : {}),
+        ...(skillInvocationText !== undefined ? { skillInvocationText } : {}),
       };
       await admitToOutbox(entry);
     }, () => dispatchPrompt(entry!, name));
@@ -330,6 +332,19 @@ export async function addRemoteProject(device: string, name: string, folderId: s
     return DEFINITE_REFUSALS.has(code) ? refusalText(code, name) : `We couldn't confirm that the project was added. Check the list on ${name}.`;
   }
 }
+/** The handle to follow, or what to tell the user. A clone only starts here. */
+export async function startRemoteClone(device: string, name: string, folderId: string, url: string): Promise<{ handle: string; folder: string } | { failure: string }> {
+  try {
+    const result = await sequenced(device, () => undefined, (opSeq) => viewerWork<ProjectCloneResult>(device, "projects.clone", { opId: crypto.randomUUID(), opSeq, folderId, url }));
+    return result?.state === "accepted" && result.processHandle && result.name ? { handle: result.processHandle, folder: result.name } : { failure: `We couldn't confirm that the clone started. Check the folder on ${name}.` };
+  } catch (reason) {
+    const code = viewerErrorCode(reason);
+    if (code === "invalid") return { failure: "Enter a valid GitHub repository address." };
+    if (code === "busy") return { failure: `That folder already exists there, or ${name} is busy with another clone. Choose another folder or try again shortly.` };
+    return { failure: DEFINITE_REFUSALS.has(code) ? refusalText(code, name) : `We couldn't confirm that the clone started. Check the folder on ${name}.` };
+  }
+}
+export const readRemoteClone = (device: string, processHandle: string) => viewerHostOperation<ProjectCloneStatus>(device, "projects.clone.status", { processHandle });
 export function keepRemoteDevices(paired: readonly string[], online: readonly string[]): void {
   keepRemoteSessions(paired, online);
   forgetPanels(paired);

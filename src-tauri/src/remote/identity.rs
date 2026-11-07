@@ -127,3 +127,22 @@ pub(crate) async fn load_or_create(
     }
 }
 
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn windows_identity_codec_rejects_bad_keys_without_formatting_private_bytes() {
+        assert!(identity_from(Vec::new()).is_none());
+        assert!(identity_from(vec![0; 128]).is_none());
+        let bytes = generate_pkcs8().unwrap();
+        let first = identity_from(bytes.clone()).unwrap();
+        let second = identity_from(bytes).unwrap();
+        assert!(first.fingerprint == second.fingerprint);
+        assert!(super::super::tls::spki_is_ed25519(&first.spki));
+        assert!(fingerprint_is_valid(&first.fingerprint));
+        assert!(!fingerprint_is_valid(&"A".repeat(64)));
+    }
+
+}

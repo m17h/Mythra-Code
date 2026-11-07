@@ -425,7 +425,7 @@ unsafe extern "system" fn browse_complete(
 }
 
 pub struct Browser {
-    cancel: DNS_SERVICE_CANCEL,
+    cancel: Box<DNS_SERVICE_CANCEL>,
     context: *const BrowseContext,
 }
 
@@ -437,7 +437,13 @@ impl Drop for Browser {
         // SAFETY: the context is leaked and therefore always valid.
         unsafe { &*self.context }.closed.store(true, Ordering::Release);
         // SAFETY: `cancel` was filled in by a successful DnsServiceBrowse.
-        let _ = unsafe { DnsServiceBrowseCancel(&self.cancel) };
+        let status = unsafe { DnsServiceBrowseCancel(self.cancel.as_ref()) };
+        if status != 0 {
+            // Cancellation did not establish the end of the OS borrow. Retain
+            // the original handle storage with the already-retained context.
+            // The replacement is unsubmitted and safe to drop normally.
+            std::mem::forget(std::mem::take(&mut self.cancel));
+        }
     }
 }
 
@@ -460,10 +466,10 @@ pub fn browse(sink: DiscoverySink) -> Result<Browser, DiscoveryFailure> {
     }));
     // SAFETY: `context` came from Box::into_raw and nothing else can see it yet.
     unsafe { (*context).request.pQueryContext = context.cast() };
-    let mut cancel = DNS_SERVICE_CANCEL::default();
+    let mut cancel = Box::new(DNS_SERVICE_CANCEL::default());
     // SAFETY: the request and its query live in the context, which is never
     // freed once this call has been accepted.
-    let status = unsafe { DnsServiceBrowse(&(*context).request, &mut cancel) } as u32;
+    let status = unsafe { DnsServiceBrowse(&(*context).request, cancel.as_mut()) } as u32;
     if status != REQUEST_PENDING {
         // SAFETY: refused, so no callback can arrive.
         drop(unsafe { Box::from_raw(context) });
@@ -909,5 +915,289 @@ unsafe fn read_socket_address(pointer: *const u8, length: i32) -> Option<IpAddr>
             Some(IpAddr::V6(Ipv6Addr::from(octets)))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use super::*;
+    use std::mem::ManuallyDrop;
+
+    fn context() -> Arc<ResolveContext> {
+        let mut query = wide("mythra-0123abcd._mythra-code._tcp.local");
+        let name = PWSTR(query.as_mut_ptr());
+        let context = Arc::new(ResolveContext {
+            outcome: Mutex::new(None),
+            ready: Condvar::new(),
+            request: UnsafeCell::new(DNS_SERVICE_RESOLVE_REQUEST {
+                Version: DNS_QUERY_REQUEST_VERSION1.0,
+                QueryName: name,
+                pResolveCompletionCallback: Some(resolve_complete),
+                ..Default::default()
+            }),
+            cancel: UnsafeCell::new(DNS_SERVICE_CANCEL::default()),
+            _query: query,
+            finished: AtomicBool::new(false),
+            callbacks: AtomicUsize::new(0),
+        });
+        unsafe {
+            (*context.request.get()).pQueryContext = Arc::as_ptr(&context) as *mut c_void;
+        }
+        context
+    }
+    fn service(port: u16) -> *mut DNS_SERVICE_INSTANCE {
+        let name = wide("mythra-0123abcd._mythra-code._tcp.local");
+        let host = wide("headless-test.local");
+        let keys = [wide("proto"), wide("name")];
+        let values = [wide("1"), wide("é Windows test")];
+        let k: Vec<_> = keys.iter().map(|s| PCWSTR(s.as_ptr())).collect();
+        let v: Vec<_> = values.iter().map(|s| PCWSTR(s.as_ptr())).collect();
+        let ip = u32::from_ne_bytes([192, 168, 42, 7]);
+        let instance = unsafe {
+            DnsServiceConstructInstance(
+                PCWSTR(name.as_ptr()),
+                PCWSTR(host.as_ptr()),
+                Some(&ip),
+                None,
+                port,
+                0,
+                0,
+                k.len() as u32,
+                k.as_ptr(),
+                v.as_ptr(),
+            )
+        };
+        assert!(!instance.is_null(), "construct owned native DNS instance");
+        instance
+    }
+
+    #[test]
+    fn windows_browse_cancel_storage_survives_owner_moves() {
+        fn address(cancel: &DNS_SERVICE_CANCEL) -> usize {
+            cancel as *const _ as usize
+        }
+        // No query has been started: never run Browser::drop or call DNS APIs.
+        // This tests the storage-lifetime requirement independently of OS timing.
+        let browser = ManuallyDrop::new(Browser {
+            cancel: Default::default(),
+            context: std::ptr::null(),
+        });
+        let passed_to_os = address(&browser.cancel);
+        let mut moved = Box::new(browser);
+        let moved_address = address(&moved.cancel);
+        // No operation was submitted, so free only the unsubmitted cancel box.
+        // ManuallyDrop prevents Browser::drop from dereferencing the dummy context.
+        unsafe {
+            std::ptr::drop_in_place(&mut moved.cancel);
+        }
+        assert_eq!(passed_to_os,moved_address,"DnsServiceBrowse retains the cancel storage until cancellation; moving Browser must not relocate it");
+    }
+
+    #[test]
+    fn windows_resolve_callbacks_borrow_and_keep_only_the_first_result() {
+        let context = context();
+        let raw = Arc::as_ptr(&context).cast::<c_void>();
+        let references = Arc::strong_count(&context);
+        unsafe {
+            resolve_complete(0, raw, service(4242));
+        }
+        unsafe {
+            resolve_complete(0, raw, service(9999));
+        }
+        assert_eq!(
+            Arc::strong_count(&context),
+            references,
+            "callbacks must not consume retained ownership"
+        );
+        assert_eq!(context.callbacks.load(Ordering::Acquire), 0);
+        let resolved = context.outcome.lock().unwrap().take().unwrap().unwrap();
+        assert_eq!(
+            resolved.addresses[0],
+            "192.168.42.7:4242".parse::<SocketAddr>().unwrap()
+        );
+        assert!(resolved
+            .txt
+            .contains(&("name".into(), "é Windows test".into())));
+        context.finished.store(true, Ordering::Release);
+        unsafe {
+            resolve_complete(ERROR_CANCELLED, raw, std::ptr::null());
+        }
+        assert!(context.outcome.lock().unwrap().is_none());
+        assert_eq!(Arc::strong_count(&context), references);
+    }
+
+    #[test]
+    fn windows_registration_completions_own_independent_references_in_either_order() {
+        for deregister_first in [false, true] {
+            let shared = Arc::new(AdvertiseShared {
+                sink: Arc::new(|_| {}),
+                live: AtomicUsize::new(1),
+                refused: AtomicU32::new(0),
+            });
+            let context = Arc::new(RegisterContext {
+                shared,
+                instance: service(4242),
+                request: UnsafeCell::new(Default::default()),
+                closing: AtomicBool::new(true),
+                finished: Mutex::new(false),
+                finished_changed: Condvar::new(),
+            });
+            let registered = context.hand_to_os() as usize;
+            let deregistered = context.hand_to_os() as usize;
+            let callbacks = if deregister_first {
+                [deregistered, registered]
+            } else {
+                [registered, deregistered]
+            };
+            for address in callbacks {
+                std::thread::spawn(move || unsafe {
+                    register_complete(0, address as *const c_void, std::ptr::null());
+                })
+                .join()
+                .unwrap();
+            }
+            assert_eq!(Arc::strong_count(&context), 1);
+            assert!(*context.finished.lock().unwrap());
+        }
+    }
+
+    #[test]
+    fn windows_dns_names_utf16_and_socket_lengths_are_bounded() {
+        for name in [
+            "mythra-0123abcd._mythra-code._tcp.local",
+            "MYTHRA-0123ABCD._MYTHRA-CODE._TCP.LOCAL.",
+        ] {
+            assert_eq!(
+                instance_from_full_name(name).as_deref(),
+                Some("mythra-0123abcd")
+            );
+        }
+        for name in [
+            "mythra-0123abcd._other._tcp.local",
+            "é._mythra-code._tcp.local",
+            "mythra-0123abcd._mythra-code._tcp.local.evil",
+        ] {
+            assert!(instance_from_full_name(name).is_none());
+        }
+        let text = wide("é UTF-16 🦀");
+        assert_eq!(
+            unsafe { narrow(text.as_ptr()) }.as_deref(),
+            Some("é UTF-16 🦀")
+        );
+        assert!(unsafe { narrow([0xd800, 0].as_ptr()) }.is_none());
+        assert!(unsafe { narrow(std::ptr::null()) }.is_none());
+        assert!(unsafe { read_socket_address(std::ptr::null(), 32) }.is_none());
+        let mut v4 = [0u8; 16];
+        v4[..2].copy_from_slice(&2u16.to_ne_bytes());
+        v4[4..8].copy_from_slice(&[192, 168, 1, 9]);
+        assert!(unsafe { read_socket_address(v4.as_ptr(), 7) }.is_none());
+        assert_eq!(
+            unsafe { read_socket_address(v4.as_ptr(), 16) },
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 9)))
+        );
+        let mut v6 = [0u8; 28];
+        v6[..2].copy_from_slice(&23u16.to_ne_bytes());
+        v6[8..24].copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
+        assert!(unsafe { read_socket_address(v6.as_ptr(), 23) }.is_none());
+        assert_eq!(
+            unsafe { read_socket_address(v6.as_ptr(), 28) },
+            Some(IpAddr::V6(Ipv6Addr::LOCALHOST))
+        );
+        assert!(resolve("bad\0query", Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn windows_network_status_is_bounded_on_an_already_sta_worker() {
+        use ::windows::Win32::System::Com::COINIT_APARTMENTTHREADED;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let joined = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            let addresses = local_addresses();
+            let status = network_status();
+            if joined.is_ok() {
+                unsafe { CoUninitialize() };
+            }
+            let _ = tx.send((addresses, status));
+        });
+        let (addresses, status) = rx
+            .recv_timeout(Duration::from_secs(12))
+            .expect("adapter/COM query on worker must finish without a desktop message loop");
+        assert!(addresses.len() <= MAX_ADDRESSES);
+        assert!(addresses.iter().all(|ip| address_is_usable(*ip)));
+        assert!(status.fingerprint.len() < 16 * 1024);
+    }
+
+    #[test]
+    #[ignore = "real LAN multicast advertise/browse/resolve and cancel; may need a Private-network firewall rule, never a desktop window"]
+    fn windows_native_dns_sd_advertise_browse_resolve_and_cancel_headlessly() {
+        let instance = format!("mythra-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::sync_channel(128);
+        let sink: DiscoverySink = Arc::new(move |event| {
+            let _ = tx.try_send(event);
+        });
+        let request = AdvertiseRequest {
+            instance: instance.clone(),
+            port,
+            txt: vec![("proto".into(), "1".into()), ("pairing".into(), "0".into())],
+        };
+        // Deliberately advertise first: a later browse must discover existing services.
+        let advertised = advertise(&request, sink.clone())
+            .expect("native DNS-SD registration/adapters unavailable");
+        let browser = browse(sink).expect("native DNS-SD browse unavailable");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut found = false;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(DiscoveryEvent::Found(name)) if name == instance => {
+                    found = true;
+                    break;
+                }
+                Ok(DiscoveryEvent::Failed(reason)) => panic!("native DNS-SD failed: {reason:?}"),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(found,"own DNS-SD announcement not browsed in 20s: inspect adapters, DNS Client service, multicast/firewall policy; no interactive-session API is used");
+        for _ in 0..3 {
+            let resolved = resolve(&instance, Duration::from_secs(5))
+                .expect("native resolution of our own service");
+            assert!(!resolved.addresses.is_empty());
+            assert!(resolved.addresses.iter().all(|a| a.port() == port));
+            assert!(resolved.txt.contains(&("pairing".into(), "0".into())));
+        }
+        // Move after start before Drop, like Core does. Exercise real cancellation
+        // and let the documented final ERROR_CANCELLED callback arrive afterward.
+        drop(Box::new(browser));
+        drop(advertised);
+        std::thread::sleep(Duration::from_millis(500));
+        let absent = format!("mythra-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let started = Instant::now();
+        assert!(resolve(&absent, Duration::from_millis(100)).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "resolve cancellation must stay bounded"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        let retained = RESOLVE_CONTEXTS.get().unwrap();
+        let (before, retiring) = {
+            let contexts = retained.lock().unwrap();
+            (
+                contexts.len(),
+                contexts
+                    .iter()
+                    .filter(|entry| entry.finished_at.is_some())
+                    .count(),
+            )
+        };
+        eprintln!("Windows DNS-SD cancellation: contexts={before}, successfully cancelled/retiring={retiring}; exercising the real 60-second retirement grace");
+        std::thread::sleep(RESOLVE_RETIRE_GRACE + Duration::from_millis(100));
+        // Invalid names still sweep retirement, but cannot start another native query.
+        assert!(resolve("invalid-service", Duration::ZERO).is_err());
+        let after = retained.lock().unwrap().len();
+        assert!(after<=before.saturating_sub(retiring),"successful cancellations must retire after the real grace; failed cancellations remain retained safely");
+        std::thread::sleep(Duration::from_millis(500));
+        eprintln!("Windows native DNS-SD: advertised, browsed, resolved three times, moved/cancelled browser, deregistered, cancelled missing-service resolve, retired after real grace; remaining={after}");
     }
 }

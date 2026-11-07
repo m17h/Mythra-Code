@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ArrowDownToLine, ArrowUpFromLine, Bot, ChevronRight, FileText, Files, Image, Info, Layers3, RefreshCw, Shrink } from "lucide-react";
 import type { TokenUsageView } from "./StudioDock";
 import type { Provider } from "../types";
-import { threadUsageSummary, type ThreadUsageAmounts } from "../lib/threadUsage";
+import { threadUsageSummary, type ThreadUsageAmounts, type ThreadUsageSummary } from "../lib/threadUsage";
 import type { NativeAgentLink, OwnershipLinks } from "../lib/nativeAgentLinks";
 import { readClaudeThreadContext, type ClaudeThreadContextResult } from "../lib/threadContext";
 import { contextUsagePercent } from "../lib/contextUsage";
@@ -22,6 +22,8 @@ export interface ThreadUsagePanelProps {
   visibleAttachments?: { images: number; documents: number; files: number };
   onCompact: () => void;
   onRefresh?: () => void;
+  /** Usage recorded on another machine, in place of this one's ledger. */
+  hostSummary?: ThreadUsageSummary | null;
 }
 
 function available(value: number | null | undefined): value is number {
@@ -70,13 +72,14 @@ function sampledAge(sampledAt: number | null): string {
 
 const subscribeNoUsage = () => () => {};
 
-export function ThreadUsagePanel({ activeThread, threadId, turnId, provider, threadTitle, nativeLinks, managedLinks, context, visibleAttachments, onCompact, onRefresh }: ThreadUsagePanelProps) {
+export function ThreadUsagePanel({ activeThread, threadId, turnId, provider, threadTitle, nativeLinks, managedLinks, context, visibleAttachments, onCompact, onRefresh, hostSummary }: ThreadUsagePanelProps) {
   // Keep global ledger notifications inside this mounted panel instead of
   // rerendering the app shell and rescanning its loaded messages on each write.
   const usageRevision = useSyncExternalStore(activeThread && threadId ? subscribeUsage : subscribeNoUsage, getUsageRevision);
-  const summary = useMemo(() => activeThread && threadId
+  const remote = hostSummary !== undefined;
+  const summary = useMemo(() => remote ? hostSummary : activeThread && threadId
     ? threadUsageSummary({ threadId, nativeLinks, managedLinks })
-    : null, [activeThread, threadId, nativeLinks, managedLinks, usageRevision]);
+    : null, [activeThread, hostSummary, remote, threadId, nativeLinks, managedLinks, usageRevision]);
   // Missing live fields own availability: do not revive stale ledger fields.
   const current = context ? {
     totalTokens: context.contextTokens,
@@ -86,7 +89,7 @@ export function ThreadUsagePanel({ activeThread, threadId, turnId, provider, thr
     reasoningOutputTokens: context.contextReasoningOutputTokens,
     contextWindow: context.contextWindow,
   } : summary?.context;
-  const canReadContext = activeThread && provider === "claude" && Boolean(threadId && turnId);
+  const canReadContext = !remote && activeThread && provider === "claude" && Boolean(threadId && turnId);
   const requestKey = JSON.stringify([canReadContext, threadId, turnId, current?.totalTokens, current?.inputTokens, current?.outputTokens, current?.cachedInputTokens, current?.reasoningOutputTokens, current?.contextWindow]);
   const [contextRead, setContextRead] = useState<{ key: string; result: ClaudeThreadContextResult } | null>(null);
   useEffect(() => {

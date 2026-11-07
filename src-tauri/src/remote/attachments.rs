@@ -150,6 +150,162 @@ pub(super) async fn put(inner: &Arc<Inner>, stamp: Stamp, args: Value) -> Result
     finish_write(saved).await
 }
 
+/// What a project file becomes as an attachment. The extension alone never makes
+/// something an image: its first bytes must agree.
+fn copied_kind(name: &str, header: &[u8]) -> &'static str {
+    if image_ok(name, header) {
+        "image"
+    } else {
+        "file"
+    }
+}
+
+/// Copies one project file into new app-owned storage. It is opened with no link
+/// followed at any level, read through that handle only, and stops at the limit.
+fn copy_project_file(
+    root: &std::path::Path,
+    path: &str,
+    images: &std::path::Path,
+    files: &std::path::Path,
+    id: &str,
+) -> Result<(String, &'static str, u64, String, PathBuf), String> {
+    let parts = fs_guard::relative(path, false)?;
+    let (name, parents) = parts.split_last().ok_or_else(invalid)?;
+    let root = Anchor::open(root)?;
+    let parent = root.directory(&parents.join("/"))?;
+    let mut source = parent.regular(name)?;
+    if source.metadata().map_err(|_| failed())?.len() > MAX {
+        return Err(work::refused("busy"));
+    }
+    let mut buffer = [0u8; 65536];
+    let mut first = source.read(&mut buffer).map_err(|_| failed())?;
+    if first == 0 {
+        return Err(invalid());
+    }
+    // A short read can't decide this, so the header is filled before it's judged.
+    while first < 16 {
+        let read = source.read(&mut buffer[first..]).map_err(|_| failed())?;
+        if read == 0 {
+            break;
+        }
+        first += read;
+    }
+    let kind = copied_kind(name, &buffer[..first]);
+    let directory = if kind == "image" { images } else { files };
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| e.len() <= 16 && e.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .unwrap_or("bin");
+    let leaf = format!("remote-{id}.{ext}");
+    std::fs::create_dir_all(directory).map_err(|_| failed())?;
+    let anchor = Anchor::open(directory)?;
+    let mut target = fs_guard::create_new(&anchor, &leaf)?;
+    let copied = (|| {
+        let mut total = first as u64;
+        target.write_all(&buffer[..first]).map_err(|_| failed())?;
+        loop {
+            let read = source.read(&mut buffer).map_err(|_| failed())?;
+            if read == 0 {
+                break;
+            }
+            total += read as u64;
+            if total > MAX {
+                return Err(work::refused("busy"));
+            }
+            target.write_all(&buffer[..read]).map_err(|_| failed())?;
+        }
+        target.sync_all().map_err(|_| failed())?;
+        parent.validate()?;
+        root.validate()?;
+        Ok(total)
+    })();
+    let stored = directory.join(&leaf);
+    match copied {
+        Ok(size) => Ok(((*name).to_owned(), kind, size, leaf, stored)),
+        Err(error) => {
+            let _ = std::fs::remove_file(stored);
+            Err(error)
+        }
+    }
+}
+
+/// Attaches a file already in the shared project without sending it over the
+/// network. Uploads and this share one table, one set of limits and one expiry, so
+/// everything after here is an ordinary attachment.
+#[tauri::command]
+pub(crate) async fn remote_attachment_copy(
+    state: tauri::State<'_, super::RemoteState>,
+    window: tauri::WebviewWindow,
+    stamp: Stamp,
+    root: String,
+    path: String,
+) -> Result<Value, String> {
+    super::hostbridge::window_is_host(&window).map_err(|_| invalid())?;
+    let inner = state.inner.clone();
+    let (s, r, worker) = (stamp.clone(), root.clone(), inner.clone());
+    let prior = inner
+        .read_db(move |db| {
+            if commit::operation(db, &s)? != "attachment.reference" {
+                return Err(invalid());
+            }
+            s.check(&worker.lock(), "attachment.reference")?;
+            super::discovery_work::binding(db, &s, &r)?;
+            commit::prior(db, &s)
+        })
+        .await?;
+    if let Some(prior) = prior {
+        return Ok(prior);
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let (images, files) = (directory(&inner, "image")?, directory(&inner, "file")?);
+    let (copy_root, copy_id) = (root.clone(), id.clone());
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        copy_project_file(std::path::Path::new(&copy_root), &path, &images, &files, &copy_id)
+    });
+    let (name, kind, size, leaf, cleanup) = task.await.map_err(|_| failed())??;
+    let (worker, s, r) = (inner.clone(), stamp, root);
+    let saved = finish_write(inner.enqueue_write(false, move |db| {
+        if let Some(prior) = commit::prior(db, &s)? {
+            return Ok(prior);
+        }
+        let workspace = s.workspace_id.as_deref().ok_or_else(invalid)?;
+        let tx = db.transaction().map_err(|_| failed())?;
+        let (count, total, own_count, own_size): (i64, i64, i64, i64) = tx
+            .query_row(
+                "SELECT COUNT(*),COALESCE(SUM(size),0),COALESCE(SUM(device=?1),0),COALESCE(SUM(CASE WHEN device=?1 THEN size ELSE 0 END),0) FROM remote_uploads WHERE NOT EXISTS(SELECT 1 FROM remote_attachment_refs r WHERE r.attachment_id=remote_uploads.id)",
+                [&s.device],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|_| failed())?;
+        if count >= 16
+            || own_count >= 4
+            || total + size as i64 > 200 * 1024 * 1024
+            || own_size + size as i64 > 100 * 1024 * 1024
+        {
+            return Err(work::refused("busy"));
+        }
+        super::discovery_work::binding(&tx, &s, &r)?;
+        let core = worker.lock();
+        s.check(&core, "attachment.reference")?;
+        tx.execute(
+            "INSERT INTO remote_uploads(id,device,workspace,generation,revision,name,kind,size,offset,leaf,expires,complete) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,1)",
+            params![id, s.device, workspace, s.generation as i64, s.grant_revision as i64, name, kind, size as i64, leaf, crate::unix_timestamp_ms() + 15 * 60000],
+        )
+        .map_err(|_| failed())?;
+        let result = json!({"opId":s.op_id,"state":"accepted","attachmentId":id,"name":name,"kind":kind,"size":size});
+        commit::complete(&tx, &s, "attachment.reference", &result, false)?;
+        tx.commit().map_err(|_| failed())?;
+        drop(core);
+        Ok(result)
+    }))
+    .await;
+    if saved.is_err() {
+        let _ = std::fs::remove_file(cleanup);
+    }
+    saved
+}
+
 /// Host-only conversion, after upload completion and a fresh grant check. LAN
 /// responses carry only attachmentId; this path is never a viewer file handle.
 #[tauri::command]
@@ -194,4 +350,64 @@ pub(super) fn retain_instruction(
         db.execute("INSERT OR IGNORE INTO remote_attachment_refs(attachment_id,device,op_id,thread_id,message_id) VALUES(?1,?2,?3,?4,?5)",params![id,device,op_id,receipt.get("threadId").and_then(Value::as_str),receipt.get("messageId").and_then(Value::as_str)]).map_err(|_|failed())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use std::fs;
+
+    fn folders() -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("mythra-copy-{}", uuid::Uuid::new_v4()));
+        let (root, store) = (base.join("project"), base.join("store"));
+        fs::create_dir_all(root.join("src")).expect("project");
+        (root, store)
+    }
+
+    #[test]
+    fn a_project_file_is_copied_and_keeps_its_own_name() {
+        let (root, store) = folders();
+        fs::write(root.join("src/notes.txt"), "hello").expect("file");
+        let (name, kind, size, leaf, _) = copy_project_file(&root, "src/notes.txt", &store, &store, "a").expect("copies");
+        assert_eq!((name.as_str(), kind, size), ("notes.txt", "file", 5));
+        assert_eq!(fs::read(store.join(leaf)).expect("copy"), b"hello");
+    }
+
+    #[test]
+    fn an_image_needs_real_image_bytes() {
+        let (root, store) = folders();
+        fs::write(root.join("fake.png"), "not an image").expect("file");
+        fs::write(root.join("real.png"), b"\x89PNG\r\n\x1a\nrest").expect("file");
+        assert_eq!(copy_project_file(&root, "fake.png", &store, &store, "a").expect("copies").1, "file");
+        assert_eq!(copy_project_file(&root, "real.png", &store, &store, "b").expect("copies").1, "image");
+    }
+
+    #[test]
+    fn leaving_the_project_is_refused_and_leaves_nothing_behind() {
+        let (root, store) = folders();
+        for path in ["../outside.txt", "/etc/hosts", ".git/config", ".ssh/key", ""] {
+            assert!(copy_project_file(&root, path, &store, &store, "a").is_err(), "{path}");
+        }
+        assert!(fs::read_dir(&store).map_or(true, |mut rows| rows.next().is_none()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_refused_at_the_file_and_on_the_way_there() {
+        let (root, store) = folders();
+        let outside = root.parent().expect("base").join("secret.txt");
+        fs::write(&outside, "secret").expect("file");
+        std::os::unix::fs::symlink(&outside, root.join("link.txt")).expect("link");
+        std::os::unix::fs::symlink(root.parent().expect("base"), root.join("up")).expect("link");
+        assert!(copy_project_file(&root, "link.txt", &store, &store, "a").is_err());
+        assert!(copy_project_file(&root, "up/secret.txt", &store, &store, "b").is_err());
+    }
+
+    #[test]
+    fn an_empty_file_is_refused_and_nothing_is_stored() {
+        let (root, store) = folders();
+        fs::write(root.join("empty.txt"), "").expect("file");
+        assert!(copy_project_file(&root, "empty.txt", &store, &store, "a").is_err());
+        assert!(fs::read_dir(&store).map_or(true, |mut rows| rows.next().is_none()));
+    }
 }

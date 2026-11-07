@@ -337,6 +337,7 @@ struct RuntimeLifecycleState {
     active_native_agents: HashSet<String>,
     settled_native_agents: HashSet<String>,
     native_agent_operations: HashMap<String, String>,
+    native_agent_parents: HashMap<String,String>,
     native_agent_operation_ids: HashSet<(String, String)>,
     native_passive_operation_snapshots: HashMap<String, HashMap<String, String>>,
     native_subagent_activity_ids: HashMap<String, String>,
@@ -507,6 +508,7 @@ impl RuntimeLifecycle {
         state.active_native_agents.clear();
         state.settled_native_agents.clear();
         state.native_agent_operations.clear();
+        state.native_agent_parents.clear();
         state.native_agent_operation_ids.clear();
         state.native_passive_operation_snapshots.clear();
         state.native_subagent_activity_ids.clear();
@@ -530,6 +532,7 @@ impl RuntimeLifecycle {
             state.active_native_agents.clear();
             state.settled_native_agents.clear();
             state.native_agent_operations.clear();
+        state.native_agent_parents.clear();
             state.native_agent_operation_ids.clear();
             state.native_passive_operation_snapshots.clear();
             state.native_subagent_activity_ids.clear();
@@ -592,6 +595,7 @@ impl RuntimeLifecycle {
                         state
                             .native_agent_operations
                             .insert(agent.to_owned(), operation.to_owned());
+                        if let Some(parent)=params["threadId"].as_str(){state.native_agent_parents.insert(agent.to_owned(),parent.to_owned());}
                         state.settled_native_agents.remove(agent);
                         state.active_native_agents.insert(agent.to_owned());
                     }
@@ -670,6 +674,7 @@ impl RuntimeLifecycle {
                     state
                         .native_agent_operations
                         .insert(agent.to_owned(), operation.to_owned());
+                    if let Some(parent)=params["threadId"].as_str(){state.native_agent_parents.insert(agent.to_owned(),parent.to_owned());}
                     state.settled_native_agents.remove(agent);
                 }
                 let status = states
@@ -2801,7 +2806,7 @@ impl AppServer {
                     self.loaded_threads.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread_id.clone());
                 }
             }
-            if method=="command/exec"{command_observation=remote::owners::observe_command(&self.app,&self.instance,id,params.get("processId").and_then(Value::as_str),command_owner.as_deref())?;}
+            if method=="command/exec"{command_observation=remote::owners::observe_command(&self.app,&self.instance,id,params.get("processId").and_then(Value::as_str),command_owner.as_deref())?;if let Some(proof)=command_observation.as_ref(){remote::terminal::observe_local(&self.app,proof.clone(),&params);}}
             dispatch_attempted = true;
             let written=if let Some(permit)=remote_permit.as_mut(){
                 let mut stdin=timeout_at(write_deadline,self.stdin.lock()).await.map_err(|_|remote::work::refused("busy"))?;
@@ -10421,6 +10426,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
+        .on_page_load(|webview, payload| {
+            // A page that reloads never ran its cleanup, so its capture ends here.
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                remote::upload_source::forget_window(webview.window().label());
+            }
+        })
         .on_window_event(|window, event| {
             remote::upload_source::note_window_event(window, event);
             if matches!(event, tauri::WindowEvent::Destroyed) {
@@ -10755,6 +10766,7 @@ pub fn run() {
                     remote::owners::remote_local_owner_open,
                     remote::owners::remote_local_owner_finish,
                     remote::owners::remote_work_owner_finish,
+                    remote::diagnostics::remote_host_provider_status,
                     remote::owners::remote_work_owner_open,
                     remote::owners::remote_work_owner_retire,
                     remote::bookkeeping::remote_domain_snapshot,
@@ -10769,10 +10781,18 @@ pub fn run() {
                     remote::github::remote_github_read,
                     remote::github::remote_github_execute,
                     remote::terminal::remote_terminal_start,
+                    remote::terminal::remote_terminal_list,
                     remote::terminal::remote_terminal_action,
                     remote::upload_source::remote_upload_read_dropped,
+                    remote::upload_source::remote_upload_arm,
+                    remote::attachments::remote_attachment_copy,
+                    remote::clone::remote_projects_clone,
+                    remote::clone::remote_projects_clone_status,
                     remote::attachments::remote_attachment_resolve,
                     remote::commit::remote_work_queue_authorize,
+                    remote::agent_actions::remote_agent_stop,
+            remote::queue::remote_work_queue_steer_claim,
+                    remote::queue::remote_work_queue_detach_owner,
                     remote::commit::remote_work_cancel_attempt,
                     remote::commit::remote_state_snapshot,
                     remote::commit::remote_state_commit,
@@ -10795,6 +10815,7 @@ pub fn run() {
                     remote::studio::remote_studio_git_status,
                     remote::studio::remote_studio_git_snapshot,
                     remote::studio::remote_studio_git_identity,
+                    remote::studio::remote_studio_commit_context,
                     remote::studio::remote_studio_git_metadata,
                     remote::studio::remote_studio_git_diff,
                     remote::studio::remote_work_files_search,
@@ -10959,6 +10980,11 @@ pub(crate) async fn remote_native_dispatch(app:&AppHandle,target:&remote::work::
     }
 }
 
+fn remote_native_agent_proof(state:&RuntimeLifecycleState,thread:&str,proof:&Value)->bool{
+ proof["child"]==thread&&proof["parent"].as_str().is_some_and(|parent|state.native_agent_parents.get(thread).is_some_and(|p|p==parent))&&state.native_agent_operations.get(thread).is_some_and(|current|[proof["activation"].as_str(),proof["alias"].as_str()].into_iter().flatten().any(|id|id==current&&state.native_agent_operation_ids.contains(&(thread.to_owned(),id.to_owned()))))
+}
+fn remote_agent_cutoff_allowed(state:&RuntimeLifecycleState,instance:&str,proof:&Value)->bool{proof["runtimeOwner"]==format!("codex:{instance}")&&proof["child"].as_str().is_some_and(|child|remote_native_agent_proof(state,child,proof)&&!state.remote_turn_owners.contains_key(child)&&!state.active_turns.contains(child)&&!state.starting_turns.contains(child))}
+pub(crate) fn remote_agent_cutoff_gate<T>(app:&AppHandle,proof:&Value,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{let state=app.state::<RuntimeState>();let servers=state.server.try_lock().map_err(|_|remote::work::refused("busy"))?;let server=servers.as_ref().filter(|s|s.is_alive()).ok_or_else(||remote::work::refused("stale_target"))?;let owner=server.lifecycle.lock();if owner.instance.as_deref()!=Some(server.instance.as_str())||!remote_agent_cutoff_allowed(&owner,&server.instance,proof){return Err(remote::work::refused("stale_target"));}commit()}
 async fn remote_codex_dispatch(app:&AppHandle,target:&remote::work::Target,action:&str,args:Value,permit:&mut remote::work::NativePermit)->Result<Value,String>{
     let stale=||remote::work::refused("stale_target");let state=app.state::<RuntimeState>();let server=state.server.lock().await.as_ref().filter(|server|server.is_alive()).cloned().ok_or_else(stale)?;
     if target.owner!=format!("codex:{}",server.instance){return Err(stale());}
@@ -10980,6 +11006,7 @@ async fn remote_codex_dispatch(app:&AppHandle,target:&remote::work::Target,actio
         let params=if method=="turn/steer"{if args.get("expectedTurnId")!=target.turn_id.as_ref().map(|id|json!(id)).as_ref(){return Err(stale());}json!({"threadId":thread,"expectedTurnId":target.turn_id,"input":args.get("input").filter(|value|value.is_array()).ok_or_else(stale)?})}else{json!({"threadId":thread,"turnId":target.turn_id})};
         let id=server.next_id.fetch_add(1,Ordering::Relaxed);let(sender,receiver)=oneshot::channel();server.pending.lock().await.insert(id,sender);(json!({"id":id,"method":method,"params":params}),Some(receiver),Some(id),method)
     };
+    let agent_stop_proof=permit.agent_stop_proof().cloned();let engine_cutoff_proof=permit.agent_cutoff_proof().cloned();
     let dispatch_result=async {
     let activity=server.lifecycle.begin_activity(&server.instance,method,Some(thread))?;
     let bytes=format!("{message}\n");let deadline=Instant::now()+Duration::from_secs(120);let mut stdin=timeout_at(deadline,server.stdin.lock()).await.map_err(|_|remote::work::refused("busy"))?;
@@ -10990,6 +11017,8 @@ async fn remote_codex_dispatch(app:&AppHandle,target:&remote::work::Target,actio
         // target-claim path. Never acquire this owner lock inside permit.begin.
         let owner=server.lifecycle.lock();
         if !server.is_alive()||owner.instance.as_deref()!=Some(server.instance.as_str())||((action=="codex_steer"||action=="turn_stop")&&owner.remote_turn_owners.get(thread)!=target.turn_id.as_ref()){return std::task::Poll::Ready(Err(if permit.did_begin(){"MYTHRA_DELIVERY_UNCERTAIN: The observed turn ended while its input was being written.".into()}else{stale()}));}
+        if engine_cutoff_proof.as_ref().is_some_and(|p|!remote_agent_cutoff_allowed(&owner,&server.instance,p)){return std::task::Poll::Ready(Err(if permit.did_begin(){"MYTHRA_DELIVERY_UNCERTAIN: The child resumed while the replacement instruction was being written.".into()}else{stale()}));}
+        if agent_stop_proof.as_ref().is_some_and(|p|!remote_native_agent_proof(&owner,thread,p)){return std::task::Poll::Ready(Err(if permit.did_begin(){"MYTHRA_DELIVERY_UNCERTAIN: The sub-agent activation changed while its Stop was being written.".into()}else{stale()}));}
         permit.poll_write(cx,write.as_mut(),||{if let Some(requests)=response_requests.as_mut(){let key=target.request_id.as_ref().ok_or_else(stale)?.to_string();if requests.remove(&key).is_none(){return Err(stale());}}response_requests.take();Ok(())})
     })).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input timed out.".to_string())?;
     drop(write);drop(stdin);
@@ -11020,13 +11049,13 @@ pub(crate) async fn remote_native_claim(app:&AppHandle,target:&remote::work::Tar
 }
 
 pub(crate) async fn remote_pending_request_inventory(app:&AppHandle)->Value{
-    let mut result=Vec::new();let now=unix_timestamp_ms();
+    let mut result=remote::pending::Inventory::default();let now=unix_timestamp_ms();
     let claude=app.state::<ClaudeState>();let turns:Vec<_>=claude.turns.lock().await.iter().map(|(id,turn)|(id.clone(),turn.clone())).collect();
-    for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.control_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){if let Some(params)=requests.get(id){result.push(json!({"id":id,"method":"claude/can_use_tool","params":params,"threadId":thread,"receivedAt":now}));}}}
-    let cursor=app.state::<cursor::CursorState>();result.extend(cursor::remote_pending_inventory(&cursor).await);
+    for(thread,turn)in turns{if !turn.alive.load(Ordering::Acquire){continue;}let pending=turn.control_requests.lock().await;let requests=turn.remote_requests.lock().await;for id in pending.iter(){let params=requests.get(id).unwrap_or(&Value::Null);result.push(json!(id),"claude/can_use_tool",&thread,params,Some(&turn.turn_id),params["itemId"].as_str(),now);}}
+    let cursor=app.state::<cursor::CursorState>();cursor::remote_pending_inventory(&cursor,&mut result).await;
     let runtime=app.state::<RuntimeState>();let server=runtime.server.lock().await.as_ref().filter(|server|server.is_alive()).cloned();
-    if let Some(server)=server{let requests=server.server_requests.lock().await;for(id,request)in requests.iter(){if request.params.is_null(){return json!({"complete":false,"requests":[]});}if let(Some(thread),Ok(id))=(request.thread_id.as_deref(),serde_json::from_str::<Value>(id)){result.push(json!({"id":id,"method":request.method,"params":request.params,"threadId":thread,"receivedAt":now}));}}}
-    if result.len()>1024||serde_json::to_vec(&result).map_or(true,|bytes|bytes.len()>4*1024*1024){json!({"complete":false,"requests":[]})}else{json!({"complete":true,"requests":result})}
+    if let Some(server)=server{let requests=server.server_requests.lock().await;for(id,request)in requests.iter(){if let(Some(thread),Ok(id))=(request.thread_id.as_deref(),serde_json::from_str::<Value>(id)){result.push(id,&request.method,thread,&request.params,request.turn_id.as_deref(),request.item_id.as_deref(),now);}else{result.incomplete();}}}
+    result.finish()
 }
 
 pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut remote::work::Target)->Result<bool,String>{
@@ -11055,6 +11084,7 @@ fn remote_thread_method(op:&str)->Option<&'static str>{match op{"thread.rename"=
 fn remote_thread_busy(state:&RuntimeLifecycleState,thread:&str)->bool{state.active_turns.contains(thread)||state.starting_turns.contains(thread)||state.active_compactions.contains(thread)||state.starting_compactions.contains(thread)||state.active_native_agents.contains(thread)||state.ambiguous_native_activity.contains(thread)}
 pub(crate) struct RemoteThreadProviderProof{server:Arc<AppServer>,epoch:u64,source:String,root:remote::threads::RootProof,thread:Value}
 impl RemoteThreadProviderProof{
+ pub(crate) fn idle_metadata_gate<T>(&self,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{let state=self.server.lifecycle.lock();self.root.validate()?;if !self.server.is_alive()||state.instance.as_deref()!=Some(self.server.instance.as_str())||state.thread_changes.get(&self.source).copied().unwrap_or_default()!=(self.epoch,0)||remote_thread_busy(&state,&self.source){return Err(remote::work::refused("busy"));}commit()}
  pub(crate) fn metadata(&self)->Result<Value,String>{let mut meta=self.root.metadata()?;meta["instance"]=json!(self.server.instance);meta["epoch"]=json!(self.epoch);Ok(meta)}
  pub(crate) fn commit_gate<T>(&self,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{let state=self.server.lifecycle.lock();self.root.validate()?;if !self.server.is_alive()||state.instance.as_deref()!=Some(self.server.instance.as_str())||state.thread_changes.get(&self.source).copied().unwrap_or_default()!=(self.epoch+1,0){return Err(remote::work::refused("stale_target"));}commit()}
 }
@@ -11068,6 +11098,7 @@ pub(crate) async fn remote_thread_provider_proof(app:&AppHandle,provider:&str,th
  Ok(RemoteThreadProviderProof{server,epoch,source:thread.into(),root:expected,thread:actual})
 }
 fn remote_thread_write_proof(permit:&remote::work::NativePermit,state:&RuntimeLifecycleState,instance:&str,method:&str,thread:Option<&str>)->Result<(),String>{
+ if permit.agent_cutoff_proof().is_some_and(|proof|!remote_agent_cutoff_allowed(state,instance,proof)){return Err(remote::work::refused("stale_target"));}
  let Some((operation,proof))=permit.thread_effect_proof()else{return Ok(());};let stale=||remote::work::refused("stale_target");
  if remote_thread_method(operation)!=Some(method)||proof.get("instance").and_then(Value::as_str)!=Some(instance){return Err(stale());}
  remote::threads::RootProof::check_metadata(proof)?;
@@ -11121,4 +11152,22 @@ mod remote_thread_revision_tests{
 pub(crate) fn remote_local_archive_snapshot(app:&AppHandle,value:&Value){
  if let Some(state)=app.try_state::<ClaudeState>(){state.starts.adopt_local_archives(value);}
  cursor::adopt_local_archive_snapshot(app,value);
+}
+
+#[cfg(test)]
+mod remote_native_agent_proof_tests{
+ use super::*;
+ #[test]
+ fn native_agent_cutoff_needs_observed_parent_and_current_activation_or_alias(){
+  let lifecycle=RuntimeLifecycle::default();lifecycle.begin_instance("instance");let event=json!({"method":"item/started","params":{"threadId":"root","item":{"type":"subAgentActivity","kind":"started","id":"activation","agentThreadId":"child"}}});lifecycle.observe_server_message("instance",&event);let proof=json!({"parent":"root","child":"child","activation":"activation"});assert!(remote_native_agent_proof(&lifecycle.lock(),"child",&proof));let mut wrong=proof.clone();wrong["parent"]=json!("other");assert!(!remote_native_agent_proof(&lifecycle.lock(),"child",&wrong));
+  let mut alias=proof.clone();alias["activation"]=json!("spawn-op");alias["alias"]=json!("activation");assert!(remote_native_agent_proof(&lifecycle.lock(),"child",&alias));let mut newer=event.clone();newer["params"]["item"]["id"]=json!("newer");lifecycle.observe_server_message("instance",&newer);assert!(!remote_native_agent_proof(&lifecycle.lock(),"child",&proof));assert!(!remote_native_agent_proof(&lifecycle.lock(),"child",&alias));lifecycle.begin_instance("replacement");assert!(lifecycle.lock().native_agent_parents.is_empty());
+ }
+}
+#[cfg(test)]
+mod remote_agent_cutoff_tests{
+ use super::*;
+ #[test]
+ fn acknowledged_interrupt_is_not_ended_and_a_new_activation_invalidates_replacement(){
+  let mut state=RuntimeLifecycleState::default();state.native_agent_parents.insert("child".into(),"parent".into());state.native_agent_operations.insert("child".into(),"activation".into());state.native_agent_operation_ids.insert(("child".into(),"activation".into()));state.remote_turn_owners.insert("child".into(),"turn".into());let proof=json!({"child":"child","parent":"parent","activation":"activation","runtimeOwner":"codex:instance"});assert!(!remote_agent_cutoff_allowed(&state,"instance",&proof));state.remote_turn_owners.remove("child");assert!(remote_agent_cutoff_allowed(&state,"instance",&proof));state.starting_turns.insert("child".into());assert!(!remote_agent_cutoff_allowed(&state,"instance",&proof));state.starting_turns.clear();state.native_agent_operations.insert("child".into(),"newer".into());assert!(!remote_agent_cutoff_allowed(&state,"instance",&proof));assert!(!remote_agent_cutoff_allowed(&state,"replacement-server",&proof));
+ }
 }

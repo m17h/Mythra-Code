@@ -8,6 +8,7 @@ import type { ProjectRunCommand } from "../types";
 import "./RunSetup.css";
 
 const RunCommandDiscovery = lazy(() => import("./RunCommandDiscovery"));
+type CommandDiscoveryState = import("./RunCommandDiscovery").CommandDiscoveryState;
 
 /**
  * The top-bar Run button. Grey until the project has a command, lit once it
@@ -28,6 +29,8 @@ export function ProjectRunControl({
   onStop,
   onSave,
   onDiscovered,
+  remoteDiscovery,
+  discoveryModelNote,
 }: {
   projectName: string;
   projectPath?: string;
@@ -44,8 +47,12 @@ export function ProjectRunControl({
   onSave: (run: { command: string; label: string; setupCommand?: string } | null) => void;
   /** Captured when discovery starts, so its result can be checked against the originating project. */
   onDiscovered?: (run: { command: string; label: string; setupCommand?: string }) => void;
+  /** A search that runs on another machine, in place of this one's. */
+  remoteDiscovery?: CommandDiscoveryState;
+  discoveryModelNote?: string;
 }) {
-  const discovery = useRunCommandDiscovery(projectPath, lmStudioBaseUrl);
+  const localDiscovery = useRunCommandDiscovery(projectPath, lmStudioBaseUrl);
+  const discovery = remoteDiscovery ?? localDiscovery;
   const [open, setOpen] = useState(false);
   const { ref: panelRef, present } = usePopoverFade(open);
   const [command, setCommand] = useState(run?.command ?? "");
@@ -188,8 +195,8 @@ export function ProjectRunControl({
             <small>Runs from the project folder in the Terminal panel. A thread working in an isolated worktree runs it there instead.</small>
           </div>
 
-          {projectPath && <Suspense fallback={<small>Loading discovery…</small>}>
-            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onFound={onDiscovered ?? onSave} />
+          {(projectPath || remoteDiscovery) && <Suspense fallback={<small>Loading discovery…</small>}>
+            <RunCommandDiscovery discovery={discovery} catalogs={discoveryCatalogs} onAccounts={onDiscoveryAccounts} onFound={onDiscovered ?? onSave} savedModelNote={discoveryModelNote} />
           </Suspense>}
 
           <div className="project-prompt-actions">
