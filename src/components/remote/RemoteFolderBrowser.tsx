@@ -4,6 +4,7 @@ import { ChevronRight, Folder, FolderUp, LoaderCircle, X } from "lucide-react";
 import { useModalFocus } from "../../hooks/useModalFocus";
 import { safeErrorText } from "../../lib/errors";
 import { parseGitHubCloneTarget } from "../../lib/github";
+import { accessReason } from "../../lib/remote/remoteActions";
 import { addRemoteProject, browseRemoteFolders, readRemoteClone, startRemoteClone } from "../../lib/remote/remoteWork";
 import type { FoldersBrowseResult } from "../../lib/remote/wire-studio";
 
@@ -16,9 +17,11 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Remote-only for a reason: a native folder dialog would open on the other
  * machine's screen, where the user can't see it. */
-export function RemoteFolderBrowser({ device, name, onClose, onAdded }: {
+export function RemoteFolderBrowser({ device, name, canClone, onClose, onAdded }: {
   device: string;
   name: string;
+  /** Cloning runs Git on that machine, so it also needs Terminal. */
+  canClone: boolean;
   onClose: () => void;
   onAdded: () => void;
 }) {
@@ -43,6 +46,7 @@ export function RemoteFolderBrowser({ device, name, onClose, onAdded }: {
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   /** Clones into this folder, then adds the result the way Add project does. */
+  const cloneReason = canClone ? undefined : accessReason(name, "clone repositories", "Terminal");
   const clone = async () => {
     const parent = listing?.folder;
     const target = parseGitHubCloneTarget(cloneUrl);
@@ -112,11 +116,12 @@ export function RemoteFolderBrowser({ device, name, onClose, onAdded }: {
         {listing?.truncated && <p role="note">Only the first folders are shown.</p>}
       </div>
       {listing?.folder && <div className="remote-folder-clone">
-        <input aria-label="GitHub repository address" placeholder="Clone a GitHub repository here: https://github.com/owner/name" value={cloneUrl} disabled={cloning} maxLength={2048} onChange={(event) => setCloneUrl(event.target.value)} />
-        <button type="button" className="secondary-button" disabled={cloning || !cloneUrl.trim()} onClick={() => void clone()}>
+        <input aria-label="GitHub repository address" placeholder="Clone a GitHub repository here: https://github.com/owner/name" value={cloneUrl} disabled={cloning || !canClone} title={cloneReason} maxLength={2048} onChange={(event) => setCloneUrl(event.target.value)} />
+        <button type="button" className="secondary-button" disabled={cloning || !canClone || !cloneUrl.trim()} title={cloneReason} onClick={() => void clone()}>
           {cloning ? <><LoaderCircle size={13} className="spin" aria-hidden="true" /> Cloning…</> : "Clone here"}
         </button>
       </div>}
+      {cloneReason && listing?.folder && <p className="remote-folder-note" role="note">{cloneReason}</p>}
       {error && <p className="remote-composer-error" role="alert">{error}</p>}
       <footer>
         <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>

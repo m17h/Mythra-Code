@@ -165,6 +165,7 @@ export class HostProjectNavigation {
   }
   /** Only starts it. Native checks the address and folder, and owns the process. */
   private async clone(request: HostRequest, args: Record<string, unknown>): Promise<ProjectCloneResult> {
+    if (!request.grant.capabilities.terminal || !currentGrant(this.sources, request.device, request.grant).capabilities.terminal) throw new HostReadError("forbidden", "Cloning needs Terminal as well as Manage projects.");
     const folder = this.handle(request, args.folderId, "folder");
     const opId = idArg(args.opId);
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(opId) || typeof args.opSeq !== "number" || !Number.isSafeInteger(args.opSeq) || args.opSeq < 1 || typeof args.url !== "string") throw invalid();

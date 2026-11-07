@@ -25,6 +25,8 @@ interface ActiveMachineState {
   remoteRunning: boolean;
   remoteThreadOpen: boolean;
   remoteApprovals: number;
+  /** Goes up when the main view asks the sidebar to open the folder browser. */
+  remoteAddProject: number;
   /** The shown machine's other threads, from its last quiet look. */
   remoteElsewhere: { working: number; approvals: number };
   /** A file is being dragged over the window while another machine is shown. */
@@ -36,7 +38,7 @@ interface ActiveMachineState {
  * device. Nothing ever moves this back to `local` except the user, so a lost
  * connection or removed access can't silently put them on the other machine.
  */
-export const useActiveMachine = create<ActiveMachineState>(() => ({ machine: LOCAL_MACHINE, name: null, shown: LOCAL_MACHINE, phase: "idle", remoteRunning: false, remoteDropHover: false, remoteThreadOpen: false, remoteApprovals: 0, remoteElsewhere: { working: 0, approvals: 0 } }));
+export const useActiveMachine = create<ActiveMachineState>(() => ({ machine: LOCAL_MACHINE, name: null, shown: LOCAL_MACHINE, phase: "idle", remoteRunning: false, remoteDropHover: false, remoteThreadOpen: false, remoteApprovals: 0, remoteAddProject: 0, remoteElsewhere: { working: 0, approvals: 0 } }));
 
 /** Same values as --lm-d-2 and --lm-d-3, which the keyframes run for. */
 const LEAVE_MS = 160;

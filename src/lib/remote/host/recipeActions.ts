@@ -31,7 +31,7 @@ export async function executeHostRecipe(op: "review.start" | "git.suggestCommit"
   if (op === "git.suggestCommit") prompt = "Refresh the commit-message suggestion for this checkout using get_commit_message_context and set_commit_message. Describe all accumulated uncommitted changes, including earlier work. Include a separate stagedMessage if there are staged changes. Inspect the changes as needed, but do not modify files, stage, commit or push. Finish with a brief confirmation.";
   else {
     const root = sources.executionPathFor(thread.id, workspace.path), current = useTaskStore.getState().tasks[thread.id]?.diff;
-    let excerpt = current?.text ?? "", source = current?.source ?? "repository", baseline = current?.baseline ?? "working changes", untrackedPaths = current?.untrackedPaths ?? [];
+    let excerpt = current?.successfulText ?? "", source = current?.source ?? "repository", baseline = current?.baseline ?? "working changes", untrackedPaths = current?.untrackedPaths ?? [];
     if (!excerpt) {
       const status = await transport.invoke<{ rows: { path: string; area: string }[] }>("remote_studio_git_status", { root, limit: 50 });
       operation.assertAllowed();

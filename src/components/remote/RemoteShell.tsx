@@ -34,7 +34,8 @@ import {
   runRemoteRowAction, searchRemoteFiles, sendRemotePrompt, setRemoteThreadSettings, stopRemoteTurn, UNCONFIRMED_TEXT,
   useRemoteContext, useRemoteWork, type RemoteSendOutcome,
 } from "../../lib/remote/remoteWork";
-import { deviceHelp, namingDevice, useRemoteDevices, startRemoteDevices } from "../../lib/remote/devices";
+import { remoteFindNearby } from "../../lib/remote/client";
+import { acceptRemoteSnapshot, deviceHelp, deviceHelpOffersRetry, namingDevice, useRemoteDevices, startRemoteDevices } from "../../lib/remote/devices";
 import {
   useRemoteStore, mountRemoteDevice, selectRemoteWorkspace, selectRemoteThread,
   loadRemoteThreads, loadRemoteEarlier, readRemoteTranscript, refreshRemoteDevice, watchRemoteThreads, type RemoteTimeline, type ViewState,
@@ -55,6 +56,8 @@ import { useRemoteDiscovery } from "./useRemoteDiscovery";
 import { useFeedbackMessageSource } from "../FeedbackProvider";
 import { FeedbackTray } from "../FeedbackTray";
 import { ThreadPullRequestChip } from "../ThreadPullRequestChip";
+import { ScheduledCountBadge } from "../ScheduledCountBadge";
+import { remoteGuide, type RemoteGuide } from "../../lib/remote/firstRun";
 import { remotePullRequests } from "../../lib/remote/remotePullRequests";
 import type { GitView } from "../../lib/projectGit";
 import type { PullRequest } from "../../lib/pullRequests";
@@ -241,6 +244,19 @@ function RemotePullRequestChip({ device, name, target, connected, onOpen }: { de
   return state.repository ? <ThreadPullRequestChip repository={state.repository} pullRequest={state.pullRequest} linked={state.linked} onClick={onOpen} /> : null;
 }
 
+function RemoteGuideCard({ guide, onAddProject, onOpenChats, onCheckAgain }: { guide: RemoteGuide; onAddProject: () => void; onOpenChats: () => void; onCheckAgain: () => void }) {
+  return <div className="remote-guide" role="status">
+    {guide.kind === "opening" ? <LoaderCircle className="spin" size={18} aria-hidden="true" /> : null}
+    <h2>{guide.title}</h2>
+    <p>{guide.body}</p>
+    {guide.actions.length > 0 && <div className="remote-guide-actions">
+      {guide.actions.includes("addProject") && <button type="button" className="primary-button" onClick={onAddProject}>Add a project</button>}
+      {guide.actions.includes("openChats") && <button type="button" className="secondary-button" onClick={onOpenChats}>Start a normal chat</button>}
+      {guide.actions.includes("checkAgain") && <button type="button" className="secondary-button" onClick={onCheckAgain}>Check again</button>}
+    </div>}
+  </div>;
+}
+
 /** Replies stay selectable for notes. The note itself goes out with the next message. */
 function RemoteMessageFeedback({ message, children }: { message: ChatMessage; children: (open: ((trigger: HTMLElement) => void) | null) => ReactNode }) {
   return <>{children(useFeedbackMessageSource(message))}</>;
@@ -297,7 +313,7 @@ function RemoteThreadRow({ device, name, thread, workspaceName, timeline, select
       <ThreadRenameInput initial={title} onCancel={() => setRenaming(false)} onCommit={(next) => { setRenaming(false); run("thread.rename", { name: next }); }} />
     </div> : <ThreadInboxCard active={active} threadId={thread.id} title={title} workspaceName={workspaceName} directory={workspaceName}
       provider={thread.provider} providerName={providerDisplayName(thread.provider)} pinned={Boolean(thread.pinned)}
-      presence={threadPresence(thread, timeline)} onOpen={onOpen} />}
+      scheduledPromptCount={thread.scheduled} presence={threadPresence(thread, timeline)} onOpen={onOpen} />}
     <RowMenu label={`Options for ${title}`} scale={scale} items={() => [
       { label: thread.pinned ? "Unpin" : "Pin", icon: thread.pinned ? <PinOff size={13} /> : <Pin size={13} />, disabledReason: blocked, onSelect: () => run("thread.pin", { pinned: !thread.pinned }) },
       { label: "Rename", icon: <Pencil size={13} />, disabledReason: blocked, onSelect: () => setRenaming(true) },
@@ -320,6 +336,9 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
   const canWork = useRemoteWork((state) => state.capabilities[device] !== null);
   const [query, setQuery] = useState("");
   const [browsing, setBrowsing] = useState(false);
+  const addProjectRequest = useActiveMachine((state) => state.remoteAddProject);
+  const addProjectSeen = useRef(addProjectRequest);
+  useEffect(() => { if (addProjectRequest !== addProjectSeen.current) { addProjectSeen.current = addProjectRequest; setBrowsing(true); } }, [addProjectRequest]);
   const [error, setError] = useState("");
   const workspace = remote?.workspaces.find((entry) => entry.id === remote.workspaceId);
   const list = remote?.lists.get(remote.workspaceId ?? "");
@@ -407,7 +426,7 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
       if (failure) setError(failure); else refreshRemoteDevice(device);
     });
   };
-  const projectRow = (project: WireWorkspace) => <WorkspaceRow key={project.id} name={project.name} title={`${project.name} on ${name}`} label={project.name} pinned={project.pinned} scale={scale}
+  const projectRow = (project: WireWorkspace) => <WorkspaceRow key={project.id} counts={<ScheduledCountBadge {...project.scheduled} />} name={project.name} title={`${project.name} on ${name}`} label={project.name} pinned={project.pinned} scale={scale}
     className={[remote?.workspaceId === project.id ? "active" : "", dragged === project.id ? "dragging" : "", dropTarget?.id === project.id ? `drop-${dropTarget.position}` : ""].filter(Boolean).join(" ")}
     wrapProps={{
       "data-project-id": project.id, "data-project-pinned": project.pinned ? "true" : "false",
@@ -455,12 +474,12 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
   return <div className="sidebar-machine-lists" inert={leaving || undefined} aria-label={`Workspaces and threads on ${name}`} role="group">
     <WorkspacesSection onAdd={() => setBrowsing(true)} addDisabled={!addAllowed}
       addTitle={addAllowed ? `Add a project on ${name}` : `On ${name}, turn on Work with all projects and Manage projects for this device in Settings → Connections → Devices.`}>
-      {chats && <ChatsRow active={remote?.workspaceId === chats.id} onOpen={() => { setNewThreadTarget(device, undefined); selectRemoteWorkspace(device, chats.id); }} label="Chats" />}
+      {chats && <ChatsRow scheduled={chats.scheduled} active={remote?.workspaceId === chats.id} onOpen={() => { setNewThreadTarget(device, undefined); selectRemoteWorkspace(device, chats.id); }} label="Chats" />}
       {pinnedProjects.length > 0 && <PinnedWorkspaceGroup count={pinnedProjects.length} containsActiveWorkspace={pinnedProjects.some((project) => project.id === remote?.workspaceId)}>
         {pinnedProjects.map(projectRow)}
       </PinnedWorkspaceGroup>}
       {projects.filter((entry) => !entry.pinned).map(projectRow)}
-      {!remote?.workspaces.length && <p className="empty-threads" role="status">{remote?.loading ? "" : `Nothing is shared from ${name}.`}</p>}
+      {!remote?.workspaces.length && <p className="empty-threads" role="status">{remote?.loading ? "" : `On ${name}, share a project with this device in Settings → Connections → Devices.`}</p>}
     </WorkspacesSection>
     {splitter}
     <ThreadsSection
@@ -515,6 +534,7 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
           <span className="thread-row archived-label" role="group">
             <Archive size={13} />
             <span className="archived-thread-title">{thread.title || thread.preview || "Untitled thread"}</span>
+            <ScheduledCountBadge threadPrompts={thread.scheduled ?? 0} label={`${thread.scheduled ?? 0} scheduled prompts in this archived thread`} />
           </span>
           <RowMenu label={`Options for archived ${thread.title}`} scale={scale} items={[
             { label: "Restore", icon: <ArchiveRestore size={13} />, disabledReason: canWork ? undefined : WORK_SWITCH(name), onSelect: () => runArchived("thread.restore", thread.id) },
@@ -527,7 +547,7 @@ export function RemoteSidebar({ device, splitter, scale, active }: { device: str
     />
     {editing && <RemoteProjectEditor device={device} name={name} workspaceId={editing} projectName={projects.find((entry) => entry.id === editing)?.name ?? name} context={context}
       onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refreshRemoteDevice(device); void refreshRemoteContext(device, editing); }} />}
-    {browsing && <RemoteFolderBrowser device={device} name={name} onClose={() => setBrowsing(false)} onAdded={() => { setBrowsing(false); refreshRemoteDevice(device); }} />}
+    {browsing && <RemoteFolderBrowser device={device} name={name} canClone={Boolean(context?.capabilities.terminal)} onClose={() => setBrowsing(false)} onAdded={() => { setBrowsing(false); refreshRemoteDevice(device); }} />}
   </div>;
 }
 
@@ -603,7 +623,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const projectedActivities = useMemo(() => !compose && timeline ? timeline.activities.map(activityForTimeline) : NO_ACTIVITIES, [compose, timeline?.activities]);
   const queuedTurns = useMemo<QueuedTurn[]>(() => [
     ...(!compose && timeline ? timeline.queuedTurns.map((entry) => ({
-      id: entry.id, threadId: remote?.threadId ?? "", text: entry.text, attachments: NO_ATTACHMENTS, createdAt: entry.createdAt, status: entry.status,
+      id: entry.id, threadId: remote?.threadId ?? "", text: entry.text, attachments: entry.attachmentNames?.length ? entry.attachmentNames.map((attachment) => ({ path: attachment, name: attachment, kind: "file" as const })) : NO_ATTACHMENTS, createdAt: entry.createdAt, status: entry.status,
       ...(isEditing(entry.id) ? { editing: true } : {}),
     })) : []),
     ...schedules,
@@ -628,6 +648,11 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     loading: timeline.reading, paginated: true,
   } : undefined, [timeline?.history, timeline?.reading, timeline?.historyLimited]);
   const help = machine && snapshot ? deviceHelp(machine, snapshot) : null;
+  const [reaching, setReaching] = useState(false);
+  const tryReaching = () => {
+    setReaching(true);
+    void remoteFindNearby().then(acceptRemoteSnapshot).catch(() => setNotice(`Mythra Code couldn't try ${name} again. Try again.`)).finally(() => setReaching(false));
+  };
   const settling = state === "stale" && connected;
   const outlasted = useOutlasted(settling, SETTLE_MS);
   const stillSettling = settling && !outlasted;
@@ -655,6 +680,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const composerRef = useRef<ComposerHandle>(null);
   const [editingProject, setEditingProject] = useState(false);
   const canWork = threadId ? capabilities !== null : true;
+  const viewOnly = Boolean(threadId && capabilities === null);
   const canRun = Boolean(context?.capabilities.terminal);
   const revision = context?.revision ?? "";
   const parityTarget = useMemo(() => ({ ...(workspaceId ? { workspaceId } : {}), ...(threadId ? { threadId } : {}) }), [threadId, workspaceId]);
@@ -973,6 +999,12 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
   const contextPercent = context?.usage?.contextTokens && context.usage.contextWindow ? Math.round(context.usage.contextTokens / context.usage.contextWindow * 100) : null;
   const known = Boolean(compose || (thread && timeline?.baseline) || pending.length || echoes.length);
   const waiting = state === "removed" ? `This thread is not available from ${name}.` : thread ? "" : remote?.loading ? "" : `Choose a thread on ${name}, or start a new one.`;
+  // The moment someone first switches: never a blank page, and always the next step.
+  const guide = !connected || state === "removed" ? null : remoteGuide({ name, loading: Boolean(remote?.loading), workspaces: remote ? remote.workspaces : null, chosenWorkspace: Boolean(workspaceId) && !workspace?.isChat || Boolean(compose) || Boolean(thread),
+    providers: context ? context.providers : null, canWork: viewOnly === false, canAddProjects: Boolean(context?.capabilities.manageProjects) });
+  const checkAgain = () => { refreshRemoteDevice(device); if (workspaceId) void refreshRemoteContext(device, workspaceId, threadId); };
+  const guideCard = guide && <RemoteGuideCard guide={guide} onAddProject={() => useActiveMachine.setState((current) => ({ remoteAddProject: current.remoteAddProject + 1 }))}
+    onOpenChats={() => { const chats = remote?.workspaces.find((entry) => entry.isChat); if (chats) { selectRemoteWorkspace(device, chats.id); setNewThreadTarget(device, newThreadTargetFor(chats.id)); } }} onCheckAgain={checkAgain} />;
   return <section className="remote-stage" data-remote-device={device} inert={leaving || undefined} aria-label={`Conversation on ${name}`}>
     <header className="topbar">
       <div className="topbar-left">
@@ -1028,21 +1060,27 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
     <section className="conversation">
       {banner && <div className="remote-banner" role="status"><span>{banner}</span>
         {(help || !machine) && <button type="button" className="secondary-button" onClick={onManageDevices}>Open Devices settings</button>}
+        {machine && help && deviceHelpOffersRetry(machine) && <button type="button" className="secondary-button" disabled={reaching} onClick={tryReaching}>Try again</button>}
       </div>}
       {remote?.error && <div className="remote-banner" role="status">{namingDevice(remote.error, name)}</div>}
       {timeline?.error && <div className="remote-banner" role="status">{namingDevice(timeline.error, name)}</div>}
       {!compose && scope && <RemoteRequests scope={scope} summaries={timeline?.approvals ?? NO_APPROVALS} capabilities={capabilities} questionsInTimeline={timelineQuestions} />}
+      {!compose && thread && guide && (guide.kind === "noProviders" || guide.kind === "viewOnly") && <div className="remote-banner" role="status"><strong>{guide.title}.</strong> {guide.body}
+        <button type="button" className="secondary-button" onClick={checkAgain}>Check again</button></div>}
       {findOpen && threadId && <ConversationSearchBar inputRef={findInput} query={findQuery} index={findIndex} count={findCount}
         onQuery={(query) => { setFindQuery(query); setFindIndex(0); }} onIndex={setFindIndex} onClose={() => { setFindOpen(false); setFindQuery(""); }} />}
       <div className="remote-timeline">
-        {compose && !pending.length && !echoes.length ? <div className="thread-empty-state">
+        {!compose && !thread && guideCard ? guideCard : compose && !pending.length && !echoes.length ? <div className="thread-empty-state">
+          {guideCard}
           {handoffDrafts[draftKey] && <div className="handoff-draft-banner">
             <GitFork size={15} />
             <span><strong>Provider handoff ready</strong><small>From {providerDisplayName(handoffDrafts[draftKey].from)} · review the visible context below, then send it to {providerDisplayName(handoffDrafts[draftKey].to)}.</small></span>
           </div>}
-          <AnimatedMythraLogo />
-          <h1>{workspace?.isChat ? "Start a normal chat." : "What should we build?"}</h1>
-          <p>This conversation runs on {name}, with its files and accounts.</p>
+          {!guideCard && <>
+            <AnimatedMythraLogo />
+            <h1>{workspace?.isChat ? "Start a normal chat." : "What should we build?"}</h1>
+            <p>This conversation runs on {name}, with its files and accounts.</p>
+          </>}
           <div className="trust-strip">
             <span><Check size={13} /> {workspace?.isChat ? "No project folder" : `${workspace?.name ?? "Project"} on ${name}`}</span>
             <span><Check size={13} /> Approval controls</span>
@@ -1126,7 +1164,7 @@ export function RemoteConversation({ device, notifications, leaving, sidebarOpen
           modelControls={<RemoteModelControls context={context} chosen={chosen} name={name} provider={provider} running={running} threadStarted={Boolean(threadId)}
             onSettings={changeSettings} onDefaults={() => setEditingProject(true)} onNotice={setNotice} />}
           controls={<>
-            <RemoteComposerControls device={device} workspaceId={workspaceId} context={context} chosen={chosen} name={name} provider={provider} running={running} threadId={threadId} scopeKey={draftKey}
+            <RemoteComposerControls device={device} workspaceId={workspaceId} revision={revision} onOpenThread={(id) => { setNewThreadTarget(device, undefined); selectRemoteThread(device, id); }} context={context} chosen={chosen} name={name} provider={provider} running={running} threadId={threadId} scopeKey={draftKey}
               onSettings={changeSettings} onNotice={setNotice} onOpenSettings={() => setEditingProject(true)} />
             <button className={`toolbar-button ${attachments.length ? "has-attachments" : ""}`} disabled={!canWork} title={canWork ? `Attach a file from this device. It's sent to ${name}.` : WORK_SWITCH(name)} onClick={() => fileInput.current?.click()}>
               <Paperclip size={14} />{attachments.length ? attachments.length : "Attach"}

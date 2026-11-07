@@ -4,7 +4,7 @@ import { loadStored } from "../../storage";
 import { getChildMailboxes, type ChildMailbox } from "../../childAgentMailbox";
 import { refreshModelPricingCatalog, pricingRefreshStatus } from "../../usageLedger";
 import { publicCrew } from "./executionPreferences";
-import { sanitizeChildAgentLinks, sanitizeChildAgentPresets } from "../../childAgents";
+import { providerDisplayName, sanitizeChildAgentLinks, sanitizeChildAgentPresets } from "../../childAgents";
 import { sanitizeNativeAgentLinks } from "../../nativeAgentLinks";
 import { collectSubAgentWorkers, type SubAgentWorker, type SubAgentWorkerInput } from "../../subAgentActivity";
 import { useTaskStore } from "../../taskStore";
@@ -18,7 +18,7 @@ import { REMOTE_ACTIVITY_BYTES } from "../wire-resources";
 import type { HostResourceOperation, WireResourceResult, WireUsageAmounts, WireWorker, WireMailbox } from "../wire-resources";
 import { nativeHostTransport, type HostTransport } from "./bridge";
 import { HostReadError, currentGrant, idArg, requireThread, threadWorkspace } from "./scope";
-const names = new Set<string>(["activity.read", "git.autoPublish.read", "agents.read", "mail.read", "workflows.view", "actions.list", "usage.thread.read", "usage.thread.details", "thread.handoff.lineage", "git.suggestion.read", "terminal.list", "git.context", "usage.prices.refresh", "tools.mcp.list", "agents.presets.read"]);
+const names = new Set<string>(["activity.read", "review.diff", "git.autoPublish.read", "agents.read", "mail.read", "workflows.view", "actions.list", "usage.thread.read", "usage.thread.details", "thread.handoff.lineage", "git.suggestion.read", "terminal.list", "git.context", "usage.prices.refresh", "tools.mcp.list", "agents.presets.read"]);
 export const isHostResourceOperation = (op: string): op is HostResourceOperation => names.has(op);
 export interface HostResourceSources {
   /** Cached host-only tool inventory for this exact workspace; never the selected project's cache. */
@@ -148,9 +148,28 @@ export class HostResources {
       if (!activity || activity.kind === "warning") throw new HostReadError("stale_target", "This step is no longer available.");
       const detail = activity.detail ?? "";
       result.activity = { id: activity.id, detail: text(detail, REMOTE_ACTIVITY_BYTES), truncated: detail.length > REMOTE_ACTIVITY_BYTES };
+    } else if (request.op === "review.diff") {
+      const diff = rootId ? useTaskStore.getState().tasks[rootId]?.diff : undefined;
+      // Local text deliberately includes diagnostics. Only the producer's
+      // explicit current-success cache may cross the remote read boundary.
+      const success = diff && "successfulText" in diff && typeof diff.successfulText === "string" ? diff.successfulText : undefined;
+      const body = success ?? "Review changes are unavailable. Refresh them on the host.";
+      result.reviewDiff = { text: text(body, REMOTE_ACTIVITY_BYTES), source: success !== undefined && diff?.source === "runtime" ? "runtime" : "repository",
+        baseline: success !== undefined ? text(diff?.baseline, 256) || "HEAD" : "HEAD",
+        untrackedPaths: success !== undefined ? (diff?.untrackedPaths ?? []).slice(0, 50).map((path) => text(path, 1024)) : [], truncated: body.length > REMOTE_ACTIVITY_BYTES };
     } else if (request.op === "git.autoPublish.read") {
       const state = this.sources.getAutoPublish?.(workspace.id);
-      result.autoPublish = { enabled: state?.enabled === true, status: text(state?.status, 32) || "idle", message: text(state?.message, 1024) || "Automatic publishing is off.",
+      // Local messages include native Git/SSH/helper errors. Status is the only
+      // diagnostic provenance allowed onto the wire, never the original text.
+      const enabled = state?.enabled === true;
+      const status = !enabled ? "idle" : state?.status === "idle" || state?.status === "publishing" || state?.status === "waiting" ? state.status : "paused";
+      const message = !enabled ? "Automatic publishing is off." : {
+        idle: "Committed changes publish automatically.",
+        publishing: "Publishing committed changes on the other device.",
+        waiting: "Automatic publishing is waiting on the other device.",
+        paused: "Automatic publishing needs attention. Inspect it on the other device.",
+      }[status];
+      result.autoPublish = { enabled, status, message,
         ...(state?.repository ? { repository: text(state.repository, 256) } : {}) };
     } else if (request.op === "usage.prices.refresh") {
       const refreshed = await (this.sources.refreshHostPricing?.() ?? refreshModelPricingCatalog()); validate();
@@ -210,7 +229,7 @@ export class HostResources {
       if (request.op === "agents.read" || request.op === "mail.read") {
         const workers = this.workers(rootId).filter((worker) => scoped(worker.id)).filter((worker) => args.agentId === undefined || worker.id === idArg(args.agentId));
         if (args.agentId !== undefined && !workers.length) throw new HostReadError("thread_unavailable", "This sub-agent is not shared in this workspace.");
-        if (request.op === "agents.read") result.workers = workers.slice(0, limit).map((worker): WireWorker => ({ id: worker.id, kind: worker.kind, status: worker.status, title: text(worker.title, 4000), detail: text(worker.detail, 1024), createdAt: worker.createdAt,
+        if (request.op === "agents.read") result.workers = workers.slice(0, limit).map((worker): WireWorker => ({ id: worker.id, kind: worker.kind, ...(worker.nativeRuntime ? { nativeRuntime: worker.nativeRuntime } : {}), status: worker.status, title: text(worker.title, 4000), detail: worker.provider ? `${providerDisplayName(worker.provider)} · ${text(worker.model, 256) || "provider managed"}` : "Same provider as this thread", createdAt: worker.createdAt,
           target: this.target(worker, request.device, rootId), canOpen: worker.canOpen !== false, canStop: worker.canStop === true, canAccept: Boolean(worker.reviewToken && worker.review !== "accepted"),
           ...(worker.provider ? { provider: worker.provider } : {}), ...(worker.model ? { model: text(worker.model, 256) } : {}), ...(worker.task ? { task: text(worker.task, 12000) } : {}),
           ...(worker.progress ? { progress: text(worker.progress, 8000) } : {}), ...(worker.result ? { result: text(worker.result, 12000) } : {}), ...(worker.review ? { review: worker.review } : {}),

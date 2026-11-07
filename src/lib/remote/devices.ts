@@ -95,9 +95,14 @@ export function deviceHelp(device: RemoteDevice, snapshot: RemoteSnapshot): stri
     case "stale":
       return `Connection lost. This conversation may be out of date. Your draft is saved. Work already started on ${name} may still be running.`;
     case "unreachable":
-      return device.platform === "windows"
-        ? `Windows may be blocking connections to Mythra Code on ${name}. On that PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`
-        : `${name} may be asleep, or Mythra Code may be closed there. This network may keep devices apart. Connect both computers to the same non-guest network, or ask the network owner to allow devices to connect. An invitation won't bypass this restriction.`;
+      if (device.platform === "windows") return `Windows may be blocking connections to Mythra Code on ${name}. On that PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`;
+      {
+        const reach = `${name} may be asleep, or Mythra Code may be closed there. This network may keep devices apart. Connect both computers to the same non-guest network, or ask the network owner to allow devices to connect. An invitation won't bypass this restriction.`;
+        // Bonjour can still find a Mac whose firewall refuses incoming connections.
+        return device.platform === "macos"
+          ? `${reach} Its firewall may also be blocking connections. On that Mac, open System Settings → Network → Firewall → Options and allow incoming connections for Mythra Code. Then choose Try again.`
+          : reach;
+      }
     default:
       // Versions can also refuse a device that only views this one.
       return device.updateOn ? update : null;
@@ -117,6 +122,9 @@ export interface NetworkNotice {
 }
 
 /** Notes about the network that apply to this whole device. */
+/** The wording for this device asks the user to choose Try again, so a button must be beside it. */
+export const deviceHelpOffersRetry = (device: RemoteDevice) => device.state === "unreachable" && device.platform === "macos";
+
 export function networkHelp(snapshot: RemoteSnapshot): NetworkNotice | null {
   if (snapshot.networkAccess === "waiting") {
     return snapshot.platform === "macos"
@@ -126,7 +134,7 @@ export function networkHelp(snapshot: RemoteSnapshot): NetworkNotice | null {
   if (snapshot.networkAccess === "blocked") {
     return snapshot.platform === "macos"
       ? { text: "Mythra Code can't access your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. Then choose Try again.", canRetry: true }
-      : { text: `Windows may be blocking connections to Mythra Code on ${snapshot.deviceName}. On that PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`, canRetry: true };
+      : { text: `Windows may be blocking connections to Mythra Code on ${snapshot.deviceName}. On this PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator.`, canRetry: true };
   }
   if (snapshot.publicNetwork === true) {
     return { text: "Windows marks this network as Public. Only if this is your trusted home or work network, open its Wi-Fi or Ethernet settings and change Network profile to Private. Don't change this on public Wi-Fi.", canRetry: false };

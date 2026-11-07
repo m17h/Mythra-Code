@@ -117,12 +117,29 @@ test("checkpoint acceptance uses exact stamped CAS and preserves unrelated check
 });
 for (const op of ["review.start", "git.suggestCommit"]) test(`${op} builds a host recipe, not viewer instructions/attachments/skill mentions`, async () => {
   const f = fixture(); try {
-    useTaskStore.getState().ensureTask("root", project.path); useTaskStore.getState().setDiff("root", { text: "HOST DIFF", source: "turn", baseline: "run", untrackedPaths: [], untrackedTruncated: false });
+    useTaskStore.getState().ensureTask("root", project.path); useTaskStore.getState().setDiff("root", { text: "HOST DIFF\nfatal: private diagnostic", successfulText: "HOST DIFF", source: "turn", baseline: "run", untrackedPaths: [], untrackedTruncated: false });
     const operation = { context: f.context, identity: { device, opId: "recipe", opSeq: 1 }, generation: 1, grantRevision: 1, assertAllowed: f.validate, delivery: {} };
     let seen;
     await executeHostRecipe(op, f.sources, operation, { sendPromptTo: async (context, text) => { seen = { context, text }; return { state: "queued", threadId: "root", queuedTurnId: "q" }; } });
     assert.deepEqual(seen.context.attachments, []); assert.equal(seen.context.resolveSkillMentions, false); assert.equal(seen.context.activeThread.id, "root");
     assert.ok(seen.text.includes(op === "review.start" ? "HOST DIFF" : "get_commit_message_context"));
+    assert.equal(seen.text.includes("private diagnostic"), false);
+  } finally { f.close(); }
+});
+test("a failed diff refresh never puts Git's diagnostics into the review prompt", async () => {
+  const f = fixture(); try {
+    useTaskStore.getState().ensureTask("root", project.path); useTaskStore.getState().setDiff("root", { text: "fatal: private diagnostic", source: "repository", baseline: "HEAD", untrackedPaths: [] });
+    const operation = { context: f.context, identity: { device, opId: "recipe", opSeq: 1 }, generation: 1, grantRevision: 1, assertAllowed: f.validate, delivery: {} };
+    // With no successful diff it goes back to the guarded read, which this fixture refuses.
+    await assert.rejects(executeHostRecipe("review.start", f.sources, operation, { sendPromptTo: async () => assert.fail("the diagnostic reached a prompt") }), /remote_studio_git_status/);
+  } finally { f.close(); }
+});
+test("agents.read says which runtime a native child uses", async () => {
+  const f = fixture(); try {
+    f.input.agents = [{ id: "child", provider: "openai", model: "model", status: "running" }];
+    delete f.input.links.child;
+    f.input.nativeLinks.child = { childThreadId: "child", rootThreadId: "root", provider: "openai", model: "model", createdAt: 1, runtime: "codex" };
+    assert.equal((await f.read("agents.read")).workers.find((worker) => worker.id === "child")?.nativeRuntime, "codex");
   } finally { f.close(); }
 });
 test("real work router serves resource reads for View-only callers without touching selection", async () => {
@@ -187,6 +204,60 @@ test("git.autoPublish.read shows only the allowlisted state of this project", as
     assert.deepEqual((await f.read("git.autoPublish.read")).autoPublish, { enabled: false, status: "idle", message: "Automatic publishing is off." });
     let asked; f.sources.getAutoPublish = (id) => { asked = id; return { enabled: true, status: "waiting", message: "Waiting", repository: "a/b", binding: "DO-NOT-SEND" }; };
     const result = await f.read("git.autoPublish.read");
-    assert.equal(asked, "p"); assert.deepEqual(result.autoPublish, { enabled: true, status: "waiting", message: "Waiting", repository: "a/b" });
+    assert.equal(asked, "p"); assert.deepEqual(result.autoPublish, { enabled: true, status: "waiting", message: "Automatic publishing is waiting on the other device.", repository: "a/b" });
+  } finally { f.close(); }
+});
+
+
+test("publishing status never sends native error text or an unknown status", async () => {
+  const f = fixture(); try {
+    const secret = "fatal: /private/project/credentials https://user:token@example.invalid";
+    for (const status of ["idle", "publishing", "waiting", "paused", secret]) {
+      const config = { enabled: true, status, message: secret, repository: "a/b" };
+      f.sources.getAutoPublish = () => config;
+      const wire = (await f.read("git.autoPublish.read")).autoPublish;
+      assert.equal(wire.status, status === secret ? "paused" : status);
+      assert.equal(JSON.stringify(wire).includes(secret), false);
+      assert.equal(config.message, secret, "host-local diagnostics remain intact");
+    }
+    f.sources.getAutoPublish = () => ({ enabled: false, status: "publishing", message: secret });
+    assert.deepEqual((await f.read("git.autoPublish.read")).autoPublish,
+      { enabled: false, status: "idle", message: "Automatic publishing is off." });
+  } finally { f.close(); }
+});
+
+test("worker identity detail is built only from provider and model, never its host checkout", async () => {
+  const f = fixture(); try {
+    const secret = "C:\\Users\\private\\checkout";
+    f.input.agents = [{ id: "child", provider: "claude", model: "claude-model", status: "running", path: secret }];
+    delete f.input.links.child;
+    f.input.nativeLinks.child = { childThreadId: "child", rootThreadId: "root", provider: "claude", model: "claude-model", createdAt: 1, runtime: "claude" };
+    const result = await f.read("agents.read");
+    assert.equal(result.workers[0].detail, "Claude · claude-model");
+    assert.equal(JSON.stringify(result).includes(secret), false);
+    assert.equal(f.input.agents[0].path, secret, "local identity detail keeps its checkout");
+    delete f.input.agents[0].provider; delete f.input.agents[0].model;
+    delete f.input.nativeLinks.child.provider; delete f.input.nativeLinks.child.model;
+    assert.equal((await f.read("agents.read")).workers[0].detail, "Same provider as this thread");
+  } finally { f.close(); }
+});
+
+test("review diff exports known-success stdout only; old caches and failures use a fixed notice", async () => {
+  const f = fixture(); try {
+    useTaskStore.getState().ensureTask("root", project.path);
+    const diagnostic = "fatal: C:\\Users\\private\\checkout https://user:token@example.invalid";
+    const diff = { text: diagnostic, source: "repository", baseline: diagnostic, untrackedPaths: [diagnostic] };
+    useTaskStore.getState().setDiff("root", diff);
+    const unavailable = (await f.read("review.diff")).reviewDiff;
+    assert.equal(unavailable.text, "Review changes are unavailable. Refresh them on the host.");
+    assert.equal(unavailable.baseline, "HEAD"); assert.deepEqual(unavailable.untrackedPaths, []);
+    assert.equal(JSON.stringify(unavailable).includes(diagnostic), false);
+    const stdout = "diff --git a/file b/file\n+safe";
+    useTaskStore.getState().setDiff("root", { ...diff, successfulText: stdout, baseline: "HEAD", untrackedPaths: ["new-file"] });
+    const successful = (await f.read("review.diff")).reviewDiff;
+    assert.equal(successful.text, stdout); assert.deepEqual(successful.untrackedPaths, ["new-file"]);
+    assert.equal(useTaskStore.getState().tasks.root.diff.text, diagnostic, "local diagnostics are untouched");
+    useTaskStore.getState().setDiff("root", { ...diff, successfulText: "", baseline: "HEAD", untrackedPaths: [] });
+    assert.equal((await f.read("review.diff")).reviewDiff.text, "", "empty successful stdout is not a failed read");
   } finally { f.close(); }
 });

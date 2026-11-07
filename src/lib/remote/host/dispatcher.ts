@@ -1,4 +1,5 @@
 import { drainTaskDeltas, pinTaskTranscript, useTaskStore } from "../../taskStore";
+import { normalizedProjectPath } from "../../paths";
 import type { HostRequest, HostResponse, ThreadsListResult, WireThread } from "../wire";
 import { REMOTE_RESULT_BYTES } from "../wire";
 import { HostBridge, type HostTransport } from "./bridge";
@@ -55,7 +56,9 @@ export class HostDispatcher {
         result = await this.studioReads.execute(request) as HostResponse["result"];
       } else if (request.op === "workspaces.list") {
         result = { workspaces: this.sources.getWorkspaces().filter((workspace) => workspaceAllowed(workspace, request.grant)).slice(0, 256)
-          .map((workspace) => ({ id: workspace.id, name: boundedText(workspace.name, 256), isChat: workspace.isChat === true, pinned: workspace.pinned === true })) };
+          .map((workspace) => { const scheduled = this.sources.getScheduledCounts?.().workspaces[normalizedProjectPath(workspace.path)];
+            return { id: workspace.id, name: boundedText(workspace.name, 256), isChat: workspace.isChat === true, pinned: workspace.pinned === true,
+              ...(scheduled && (scheduled.newConversations > 0 || scheduled.threadPrompts > 0) ? { scheduled: { newConversations: scheduled.newConversations, threadPrompts: scheduled.threadPrompts } } : {}) }; }) };
       } else if (request.op === "threads.list") {
         result = await this.list(request, args);
       } else if (request.op === "timeline.read" || request.op === "timeline.subscribe") {

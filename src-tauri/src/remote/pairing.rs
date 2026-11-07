@@ -22,7 +22,8 @@
 //! close, expiry or a dropped link before that stops the pairing. After it they
 //! do nothing and the pairing stands, unless saving fails, and the user can
 //! Revoke it. On the viewer, Cancel always wins: a save that finishes after it
-//! is overwritten by what memory says.
+//! restores only that save's viewer relationship, unless a newer viewer decision
+//! has already superseded it.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::Ordering;
@@ -879,8 +880,9 @@ async fn commit_approval(
         }
         let relationship = core.relationship(&link.peer_fingerprint);
         let write = record.clone();
+        core.begin_device_save(&link.peer_fingerprint);
         let saved =
-            inner.enqueue_write(false, move |connection| store::save_device(connection, &write));
+            inner.enqueue_write(false, move |connection| store::save_pairing_host(connection, &write));
         (
             ApprovalClaim {
                 window_id,
@@ -911,6 +913,8 @@ fn finish_approval(
     let fingerprint = claim.link.peer_fingerprint.clone();
     let (pending, answer) = {
         let mut core = inner.lock();
+        core.end_device_save(&fingerprint);
+        inner.wake.notify_one();
         let unchanged = core.relationship(&fingerprint) == claim.relationship;
         let Some(window) = core
             .pairing
@@ -1348,7 +1352,7 @@ async fn run_initiator(
     // The flow is rechecked and the save queued in one step under the lock, so
     // a cancel lands wholly before this or wholly after it.
     let claimed = {
-        let core = inner.lock();
+        let mut core = inner.lock();
         is_current(&core).then(|| {
             let mut record = core
                 .devices
@@ -1362,24 +1366,32 @@ async fn run_initiator(
             record.access_removed = false;
             record.addresses = addresses;
             let relationship = core.relationship(&fingerprint);
+            let undo = store::ViewerPairingUndo::new(&fingerprint, flow_id, core.devices.get(&fingerprint));
             let write = record.clone();
+            let save_undo = undo.clone();
+            core.begin_device_save(&fingerprint);
             let saved = inner
-                .enqueue_write(false, move |connection| store::save_device(connection, &write));
-            (record, relationship, saved)
+                .enqueue_write(false, move |connection| store::save_pairing_viewer(connection, &write, &save_undo));
+            (record, relationship, undo, saved)
         })
     };
-    let Some((record, relationship, saved)) = claimed else {
+    let Some((record, relationship, undo, saved)) = claimed else {
         link.close(CloseReason::Finished);
         return;
     };
     let result = super::finish_write(saved).await;
     let finished = {
         let mut core = inner.lock();
+        core.end_device_save(&fingerprint);
+        inner.wake.notify_one();
         if !is_current(&core) {
-            // Cancelled while saving. The save has landed or will have, so
-            // what memory says is written over it, in its place in the order.
-            core.unsaved.devices.insert(fingerprint.clone());
-            core.unsaved.retry_at = None;
+            // A failed transactional save changed nothing. A successful one
+            // needs its own viewer-only undo, not a stale full device snapshot.
+            // The persisted token fences newer pairing/revoke/forget decisions.
+            if result.is_ok() {
+                core.unsaved.remember_viewer_undo(undo);
+                core.unsaved.retry_at = None;
+            }
             Err(None)
         } else if let Err(message) = result {
             Err(Some(message))
@@ -1696,3 +1708,7 @@ pub(super) fn test_open_window(inner: &Arc<Inner>, temporary: bool, lifetime: Du
     });
     invitation
 }
+
+#[cfg(test)]
+#[path = "pairing_cancel_tests.rs"]
+mod cancellation_tests;

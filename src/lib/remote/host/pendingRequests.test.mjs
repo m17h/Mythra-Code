@@ -126,3 +126,27 @@ test("incomplete recovery does not block unrelated timelines; missing bodies are
   assert.equal(history.availability("missing"), "ready");
   history.clear();
 });
+
+test("new recovered Cursor question uses the live pure adapter and native target identity", async () => {
+  resetTaskStore();
+  const raw = { threadId: "cursor", id: "q", method: "cursor/ask_question", turnId: "native-turn", itemId: "native-item", remoteOwner: "owner",
+    params: { questions: [{ id: "secret", prompt: "Password?", secret: true, options: [{ label: "Option", description: "Description" }] }] } };
+  await reconcile({ complete: true, requests: [raw] });
+  const approval = useTaskStore.getState().tasks.cursor.approvals[0];
+  assert.equal(approval.params.turnId, "native-turn"); assert.equal(approval.params.itemId, "native-item");
+  const { requestQuestions, remoteQuestionResponse } = await import("./questionActions.ts");
+  assert.deepEqual(requestQuestions(approval), [{ id: "secret", title: "Password?", secret: true, options: ["Option"], answered: false }]);
+  assert.deepEqual(remoteQuestionResponse(approval, { secret: ["transient answer"] }), { answers: { secret: { answers: ["transient answer"] } } });
+  assert.equal(raw.params.questions[0].question, undefined); // shared adapter is pure
+  await reconcile({ complete: true, requests: [], expired: [{ threadId: "cursor", id: "q", method: raw.method, turnId: "native-turn", itemId: "native-item", remoteOwner: "owner" }] });
+  assert.equal(useTaskStore.getState().tasks.cursor.approvals.length, 0);
+});
+
+test("Cursor inventory cannot normalize, replace or acquire an existing local question", async () => {
+  resetTaskStore();
+  const local = { threadId: "cursor", id: "local-q", method: "cursor/ask_question", receivedAt: 123,
+    params: { turnId: "local-turn", questions: [{ id: "q", question: "Already normalized" }] } };
+  useTaskStore.getState().enqueueApproval(local); const before = useTaskStore.getState();
+  await reconcile({ complete: true, requests: [{ ...local, turnId: "different", remoteOwner: "remote", params: { questions: [{ id: "q", prompt: "Different" }] } }] });
+  assert.equal(useTaskStore.getState(), before); assert.equal(useTaskStore.getState().tasks.cursor.approvals[0], local);
+});

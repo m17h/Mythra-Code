@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PendingApproval } from "../../../types";
 import { useTaskStore } from "../../taskStore";
+import { normalizeCursorQuestionParams } from "../../cursorEvents";
 export interface PendingRequestIdentity {
   threadId: string; id: string | number; method: string; turnId?: string; itemId?: string;
   /** Native-attested remote execution lifetime, NOT a viewer or timeline field. */
@@ -8,7 +9,7 @@ export interface PendingRequestIdentity {
 }
 export interface PendingRequestInventory {
   complete: boolean;
-  requests: Array<PendingApproval & { remoteOwner?: string }>;
+  requests: Array<PendingApproval & { remoteOwner?: string; turnId?: string; itemId?: string }>;
   /** Identities whose live payload was individually omitted (size/unsupported).
    * They are PRESENT, not expired; other complete payloads remain recoverable. */
   present?: PendingRequestIdentity[];
@@ -27,8 +28,9 @@ const matchesLiveIdentity = (approval: PendingApproval, entry: PendingRequestIde
   && approval.id === entry.id && approval.method === entry.method
   && (entry.turnId === undefined || approval.params.turnId === entry.turnId) && (entry.itemId === undefined || approval.params.itemId === entry.itemId);
 const identity = (entry: PendingRequestIdentity) => JSON.stringify([entry.threadId, typeof entry.id, entry.id, entry.method, entry.turnId ?? null, entry.itemId ?? null]);
-const approvalIdentity = (entry: PendingApproval): PendingRequestIdentity => ({ threadId: entry.threadId, id: entry.id, method: entry.method,
-  ...(typeof entry.params?.turnId === "string" ? { turnId: entry.params.turnId } : {}), ...(typeof entry.params?.itemId === "string" ? { itemId: entry.params.itemId } : {}) });
+const approvalIdentity = (entry: PendingApproval & { turnId?: string; itemId?: string }): PendingRequestIdentity => ({ threadId: entry.threadId, id: entry.id, method: entry.method,
+  ...(typeof entry.turnId === "string" ? { turnId: entry.turnId } : typeof entry.params?.turnId === "string" ? { turnId: entry.params.turnId } : {}),
+  ...(typeof entry.itemId === "string" ? { itemId: entry.itemId } : typeof entry.params?.itemId === "string" ? { itemId: entry.params.itemId } : {}) });
 /** Remote recovery is NOT the owner of ordinary host approvals. Incomplete,
  * malformed or failed reads leave every local reference/status/unread bit alone.
  * Absence in a list alone is never proof a local provider stopped waiting. */
@@ -81,7 +83,11 @@ export async function reconcilePendingRequests(generation: number, isCurrent: ()
     // Never resolve/re-enqueue a live local request just to change receivedAt,
     // object identity or provenance, and never replace a newer listener event.
     if (store.tasks[entry.threadId]?.approvals.some((approval) => approval.id === entry.id)) continue;
-    const approval: PendingApproval = { id: entry.id, method: entry.method, params: entry.params, threadId: entry.threadId, receivedAt: Date.now() };
+    const target = approvalIdentity(entry);
+    const params = entry.method === "cursor/ask_question"
+      ? normalizeCursorQuestionParams(entry.params, target.turnId, target.itemId)
+      : { ...entry.params, ...(target.turnId === undefined ? {} : { turnId: target.turnId }), ...(target.itemId === undefined ? {} : { itemId: target.itemId }) };
+    const approval: PendingApproval = { id: entry.id, method: entry.method, params, threadId: entry.threadId, receivedAt: Date.now() };
     store.enqueueApproval(approval);
     const installed = useTaskStore.getState().tasks[entry.threadId]?.approvals.find((value) => value === approval);
     if (installed && typeof entry.remoteOwner === "string" && entry.remoteOwner && entry.remoteOwner.length <= 512) recoveredOwners.set(installed, entry.remoteOwner);

@@ -673,44 +673,12 @@ fn validate_clone_destination(destination_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// How a clone for another device ended. It says nothing of the path or Git's output.
-pub(crate) enum CloneFinished {
-    Done,
-    Failed,
-    TimedOut,
-}
-const REMOTE_CLONE_WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-
 /// The normalized address and the folder a clone of it would create.
 pub(crate) fn clone_target(input: &str) -> Option<(String, String)> {
     let url = normalize_github_remote_url(input)?;
     let repository = parse_github_repository(&url)?;
     let name = repository.rsplit('/').next()?.to_owned();
     Some((url, name))
-}
-
-pub(crate) async fn clone_into(app: &AppHandle, url: &str, destination: &Path) -> CloneFinished {
-    if validate_clone_destination(destination).is_err() {
-        return CloneFinished::Failed;
-    }
-    let Ok(path) = resolve_github_binary(app).await else {
-        return CloneFinished::Failed;
-    };
-    let mut command = github_command(&path);
-    command
-        .args(["repo", "clone", url])
-        .arg(destination)
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
-    match tokio::time::timeout(REMOTE_CLONE_WAIT, command.output()).await {
-        Ok(Ok(output)) if output.status.success() => CloneFinished::Done,
-        Ok(_) => CloneFinished::Failed,
-        Err(_) => {
-            // It was checked absent before starting, so what's here is this clone's.
-            let _ = std::fs::remove_dir_all(destination);
-            CloneFinished::TimedOut
-        }
-    }
 }
 
 #[tauri::command]

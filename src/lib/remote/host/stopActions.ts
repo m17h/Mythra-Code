@@ -3,7 +3,7 @@ import { captureRootCutoff, stopWithChildren, waitForRootCutoff } from "../../st
 import { useTaskStore } from "../../taskStore";
 import { HostReadError } from "./scope";
 import { markRemoteEngineRetiring, remoteEngineStopped } from "./engineOwners";
-import { sameStop } from "./targetHandles";
+import { sameStop, sameStopLifetime } from "./targetHandles";
 import type { RemoteStopSnapshot, RemoteTurnRunner } from "./workTypes";
 
 /** Closures supplied by App must address the supplied root, never selection. */
@@ -19,7 +19,7 @@ export async function stopThreadAndChildren(context: TurnRunnerContext, expected
   // Native handle is already claimed; recheck renderer ownership synchronously
   // before ANY parent retirement, workflow cutoff or child-frontier capture.
   assertCurrent();
-  if (context.activeThread?.id !== expected.threadId || !sameStop(expected, runner.getThreadStopTarget(expected.threadId))) {
+  if (context.activeThread?.id !== expected.threadId || !(expected.ownerHandle ? sameStopLifetime(expected, runner.getThreadStopTarget(expected.threadId)) : sameStop(expected, runner.getThreadStopTarget(expected.threadId)))) {
     throw new HostReadError("stale_target", "The observed run has changed.");
   }
   const id = expected.threadId;

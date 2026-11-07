@@ -22,6 +22,7 @@ import {
   acceptRemoteSnapshot,
   deviceDotState,
   deviceHelp,
+  deviceHelpOffersRetry,
   deviceStateLabel,
   localMachineLabel,
   networkHelp,
@@ -162,6 +163,11 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
   const grantPending = useRef(false);
   const grantFocus = useRef<HTMLButtonElement | null>(null);
   const help = deviceHelp(device, snapshot);
+  const [retrying, setRetrying] = useState(false);
+  const retry = () => {
+    setRetrying(true);
+    void remoteFindNearby().then(acceptRemoteSnapshot).catch(fail(`Mythra Code couldn't try ${device.name} again. Try again.`)).finally(() => setRetrying(false));
+  };
   useEffect(() => {
     if (savingGrant) return;
     const control = grantFocus.current;
@@ -232,6 +238,7 @@ function PairedDeviceRow({ device, snapshot, projects, onError }: { device: Remo
         </div>
       </div>
       {help && <p className="devices-help">{help}</p>}
+      {deviceHelpOffersRetry(device) && <button type="button" className="secondary-button" disabled={retrying} onClick={retry}>Try again</button>}
       {device.grant && showAccess && <GrantEditor device={device} grant={device.grant} projects={projects} saving={savingGrant} onChange={saveGrant} />}
     </div>
   );

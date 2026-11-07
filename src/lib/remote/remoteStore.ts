@@ -67,12 +67,18 @@ function unique<T extends { id: string }>(entries: T[]): T[] {
   if (new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new Error("Duplicate identity");
   return entries;
 }
+function scheduledCounts(value: unknown): { scheduled?: { newConversations: number; threadPrompts: number } } {
+  if (!value || typeof value !== "object") return {};
+  const { newConversations, threadPrompts } = value as Record<string, unknown>;
+  const count = (raw: unknown) => typeof raw === "number" && raw > 0 ? Math.min(9999, Math.floor(raw)) : 0;
+  return { scheduled: { newConversations: count(newConversations), threadPrompts: count(threadPrompts) } };
+}
 function threadRow(entry: unknown, workspaceId: string): WireThread {
   const v = object(entry);
   if (v.workspaceId !== workspaceId || typeof v.provider !== "string" || !PROVIDERS.has(v.provider) || typeof v.status !== "string" || !STATUSES.has(v.status)) throw new Error("Invalid thread");
   return { id: id(v.id), workspaceId, provider: v.provider as WireProvider, title: text(v.title, 512), preview: text(v.preview, 16000), updatedAt: measure(v.updatedAt), status: v.status as WireTaskStatus,
     ...(v.archived === true ? { archived: true } : {}), ...(v.child === true ? { child: true } : {}), ...(v.pinned === true ? { pinned: true } : {}),
-    ...(v.unread === true ? { unread: true } : {}), ...(v.waiting === true ? { waiting: true } : {}), ...(v.parentThreadId === undefined ? {} : { parentThreadId: id(v.parentThreadId) }) };
+    ...(v.unread === true ? { unread: true } : {}), ...(v.waiting === true ? { waiting: true } : {}), ...(typeof v.scheduled === "number" && v.scheduled > 0 ? { scheduled: Math.min(9999, Math.floor(v.scheduled)) } : {}), ...(v.parentThreadId === undefined ? {} : { parentThreadId: id(v.parentThreadId) }) };
 }
 /** What happened between two looks at a list, for telling someone about it. */
 export interface RemoteThreadChange { thread: WireThread; kind: "finished" | "waiting" }
@@ -328,7 +334,7 @@ class ViewerSession {
       await ensureBridge();
       const raw = object(await viewerRequest<unknown>(this.device, "workspaces.list"));
       const workspaces = unique(rows(raw.workspaces, (entry): WireWorkspace => {
-        const v = object(entry); return { id: id(v.id), name: text(v.name, 512), isChat: bool(v.isChat), ...(v.pinned === true ? { pinned: true } : {}) };
+        const v = object(entry); return { id: id(v.id), name: text(v.name, 512), isChat: bool(v.isChat), ...(v.pinned === true ? { pinned: true } : {}), ...scheduledCounts(v.scheduled) };
       }, 1000));
       if (!this.alive || generation !== this.catalogToken) return;
       const oldWorkspace = this.view?.workspaceId;

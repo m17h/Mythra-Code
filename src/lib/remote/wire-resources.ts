@@ -1,12 +1,12 @@
 import type { WireProvider } from "./wire";
-export type HostResourceOperation = "activity.read" | "git.autoPublish.read" | "agents.read" | "mail.read" | "workflows.view" | "actions.list" | "usage.thread.read" | "usage.thread.details" | "thread.handoff.lineage" | "git.suggestion.read" | "terminal.list" | "git.context" | "usage.prices.refresh" | "tools.mcp.list" | "agents.presets.read";
+export type HostResourceOperation = "activity.read" | "review.diff" | "git.autoPublish.read" | "agents.read" | "mail.read" | "workflows.view" | "actions.list" | "usage.thread.read" | "usage.thread.details" | "thread.handoff.lineage" | "git.suggestion.read" | "terminal.list" | "git.context" | "usage.prices.refresh" | "tools.mcp.list" | "agents.presets.read";
 export interface HostResourceArgs { workspaceId: string; threadId?: string; activityId?: string; agentId?: string; workflowId?: string; limit?: number }
 export const REMOTE_ACTIVITY_BYTES = 256 * 1024;
 export interface WireWorker {
   id: string; kind: "cross-provider" | "native"; status: string; title: string; detail: string; createdAt: number;
   target: string; provider?: WireProvider; model?: string; task?: string; progress?: string; result?: string;
   canOpen: boolean; canStop: boolean; canAccept: boolean; review?: "awaiting" | "accepted";
-  finishedAt?: number; targetId?: string;
+  finishedAt?: number; targetId?: string; nativeRuntime?: "codex" | "claude";
 }
 export interface WireMailMessage { id: string; direction: "toParent" | "toChild"; kind: "question" | "update" | "guidance"; text: string; state: string; createdAt: number; answeredAt?: number; closedAt?: number; settledAt?: number; uncertain?: boolean; replyTo?: string; via?: "steer" | "turn" | "read" }
 export interface WireMailbox { agentId: string; dropped: number; messages: WireMailMessage[]; truncated: boolean }
@@ -26,5 +26,7 @@ export interface WireResourceResult {
   terminals?: WireTerminalSummary[];
   /** The whole of one work-history row, up to REMOTE_ACTIVITY_BYTES. */
   activity?: { id: string; detail: string; truncated: boolean };
+  /** What the current turn changed, when the host has that. Empty means use the repository. */
+  reviewDiff?: { text: string; source: "runtime" | "repository"; baseline: string; untrackedPaths: string[]; truncated: boolean };
   autoPublish?: { enabled: boolean; status: string; message: string; repository?: string };
 }

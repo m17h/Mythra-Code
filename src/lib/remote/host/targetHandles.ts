@@ -15,6 +15,13 @@ export function sameStop(a: RemoteStopSnapshot, b: RemoteStopSnapshot): boolean 
     && a.agentRunId === b.agentRunId && a.runStartedAt === b.runStartedAt && a.parentRunId === b.parentRunId
     && a.workflowId === b.workflowId && a.workflowRunId === b.workflowRunId && a.ownerHandle === b.ownerHandle && a.ownerRunId === b.ownerRunId;
 }
+/** Whole-owner Stop remains valid when its exact startup becomes a turn.
+ * Steer and ordinary turn handles must still use sameStop, never this helper. */
+export function sameStopLifetime(a: RemoteStopSnapshot, b: RemoteStopSnapshot): boolean {
+  return Boolean(a.ownerHandle && a.ownerRunId && a.ownerHandle === b.ownerHandle && a.ownerRunId === b.ownerRunId
+    && a.threadId === b.threadId && a.agentRunId === b.agentRunId && a.runStartedAt === b.runStartedAt
+    && a.parentRunId === b.parentRunId && a.workflowId === b.workflowId && a.workflowRunId === b.workflowRunId);
+}
 /** Renderer identity checks supplement, never replace, native owner fencing. */
 export class WorkTargets {
   private entries = new Map<string, WorkTarget>();

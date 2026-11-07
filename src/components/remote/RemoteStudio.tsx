@@ -11,6 +11,9 @@ import { useSessionThreadPullRequest } from "../../hooks/useThreadPullRequest";
 import { RemotePullRequestActivity } from "./RemotePullRequestActivity";
 import { useRemoteCommand } from "./useRemoteCommand";
 import { useRemoteDiscovery } from "./useRemoteDiscovery";
+import { useRemoteWorkers } from "./useRemoteWorkers";
+import { workerRuntime } from "../../lib/remote/workerReads";
+import { useRemoteOutbox } from "../../lib/remote/outbox";
 import { AgentsPanel, CheckpointsPanel, Empty, PanelHeader, StudioDockFrame, TerminalPanelHost, WorktreesPanel, type AgentRecord, type StudioTab } from "../StudioDock";
 import { confirmDialog } from "../../lib/confirmDialog";
 import { mcpStatusLabel } from "../../lib/statusLabels";
@@ -160,6 +163,7 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
   const [selected, setSelected] = useState<WireGitChange | null>(null);
   const [diff, setDiff] = useState("");
   const request = useRef(0);
+  const reloadTurnRef = useRef<() => void>(noop);
   const open = useCallback((change: WireGitChange) => {
     setSelected(change);
     setDiff("");
@@ -168,11 +172,16 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
       .then((result) => { if (current === request.current) setDiff(result.binary ? "This file is binary." : `${result.text}${result.truncated ? "\n… Diff shortened." : ""}`); })
       .catch(() => { if (current === request.current) setDiff(`Mythra Code couldn't read that change on ${name}. Try again.`); });
   }, [device, name, target]);
-  const refresh = useCallback(() => { setSelected(null); setDiff(""); request.current += 1; reload(); }, [reload]);
+  const refresh = useCallback(() => { setSelected(null); setDiff(""); request.current += 1; reload(); reloadTurnRef.current(); }, [reload]);
   const { busy: gitBusy, remember, pathAction } = useHostGitWrites({ device, name, target, revision, allowed: canGit, reason: accessReason(name, "change Git", "Git changes and Terminal"), onResult: setNotice, onChanged: refresh });
   const changes = useMemo(() => Array.isArray(status?.changes) ? status.changes : [], [status?.changes]);
   useEffect(() => { remember(changes); }, [changes, remember]);
-  const sections = useMemo(() => parseDiffSections(diff), [diff]);
+  // What this turn changed, when the host has that. Picking a file shows just that file.
+  const { data: turn, reload: reloadTurn } = useHostData(target.threadId ? () => hostRead<WireResourceResult>(device, "review.diff", { ...target }) : null, panelKey(device, "review.diff", target));
+  reloadTurnRef.current = reloadTurn;
+  const turnDiff = turn?.reviewDiff?.text ? turn.reviewDiff : null;
+  const shownDiff = diff || (selected ? "" : turnDiff?.text ?? "");
+  const sections = useMemo(() => parseDiffSections(shownDiff), [shownDiff]);
   const stagedPaths = useMemo(() => changes.filter((change) => change.area === "staged").map((change) => change.path), [changes]);
   const [reviewing, setReviewing] = useState(false);
   const review = () => {
@@ -199,7 +208,7 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
     </div>
     <Reason text={notice} />
     <div className="diff-summary">
-      <span><CodeXml size={13} /> Repository changes</span>
+      <span><CodeXml size={13} /> {turnDiff?.source === "runtime" && !selected ? "Working changes" : "Repository changes"}</span>
       <small>{status ? `${status.changedFiles} file${status.changedFiles === 1 ? "" : "s"} changed` : failed ? "Not available" : "Reading changes…"}</small>
     </div>
     {failed && <Reason text={`Mythra Code couldn't read changes on ${name}. Try again.`} />}
@@ -207,8 +216,9 @@ function HostChanges({ device, name, target, context, onOpenGit, onClose }: { de
       <div><strong>{change.path}</strong><small>{change.status} · {change.area}</small></div>
     </button>)}</div>
     {sections.length ? <DiffFileSections sections={sections} readOnly={!canGit || gitBusy} readOnlyReason={canGit ? "Mythra Code is finishing the last change." : accessReason(name, "change Git", "Git changes and Terminal")}
-      stagedPaths={stagedPaths} feedbackDiff={REVIEW_BASELINE} onPathAction={pathAction} onUnstage={(path) => pathAction("unstage", path)} />
-      : diff && <pre className="diff-view">{diff}</pre>}
+      stagedPaths={stagedPaths} feedbackDiff={!selected && turnDiff ? { baseline: turnDiff.baseline, source: turnDiff.source } : REVIEW_BASELINE} onPathAction={pathAction} onUnstage={(path) => pathAction("unstage", path)} />
+      : shownDiff && <pre className="diff-view">{shownDiff}</pre>}
+    {turnDiff?.truncated && !selected && <Reason text="This turn's diff is shortened here. Pick a file to read it in full." />}
   </>;
 }
 
@@ -236,6 +246,7 @@ const AREA_MARK: Partial<Record<GitChangeArea, string>> = { staged: "M ", unstag
 const PUBLISH_RECHECK_MS = 15_000;
 const MOST_DIFF_FILES = 40;
 const MOST_DIFF_CHARS = 256 * 1024;
+const NO_CREW: readonly { id: string; label?: string; enabled?: boolean }[] = [];
 const NO_LINKS = {};
 const NO_MANAGED_LINKS: OwnershipLinks = {};
 const NOT_HERE_YET = (what: string, name: string) => `${what} on ${name} isn't available from here yet.`;
@@ -323,6 +334,7 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
     onChanged: reloadGitHub,
   }), [blocked, github, label, linkedNumber, linkedRepository, onAttach, pullRequests, reloadGitHub, target.threadId, updateLocal]);
   const signInHere = () => setOutput(`GitHub sign-in stays on ${name}. Connect it there in Settings → GitHub.`);
+  const connectHere = () => setOutput(`Connecting this project to GitHub happens on ${name}. There, open this project, then Git → Connect a GitHub repository.`);
   /** The host's latest suggestion. It changes when a turn on that machine writes a new one. */
   const threadScoped = Boolean(target.threadId);
   const { data: suggested, reload: reloadSuggestion } = useHostData(threadScoped ? () => hostRead<WireResourceResult>(device, "git.suggestion.read", { ...target }) : null, panelKey(device, "git.suggestion", target));
@@ -360,14 +372,10 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
     const timer = setInterval(reloadPublishing, PUBLISH_RECHECK_MS);
     return () => clearInterval(timer);
   }, [publishState?.enabled, reloadPublishing]);
-  const publishWrite = useCallback((op: "git.autoPublish.set" | "git.autoPublish.retry", extra: Record<string, unknown> = {}) => {
-    if (!allowed) { setOutput(reason); return; }
-    void hostWrite(device, name, op, { ...target, revision: revisionRef.current, ...extra }).then((outcome) => { if (!outcome.ok) setOutput(outcome.message); reloadPublishing(); });
-  }, [allowed, device, name, reason, reloadPublishing, target]);
   const repositoryName = github?.repository;
+  // Status only. Turning publishing on can push code, so that stays on the machine itself.
   const autoPublish = useMemo<GitWorkflowControls["autoPublish"]>(() => publishState && (repositoryName || publishState.repository) ? { enabled: publishState.enabled, status: publishState.status, message: publishState.message,
-    repository: publishState.repository ?? repositoryName ?? undefined, onToggle: (enabled) => publishWrite("git.autoPublish.set", { enabled }), onRetry: () => publishWrite("git.autoPublish.retry") } : undefined,
-  [publishState, publishWrite, repositoryName]);
+    repository: publishState.repository ?? repositoryName ?? undefined, hostOnly: `Change this on ${name}.` } : undefined, [name, publishState, repositoryName]);
   const workflow = useMemo<GitWorkflowControls | undefined>(() => snapshot ? { snapshot, busy, isolated: github?.isolated === true, onBranch: switchBranch, onRefresh: reloadCheckout, ...(output ? { notice: output } : {}), ...(autoPublish ? { autoPublish } : {}) } : undefined,
     [autoPublish, busy, github?.isolated, output, reloadCheckout, snapshot, switchBranch]);
   /** The same answers as local `git status` and `git diff`, built from what the host reads. */
@@ -424,7 +432,7 @@ function HostGit({ device, name, target, revision, allowed, canWork, threadBusy,
       readOnly={!allowed} readOnlyReason={reason} gitOperationBusy={busy} defaultRepositoryName="" inspection={inspection} workflow={workflow} draft={currentDraft} onDraftChange={onDraft}
       commitSuggestion={commitSuggestion} commitSuggestionBusy={threadBusy} readCommitContext={readCommitContext} onRegenerateCommitMessage={target.threadId && canWork ? regenerate : undefined} view={view} onViewChange={onView} focusRequest={route}
       onOpenTool={onTab} onPathAction={pathAction} onAction={panelAction}
-      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} onGitHubAttach={signInHere} onGitHubCreate={signInHere} onOpenGitHubSettings={signInHere} />
+      onInitializeGit={() => { void write("init").then((done) => { if (done) reloadRepository(); }); }} onGitHubAttach={connectHere} onGitHubCreate={connectHere} onOpenGitHubSettings={signInHere} />
   </>;
 }
 
@@ -513,30 +521,32 @@ function HostWorktrees({ device, name, target, revision, allowed, onReview, onFi
   </>;
 }
 
-function HostAgents({ device, name, target, revision, onClose }: { device: string; name: string; target: StudioTarget; revision: string; onClose: () => void }) {
+function HostAgents({ device, name, target, revision, running, crew, onClose }: { device: string; name: string; target: StudioTarget; revision: string; running: boolean; crew: readonly { id: string; label?: string; enabled?: boolean }[]; onClose: () => void }) {
   const threadScoped = Boolean(target.threadId);
-  const { data, failed, reload } = useHostData(threadScoped ? () => hostRead<WireResourceResult>(device, "agents.read", { ...target }) : null, panelKey(device, "agents.read", target));
+  const { rows, act } = useRemoteWorkers(device, name, target, revision, running);
   const { data: mail, reload: reloadMail } = useHostData(threadScoped ? () => hostRead<WireResourceResult>(device, "mail.read", { ...target }) : null, panelKey(device, "mail.read", target));
   const [notice, setNotice] = useState("");
-  const workers = useMemo(() => data?.workers ?? [], [data?.workers]);
-  const agents = useMemo<AgentRecord[]>(() => workers.map((worker) => ({ id: worker.id, prompt: worker.title, status: worker.status, ...(worker.provider ? { provider: worker.provider as Provider } : {}), ...(worker.model ? { model: worker.model } : {}),
-    runtime: worker.kind === "native" ? "claude" : "codex", task: worker.task, progress: worker.progress, result: worker.result, canOpen: worker.canOpen, canStop: worker.canStop, canAccept: worker.canAccept })), [workers]);
-  const act = (op: "agents.stop" | "agents.accept", id: string) => {
-    const worker = workers.find((entry) => entry.id === id);
-    if (!worker) return;
-    void hostWrite(device, name, op, { ...target, revision, agentId: id, target: worker.target }).then((outcome) => { setNotice(outcome.message); reload(); reloadMail(); });
-  };
+  const agents = useMemo<AgentRecord[]>(() => rows.map((worker) => ({ id: worker.id, prompt: worker.title, status: worker.status, ...(worker.provider ? { provider: worker.provider as Provider } : {}), ...(worker.model ? { model: worker.model } : {}),
+    runtime: worker.kind === "native" ? workerRuntime(worker) : "codex", task: worker.task, progress: worker.progress, result: worker.result, canOpen: worker.canOpen, canStop: worker.canStop, canAccept: worker.canAccept })), [rows]);
+  const run = (op: "agents.stop" | "agents.accept" | "agents.replace", id: string, extra?: Record<string, unknown>) => { void act(op, id, extra).then((message) => { setNotice(message); reloadMail(); }); };
+  const replacements = crew.filter((entry) => entry.enabled !== false);
   const detail = (id: string) => {
     const messages = mail?.mailboxes?.find((entry) => entry.agentId === id)?.messages;
-    return messages?.length ? <details><summary>Messages</summary>{messages.map((message) => <div key={message.id}>
-      <small>{message.direction === "toParent" ? `From this agent · ${message.kind}` : "To this agent"}</small>
-      <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.text}</p>
-    </div>)}</details> : null;
+    const worker = rows.find((entry) => entry.id === id);
+    return <>
+      {messages?.length ? <details><summary>Messages</summary>{messages.map((message) => <div key={message.id}>
+        <small>{message.direction === "toParent" ? `From this agent · ${message.kind}` : "To this agent"}</small>
+        <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{message.text}</p>
+      </div>)}</details> : null}
+      {worker?.canStop && replacements.length > 0 && <details><summary>Replace on another model</summary>{replacements.map((entry) => <button key={entry.id} type="button" className="secondary-button" onClick={() => {
+        void confirmDialog(`Stop “${worker.title}” on ${name} and restart its task with ${entry.label || entry.id}?`).then((confirmed) => { if (confirmed) run("agents.replace", id, { targetId: entry.id }); });
+      }}>{entry.label || entry.id}</button>)}</details>}
+    </>;
   };
   return <>
-    <Reason text={failed ? `Mythra Code couldn't read agent details on ${name}. Try again.` : notice} />
+    <Reason text={notice} />
     <AgentsPanel agents={agents} onClose={onClose} onOpenAgent={(id) => selectRemoteThread(device, id)} agentDetail={detail}
-      onStopAgent={(id) => act("agents.stop", id)} onAcceptAgent={(id) => act("agents.accept", id)} />
+      onStopAgent={(id) => run("agents.stop", id)} onAcceptAgent={(id) => run("agents.accept", id)} />
   </>;
 }
 
@@ -623,8 +633,12 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
   onClose: () => void;
   onFork: () => void;
 }) {
-  const workspaceId = useRemoteStore((state) => state.devices[device]?.workspaceId ?? null);
-  const threadId = useRemoteStore((state) => state.devices[device]?.threadId ?? undefined);
+  // A new draft owns the panels too, as it does locally, not the thread it was opened from.
+  const compose = useRemoteOutbox((state) => state.compose[device]);
+  const selectedWorkspaceId = useRemoteStore((state) => state.devices[device]?.workspaceId ?? null);
+  const selectedThreadId = useRemoteStore((state) => state.devices[device]?.threadId ?? undefined);
+  const workspaceId = compose?.workspaceId ?? selectedWorkspaceId;
+  const threadId = compose ? undefined : selectedThreadId;
   const workspaceName = useRemoteStore((state) => state.devices[device]?.workspaces.find((entry) => entry.id === workspaceId)?.name);
   const threadProvider = useRemoteStore((state) => state.devices[device]?.lists.get(workspaceId ?? "")?.threads.find((entry) => entry.id === threadId)?.provider);
   const threadTitle = useRemoteStore((state) => { const entry = state.devices[device]?.lists.get(workspaceId ?? "")?.threads.find((row) => row.id === threadId); return entry?.title || entry?.preview; });
@@ -654,7 +668,7 @@ export function RemoteStudio({ device, open, rootRef, onResizeStart, onResizeKey
     {target && tab === "git" && <HostGit key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.gitWrite && capabilities.terminal)} canWork={Boolean(capabilities)} threadBusy={threadBusy} draft={gitDrafts[targetKey]} onDraft={saveGitDraft} view={gitView} route={gitRoute} onView={setGitView} onTab={onTab} onClose={onClose} />}
     {target && tab === "checkpoints" && <HostCheckpoints key={targetKey} device={device} name={name} target={target} revision={revision} threadOpen={Boolean(threadId)} allowed={Boolean(capabilities?.checkpointRestore && capabilities.terminal)} onFork={onFork} onClose={onClose} />}
     {target && tab === "worktrees" && <HostWorktrees key={targetKey} device={device} name={name} target={target} revision={revision} allowed={Boolean(capabilities?.terminal)} onReview={() => onTab("review")} onFiles={() => onTab("files")} onClose={onClose} />}
-    {target && tab === "agents" && <HostAgents key={targetKey} device={device} name={name} target={target} revision={revision} onClose={onClose} />}
+    {target && tab === "agents" && <HostAgents key={targetKey} device={device} name={name} target={target} revision={revision} running={threadBusy} crew={context?.execution?.subagents?.crew ?? NO_CREW} onClose={onClose} />}
     {tab === "usage" && <HostUsage device={device} target={target} context={context} name={name} provider={threadProvider} title={threadTitle} busy={threadBusy} onClose={onClose} />}
     {tab === "tools" && <HostTools device={device} name={name} target={target} context={context} onOpenThread={(id) => selectRemoteThread(device, id)} onTab={onTab} onClose={onClose} />}
   </StudioDockFrame>;

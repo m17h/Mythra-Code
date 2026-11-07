@@ -44,6 +44,8 @@ export interface RemoteTurnRunner {
   queuePromptTo(context: TurnRunnerContext, text: string, delivery: RemoteQueuedDelivery): Promise<RemoteWorkResult>;
   stopThreadTurn(context: TurnRunnerContext, expected: RemoteStopSnapshot): Promise<void>;
   getThreadStopTarget(threadId: string): RemoteStopSnapshot;
+  /** Join only native owner admission, not the start/skills/provider response. */
+  waitForThreadStopTarget?(threadId: string): Promise<void>;
   pumpRemoteQueue(threadId: string): void;
 }
 export interface RemoteWorkAdapter {

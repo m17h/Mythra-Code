@@ -22,7 +22,6 @@ const writes: Record<string, readonly string[]> = {
   "workflows.start": ["workflowId", "variables", "userPrompt"], "workflows.stop": ["workflowId", "runId"],
   "checkpoint.accept": ["checkpointId"], "agents.stop": ["agentId", "target"], "agents.accept": ["agentId", "target"], "agents.replace": ["agentId", "target", "targetId"],
   "actions.run": ["actionId"], "review.start": [], "git.suggestCommit": [],
-  "git.autoPublish.set": ["enabled"], "git.autoPublish.retry": [],
   "projects.settings.set": ["name", "provider", "model", "effort"], "projects.instructions.set": ["prompt", "mode"],
   "projects.profiles.save": ["profileId", "name", "prompt", "mode"], "projects.profiles.delete": ["profileId"], "projects.profiles.select": ["profileId"],
   "projects.run.set": ["command", "setupCommand", "label"], "projects.check.set": ["command"],
@@ -58,7 +57,6 @@ export function assertParityAuthority(op: string, grant: DeviceGrant): void {
   const shell = (op.startsWith("run.") || op.startsWith("checks.")) && !isParityRead(op)
     || (op.startsWith("discovery.") || op === "actions.run") && !isParityRead(op) || op === "projects.run.set" || op === "projects.check.set";
   if (shell && !grant.capabilities.terminal) throw new HostReadError("forbidden", "This action requires Terminal access.");
-  if (op.startsWith("git.autoPublish.") && !isParityRead(op) && !(grant.capabilities.gitWrite && grant.capabilities.terminal)) throw new HostReadError("forbidden", "This action requires Git changes and Terminal access.");
 }
 function string(value: unknown, maximum: number): string {
   if (typeof value !== "string" || new TextEncoder().encode(value).byteLength > maximum) throw invalid();
@@ -114,7 +112,6 @@ export function validateParityArgs(op: string, args: Record<string, unknown>): v
   if (op === "workflows.stop") idArg(args.runId);
   if (op.startsWith("agents.")) { idArg(args.agentId); idArg(args.target); }
   if (op === "agents.replace") idArg(args.targetId);
-  if (op === "git.autoPublish.set" && typeof args.enabled !== "boolean") throw invalid();
   if (op === "actions.run") idArg(args.actionId);
   if (op === "projects.instructions.set" && (typeof args.prompt !== "string" || args.mode === undefined)) throw invalid();
 }

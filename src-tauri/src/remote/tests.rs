@@ -341,6 +341,8 @@ async fn pairing_checks_commit_before_code_and_caps_failed_attempts() {
     }
     assert_eq!(snapshot(&host.inner)["pairing"]["nearbyStopped"], true);
     let link = viewer.connect(&host, Role::Viewer).await;
+    let inbound = host.inner.lock().links.values().next().cloned();
+    let began = Instant::now();
     let error = link
         .request(
             "pair.request",
@@ -349,7 +351,10 @@ async fn pairing_checks_commit_before_code_and_caps_failed_attempts() {
         )
         .await
         .unwrap_err();
-    assert_eq!(error.code, "pairing_closed");
+    assert_eq!(error.code, "pairing_closed",
+        "elapsed={:?} message={} viewer_closed={:?} viewer={:?} host_closed={:?} host={:?}",
+        began.elapsed(), error.message, link.close_reason(), link.test_trace(),
+        inbound.as_ref().and_then(|link|link.close_reason()), inbound.map(|link|link.test_trace()));
     assert!(host.inner.lock().devices.is_empty());
 }
 #[tokio::test]

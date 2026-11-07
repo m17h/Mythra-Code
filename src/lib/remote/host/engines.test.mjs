@@ -116,7 +116,7 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
     function Fixture() {
       engine = useWorkflowEngine({ workflows: [workflow], projects: [project], runtimeAvailable: true, chatGptConnected: true, claudeReady: true, cursorReady: true, openRouterReady: true, lmStudioReady: true,
         customAgents: [], ensureSkillRoots: async () => {}, resolveSkillPrompt: async (text) => text, bindThreadToProject() {},
-        beginRunCheckpoint: async () => undefined, finalizeRunCheckpoint: async () => {}, discardRunCheckpoint() {}, updateWorkflow() {},
+        beginRunCheckpoint: async () => { assert.fail("a remote workflow step ran an unstamped local checkpoint"); }, finalizeRunCheckpoint: async () => {}, discardRunCheckpoint() {}, updateWorkflow() {},
         recordRun: (run) => runs.push(run), onThreadStarted() {}, onError: (error) => errors.push(error) });
       return React.createElement("span");
     }
@@ -127,6 +127,7 @@ for (const provider of ["openai", "openrouter", "lmstudio", "claude", "cursor"])
       assert.ok(threadId, errors.join("\n"));
       assert.deepEqual(errors, []);
       assert.equal(runs.at(-1).status, "completed");
+      assert.equal(useTaskStore.getState().tasks[threadId].activities.some((activity) => activity.title === "Automatic checkpoint not created"), true);
       const prompt = calls.find((call) => call.command === "claude_turn_start" || call.command === "cursor_turn_start" || call.command === "codex_rpc" && call.args.method === "turn/start");
       const params = prompt.args.options ?? prompt.args.params;
       assert.equal(params.remoteDelivery.ownerHandle, `owner-${provider}`);
@@ -300,11 +301,11 @@ test("real local command-only workflow exposes its owner before the first comman
   const run = { ...DEFAULT_SETTINGS, provider: "openai", model: "model", permission: "ask", subagentsEnabled: false };
   const workflow = { id: "local-command-recipe", name: "Local fixture", projectId: project.id, enabled: false, trigger: { type: "manual" }, skillNames: [], variables: [], run,
     steps: [{ id: "command", name: "Command", type: "command", command: "echo local", continueOnError: false }], createdAt: 1, updatedAt: 1 };
-  let engine;
+  let engine, localCheckpoints = 0;
   function Fixture() {
     engine = useWorkflowEngine({ workflows: [workflow], projects: [project], trackNativeOwners: true, runtimeAvailable: true, chatGptConnected: true,
       customAgents: [], ensureSkillRoots: async () => {}, resolveSkillPrompt: async (text) => text, bindThreadToProject() {},
-      beginRunCheckpoint: async () => undefined, finalizeRunCheckpoint: async () => {}, discardRunCheckpoint() {}, updateWorkflow() {},
+      beginRunCheckpoint: async () => { localCheckpoints += 1; return undefined; }, finalizeRunCheckpoint: async () => {}, discardRunCheckpoint() {}, updateWorkflow() {},
       recordRun() {}, onThreadStarted() {}, onError: (reason) => errors.push(reason) });
     return React.createElement("span");
   }
@@ -316,6 +317,7 @@ test("real local command-only workflow exposes its owner before the first comman
     const runId = useTaskStore.getState().workflowOwners["local-command-thread"].runId;
     assert.equal(remoteEngineOwner("local-command-thread", undefined, runId)?.ownerHandle, "local-command-owner");
     assert.equal(calls.find((call) => call.command === "codex_rpc" && call.args.method === "command/exec").args.params.localOwnerHandle, "local-command-owner");
+    assert.equal(localCheckpoints, 1);
     actions = createHostEngineAdapters({ getWorkflowEngine: () => engine }, { revision: () => "r" }, () => {});
     const stopped = await actions.adapter.execute("workflows.stop", { workflowId: workflow.id, runId }, {
       generation: 42, grantRevision: 1, identity: { device, opId: "remote-stop-local-command", opSeq: 8 },

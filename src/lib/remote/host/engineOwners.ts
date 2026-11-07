@@ -11,7 +11,20 @@ export interface RemoteEngineOwner {
 interface Lifetime { owner: RemoteEngineOwner; retiring?: boolean; finishing?: Promise<boolean>; timer?: ReturnType<typeof setTimeout>; wake?: () => void }
 const owners = new Map<string, Lifetime>();
 const threads = new Map<string, string>();
+/** Threads another device last gave work to. Outlives the owner on purpose: a child
+ * can start after that turn ended or the lease changed, and it's still that device's
+ * work. Only a local send clears it. Being wrong here only skips an optional checkpoint. */
+const remoteWorkThreads = new Set<string>();
+const REMOTE_WORK_LIMIT = 4_096;
+export function noteRemoteWork(threadId: string): void {
+  remoteWorkThreads.delete(threadId);
+  remoteWorkThreads.add(threadId);
+  if (remoteWorkThreads.size > REMOTE_WORK_LIMIT) remoteWorkThreads.delete(remoteWorkThreads.values().next().value!);
+}
+export function noteLocalWork(threadId: string): void { remoteWorkThreads.delete(threadId); }
+export function hasRemoteWork(threadId: string): boolean { return remoteWorkThreads.has(threadId); }
 export function rememberRemoteEngineOwner(owner: RemoteEngineOwner): void {
+  if (!owner.local && !owner.threadId.startsWith("command:") && !owner.threadId.startsWith("preparing:")) noteRemoteWork(owner.threadId);
   const previous = threads.get(owner.threadId);
   if (previous && previous !== owner.ownerHandle) void finishRemoteEngineOwner(previous);
   owners.set(owner.ownerHandle, owners.get(owner.ownerHandle) ?? { owner });
@@ -22,6 +35,13 @@ export function remoteEngineOwner(threadId: string, parentRunId?: string, workfl
   const owner = owners.get(threads.get(threadId) ?? "")?.owner;
   return owner && (owner.kind === "parent" ? (owner.parentRunId ?? owner.runId) === parentRunId
     : owner.kind === "workflow" && owner.runId === workflowRunId) ? owner : undefined;
+}
+/** Start owners have no parent/workflow ID yet, but are still exact Stop
+ * targets during preparation. Never infer one from a restored receipt. */
+export function remoteThreadOwner(threadId: string): RemoteEngineOwner | undefined { return owners.get(threads.get(threadId) ?? "")?.owner; }
+export function remoteStartOwner(threadId: string): RemoteEngineOwner | undefined {
+  const owner = owners.get(threads.get(threadId) ?? "")?.owner;
+  return owner?.kind === "start" ? owner : undefined;
 }
 function forget(handle: string): void {
   const entry = owners.get(handle); if (!entry) return;

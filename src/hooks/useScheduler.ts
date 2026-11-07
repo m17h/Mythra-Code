@@ -1,3 +1,4 @@
+import { checkpointUnlessRemote } from "../lib/remote/host/remoteCheckpoint";
 import { useCallback, useEffect, useRef } from "react";
 import { auditEvent, rpc, runtimeInstanceId, runtimeThreadState } from "../lib/codex";
 import { useTaskStore } from "../lib/taskStore";
@@ -372,7 +373,7 @@ export function useScheduler(deps: SchedulerDeps): void {
       // router finalizes it on turn completion like any user turn.
       try {
         assertCurrent();
-        if (!initializeNewThreadGit) ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model);
+        if (!initializeNewThreadGit) ownedCheckpointId = await checkpointUnlessRemote([started.thread.id], project.isChat ? null : started.thread.id, () => current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model));
         assertCurrent();
         assertIdle(started.thread.id, true);
         const model = started.model;
@@ -395,7 +396,7 @@ export function useScheduler(deps: SchedulerDeps): void {
           await current.prepareNewThreadGit?.(started.thread.id, project, true);
           assertCurrent();
           assertIdle(started.thread.id, true);
-          ownedCheckpointId = await current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model);
+          ownedCheckpointId = await checkpointUnlessRemote([started.thread.id], project.isChat ? null : started.thread.id, () => current.beginRunCheckpoint(started.thread.id, executionPath, scheduled.prompt, run.provider, run.model));
         }
         assertCurrent();
         assertIdle(started.thread.id, true);

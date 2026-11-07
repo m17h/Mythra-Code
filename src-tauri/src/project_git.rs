@@ -1448,7 +1448,7 @@ pub(super) async fn worktree_create(
 }
 
 pub(crate) fn worktree_create_sync(app:&AppHandle,project_path:&str,label:&str)->Result<CreatedWorktree,String>{let data=crate::release_qa::app_data_dir(app).map_err(|error|error.to_string())?;worktree_create_sync_with_data(&data,project_path,label)}
-fn worktree_create_sync_with_data(app_data:&Path,project_path:&str,label:&str)->Result<CreatedWorktree,String>{
+pub(crate) fn worktree_create_sync_with_data(app_data:&Path,project_path:&str,label:&str)->Result<CreatedWorktree,String>{
         let source = checkpoint_repo(&project_path)?;
         let base_commit =
             git_stdout(&source, &["rev-parse", "--verify", "HEAD"], None).map_err(|_| {

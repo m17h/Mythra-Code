@@ -97,16 +97,6 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       // The old App callbacks issue untagged provider stops/blind state saves.
       // A journal admission is not a commit-time grant or ownership fence.
       if (op === "checkpoint.accept") return acceptCheckpoint(args, operation);
-      if (op === "git.autoPublish.set" || op === "git.autoPublish.retry") {
-        const workspace = operation.context.activeWorkspace;
-        if (!workspace || workspace.isChat) throw new HostReadError("unsupported", "Open a project first.");
-        if (operation.context.effectiveSettings.permission === "read-only") throw new HostReadError("forbidden", "Switch this thread to Ask or Full access before changing automatic publishing.");
-        if (!sources.setAutoPublish || !sources.retryAutoPublish) throw new HostReadError("unsupported", "Automatic publishing isn't available on this device yet.");
-        operation.assertAllowed();
-        if (op === "git.autoPublish.retry") sources.retryAutoPublish(workspace.id);
-        else await sources.setAutoPublish(workspace.id, workspace.path, args.enabled === true);
-        return { state: "accepted" };
-      }
       if (op === "agents.accept") {
         const resources = getResources?.(); if (!resources) throw new HostReadError("unsupported", "The shared sub-agent details are not attached.");
         return acceptHostAgent(args, operation, sources, resources);

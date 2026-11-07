@@ -9,13 +9,15 @@ export type WireTaskStatus = "idle" | "starting" | "running" | "completed" | "in
 export type WireTurnStatus = "inProgress" | "completed" | "interrupted" | "failed";
 export type WireAvailability = "ready" | "recovering";
 
-export interface WireWorkspace { id: string; name: string; isChat: boolean; pinned?: boolean }
+export interface WireWorkspace { id: string; name: string; isChat: boolean; pinned?: boolean; scheduled?: { newConversations: number; threadPrompts: number } }
 export interface WireThread {
   id: string; workspaceId: string; provider: WireProvider; title: string;
   preview: string; updatedAt: number; status: WireTaskStatus;
   archived?: boolean; child?: boolean; parentThreadId?: string; pinned?: boolean; unread?: boolean;
   /** Stopped until someone answers an approval or question. */
   waiting?: boolean;
+  /** Prompts timed for later in this thread. */
+  scheduled?: number;
 }
 export interface WireQuestion {
   id: string; title: string; secret: boolean; options: string[];
@@ -237,7 +239,7 @@ export type ParityMutationOperation = "queue.edit.begin" | "queue.edit.finish" |
   | "projects.settings.set" | "projects.instructions.set" | "projects.profiles.save" | "projects.profiles.delete" | "projects.profiles.select"
   | "projects.run.set" | "projects.check.set" | "run.start" | "run.stop" | "checks.start" | "checks.stop"
   | "discovery.run.start" | "discovery.run.stop" | "discovery.check.start" | "discovery.check.stop" | "discovery.settings.set"
-  | "checkpoint.accept" | "agents.stop" | "agents.accept" | "agents.replace" | "actions.run" | "review.start" | "git.suggestCommit" | "git.autoPublish.set" | "git.autoPublish.retry";
+  | "checkpoint.accept" | "agents.stop" | "agents.accept" | "agents.replace" | "actions.run" | "review.start" | "git.suggestCommit";
 export type HostParityOperation = ParityReadOperation | ParityMutationOperation;
 /** Host-generated resource revision; never a timestamp supplied as authority. */
 export interface ParityTarget { workspaceId: string; threadId?: string }

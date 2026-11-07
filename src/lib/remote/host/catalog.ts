@@ -114,6 +114,7 @@ export class HostCatalog {
       pinned: this.sources.getPinnedThreadIds?.().has(thread.id) === true,
       unread: useTaskStore.getState().tasks[thread.id]?.unread === true,
       waiting: (useTaskStore.getState().tasks[thread.id]?.approvals.length ?? 0) > 0,
+      scheduled: this.sources.getScheduledCounts?.().threads[thread.id] ?? 0,
     };
   }
 }

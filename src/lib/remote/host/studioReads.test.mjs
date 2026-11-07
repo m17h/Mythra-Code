@@ -52,7 +52,7 @@ function harness({ grantFor = () => grant, execution = (_id, path) => path, nati
     await bridge.command("noop").catch(() => undefined);
     return sent[n];
   };
-  return { call, calls };
+  return { call, calls, sources };
 }
 const wire = (reply) => JSON.stringify(reply);
 
@@ -262,4 +262,16 @@ test("a started thread shows the crew it captured, including one waiting for the
   const context = hostContext(sources, { device: DEVICE, grant }, { workspaceId: "p", threadId: "t" });
   assert.deepEqual(context.execution.subagents.crew.map((entry) => entry.id), ["reviewer"]);
   assert.equal(context.execution.subagents.maxConcurrent, 3);
+});
+
+test("uppercase Windows workspace badges use the schedule producer's exact path key", async () => {
+  const { countScheduledPrompts } = await import("../../scheduledPromptCounts.ts");
+  const { call, sources } = harness();
+  const path = "C:\\Users\\Morgan\\Project\\";
+  const counts = countScheduledPrompts([], { [path]: [{ id: "new", status: "scheduled" }] }, { bindings: {}, knownThreads: {}, worktrees: {}, tasks: {} });
+  sources.getWorkspaces = () => [{ ...project, path }];
+  sources.getScheduledCounts = () => counts;
+  const { result } = await call("workspaces.list", {});
+  assert.deepEqual(result.workspaces[0].scheduled, { newConversations: 1, threadPrompts: 0 });
+  assert.equal(Object.keys(counts.workspaces)[0], "C:/Users/Morgan/Project");
 });

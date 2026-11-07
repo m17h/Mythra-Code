@@ -611,6 +611,7 @@ pub(crate) struct NativePermit {
     target: Option<String>,
     step: String,
     begun: bool,
+    prepared_root: std::sync::OnceLock<String>,
 }
 impl NativePermit {
     pub(crate) fn begin<T>(
@@ -645,6 +646,7 @@ impl NativePermit {
             return Err(refused("forbidden"));
         }
         super::owners::check(&core,&self.meta)?;
+        super::prompt_preparation::check_native_root(&core,&self.meta,&self.step,self.receipt.get("threadId").and_then(Value::as_str),self.prepared_root.get().map(String::as_str))?;
         if core.work.cancelled.contains(&(self.meta.device.clone(),self.meta.op_id.clone())){return Err(refused("stale_target"));}
         if core.work.tickets.get(&self.ticket) != Some(&false) {
             return Err(refused("stale_target"));
@@ -847,6 +849,7 @@ pub(super) async fn prepare_native_inner(
         target,
         step: step.to_owned(),
         begun: false,
+        prepared_root: std::sync::OnceLock::new(),
     })
 }
 impl Drop for NativePermit {
@@ -883,6 +886,7 @@ impl NativePermit {
     ) -> Result<T, String> {
         let core = self.inner.lock();
         super::owners::check(&core,&self.meta)?;
+        super::prompt_preparation::check_native_root(&core,&self.meta,&self.step,self.receipt.get("threadId").and_then(Value::as_str),self.prepared_root.get().map(String::as_str))?;
         let grant = authorize(
             &core,
             &self.meta,
@@ -1262,4 +1266,13 @@ mod round11_wire_tests{
  fn skill_invocation_text_is_authored_text_not_a_provider_override(){
   for op in ["prompt.send","prompt.queue","prompt.steer"]{let mut args=json!({"opId":"op","opSeq":1,"text":"hello","skillInvocationText":""});if op=="prompt.send"{args["workspaceId"]=json!("p");}else{args["threadId"]=json!("t");}if op=="prompt.steer"{args["target"]=json!("opaque");}assert!(validate_args(op,&args).is_ok(),"{op}");args["skillInvocationText"]=json!(42);assert!(validate_args(op,&args).is_err());args["skillInvocationText"]=json!("hello");args["modelOverride"]=json!("not-permitted");assert!(validate_args(op,&args).is_err());}
  }
+}
+
+impl NativePermit {
+    pub(crate) fn verify_preparation_root(&self,cwd:&str)->Result<(),String>{
+        if let Some(identity)=super::prompt_preparation::verify_native_root(&self.inner.lock(),&self.meta,cwd)?{
+            if self.prepared_root.get().is_some_and(|old|old!=&identity){return Err(refused("stale_target"));}
+            let _=self.prepared_root.set(identity);
+        }Ok(())
+    }
 }

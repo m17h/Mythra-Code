@@ -3975,6 +3975,7 @@ export default function App() {
         const result = await rpc<{ diff: string }>("gitDiffToRemote", { cwd: projectPath });
         useTaskStore.getState().setDiff(threadId, {
           text: result.diff ?? "",
+          successfulText: result.diff ?? "",
           source: "runtime",
           baseline: "the tracked remote branch",
           untrackedPaths: [],
@@ -4011,6 +4012,7 @@ export default function App() {
           : [];
         useTaskStore.getState().setDiff(threadId, {
           text: `${tracked.stdout}${tracked.stderr}`,
+          ...(tracked.exitCode === 0 ? { successfulText: tracked.stdout } : {}),
           source: "repository",
           baseline,
           untrackedPaths: untrackedPaths.slice(0, MAX_LISTED_UNTRACKED_PATHS),
@@ -9064,8 +9066,21 @@ export default function App() {
     parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels, terminal, checks,
     automaticTitles, localTranscriptSaves, invalidateChildAgentGuidance, retryChildAgentGuidance, hasChildStartInFlight,
     newThread, loadThreads, activeWorkspace, childAgentPolicies, projectDefaultProvider, threadModels, effectiveSettings,
-    projectActions, workflowRuns, threadHandoffs, mcpServers, beginRemoteAcceptance, stopRemoteWorker,
+    projectActions, workflowRuns, threadHandoffs, mcpServers, beginRemoteAcceptance, stopRemoteWorker, scheduledPromptCounts,
   };
+  // How many providers a paired device could use here, for the host's own diagnostics.
+  // Told when a lease attaches and when the count moves. It never polls.
+  const hostLeaseGeneration = useRef<number | null>(null);
+  const hostReadyProviders = [childAgentReadiness.codexRuntimeAvailable && childAgentReadiness.openAiSignedIn, childAgentReadiness.openRouterReady,
+    childAgentReadiness.lmStudioReady, childAgentReadiness.claudeReady, childAgentReadiness.cursorReady].filter(Boolean).length;
+  const hostReadyRef = useRef(hostReadyProviders);
+  hostReadyRef.current = hostReadyProviders;
+  const reportHostReadiness = useCallback(() => {
+    const generation = hostLeaseGeneration.current;
+    if (generation === null) return;
+    void invoke("remote_host_provider_status", { generation, readyProviders: hostReadyRef.current, totalProviders: 5 }).catch(() => undefined);
+  }, []);
+  useEffect(() => { reportHostReadiness(); }, [hostReadyProviders, reportHostReadiness]);
   const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined,
     runWorkflow: undefined as RemoteWorkflowEngine["runWorkflow"] | undefined });
   Object.assign(remoteHostLive.current, remoteHostValues);
@@ -9154,11 +9169,7 @@ export default function App() {
         return { enabled: Boolean(config?.enabled), status: config?.status ?? "idle", message: config?.message ?? "Automatic publishing is off.",
           ...(config?.binding.repository ? { repository: config.binding.repository } : {}) };
       },
-      setAutoPublish: async (workspaceId, path, enabled) => {
-        if (enabled) await live.current.autoPublish.enable(workspaceId, path);
-        else live.current.autoPublish.disable(workspaceId);
-      },
-      retryAutoPublish: (workspaceId) => live.current.autoPublish.retry(workspaceId),
+      getScheduledCounts: () => live.current.scheduledPromptCounts,
       getProjectActions: () => live.current.projectActions,
       getHostWorkflows: () => live.current.workflows,
       getHostWorkflowRuns: () => live.current.workflowRuns,
@@ -9398,7 +9409,7 @@ export default function App() {
       if (disposed) return;
       rows.threadLifecycle = createThreadRowLifecycle(lifecycleSources);
       sources.canArchiveThreads = () => Boolean(rows.threadLifecycle);
-      sources.createWork = (lease) => createRemoteWork({
+      sources.createWork = (lease) => { hostLeaseGeneration.current = lease.generation; reportHostReadiness(); return createRemoteWork({
         ...lease, sources, stop, rows, parity,
         getRunner: () => {
           const runner = turnRunnerRef.current;
@@ -9406,7 +9417,7 @@ export default function App() {
           return runner;
         },
         subscribeAuthority: (changed) => useRemoteDevices.subscribe(changed),
-      });
+      }); };
       const host = createRemoteHost(sources);
       remoteHostRef.current = host;
       dispose = () => { if (remoteHostRef.current === host) remoteHostRef.current = null; host.dispose(); };

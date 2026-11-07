@@ -177,10 +177,20 @@ pub(crate) fn init(connection: &Connection) -> rusqlite::Result<()> {
            paired_at INTEGER NOT NULL,
            last_seen_at INTEGER
          );
+         CREATE TABLE IF NOT EXISTS remote_viewer_pairing_saves (
+           fingerprint TEXT PRIMARY KEY,
+           token TEXT NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS remote_grants (
            fingerprint TEXT PRIMARY KEY,
            grant_json TEXT NOT NULL,
            updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS remote_prompt_preparations (
+           device TEXT NOT NULL, op_id TEXT NOT NULL, op_seq INTEGER NOT NULL,
+           kind TEXT NOT NULL, preparation_id TEXT NOT NULL, state TEXT NOT NULL,
+           payload_json TEXT NOT NULL, source_root TEXT NOT NULL, execution_root TEXT NOT NULL,
+           thread_id TEXT, PRIMARY KEY(device,op_id,op_seq,kind)
          );
          CREATE TABLE IF NOT EXISTS remote_op_journal (
            device_fingerprint TEXT NOT NULL,
@@ -335,6 +345,45 @@ pub(crate) fn load_devices(
 /// Writes one device and its grant atomically. No grant means no row, so a
 /// revocation cannot leave a stale grant behind.
 pub(crate) fn save_device(connection: &mut Connection, device: &DeviceRecord) -> Result<(), String> {
+    save_device_direction(connection,device,0,None)
+}
+/// Pairing proves exactly ONE direction. A snapshot of the opposite relationship
+/// may already be stale while its independent approval waits for the SQL writer.
+pub(super) fn save_pairing_host(connection:&mut Connection,device:&DeviceRecord)->Result<(),String>{
+    if device.grant.is_none(){return Err("The device access could not be saved.".into());}
+    save_device_direction(connection,device,1,None)
+}
+/// A canceled viewer save may undo only its own viewer flags, never a host grant
+/// or a later viewer save. The token is persisted atomically with those flags.
+#[derive(Clone)]
+pub(super) struct ViewerPairingUndo {
+    pub(super) fingerprint: String,
+    pub(super) sequence: u64,
+    token: String,
+    they_host: bool,
+    access_removed: bool,
+}
+impl ViewerPairingUndo {
+    pub(super) fn new(fingerprint: &str, sequence: u64, previous: Option<&DeviceRecord>) -> Self {
+        Self {
+            fingerprint: fingerprint.to_string(), sequence,
+            token: uuid::Uuid::new_v4().to_string(),
+            they_host: previous.is_some_and(|record| record.they_host),
+            access_removed: previous.is_some_and(|record| record.access_removed),
+        }
+    }
+}
+pub(super) fn save_pairing_viewer(
+    connection: &mut Connection, device: &DeviceRecord, undo: &ViewerPairingUndo,
+) -> Result<(), String> {
+    if !device.they_host || device.fingerprint != undo.fingerprint {
+        return Err("The device connection could not be saved.".into());
+    }
+    save_device_direction(connection, device, 2, Some(&undo.token))
+}
+fn save_device_direction(
+    connection: &mut Connection, device: &DeviceRecord, direction: u8, viewer_token: Option<&str>,
+) -> Result<(), String> {
     let grant = device
         .grant
         .as_ref()
@@ -351,9 +400,12 @@ pub(crate) fn save_device(connection: &mut Connection, device: &DeviceRecord) ->
                 paired_at, last_seen_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(fingerprint) DO UPDATE SET
-               spki = excluded.spki, name = excluded.name, platform = excluded.platform,
-               addresses = excluded.addresses, they_host = excluded.they_host,
-               access_removed = excluded.access_removed, paired_at = excluded.paired_at,
+               spki = excluded.spki, name = excluded.name,
+               platform = CASE WHEN ?10=1 THEN COALESCE(excluded.platform,remote_devices.platform) ELSE excluded.platform END,
+               addresses = excluded.addresses,
+               they_host = CASE WHEN ?10=1 THEN remote_devices.they_host ELSE excluded.they_host END,
+               access_removed = CASE WHEN ?10=1 THEN remote_devices.access_removed ELSE excluded.access_removed END,
+               paired_at = excluded.paired_at,
                last_seen_at = excluded.last_seen_at",
             params![
                 device.fingerprint,
@@ -361,14 +413,15 @@ pub(crate) fn save_device(connection: &mut Connection, device: &DeviceRecord) ->
                 device.name,
                 device.platform,
                 addresses,
-                device.they_host as i64,
-                device.access_removed as i64,
+                if direction==1{0}else{device.they_host as i64},
+                if direction==1{0}else{device.access_removed as i64},
                 device.paired_at,
                 device.last_seen_at,
+                direction,
             ],
         )
         .map_err(|error| error.to_string())?;
-    match grant {
+    if direction!=2{match grant {
         Some(grant) => transaction.execute(
             "INSERT INTO remote_grants (fingerprint, grant_json, updated_at)
              VALUES (?1, ?2, ?3)
@@ -383,6 +436,42 @@ pub(crate) fn save_device(connection: &mut Connection, device: &DeviceRecord) ->
     }
     .map_err(|error| error.to_string())?;
     reject_queued_for_grant(&transaction,&device.fingerprint,device.grant.as_ref())?;
+    }
+    if let Some(token) = viewer_token {
+        transaction.execute(
+            "INSERT INTO remote_viewer_pairing_saves (fingerprint,token) VALUES (?1,?2)
+             ON CONFLICT(fingerprint) DO UPDATE SET token=excluded.token",
+            params![device.fingerprint, token],
+        ).map_err(|error| error.to_string())?;
+    } else if direction == 0 {
+        // Explicit full-state decisions (including revoke/forget) supersede any
+        // pending viewer undo. Host-only pairing deliberately does not.
+        transaction.execute("DELETE FROM remote_viewer_pairing_saves WHERE fingerprint=?1",
+            params![device.fingerprint]).map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+pub(super) fn undo_pairing_viewer(connection: &mut Connection, undo: &ViewerPairingUndo) -> Result<(), String> {
+    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    let ours: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM remote_viewer_pairing_saves WHERE fingerprint=?1 AND token=?2)",
+        params![undo.fingerprint, undo.token], |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    if ours {
+        transaction.execute("UPDATE remote_devices SET they_host=?2,access_removed=?3 WHERE fingerprint=?1",
+            params![undo.fingerprint, undo.they_host as i64, undo.access_removed as i64])
+            .map_err(|error| error.to_string())?;
+        // Only discard a now-unused contact, never an independently approved
+        // host relationship. No host grant or queued admission is touched.
+        transaction.execute(
+            "DELETE FROM remote_devices WHERE fingerprint=?1 AND they_host=0
+             AND NOT EXISTS(SELECT 1 FROM remote_grants WHERE fingerprint=?1)",
+            params![undo.fingerprint],
+        ).map_err(|error| error.to_string())?;
+        transaction.execute("DELETE FROM remote_viewer_pairing_saves WHERE fingerprint=?1 AND token=?2",
+            params![undo.fingerprint, undo.token]).map_err(|error| error.to_string())?;
+    }
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -416,7 +505,7 @@ pub(crate) fn update_device_details(
 pub(crate) fn delete_device(connection: &mut Connection, fingerprint: &str) -> Result<(), String> {
     let transaction = connection.transaction().map_err(|error| error.to_string())?;
     reject_queued_for_grant(&transaction,fingerprint,None)?;
-    for table in ["remote_devices", "remote_grants"] {
+    for table in ["remote_devices", "remote_grants", "remote_viewer_pairing_saves"] {
         transaction
             .execute(
                 &format!("DELETE FROM {table} WHERE fingerprint = ?1"),
@@ -643,6 +732,7 @@ pub(crate) fn claim_operation(
         }
         for (old_id, old_seq) in oldest {
             evicted_through = evicted_through.max(old_seq);
+            transaction.execute("DELETE FROM remote_prompt_preparations WHERE device=?1 AND (op_id=?2 OR op_id IN(SELECT op_id FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2))",params![fingerprint,old_id])?;
             transaction.execute("DELETE FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2",params![fingerprint,old_id])?;
             transaction.execute(
                 "DELETE FROM remote_op_journal WHERE device_fingerprint = ?1 AND op_id = ?2",
@@ -848,4 +938,29 @@ pub(super) fn reject_thread_queue(db:&Connection,thread:&str)->Result<(),String>
         receipt["disposition"]=serde_json::json!("rejected");receipt["errorCode"]=serde_json::json!("thread_unavailable");let result=serde_json::json!({"opId":id,"state":"rejected","threadId":thread,"error":{"code":"thread_unavailable","message":"This conversation was deleted before the instruction could run."}});
         db.execute("UPDATE remote_op_journal SET state='rejected',delivery_json=?4,result_json=?5,updated_at=?6 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,id,seq,receipt.to_string(),result.to_string(),crate::unix_timestamp_ms()]).map_err(|_|"Could not reject queued instruction.".to_owned())?;
     }Ok(())
+}
+#[cfg(test)]
+mod pairing_direction_tests{
+ use super::*;use serde_json::json;
+ fn record()->DeviceRecord{DeviceRecord{fingerprint:"peer".into(),spki:vec![1],name:"Peer".into(),platform:None,addresses:vec![],they_host:false,access_removed:false,paired_at:1,last_seen_at:Some(1),grant:None}}
+ #[test]
+ fn reciprocal_pairing_snapshots_never_erase_the_other_relationship_in_either_write_order(){
+  // Positive control for the original callers: a serialized writer alone does
+  // not make two stale full snapshots safe. The second removes the first grant.
+  let mut legacy=Connection::open_in_memory().unwrap();init(&legacy).unwrap();let mut old_host=record();old_host.grant=Some(DeviceGrant::initial());let mut old_viewer=record();old_viewer.they_host=true;save_device(&mut legacy,&old_host).unwrap();save_device(&mut legacy,&old_viewer).unwrap();assert!(load_devices(&legacy).unwrap()["peer"].grant.is_none());
+  for viewer_first in [false,true]{let mut db=Connection::open_in_memory().unwrap();init(&db).unwrap();let mut host=record();host.grant=Some(DeviceGrant::initial().succeeding(None));let mut viewer=record();viewer.they_host=true;viewer.platform=Some("windows".into());
+   if viewer_first{save_pairing_viewer(&mut db,&viewer,&ViewerPairingUndo::new("peer",1,None)).unwrap();save_pairing_host(&mut db,&host).unwrap();}else{save_pairing_host(&mut db,&host).unwrap();save_pairing_viewer(&mut db,&viewer,&ViewerPairingUndo::new("peer",1,None)).unwrap();}
+   let saved=load_devices(&db).unwrap().remove("peer").unwrap();assert!(saved.they_host);assert_eq!(saved.grant,host.grant);assert_eq!(saved.platform.as_deref(),Some("windows"));
+  }
+ }
+ #[test]
+ fn stale_outgoing_pair_preserves_newer_host_grant_and_queued_work(){
+  let mut db=Connection::open_in_memory().unwrap();init(&db).unwrap();let mut host=record();let mut grant=DeviceGrant::initial().succeeding(None);grant.work=true;grant.revision=9;host.grant=Some(grant.clone());save_pairing_host(&mut db,&host).unwrap();claim_operation(&mut db,"peer","queue",1,"prompt.send","digest").unwrap();save_delivery_receipt(&mut db,"peer","queue",1,&json!({"disposition":"queued","workspaceId":"p","threadId":"t"})).unwrap();
+  let mut stale=record();stale.they_host=true;save_pairing_viewer(&mut db,&stale,&ViewerPairingUndo::new("peer",1,None)).unwrap();assert_eq!(load_devices(&db).unwrap()["peer"].grant,Some(grant));assert_eq!(delivery_receipt(&db,"peer","queue",1).unwrap().unwrap()["disposition"],"queued");
+ }
+ #[test]
+ fn outgoing_pair_does_not_restore_a_revoked_stale_grant_and_host_pair_does_not_clear_removed_viewing(){
+  let mut db=Connection::open_in_memory().unwrap();init(&db).unwrap();let mut current=record();current.they_host=true;current.access_removed=true;save_device(&mut db,&current).unwrap();let mut host=record();host.grant=Some(DeviceGrant::initial().succeeding(None));save_pairing_host(&mut db,&host).unwrap();let saved=load_devices(&db).unwrap().remove("peer").unwrap();assert!(saved.they_host&&saved.access_removed);
+  current.grant=None;save_device(&mut db,&current).unwrap();let mut stale=current.clone();stale.grant=host.grant;stale.access_removed=false;save_pairing_viewer(&mut db,&stale,&ViewerPairingUndo::new("peer",1,None)).unwrap();let saved=load_devices(&db).unwrap().remove("peer").unwrap();assert!(saved.grant.is_none());assert!(!saved.access_removed);
+ }
 }

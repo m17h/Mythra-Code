@@ -14,6 +14,8 @@ export interface HostSources {
   getArchivedThreadIds(): ReadonlySet<string>;
   getArchivedThreads?(): readonly Thread[];
   getPinnedThreadIds?(): ReadonlySet<string>;
+  /** Pending timed prompts, read from the durable queue so unopened threads count too. */
+  getScheduledCounts?(): import("../../scheduledPromptCounts").ScheduledPromptCounts;
   getUnavailableThreadIds(): ReadonlySet<string>;
   getRuntime(): { available: boolean; dataHome?: string | null };
   getDefaultProvider?(): Provider;

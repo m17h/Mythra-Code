@@ -692,6 +692,7 @@ discovery.
 | --- | --- |
 | macOS Local Network blocked | Mythra Code can't access your local network. On this Mac, open System Settings → Privacy & Security → Local Network and turn on Mythra Code. Then choose Try again. |
 | Windows firewall suspected | Windows may be blocking connections to Mythra Code on ZEDS-PC. On that PC, open Windows Security → Firewall & network protection → Allow an app through firewall, and allow Mythra Code on Private networks. You may need an administrator. |
+| Mac firewall suspected | Its firewall may also be blocking connections. On that Mac, open System Settings → Network → Firewall → Options and allow incoming connections for Mythra Code. Then choose Try again. |
 | Public network detected | Windows marks this network as Public. Only if this is your trusted home or work network, open its Wi-Fi or Ethernet settings and change Network profile to Private. Don't change this on public Wi-Fi. |
 | Guest Wi-Fi suspected | This network may keep devices apart. Connect both computers to the same non-guest network, or ask the network owner to allow devices to connect. An invitation won't bypass this restriction. |
 | Versions differ | These versions of Mythra Code can't connect. Update Mythra Code on ZEDS-PC in Settings → Updates, then try again. |

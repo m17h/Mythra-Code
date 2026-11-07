@@ -30,6 +30,7 @@ pub(crate) mod preview;
 pub(crate) mod terminal;
 pub(crate) mod upload_source;
 pub(crate) mod domain;
+pub(crate) mod prompt_preparation;
 pub(crate) mod owners;
 pub(crate) mod bookkeeping;
 pub(crate) mod safe_git;
@@ -189,6 +190,7 @@ impl DialState {
 #[derive(Default)]
 struct Unsaved {
     devices: HashSet<String>,
+    viewer_undos: HashMap<String, store::ViewerPairingUndo>,
     hosting: bool,
     share_name: bool,
     retrying: bool,
@@ -197,7 +199,19 @@ struct Unsaved {
 
 impl Unsaved {
     fn pending(&self) -> bool {
-        self.retrying || self.hosting || self.share_name || !self.devices.is_empty()
+        self.retrying || self.hosting || self.share_name || !self.devices.is_empty() || !self.viewer_undos.is_empty()
+    }
+
+    fn remember_viewer_undo(&mut self, undo: store::ViewerPairingUndo) {
+        // Only successful viewer saves need undoing. If two canceled saves
+        // finish out of order, the newer persisted token supersedes the older.
+        let entry = self.viewer_undos.entry(undo.fingerprint.clone());
+        match entry {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get().sequence < undo.sequence { entry.insert(undo); }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => { entry.insert(undo); }
+        }
     }
 }
 
@@ -213,6 +227,7 @@ struct SettingEdits {
 struct Core {
     bridge: hostbridge::Bridge,
     work: work::WorkState,
+    prompt_preparations: prompt_preparation::Registry,
     folders: folders::Registry,
     loaded: bool,
     load_failed: bool,
@@ -252,6 +267,9 @@ struct Core {
     /// Bumped by revoke and forget, so work that began before either cannot
     /// finish after it. Only a local user action adds an entry.
     relationships: HashMap<String, u64>,
+    /// A queued pairing/grant save has not yet published its outcome in memory.
+    /// Full-state narrowing retries must wait, then take a fresh snapshot.
+    unpublished_device_saves: HashMap<String, usize>,
     next_id: u64,
     unsaved: Unsaved,
     edits: SettingEdits,
@@ -280,6 +298,17 @@ impl Core {
         self.relationships.insert(fingerprint.to_string(), generation);
     }
 
+    fn begin_device_save(&mut self, fingerprint: &str) {
+        *self.unpublished_device_saves.entry(fingerprint.to_string()).or_default() += 1;
+    }
+
+    fn end_device_save(&mut self, fingerprint: &str) {
+        if let Some(count) = self.unpublished_device_saves.get_mut(fingerprint) {
+            *count -= 1;
+            if *count == 0 { self.unpublished_device_saves.remove(fingerprint); }
+        }
+    }
+
     fn retire_advertiser(&mut self) -> Option<Advertisement> {
         self.advertise_generation = self.take_id();
         self.advertised = None;
@@ -299,6 +328,7 @@ impl Default for Core {
         Self {
             bridge: hostbridge::Bridge::default(),
             work: work::WorkState::default(),
+            prompt_preparations: prompt_preparation::Registry::default(),
             folders: folders::Registry::default(),
             loaded: false,
             load_failed: false,
@@ -330,6 +360,7 @@ impl Default for Core {
             dials: HashMap::new(),
             reservations: HashSet::new(),
             relationships: HashMap::new(),
+            unpublished_device_saves: HashMap::new(),
             next_id: 1,
             unsaved: Unsaved::default(),
             edits: SettingEdits::default(),
@@ -1855,21 +1886,28 @@ fn clear_stale_denial(inner: &Inner) {
     }
 }
 
-/// Writes current memory for everything a failed save left behind. Whatever was
-/// decided since is what gets written, in its proper place in the order.
+/// Retries narrowing decisions from current memory, plus token-fenced viewer
+/// undos. An outgoing cancellation never takes a full device/grant snapshot.
 fn retry_unsaved(inner: &Arc<Inner>) {
     let now = Instant::now();
-    let (devices, hosting, share_name, saved) = {
+    let (devices, viewer_undos, hosting, share_name, saved) = {
         let mut core = inner.lock();
+        if core.unsaved.retrying
+            || !core.unsaved.pending()
+            || core.unsaved.retry_at.is_some_and(|at| now < at)
+        { return; }
+        let devices: Vec<String> = core.unsaved.devices.iter()
+            .filter(|fingerprint| !core.unpublished_device_saves.contains_key(*fingerprint))
+            .cloned().collect();
+        // Do not enqueue an empty retry every supervisor tick while a pairing
+        // save is pending. Its finisher wakes us after publishing under core.
+        if devices.is_empty() && core.unsaved.viewer_undos.is_empty()
+            && !core.unsaved.hosting && !core.unsaved.share_name { return; }
         let unsaved = &mut core.unsaved;
-        if unsaved.retrying
-            || !unsaved.pending()
-            || unsaved.retry_at.is_some_and(|at| now < at)
-        {
-            return;
-        }
         unsaved.retrying = true;
-        let devices: Vec<String> = unsaved.devices.drain().collect();
+        for fingerprint in &devices { unsaved.devices.remove(fingerprint); }
+        let viewer_undos: Vec<store::ViewerPairingUndo> = unsaved.viewer_undos.drain().map(|(_, undo)| undo).collect();
+        let write_undos = viewer_undos.clone();
         let hosting = std::mem::take(&mut unsaved.hosting);
         let share_name = std::mem::take(&mut unsaved.share_name);
         let records: Vec<(String, Option<DeviceRecord>)> = devices
@@ -1885,6 +1923,9 @@ fn retry_unsaved(inner: &Arc<Inner>) {
                     None => store::delete_device(connection, fingerprint)?,
                 }
             }
+            for undo in &write_undos {
+                store::undo_pairing_viewer(connection, undo)?;
+            }
             if let Some(enabled) = hosting_value {
                 store::set_hosting(connection, enabled).map_err(|error| error.to_string())?;
             }
@@ -1893,7 +1934,7 @@ fn retry_unsaved(inner: &Arc<Inner>) {
             }
             Ok(())
         });
-        (devices, hosting, share_name, saved)
+        (devices, viewer_undos, hosting, share_name, saved)
     };
     let inner = inner.clone();
     tauri::async_runtime::spawn(async move {
@@ -1903,6 +1944,7 @@ fn retry_unsaved(inner: &Arc<Inner>) {
             core.unsaved.retrying = false;
             if result.is_err() {
                 core.unsaved.devices.extend(devices);
+                for undo in viewer_undos { core.unsaved.remember_viewer_undo(undo); }
                 core.unsaved.hosting |= hosting;
                 core.unsaved.share_name |= share_name;
                 core.unsaved.retry_at = Some(Instant::now() + UNSAVED_RETRY);
@@ -2494,6 +2536,7 @@ pub(crate) async fn remote_device_set_grant(
         device.grant = Some(next.clone());
         let record = device.clone();
         device.grant = Some(overlap);
+        core.begin_device_save(&fingerprint);
         let saved =
             inner.enqueue_write(false, move |connection| store::save_device(connection, &record));
         hostbridge::retire_device_locked(&inner, &mut core, &fingerprint);
@@ -2502,6 +2545,7 @@ pub(crate) async fn remote_device_set_grant(
     inner.changed();
     let result = finish_write(saved).await;
     if let Err(message) = result {
+        inner.lock().end_device_save(&fingerprint);
         inner.note_unsaved(|unsaved| {
             unsaved.devices.insert(fingerprint);
         });
@@ -2510,6 +2554,8 @@ pub(crate) async fn remote_device_set_grant(
     }
     let applied = {
         let mut core = inner.lock();
+        core.end_device_save(&fingerprint);
+        inner.wake.notify_one();
         let unchanged = core.relationship(&fingerprint) == relationship;
         match core
             .devices

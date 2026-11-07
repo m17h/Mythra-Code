@@ -2809,6 +2809,7 @@ impl AppServer {
             if method=="command/exec"{command_observation=remote::owners::observe_command(&self.app,&self.instance,id,params.get("processId").and_then(Value::as_str),command_owner.as_deref())?;if let Some(proof)=command_observation.as_ref(){remote::terminal::observe_local(&self.app,proof.clone(),&params);}}
             dispatch_attempted = true;
             let written=if let Some(permit)=remote_permit.as_mut(){
+                if matches!(method,"thread/start"|"thread/resume"){if let Some(cwd)=params.get("cwd").and_then(Value::as_str){permit.verify_preparation_root(cwd)?;}}
                 let mut stdin=timeout_at(write_deadline,self.stdin.lock()).await.map_err(|_|remote::work::refused("busy"))?;
                 if !self.is_alive(){return Err(remote::work::refused("stale_target"));}
                 let bytes=format!("{message}\n");
@@ -7350,7 +7351,7 @@ async fn claude_turn_start(
     start.assert_current()?;
     process_requested = true;
     let mut spawn=||command.spawn().map_err(|error| { safe_not_dispatched=true; format!("Could not start Claude Code: {error}") });
-    let mut child=if let Some(permit)=remote_permit.as_ref(){permit.check_spawn(spawn)?}else if let Some(owner)=local_owner.as_ref(){owner.spawn(spawn)?}else{spawn()?};
+    let mut child=if let Some(permit)=remote_permit.as_ref(){permit.verify_preparation_root(&options.cwd)?;permit.check_spawn(spawn)?}else if let Some(owner)=local_owner.as_ref(){owner.spawn(spawn)?}else{spawn()?};
     let pid = child.id();
     let stdin = child
         .stdin
@@ -10778,6 +10779,9 @@ pub fn run() {
                     remote::discovery_work::remote_discovery_status,
                     remote::discovery_work::remote_discovery_stop,
                     remote::domain::remote_domain_execute,
+                    remote::prompt_preparation::remote_prompt_prepare,
+                    remote::prompt_preparation::remote_prompt_preparation_bind,
+                    remote::prompt_preparation::remote_prompt_preparation_discard,
                     remote::github::remote_github_read,
                     remote::github::remote_github_execute,
                     remote::terminal::remote_terminal_start,

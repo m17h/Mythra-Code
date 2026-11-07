@@ -1051,10 +1051,10 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
             onChange={(event) => {
               if (event.target.checked && !enabled) { setConfirming(true); return; }
               setConfirming(false);
-              autoPublish.onToggle(event.target.checked);
+              autoPublish.onToggle?.(event.target.checked);
             }}
-            disabled={disabled}
-            title={disabledReason}
+            disabled={disabled || !autoPublish.onToggle}
+            title={autoPublish.hostOnly ?? disabledReason}
           />
           <span>
             <strong>Automatically publish branches and commits</strong>
@@ -1076,7 +1076,7 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
       </small>
       {confirming && (
         <div className="git-auto-publish-confirm" role="group" aria-label="Confirm automatic publishing">
-          <button type="button" className="github-create-button" onClick={() => { setConfirming(false); autoPublish.onToggle(true); }} disabled={disabled}>
+          <button type="button" className="github-create-button" onClick={() => { setConfirming(false); autoPublish.onToggle?.(true); }} disabled={disabled}>
             <CloudUpload size={13} aria-hidden="true" /> Turn on and publish
           </button>
           <button type="button" className="github-secondary-button" onClick={() => setConfirming(false)}>Keep it off</button>
@@ -1086,10 +1086,11 @@ function AutoPublishControl({ autoPublish, repository, disabled, disabledReason 
         <div className="git-auto-publish-status" role="status" aria-live="polite">
           <span className={`git-auto-publish-orb ${status}`} aria-hidden="true" />
           <span>{autoPublish.message || "Watching this project for new commits."}</span>
-          {status === "waiting" && (
+          {status === "waiting" && autoPublish.onRetry && (
             <button type="button" className="thread-pr-inline-button" onClick={autoPublish.onRetry}>Retry</button>
           )}
-          {status === "paused" && <small>Resolve the issue above, then turn automatic publishing off and on to review the destination again.</small>}
+          {autoPublish.hostOnly && <small>{autoPublish.hostOnly}</small>}
+          {status === "paused" && !autoPublish.hostOnly && <small>Resolve the issue above, then turn automatic publishing off and on to review the destination again.</small>}
         </div>
       )}
     </section>

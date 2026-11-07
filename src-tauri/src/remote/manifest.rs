@@ -8,7 +8,7 @@ fn invalid() -> WireError {
     WireError::new("invalid", "That action isn't valid.")
 }
 pub(super) const READS: &[&str] = &[
-    "activity.read","git.autoPublish.read","usage.prices.refresh","tools.mcp.list","agents.presets.read","git.context","agents.read","mail.read","workflows.view","actions.list","usage.thread.read","usage.thread.details","thread.handoff.lineage","git.suggestion.read","terminal.list","terminal.read","terminal.status",
+    "activity.read","review.diff","git.autoPublish.read","usage.prices.refresh","tools.mcp.list","agents.presets.read","git.context","agents.read","mail.read","workflows.view","actions.list","usage.thread.read","usage.thread.details","thread.handoff.lineage","git.suggestion.read","terminal.list","terminal.read","terminal.status",
     "queue.read",
     "schedules.read",
     "workflows.list",
@@ -36,7 +36,7 @@ pub(super) const READS: &[&str] = &[
 pub(super) fn mutation(op: &str) -> bool {
     matches!(
         op,
-        "attachment.reference" | "projects.clone" | "git.autoPublish.set" | "git.autoPublish.retry" | "github.pr.create" | "github.pr.merge" | "github.pr.ready" | "github.pr.comment" | "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "worktree.continueShared" | "worktree.returnShared" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
+        "attachment.reference" | "projects.clone" | "github.pr.create" | "github.pr.merge" | "github.pr.ready" | "github.pr.comment" | "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "worktree.continueShared" | "worktree.returnShared" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
             | "queue.edit.begin"
             | "queue.edit.finish"
             | "queue.retry"
@@ -134,9 +134,8 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         "attachment.put" => (&["opId","opSeq","workspaceId","phase","name","kind","size","uploadId","offset","data","sha256"],true),
         "attachment.reference" => (&["opId","opSeq","workspaceId","threadId","revision","fileId"],true),
         "activity.read" => (&["workspaceId","threadId","activityId"],false),
+        "review.diff" => (&["workspaceId","threadId"],false),
         "git.autoPublish.read" => (&["workspaceId","threadId"],false),
-        "git.autoPublish.set" => (&["opId","opSeq","workspaceId","threadId","revision","enabled"],true),
-        "git.autoPublish.retry" => (&["opId","opSeq","workspaceId","threadId","revision"],true),
         "projects.clone" => (&["opId","opSeq","folderId","url"],true),
         "projects.clone.status" => (&["processHandle"],false),
         "queue.edit.begin" => (
@@ -581,6 +580,11 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
     })
 }
 pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
+    // Refuse even an old journal's native dispatch; these are host-only, not
+    // merely absent from the renderer's menu or its accepted field table.
+    if matches!(op, "git.autoPublish.set" | "git.autoPublish.retry") {
+        return Err(WireError::new("unsupported", "Automatic publishing can only be changed on the host."));
+    }
     let manage = matches!(
         op,
         "projects.add"
@@ -596,9 +600,9 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
             | "projects.run.set"
             | "projects.check.set"
     );
-    let git_change=op=="git.write"||op=="git.revert.preview"||matches!(op,"git.autoPublish.set"|"git.autoPublish.retry"|"github.pr.create"|"github.pr.merge"|"github.pr.ready"|"github.pr.comment");
+    let git_change=op=="git.write"||op=="git.revert.preview"||matches!(op,"github.pr.create"|"github.pr.merge"|"github.pr.ready"|"github.pr.comment");
     let domain=git_change||(op.starts_with("checkpoint.")&&!matches!(op,"checkpoint.list"|"checkpoint.diff"|"checkpoint.accept"))||(op.starts_with("worktree.")&&op!="worktree.status");
-    let shell = domain || matches!(op,"git.autoPublish.set"|"git.autoPublish.retry") || op=="engine.command" || op.starts_with("terminal.") || matches!(
+    let shell = domain || op=="projects.clone" || op=="engine.command" || op.starts_with("terminal.") || matches!(
         op,
         "actions.run" | "projects.run.set"
             | "projects.check.set"
@@ -856,4 +860,43 @@ mod round11_tests{
   for op in ["agents.stop","agents.accept","agents.replace"]{let mut v=json!({"workspaceId":"p","threadId":"t","agentId":"c","target":"opaque","revision":"r","opId":"op","opSeq":1});if op=="agents.replace"{v["targetId"]=json!("approved");}assert!(validate(op,&v).unwrap(),"{op}");v["reviewToken"]=json!("viewer-supplied");assert!(validate(op,&v).is_err());}
   let mut grant=DeviceGrant::initial();assert!(access("terminal.list",&grant).is_err());grant.capabilities.terminal=true;assert!(access("terminal.list",&grant).is_ok());assert!(access("terminal.open",&grant).is_err());assert!(access("actions.run",&grant).is_err());grant.work=true;assert!(access("actions.run",&grant).is_ok());grant.capabilities.terminal=false;assert!(access("actions.run",&grant).is_err());assert!(access("review.start",&grant).is_ok());assert!(access("git.suggestCommit",&grant).is_ok());
  }
+}
+
+#[cfg(test)]
+mod round13_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn publishing_changes_refuse_natively_even_with_every_capability() {
+        let mut grant = DeviceGrant::initial();
+        grant.work = true;
+        grant.capabilities.git_write = true;
+        grant.capabilities.terminal = true;
+        grant.capabilities.manage_projects = true;
+        grant.capabilities.full_access = true;
+        for op in ["git.autoPublish.set", "git.autoPublish.retry"] {
+            assert!(fields(op).is_none());
+            assert!(!mutation(op));
+            assert!(!validate(op, &json!({"workspaceId":"p","opId":"op","opSeq":1,"revision":"r"})).unwrap());
+            assert_eq!(access(op, &grant).unwrap_err().code, "unsupported");
+        }
+        assert!(fields("git.autoPublish.read").is_some());
+        assert!(access("git.autoPublish.read", &DeviceGrant::initial()).is_ok());
+    }
+
+    #[test]
+    fn review_diff_is_a_strict_view_read_not_a_command_proxy() {
+        assert!(READS.contains(&"review.diff"));
+        assert!(!mutation("review.diff"));
+        assert_eq!(fields("review.diff").unwrap(), (&["workspaceId", "threadId"][..], false));
+        assert!(access("review.diff", &DeviceGrant::initial()).is_ok());
+        let mut denied = DeviceGrant::initial();
+        denied.view = false;
+        assert!(access("review.diff", &denied).is_err());
+        assert!(validate("review.diff", &json!({"workspaceId":"p","threadId":"t"})).unwrap());
+        assert!(validate("review.diff", &json!({"workspaceId":"p","threadId":"t","path":"/private"})).is_err());
+        assert!(validate("review.diff", &json!({"workspaceId":"p","threadId":"t","command":"anything"})).is_err());
+        assert!(validate("review.diff", &json!({"threadId":"t"})).is_err());
+    }
 }

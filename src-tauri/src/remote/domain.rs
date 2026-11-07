@@ -23,6 +23,7 @@ pub(crate) struct Fence {
     stamp: Stamp,
     operation: String,
     read_only: bool,
+    owner_meta: Option<work::RemoteDelivery>,
     anchors: Vec<Anchor>,
     deadline: Instant,
 }
@@ -66,6 +67,7 @@ pub(crate) fn spawn_gate<T>(spawn: impl FnOnce() -> Result<T, String>) -> Result
             return Err(work::refused("forbidden"));
         }
     }
+    if let Some(meta) = &fence.owner_meta { super::owners::check(&core, meta)?; }
     for anchor in &fence.anchors {
         anchor.validate()?;
     }
@@ -275,6 +277,7 @@ pub(crate) async fn remote_domain_execute(
             stamp: stamp_worker.clone(),
             operation: op_worker.clone(),
             read_only:false,
+            owner_meta:None,
             anchors,
             deadline: Instant::now() + Duration::from_secs(120),
         });
@@ -581,6 +584,7 @@ pub(super) fn make_context(
         stamp,
         operation,
         read_only,
+        owner_meta:None,
         anchors: vec![anchor],
         deadline: Instant::now() + Duration::from_secs(120),
     })
@@ -633,4 +637,8 @@ mod tests {
         );
         std::fs::remove_dir_all(cleanup).unwrap();
     }
+}
+
+pub(super) fn make_preparation_context(inner:Arc<Inner>,stamp:Stamp,operation:String,anchor:Anchor,meta:work::RemoteDelivery)->Arc<Fence>{
+    Arc::new(Fence{inner,stamp,operation,read_only:false,owner_meta:Some(meta),anchors:vec![anchor],deadline:Instant::now()+Duration::from_secs(120)})
 }

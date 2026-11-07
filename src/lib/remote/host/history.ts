@@ -20,7 +20,10 @@ export class HostHistory {
   requestRecovery(complete: boolean, unavailableThreads: ReadonlySet<string> = new Set()): void { if (complete) this.pendingRequestGaps = new Set(unavailableThreads); }
   private pending = new Map<string, Promise<void>>();
   private hydrated = new Map<string, { messages: ChatMessage[]; activities: Activity[] }>();
-  private uncertain = new Set<string>();
+  private uncertain = new Map<string, string | undefined>();
+  private markUncertain(threadId: string): void {
+    if (!this.uncertain.has(threadId)) this.uncertain.set(threadId, useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId);
+  }
   private serial = 0;
   private activeReads = 0;
   private pins = new Set<() => void>();
@@ -33,8 +36,17 @@ export class HostHistory {
   availability(threadId: string): WireAvailability {
     if (this.pendingRequestGaps.has(threadId)) return "recovering";
     const task = useTaskStore.getState().tasks[threadId];
-    if (task?.activeTurnId && (task.status === "running" || task.status === "starting")) return "ready";
-    if (this.uncertain.has(threadId)) return "recovering";
+    if (task?.activeTurnId && (task.status === "running" || task.status === "starting")) {
+      this.uncertain.delete(threadId); return "ready";
+    }
+    if (this.uncertain.has(threadId)) {
+      // A pre-existing terminal row is not evidence that the untracked native
+      // work ended. Only a new live terminal receipt can settle that uncertainty.
+      if (task?.lastCompletedTurnId && task.lastCompletedTurnId !== this.uncertain.get(threadId)
+        && ["completed", "interrupted", "failed"].includes(task.lastCompletedTurnStatus ?? "")
+        && ["completed", "interrupted", "error"].includes(task.status)) this.uncertain.delete(threadId);
+      else return "recovering";
+    }
     if (task && (task.status === "completed" || task.status === "interrupted" || task.status === "error")) return "ready";
     return this.uncertain.has(threadId) || !this.hydrated.has(threadId) ? "recovering" : "ready";
   }
@@ -143,13 +155,13 @@ export class HostHistory {
             const task = useTaskStore.getState().tasks[id];
             const sealed = [...(task?.messages ?? []), ...(task?.activities ?? [])].some((row) => row.turnId === receipt.turnId
               && !("role" in row && row.role === "user") && ["completed", "interrupted", "failed"].includes(row.turnStatus ?? ""));
-            if (!sealed) this.uncertain.add(id);
+            if (!sealed) this.markUncertain(id);
           }
         }
       } else if (!older && provider === "claude") {
         const active = await isClaudeTurnActive(id);
         check();
-        if (active && !useTaskStore.getState().tasks[id]?.activeTurnId) this.uncertain.add(id);
+        if (active && !useTaskStore.getState().tasks[id]?.activeTurnId) this.markUncertain(id);
       }
       return;
     }
@@ -162,7 +174,7 @@ export class HostHistory {
       const turns = turnsFromDescendingPage(result);
       history = timelineFromTurns(turns, { includeContextCompaction: provider === "openai" });
       install(history.messages, history.activities, { nextCursor: result.nextCursor, hasMore: Boolean(result.nextCursor), loading: false, paginated: true }, false);
-      if (!older && turns.length && !["completed", "interrupted", "failed"].includes(turns.at(-1)?.status ?? "") && !useTaskStore.getState().tasks[id]?.activeTurnId) this.uncertain.add(id);
+      if (!older && turns.length && !["completed", "interrupted", "failed"].includes(turns.at(-1)?.status ?? "") && !useTaskStore.getState().tasks[id]?.activeTurnId) this.markUncertain(id);
     } catch (reason) {
       check();
       if (!(reason instanceof HostReadError && reason.code === "unsupported") && !isPaginatedHistoryUnsupported(reason)) throw reason;
@@ -175,7 +187,7 @@ export class HostHistory {
       drainTaskDeltas();
       store.hydrateTask(id, history.messages, history.activities, executionPath,
         { nextCursor: null, hasMore: false, loading: false, paginated: false }, boundary, { preserveUnread: true });
-      if (result.thread.turns?.length && !["completed", "interrupted", "failed"].includes(result.thread.turns.at(-1)?.status ?? "") && !useTaskStore.getState().tasks[id]?.activeTurnId) this.uncertain.add(id);
+      if (result.thread.turns?.length && !["completed", "interrupted", "failed"].includes(result.thread.turns.at(-1)?.status ?? "") && !useTaskStore.getState().tasks[id]?.activeTurnId) this.markUncertain(id);
     }
   }
   /** Fetch only enough native pages to serve the requested opaque row anchor. */

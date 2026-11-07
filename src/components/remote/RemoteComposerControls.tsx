@@ -6,16 +6,18 @@ import type { ChildAgentReadiness } from "../../lib/childAgents";
 import type { HostContextResult, WireExecutionSettings, WireSubagents } from "../../lib/remote/wire";
 import { PermissionPicker } from "../PermissionPicker";
 import { SubAgentCommandCenter } from "../SubAgentCommandCenter";
+import { useRemoteWorkers } from "./useRemoteWorkers";
 import type { ChildAgentModelCatalogs } from "../subAgentModelOptions";
 
-const NO_WORKERS: never[] = [];
 const DEFAULT_SUBAGENTS: WireSubagents = { enabled: false, engine: "mythra", maxConcurrent: 4 };
 
 /** The real permission and sub-agent pickers. Each choice is sent to the host,
  * which checks it against what this device has been given. */
-export function RemoteComposerControls({ device, workspaceId, context, chosen, name, provider, running, threadId, scopeKey, onSettings, onNotice, onOpenSettings }: {
+export function RemoteComposerControls({ device, workspaceId, revision, onOpenThread, context, chosen, name, provider, running, threadId, scopeKey, onSettings, onNotice, onOpenSettings }: {
   device: string;
   workspaceId: string | undefined;
+  revision: string;
+  onOpenThread: (id: string) => void;
   context: HostContextResult | undefined;
   /** A new thread's choices, not yet saved in a thread. */
   chosen?: Pick<WireExecutionSettings, "permission" | "subagents">;
@@ -70,13 +72,20 @@ export function RemoteComposerControls({ device, workspaceId, context, chosen, n
     }, () => undefined);
     return () => { current = false; };
   }, [device, workspaceId]);
+  const { workers, act } = useRemoteWorkers(device, name, { workspaceId, threadId }, revision, running);
+  const workerAction = async (op: "agents.stop" | "agents.accept" | "agents.replace", id: string, extra?: Record<string, unknown>) => {
+    const message = await act(op, id, extra);
+    if (message) onNotice(message);
+  };
   const change = (next: Partial<WireSubagents>) => onSettings({ subagents: { ...subagents, ...next } });
   return <>
     <PermissionPicker value={permission} open={open} rootRef={root} description={description} onOpenChange={setOpen} onChange={(mode) => onSettings({ permission: mode })}
       disabledReason={(mode) => mode === "full" && !fullAccess ? `Full access is turned off for this device on ${name}. Turn it on in Devices on that device.` : undefined} />
     <SubAgentCommandCenter policy={policy} engine={subagents.engine} provider={provider} nativeMaxConcurrent={subagents.maxConcurrent} nativeOptions={subagents.nativeOptions}
       autoCompactTokens={subagents.autoCompactTokens} nativeDefaultModel={context?.selected.model}
-      presets={presets} contextKey={threadId ?? `new:${scopeKey}`} capturedPolicy={null} mode="open" readiness={readiness} workers={NO_WORKERS} parentActive={running}
+      presets={presets} contextKey={threadId ?? `new:${scopeKey}`} capturedPolicy={null} mode="open" readiness={readiness} workers={workers} parentActive={running}
+      onOpenWorker={async (worker) => onOpenThread(worker.id)} onStopWorker={(worker) => workerAction("agents.stop", worker.id)}
+      onAcceptWorker={(worker) => workerAction("agents.accept", worker.id)} onReplaceWorker={(worker, targetId) => workerAction("agents.replace", worker.id, { targetId })}
       scopeLabel={threadId ? "this thread" : "this new thread"} projectOverride={false} modelCatalogs={modelCatalogs} onUnavailable={onNotice} onOpenSettings={onOpenSettings}
       onEngineChange={(engine) => change({ engine })}
       onNativeMaxConcurrentChange={(maxConcurrent) => change({ maxConcurrent })}

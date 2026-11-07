@@ -1415,7 +1415,7 @@ async fn spawn_cursor_process_remote(app:&AppHandle,cwd:&Path,event_context:Opti
     #[cfg(unix)]
     command.process_group(0);
     let mut spawn=||command.spawn().map_err(|error|format!("Could not start Cursor Agent at `{}`: {error}",runtime.display_path()));
-    let child=if let Some(remote)=remote{remote.check_spawn(spawn)?}else if let Some(local)=local{local.spawn(spawn)?}else{spawn()?};
+    let child=if let Some(remote)=remote{remote.verify_preparation_root(&cwd.to_string_lossy())?;remote.check_spawn(spawn)?}else if let Some(local)=local{local.spawn(spawn)?}else{spawn()?};
     let app = app.clone();
     let emit: CursorEmit = Arc::new(move |event: &str, payload: Value| {
         let _ = app.emit(event, payload);

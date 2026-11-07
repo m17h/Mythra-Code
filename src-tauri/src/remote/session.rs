@@ -275,6 +275,13 @@ impl Link {
     }
 
     pub(super) fn respond(&self, id: u64, result: Result<Value, WireError>) -> bool {
+        #[cfg(test)] self.trace(match result.as_ref().err().map(|e| e.code.as_str()) {
+            Some("pairing_closed") => "reply_pairing_closed",
+            Some("forbidden") => "reply_forbidden",
+            Some("rate_limited") => "reply_rate_limited",
+            Some(_) => "reply_other_error",
+            None => "reply_ok",
+        });
         let seq=result.as_ref().ok().and_then(|v|v.get("seq")).and_then(Value::as_u64).unwrap_or(0);
         let count=result.as_ref().ok().and_then(|v|v.get("frames")).and_then(Value::as_array).map_or(0,Vec::len);
         super::diagnostics::record(super::diagnostics::Event::Reply,self.id,id,seq,count,if self.role==Role::Host{"host"}else{"viewer"},result.as_ref().err().map_or("ok",|e|e.code.as_str()));
@@ -303,6 +310,7 @@ impl Link {
         wait: Duration,
     ) -> Result<Value, WireError> {
         self.note_readiness(op);
+        #[cfg(test)] self.trace("request_started");
         let lost = || WireError::new("host_unavailable", "The connection was lost.");
         let id = self.next_request.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
@@ -324,13 +332,15 @@ impl Link {
             args,
         });
         if !sent {
+            #[cfg(test)] self.trace("request_not_sent");
             self.forget_request(id);
             return Err(lost());
         }
         let result=match timeout(wait, receiver).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(lost()),
+            Ok(Err(_)) => { #[cfg(test)] self.trace("request_dropped"); Err(lost()) },
             Err(_) => {
+                #[cfg(test)] self.trace("request_timeout");
                 self.forget_request(id);
                 Err(WireError::new("host_unavailable", "The device did not answer in time."))
             }

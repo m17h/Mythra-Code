@@ -34,9 +34,6 @@ export interface HostContextSources extends ExecutionSources, HostResourceSource
   resolveArchivedThread?(threadId: string): { thread: import("../../../types").Thread; workspaceId: string } | null | Promise<{ thread: import("../../../types").Thread; workspaceId: string } | null>;
   /** True once archiving from another device has a native fence. */
   canArchiveThreads?(): boolean;
-  /** Publishing belongs to the project, so these never depend on what's selected here. */
-  setAutoPublish?(workspaceId: string, path: string, enabled: boolean): Promise<void>;
-  retryAutoPublish?(workspaceId: string): void;
   /** Applies a crew change exactly as the local picker does. */
   stageThreadCrew?(threadId: string, next: { maxConcurrent: number; targets: ChildAgentTarget[] }, dryRun: boolean): "none" | "staged" | "busy" | "not-ready";
 }

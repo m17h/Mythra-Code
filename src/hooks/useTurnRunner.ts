@@ -36,7 +36,8 @@ import { flushPendingStateWrites } from "../lib/storage";
 import type { RemoteStopSnapshot, RemoteTurnDelivery, RemoteTurnRunner } from "../lib/remote/host/workTypes";
 import type { RemoteWorkResult } from "../lib/remote/wire";
 import { HostReadError } from "../lib/remote/host/scope";
-import { rememberRemoteEngineOwner, remoteEngineOwner, forgetRemoteEngineOwner, finishRemoteThreadOwner, hasRemoteEngineOwners, remoteEngineOwnerThreads, isLiveRemoteEngineOwner, openLocalEngineOwner, type RemoteEngineOwner } from "../lib/remote/host/engineOwners";
+import { noteCheckpointSkipped } from "../lib/remote/host/remoteCheckpoint";
+import { noteLocalWork, noteRemoteWork, rememberRemoteEngineOwner, remoteEngineOwner, remoteStartOwner, remoteThreadOwner, forgetRemoteEngineOwner, finishRemoteThreadOwner, hasRemoteEngineOwners, remoteEngineOwnerThreads, isLiveRemoteEngineOwner, openLocalEngineOwner, type RemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { claimParentRun, parentAuthKey, pausedParentRun, PARENT_EXECUTION_UNCONFIRMED, PARENT_NOTICE_PROVENANCE, PARENT_RUN_CHECKPOINT_LABEL, type ParentExecution, type ParentRun } from "../lib/parentRun";
 import { claudeSteerReadState } from "../lib/claudeEvents";
 import {
@@ -298,9 +299,9 @@ function threadWorktreeRecord(threadId: string, project: Project, worktree: Crea
 }
 
 /** Tracking-only completion bookkeeping, never selection or provider dispatch. */
-function trackNativeStartOwner(ctx: TurnRunnerContext, threadId: string): void {
+function trackNativeStartOwner(ctx: TurnRunnerContext, threadId: string, preparing = false): void {
   const store = useTaskStore.getState();
-  if (store.parentRuns[threadId]) return;
+  if (!preparing && store.parentRuns[threadId]) return;
   const ownerHandle = ctx.remoteDelivery?.ownerHandle ?? ctx.localOwnerHandle;
   if (!ownerHandle) return;
   rememberRemoteEngineOwner({ generation: ctx.remoteDelivery?.metadata().generation ?? 0, ...(ctx.remoteDelivery ? {} : { local: true }),
@@ -574,6 +575,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
   }, []);
   const draftGenerationRef = useRef(0);
   const ordinarySharedDraftStartsRef = useRef(new Map<symbol, string | undefined>());
+  const remoteStartAdmissionsRef = useRef(new Map<string, Promise<void>>());
   const localStartRequestsRef = useRef(new Map<string, { startRequestId: string; runStartedAt?: number; turnId?: string }>());
 
   const archiveOwnsThread = useCallback((threadId: string): boolean => {
@@ -625,6 +627,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const explicitAttemptCurrent = () => !explicitThreadId || !explicitAttemptId
       || ctx.isExplicitChildStartCurrent?.(explicitThreadId, explicitAttemptId) !== false;
     let finishProviderPreparation: (() => void) | undefined;
+    let finishRemoteStartAdmission: (() => void) | undefined;
     try {
     try {
       if (coordinationResume || ctx.effectiveSettings.provider === "openai" || ctx.effectiveSettings.provider === "claude") {
@@ -661,7 +664,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       threadWorktreesRef, threadProjectBindingsRef, activeWorkspacePathRef,
       pendingTurnStartsRef, skillRuntimeRootRef, cursorSessionIdsRef,
       executionPathFor, bindThreadToProject, rememberThread, onThreadCreated, persistThreadModel, persistThreadReasoning,
-      persistThreadWorktrees, waitForThreadPreparation, beginRunCheckpoint, discardRunCheckpoint,
+      persistThreadWorktrees, waitForThreadPreparation, beginRunCheckpoint: beginLocalRunCheckpoint, discardRunCheckpoint,
       refreshLocalSkills, ensureSkillRoots, scheduleClaudeThreadSave, scheduleCursorThreadSave,
       setThreads, setActiveThread, setAttachments, setDraftThreadIsolated: setContextDraftThreadIsolated,
       setStartingDraftTurn: setContextStartingDraftTurn, setError, setStatus, setTransientStatus,
@@ -676,7 +679,22 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const effectiveSettings = childThread ? settingsWithoutChildDelegation(configuredSettings) : configuredSettings;
     const nativeDelegation = effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine === "native";
     if (!text || !activeWorkspace) return false;
-    const initializeNewThreadGit = !activeThread && !childThread && !activeWorkspace.isChat && effectiveSettings.automaticGitInitialization === true;
+    // Local preparation IPC has no remote commit-time grant fence. Do not let
+    // prompt.send implicitly execute Git hooks/filters or install tooling.
+    // Explicit checkpoint/worktree actions have their own stamped native path.
+    if (ctx.remoteDelivery && !activeThread && draftThreadIsolated && activeProject) {
+      throw new HostReadError("unsupported", "Create the isolated worktree on the host before sending. Remote draft preparation is not connected yet.");
+    }
+    const initializeNewThreadGit = !ctx.remoteDelivery && !activeThread && !childThread && !activeWorkspace.isChat && effectiveSettings.automaticGitInitialization === true;
+    const beginRunCheckpoint: TurnRunnerContext["beginRunCheckpoint"] = ctx.remoteDelivery
+      ? async (threadId) => {
+        if (activeProject) noteCheckpointSkipped(threadId);
+        return undefined;
+      } : (threadId, ...details) => {
+        // Someone at this machine took over, unless this is an automatic continuation.
+        if (!ctx.coordinationResume) noteLocalWork(threadId);
+        return beginLocalRunCheckpoint(threadId, ...details);
+      };
     const compactionReason = parentAutoCompactionUnavailableReason(effectiveSettings.provider, effectiveSettings.autoCompactTokens);
     if (compactionReason) {
       setError(compactionReason);
@@ -962,6 +980,15 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     const parentStopEpochBefore = startingThreadId ? parentRunStopEpoch(startingThreadId) : 0;
     let startedAgentRunId: string | undefined;
     if (startingThreadId) {
+      if (ctx.remoteDelivery) {
+        let finish!: () => void;
+        const admission = new Promise<void>((resolve) => { finish = resolve; });
+        remoteStartAdmissionsRef.current.set(startingThreadId, admission);
+        finishRemoteStartAdmission = () => {
+          if (remoteStartAdmissionsRef.current.get(startingThreadId) === admission) remoteStartAdmissionsRef.current.delete(startingThreadId);
+          finish();
+        };
+      }
       if (effectiveSettings.provider === "cursor") cursorAttempt = beginCursorTurnStart(startingThreadId, useTaskStore.getState().tasks[startingThreadId]?.activeTurnId);
       useTaskStore.getState().beginAgentRun(startingThreadId, undefined, coordinationResume?.dispatchId, typedFollowUp && !deferredDelivery);
       guardedRunStartedAt = useTaskStore.getState().tasks[startingThreadId]?.agentRunStartedAt;
@@ -1291,6 +1318,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         await ctx.remoteDelivery.beforeCreate();
         // Ownership must precede ANY native thread/start/resume preparation.
         if (!ctx.remoteDelivery.ownerHandle && ctx.remoteDelivery.openOwner) await ctx.remoteDelivery.openOwner("start", ctx.remoteDelivery.attemptId, activeThread?.id);
+        // Existing threads already have a native-attested binding. Expose the
+        // start owner before skills/checkpoints/RPC preparation can await.
+        if (activeThread) trackNativeStartOwner(ctx, activeThread.id, true);
+        finishRemoteStartAdmission?.();
       }
       if (sharedDraftStart) {
         // Reserve synchronously before any preparation await. The draft flag
@@ -1369,7 +1400,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       const additionalWorkspaceRoots = isolationGitDir ? [isolationGitDir] : [];
       // Provision only for real project threads, never a normal chat's backing
       // directory. Existing installations are shared across project worktrees.
-      if (!activeThread && activeProject) {
+      if (!ctx.remoteDelivery && !activeThread && activeProject) {
         setStatus("Checking language tools…");
         await invoke("language_tools_prepare_project", { cwd: executionPath, permission: effectiveSettings.permission }).catch(() => undefined);
         assertCanStart();
@@ -1841,6 +1872,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         delete next[entry[0]];
         return next;
       });
+      finishRemoteStartAdmission?.();
       finishProviderPreparation?.();
       if (subagentPreparation) {
         subagentPreparationsRef.current.delete(subagentPreparation);
@@ -2347,6 +2379,8 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     };
     try {
       if (!expected.turnId || !matches()) throw new HostReadError("stale_target", "The observed turn has ended.");
+      // A steered turn may start children, whoever started the turn itself.
+      noteRemoteWork(expected.threadId);
       const guard = ctx.deliveryGuard;
       const delivery = { ...ctx, running: true, deliveryGuard: () => matches() && (!guard || guard()) };
       if (!await deliverMessage(delivery, text, "steer")) await remote.rejected("stale_target");
@@ -2710,8 +2744,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       const task = useTaskStore.getState().tasks[expected.threadId];
       const start = localStartRequestsRef.current.get(expected.threadId);
       if (activeThread?.id !== expected.threadId || task?.agentRunId !== expected.agentRunId
-        || expected.turnId && task?.activeTurnId !== expected.turnId
-        || expected.startRequestId && start?.startRequestId !== expected.startRequestId) {
+        || expected.ownerHandle && (remoteThreadOwner(expected.threadId)?.ownerHandle !== expected.ownerHandle || task?.agentRunStartedAt !== expected.runStartedAt)
+        || !expected.ownerHandle && expected.turnId && task?.activeTurnId !== expected.turnId
+        || !expected.ownerHandle && expected.startRequestId && start?.startRequestId !== expected.startRequestId) {
         throw new HostReadError("stale_target", "The observed turn or startup attempt changed.");
       }
     }
@@ -2724,10 +2759,19 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       await ctx.remoteStop({ threadId: activeThread.id, turnId: expected.turnId,
         startRequestId: expected.startRequestId, agentRunId: expected.agentRunId });
       const task = useTaskStore.getState().tasks[activeThread.id];
-      if (task?.agentRunId === expected.agentRunId && expected.turnId && task.activeTurnId === expected.turnId) {
-        sealStoppedTurn(activeThread.id, expected.turnId);
+      const stoppedTurnId = expected.ownerHandle && task?.agentRunId === expected.agentRunId && task.agentRunStartedAt === expected.runStartedAt
+        ? task.activeTurnId : expected.turnId;
+      if (task?.agentRunId === expected.agentRunId && stoppedTurnId && task.activeTurnId === stoppedTurnId) {
+        sealStoppedTurn(activeThread.id, stoppedTurnId);
         if (isClaudeThread(activeThread)) ctx.scheduleClaudeThreadSave(activeThread.id);
         if (isCursorThread(activeThread)) ctx.scheduleCursorThreadSave(activeThread.id);
+      }
+      else if (expected.ownerHandle && !task?.activeTurnId
+        && task?.agentRunId === expected.agentRunId && task.agentRunStartedAt === expected.runStartedAt
+        && (task.status === "starting" || task.status === "running")) {
+        // Native retired this whole owner, including in-flight start tickets.
+        // Do not wait for an unrelated slow skill scan to paint its cutoff.
+        useTaskStore.getState().completeTurn(activeThread.id, undefined, "interrupted");
       }
       return;
     }
@@ -2839,7 +2883,12 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       startRequestId: start?.runStartedAt === task?.agentRunStartedAt ? start?.startRequestId : undefined,
       agentRunId: task?.agentRunId, runStartedAt: task?.agentRunStartedAt,
       parentRunId: store.parentRuns[threadId]?.id, workflowId: workflow?.workflowId, workflowRunId: workflow?.runId,
-      ...(() => { const owner = remoteEngineOwner(threadId, store.parentRuns[threadId]?.id, workflow?.runId); return owner ? { ownerHandle: owner.ownerHandle, ownerRunId: owner.runId } : {}; })() };
+      ...(() => { const owner = remoteEngineOwner(threadId, store.parentRuns[threadId]?.id, workflow?.runId) ?? remoteStartOwner(threadId); return owner ? { ownerHandle: owner.ownerHandle, ownerRunId: owner.runId } : {}; })() };
+  }, []);
+  const waitForThreadStopTarget = useCallback(async (threadId: string): Promise<void> => {
+    // Join only owner admission, never provider preparation/input. Both success
+    // and failure resolve this gate, without polling or an extra native call.
+    await remoteStartAdmissionsRef.current.get(threadId);
   }, []);
   const continueParentTo = useCallback(async (ctx: TurnRunnerContext, request: { parentRunId: string; notice: string; progress: string; wokenQuestions: string[] }): Promise<RemoteWorkResult> => {
     const id = ctx.activeThread?.id, delivery = ctx.remoteDelivery;
@@ -2852,7 +2901,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
   const pumpRemoteQueue = useCallback((threadId: string) => { void pumpQueuedThread(threadId); }, [pumpQueuedThread]);
 
   return {
-    sendPromptTo, steerThread, queuePromptTo, stopThreadTurn, getThreadStopTarget, pumpRemoteQueue, continueParentTo,
+    sendPromptTo, steerThread, queuePromptTo, stopThreadTurn, getThreadStopTarget, waitForThreadStopTarget, pumpRemoteQueue, continueParentTo,
     pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,

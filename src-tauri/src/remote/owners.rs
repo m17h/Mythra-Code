@@ -175,6 +175,7 @@ pub(super) fn record_terminal(
     Ok(())
 }
 pub(super) fn invalidate(core: &mut Core) {
+    super::prompt_preparation::invalidate(core);
     for owner in core.owners.owners.values_mut().filter(|owner| !owner.local) {
         cancel_owned_commands(owner);
         owner.closed = true;
@@ -239,6 +240,7 @@ pub(super) async fn retire(
         }
         owner.closed = true;
         owner.signal.notify_waiters();
+        super::prompt_preparation::retire_owner(&mut core,&handle);
     }
     let work = async {
         let mut done = HashSet::new();
@@ -388,6 +390,7 @@ pub(super) fn is_open(core: &Core, handle: &str) -> bool {
 }
 
 pub(super) fn retire_device(core: &mut Core, device: &str) {
+    super::prompt_preparation::retire_device(core,device);
     for owner in core
         .owners
         .owners
@@ -437,10 +440,11 @@ async fn finish_owner(
             .ok_or_else(stale)?;
         owner.closed = true;
         owner.signal.notify_waiters();
-        if !owner.pending.is_empty() {
-            return Ok(json!({"confirmed":false}));
-        }
-        owner.children.values().cloned().collect::<Vec<_>>()
+        let pending=!owner.pending.is_empty();
+        let children=owner.children.values().cloned().collect::<Vec<_>>();
+        super::prompt_preparation::retire_owner(&mut core,&owner_handle);
+        if pending { return Ok(json!({"confirmed":false})); }
+        children
     };
     for child in &children {
         let ended = match child {
@@ -1381,6 +1385,7 @@ pub(super) fn validate_schedule_preparation(core:&Core,db:&rusqlite::Connection,
  Ok(handle.to_owned())
 }
 pub(super) fn detach_schedule_preparation(core:&mut Core,handle:&str){
+ super::prompt_preparation::retire_owner(core,handle);
  if let Some(owner)=core.owners.owners.remove(handle){owner.signal.notify_waiters();}
  core.owners.bindings.retain(|_,bound|bound!=handle);
 }
@@ -1426,4 +1431,22 @@ mod replacement_tests{
   let make=|db:&rusqlite::Connection,target:Option<&str>|engine_step_record(db,"device","root","owner","replacement-input","prompt",Some("parent"),"claude","ask",&Some("p".into()),1,1,target);
   assert!(make(&db,Some("target")).is_err());r["agentCutoffConfirmed"]=json!("child");super::super::store::save_delivery_receipt(&mut db,"device","root",1,&r).unwrap();let step=make(&db,Some("target")).unwrap();assert_eq!(make(&db,Some("target")).unwrap(),step);assert!(make(&db,Some("different")).is_err());assert!(make(&db,None).is_err());let id=step["delivery"]["opId"].as_str().unwrap();assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"turn/start").is_err());assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"cursor_turn_steer").is_err());super::super::store::claim_native_step(&mut db,"device",id,1,"claude_turn_steer").unwrap();assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"claude_turn_steer").is_err());assert!(super::super::store::claim_native_step(&mut db,"device",id,1,"claude_prompt").is_err());
  }
+}
+
+/// Actual native thread/start/resume proof or a native-owned live start/turn.
+pub(super) fn preparation_thread(core:&Core,meta:&RemoteDelivery,thread:&str)->bool{
+    check(core,meta).is_ok() && meta.owner_handle.as_ref().and_then(|h|core.owners.owners.get(h)).is_some_and(|owner|
+        owner.thread.as_deref()==Some(thread)||owner.prepared_threads.contains(thread)||owner.children.values().any(|child|matches!(child,Child::Native(target) if target.thread_id.as_deref()==Some(thread))))
+}
+
+pub(super) fn preparation_owner(core:&Core,meta:&RemoteDelivery,workspace:Option<&str>)->bool{
+    meta.owner_handle.as_ref().is_some_and(|handle|
+        core.owners.bindings.get(&(meta.device.clone(),meta.op_id.clone()))==Some(handle)
+        &&core.owners.owners.get(handle).is_some_and(|owner|!owner.local&&!owner.closed&&owner.stamp.generation==meta.generation&&owner.stamp.device==meta.device&&owner.stamp.workspace_id.as_deref()==workspace))
+}
+
+#[cfg(test)]
+pub(super) fn test_preparation_owner(core:&mut Core,stamp:Stamp)->String{
+    let handle=uuid::Uuid::new_v4().to_string();core.owners.bindings.insert((stamp.device.clone(),stamp.op_id.clone()),handle.clone());
+    core.owners.owners.insert(handle.clone(),Owner{local:false,thread:stamp.thread_id.clone(),stamp,kind:"start".into(),prepared_threads:HashSet::new(),run:uuid::Uuid::new_v4().to_string(),closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});handle
 }

@@ -518,6 +518,7 @@ export function routeCodexEvent(event: CodexEvent, ctx: CodexEventContext): void
     // The runtime's live turn diff, against whatever remote the thread tracks.
     useTaskStore.getState().setDiff(eventThreadId, {
       text: String(params.diff ?? ""),
+      successfulText: String(params.diff ?? ""),
       source: "runtime",
       baseline: "the tracked remote branch",
       untrackedPaths: [],

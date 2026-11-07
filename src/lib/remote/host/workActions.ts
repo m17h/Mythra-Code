@@ -13,7 +13,7 @@ import { hostContext, searchHostFiles, wireEfforts, type HostContextSources } fr
 import { remoteQuestionResponse, requestQuestions } from "./questionActions";
 import { currentGrant, HostReadError, idArg, objectArgs, requireThread, requireWorkspace, threadWorkspace, workspaceAllowed } from "./scope";
 import { stopThreadAndChildren, type StopActionSources } from "./stopActions";
-import { sameStop, WorkTargets, type WorkTarget } from "./targetHandles";
+import { sameStop, sameStopLifetime, WorkTargets, type WorkTarget } from "./targetHandles";
 import type { RemoteStopSnapshot, RemoteTurnRunner, RemoteWorkAdapter } from "./workTypes";
 import { assertParityAuthority, executeParityMutation, isParityOperation, isParityRead, projectParityRead, validateParityArgs, type HostParityActions } from "./parityActions";
 import { DraftTokens, type DraftToken } from "./draftTokens";
@@ -217,8 +217,10 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     strictKeys(args, ["threadId"]);
     const threadId = idArg(args.threadId);
     await refresh(request.device);
-    const ctx = context({ threadId }, request.device), task = useTaskStore.getState().tasks[threadId];
-    const runner = options.getRunner(), stop = runner.getThreadStopTarget(threadId);
+    const ctx = context({ threadId }, request.device), runner = options.getRunner();
+    await runner.waitForThreadStopTarget?.(threadId);
+    assertTarget({ threadId }, request.device, ctx);
+    const task = useTaskStore.getState().tasks[threadId], stop = runner.getThreadStopTarget(threadId);
     const register = (kind: "turn" | "start" | "parent" | "approval" | "question", extra: { stop?: RemoteStopSnapshot; approval?: NonNullable<typeof task>["approvals"][number] }) =>
       targets.register({ device: request.device, workspaceId: ctx.activeWorkspace!.id, provider: ctx.effectiveSettings.provider, ...extra }, kind);
     const approvals: WireWorkApproval[] = [];
@@ -258,6 +260,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           const previous = args.draftHandle === undefined ? undefined : idArg(args.draftHandle);
           const patch = Object.fromEntries(Object.entries(args).filter(([key]) => ["provider", "model", "effort", "permission", "serviceTier", "subagents", "isolated"].includes(key)));
           const settings = validateExecutionSettings({ ...(previous ? drafts.get(previous, id.device, workspaceId).settings : {}), ...patch }, sources, ctx.effectiveSettings);
+          if (settings.isolated) throw new HostReadError("unsupported", "Create the isolated worktree on the host before sending. Remote draft preparation is not connected yet.");
           if (settings.permission && remotePermission(settings.permission, currentWorkGrant(sources, id.device)) !== settings.permission
             || settings.permission === "full" && ctx.effectiveSettings.permission !== "full") throw new HostReadError("forbidden", "Full access isn't allowed for this device. To change it, open Settings → Connections → Devices on the other device.");
           await delivery.beforeCreate();
@@ -384,7 +387,8 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       if (request.op === "turn.stop") {
         if (!owned.stop) throw stale();
         await targets.claim(owned, id);
-        if (!sameStop(owned.stop, options.getRunner().getThreadStopTarget(threadId!))) throw stale();
+        if (!(owned.wire.kind === "parent" ? sameStopLifetime(owned.stop, options.getRunner().getThreadStopTarget(threadId!))
+          : sameStop(owned.stop, options.getRunner().getThreadStopTarget(threadId!)))) throw stale();
         await delivery.beforeDispatch({ threadId: threadId!, messageId: delivery.messageId, provider: ctx.effectiveSettings.provider,
           turnId: owned.stop.turnId, startRequestId: owned.stop.startRequestId });
         await stopThreadAndChildren({ ...ctx, remoteStop: async (args) => {

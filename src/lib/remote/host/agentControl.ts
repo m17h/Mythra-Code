@@ -1,3 +1,4 @@
+import { noteRemoteWork } from "./engineOwners";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import { useTaskStore, pinTaskTranscript, type TaskStatus } from "../../taskStore";
 import { sealStoppedTurn } from "../../stopTurnHistory";
@@ -32,6 +33,8 @@ export async function executeHostAgentControl(op: "agents.stop" | "agents.replac
   const worker = resources.resolveWorker(handle, device, root);
   if (worker.id !== args.agentId || !worker.canStop) throw stale();
   if (worker.nativeRuntime === "claude" || worker.id.startsWith("claude-native:")) throw new HostReadError("unsupported", "Claude native sub-agents share their root process. Stop the root conversation to stop them.");
+  // The restarted task runs under this root, however the root's own turn began.
+  if (op === "agents.replace") noteRemoteWork(root);
   const lifecycle = sources.getAgentLifecycle?.();
   const stopWorker = lifecycle?.stopWorker?.bind(lifecycle);
   if (!stopWorker) throw new HostReadError("unsupported", "The host's shared sub-agent Stop lifecycle is not attached.");

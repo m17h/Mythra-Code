@@ -1,3 +1,4 @@
+import { noteCheckpointSkipped } from "../lib/remote/host/remoteCheckpoint";
 import { openLocalEngineOwner, rememberRemoteEngineOwner, finishRemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { useCallback, useEffect, useRef } from "react";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
@@ -590,7 +591,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               });
               // Command steps edit the project unattended; snapshot around
               // them so their changes are restorable like any model turn's.
-              await current.beginRunCheckpoint(threadId, project.path, command, workflow.run.provider, workflow.run.model);
+              if (!remote) await current.beginRunCheckpoint(threadId, project.path, command, workflow.run.provider, workflow.run.model);
+              else if (!project.isChat) noteCheckpointSkipped(threadId);
               let result: { exitCode: number; stdout: string; stderr: string };
               try {
                 if (active.stopRequested) throw new WorkflowStoppedError();
@@ -667,7 +669,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               let nativeTurnAcknowledged = false;
               let turnDispatched = false;
               try {
-                await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
+                if (!remote) await current.beginRunCheckpoint(threadId, project.path, prompt, workflow.run.provider, workflow.run.model);
+                else if (!project.isChat) noteCheckpointSkipped(threadId);
                 if (active.stopRequested) throw new WorkflowStoppedError();
                 if (localProvider) {
                   // Save only prior history while preparation can still fail

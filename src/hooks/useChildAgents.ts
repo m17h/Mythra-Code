@@ -1,3 +1,5 @@
+import { hasRemoteWork } from "../lib/remote/host/engineOwners";
+import { checkpointUnlessRemote } from "../lib/remote/host/remoteCheckpoint";
 import { latestCodexTurn, terminalTurnStatus } from "./useThreadHealth";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
@@ -1607,12 +1609,11 @@ export function useChildAgents(context: ChildAgentContext): {
         claimDispatch: async (childThreadId) => {
           await claimChildAgentSpawn(request, childThreadId);
         },
-        prepareNewThreadGit: projectId ? (childThreadId) => ctx.prepareNewThreadGit?.(childThreadId, projectId, logicalPath) ?? Promise.resolve(false) : undefined,
+        prepareNewThreadGit: projectId ? (childThreadId) => hasRemoteWork(rootThreadId) ? Promise.resolve(false) : ctx.prepareNewThreadGit?.(childThreadId, projectId, logicalPath) ?? Promise.resolve(false) : undefined,
         canDiscardUnusedChild,
         onDiscardUnusedChild: (childThreadId) => contextRef.current.onDiscardUnusedChild?.(childThreadId),
-        beginCheckpoint: async (childThreadId) => {
-          return ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target));
-        },
+        beginCheckpoint: (childThreadId) => checkpointUnlessRemote([rootThreadId, childThreadId], projectId ? rootThreadId : null,
+          () => ctx.beginRunCheckpoint(childThreadId, executionPath, prompt, target.provider, childAgentModel(target))),
         discardCheckpoint: ctx.discardRunCheckpoint,
         // The child's first tool call can be a parent message that lands
         // before its ownership link exists.
@@ -2638,7 +2639,8 @@ export function useChildAgents(context: ChildAgentContext): {
         resolveSkillPrompts: ctx.resolveSkillPrompts,
         assertCanStart,
         beginCheckpoint: async (threadId) => {
-          checkpointId = await ctx.beginRunCheckpoint(threadId, executionPath, prompt, link.provider, link.model);
+          checkpointId = await checkpointUnlessRemote([rootThreadId, threadId], projectId ? rootThreadId : null,
+            () => ctx.beginRunCheckpoint(threadId, executionPath, prompt, link.provider, link.model));
         },
         onDispatch: (startRequestId) => {
           assertCanStart();
