@@ -22,6 +22,10 @@ export { createHostSettingsActions } from "./settingsActions";
 export { applyHostExecutionPreferences, getHostThreadPreferences } from "./executionPreferences";
 export { commitHostState, operationStamp } from "./stateCommit";
 export { appendHostCommandOutput, hostCommandBusy, hostCommandRows, useHostCommands } from "./commandActions";
+export { executeThreadRow, threadRowKeys } from "./threadRows";
+export type { ThreadRowChange, ThreadRowLease, ThreadRowLifecycle, ThreadRowOperation } from "./threadRows";
+export { createThreadRowLifecycle, threadRowBlockedReason } from "./threadLifecycle";
+export type { ThreadLifecycleSources } from "./threadLifecycle";
 interface Session { generation: number; ready: boolean; bridge: HostBridge; publisher: HostPublishers; dispatcher: HostDispatcher; work?: RemoteWorkAdapter }
 
 /** App mounts one controller after its own indexes/provider listeners are ready. */

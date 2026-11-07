@@ -186,7 +186,11 @@ export function useProjectChecks(scope: ProjectCheckScope) {
     await run.terminatePromise;
   }, []);
 
+  /** Every retained scope, not just the one on screen. */
+  const runningIn = useCallback((cwd: string) => liveByCwdRef.current.has(cwd), []);
+
   return {
+    runningIn,
     latest: selected?.latest ?? null,
     status: live ? "running" as const : selected?.latest?.status ?? "idle" as const,
     running: Boolean(live),

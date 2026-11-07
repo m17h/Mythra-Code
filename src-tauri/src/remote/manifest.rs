@@ -27,6 +27,7 @@ pub(super) const READS: &[&str] = &[
     "parent.read",
     "checks.read",
     "checks.status",
+    "run.status",
     "discovery.run.status",
     "discovery.check.status",
 ];
@@ -96,7 +97,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         "github.pr.list" => (&["workspaceId","search","state","limit"],false),
         "github.pr.find" => (&["workspaceId","threadId","branch"],false),
         "github.pr.context" => (&["workspaceId","threadId"],false),
-        "git.write" => (&["opId","opSeq","workspaceId","threadId","action","resourceId","revision","message","name","create","stagedOnly","confirmed"],true),
+        "git.write" => (&["opId","opSeq","workspaceId","threadId","action","resourceId","revision","message","name","create","stagedOnly","confirmed","base"],true),
         "checkpoint.list" | "worktree.status" | "agents.list" | "preview.links" => (&["workspaceId","threadId"],false),
         "checkpoint.diff" => (&["workspaceId","threadId","checkpointId"],false),
         "git.log" => (&["workspaceId","threadId","offset","limit","headOid"],false),
@@ -108,7 +109,8 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         "checkpoint.delete" => (&["opId","opSeq","workspaceId","threadId","checkpointId","revision","confirmed"],true),
         "checkpoint.restore" => (&["opId","opSeq","workspaceId","threadId","checkpointId","target","revision","confirmed"],true),
         "worktree.create" | "worktree.recreate" => (&["opId","opSeq","workspaceId","threadId","label","revision"],true),
-        "worktree.apply"|"worktree.remove"|"worktree.merge"|"worktree.baseline"|"worktree.continueShared"|"worktree.returnShared" => (&["opId","opSeq","workspaceId","threadId","revision","confirmed"],true),
+        "worktree.remove"|"worktree.returnShared" => (&["opId","opSeq","workspaceId","threadId","revision","confirmed","force"],true),
+        "worktree.apply"|"worktree.merge"|"worktree.baseline"|"worktree.continueShared" => (&["opId","opSeq","workspaceId","threadId","revision","confirmed"],true),
         "terminal.open" => (&["opId","opSeq","workspaceId","threadId","command","columns","rows"],true),
         "terminal.write" => (&["opId","opSeq","workspaceId","terminalId","data"],true),
         "terminal.resize" => (&["opId","opSeq","workspaceId","terminalId","columns","rows"],true),
@@ -530,7 +532,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         ),
         "projects.add" => (&["opId", "opSeq", "folderId"], true),
         "host.context" => (&["workspaceId", "threadId"], false),
-        "files.search" => (&["workspaceId", "query"], false),
+        "files.search" => (&["workspaceId", "threadId", "query"], false),
         "files.list" => (
             &["workspaceId", "threadId", "parentId", "cursor", "limit"],
             false,
@@ -796,6 +798,8 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
     if op=="prompt.cancel"{id(args,"startTarget",true)?;}
     if op=="git.write"&&!matches!(args.get("action").and_then(Value::as_str),Some("init"|"stage"|"unstage"|"commit"|"branch"|"push"|"pull"|"fetch"|"update"|"revert"|"revertAll")){return Err(invalid());}
     if matches!(op,"checkpoint.restore"|"checkpoint.delete"|"worktree.apply"|"worktree.remove"|"worktree.continueShared"|"worktree.returnShared")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}
+    if args.get("force").is_some_and(|value|!value.is_boolean()){return Err(invalid());}
+    if op=="git.write"&&args.get("base").is_some_and(|base|!base.as_str().is_some_and(|text|!text.is_empty()&&text.len()<=256&&!text.contains('\0'))){return Err(invalid());}
     if op.starts_with("checkpoint.")&&op!="checkpoint.list"{id(args,"checkpointId",true)?;}
     if op.starts_with("terminal.") {
         if op!="terminal.open"{id(args,"terminalId",true)?;}

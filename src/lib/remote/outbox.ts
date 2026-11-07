@@ -85,6 +85,29 @@ export function nextOperationSequence(device: string, atLeast = 0): number {
   return next;
 }
 
+/** A message showing on this device between Send and the host's copy of it. Memory
+ * only: the outbox is what survives, and this is only how it looks. */
+export interface RemoteEcho {
+  id: string; device: string; draftKey: string; text: string; queued: boolean; threadId?: string;
+  /** How many of this text the thread already had, so an older copy can't end this one. */
+  known: number;
+  accepted?: boolean;
+}
+const MAX_ECHOES = 32;
+const ECHO_MS = 30_000;
+export const useRemoteEchoes = create<{ echoes: RemoteEcho[] }>(() => ({ echoes: [] }));
+export function addRemoteEcho(echo: RemoteEcho): void {
+  useRemoteEchoes.setState((state) => ({ echoes: [...state.echoes, echo].slice(-MAX_ECHOES) }));
+}
+export function removeRemoteEcho(id: string): void {
+  useRemoteEchoes.setState((state) => state.echoes.some((echo) => echo.id === id) ? { echoes: state.echoes.filter((echo) => echo.id !== id) } : state);
+}
+/** The host has it. It stays until the thread shows it, or for a moment if that never comes. */
+export function settleRemoteEcho(id: string, threadId: string | undefined): void {
+  useRemoteEchoes.setState((state) => ({ echoes: state.echoes.map((echo) => echo.id === id ? { ...echo, accepted: true, ...(threadId ? { threadId } : {}) } : echo) }));
+  setTimeout(() => removeRemoteEcho(id), ECHO_MS);
+}
+
 export function outboxIsFull(): boolean {
   return useRemoteOutbox.getState().entries.length >= MAX_ENTRIES;
 }

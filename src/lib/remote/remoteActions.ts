@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { viewerErrorCode, viewerHostOperation } from "./viewerBridge";
 import { refusalText, sequenced } from "./remoteWork";
-import type { WireParityRow } from "./wire";
+import type { WireParityReadResult, WireParityRow } from "./wire";
 
 export interface HostWriteResult<T = Record<string, unknown>> {
   ok: boolean; message: string; result?: T;
   /** The reply was lost, so the change may or may not have happened. */
   unknown?: boolean;
+  /** Why it was refused, when the host said. */
+  code?: string;
 }
 
 /** A plain read from the host. Whatever it refuses is thrown to the caller. */
@@ -23,13 +25,22 @@ const DEFINITE = new Set(["forbidden", "busy", "rate_limited", "stale_target", "
 export async function hostWrite<T = Record<string, unknown>>(device: string, name: string, op: string, args: Record<string, unknown>): Promise<HostWriteResult<T>> {
   try {
     const result = await sequenced(device, () => undefined, (opSeq) => viewerHostOperation<T & { state?: string; error?: { code?: string } }>(device, op, { opId: crypto.randomUUID(), opSeq, ...args }));
-    if (result?.state === "rejected") return { ok: false, message: refusalText(result.error?.code ?? "", name), result };
+    if (result?.state === "rejected") return { ok: false, message: refusalText(result.error?.code ?? "", name), result, code: result.error?.code };
     if (result?.state === "uncertain") return { ok: false, message: UNCONFIRMED, result, unknown: true };
     return { ok: true, message: "", result };
   } catch (reason) {
     const code = viewerErrorCode(reason);
-    return DEFINITE.has(code) ? { ok: false, message: refusalText(code, name) } : { ok: false, message: UNCONFIRMED, unknown: true };
+    return DEFINITE.has(code) ? { ok: false, message: refusalText(code, name), code } : { ok: false, message: UNCONFIRMED, unknown: true };
   }
+}
+
+/** A project's own settings are checked against the project, not the thread on
+ * screen, so the revision has to be read for exactly that target. */
+export async function hostProjectWrite(device: string, name: string, workspaceId: string, op: string, args: Record<string, unknown>): Promise<HostWriteResult> {
+  let revision: string | undefined;
+  try { revision = (await hostRead<WireParityReadResult>(device, "projects.settings.read", { workspaceId })).revision; }
+  catch { return { ok: false, message: `Mythra Code couldn't reach ${name}. Try again.` }; }
+  return hostWrite(device, name, op, { workspaceId, revision, ...args });
 }
 
 /** The sentence every switch-gated control shows. */

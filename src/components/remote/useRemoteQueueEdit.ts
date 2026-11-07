@@ -65,12 +65,29 @@ export function useRemoteQueueEdit({ device, name, threadId, workspaceId, draftS
     if (!hold || finishing.has(key)) return false;
     finishing.add(key);
     const stillThisEdit = () => useHolds.getState().holds[key]?.generation === hold.generation;
+    const attempt = async (editHandle: string) => {
+      const { revision } = await read();
+      return hostWrite(device, name, "queue.edit.finish", { workspaceId, threadId, revision, queueId: id, editHandle, ...(text === undefined ? { cancel: true } : { text }) });
+    };
     void (async () => {
       try {
-        const { revision } = await read();
-        const outcome = await hostWrite(device, name, "queue.edit.finish", { workspaceId, threadId, revision, queueId: id, editHandle: hold.handle, ...(text === undefined ? { cancel: true } : { text }) });
+        let outcome = await attempt(hold.handle);
         if (!stillThisEdit()) return;
         if (outcome.ok || await settled(id, text)) { if (stillThisEdit()) end(id); return; }
+        // Holds expire, and a host restart ends them. The row is still there, so ask
+        // for it again: the host decides who owns it, and the text waits here meanwhile.
+        if (outcome.code === "stale_target") {
+          const { revision } = await read();
+          const renewed = await hostWrite<{ editHandle?: string }>(device, name, "queue.edit.begin", { workspaceId, threadId, revision, queueId: id });
+          const editHandle = renewed.result?.editHandle;
+          if (!stillThisEdit()) return;
+          if (renewed.ok && editHandle) {
+            setHold(key, { handle: editHandle, generation: hold.generation });
+            outcome = await attempt(editHandle);
+            if (!stillThisEdit()) return;
+            if (outcome.ok || await settled(id, text)) { if (stillThisEdit()) end(id); return; }
+          } else { onNotice(`Someone else may be editing this message on ${name}. Your text is still here.`); return; }
+        }
         onNotice(outcome.message || `${name} didn't save that edit. Your text is still here.`);
       } catch { if (stillThisEdit()) onNotice(`Mythra Code couldn't confirm that with ${name}. Your text is still here.`); }
       finally { finishing.delete(key); }

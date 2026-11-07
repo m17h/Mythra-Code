@@ -2066,3 +2066,269 @@ async fn failed_reverse_write_does_not_discard_the_peers_flushed_refusal() {
     link.close(CloseReason::Finished);
     assert_eq!(outcome.unwrap_err().code, "forbidden", "{trace:?}");
 }
+
+/// Exercise the native Phase 3 boundary, not just a renderer's accepted reply.
+/// Only the renderer and model process are fixtures: requests, TLS, TCP, journal,
+/// native dispatch latch/permission fence and acceptance persistence are real.
+#[tokio::test]
+async fn phase3_prompt_native_acceptance_survives_lost_ack_without_second_dispatch() {
+    use std::sync::atomic::AtomicUsize;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    const OP: &str = "phase3-once";
+    const PROMPT: &str = "NEVER-PERSIST-PROMPT-CONTENT: execute one model turn";
+
+    async fn reconnect(host: &Node, viewer: &Node, reverse: bool) -> Arc<Link> {
+        let (dialer, listener) = if reverse {
+            (host, viewer)
+        } else {
+            (viewer, host)
+        };
+        let link = session::dial(
+            &dialer.inner,
+            &dialer.identity,
+            listener.address,
+            ServerKeyPolicy::Pinned(listener.identity.fingerprint.clone()),
+            DialPurpose::Paired,
+        )
+        .await
+        .unwrap();
+        if !reverse {
+            return link;
+        }
+        until(|| {
+            viewer
+                .inner
+                .lock()
+                .links
+                .values()
+                .any(|l| l.role == Role::Viewer && l.is_paired() && l.is_open())
+        })
+        .await;
+        let viewer_link = viewer
+            .inner
+            .lock()
+            .links
+            .values()
+            .find(|l| l.role == Role::Viewer && l.is_paired() && l.is_open())
+            .unwrap()
+            .clone();
+        viewer_link
+    }
+
+    for reverse in [false, true] {
+        let (host, viewer, direct) = paired_nodes().await;
+        let link = if reverse {
+            direct.close(CloseReason::Finished);
+            until(|| host.inner.lock().links.is_empty() && viewer.inner.lock().links.is_empty())
+                .await;
+            reconnect(&host, &viewer, true).await
+        } else {
+            direct
+        };
+        let mut incoming = events(&host.inner);
+        hostbridge::test_attach(&host.inner, 1);
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_address = provider_listener.local_addr().unwrap();
+        let observed = provider_calls.clone();
+        let provider = tokio::spawn(async move {
+            let (socket, _) = provider_listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            loop {
+                let mut line = String::new();
+                if socket.read_line(&mut line).await.unwrap() == 0 {
+                    break;
+                }
+                let rpc: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(rpc["method"], "turn/start");
+                assert_eq!(rpc["params"]["input"][0]["text"], PROMPT);
+                observed.fetch_add(1, Ordering::AcqRel);
+                socket
+                    .get_mut()
+                    .write_all(b"{\"id\":1,\"result\":{\"turn\":{\"id\":\"turn-once\"}}}\n")
+                    .await
+                    .unwrap();
+                socket.get_mut().flush().await.unwrap();
+            }
+        });
+        let native = host.inner.clone();
+        let original_viewer_link = link.clone();
+        let calls = renderer_calls.clone();
+        let (accepted, acceptance) = oneshot::channel();
+        let renderer = tokio::spawn(async move {
+            let mut accepted = Some(accepted);
+            let mut provider = BufReader::new(TcpStream::connect(provider_address).await.unwrap());
+            while let Some((event, request)) = incoming.recv().await {
+                if event != "remote-host-request" {
+                    continue;
+                }
+                assert_eq!(request["op"], "prompt.send");
+                calls.fetch_add(1, Ordering::AcqRel);
+                let args = &request["args"];
+                let device = request["device"].as_str().unwrap().to_owned();
+                let id = args["opId"].as_str().unwrap().to_owned();
+                let seq = args["opSeq"].as_u64().unwrap();
+                let generation = request["generation"].as_u64().unwrap();
+                let meta = work::RemoteDelivery {
+                    owner_handle: None,
+                    generation,
+                    device: device.clone(),
+                    op_id: id.clone(),
+                    op_seq: seq,
+                    attempt_id: Some("attempt-once".into()),
+                    message_id: Some("message-once".into()),
+                };
+                let receipt = json!({"generation":generation,"device":device,"opId":id,"opSeq":seq,"disposition":"dispatched","workspaceId":"project","threadId":"thread","provider":"openai","permission":"ask","attemptId":"attempt-once","messageId":"message-once"});
+                let saved = {
+                    let core = native.lock();
+                    work::authorize(&core, &meta, Some("project")).unwrap();
+                    let (device, id) = (device.clone(), id.clone());
+                    native.enqueue_write(false, move |db| {
+                        store::save_delivery_receipt(db, &device, &id, seq, &receipt)
+                    })
+                };
+                finish_write(saved).await.unwrap();
+                let mut permit = work::prepare_native_inner(
+                    native.clone(),
+                    meta,
+                    "turn/start",
+                    Some("ask"),
+                    None,
+                )
+                .await
+                .unwrap();
+                let bytes = format!(
+                    "{}\n",
+                    json!({"id":1,"method":"turn/start","params":{"threadId":"thread","input":[{"type":"text","text":args["text"]}]}})
+                );
+                permit
+                    .write_claimed(|| Ok(()), async {
+                        provider
+                            .get_mut()
+                            .write_all(bytes.as_bytes())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        provider.get_mut().flush().await.map_err(|e| e.to_string())
+                    })
+                    .await
+                    .unwrap();
+                let mut reply = String::new();
+                provider.read_line(&mut reply).await.unwrap();
+                let reply: Value = serde_json::from_str(&reply).unwrap();
+                let turn = reply["result"]["turn"]["id"].as_str().unwrap();
+                permit.accepted(json!({"threadId":"thread","turnId":turn,"runtimeInstance":"test-provider"})).await.unwrap();
+                // Native acceptance is durable, but NO renderer/network ack has
+                // been sent. Kill the actual links at this exact boundary.
+                let host_link = native
+                    .lock()
+                    .links
+                    .values()
+                    .find(|l| l.peer_fingerprint == device && l.role == Role::Host && l.is_open())
+                    .unwrap()
+                    .clone();
+                host_link.close(CloseReason::Dead);
+                original_viewer_link.close(CloseReason::Dead);
+                accepted.take().unwrap().send(()).unwrap();
+                // Cleanup may already have expired this renderer request. Either
+                // late reply outcome must preserve the authoritative native row.
+                let late = hostbridge::renderer_respond(
+                    &native,
+                    generation,
+                    request["requestId"].as_str().unwrap().into(),
+                    Some(json!({"opId":id,"state":"accepted","threadId":"thread","turnId":turn})),
+                    None,
+                );
+                if let Err(error) = late {
+                    assert_eq!(error.code, "stale_target");
+                }
+            }
+        });
+        let args = json!({"opId":OP,"opSeq":1,"threadId":"thread","text":PROMPT});
+        let source = viewer.inner.clone();
+        let destination = host.identity.fingerprint.clone();
+        let first_args = args.clone();
+        let first = tokio::spawn(async move {
+            hostbridge::viewer_request(&source, destination, "prompt.send".into(), first_args).await
+        });
+        match timeout(WAIT, acceptance).await {
+            Ok(result) => result.expect("renderer ended before native acceptance"),
+            Err(error) => {
+                if first.is_finished() {
+                    panic!(
+                        "request finished before native acceptance: {:?}",
+                        first.await.unwrap()
+                    );
+                }
+                panic!(
+                    "native acceptance missing ({error}); renderer calls={}",
+                    renderer_calls.load(Ordering::Acquire)
+                );
+            }
+        }
+        let lost = timeout(WAIT, first).await.unwrap().unwrap().unwrap_err();
+        assert_eq!(
+            lost.code, "host_unavailable",
+            "reverse={reverse}: ack must really be lost"
+        );
+        until(|| host.inner.lock().links.is_empty() && viewer.inner.lock().links.is_empty()).await;
+        let restored = reconnect(&host, &viewer, reverse).await;
+        assert!(restored.is_paired());
+        let recovered = hostbridge::viewer_request(
+            &viewer.inner,
+            host.identity.fingerprint.clone(),
+            "op.status".into(),
+            json!({"opId":OP,"opSeq":1}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recovered["state"], "accepted",
+            "reverse={reverse}: {recovered}"
+        );
+        assert_eq!(recovered["turnId"], "turn-once");
+        let (retry, duplicate) = tokio::join!(
+            hostbridge::viewer_request(
+                &viewer.inner,
+                host.identity.fingerprint.clone(),
+                "prompt.send".into(),
+                args.clone()
+            ),
+            hostbridge::viewer_request(
+                &viewer.inner,
+                host.identity.fingerprint.clone(),
+                "prompt.send".into(),
+                args.clone()
+            )
+        );
+        assert_eq!(retry.as_ref().unwrap()["state"], "accepted");
+        assert_eq!(retry.unwrap(), duplicate.unwrap());
+        assert_eq!(
+            renderer_calls.load(Ordering::Acquire),
+            1,
+            "replay reached renderer"
+        );
+        assert_eq!(
+            provider_calls.load(Ordering::Acquire),
+            1,
+            "prompt dispatched twice"
+        );
+        let device = viewer.identity.fingerprint.clone();
+        host.inner
+            .read_db(move |db| {
+                let receipt = store::delivery_receipt(db, &device, OP, 1)?.unwrap();
+                assert_eq!(receipt["disposition"], "accepted");
+                assert_eq!(receipt["nativeSteps"], json!(["turn/start"]));
+                assert!(!receipt.to_string().contains(PROMPT));
+                assert!(!store::operation_result(db, &device, OP)?
+                    .to_string()
+                    .contains(PROMPT));
+                Ok(())
+            })
+            .await
+            .unwrap();
+        renderer.abort();
+        let _ = renderer.await;
+        timeout(WAIT, provider).await.unwrap().unwrap();
+    }
+}

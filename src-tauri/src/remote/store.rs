@@ -756,7 +756,7 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
         if previous == "accepted" && next != "accepted" { return Ok(()); }
         if previous=="rejected"&&next!="rejected"&&!(native&&next=="accepted"){return Err("A rejected instruction cannot be reopened.".into());}
         if ["dispatched","uncertain","accepted","rejected"].contains(&previous) && ["preparing","queued"].contains(&next) { return Err("That delivery cannot be queued again.".into()); }
-        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","grantRevision"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
+        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","grantRevision","threadEffectStarted","nativeThreadRoot","nativeThreadProvider","nativeThreadProof"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
         // Native dispatch latches may only be added, never cleared by IPC.
         if let Some(steps) = old.get("nativeSteps") { receipt["nativeSteps"] = steps.clone(); }
     }
@@ -783,8 +783,16 @@ pub(super) fn claim_native_step(connection: &mut Connection, device: &str, op_id
     // adapters before extending this explicit dispatch matrix.
     let operation:String=transaction.query_row("SELECT op FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64],|row|row.get(0)).map_err(|_|"That delivery is no longer available.".to_string())?;
     let allowed=match step {
-        "thread/start"|"thread/resume"|"turn/start"|"claude_prompt"|"cursor_prompt"=>matches!(operation.as_str(),"prompt.send"|"prompt.queue"|"engine.prompt")||(matches!(operation.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"schedules.edit")&&receipt.get("queueAuthorized").and_then(Value::as_bool)==Some(true)&&receipt.get("queueAdmissionCommitted").and_then(Value::as_bool)==Some(true)),
-        "claude_turn_steer"|"cursor_turn_steer"|"codex_steer"=>operation=="prompt.steer",
+        "thread/name/set"=>operation=="thread.rename",
+        "thread/archive"=>operation=="thread.archive",
+        "thread/unarchive"=>operation=="thread.restore",
+        "thread/delete"=>operation=="thread.delete",
+        "thread/fork"=>operation=="thread.fork",
+        "thread/compact/start"=>operation=="thread.compact",
+        "thread/rollback"=>operation=="thread.rollback",
+        "thread/start" if operation=="prompt.scheduleNew"=>true,
+        "thread/start"|"thread/resume"|"turn/start"|"claude_prompt"|"cursor_prompt"=>matches!(operation.as_str(),"prompt.send"|"prompt.queue"|"engine.prompt"|"parent.continue")||(matches!(operation.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit")&&receipt.get("queueAuthorized").and_then(Value::as_bool)==Some(true)&&receipt.get("queueAdmissionCommitted").and_then(Value::as_bool)==Some(true)),
+        "claude_turn_steer"|"cursor_turn_steer"|"codex_steer"=>matches!(operation.as_str(),"prompt.steer"|"queue.steer"),
         "approval_answer"=>operation=="approval.answer",
         "question_answer"=>operation=="question.answer",
         "turn_stop"=>operation=="turn.stop",
@@ -792,7 +800,7 @@ pub(super) fn claim_native_step(connection: &mut Connection, device: &str, op_id
         "command/exec/write"=>operation=="terminal.write",
         "command/exec/resize"=>operation=="terminal.resize",
         "command/exec/terminate"=>operation=="terminal.close",
-        step if step.starts_with("owner_stop:")=>matches!(operation.as_str(),"turn.stop"|"workflows.stop"),
+        step if step.starts_with("owner_stop:")=>matches!(operation.as_str(),"turn.stop"|"workflows.stop"|"run.stop"|"checks.stop"),
         _=>false,
     };
     if !allowed{return Err("That instruction does not authorize this native action.".into());}
@@ -829,5 +837,14 @@ pub(super) fn reject_unused_engine_steps(db:&Connection,device:&str,root:&str)->
         if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|a|!a.is_empty())||!matches!(receipt.get("disposition").and_then(Value::as_str),Some("preparing"|"dispatched")){continue;}
         receipt["disposition"]=serde_json::json!("rejected");receipt["errorCode"]=serde_json::json!("stale_target");let result=serde_json::json!({"opId":id,"state":"rejected","error":{"code":"stale_target","message":"This engine ended before the instruction was delivered."}});
         db.execute("UPDATE remote_op_journal SET state='rejected',delivery_json=?4,result_json=?5,updated_at=?6 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,id,seq,receipt.to_string(),result.to_string(),crate::unix_timestamp_ms()]).map_err(|_|"The engine receipts could not be saved.".to_owned())?;
+    }Ok(())
+}
+
+pub(super) fn reject_thread_queue(db:&Connection,thread:&str)->Result<(),String>{
+    let sources:Vec<(String,String,i64,String)>={let mut statement=db.prepare("SELECT device_fingerprint,op_id,op_seq,delivery_json FROM remote_op_journal WHERE delivery_json IS NOT NULL AND state IN ('pending','accepted')").map_err(|_|"Could not read queued instructions.".to_owned())?;let rows=statement.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|_|"Could not read queued instructions.".to_owned())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|_|"Could not read queued instructions.".to_owned())?;rows};
+    for(device,id,seq,text)in sources{let mut receipt:Value=serde_json::from_str(&text).map_err(|_|"Could not read queued instruction.".to_owned())?;
+        if receipt.get("threadId").and_then(Value::as_str)!=Some(thread)||!matches!(receipt.get("disposition").and_then(Value::as_str),Some("preparing"|"queued"))||receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|steps.iter().any(|s|!matches!(s.as_str(),Some("thread/start"|"thread/resume")))){continue;}
+        receipt["disposition"]=serde_json::json!("rejected");receipt["errorCode"]=serde_json::json!("thread_unavailable");let result=serde_json::json!({"opId":id,"state":"rejected","threadId":thread,"error":{"code":"thread_unavailable","message":"This conversation was deleted before the instruction could run."}});
+        db.execute("UPDATE remote_op_journal SET state='rejected',delivery_json=?4,result_json=?5,updated_at=?6 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,id,seq,receipt.to_string(),result.to_string(),crate::unix_timestamp_ms()]).map_err(|_|"Could not reject queued instruction.".to_owned())?;
     }Ok(())
 }

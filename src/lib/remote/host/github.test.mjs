@@ -15,7 +15,7 @@ function host(replies = {}) {
   const calls = [];
   const transport = { invoke: async (command, args) => {
     calls.push({ command, args });
-    if (command === "github_repo_status") return replies.repo === undefined ? { repository: "me/app" } : replies.repo;
+    if (command === "remote_studio_git_metadata") return replies.repo === undefined ? { repository: "me/app" } : replies.repo;
     if (command === "github_status") return { authenticated: true, login: "me", email: "secret@example.com" };
     if (command === "remote_github_read") {
       if (args.action === "github.pr.context") return { repository: "me/app", branch: "fix", defaultBranch: "main", headOid: HEAD, dirty: false, ahead: 1, behind: 0, pushRemote: "https://token@github.com/me/app", permission: "WRITE", mergeMethods: ["merge"], remoteUrl: "x" };
@@ -129,4 +129,22 @@ test("a retired adapter refuses and forgets", async () => {
   github.dispose();
   await assert.rejects(github.read(request("github.pr.view"), { number: 7 }, target, fine), { code: "host_unavailable" });
   await assert.rejects(github.write(request("github.pr.ready"), { number: 7 }, identity, stamp, target.root, fine), { code: "host_unavailable" });
+});
+
+test("Update local follows only a branch GitHub named to this device", async () => {
+  const { github } = host();
+  assert.throws(() => github.verifiedBase(request("git.write"), "w", "main"), { code: "stale_target" });
+  await github.read(request("github.pr.view"), { number: 7 }, target, fine);
+  assert.equal(github.verifiedBase(request("git.write"), "w", "main"), "main");
+  assert.throws(() => github.verifiedBase(request("git.write"), "w", "../evil"), { code: "stale_target" });
+  assert.throws(() => github.verifiedBase(request("git.write", "d2"), "w", "main"), { code: "stale_target" });
+  assert.throws(() => github.verifiedBase(request("git.write"), "other", "main"), { code: "stale_target" });
+});
+
+test("what the host can archive, and the link it saved, travel with the context", async () => {
+  const transport = { invoke: async (command, args) => command === "remote_studio_git_metadata" ? { repository: "me/app" } : command === "github_status" ? { authenticated: false } : assert.fail(`${command} ${JSON.stringify(args)}`) };
+  const access = await new HostGitHub(1, transport, () => true).read(request("github.pr.context"), {}, target, fine);
+  assert.equal(access.canArchive, true);
+  assert.equal(access.savedLink, null);
+  assert.equal((await new HostGitHub(1, transport).read(request("github.pr.context"), {}, target, fine)).canArchive, false);
 });

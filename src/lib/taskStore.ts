@@ -177,6 +177,24 @@ export function adoptRemoteParentDismissal(threadId: string, expectedRunId: stri
     const parentRuns = { ...state.parentRuns }; delete parentRuns[threadId]; return { parentRuns };
   }); } finally { parentRunRetirements.delete(threadId); }
 }
+/** Native thread deletion already committed queue/parent bookkeeping. Drop only
+ * resident state and streaming routes; removeTask would issue blind saves. */
+export function adoptRemoteThreadRemoval(threadId: string): void {
+  const run = useTaskStore.getState().parentRuns[threadId];
+  if (run) adoptRemoteParentDismissal(threadId, run.id);
+  forgetCursorTurnOwnership(threadId);
+  pendingDeltas.delete(threadId);
+  localDeltaRowsWithoutHistory.delete(threadId);
+  localTranscriptThreads.delete(threadId);
+  locallyHydratedAssistantRows.delete(threadId);
+  clearReasoningBuffers(threadId);
+  useTaskStore.setState((state) => {
+    const tasks = { ...state.tasks }, statuses = { ...state.statuses }, workflowOwners = { ...state.workflowOwners };
+    delete tasks[threadId]; delete statuses[threadId]; delete workflowOwners[threadId];
+    return { tasks, statuses, workflowOwners, activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId,
+      approvalQueryToken: state.tasks[threadId]?.approvals.length ? {} : state.approvalQueryToken, queueRevision: state.queueRevision + 1 };
+  });
+}
 export function storedQueuedTurnsForThread(threadId: string): readonly QueuedTurn[] { return queuedTurnsCache[threadId] ?? []; }
 export function storedRemoteQueuedTurns(): QueuedTurn[] {
   return Object.values(queuedTurnsCache).flat().filter((entry) => Boolean(entry.remoteDelivery));

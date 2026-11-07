@@ -28,6 +28,8 @@ export interface HostContextSources extends ExecutionSources {
   getPublicWorkflows(workspaceId: string): readonly { id: string; name: string; description?: string }[];
   /** The crew a started thread captured, with any change waiting for its next message. */
   getThreadCrew?(threadId: string): { maxConcurrent: number; targets: readonly ChildAgentTarget[] } | undefined;
+  /** True once archiving from another device has a native fence. */
+  canArchiveThreads?(): boolean;
   /** Applies a crew change exactly as the local picker does. */
   stageThreadCrew?(threadId: string, next: { maxConcurrent: number; targets: ChildAgentTarget[] }, dryRun: boolean): "none" | "staged" | "busy" | "not-ready";
 }

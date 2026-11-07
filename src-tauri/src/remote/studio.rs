@@ -25,14 +25,14 @@ fn gate() -> Arc<Semaphore> {
 pub(super) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let permit = gate()
-        .try_acquire_owned()
-        .map_err(|_| "The other device is reading other Studio items. Try again shortly.".to_string())?;
+    let permit = gate().try_acquire_owned().map_err(|_| {
+        "The other device is reading other Studio items. Try again shortly.".to_string()
+    })?;
     tokio::time::timeout(
         Duration::from_secs(20),
         tauri::async_runtime::spawn_blocking(move || {
             let _permit = permit;
-            let _read_policy=super::safe_git::enter();
+            let _read_policy = super::safe_git::enter();
             work()
         }),
     )
@@ -109,7 +109,10 @@ pub(super) fn git(
     }
     Ok((output.stdout, truncated))
 }
-pub(super) fn git_root(read: &crate::project_git::GitReadOperation, root: &Anchor) -> Result<(), String> {
+pub(super) fn git_root(
+    read: &crate::project_git::GitReadOperation,
+    root: &Anchor,
+) -> Result<(), String> {
     let (bytes, truncated) = git(read, root, &["rev-parse", "--show-toplevel"], 8192)?;
     if truncated {
         return Err(failed());
@@ -402,4 +405,106 @@ pub(crate) async fn remote_studio_file_preview(
         Ok(json!({"text":text,"binary":binary,"truncated":truncated}))
     })
     .await
+}
+
+/// Host-only baselines for remote writes. Never call the unrestricted local
+/// snapshot/metadata commands from a View request.
+#[tauri::command]
+pub(crate) async fn remote_studio_git_snapshot(
+    window: WebviewWindow,
+    root: String,
+) -> Result<Value, String> {
+    main(&window)?;
+    blocking(move || git_baseline(&root, false)).await
+}
+#[tauri::command]
+pub(crate) async fn remote_studio_git_metadata(
+    window: WebviewWindow,
+    root: String,
+) -> Result<Value, String> {
+    main(&window)?;
+    blocking(move || git_baseline(&root, true)).await
+}
+fn git_baseline(path: &str, metadata: bool) -> Result<Value, String> {
+    let root = Anchor::open(Path::new(path))?;
+    let read = crate::project_git::GitReadOperation::new();
+    git_root(&read, &root)?;
+    let cwd = root.git_cwd();
+    let value = if metadata {
+        serde_json::to_value(crate::github::github_repo_status_sync(
+            cwd.to_str().ok_or_else(failed)?,
+        )?)
+        .map_err(|_| failed())?
+    } else {
+        serde_json::to_value(crate::git_workspace::snapshot_for_selection_with_read(
+            &cwd,
+            cwd.to_str().ok_or_else(failed)?,
+            &read,
+        )?)
+        .map_err(|_| failed())?
+    };
+    root.validate()?;
+    Ok(value)
+}
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::*;
+    #[test]
+    fn remote_baseline_and_github_metadata_never_run_configured_programs() {
+        let path =
+            std::env::temp_dir().join(format!("mythra-safe-baseline-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let git = |args: &[&str]| {
+            let output = crate::process_launch::background_std_command("git")
+                .current_dir(&path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Native test"]);
+        git(&["config", "user.email", "native@example.invalid"]);
+        std::fs::write(path.join("file"), "baseline\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "baseline"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/native-test/example.git",
+        ]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&["branch", "--set-upstream-to=origin/main", "main"]);
+        std::fs::write(path.join("file"), "ahead\n").unwrap();
+        git(&["commit", "-am", "ahead", "-q"]);
+        let marker = path.join("PROGRAM-RAN");
+        let target = marker
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "'\\''");
+        let evil = format!("echo ran > '{target}'; exit 1");
+        git(&["config", "core.fsmonitor", &evil]);
+        git(&["config", "filter.evil.process", &evil]);
+        git(&["config", "diff.external", &evil]);
+        {
+            let _policy = super::super::safe_git::enter();
+            let snapshot = git_baseline(path.to_str().unwrap(), false).unwrap();
+            assert_eq!(snapshot["isRoot"], true);
+            assert_eq!(snapshot["branch"], "main");
+            assert_eq!(snapshot["upstream"], "origin/main");
+            assert_eq!(snapshot["upstreamRemote"], "origin");
+            assert_eq!(snapshot["ahead"], 1);
+            assert_eq!(snapshot["behind"], 0);
+            let metadata = git_baseline(path.to_str().unwrap(), true).unwrap();
+            assert_eq!(metadata["repository"], "native-test/example");
+            assert!(!marker.exists());
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

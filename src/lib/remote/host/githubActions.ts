@@ -2,6 +2,7 @@ import type { GitHubAccountStatus, GitHubRepoStatus } from "../../github";
 import type { RemoteWorkResult, HostRequest, RemoteOperationIdentity } from "../wire";
 import type { WireGitHubAccess, WirePullRequest, WirePullRequestComment, WirePullRequestContext, WirePullRequestSummary } from "../wire-studio";
 import type { HostTransport } from "./bridge";
+import { loadStored } from "../../storage";
 import { nativeRefusal } from "./nativeActions";
 import { HostReadError } from "./scope";
 
@@ -80,14 +81,38 @@ interface Stamp { workspaceId?: string | null; threadId?: string | null }
 export class HostGitHub {
   private repositories = new Map<string, { repository: string | null; expires: number }>();
   private heads = new Map<string, Baseline>();
+  /** Branches GitHub named to this device, the only ones an update may follow. */
+  private bases = new Map<string, Set<string>>();
   private disposed = false;
-  constructor(private readonly generation: number, private readonly transport: HostTransport) {}
-  dispose(): void { this.disposed = true; this.repositories.clear(); this.heads.clear(); }
+  constructor(private readonly generation: number, private readonly transport: HostTransport, private readonly canArchive: () => boolean = () => false) {}
+  /** The link saved with this thread on the host, as identities only. */
+  private savedLink(threadId: string | undefined, repository: string | null): WireGitHubAccess["savedLink"] {
+    const link = threadId ? record(loadStored<Record<string, unknown>>("kiwi.threadPullRequests", {})[threadId]) : {};
+    return typeof link.repository === "string" && link.repository.toLowerCase() === repository?.toLowerCase() && typeof link.number === "number" && Number.isSafeInteger(link.number) && link.number > 0
+      ? { repository: link.repository, number: link.number } : null;
+  }
+  dispose(): void { this.disposed = true; this.repositories.clear(); this.heads.clear(); this.bases.clear(); }
+  private rememberBase(request: HostRequest, target: Target, base: string): void {
+    if (!base) return;
+    const key = JSON.stringify([request.device, target.workspaceId]);
+    const known = this.bases.get(key) ?? new Set<string>();
+    if (known.size >= MAX_ENTRIES) known.clear();
+    known.add(base);
+    this.bases.delete(key);
+    while (this.bases.size >= MAX_ENTRIES) this.bases.delete(this.bases.keys().next().value!);
+    this.bases.set(key, known);
+  }
+  /** Update local follows a branch the host learned from GitHub, never a viewer's word. */
+  verifiedBase(request: HostRequest, workspaceId: string, base: unknown): string {
+    if (typeof base !== "string" || !this.bases.get(JSON.stringify([request.device, workspaceId]))?.has(base)) throw stale();
+    return base;
+  }
+  repositoryFor(root: string): Promise<string | null> { return this.repository(root); }
 
   private async repository(root: string): Promise<string | null> {
     const known = this.repositories.get(root);
     if (known && known.expires > Date.now()) return known.repository;
-    const status = await this.transport.invoke<GitHubRepoStatus>("github_repo_status", { cwd: root });
+    const status = await this.transport.invoke<GitHubRepoStatus>("remote_studio_git_metadata", { root });
     while (this.repositories.size >= MAX_ENTRIES) this.repositories.delete(this.repositories.keys().next().value!);
     const repository = typeof status?.repository === "string" ? status.repository : null;
     this.repositories.set(root, { repository, expires: Date.now() + REPOSITORY_MS });
@@ -122,11 +147,12 @@ export class HostGitHub {
       let authenticated = false;
       try { authenticated = (await this.transport.invoke<GitHubAccountStatus>("github_status")).authenticated === true; } catch { /* No GitHub CLI there. */ }
       assertCurrent();
-      const access: WireGitHubAccess = { authenticated, repository, isolated: target.isolated, context: null };
+      const access: WireGitHubAccess = { authenticated, repository, isolated: target.isolated, context: null, canArchive: this.canArchive(), savedLink: this.savedLink(target.threadId, repository) };
       if (!repository || !authenticated) return access;
       try { access.context = wireContext(await this.call(request, target, request.op, { repository })); } catch (reason) { throw nativeRefusal(reason); }
       assertCurrent();
       this.remember(request, target, "checkout", access.context.headOid);
+      this.rememberBase(request, target, access.context.defaultBranch);
       return access;
     }
     if (!repository) throw noRepository();
@@ -140,7 +166,7 @@ export class HostGitHub {
         const found = await this.call(request, target, request.op, { repository, branch: args.branch });
         assertCurrent();
         const pullRequest = found ? wirePullRequest(found) : null;
-        if (pullRequest) this.remember(request, target, pullRequest.number, pullRequest.headOid);
+        if (pullRequest) { this.remember(request, target, pullRequest.number, pullRequest.headOid); this.rememberBase(request, target, pullRequest.baseRefName); }
         return { pullRequest };
       }
       const number = prNumber(args.number), raw = await this.call(request, target, request.op, { repository, number });
@@ -148,6 +174,7 @@ export class HostGitHub {
       if (request.op === "github.pr.view") {
         const pullRequest = wirePullRequest(raw);
         this.remember(request, target, number, pullRequest.headOid);
+        this.rememberBase(request, target, pullRequest.baseRefName);
         return { pullRequest };
       }
       const row = record(raw);

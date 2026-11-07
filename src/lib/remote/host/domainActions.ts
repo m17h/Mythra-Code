@@ -44,7 +44,7 @@ export class HostDomains {
     const catalog = { thread: (id: string) => sources.getKnownThreads()[id], ownership: () => sources.getOwnershipLinks() };
     this.studio = new HostStudio(sources, catalog, generation, isCurrent, transport);
     this.studioReads = new HostStudioReads(sources, catalog, this.studio, generation, isCurrent, sources.getStudioReads?.(), transport);
-    this.github = new HostGitHub(generation, transport);
+    this.github = new HostGitHub(generation, transport, () => sources.canArchiveThreads?.() === true);
   }
   dispose(): void { this.disposed = true; this.studio.dispose(); this.studioReads.dispose(); this.github.dispose(); this.git.clear(); }
   private check(request: HostRequest): void {
@@ -62,6 +62,18 @@ export class HostDomains {
     const context = resolveThreadExecutionContext(this.sources, args.threadId === undefined ? { workspaceId: workspace.id } : { threadId: idArg(args.threadId) });
     return { workspace, context, root: this.sources.executionPathFor(context.activeThread?.id ?? "", workspace.path) };
   }
+  /** Host-only baseline through native anchored safe_git, never local helpers. */
+  private async guardedSnapshot(request: HostRequest, root: string): Promise<GitWorkspaceSnapshot> {
+    this.check(request);
+    try {
+      const result = await this.transport.invoke<GitWorkspaceSnapshot>("remote_studio_git_snapshot", { root });
+      this.check(request);
+      return result;
+    } catch (reason) {
+      if (typeof reason === "string" && /not found|unknown command/i.test(reason)) throw new HostReadError("unsupported", "This device has not installed guarded Git baseline reads yet.");
+      throw reason;
+    }
+  }
   async read(request: HostRequest, args: Record<string, unknown>): Promise<StudioResult> {
     const before = this.target(request, args);
     const validate = () => { const now = this.target(request, args); if (now.root !== before.root || now.workspace.path !== before.workspace.path) throw stale(); };
@@ -70,14 +82,14 @@ export class HostDomains {
       return await this.github.read(request, args, { workspaceId: before.workspace.id, ...(threadId ? { threadId } : {}), root: before.root, isolated: before.root !== before.workspace.path }, validate) as StudioResult;
     }
     if (request.op === "git.status") {
-      const snapshot = await this.transport.invoke<GitWorkspaceSnapshot>("git_workspace_snapshot", { cwd: before.root });
+      const snapshot = await this.guardedSnapshot(request, before.root);
       validate();
       const result = await this.studio.execute(request);
-      const after = await this.transport.invoke<GitWorkspaceSnapshot>("git_workspace_snapshot", { cwd: before.root });
+      const after = await this.guardedSnapshot(request, before.root);
       validate();
       if (snapshot.headOid !== after.headOid || snapshot.branch !== after.branch || !after.isRoot) throw stale();
       let remote: GitHubRepoStatus | undefined;
-      try { remote = await this.transport.invoke<GitHubRepoStatus>("github_repo_status", { cwd: before.root }); } catch { /* Offline/non-GitHub repos retain local Git actions. */ }
+      try { remote = await this.transport.invoke<GitHubRepoStatus>("remote_studio_git_metadata", { root: before.root }); } catch { /* Safe local actions do not require a configured remote. No fallback. */ }
       validate();
       const revision = this.parity?.revision(before.context);
       if (!revision || this.parity?.revision(this.target(request, args).context) !== revision) throw stale();
@@ -105,7 +117,7 @@ export class HostDomains {
     if (isGitHubWrite(request.op)) return this.github.write(request, args, identity, target.stamp, target.root, assertAllowed);
     const checkpoint = request.op.startsWith("checkpoint.");
     strictNativeKeys(args, ["workspaceId", "threadId", "revision", ...(checkpoint ? ["checkpointId", "label", "target", "confirmed"]
-      : request.op === "worktree.create" || request.op === "worktree.recreate" ? ["label"] : request.op === "worktree.baseline" ? [] : ["confirmed"])]);
+      : request.op === "worktree.create" || request.op === "worktree.recreate" ? ["label"] : request.op === "worktree.baseline" ? [] : request.op === "worktree.remove" || request.op === "worktree.returnShared" ? ["confirmed", "force"] : ["confirmed"])]);
     if ((request.op === "checkpoint.restore" || request.op === "checkpoint.delete" || request.op === "worktree.apply" || request.op === "worktree.merge" || (request.op === "worktree.remove" || request.op === "worktree.returnShared" || request.op === "worktree.continueShared")) && args.confirmed !== true) throw invalid();
     if (!target.context.activeThread) throw invalid();
     const keys = request.op === "checkpoint.restore" ? ["kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.threadWorktrees"]
@@ -153,9 +165,9 @@ export class HostDomains {
           else {
             if (record.status === "missing" || record.status === "removed") throw stale();
             nativeArgs = { worktreePath: record.path, baseCommit: record.baseCommit, branch: record.branch, confirmed: true };
-            if (request.op === "worktree.remove" || request.op === "worktree.returnShared") Object.assign(nativeArgs, { force: false, deleteBranch: true, expectedRetainedBranchOid: record.retainedBranchOid ?? null });
+            if (request.op === "worktree.remove" || request.op === "worktree.returnShared") Object.assign(nativeArgs, { force: args.force === true, deleteBranch: true, expectedRetainedBranchOid: record.retainedBranchOid ?? null });
             if (request.op === "worktree.merge") {
-              const source = await this.transport.invoke<GitWorkspaceSnapshot>("git_workspace_snapshot", { cwd: root });
+              const source = await this.guardedSnapshot(request, root);
               Object.assign(nativeArgs, { expectedSourceBranch: source.branch, expectedSourceHeadOid: source.headOid });
             }
           }
@@ -193,11 +205,31 @@ export class HostDomains {
       return { opId: identity.opId, state: "accepted", workspaceId: target.stamp.workspaceId };
     } catch (reason) { throw nativeRefusal(reason); }
   }
+  /** The shared project's branch, as local Update does, even from an isolated thread. */
+  private async gitUpdate(request: HostRequest, args: Record<string, unknown>, identity: RemoteOperationIdentity,
+    target: ReturnType<typeof nativeTarget>, assertAllowed: () => void): Promise<RemoteWorkResult> {
+    if (args.confirmed !== true) throw invalid();
+    const root = target.context.activeWorkspace!.path;
+    const base = this.github.verifiedBase(request, target.stamp.workspaceId, args.base);
+    const repository = await this.github.repositoryFor(root);
+    if (!repository) throw new HostReadError("unsupported", "Refresh this project's configured Git remote on the other device first.");
+    const before = await this.transport.invoke<GitWorkspaceSnapshot>("remote_studio_git_snapshot", { root });
+    if (!before.headOid || !before.branch) throw new HostReadError("stale_target", "The shared project needs a named branch before it can update.");
+    assertAllowed();
+    try {
+      const raw = await this.transport.invoke<{ result: RemoteWorkResult }>("remote_domain_execute", { stamp: target.stamp, root, action: "git.update",
+        args: { expectedRepository: repository, base, expectedHeadOid: before.headOid, expectedBranch: before.branch } });
+      if (raw.result?.opId !== identity.opId || raw.result.state !== "accepted") throw new Error("Unconfirmed domain receipt");
+      this.git.delete(key(request, args));
+      return { opId: identity.opId, state: "accepted", workspaceId: target.stamp.workspaceId };
+    } catch (reason) { throw nativeRefusal(reason); }
+  }
   private async gitWrite(request: HostRequest, args: Record<string, unknown>, identity: RemoteOperationIdentity,
     target: ReturnType<typeof nativeTarget>, assertAllowed: () => void): Promise<RemoteWorkResult> {
-    strictNativeKeys(args, ["workspaceId", "threadId", "revision", "action", "resourceId", "message", "name", "create", "stagedOnly", "confirmed"]);
+    strictNativeKeys(args, ["workspaceId", "threadId", "revision", "action", "resourceId", "message", "name", "create", "stagedOnly", "confirmed", "base"]);
     const action = bounded(args.action, 32);
     if (action === "init") return this.gitInit(args, identity, target, assertAllowed);
+    if (action === "update") return this.gitUpdate(request, args, identity, target, assertAllowed);
     if (!["stage", "unstage", "commit", "branch", "push", "pull", "fetch", "update", "revert", "revertAll"].includes(action)) throw invalid();
     const baseline = this.git.get(key(request, args));
     if (!baseline || baseline.root !== target.root || baseline.revision !== args.revision || baseline.expires < Date.now() || baseline.grantRevision !== request.grant.revision) throw stale();
@@ -211,10 +243,9 @@ export class HostDomains {
     }
     if (action === "commit") { nativeArgs.message = bounded(args.message, 16384); if (typeof args.stagedOnly !== "boolean") throw invalid(); nativeArgs.stagedOnly = args.stagedOnly; }
     if (action === "branch") { nativeArgs.name = bounded(args.name, 256); if (typeof args.create !== "boolean") throw invalid(); nativeArgs.create = args.create; }
-    if (action === "push" || action === "pull" || action === "update") {
+    if (action === "push" || action === "pull") {
       if (!baseline.remote?.repository || !baseline.remote.remoteUrl) throw new HostReadError("unsupported", "Refresh this project's configured Git remote on the other device first.");
       Object.assign(nativeArgs, { expectedRemoteUrl: baseline.remote.remoteUrl, expectedRepository: baseline.remote.repository });
-      if (action === "update") throw new HostReadError("unsupported", "The other device has not selected a verified update base.");
     }
     if (action === "revert" || action === "revertAll") {
       if (args.confirmed !== true) throw invalid();

@@ -37,3 +37,14 @@ export function hostLinkPath(href: string): string | undefined {
     return path === "/" || path.length > 8192 || path.startsWith("//") || path.includes("\\") ? undefined : path;
   } catch { return undefined; }
 }
+
+/** A tunnel this device opened: its own loopback address, numeric or a `*.localhost`
+ * name. Nothing else is ever offered as an address to paste into a browser. */
+export function isLocalTunnelUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === "http:" && Boolean(url.port) && !url.username && !url.password && (host === "127.0.0.1" || host.endsWith(".localhost"));
+  } catch { return false; }
+}

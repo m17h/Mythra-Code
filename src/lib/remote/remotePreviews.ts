@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isLocalTunnelUrl } from "./links";
 import { hostRead } from "./remoteActions";
 import type { PreviewLinksResult } from "./wire-studio";
 
@@ -22,7 +23,7 @@ export async function openRemotePreview(device: string, endpointId: string, path
   const result = await invoke<PreviewOpened>("remote_preview_open", { device, endpointId, ...(path ? { path } : {}) });
   if (result?.opened) return { previewId: result.previewId, notice: "" };
   const reason = result?.reason ?? "Your browser didn't open.";
-  const address = typeof result?.url === "string" && result.url.startsWith("http://127.0.0.1:") ? ` Open ${result.url} in a browser on this device.` : "";
+  const address = isLocalTunnelUrl(result?.url) ? ` Open ${result.url} in a browser on this device.` : "";
   return { previewId: result?.previewId, notice: `${reason}${address}` };
 }
 export const closeRemotePreview = (previewId: string) => invoke<void>("remote_preview_close", { previewId });

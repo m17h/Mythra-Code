@@ -487,8 +487,8 @@ test("Git writes resolve opaque per-viewer changes and send only host-built stam
   const snapshot = { headOid: "host-head", branch: "main", isRoot: true };
   const transport = { invoke: async (command, args) => {
     calls.push({ command, args });
-    if (command === "git_workspace_snapshot") return snapshot;
-    if (command === "github_repo_status") return { repository: "host/repo", remoteUrl: "https://private-token@example/repo" };
+    if (command === "remote_studio_git_snapshot") return snapshot;
+    if (command === "remote_studio_git_metadata") return { repository: "host/repo", remoteUrl: "https://private-token@example/repo" };
     if (command === "remote_studio_git_status") return { rows: [{ path: "file.ts", area: "unstaged", status: " M" }], stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false };
     if (command === "remote_domain_execute") return { result: { opId: args.stamp.opId, state: "accepted" }, payload: { stdout: "/secret/path", stderr: "token" } };
     throw new Error(command);
@@ -568,8 +568,8 @@ test("the real shared Studio preview token is consumed once by the real Git writ
   const host = { ...sources(), getGrant: () => allowed }, calls = [];
   const transport = { invoke: async (command, args) => {
     calls.push({ command, args });
-    if (command === "git_workspace_snapshot") return { headOid: "head", branch: "main", isRoot: true };
-    if (command === "github_repo_status") return {};
+    if (command === "remote_studio_git_snapshot") return { headOid: "head", branch: "main", isRoot: true };
+    if (command === "remote_studio_git_metadata") return {};
     if (command === "remote_studio_git_status") return { rows: [{ path: "file.ts", area: "unstaged", status: " M" }], stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false };
     if (command === "remote_studio_revert_preview") return { token: "host-only-token", restorePaths: ["file.ts"], preservedPaths: [] };
     if (command === "remote_domain_execute") return { result: { state: "accepted", opId: args.stamp.opId } };
@@ -624,7 +624,8 @@ test("native checkpoint/worktree writes fence the complete installed safety-reco
     ["worktree.apply", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
     ["worktree.merge", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
     ["worktree.remove", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
-    ["worktree.returnShared", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
+    ["worktree.remove", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], { force: true }],
+    ["worktree.returnShared", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], { force: true }],
     ["worktree.continueShared", ["kiwi.threadWorktrees"], {}],
   ];
   resetTaskStore();
@@ -634,7 +635,7 @@ test("native checkpoint/worktree writes fence the complete installed safety-reco
     const transport = { invoke: async (command, args) => {
       calls.push({ command, args });
       if (command === "remote_domain_snapshot") return { version: 1, rows: keys.map((key) => ({ key, value: values[key], revision: 1 })) };
-      if (command === "git_workspace_snapshot") return { branch: "main", headOid: "host-head", isRoot: true };
+      if (command === "remote_studio_git_snapshot") return { branch: "main", headOid: "host-head", isRoot: true };
       if (command === "remote_domain_execute") return { result: { opId: op, state: "accepted" }, rows: keys.map((key) => ({ key, value: values[key], revision: 2 })) };
       throw new Error(command);
     } };
@@ -646,6 +647,7 @@ test("native checkpoint/worktree writes fence the complete installed safety-reco
       assert.deepEqual(dispatched.bookkeeping.rows.map((row) => row.key), keys);
       assert.equal(dispatched.root, project.path);
       if (op.startsWith("worktree.") && op !== "worktree.continueShared") assert.equal(dispatched.args.worktreePath, worktree.path);
+      if (op === "worktree.remove" || op === "worktree.returnShared") assert.equal(dispatched.args.force, extra.force === true, "only an explicit confirmed choice deletes unsaved work");
       assert.equal(JSON.stringify(result).includes("/host/"), false);
     } finally { domains.dispose(); }
   }
@@ -684,4 +686,42 @@ test("an unfenced App fork adapter is rejected before marking dispatch or invoki
     assert.equal(forked, false);
     assert.equal(receipts.some((receipt) => receipt.disposition === "dispatched"), false);
   } finally { work.dispose(); globalThis.window = previous; }
+});
+
+test("View-only domain Git reads refuse before invoking unrestricted local Git helpers", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const viewOnly = { ...grant, work: false }, device = "a".repeat(64), calls = [];
+  const host = { ...sources(), getGrant: () => viewOnly };
+  const domains = new HostDomains(host, 1, () => true, { revision: () => "r" }, { invoke: async (command, args) => {
+    calls.push({ command, args });
+    throw "Command remote_studio_git_snapshot not found";
+  } });
+  const args = { workspaceId: "p", threadId: "t" };
+  try {
+    await assert.rejects(domains.read({ op: "git.status", device, generation: 1, grant: viewOnly, args }, args), (error) => error.code === "unsupported");
+    assert.equal(calls.some((call) => call.command === "git_workspace_snapshot" || call.command === "github_repo_status"), false);
+    assert.deepEqual(calls, [{ command: "remote_studio_git_snapshot", args: { root: project.path } }]);
+  } finally { domains.dispose(); }
+});
+
+test("a successful View-only Git baseline uses only anchored guarded reads and keeps metadata host-only", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const viewOnly = { ...grant, work: false }, device = "a".repeat(64), calls = [];
+  const host = { ...sources(), getGrant: () => viewOnly };
+  const domains = new HostDomains(host, 1, () => true, { revision: () => "r" }, { invoke: async (command, args) => {
+    calls.push({ command, args });
+    assert.deepEqual(args.root, project.path);
+    assert.equal("cwd" in args, false);
+    if (command === "remote_studio_git_snapshot") return { branch: "main", headOid: "host-only-head", isRoot: true, rootPath: "/host/private" };
+    if (command === "remote_studio_git_status") return { rows: [], changedFiles: 0, stagedFiles: 0, unstagedFiles: 0, untrackedFiles: 0, truncated: false };
+    if (command === "remote_studio_git_metadata") return { repository: "private/repo", remoteUrl: "https://token@github.com/private/repo" };
+    assert.fail(`Unexpected remote read: ${command}`);
+  } });
+  const args = { workspaceId: "p", threadId: "t" };
+  try {
+    const result = await domains.read({ op: "git.status", device, generation: 1, grant: viewOnly, args }, args);
+    assert.equal(result.changedFiles, 0);
+    assert.deepEqual(calls.map((call) => call.command), ["remote_studio_git_snapshot", "remote_studio_git_status", "remote_studio_git_snapshot", "remote_studio_git_metadata"]);
+    for (const secret of ["host-only-head", "/host/private", "token@", "private/repo"]) assert.equal(JSON.stringify(result).includes(secret), false);
+  } finally { domains.dispose(); }
 });

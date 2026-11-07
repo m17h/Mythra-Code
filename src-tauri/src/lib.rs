@@ -325,6 +325,7 @@ struct RuntimeLifecycle {
 
 #[derive(Default)]
 struct RuntimeLifecycleState {
+    thread_changes: HashMap<String,(u64,usize)>,
     instance: Option<String>,
     restart_reservation: Option<RuntimeRestartReservationState>,
     active_turns: HashSet<String>,
@@ -498,6 +499,7 @@ impl RuntimeLifecycle {
     fn begin_instance(&self, instance: &str) {
         let mut state = self.lock();
         state.instance = Some(instance.to_owned());
+        state.thread_changes.clear();
         state.active_turns.clear();
         state.remote_turn_owners.clear();
         state.remote_turn_permissions.clear();
@@ -1218,6 +1220,7 @@ fn kill_process_tree(pid: u32) -> Result<(), String> {
 #[derive(Default)]
 pub(crate) struct NativeStartRegistry {
     attempts: Arc<StdMutex<HashMap<String, Arc<NativeStartAttempt>>>>,
+    row_retired:StdMutex<HashMap<String,bool>>,
 }
 
 pub(crate) struct NativeStartAttempt {
@@ -1238,6 +1241,7 @@ pub(crate) struct NativeStartGuard {
 impl NativeStartRegistry {
     pub(crate) fn begin(&self, thread_id: &str, turn_id: &str, start_request_id: Option<&str>) -> Result<NativeStartGuard, String> {
         let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.row_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(thread_id){return Err("This conversation was archived or deleted. Restore it or start a new conversation.".into());}
         if attempts.contains_key(thread_id) {
             return Err("A provider start is still settling in this thread. Wait before starting another turn.".into());
         }
@@ -1248,6 +1252,23 @@ impl NativeStartRegistry {
         });
         attempts.insert(thread_id.to_owned(), attempt.clone());
         Ok(NativeStartGuard { registry: self.attempts.clone(), thread_id: thread_id.to_owned(), attempt })
+    }
+
+    pub(crate) fn row_gate<T>(&self,thread:&str,op:&str,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{
+        let attempts=self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if op!="thread.rename"&&attempts.contains_key(thread){return Err(remote::work::refused("busy"));}
+        let result=commit()?;
+        if matches!(op,"thread.archive"|"thread.delete"){self.row_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread.into(),op=="thread.delete");}
+        if op=="thread.restore"{self.row_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(thread);}
+        Ok(result)
+    }
+
+    // A local Restore still uses the ordinary persistence path. Release only
+    // archive fences after that durable snapshot; permanent deletions stay shut.
+    fn adopt_local_archives(&self, archived:&Value){
+        let Some(rows)=archived.as_array() else{return;};
+        let _attempts=self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.row_retired.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|id,permanent|*permanent||rows.iter().any(|row|row.get("id").and_then(Value::as_str)==Some(id)));
     }
 
     pub(crate) fn cancel(&self, thread_id: &str, expected_turn_id: Option<&str>, expected_start_request_id: Option<&str>) -> Result<Option<Arc<NativeStartAttempt>>, String> {
@@ -2746,6 +2767,7 @@ impl AppServer {
             Some(remote::work::prepare_native(&self.app,meta,method,if matches!(method,"turn/start"|"command/exec"){Some(permission)}else{None},None).await?)
         }else{None};
         if let Some(permit)=remote_permit.as_ref(){if matches!(method,"thread/resume"|"turn/start"){permit.verify_thread(params.get("threadId").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?)?;}}
+        let _thread_change=RuntimeThreadChangeGuard::begin(&self.lifecycle,&self.instance,method,params.get("threadId").and_then(Value::as_str));
         validate_command_timeout_runtime(method, &params, &self.runtime_version)
             .map_err(|error| format!("MYTHRA_NOT_DISPATCHED: {}", provider_error_text(&error)))?;
         let mut activity_guard = self.lifecycle.begin_activity(
@@ -2788,6 +2810,7 @@ impl AppServer {
                 let write=async{if let Some(command)=command_observation.as_ref(){command.started.store(true,Ordering::Release);}stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input flush failed.".to_string())};tokio::pin!(write);
                 timeout_at(write_deadline,std::future::poll_fn(|cx|{
                     let owner=self.lifecycle.lock();
+                    if !permit.did_begin(){if let Err(error)=remote_thread_write_proof(permit,&owner,&self.instance,method,params.get("threadId").and_then(Value::as_str)){return std::task::Poll::Ready(Err(error));}}
                     if !self.is_alive()||owner.instance.as_deref()!=Some(self.instance.as_str()){return std::task::Poll::Ready(Err(if permit.did_begin(){"MYTHRA_DELIVERY_UNCERTAIN: The provider changed while its input was being written.".into()}else{remote::work::refused("stale_target")}));}
                     permit.poll_write(cx,write.as_mut(),||Ok(()))
                 })).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input timed out.".to_string())?
@@ -2820,7 +2843,7 @@ impl AppServer {
                 if method=="turn/start"{if let Some(owner)=local_owner.as_ref(){let thread=params.get("threadId").and_then(Value::as_str).ok_or_else(||remote::work::refused("invalid"))?;let turn=value.pointer("/turn/id").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?;owner.accepted("openai",thread,turn,Some(&self.instance),None)?;}}
                 if let Some(permit)=remote_permit.as_ref().filter(|_|!method.starts_with("command/exec")){
                     let extra=json!({"threadId":value.pointer("/thread/id").or_else(||tracking_thread_id.as_ref().map(|_|&message["params"]["threadId"])),"turnId":value.pointer("/turn/id"),"runtimeInstance":self.instance});
-                    if method=="turn/start"{permit.accepted(extra).await?;}else{permit.prepared(extra).await?;}
+                    if method=="turn/start"{permit.accepted(extra).await?;}else if matches!(method,"thread/start"|"thread/resume"){permit.prepared(extra).await?;}
                 }
                 self.track_successful_request(method, tracking_thread_id.as_deref(), value);
             } else {
@@ -9654,7 +9677,7 @@ async fn codex_rpc(
     mut params: Value,
 ) -> Result<Value, String> {
     let remote_delivery=params.as_object_mut().and_then(|object|object.remove("remoteDelivery")).filter(|value|!value.is_null()).map(serde_json::from_value::<remote::work::RemoteDelivery>).transpose().map_err(|_|remote::work::refused("invalid"))?;
-    if remote_delivery.is_some()&&!matches!(method.as_str(),"thread/start"|"thread/resume"|"turn/start"|"command/exec"){return Err(remote::work::refused("unsupported"));}
+    if remote_delivery.is_some()&&!matches!(method.as_str(),"thread/start"|"thread/resume"|"turn/start"|"command/exec"|"thread/name/set"|"thread/archive"|"thread/unarchive"|"thread/delete"|"thread/fork"|"thread/compact/start"|"thread/rollback"){return Err(remote::work::refused("unsupported"));}
     let local_owner=params.as_object_mut().and_then(|p|p.remove("localOwnerHandle")).filter(|v|!v.is_null()).map(|v|v.as_str().map(str::to_owned).ok_or_else(||remote::work::refused("invalid"))).transpose()?;
     if local_owner.is_some()&&!matches!(method.as_str(),"thread/start"|"thread/resume"|"turn/start"|"command/exec"){return Err(remote::work::refused("unsupported"));}
     let expected_instance = params.as_object_mut().and_then(|object| object.remove("expectedRuntimeInstance"))
@@ -10735,6 +10758,8 @@ pub fn run() {
                     remote::owners::remote_work_owner_open,
                     remote::owners::remote_work_owner_retire,
                     remote::bookkeeping::remote_domain_snapshot,
+                    remote::threads::remote_thread_snapshot,
+                    remote::threads::remote_thread_execute,
                     remote::domain::remote_domain_execute,
                     remote::github::remote_github_read,
                     remote::github::remote_github_execute,
@@ -10763,6 +10788,8 @@ pub fn run() {
                     remote::studio_extra::remote_studio_attachment_image,
                     remote::studio::remote_studio_file_preview,
                     remote::studio::remote_studio_git_status,
+                    remote::studio::remote_studio_git_snapshot,
+                    remote::studio::remote_studio_git_metadata,
                     remote::studio::remote_studio_git_diff,
                     remote::studio::remote_work_files_search,
                     remote::folders::remote_folders_browse,
@@ -11006,4 +11033,86 @@ pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut remote::
   }else{Ok(true)}},
  Some("openai"|"openrouter"|"lmstudio")=>{let state=app.state::<RuntimeState>();let server=state.server.lock().await.as_ref().cloned().ok_or_else(stale)?;if target.owner!=format!("codex:{}",server.instance){return Err(stale());}let owner=server.lifecycle.lock();Ok(owner.remote_turn_owners.get(thread)!=target.turn_id.as_ref())},
  _=>Err(stale())}
+}
+
+/// Tracking only for ordinary callers; no new waits, permission checks, flags or
+/// provider bytes. A remote thread effect uses the revision at its actual write.
+struct RuntimeThreadChangeGuard{lifecycle:Arc<RuntimeLifecycle>,instance:String,thread:String}
+impl RuntimeThreadChangeGuard{
+ fn begin(lifecycle:&Arc<RuntimeLifecycle>,instance:&str,method:&str,thread:Option<&str>)->Option<Self>{
+    if !matches!(method,"thread/resume"|"turn/start"|"thread/fork"|"thread/name/set"|"thread/archive"|"thread/unarchive"|"thread/delete"|"thread/rollback"|"thread/compact/start"){return None;}
+    let thread=thread?;let mut state=lifecycle.lock();if state.instance.as_deref()!=Some(instance){return None;}let entry=state.thread_changes.entry(thread.into()).or_default();entry.0=entry.0.saturating_add(1);entry.1=entry.1.saturating_add(1);Some(Self{lifecycle:lifecycle.clone(),instance:instance.into(),thread:thread.into()})
+ }
+}
+impl Drop for RuntimeThreadChangeGuard{fn drop(&mut self){let mut state=self.lifecycle.lock();if state.instance.as_deref()==Some(&self.instance){if let Some(entry)=state.thread_changes.get_mut(&self.thread){entry.1=entry.1.saturating_sub(1);}}}}
+fn remote_thread_method(op:&str)->Option<&'static str>{match op{"thread.rename"=>Some("thread/name/set"),"thread.archive"=>Some("thread/archive"),"thread.restore"=>Some("thread/unarchive"),"thread.delete"=>Some("thread/delete"),"thread.fork"=>Some("thread/fork"),"thread.compact"=>Some("thread/compact/start"),"thread.rollback"=>Some("thread/rollback"),_=>None}}
+fn remote_thread_busy(state:&RuntimeLifecycleState,thread:&str)->bool{state.active_turns.contains(thread)||state.starting_turns.contains(thread)||state.active_compactions.contains(thread)||state.starting_compactions.contains(thread)||state.active_native_agents.contains(thread)||state.ambiguous_native_activity.contains(thread)}
+pub(crate) struct RemoteThreadProviderProof{server:Arc<AppServer>,epoch:u64,source:String,root:remote::threads::RootProof,thread:Value}
+impl RemoteThreadProviderProof{
+ pub(crate) fn metadata(&self)->Result<Value,String>{let mut meta=self.root.metadata()?;meta["instance"]=json!(self.server.instance);meta["epoch"]=json!(self.epoch);Ok(meta)}
+ pub(crate) fn commit_gate<T>(&self,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{let state=self.server.lifecycle.lock();self.root.validate()?;if !self.server.is_alive()||state.instance.as_deref()!=Some(self.server.instance.as_str())||state.thread_changes.get(&self.source).copied().unwrap_or_default()!=(self.epoch+1,0){return Err(remote::work::refused("stale_target"));}commit()}
+}
+pub(crate) async fn remote_thread_provider_proof(app:&AppHandle,provider:&str,thread:&str,root:&str,op:&str,removed:Option<&str>)->Result<RemoteThreadProviderProof,String>{
+ let stale=||remote::work::refused("stale_target");let state=app.state::<RuntimeState>();let server=ensure_server(app,&state).await?;
+ let epoch={let state=server.lifecycle.lock();let(epoch,pending)=state.thread_changes.get(thread).copied().unwrap_or_default();if pending!=0||op!="thread.rename"&&remote_thread_busy(&state,thread){return Err(remote::work::refused("busy"));}epoch};
+ let data=server.request("thread/read",json!({"threadId":thread,"includeTurns":false})).await?;let actual=data.get("thread").filter(|t|t["id"]==thread).ok_or_else(stale)?.clone();
+ if actual.get("modelProvider").and_then(Value::as_str).is_some_and(|p|if provider=="lmstudio"{!matches!(p,"lmstudio"|"lmstudio_openkiwi"|"openkiwi-lmstudio")}else{p!=provider}){return Err(stale());}
+ let actual_cwd=actual.get("cwd").and_then(Value::as_str).ok_or_else(stale)?;let expected=if let Some(saved)=removed.filter(|_|op=="thread.delete"){remote::threads::RootProof::new_removed(root,actual_cwd,saved)?}else{remote::threads::RootProof::new(root,actual_cwd)?};
+ {let state=server.lifecycle.lock();if state.thread_changes.get(thread).copied().unwrap_or_default()!=(epoch,0)||op!="thread.rename"&&remote_thread_busy(&state,thread){return Err(remote::work::refused("busy"));}}
+ Ok(RemoteThreadProviderProof{server,epoch,source:thread.into(),root:expected,thread:actual})
+}
+fn remote_thread_write_proof(permit:&remote::work::NativePermit,state:&RuntimeLifecycleState,instance:&str,method:&str,thread:Option<&str>)->Result<(),String>{
+ let Some((operation,proof))=permit.thread_effect_proof()else{return Ok(());};let stale=||remote::work::refused("stale_target");
+ if remote_thread_method(operation)!=Some(method)||proof.get("instance").and_then(Value::as_str)!=Some(instance){return Err(stale());}
+ remote::threads::RootProof::check_metadata(proof)?;
+ let thread=thread.ok_or_else(stale)?;permit.verify_thread(thread)?;let epoch=proof.get("epoch").and_then(Value::as_u64).ok_or_else(stale)?;
+ if state.thread_changes.get(thread).copied().unwrap_or_default()!=(epoch+1,1){return Err(stale());}
+ // Compact has already reserved its own lifecycle slot; the unchanged epoch
+ // proves no competing mutation/turn began since the native read proof.
+ if operation!="thread.rename"&&method!="thread/compact/start"&&remote_thread_busy(state,thread){return Err(remote::work::refused("busy"));}Ok(())
+}
+pub(crate) async fn remote_thread_provider_apply(app:&AppHandle,proof:&RemoteThreadProviderProof,meta:remote::work::RemoteDelivery,op:&str,root:&str,args:&Value)->Result<Value,String>{
+ let method=remote_thread_method(op).ok_or_else(||remote::work::refused("unsupported"))?;
+ let mut params=json!({"threadId":proof.source,"expectedRuntimeInstance":proof.server.instance,"remoteDelivery":meta});
+ match op{
+ "thread.rename"=>params["name"]=args["name"].clone(),
+ "thread.rollback"=>params["numTurns"]=json!(1),
+ "thread.fork"=>{for key in ["model","modelProvider","config","baseInstructions","developerInstructions"]{if let Some(v)=args.get(key){params[key]=v.clone();}}params["cwd"]=json!(root);params["runtimeWorkspaceRoots"]=json!([root]);},_=>{}}
+ let mut result=codex_rpc(app.clone(),app.state::<RuntimeState>(),method.into(),params).await?;
+ if op=="thread.restore"{if !result.is_object(){result=json!({});}result["thread"]=proof.thread.clone();}
+ if op=="thread.fork"{let fork=result.get("thread").ok_or_else(||remote::work::refused("stale_target"))?;let cwd=fork.get("cwd").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?;if std::fs::canonicalize(cwd).ok()!=std::fs::canonicalize(root).ok(){return Err(remote::work::refused("stale_target"));}}
+ Ok(result)
+}
+pub(crate) fn remote_local_thread_gate<T>(app:&AppHandle,provider:&str,thread:&str,op:&str,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{
+ if provider=="cursor"{return cursor::remote_row_gate(app,thread,op,commit);}
+ let state=app.state::<ClaudeState>();let turns=state.turns.try_lock().map_err(|_|remote::work::refused("busy"))?;
+ if op!="thread.rename"&&turns.get(thread).is_some_and(|turn|turn.alive.load(Ordering::Acquire)||turn.cutoff_uncertain.load(Ordering::Acquire)){return Err(remote::work::refused("busy"));}
+ state.starts.row_gate(thread,op,commit)
+}
+
+#[cfg(test)]
+mod remote_thread_revision_tests{
+ use super::*;
+ #[test]
+ fn local_mutation_tracking_fences_pending_and_settled_competing_changes(){
+    let lifecycle=Arc::new(RuntimeLifecycle::default());lifecycle.begin_instance("instance");assert_eq!(lifecycle.lock().thread_changes.get("t").copied().unwrap_or_default(),(0,0));
+    let own=RuntimeThreadChangeGuard::begin(&lifecycle,"instance","thread/name/set",Some("t")).unwrap();assert_eq!(lifecycle.lock().thread_changes["t"],(1,1));
+    let competing=RuntimeThreadChangeGuard::begin(&lifecycle,"instance","thread/resume",Some("t")).unwrap();assert_eq!(lifecycle.lock().thread_changes["t"],(2,2));drop(competing);assert_eq!(lifecycle.lock().thread_changes["t"],(2,1));drop(own);assert_eq!(lifecycle.lock().thread_changes["t"],(2,0));
+    assert!(RuntimeThreadChangeGuard::begin(&lifecycle,"instance","thread/read",Some("t")).is_none());lifecycle.begin_instance("replacement");assert!(lifecycle.lock().thread_changes.is_empty());
+ }
+ #[test]
+ fn local_transcript_retirement_cannot_race_a_later_start(){
+    let registry=NativeStartRegistry::default();let start=registry.begin("t","turn",None).unwrap();assert!(registry.row_gate("t","thread.delete",||Ok(())).is_err());drop(start);
+    registry.row_gate("t","thread.archive",||Ok(())).unwrap();assert!(registry.begin("t","later",None).is_err());
+    registry.adopt_local_archives(&json!([{"id":"t"}]));assert!(registry.begin("t","still-archived",None).is_err());
+    registry.adopt_local_archives(&json!([]));assert!(registry.begin("t","locally-restored",None).is_ok());
+    registry.row_gate("t","thread.archive",||Ok(())).unwrap();registry.row_gate("t","thread.restore",||Ok(())).unwrap();assert!(registry.begin("t","new",None).is_ok());
+    registry.row_gate("t","thread.delete",||Ok(())).unwrap();registry.adopt_local_archives(&json!([]));assert!(registry.begin("t","deleted",None).is_err());
+ }
+}
+
+// Tracking-only adoption for the existing local archive persistence command.
+pub(crate) fn remote_local_archive_snapshot(app:&AppHandle,value:&Value){
+ if let Some(state)=app.try_state::<ClaudeState>(){state.starts.adopt_local_archives(value);}
+ cursor::adopt_local_archive_snapshot(app,value);
 }

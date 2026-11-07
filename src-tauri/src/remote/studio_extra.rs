@@ -338,6 +338,12 @@ mod tests {
         // production guard, not the intentionally unrestricted LOCAL helper.
         let result=super::super::studio::blocking(move||{
             let anchor=Anchor::open(Path::new(&root))?;let read=GitReadOperation::new();git_root(&read,&anchor)?;
+            // Revert-all derives its branch via this scalar identity query.
+            // A detached object snapshot must not report HEAD here while the
+            // final checkout guard still sees the live named branch.
+            let branch=read.stdout(&anchor.git_cwd(),&["symbolic-ref","--short","-q","HEAD"])?;
+            let reference=read.stdout(&anchor.git_cwd(),&["rev-parse","--symbolic-full-name","HEAD"])?;
+            assert_eq!(reference,format!("refs/heads/{branch}"),"private object isolation changed live checkout identity");
             let preview=crate::git_workspace::revert_all_preview_sync(&root)?;anchor.validate()?;serde_json::to_value(preview).map_err(|_|failed())
         }).await;
         let ran=marker.exists();let _=fs::remove_dir_all(dir);

@@ -23,13 +23,13 @@ import { providerDisplayName } from "../../lib/childAgents";
 import { confirmDialog } from "../../lib/confirmDialog";
 import { exportTextFile } from "../../lib/codex";
 import { startProjectPointerDrag, type ProjectDropTarget } from "../../lib/projectPointerDrag";
-import { accessReason, hostRead, hostRows, hostWrite, readDroppedFile, uploadToHost } from "../../lib/remote/remoteActions";
+import { accessReason, hostProjectWrite, hostRead, hostRows, hostWrite, readDroppedFile, uploadToHost } from "../../lib/remote/remoteActions";
 import { addRemoteNotice, machineActions, setMachineActions, useActiveMachine } from "../../lib/remote/activeMachine";
 import { hostLinkPath, hostLocalPort, isPublicWebLink } from "../../lib/remote/links";
 import { listRemotePreviews, openRemotePreview } from "../../lib/remote/remotePreviews";
-import { newThreadDraftKey, newThreadTargetFor, removeOutboxEntry, setNewThreadTarget, threadDraftKey, useRemoteOutbox, type OutboxEntry } from "../../lib/remote/outbox";
+import { addRemoteEcho, newThreadDraftKey, newThreadTargetFor, removeOutboxEntry, removeRemoteEcho, setNewThreadTarget, threadDraftKey, useRemoteEchoes, useRemoteOutbox, type OutboxEntry, type RemoteEcho } from "../../lib/remote/outbox";
 import {
-  clearRemoteCapabilities, reconcileRemoteOutbox, refreshRemoteCapabilities, refreshRemoteContext, remoteContextKey, retryRemotePrompt,
+  clearRemoteCapabilities, alignRemoteDevice, reconcileRemoteOutbox, refreshRemoteCapabilities, refreshRemoteContext, remoteContextKey, retryRemotePrompt,
   runRemoteRowAction, searchRemoteFiles, sendRemotePrompt, setRemoteThreadSettings, stopRemoteTurn, UNCONFIRMED_TEXT,
   useRemoteContext, useRemoteWork, type RemoteSendOutcome,
 } from "../../lib/remote/remoteWork";
@@ -48,6 +48,7 @@ import { RemoteProjectEditor } from "./RemoteProjectEditor";
 import { RemoteComposerControls } from "./RemoteComposerControls";
 import { RemoteImage } from "./RemoteImage";
 import { RemotePreviews } from "./RemotePreviews";
+import { useRemoteCommand } from "./useRemoteCommand";
 import { useRemoteQueueEdit } from "./useRemoteQueueEdit";
 import { RemoteModelControls } from "./RemoteModelControls";
 import { RemoteMessageQuestions, RemoteRequests, RemoteThreadContext, type RemoteThreadScope } from "./RemoteRequests";
@@ -101,10 +102,23 @@ const NO_THREADS: WireThread[] = [];
 const NO_MATCHES: readonly { id: string }[] = [];
 const NO_AGENTS: Readonly<Record<string, { status?: string }>> = {};
 const NO_ATTACHMENTS: AttachmentRecord[] = [];
+const NO_WIRE_MESSAGES: WireMessage[] = [];
 const NO_QUEUE: QueuedTurn[] = [];
 const LINK_DOWN = new Set(["stale", "offline", "unreachable", "incompatible", "connecting"]);
 const WORK_SWITCH = (name: string) => `On ${name}, turn on Work for this device in Settings → Connections → Devices.`;
 
+/** Resubscribing on a healthy link is "stale" for a round trip, which isn't news. */
+const SETTLE_MS = 1_500;
+function useOutlasted(active: boolean, ms: number): boolean {
+  const [outlasted, setOutlasted] = useState(false);
+  useEffect(() => {
+    setOutlasted(false);
+    if (!active) return;
+    const timer = setTimeout(() => setOutlasted(true), ms);
+    return () => clearTimeout(timer);
+  }, [active, ms]);
+  return outlasted;
+}
 function connectionLabel(state: ViewState, name: string): string | null {
   if (state === "recovering") return `${name} is recovering its live thread state. This view may be out of date.`;
   if (state === "stale") return `Connection lost. This conversation may be out of date. Work already started on ${name} may still be running.`;
@@ -152,9 +166,13 @@ function OutboxMessage({ entry, name }: { entry: OutboxEntry; name: string }) {
 }
 /** What a new or open thread can change. A started thread keeps its worktree choice. */
 type RemoteSettingsChange = WireExecutionSettings;
+interface DraftToken { handle: string; startTarget?: string }
 
 const pendingEntries = new WeakMap<ChatMessage, OutboxEntry>();
 const pendingByEntry = new WeakMap<OutboxEntry, ChatMessage>();
+function messageForEcho(echo: RemoteEcho): ChatMessage {
+  return { id: `outbox:${echo.id}`, role: "user", text: echo.text, streaming: false, timelineOrder: Number.MAX_SAFE_INTEGER };
+}
 function messageForEntry(entry: OutboxEntry): ChatMessage {
   const cached = pendingByEntry.get(entry);
   if (cached) return cached;
@@ -464,6 +482,8 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
   const list = remote?.lists.get(remote.workspaceId ?? "");
   const thread = list?.threads.find((entry) => entry.id === remote?.threadId);
   const timeline = remote?.timelines.get(remote.threadId ?? "");
+  const timelineRef = useRef<readonly WireMessage[]>(NO_WIRE_MESSAGES);
+  timelineRef.current = timeline?.messages ?? NO_WIRE_MESSAGES;
   const compose = useRemoteOutbox((state) => state.compose[device]);
   const entries = useRemoteOutbox((state) => state.entries);
   const capabilities = useRemoteWork((state) => state.capabilities[device]);
@@ -474,16 +494,33 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
   const workspace = remote?.workspaces.find((entry) => entry.id === workspaceId);
   const draftKey = compose ? newThreadDraftKey(device, compose) : threadId ? threadDraftKey(device, threadId) : workspaceId ? newThreadDraftKey(device, newThreadTargetFor(workspaceId)) : `${device}/`;
   const pending = useMemo(() => entries.filter((entry) => entry.draftKey === draftKey), [draftKey, entries]);
+  const shownThread = compose ? undefined : remote?.threadId ?? undefined;
+  const allEchoes = useRemoteEchoes((state) => state.echoes);
+  const echoes = useMemo(() => allEchoes.filter((echo) => echo.device === device && (echo.draftKey === draftKey || (shownThread !== undefined && echo.threadId === shownThread))), [allEchoes, device, draftKey, shownThread]);
+  // Already in the thread, so showing it again would be a duplicate.
+  const arrived = useMemo(() => {
+    const rows = !compose && timeline ? timeline.messages : NO_WIRE_MESSAGES;
+    return new Set(echoes.filter((echo) => rows.filter((row) => row.role === "user" && row.text === echo.text).length > echo.known
+      || (echo.queued && (!compose && timeline?.queuedTurns.some((row) => row.text === echo.text)))).map((echo) => echo.id));
+  }, [compose, echoes, timeline]);
+  useEffect(() => { for (const echo of echoes) if (echo.accepted && arrived.has(echo.id)) removeRemoteEcho(echo.id); }, [arrived, echoes]);
   const [notice, setNotice] = useState("");
   const queueEditScope = `${device}/${threadId ?? "new"}`;
   const queueRowIds = useMemo(() => !compose && timeline?.state === "live" ? timeline.queuedTurns.map((entry) => entry.id) : null, [compose, timeline?.queuedTurns, timeline?.state]);
   const { isEditing, begin: beginQueueEdit, finish: finishQueueEdit } = useRemoteQueueEdit({ device, name, threadId, workspaceId: workspaceId ?? undefined, draftScope: queueEditScope, rowIds: queueRowIds, onNotice: setNotice });
-  const [schedules, setSchedules] = useState<QueuedTurn[]>(NO_QUEUE);
+  const [allSchedules, setSchedules] = useState<QueuedTurn[]>(NO_QUEUE);
+  // One render can pass before the effect below clears them, so these never show on another thread.
+  const schedules = useMemo(() => allSchedules.filter((entry) => entry.threadId === threadId), [allSchedules, threadId]);
+  const scheduleRead = useRef(0);
   const projectedMessages = useMemo(() => {
     const known = !compose && timeline ? timeline.messages.map(messageForTimeline) : NO_MESSAGES;
-    const waiting = pending.filter((entry) => entry.op !== "prompt.queue").map(messageForEntry);
+    const held = new Set(pending.map((entry) => entry.opId));
+    const waiting = [
+      ...pending.filter((entry) => entry.op !== "prompt.queue" && !arrived.has(entry.opId)).map(messageForEntry),
+      ...echoes.filter((echo) => !echo.queued && !held.has(echo.id) && !arrived.has(echo.id)).map(messageForEcho),
+    ];
     return waiting.length ? [...known, ...waiting] : known;
-  }, [compose, pending, timeline?.messages]);
+  }, [arrived, compose, echoes, pending, timeline?.messages]);
   const projectedActivities = useMemo(() => !compose && timeline ? timeline.activities.map(activityForTimeline) : NO_ACTIVITIES, [compose, timeline?.activities]);
   const queuedTurns = useMemo<QueuedTurn[]>(() => [
     ...(!compose && timeline ? timeline.queuedTurns.map((entry) => ({
@@ -496,7 +533,10 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
       // Only a send in flight is "sending". Anything else shows what is actually known.
       status: entry.state === "sending" ? "sending" : "failed", error: outboxStatus(entry, name),
     })),
-  ], [compose, isEditing, name, pending, remote?.threadId, schedules, timeline?.queuedTurns]);
+    ...echoes.filter((echo) => echo.queued && !arrived.has(echo.id) && !pending.some((entry) => entry.opId === echo.id)).map((echo): QueuedTurn => ({
+      id: echo.id, threadId: echo.threadId ?? "", text: echo.text, attachments: NO_ATTACHMENTS, createdAt: 0, status: "sending",
+    })),
+  ], [arrived, compose, echoes, isEditing, name, pending, remote?.threadId, schedules, timeline?.queuedTurns]);
   // A device missing from the list was removed here. The view stays on it until
   // the user picks another: this never falls back to the local machine.
   const state: ViewState = !machine || machine.state === "accessRemoved" || !machine.canView ? "removed"
@@ -509,7 +549,10 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
     loading: timeline.reading, paginated: true,
   } : undefined, [timeline?.history, timeline?.reading, timeline?.historyLimited]);
   const help = machine && snapshot ? deviceHelp(machine, snapshot) : null;
-  const banner = !machine && snapshot ? `${name} isn't paired with this device anymore. Choose another device from the switcher.` : help ?? connectionLabel(state, name);
+  const settling = state === "stale" && connected;
+  const outlasted = useOutlasted(settling, SETTLE_MS);
+  const stillSettling = settling && !outlasted;
+  const banner = !machine && snapshot ? `${name} isn't paired with this device anymore. Choose another device from the switcher.` : help ?? (stillSettling ? null : connectionLabel(state, name));
   const scope = useMemo<RemoteThreadScope | null>(() => threadId ? { device, name, threadId, connected, ...(workspaceId ? { workspaceId } : {}) } : null, [connected, device, name, threadId, workspaceId]);
   const timelineQuestions = useMemo(() => new Set(timeline?.messages.flatMap((message) => message.questions?.map((question) => question.id) ?? [])),
     [timeline?.messages]);
@@ -517,21 +560,25 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
   const [uploads, setUploads] = useState<Record<string, AttachmentRecord[]>>({});
   const attachments = uploads[draftKey] ?? NO_ATTACHMENTS;
   const dropHover = useActiveMachine((state) => state.remoteDropHover);
-  const [draftTokens, setDraftTokens] = useState<Record<string, { handle: string; startTarget?: string }>>({});
+  const [draftTokens, setDraftTokens] = useState<Record<string, DraftToken>>({});
+  const draftTokenRef = useRef<Record<string, DraftToken>>({});
+  const draftWork = useRef(new Map<string, { generation: number; tail: Promise<DraftToken | null> }>());
   const [draftChoice, setDraftChoice] = useState<Record<string, RemoteSettingsChange>>({});
-  const chosen = compose ? draftChoice[draftKey] : undefined;
+  // A picker shows the choice at once. The host's own answer takes over when it comes.
+  const [threadChoice, setThreadChoice] = useState<Record<string, RemoteSettingsChange>>({});
+  const chosen = compose ? draftChoice[draftKey] : threadId ? threadChoice[threadId] : undefined;
   const provider: Provider = chosen?.provider ?? context?.selected.provider ?? thread?.provider ?? "openai";
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
   const findInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const [runHandle, setRunHandle] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState(false);
   const canWork = threadId ? capabilities !== null : true;
   const canRun = Boolean(context?.capabilities.terminal);
   const revision = context?.revision ?? "";
   const parityTarget = useMemo(() => ({ ...(workspaceId ? { workspaceId } : {}), ...(threadId ? { threadId } : {}) }), [threadId, workspaceId]);
+  const { handle: runHandle, set: setRunHandle } = useRemoteCommand(device, "run.status", parityTarget, connected);
   const report = useCallback((outcome: { ok: boolean; message: string }) => { setNotice(outcome.message); return outcome.ok; }, []);
   const upload = useCallback(async (files: readonly File[]) => {
     if (!workspaceId) { setNotice(`Choose a workspace on ${name} first.`); return; }
@@ -542,13 +589,15 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
     }
   }, [device, draftKey, name, workspaceId]);
   const refreshSchedules = useCallback(() => {
+    const read = ++scheduleRead.current;
     if (!threadId || !workspaceId) { setSchedules(NO_QUEUE); return; }
     hostRead<WireParityReadResult>(device, "schedules.read", parityTarget).then((result) => {
+      if (read !== scheduleRead.current) return;
       setSchedules(hostRows(result).flatMap((row): QueuedTurn[] => row.deliverAt ? [{ id: row.id, threadId, text: row.text ?? "", attachments: NO_ATTACHMENTS,
         createdAt: row.createdAt ?? Date.now(), status: "queued", deliverAt: row.deliverAt }] : []));
-    }, () => setSchedules(NO_QUEUE));
+    }, () => { if (read === scheduleRead.current) setSchedules(NO_QUEUE); });
   }, [device, parityTarget, threadId, workspaceId]);
-  useEffect(refreshSchedules, [refreshSchedules]);
+  useEffect(() => { setSchedules(NO_QUEUE); refreshSchedules(); }, [refreshSchedules]);
   useEffect(() => { setFindOpen(false); setFindQuery(""); }, [threadId]);
   const findCount = useMemo(() => {
     const words = findQuery.trim().toLowerCase();
@@ -570,11 +619,15 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
     void refreshRemoteCapabilities(device, threadId);
   }, [approvalsKey, connected, device, threadId, timeline?.activeTurnId, timeline?.status]);
   useEffect(() => {
-    if (connected) void reconcileRemoteOutbox(device, name);
+    if (!connected) return;
+    void reconcileRemoteOutbox(device, name);
+    void alignRemoteDevice(device).catch(() => undefined);
   }, [connected, device, name]);
+  // The host's revision moves with the conversation, so an old one would refuse the next change.
+  const timelineStatus = timeline?.status, timelineTurn = timeline?.activeTurnId, timelineLength = timeline?.messages.length, queueLength = timeline?.queuedTurns.length;
   useEffect(() => {
     if (connected && workspaceId) void refreshRemoteContext(device, workspaceId, threadId);
-  }, [connected, device, threadId, workspaceId]);
+  }, [connected, device, queueLength, threadId, timelineLength, timelineStatus, timelineTurn, workspaceId]);
   // Labeled with the machine, because this device did none of the work.
   const lastSeen = useRef({ threadId, running, approvals: 0 });
   useEffect(() => {
@@ -635,34 +688,65 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
     useActiveMachine.setState({ remoteRunning: running || starting, remoteThreadOpen: Boolean(threadId), remoteApprovals: timeline?.approvals.length ?? 0 });
     return () => { setMachineActions(null); useActiveMachine.setState({ remoteRunning: false, remoteThreadOpen: false, remoteApprovals: 0 }); };
   }, [device, dropFiles, exportTranscript, leaving, name, parityTarget, report, revision, running, starting, stop, threadId, timeline?.approvals.length, workspaceId]);
-  const requestDraft = useCallback(async (key: string, settings: RemoteSettingsChange, previous?: string) => {
-    const outcome = await hostWrite<{ draftHandle?: string; startTarget?: string }>(device, name, "draft.settings.set", { workspaceId, ...(previous ? { draftHandle: previous } : {}), ...settings });
-    const handle = outcome.result?.draftHandle;
-    if (!outcome.ok || !handle) { if (!outcome.ok) setNotice(outcome.message); return null; }
-    const token = { handle, ...(outcome.result?.startTarget ? { startTarget: outcome.result.startTarget } : {}) };
-    setDraftTokens((current) => ({ ...current, [key]: token }));
-    return token;
-  }, [device, name, workspaceId]);
+  const storeDraftToken = useCallback((key: string, token: DraftToken | null) => {
+    const { [key]: _previous, ...rest } = draftTokenRef.current;
+    draftTokenRef.current = token ? { ...rest, [key]: token } : rest;
+    setDraftTokens(draftTokenRef.current);
+  }, []);
+  /** One at a time per draft, newest wins. A token always answers the choices last
+   * shown, so a send can't start with an older model or permission. */
+  const requestDraft = useCallback((key: string, settings: RemoteSettingsChange) => {
+    const slot = draftWork.current.get(key) ?? { generation: 0, tail: Promise.resolve<DraftToken | null>(null) };
+    draftWork.current.set(key, slot);
+    const generation = ++slot.generation;
+    slot.tail = slot.tail.then(async () => {
+      if (generation !== slot.generation) return null;
+      const previous = draftTokenRef.current[key]?.handle;
+      const outcome = await hostWrite<{ draftHandle?: string; startTarget?: string }>(device, name, "draft.settings.set", { workspaceId, ...(previous ? { draftHandle: previous } : {}), ...settings });
+      const handle = outcome.result?.draftHandle;
+      if (!outcome.ok || !handle) {
+        if (!outcome.ok) setNotice(outcome.message);
+        // The old token no longer matches what's on screen.
+        storeDraftToken(key, null);
+        return null;
+      }
+      const token = { handle, ...(outcome.result?.startTarget ? { startTarget: outcome.result.startTarget } : {}) };
+      storeDraftToken(key, token);
+      return token;
+    });
+    return slot.tail;
+  }, [device, name, storeDraftToken, workspaceId]);
   const deliver = useCallback(async (text: string, mode: "send" | "queue" | "steer", handle?: string): Promise<RemoteSendOutcome> => {
     setNotice("");
     if (!connected) return { status: "rejected", message: `Your draft is saved. You can send once ${name} is connected.` };
     if (!threadId && !workspaceId) return { status: "rejected", message: `Choose a workspace on ${name} first.` };
     if (threadId && capabilities === null) return { status: "rejected", message: `This device can view ${name} but can't work on it. ${WORK_SWITCH(name)}` };
+    // On screen straight away, as it is locally. Everything below happens behind it.
+    const opId = crypto.randomUUID();
+    const body = text.trim();
+    addRemoteEcho({ id: opId, device, draftKey, text: body, queued: mode === "queue", ...(threadId ? { threadId } : {}),
+      known: threadId ? timelineRef.current.filter((row) => row.role === "user" && row.text === body).length : 0 });
     const attachmentIds = (uploads[draftKey] ?? NO_ATTACHMENTS).map((entry) => entry.path);
     // Asked for first so Stop has something to name while the thread is starting.
-    const draftHandle = threadId ? undefined : (draftTokens[draftKey] ?? await requestDraft(draftKey, draftChoice[draftKey] ?? {}))?.handle;
-    const outcome = await sendRemotePrompt({ device, name, draftKey, text, mode,
+    // Any change still on its way finishes first, and a send never goes without one.
+    let draftHandle: string | undefined;
+    if (!threadId) {
+      await draftWork.current.get(draftKey)?.tail;
+      draftHandle = (draftTokenRef.current[draftKey] ?? await requestDraft(draftKey, draftChoice[draftKey] ?? {}))?.handle;
+      if (!draftHandle) { removeRemoteEcho(opId); return { status: "rejected", message: `Mythra Code couldn't set up this thread on ${name}. Your draft is saved. Try again.` }; }
+    }
+    const outcome = await sendRemotePrompt({ device, name, draftKey, text, mode, opId,
       ...(threadId ? { threadId } : { workspaceId }), ...(handle ? { handle } : {}), ...(draftHandle ? { draftHandle } : {}),
       ...(attachmentIds.length ? { attachmentIds } : {}) });
-    if (outcome.status === "rejected") setNotice(outcome.message);
+    if (outcome.status === "rejected") { removeRemoteEcho(opId); setNotice(outcome.message); }
     else setUploads((current) => { const next = { ...current }; delete next[draftKey]; return next; });
     // A draft handle works for one send.
-    if (!threadId) setDraftTokens((current) => { const next = { ...current }; delete next[draftKey]; return next; });
+    if (!threadId) storeDraftToken(draftKey, null);
     return outcome;
-  }, [capabilities, connected, device, draftChoice, draftKey, draftTokens, name, requestDraft, threadId, uploads, workspaceId]);
+  }, [capabilities, connected, device, draftChoice, draftKey, name, requestDraft, storeDraftToken, threadId, uploads, workspaceId]);
   const paletteWorkflows = useMemo(() => (context?.workflows ?? []).map((workflow) => ({ id: workflow.id, name: workflow.name, description: workflow.description, enabled: true, steps: [] })) as unknown as WorkflowDefinition[], [context?.workflows]);
   const steerHandle = running && capabilities?.canSteer ? capabilities.steer?.handle : undefined;
-  const search = useCallback((query: string) => workspaceId ? searchRemoteFiles(device, workspaceId, query) : Promise.resolve([]), [device, workspaceId]);
+  const search = useCallback((query: string) => workspaceId ? searchRemoteFiles(device, workspaceId, threadId, query) : Promise.resolve([]), [device, threadId, workspaceId]);
   const skills = useMemo(() => context?.skills.filter((skill) => skill.enabled).map((skill) => ({ name: skill.name, description: skill.description })), [context?.skills]);
   const changeSettings = (change: RemoteSettingsChange) => {
     if (!workspaceId) return;
@@ -676,12 +760,16 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
       return;
     }
     if (threadId) {
-      void setRemoteThreadSettings(device, name, { threadId, ...change }, workspaceId).then((message) => { if (message) setNotice(message); });
+      setThreadChoice((current) => ({ ...current, [threadId]: { ...current[threadId], ...change } }));
+      void setRemoteThreadSettings(device, name, { threadId, ...change }, workspaceId).then((message) => {
+        setThreadChoice(({ [threadId]: _settled, ...rest }) => rest);
+        if (message) setNotice(message);
+      });
       return;
     }
     // A new thread's choices wait on the host until its first prompt.
     setDraftChoice((current) => ({ ...current, [draftKey]: { ...current[draftKey], ...change } }));
-    void requestDraft(draftKey, { ...draftChoice[draftKey], ...change }, draftTokens[draftKey]?.handle);
+    void requestDraft(draftKey, { ...draftChoice[draftKey], ...change });
   };
   const copyWorktreePath = () => {
     hostRead<{ worktree?: { path?: string } | null }>(device, "worktree.status", parityTarget).then((result) => {
@@ -706,7 +794,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
   }), [canWork, device, name, threadId, workspaceId]);
   const awaiting = timeline?.approvals.length ? timeline.approvals.some((entry) => entry.kind === "question") ? "input" as const : "approval" as const : null;
   const contextPercent = context?.usage?.contextTokens && context.usage.contextWindow ? Math.round(context.usage.contextTokens / context.usage.contextWindow * 100) : null;
-  const known = Boolean(compose || (thread && timeline?.baseline) || pending.length);
+  const known = Boolean(compose || (thread && timeline?.baseline) || pending.length || echoes.length);
   const waiting = state === "removed" ? `This thread is not available from ${name}.` : thread ? "" : remote?.loading ? "" : `Choose a thread on ${name}, or start a new one.`;
   return <section className="remote-stage" data-remote-device={device} inert={leaving || undefined} aria-label={`Conversation on ${name}`}>
     <header className="topbar">
@@ -723,7 +811,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
           appPrompt="" provider={provider} threadStarted={Boolean(threadId)} skills={skills}
           onSave={(prompt, mode) => {
             if (!context?.capabilities.manageProjects) { setNotice(accessReason(name, "change project instructions", "Manage projects")); return; }
-            void hostWrite(device, name, "projects.instructions.set", { workspaceId, revision, prompt: prompt ?? "", mode }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
+            void hostProjectWrite(device, name, workspaceId!, "projects.instructions.set", { prompt: prompt ?? "", mode }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
           }}
           onAppPromptSettings={() => setEditingProject(true)} />}
         {workspace && !workspace.isChat && workspaceId && canWork && <RemotePreviews device={device} workspaceId={workspaceId} threadId={threadId} name={name} onNotice={setNotice} />}
@@ -736,7 +824,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
           onStop={() => { if (runHandle) void hostWrite(device, name, "run.stop", { ...parityTarget, revision, processHandle: runHandle }).then((outcome) => { if (report(outcome)) setRunHandle(null); }); }}
           onSave={(next) => {
             if (!canRun) { setNotice(accessReason(name, "save this command", "Terminal")); return; }
-            void hostWrite(device, name, "projects.run.set", { workspaceId, revision, command: next?.command ?? "", ...(next?.label ? { label: next.label } : {}), ...(next?.setupCommand ? { setupCommand: next.setupCommand } : {}) }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
+            void hostProjectWrite(device, name, workspaceId!, "projects.run.set", { command: next?.command ?? "", ...(next?.label ? { label: next.label } : {}), ...(next?.setupCommand ? { setupCommand: next.setupCommand } : {}) }).then((outcome) => { if (report(outcome) && workspaceId) void refreshRemoteContext(device, workspaceId, threadId); });
           }} onDiscovered={() => undefined} />}
       </div>
       <div className="topbar-right">
@@ -762,7 +850,7 @@ export function RemoteConversation({ device, leaving, sidebarOpen, chatFont, voi
       {findOpen && threadId && <ConversationSearchBar inputRef={findInput} query={findQuery} index={findIndex} count={findCount}
         onQuery={(query) => { setFindQuery(query); setFindIndex(0); }} onIndex={setFindIndex} onClose={() => { setFindOpen(false); setFindQuery(""); }} />}
       <div className="remote-timeline">
-        {compose && !pending.length ? <div className="thread-empty-state">
+        {compose && !pending.length && !echoes.length ? <div className="thread-empty-state">
           <AnimatedMythraLogo />
           <h1>{workspace?.isChat ? "Start a normal chat." : "What should we build?"}</h1>
           <p>This conversation runs on {name}, with its files and accounts.</p>

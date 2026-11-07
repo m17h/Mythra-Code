@@ -466,7 +466,7 @@ pub(crate) async fn remote_work_queue_authorize(
     }
     let inner = state.inner.clone();
     let saved=state.inner.enqueue_write(false,move|db|{
-        let op=operation(db,&stamp)?;if !matches!(op.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"schedules.edit"){return Err(work::refused("unsupported"));}
+        let op=operation(db,&stamp)?;if !matches!(op.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit"){return Err(work::refused("unsupported"));}
         let mut core=inner.lock();stamp.check(&core,&op)?;if permission=="full"&&!work::authorize(&core,&stamp.meta(),stamp.workspace_id.as_deref()).map_err(|_|stale())?.capabilities.full_access{return Err(work::refused("forbidden"));}
         let mut meta=stamp.meta();meta.owner_handle=owner_handle.clone();super::owners::check(&core,&meta)?;
         let ticket=uuid::Uuid::new_v4().to_string();super::owners::attach(&mut core,&meta,stamp.workspace_id.as_deref(),&ticket)?;super::owners::release(&mut core,&meta,&ticket);

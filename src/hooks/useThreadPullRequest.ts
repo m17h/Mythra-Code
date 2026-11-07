@@ -138,7 +138,7 @@ export function useThreadPullRequest(options: UseThreadPullRequestOptions) {
 }
 
 /** For a conversation on another machine: links last for this session and never reach storage. */
-export function useSessionThreadPullRequest(options: UseThreadPullRequestOptions) {
+export function useSessionThreadPullRequest(options: UseThreadPullRequestOptions, saved?: { repository: string; number: number } | null) {
   const [links, setValue] = useState<Record<string, ThreadPullRequestLink>>({});
   const linksRef = useRef(links);
   const setLinks = useCallback<PullRequestLinks[1]>((update) => {
@@ -146,6 +146,17 @@ export function useSessionThreadPullRequest(options: UseThreadPullRequestOptions
     linksRef.current = next;
     setValue(next);
   }, []);
+  // Once per thread: removing it here shouldn't bring it straight back.
+  const seeded = useRef(new Set<string>());
+  const { threadId, cwd, backend } = options;
+  useEffect(() => {
+    if (!threadId || !saved || !cwd || !backend || seeded.current.has(threadId) || linksRef.current[threadId]) return;
+    seeded.current.add(threadId);
+    backend.view(cwd, saved.repository, saved.number).then((snapshot) => {
+      if (linksRef.current[threadId]) return;
+      setLinks((current) => ({ ...current, [threadId]: { repository: snapshot.repository, number: snapshot.number, url: snapshot.url, attachedAt: Date.now(), snapshot } }));
+    }, () => { seeded.current.delete(threadId); });
+  }, [backend, cwd, saved, setLinks, threadId]);
   return usePullRequestWorkflow(options, [links, setLinks, linksRef] as PullRequestLinks);
 }
 

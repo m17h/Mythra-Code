@@ -38,6 +38,8 @@ class Session {
 
   constructor(private readonly key: string, private readonly device: string, private readonly workspaceId: string) {}
 
+  /** Moves on whenever a run ends, so a late reply can't claim the view it left. */
+  private session = 0;
   private view(): RemoteTerminalView { return useRemoteTerminals.getState().views[this.key] ?? IDLE; }
   private show(change: Partial<RemoteTerminalView>) {
     useRemoteTerminals.setState((state) => ({ views: { ...state.views, [this.key]: { ...this.view(), ...change } } }));
@@ -59,6 +61,7 @@ class Session {
   }
 
   private finish(notice = "") {
+    this.session += 1;
     this.terminalId = null;
     this.waiting = [];
     this.input = "";
@@ -111,9 +114,15 @@ class Session {
     const current = this.view();
     if (current.running || current.opening) return;
     this.show({ opening: true, command, notice: "" });
+    const session = ++this.session;
     const outcome = await hostWrite<{ terminalId?: string }>(this.device, name, "terminal.open", {
       workspaceId: this.workspaceId, ...(threadId ? { threadId } : {}), command, columns: this.columns, rows: this.rows });
     const terminalId = outcome.result?.terminalId;
+    // The link dropped while this was opening, and whatever followed owns this view now.
+    if (session !== this.session) {
+      if (terminalId) void hostWrite(this.device, name, "terminal.close", { workspaceId: this.workspaceId, terminalId });
+      return;
+    }
     if (!outcome.ok || !terminalId) { this.finish(outcome.message || `${name} didn't start that command.`); return; }
     this.terminalId = terminalId;
     this.show({ running: true, opening: false, command });

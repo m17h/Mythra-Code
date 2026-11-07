@@ -494,7 +494,7 @@ fn snapshot_for_selection(root: &Path, cwd: &str) -> Result<GitWorkspaceSnapshot
     })
 }
 
-fn snapshot_for_selection_with_read(
+pub(crate) fn snapshot_for_selection_with_read(
     root: &Path,
     cwd: &str,
     read: &GitReadOperation,

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useModalFocus } from "../../hooks/useModalFocus";
-import { accessReason, hostRead, hostRows, hostWrite } from "../../lib/remote/remoteActions";
+import { accessReason, hostProjectWrite, hostRead, hostRows } from "../../lib/remote/remoteActions";
 import type { HostContextResult, WireParityReadResult } from "../../lib/remote/wire";
 
 /** Remote-only for a reason: local Settings edits this device's projects, and
@@ -20,32 +20,37 @@ export function RemoteProjectEditor({ device, name, workspaceId, projectName, co
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const dialog = useRef<HTMLDivElement>(null);
+  /** What the host last said, which Save compares with. Typing beats a late read. */
+  const saved = useRef({ prompt: context?.projectPrompt ?? "", mode: context?.projectPromptMode ?? "replace" });
+  const edited = useRef(false);
   useModalFocus(dialog, true);
   useEffect(() => {
     let current = true;
     hostRead<WireParityReadResult>(device, "projects.instructions.read", { workspaceId }).then((result) => {
       const row = hostRows(result)[0];
       if (!current || !row) return;
-      setPrompt(row.prompt ?? "");
-      setMode(row.mode === "append" ? "append" : "replace");
+      saved.current = { prompt: row.prompt ?? "", mode: row.mode === "append" ? "append" : "replace" };
+      if (edited.current) return;
+      setPrompt(saved.current.prompt);
+      setMode(saved.current.mode);
     }, () => undefined);
     return () => { current = false; };
   }, [device, workspaceId]);
   const canManage = Boolean(context?.capabilities.manageProjects);
   const canShell = Boolean(context?.capabilities.terminal);
-  const revision = context?.revision ?? "";
   const save = async () => {
     setSaving(true);
     setError("");
     const writes: [string, Record<string, unknown>, boolean][] = [
       ["projects.settings.set", { name: title.trim() }, title.trim() !== projectName],
-      ["projects.instructions.set", { prompt, mode }, prompt !== (context?.projectPrompt ?? "") || mode !== (context?.projectPromptMode ?? "replace")],
+      ["projects.instructions.set", { prompt, mode }, prompt !== saved.current.prompt || mode !== saved.current.mode],
       ["projects.run.set", { command: run.trim(), ...(setup.trim() ? { setupCommand: setup.trim() } : {}) }, canShell && (run !== (context?.run?.command ?? "") || setup !== (context?.run?.setupCommand ?? ""))],
       ["projects.check.set", { command: check.trim() }, canShell && check !== (context?.check?.command ?? "")],
     ];
     for (const [op, args, changed] of writes) {
       if (!changed) continue;
-      const outcome = await hostWrite(device, name, op, { workspaceId, revision, ...args });
+      // Each save changes the project, so each one is checked against the one before it.
+      const outcome = await hostProjectWrite(device, name, workspaceId, op, args);
       if (!outcome.ok) { setError(outcome.message); setSaving(false); return; }
     }
     setSaving(false);
@@ -61,9 +66,9 @@ export function RemoteProjectEditor({ device, name, workspaceId, projectName, co
       {!canManage && <p className="remote-folder-path" role="note">{accessReason(name, "change this project", "Manage projects")}</p>}
       <fieldset disabled={!canManage || saving}>
         <label><span>Name</span><input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-        <label><span>Project instructions</span><textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+        <label><span>Project instructions</span><textarea rows={6} value={prompt} onChange={(event) => { edited.current = true; setPrompt(event.target.value); }} /></label>
         <label><span>Use with the app's instructions</span>
-          <select value={mode} onChange={(event) => setMode(event.target.value === "append" ? "append" : "replace")}>
+          <select value={mode} onChange={(event) => { edited.current = true; setMode(event.target.value === "append" ? "append" : "replace"); }}>
             <option value="replace">Replace</option>
             <option value="append">Add to them</option>
           </select>

@@ -1,9 +1,10 @@
 import { endRemoteTerminals } from "./remoteTerminal";
+import { forgetPanels } from "./panelCache";
 import { create } from "zustand";
-import { keepRemoteSessions, openRemoteThread } from "./remoteStore";
+import { keepRemoteSessions, openRemoteThread, refreshRemoteDevice, useRemoteStore } from "./remoteStore";
 import {
-  admitToOutbox, markPromptRejected, MAX_PROMPT_CHARS, nextOperationSequence, outboxIsFull, removeOutboxEntry,
-  setNewThreadTarget, updateOutboxEntry, useRemoteOutbox, type OutboxEntry, type OutboxOperation,
+  admitToOutbox, markPromptRejected, MAX_PROMPT_CHARS, newThreadDraftKey, nextOperationSequence, outboxIsFull, removeOutboxEntry, removeRemoteEcho,
+  setNewThreadTarget, settleRemoteEcho, updateOutboxEntry, useRemoteOutbox, type OutboxEntry, type OutboxOperation,
 } from "./outbox";
 import { viewerErrorCode, viewerRequest, viewerWork } from "./viewerBridge";
 import type { HostContextResult, RemoteRowOperation, RemoteWorkResult, ThreadSettingsSetArgs, WireWorkCapabilities } from "./wire";
@@ -84,13 +85,25 @@ export function sequenced<T>(device: string, prepare: (opSeq: number) => Promise
   });
   return admitted.then(({ response }) => response);
 }
-async function operationSequence(device: string): Promise<number> {
-  let floor = 0;
-  if (!alignedDevices.has(device)) {
-    const info = await viewerRequest<{ highestOpSeq?: number }>(device, "host.info");
-    floor = typeof info?.highestOpSeq === "number" ? info.highestOpSeq : 0;
-    alignedDevices.add(device);
+const alignedFloors = new Map<string, number>();
+const aligning = new Map<string, Promise<void>>();
+/** Asked for on connecting, so the first send doesn't spend a round trip on it. */
+export function alignRemoteDevice(device: string): Promise<void> {
+  if (alignedDevices.has(device)) return Promise.resolve();
+  let pending = aligning.get(device);
+  if (!pending) {
+    pending = viewerRequest<{ highestOpSeq?: number }>(device, "host.info").then((info) => {
+      alignedFloors.set(device, typeof info?.highestOpSeq === "number" ? info.highestOpSeq : 0);
+      alignedDevices.add(device);
+    }).finally(() => aligning.delete(device));
+    aligning.set(device, pending);
   }
+  return pending;
+}
+async function operationSequence(device: string): Promise<number> {
+  await alignRemoteDevice(device);
+  const floor = alignedFloors.get(device) ?? 0;
+  alignedFloors.delete(device);
   return nextOperationSequence(device, floor);
 }
 
@@ -107,10 +120,21 @@ function promptArgs(entry: OutboxEntry): Record<string, unknown> {
 
 function settleAccepted(entry: OutboxEntry, threadId: string | undefined): void {
   removeOutboxEntry(entry.opId);
-  if (entry.op === "prompt.send" && !entry.threadId && entry.workspaceId) {
-    setNewThreadTarget(entry.device, undefined);
-    if (threadId) void openRemoteThread(entry.device, entry.workspaceId, threadId);
-  }
+  settleRemoteEcho(entry.opId, threadId ?? entry.threadId);
+  if (entry.op !== "prompt.send" || entry.threadId || !entry.workspaceId) return;
+  // Only a draft still on screen follows its new thread. A late reply never moves
+  // someone off whatever they went to meanwhile: the thread just joins the list.
+  const { device, workspaceId, draftKey } = entry;
+  const watching = () => {
+    const target = useRemoteOutbox.getState().compose[device];
+    const view = useRemoteStore.getState().devices[device];
+    return target ? newThreadDraftKey(device, target) === draftKey : !view?.threadId && view?.workspaceId === workspaceId;
+  };
+  if (!watching()) { refreshRemoteDevice(device); return; }
+  // The draft stays on screen until the thread is ready to take over from it.
+  const leaveDraft = () => { const target = useRemoteOutbox.getState().compose[device]; if (target && newThreadDraftKey(device, target) === draftKey) setNewThreadTarget(device, undefined); };
+  if (!threadId) { leaveDraft(); return; }
+  void openRemoteThread(device, workspaceId, threadId, watching).then(leaveDraft, leaveDraft);
 }
 
 async function dispatchPrompt(entry: OutboxEntry, name: string): Promise<RemoteSendOutcome> {
@@ -122,10 +146,12 @@ async function dispatchPrompt(entry: OutboxEntry, name: string): Promise<RemoteS
     const code = viewerErrorCode(reason);
     if (!DEFINITE_REFUSALS.has(code)) {
       updateOutboxEntry(entry.opId, { state: "awaiting" });
+      recheckOutbox(entry.device, name);
       return { status: "awaiting confirmation" };
     }
     const message = refusalText(code, name);
     removeOutboxEntry(entry.opId);
+    removeRemoteEcho(entry.opId);
     return { status: "rejected", message };
   }
   if (result?.state === "accepted" || result?.state === "queued") {
@@ -135,6 +161,7 @@ async function dispatchPrompt(entry: OutboxEntry, name: string): Promise<RemoteS
   if (result?.state === "rejected") {
     const message = refusalText(result.error?.code ?? "", name);
     removeOutboxEntry(entry.opId);
+    removeRemoteEcho(entry.opId);
     return { status: "rejected", message };
   }
   updateOutboxEntry(entry.opId, { state: "uncertain" });
@@ -148,6 +175,8 @@ const claimedDrafts = new Set<string>();
  * machine. */
 export async function sendRemotePrompt(request: {
   device: string; name: string; draftKey: string; text: string; mode: keyof typeof OPERATION_FOR_MODE;
+  /** Chosen by the caller when something is already showing under this identity. */
+  opId?: string;
   threadId?: string; workspaceId?: string; handle?: string; draftHandle?: string; attachmentIds?: string[];
 }): Promise<RemoteSendOutcome> {
   const { device, name, draftKey, mode, threadId, workspaceId, handle, draftHandle, attachmentIds } = request;
@@ -163,7 +192,7 @@ export async function sendRemotePrompt(request: {
   try {
     return await sequenced(device, async (opSeq) => {
       entry = {
-        opId: crypto.randomUUID(), opSeq, device, op: OPERATION_FOR_MODE[mode], draftKey, text,
+        opId: request.opId ?? crypto.randomUUID(), opSeq, device, op: OPERATION_FOR_MODE[mode], draftKey, text,
         state: "sending", createdAt: Date.now(),
         ...(threadId ? { threadId } : {}), ...(workspaceId ? { workspaceId } : {}), ...(handle ? { handle } : {}),
         ...(draftHandle ? { draftHandle } : {}), ...(attachmentIds?.length ? { attachmentIds } : {}),
@@ -190,17 +219,29 @@ export async function retryRemotePrompt(entry: OutboxEntry, name: string): Promi
 }
 
 const reconciling = new Set<string>();
-/** Asks the host about every prompt whose outcome this device doesn't know. It
- * runs when a device connects, so nothing here polls. */
+const RECHECK_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+const rechecks = new Map<string, { timer?: ReturnType<typeof setTimeout>; attempt: number }>();
+/** The one wait here that needs a timer: the host can answer "pending" on a healthy
+ * link, and no connection change will come to ask again. */
+function recheckOutbox(device: string, name: string): void {
+  const slot = rechecks.get(device) ?? { attempt: 0 };
+  if (slot.timer !== undefined) return;
+  rechecks.set(device, slot);
+  slot.timer = setTimeout(() => { slot.timer = undefined; void reconcileRemoteOutbox(device, name); }, RECHECK_MS[Math.min(slot.attempt, RECHECK_MS.length - 1)]);
+  slot.attempt += 1;
+}
+const awaitingEntries = (device: string) => useRemoteOutbox.getState().entries.filter((entry) => entry.device === device && entry.state === "awaiting");
+/** Asks the host about every prompt whose outcome this device doesn't know: when a
+ * device connects, and then again for as long as the answer is "pending". A broken
+ * link stops the asking, and the next connection starts it. */
 export async function reconcileRemoteOutbox(device: string, name: string): Promise<void> {
   if (reconciling.has(device)) return;
   reconciling.add(device);
   try {
-    const waiting = useRemoteOutbox.getState().entries.filter((entry) => entry.device === device && entry.state === "awaiting");
-    for (const entry of waiting) {
+    for (const entry of awaitingEntries(device)) {
       let status: { state?: string; threadId?: string; errorCode?: string };
       try { status = await viewerRequest(device, "op.status", { opId: entry.opId, opSeq: entry.opSeq }); }
-      catch { return; }
+      catch { rechecks.delete(device); return; }
       switch (status?.state) {
         case "accepted": settleAccepted(entry, status.threadId); break;
         case "rejected": markPromptRejected(entry.opId, refusalText(status.errorCode ?? "", name)); break;
@@ -209,6 +250,8 @@ export async function reconcileRemoteOutbox(device: string, name: string): Promi
         default: break;
       }
     }
+    if (awaitingEntries(device).length) recheckOutbox(device, name);
+    else rechecks.delete(device);
   } finally { reconciling.delete(device); }
 }
 
@@ -238,7 +281,7 @@ export const answerRemoteQuestion = (device: string, name: string, threadId: str
 export const runRemoteRowAction = (device: string, name: string, op: RemoteRowOperation, args: object) => runAction(device, name, op, args);
 export async function setRemoteThreadSettings(device: string, name: string, change: Omit<ThreadSettingsSetArgs, "opId" | "opSeq">, workspaceId: string): Promise<string | null> {
   const failure = await runAction(device, name, "thread.settings.set", change);
-  if (!failure) void refreshRemoteContext(device, workspaceId, change.threadId);
+  if (!failure) await refreshRemoteContext(device, workspaceId, change.threadId);
   return failure;
 }
 
@@ -271,8 +314,8 @@ export async function refreshRemoteContext(device: string, workspaceId: string, 
     return { contexts: { ...state.contexts, [device]: known } };
   });
 }
-export async function searchRemoteFiles(device: string, workspaceId: string, query: string): Promise<string[]> {
-  const result = await viewerRequest<{ files?: { relativePath: string }[] }>(device, "files.search", { workspaceId, query });
+export async function searchRemoteFiles(device: string, workspaceId: string, threadId: string | undefined, query: string): Promise<string[]> {
+  const result = await viewerRequest<{ files?: { relativePath: string }[] }>(device, "files.search", { workspaceId, ...(threadId ? { threadId } : {}), query });
   return result?.files?.map((file) => file.relativePath) ?? [];
 }
 export const browseRemoteFolders = (device: string, folderId?: string, cursor?: string) =>
@@ -289,6 +332,7 @@ export async function addRemoteProject(device: string, name: string, folderId: s
 }
 export function keepRemoteDevices(paired: readonly string[], online: readonly string[]): void {
   keepRemoteSessions(paired, online);
+  forgetPanels(paired);
   for (const device of paired) if (!online.includes(device)) endRemoteTerminals(device);
   for (const device of Object.keys(useRemoteContext.getState().contexts)) if (!paired.includes(device)) forgetRemoteContext(device);
 }

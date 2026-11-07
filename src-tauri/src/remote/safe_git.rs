@@ -113,7 +113,23 @@ pub(crate) fn configure(command: &mut Command, repo: &Path, args: &[&str]) -> Re
     environment(command);
     // These builtins only read metadata/config; none converts worktree content.
     // Keep real common-dir/worktree/symbolic-ref identities for scope validation.
-    if matches!(name, "rev-parse" | "symbolic-ref" | "config" | "worktree") {
+    let location_query = name == "rev-parse"
+        && args[index + 1..].iter().any(|arg| {
+            matches!(
+                *arg,
+                "--show-toplevel"
+                    | "--absolute-git-dir"
+                    | "--git-common-dir"
+                    | "--git-path"
+                    | "--show-prefix"
+                    | "--is-inside-work-tree"
+                    | "--is-bare-repository"
+                    | "--show-object-format"
+            )
+        });
+    let head_identity =
+        name == "rev-parse" && args[index + 1..] == ["--symbolic-full-name", "HEAD"];
+    if location_query || head_identity || matches!(name, "symbolic-ref" | "config" | "worktree") {
         if name == "worktree" && args.get(index + 1) != Some(&"list") {
             return Err(failure());
         }
@@ -131,7 +147,8 @@ pub(crate) fn configure(command: &mut Command, repo: &Path, args: &[&str]) -> Re
     }
     if !matches!(
         name,
-        "status"
+        "rev-parse"
+            | "status"
             | "diff"
             | "log"
             | "show"
@@ -366,7 +383,7 @@ impl Snapshot {
         let _root = path(repo, probe(repo, &["rev-parse", "--show-toplevel"])?)?;
         let git_dir = path(repo, probe(repo, &["rev-parse", "--absolute-git-dir"])?)?;
         let common = path(repo, probe(repo, &["rev-parse", "--git-common-dir"])?)?;
-        let objects = path(repo, probe(repo, &["rev-parse", "--git-path", "objects"])?)?;
+
         let directory = std::env::temp_dir().join(format!("mythra-read-{}", uuid::Uuid::new_v4()));
         #[cfg(unix)]
         {
@@ -379,7 +396,7 @@ impl Snapshot {
         fs::create_dir(&directory).map_err(|_| failure())?;
         let snapshot = Self {
             _root_pin: root_pin,
-            objects,
+            objects: directory.join("objects"),
             path: directory,
         };
         for name in ["objects", "refs", "info"] {
@@ -387,16 +404,23 @@ impl Snapshot {
         }
         let own = Anchor::open(&git_dir)?;
         let shared = Anchor::open(&common)?;
+        super::git_objects::freeze(&shared, &snapshot.objects)?;
         let mut total = 0;
         copy(&own, "HEAD", &snapshot.path.join("HEAD"), &mut total, 4096)?;
         // A detached HEAD preserves the exact commit even when a valid local
         // ref name cannot be represented by our cross-platform file policy.
-        if let Ok(head) = probe(repo, &["rev-parse", "--verify", "HEAD"]) {
-            let id = std::str::from_utf8(&head).map_err(|_| failure())?.trim();
-            if !matches!(id.len(), 40 | 64) || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(failure());
-            }
-            fs::write(snapshot.path.join("HEAD"), format!("{id}\n")).map_err(|_| failure())?;
+        let expected_head = probe(repo, &["rev-parse", "--verify", "HEAD"])
+            .ok()
+            .map(|bytes| {
+                String::from_utf8(bytes)
+                    .map(|s| s.trim().to_owned())
+                    .map_err(|_| failure())
+            })
+            .transpose()?;
+        if expected_head.as_ref().is_some_and(|id| {
+            !matches!(id.len(), 40 | 64) || !id.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(failure());
         }
         if git_dir.join("index").exists() {
             copy(
@@ -448,6 +472,23 @@ impl Snapshot {
                 )?;
             }
         }
+        if let Some(id) = expected_head {
+            let head = fs::read_to_string(snapshot.path.join("HEAD")).map_err(|_| failure())?;
+            let represented = head
+                .trim()
+                .strip_prefix("ref: ")
+                .filter(|reference| super::fs_guard::relative(reference, false).is_ok())
+                .is_some_and(|reference| {
+                    fs::read_to_string(snapshot.path.join(reference))
+                        .is_ok_and(|oid| oid.trim() == id)
+                        || fs::read_to_string(snapshot.path.join("packed-refs")).is_ok_and(|refs| {
+                            refs.lines().any(|line| line == format!("{id} {reference}"))
+                        })
+                });
+            if !represented {
+                fs::write(snapshot.path.join("HEAD"), format!("{id}\n")).map_err(|_| failure())?;
+            }
+        }
         if let Ok(info) = shared.directory("info") {
             for name in ["exclude", "sparse-checkout"] {
                 if info.path.join(name).exists() {
@@ -493,6 +534,41 @@ impl Snapshot {
                 }
                 let (section, key) = name.split_once('.').ok_or_else(failure)?;
                 config.push_str(&format!("[{section}]\n {key}={value}\n"));
+            }
+        }
+        // Upstream names/refspecs are data, not executable configuration. Keep
+        // only these fields so detached/sanitized metadata does not silently
+        // disable Pull/Push or hide ahead/behind counts. No URL/helper/program.
+        if let Ok(bytes) = probe(
+            repo,
+            &[
+                "config",
+                "--null",
+                "--get-regexp",
+                r"^(branch\..*\.(remote|merge)|remote\..*\.fetch)$",
+            ],
+        ) {
+            for record in bytes.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+                let text = std::str::from_utf8(record).map_err(|_| failure())?;
+                let (key, value) = text.split_once('\n').ok_or_else(failure)?;
+                let (prefix, field) = key.rsplit_once('.').ok_or_else(failure)?;
+                let (section, name) = prefix.split_once('.').ok_or_else(failure)?;
+                if !matches!(
+                    (section, field),
+                    ("branch", "remote" | "merge") | ("remote", "fetch")
+                ) || name.len() > 512
+                    || value.len() > 4096
+                    || name.chars().any(char::is_control)
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(failure());
+                }
+                let quote = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+                config.push_str(&format!(
+                    "[{section} \"{}\"]\n {field}=\"{}\"\n",
+                    quote(name),
+                    quote(value)
+                ));
             }
         }
         fs::write(snapshot.path.join("config"), config).map_err(|_| failure())?;
@@ -807,5 +883,118 @@ mod cwd_tests {
             !text.contains("OUTSIDE change"),
             "GIT_WORK_TREE bypassed the pinned cwd: {text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod object_snapshot_tests {
+    use super::*;
+    struct Repo(PathBuf);
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn git(path: &Path, args: &[&str]) -> Vec<u8> {
+        let output = crate::process_launch::background_std_command("git")
+            .current_dir(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    }
+    fn repo(marker: &str, pack: bool) -> (Repo, String) {
+        let r = Repo(
+            std::env::temp_dir().join(format!("mythra-object-scope-{}", uuid::Uuid::new_v4())),
+        );
+        fs::create_dir(&r.0).unwrap();
+        git(&r.0, &["init", "-q"]);
+        git(&r.0, &["config", "user.name", "Native test"]);
+        git(&r.0, &["config", "user.email", "native@example.invalid"]);
+        fs::write(r.0.join("file"), marker).unwrap();
+        git(&r.0, &["add", "."]);
+        git(&r.0, &["commit", "-qm", "baseline"]);
+        let head = String::from_utf8(git(&r.0, &["rev-parse", "HEAD"]))
+            .unwrap()
+            .trim()
+            .to_owned();
+        if pack {
+            git(&r.0, &["repack", "-ad"]);
+        }
+        (r, head)
+    }
+    #[test]
+    fn replacing_object_directory_cannot_import_another_projects_commit() {
+        for packed in [false, true] {
+            let (a, _) = repo("PROJECT A", packed);
+            let (b, foreign) = repo("UNSHARED PROJECT B", packed);
+            let _root = Anchor::open(&a.0).unwrap();
+            let _policy = enter();
+            let read = crate::project_git::GitReadOperation::new();
+            let first = read.output(&a.0, &["show", "HEAD:file"]).unwrap();
+            assert_eq!(first.stdout, b"PROJECT A");
+            let original = a.0.join(".git/objects");
+            let held = a.0.join("held-objects");
+            let donor = b.0.join(".git/objects");
+            fs::rename(&original, &held).unwrap();
+            fs::rename(&donor, &original).unwrap();
+            let foreign_result = read
+                .output(&a.0, &["show", &format!("{foreign}:file")])
+                .unwrap();
+            assert!(!foreign_result.status.success());
+            assert!(!String::from_utf8_lossy(&foreign_result.stdout).contains("UNSHARED"));
+            let own = read.output(&a.0, &["show", "HEAD:file"]).unwrap();
+            assert_eq!(own.stdout, b"PROJECT A");
+            fs::rename(&original, &donor).unwrap();
+            fs::rename(&held, &original).unwrap();
+        }
+    }
+    #[test]
+    fn mutable_alternates_never_expand_the_frozen_object_namespace() {
+        let (a, _) = repo("PROJECT A", false);
+        let (b, foreign) = repo("UNSHARED PROJECT B", false);
+        let _root = Anchor::open(&a.0).unwrap();
+        {
+            let _policy = enter();
+            let read = crate::project_git::GitReadOperation::new();
+            assert!(read
+                .output(&a.0, &["show", "HEAD:file"])
+                .unwrap()
+                .status
+                .success());
+            fs::write(
+                a.0.join(".git/objects/info/alternates"),
+                format!("{}\n", b.0.join(".git/objects").display()),
+            )
+            .unwrap();
+            let result = read
+                .output(&a.0, &["show", &format!("{foreign}:file")])
+                .unwrap();
+            assert!(!result.status.success());
+            assert!(!String::from_utf8_lossy(&result.stdout).contains("UNSHARED"));
+            let tree = read
+                .output(
+                    &a.0,
+                    &["rev-parse", "--verify", &format!("{foreign}^{{tree}}")],
+                )
+                .unwrap();
+            assert!(
+                !tree.status.success(),
+                "object-resolving rev-parse is not a metadata-only exemption"
+            );
+        }
+        {
+            let _policy = enter();
+            let read = crate::project_git::GitReadOperation::new();
+            assert!(
+                read.output(&a.0, &["show", "HEAD:file"]).is_err(),
+                "preexisting borrowed stores lack project authority and must refuse"
+            );
+        }
     }
 }

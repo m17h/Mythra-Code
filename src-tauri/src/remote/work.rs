@@ -411,6 +411,7 @@ async fn execute(
         "terminalId",
         "draftHandle",
         "startTarget",
+        "processHandle",
     ] {
         if let Some(value) = result
             .get(key)
@@ -756,10 +757,21 @@ pub(crate) async fn prepare_native(
     permission: Option<&str>,
     target: Option<String>,
 ) -> Result<NativePermit, String> {
-    if !meta.valid() {
-        return Err(refused("invalid"));
-    }
+    if !meta.valid() { return Err(refused("invalid")); }
     let inner = app.state::<RemoteState>().inner.clone();
+    prepare_native_inner(inner, meta, step, permission, target).await
+}
+
+// Shared native authority path; headless transport tests supply Inner directly
+// rather than constructing a desktop App or accessing the user's credentials.
+pub(super) async fn prepare_native_inner(
+    inner: Arc<Inner>,
+    meta: RemoteDelivery,
+    step: &str,
+    permission: Option<&str>,
+    target: Option<String>,
+) -> Result<NativePermit, String> {
+    if !meta.valid() { return Err(refused("invalid")); }
     let saved = {
         let core = inner.lock();
         generation(&core, &meta).map_err(|error| refused(&error.code))?;
@@ -1231,4 +1243,8 @@ impl NativePermit{
  pub(crate) fn track_start(&self,provider:&str,thread:&str,turn:&str,start:Option<&str>)->Result<(),String>{
   if self.meta.owner_handle.is_none(){return Ok(());}let target=Target{owner_handle:None,generation:self.meta.generation,device:self.meta.device.clone(),kind:"start".into(),thread_id:Some(thread.into()),workspace_id:self.receipt.get("workspaceId").and_then(Value::as_str).map(str::to_owned),provider:Some(provider.into()),request_id:None,method:None,turn_id:Some(turn.into()),item_id:None,start_request_id:start.map(str::to_owned),agent_run_id:None,attempt_id:self.meta.attempt_id.clone(),parent_run_id:None,revision:0,owner:format!("{provider}-start:{turn}:{}",start.unwrap_or("")),expires:None,claimed:None};let mut core=self.inner.lock();super::owners::check(&core,&self.meta)?;super::owners::record(&mut core,&self.meta,target)
  }
+}
+
+impl NativePermit{
+ pub(crate) fn thread_effect_proof(&self)->Option<(&str,&Value)>{self.receipt.get("op").and_then(Value::as_str).filter(|op|matches!(*op,"thread.rename"|"thread.archive"|"thread.restore"|"thread.delete"|"thread.fork"|"thread.compact"|"thread.rollback")).map(|op|(op,self.receipt.get("nativeThreadProof").unwrap_or(&Value::Null)))}
 }

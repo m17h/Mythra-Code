@@ -11,7 +11,7 @@ import { RemoteDeliveryJournal } from "./deliveryJournal";
 import { currentWorkGrant, remotePermission, resolveThreadExecutionContext, type ExecutionTarget } from "./executionContext";
 import { hostContext, searchHostFiles, wireEfforts, type HostContextSources } from "./hostContext";
 import { remoteQuestionResponse, requestQuestions } from "./questionActions";
-import { currentGrant, HostReadError, idArg, objectArgs, requireThread, requireWorkspace, workspaceAllowed } from "./scope";
+import { currentGrant, HostReadError, idArg, objectArgs, requireThread, requireWorkspace, threadWorkspace, workspaceAllowed } from "./scope";
 import { stopThreadAndChildren, type StopActionSources } from "./stopActions";
 import { sameStop, WorkTargets, type WorkTarget } from "./targetHandles";
 import type { RemoteStopSnapshot, RemoteTurnRunner, RemoteWorkAdapter } from "./workTypes";
@@ -28,6 +28,7 @@ import { clearRemoteEngineOwners } from "./engineOwners";
 import { HostProjectNavigation, isProjectNavigationOperation } from "./projectNavigation";
 import { executeRowState } from "./rowStateActions";
 import { createHostProjectRegistration } from "./projectRegistration";
+import { executeThreadRow, isThreadRowOperation, type ThreadRowLifecycle } from "./threadRows";
 
 const mutations = new Set(["draft.settings.set", "prompt.cancel", "prompt.send", "prompt.queue", "prompt.steer", "turn.stop", "approval.answer", "question.answer", "thread.settings.set",
   "thread.rename", "thread.archive", "thread.restore", "thread.delete", "thread.pin", "thread.fork", "projects.pin", "projects.remove", "projects.reorder"]);
@@ -41,10 +42,14 @@ export interface HostMutationContext {
   assertAllowed(): void;
 }
 export interface HostRowActions {
+  /** Shared sidebar title/transcript/removal guards, then pure stamped adoption. */
+  threadLifecycle?: ThreadRowLifecycle;
   /** Archived metadata is host-only; never trust a viewer to supply a binding. */
   /** Only list operations whose actual native/provider commit is grant-fenced. */
   nativeFenced?: readonly RemoteRowOperation[];
-  archivedThread(threadId: string): { thread: Thread; workspaceId: string } | null;
+  /** May use the same local transcript lookup as restore/delete to resolve a
+   * legacy archive whose provider metadata was never saved. Host-only read. */
+  archivedThread(threadId: string): { thread: Thread; workspaceId: string } | null | Promise<{ thread: Thread; workspaceId: string } | null>;
   execute(op: RemoteRowOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext): Promise<{ state: "accepted"; threadId?: string; workspaceId?: string }>;
 }
 export interface HostSettingsActions {
@@ -377,10 +382,10 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     const projectOp = request.op.startsWith("projects.");
     const threadId = projectOp ? undefined : idArg(args.threadId);
     let target: ExecutionTarget = projectOp ? { workspaceId: idArg(args.workspaceId) } : { threadId: threadId! };
-    let archived: ReturnType<HostRowActions["archivedThread"]> = null;
+    let archived: Awaited<ReturnType<HostRowActions["archivedThread"]>> = null;
     if (threadId && sources.getArchivedThreadIds().has(threadId)) {
       if (request.op !== "thread.restore" && request.op !== "thread.delete") throw stale();
-      archived = options.rows?.archivedThread(threadId) ?? null;
+      archived = await options.rows?.archivedThread(threadId) ?? null;
       if (!archived) throw stale();
       target = { workspaceId: archived.workspaceId };
     } else if (request.op === "thread.restore") throw stale();
@@ -388,7 +393,10 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     const delivery = journal(id, target, ctx);
     const assertAllowed = () => {
       assertTarget(target, id.device, ctx);
-      if (archived && options.rows?.archivedThread(threadId!)?.workspaceId !== archived.workspaceId) throw stale();
+      if (archived) {
+        const current = sources.getArchivedThreads?.().find((thread) => thread.id === threadId) ?? archived.thread;
+        if (!sources.getArchivedThreadIds().has(threadId!) || threadWorkspace(sources, current)?.id !== archived.workspaceId) throw stale();
+      }
       if (request.op === "projects.remove") {
         const grant = currentWorkGrant(sources, id.device);
         if (grant.scope.kind !== "all" || (grant.capabilities as { manageProjects?: boolean }).manageProjects !== true) {
@@ -428,7 +436,8 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         await delivery.accepted({ threadId });
       } else {
         if (!options.rows) throw new HostReadError("unsupported", "The other device has not enabled remote row actions yet.");
-        if (!["thread.pin", "projects.pin", "projects.reorder"].includes(request.op) && !options.rows.nativeFenced?.includes(request.op as RemoteRowOperation)) throw new HostReadError("unsupported", "This action's native ownership boundary is not connected yet.");
+        const nativeThread = isThreadRowOperation(request.op);
+        if (nativeThread ? !options.rows.threadLifecycle : !["thread.pin", "projects.pin", "projects.reorder"].includes(request.op) && !options.rows.nativeFenced?.includes(request.op as RemoteRowOperation)) throw new HostReadError("unsupported", "This action's shared lifecycle is not attached yet.");
         const extra = request.op === "thread.rename" ? ["name"] : request.op.endsWith(".pin") ? ["pinned"] : request.op === "projects.reorder" ? ["relativeTo", "position"] : [];
         strictKeys(args, [projectOp ? "workspaceId" : "threadId", ...extra, ...(request.op === "thread.delete" || request.op === "projects.remove" ? ["confirmed"] : [])]);
         if ((request.op === "thread.delete" || request.op === "projects.remove") && args.confirmed !== true) throw invalid();
@@ -444,12 +453,17 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         }
         if (projectOp && ctx.activeWorkspace?.isChat) throw invalid();
         await delivery.beforeCreate();
-        await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: ctx.effectiveSettings.provider });
+        // Typed thread effects own their final native latch. Do not mark a
+        // provider input before title/save preparation and native snapshotting.
+        if (!nativeThread) await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: ctx.effectiveSettings.provider });
         assertAllowed();
-        const rowArgs = { ...values, ...(threadId ? { threadId } : { workspaceId: ctx.activeWorkspace!.id }) };
+        const rowArgs = { ...values, ...(threadId ? { threadId } : { workspaceId: ctx.activeWorkspace!.id }), ...(request.op === "thread.delete" ? { confirmed: true } : {}) };
         const pure = await executeRowState(request.op, rowArgs, operation);
-        const result = pure ?? await options.rows.execute(request.op as RemoteRowOperation, rowArgs, operation);
+        const result = pure ?? (nativeThread ? await executeThreadRow(request.op as import("./threadRows").ThreadRowOperation, rowArgs,
+          { ...operation, context: archived ? { ...ctx, activeThread: archived.thread } : ctx }, sources, options.rows.threadLifecycle!)
+          : await options.rows.execute(request.op as RemoteRowOperation, rowArgs, operation));
         if (result?.state !== "accepted") throw new HostReadError("uncertain", "The other device's action couldn't be confirmed.");
+        if (request.op === "thread.delete") learned.delete(threadId!);
         await flushPendingStateWrites();
         await delivery.accepted({ threadId: result?.threadId ?? threadId });
         return { ...delivery.result(), ...(result?.workspaceId ? { workspaceId: result.workspaceId } : {}) };

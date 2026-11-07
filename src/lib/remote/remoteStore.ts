@@ -222,11 +222,12 @@ function applyFrame(current: RemoteTimeline, patch: ThreadFrame, seq: number): R
 // Serialize subscription mutations per device. A late unsubscribe from a closed
 // shell must complete before its replacement can establish a new subscription.
 const commandTails = new Map<string, Promise<unknown>>();
-function serial<T>(device: string, work: () => Promise<T>): Promise<T> {
-  const previous = commandTails.get(device) ?? Promise.resolve();
+/** One subscribe or unsubscribe at a time per thread. Leaving one thread never holds up the next. */
+function serial<T>(thread: string, work: () => Promise<T>): Promise<T> {
+  const previous = commandTails.get(thread) ?? Promise.resolve();
   const result = previous.catch(() => {}).then(work);
-  commandTails.set(device, result);
-  const clean = () => { if (commandTails.get(device) === result) commandTails.delete(device); };
+  commandTails.set(thread, result);
+  const clean = () => { if (commandTails.get(thread) === result) commandTails.delete(thread); };
   void result.then(clean, clean);
   return result;
 }
@@ -363,7 +364,7 @@ class ViewerSession {
     this.pending = false; this.subscribed = false; this.buffered = []; this.bufferedBytes = 0;
     this.desiredThread = threadId;
     if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
-    if (previous && previous !== threadId) void serial(this.device, () => viewerRequest(this.device, "timeline.unsubscribe", { threadId: previous })).catch(() => {});
+    if (previous && previous !== threadId) void serial(`${this.device}/${previous}`, () => viewerRequest(this.device, "timeline.unsubscribe", { threadId: previous })).catch(() => {});
     changeDevice(this.device, (current) => ({ ...current, threadId }));
     if (threadId) void this.subscribe(threadId, token);
   }
@@ -372,7 +373,7 @@ class ViewerSession {
     changeTimeline(this.device, threadId, (current) => ({ ...current, state: current.baseline ? "stale" : "loading" }));
     try {
       await ensureBridge();
-      await serial(this.device, async () => {
+      await serial(`${this.device}/${threadId}`, async () => {
         if (!this.active(token)) return;
         const baseline = this.view?.timelines.get(threadId);
         const args = { threadId, ...(baseline?.baseline && baseline.replayable && baseline.epoch ? { epoch: baseline.epoch, afterSeq: baseline.seq } : {}) };
@@ -502,7 +503,7 @@ class ViewerSession {
     const threadId = this.desiredThread;
     if (threadId) {
       changeTimeline(this.device, threadId, (current) => ({ ...current, state: "stale", reading: false }));
-      void serial(this.device, () => viewerRequest(this.device, "timeline.unsubscribe", { threadId })).catch(() => {});
+      void serial(`${this.device}/${threadId}`, () => viewerRequest(this.device, "timeline.unsubscribe", { threadId })).catch(() => {});
     }
   }
 }
@@ -535,11 +536,12 @@ export function selectRemoteThread(device: string, threadId: string) {
   if (controller?.view?.lists.get(controller.view.workspaceId ?? "")?.threads.some((thread) => thread.id === threadId)) controller.selectThread(threadId);
 }
 /** Opens a thread the host has only just created, which no list shows yet. */
-export async function openRemoteThread(device: string, workspaceId: string, threadId: string): Promise<void> {
+/** `wanted` is asked again after the list loads, because people move on in the meantime. */
+export async function openRemoteThread(device: string, workspaceId: string, threadId: string, wanted: () => boolean = () => true): Promise<void> {
   const controller = controllers.get(device);
   if (!controller) return;
   if (controller.view?.workspaceId === workspaceId) await controller.loadThreads(workspaceId, false);
-  if (controller.view?.lists.get(workspaceId)?.threads.some((thread) => thread.id === threadId)) controller.selectThread(threadId);
+  if (wanted() && controller.view?.lists.get(workspaceId)?.threads.some((thread) => thread.id === threadId)) controller.selectThread(threadId);
 }
 export const loadRemoteThreads = (device: string) => { const controller = controllers.get(device); if (controller?.view?.workspaceId) void controller.loadThreads(controller.view.workspaceId, true); };
 export const loadRemoteEarlier = (device: string) => { void controllers.get(device)?.loadEarlier(); };

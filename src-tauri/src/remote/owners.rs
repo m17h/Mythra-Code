@@ -66,16 +66,16 @@ pub(crate) async fn remote_work_owner_open(
     let inner = state.inner.clone();
     super::finish_write(state.inner.enqueue_write(false,move|db|{
         let op=commit::operation(db,&stamp)?;
-        if (kind=="workflow"&&op!="workflows.start")||(kind!="workflow"&&!matches!(op.as_str(),"prompt.send"|"prompt.queue"|"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"schedules.edit")){return Err(stale());}
+        if (kind=="workflow"&&op!="workflows.start")||(kind!="workflow"&&!matches!(op.as_str(),"prompt.send"|"prompt.queue"|"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"prompt.scheduleNew"|"schedules.edit"|"thread.handoff.send"|"parent.continue"|"run.start"|"checks.start")){return Err(stale());}
         let mut receipt=super::store::delivery_receipt(db,&stamp.device,&stamp.op_id,stamp.op_seq)?.unwrap_or_else(||json!({"generation":stamp.generation,"device":stamp.device,"opId":stamp.op_id,"opSeq":stamp.op_seq,"workspaceId":stamp.workspace_id,"threadId":stamp.thread_id,"disposition":"preparing","op":op}));
         let mut core=inner.lock();stamp.check(&core,&op)?;
         if let Some(handle)=receipt.get("engineOwnerHandle").and_then(Value::as_str){return if core.owners.owners.get(handle).is_some_and(|owner|!owner.closed&&owner.kind==kind&&owner.run==run_id){Ok(json!({"ownerHandle":handle}))}else{Err(stale())};}
-        if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|!steps.is_empty())||matches!(receipt.get("disposition").and_then(Value::as_str),Some("dispatched"|"uncertain"|"rejected"))||(kind!="workflow"&&receipt.get("disposition").and_then(Value::as_str)==Some("accepted")){return Err(stale());}
+        if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|steps|!steps.is_empty())||(matches!(receipt.get("disposition").and_then(Value::as_str),Some("uncertain"|"rejected"))||(receipt.get("disposition").and_then(Value::as_str)==Some("dispatched")&&!matches!(op.as_str(),"thread.handoff.send"|"prompt.scheduleNew")))||(kind!="workflow"&&!matches!(op.as_str(),"run.start"|"checks.start"|"parent.continue")&&receipt.get("disposition").and_then(Value::as_str)==Some("accepted")){return Err(stale());}
         if core.owners.owners.len()>=256||core.owners.bindings.len()>=4096{return Err(work::refused("busy"));}
         if core.owners.owners.values().any(|o|o.stamp.generation==stamp.generation&&o.stamp.device==stamp.device&&o.kind==kind&&o.run==run_id){return Err(stale());}
         let handle=uuid::Uuid::new_v4().to_string();receipt["ownerHandle"]=json!(handle);receipt["engineOwnerHandle"]=json!(handle);
         db.execute("UPDATE remote_op_journal SET delivery_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",rusqlite::params![stamp.device,stamp.op_id,stamp.op_seq as i64,receipt.to_string()]).map_err(|_|stale())?;
-        core.owners.bindings.insert((stamp.device.clone(),stamp.op_id.clone()),handle.clone());let thread=stamp.thread_id.clone();core.owners.owners.insert(handle.clone(),Owner{local:false,stamp,kind,prepared_threads:HashSet::new(),thread,run:run_id,closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});Ok(json!({"ownerHandle":handle}))
+        core.owners.bindings.insert((stamp.device.clone(),stamp.op_id.clone()),handle.clone());let thread=if op=="thread.handoff.send"{None}else{stamp.thread_id.clone()};core.owners.owners.insert(handle.clone(),Owner{local:false,stamp,kind,prepared_threads:HashSet::new(),thread,run:run_id,closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});Ok(json!({"ownerHandle":handle}))
     })).await
 }
 
@@ -216,7 +216,7 @@ pub(super) async fn retire(
     let copy = stamp.clone();
     let worker = state.inner.clone();
     let saved=state.inner.enqueue_write(false,move|db|{
-        let op=commit::operation(db,&copy)?;if !matches!(op.as_str(),"turn.stop"|"workflows.stop"){return Err(stale());}
+        let op=commit::operation(db,&copy)?;if !matches!(op.as_str(),"turn.stop"|"workflows.stop"|"run.stop"|"checks.stop"){return Err(stale());}
         if let Some(result)=commit::prior(db,&copy)?{return Ok(Some(result));}
         let core=worker.lock();copy.check(&core,&op)?;
         super::store::save_delivery_receipt(db,&copy.device,&copy.op_id,copy.op_seq,&json!({"generation":copy.generation,"device":copy.device,"opId":copy.op_id,"opSeq":copy.op_seq,"workspaceId":copy.workspace_id,"threadId":copy.thread_id,"permission":"read-only","disposition":"dispatched"}))?;Ok(None)
@@ -1342,3 +1342,5 @@ mod command_tests {
         assert!(!command_owned(&core, &command));
     }
 }
+
+pub(super) fn thread_busy(core:&Core,thread:&str)->bool{core.owners.owners.values().any(|o|!o.closed&&(o.thread.as_deref()==Some(thread)||o.children.values().any(|c|matches!(c,Child::Native(t) if t.thread_id.as_deref()==Some(thread)))))}

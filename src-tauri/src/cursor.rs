@@ -2414,3 +2414,13 @@ pub(crate) async fn remote_owned_child_ended(app:&AppHandle,target:&mut crate::r
  if target.kind=="start"&&state.starts.identity(thread).is_some_and(|(turn,_,phase)|Some(&turn)==target.turn_id.as_ref()&&phase=="starting"){return Ok(false);}
  let process=state.turns.lock().await.get(thread).cloned();if let Some(process)=process.filter(|p|p.turn_id==target.turn_id){if process.cutoff_uncertain.load(Ordering::Acquire){return Err(stale());}if !process.alive.load(Ordering::Acquire){return Ok(true);}target.kind="turn".into();target.owner=format!("cursor:{}",process.turn_id.as_deref().unwrap_or(""));Ok(false)}else{Ok(true)}
 }
+
+pub(crate) fn remote_row_gate<T>(app:&AppHandle,thread:&str,op:&str,commit:impl FnOnce()->Result<T,String>)->Result<T,String>{
+ let state=app.state::<CursorState>();let turns=state.turns.try_lock().map_err(|_|crate::remote::work::refused("busy"))?;
+ if op!="thread.rename"&&turns.get(thread).is_some_and(|p|p.alive.load(Ordering::Acquire)){return Err(crate::remote::work::refused("busy"));}
+ state.starts.row_gate(thread,op,commit)
+}
+
+pub(crate) fn adopt_local_archive_snapshot(app:&AppHandle,value:&Value){
+ if let Some(state)=app.try_state::<CursorState>(){state.starts.adopt_local_archives(value);}
+}

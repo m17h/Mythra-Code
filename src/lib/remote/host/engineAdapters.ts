@@ -83,6 +83,9 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       return fallback.read(op, args, context);
     },
     async execute(op, args, operation) {
+      // A batch root is not a receipt for several independent provider writes.
+      // Do not bypass the typed single-thread boundary via App's old loop.
+      if (op === "thread.archiveMany" || op === "thread.deleteMany") throw new HostReadError("unsupported", "Change these conversations individually until this device supports stamped batches.");
       if (op === "discovery.settings.set") { await setHostDiscoverySettings(sources, args, operation); return { state: "accepted" }; }
       if (op === "run.start" || op === "run.stop" || op === "checks.start" || op === "checks.stop") return commands.execute(op, args, operation);
       if (op === "parent.continue" || op === "parent.dismiss") {

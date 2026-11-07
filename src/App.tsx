@@ -84,6 +84,7 @@ import { AuthRequiredModal, RuntimeSetupModal } from "./components/RuntimeModals
 import type { AgentRecord, AttachmentRecord, McpView } from "./components/StudioDock";
 import type { HostContextSources, HostParityActions, HostRowActions, StopActionSources } from "./lib/remote/host";
 import { EXECUTION_PREFERENCES_KEY, getHostThreadPreferences, sharedThreadPreferences } from "./lib/remote/host/executionPreferences";
+import { appendHostCommandOutput, hostCommandBusy } from "./lib/remote/host/commandActions";
 import { HostReadError } from "./lib/remote/host/scope";
 import type { RemoteWorkflowEngine } from "./lib/remote/host/workflowExecution";
 import type { WireExecutionSettings } from "./lib/remote/wire";
@@ -4308,7 +4309,7 @@ export default function App() {
         setOpenAiUsageSnapshot({ accountKey, limits, updatedAt: Date.now() });
       }
     },
-    onTerminalOutput: terminal.appendProcess,
+    onTerminalOutput: (text, processId) => { if (!appendHostCommandOutput(text, processId)) terminal.appendProcess(text, processId); },
     // Sign-in sends two notices and runtime start sends one; each needs a
     // read that starts after it, but not one per notice or a renewal.
     onAccountUpdated: () => {
@@ -6457,6 +6458,7 @@ export default function App() {
       || threadWorktreesRef.current[rootThreadId]?.gitDir !== gitDir) {
       return { started: false, reason: "This conversation's execution folder or ownership changed before its command could start." };
     }
+    if (hostCommandBusy(scope, "run")) return { started: false, reason: "A paired device is already running this project's command. Wait for it to finish." };
     const busy = terminal.runningIn(scope);
     if (busy.running) {
       return { started: false, reason: `The Terminal panel is already running \`${busy.command}\` for this project. Ask the user to stop it with the Stop button first.` };
@@ -8711,6 +8713,10 @@ export default function App() {
       setRuntimeSetupOpen(true);
       return;
     }
+    if (hostCommandBusy(activeExecutionPath || activeProject.path, "run")) {
+      setError("A paired device is already running this project's command. Wait for it to finish.");
+      return;
+    }
     if (terminal.running) {
       setError(`The terminal is still running \`${terminal.runningCommand}\`. Stop it before starting the Run command.`);
       return;
@@ -9061,7 +9067,7 @@ export default function App() {
     runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
     renameThread, archiveThreadRecord, unarchiveThread, deleteThreadRecord, forkThreadFor, setProjects,
     captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent, stageDelegationCrew,
-    parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels,
+    parentRunObligations, refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels, terminal, checks,
   };
   const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined,
     runWorkflow: undefined as RemoteWorkflowEngine["runWorkflow"] | undefined });
@@ -9153,6 +9159,7 @@ export default function App() {
         return { runWorkflow, stopWorkflowRun };
       },
       getLocalSkills: () => live.current.skills,
+      isLocalCommandRunning: (root, kind) => kind === "run" ? live.current.terminal.runningIn(root).running : live.current.checks.runningIn(root),
       refreshProviderCatalog: async (provider) => {
         const { refreshModels, refreshClaudeModels, refreshCursorModels, refreshOpenRouterModels } = live.current;
         if (provider === "claude") await refreshClaudeModels();
@@ -10415,7 +10422,10 @@ export default function App() {
                 && anchor.command === checks.latest!.command && anchor.cwd === checks.latest!.cwd
                 && anchor.checkedAt === checks.latest!.finishedAt && anchor.status === checks.latest!.status) ? checks.latest.id : null}
               disabledReason={!runtimeStatus?.available ? "Start the local runtime to run checks." : isPullRequestMutationRunning(activeExecutionPath) ? "Wait for the repository operation to finish." : undefined}
-              onRun={() => void checks.start()}
+              onRun={() => {
+                if (activeExecutionPath && hostCommandBusy(activeExecutionPath, "checks")) setError("A paired device is already running this project's checks. Wait for them to finish.");
+                else void checks.start();
+              }}
               onStop={() => { void checks.stop().catch((cause: unknown) => setError(friendlyError(cause))); }}
               onSave={persistActiveProjectCheck}
               discovery={checkDiscovery}

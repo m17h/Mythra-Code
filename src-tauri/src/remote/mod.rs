@@ -32,6 +32,8 @@ pub(crate) mod domain;
 pub(crate) mod owners;
 pub(crate) mod bookkeeping;
 pub(crate) mod safe_git;
+mod git_objects;
+pub(crate) mod threads;
 pub(crate) mod github;
 #[cfg(test)]
 mod tests;

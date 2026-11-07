@@ -87,5 +87,11 @@ export type WirePullRequest = import("../pullRequests").PullRequest;
 export type WirePullRequestSummary = import("../pullRequests").PullRequestSummary;
 export type WirePullRequestContext = import("../pullRequests").PullRequestContext;
 export interface WirePullRequestComment { id: string; author: string; body: string; url: string; createdAt: string; updatedAt: string }
-export interface WireGitHubAccess { authenticated: boolean; repository: string | null; isolated: boolean; context: WirePullRequestContext | null }
+export interface WireGitHubAccess {
+  authenticated: boolean; repository: string | null; isolated: boolean; context: WirePullRequestContext | null;
+  /** Whether the host can archive a thread for this device yet. */
+  canArchive: boolean;
+  /** The pull request saved with this thread on the host. */
+  savedLink: { repository: string; number: number } | null;
+}
 export interface WireCiStatus { checks: WirePullRequest["checks"]; headOid: string; mergeStateStatus: string }
