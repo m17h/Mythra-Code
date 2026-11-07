@@ -614,7 +614,7 @@ Decisions for things that have no direct remote meaning:
 | Pins, project order | The host's, the same from either machine. |
 | Model favorites, theme, panel sizes | This device's. |
 | Export, copy, image download | Only when the user asks, as an explicit exception to host content not being kept. Never a background cache. |
-| Tray and status counts | This device plus the visible machine, labeled. Clicking a remote notification switches to that machine and thread. |
+| Tray and status counts | This device plus the visible machine, labeled. The desktop notification plugin reports no click, so a remote notification also appears in the app with an **Open** action. Focus alone never switches machines. |
 
 Grants offer a **Full control** preset for the user's own machines, which turns on
 every switch at once. It is a shortcut in the editor, not a new kind of authority.

@@ -15,7 +15,7 @@ export function createHostProjectRegistration(transport: HostTransport = nativeH
       const snapshot = await transport.invoke<{ rows: StampedRow[] }>("remote_state_snapshot", { stamp, keys: ["kiwi.projects"] });
       operation.assertAllowed();
       const row = snapshot.rows.find((row) => row.key === "kiwi.projects");
-      if (!row) throw new HostReadError("uncertain", "The host project snapshot was not confirmed.");
+      if (!row) throw new HostReadError("uncertain", "The other device couldn't confirm this project. Check it before trying again.");
       const args = { stamp, folderToken: selection.token, expectedRevision: row.revision };
       type Result = { result: { state: string; workspaceId: string }; rows: StampedRow[] };
       try {

@@ -15,6 +15,9 @@ export interface RemoteTurnDelivery {
   /** Native lifetime for all children of an orchestration, not permission to replay a step. */
   openOwner?(kind: "parent" | "workflow" | "start", runId: string, threadId?: string): Promise<string>;
   readonly ownerHandle?: string;
+  readonly ownerRunId?: string;
+  bindOwner?(threadId: string): Promise<void>;
+  childStep?(stepId: string, threadId: string): Promise<RemoteTurnDelivery>;
   assertAllowed(): void;
   beforeCreate(): Promise<void>;
   queued(threadId: string, queuedTurnId: string): Promise<void>;
@@ -33,6 +36,7 @@ export interface RemoteStopSnapshot {
   parentRunId?: string; workflowId?: string; workflowRunId?: string; ownerHandle?: string; ownerRunId?: string;
 }
 export interface RemoteTurnRunner {
+  continueParentTo?(context: TurnRunnerContext, request: { parentRunId: string; notice: string; progress: string; wokenQuestions: string[] }): Promise<RemoteWorkResult>;
   sendPromptTo(context: TurnRunnerContext, text: string): Promise<RemoteWorkResult>;
   steerThread(context: TurnRunnerContext, text: string, expected: RemoteStopSnapshot): Promise<RemoteWorkResult>;
   queuePromptTo(context: TurnRunnerContext, text: string, delivery: RemoteQueuedDelivery): Promise<RemoteWorkResult>;

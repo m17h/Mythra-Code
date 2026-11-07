@@ -61,3 +61,6 @@
 .app-shell[data-theme][data-color-scheme] .devices-offer-row > button { flex: 0 0 auto; }
 
 .settings-machine-label { display: block; color: var(--muted); font-size: var(--fs-meta); }
+.app-shell[data-theme][data-color-scheme] .devices-grant-projects { display: flex; flex-direction: column; gap: 4px; max-height: 180px; margin: 0 0 8px; padding: 6px 8px; overflow-y: auto; color: var(--muted); font-size: 12px; }
+.app-shell[data-theme][data-color-scheme] .devices-grant-projects label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.app-shell[data-theme][data-color-scheme] .devices-steps { margin: 0 0 8px; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.6; }

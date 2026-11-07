@@ -104,7 +104,7 @@ import {
   markPullRequestReady,
   mergePullRequest,
 } from "./lib/pullRequests";
-import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
+import type { Account, Activity, AppSettings, ArchivedThread, ChatFont, ChatMessage, ChildAgentTarget, CustomAgentProfile, PendingApproval, PermissionMode, Project, ProjectAction, ProjectPromptMode, ProjectSubagentSettings, EffortSliderStyle, PromptProfile, Provider, ScheduledTask, ScheduleRunRecord, ScheduleRunSettings, SettingsSection, SubagentEngine, Thread, ThreadHandoff, ThreadReasoning, ThreadSubagentSettings, ThemeName, WorkspaceMode } from "./types";
 import type { OnboardingSettingsDraft } from "./lib/onboardingSettings";
 import type { ProjectRunCommand } from "./types";
 import { PendingTurnStarts } from "./lib/pendingTurnStarts";
@@ -2423,6 +2423,23 @@ export default function App() {
    * The thread's switch stays local, while the captured roster is promoted
    * atomically by the next prompt.
    */
+  /** A started thread keeps the crew it captured until its next message picks this up. */
+  const stageDelegationCrew = (existing: ChildAgentPolicy, maxConcurrent: number, targets: ChildAgentTarget[]) => {
+    const pendingRecapture = {
+      maxConcurrent: crewSafeConcurrency(maxConcurrent, { enabled: true, targets }),
+      targets,
+      approvedAt: Date.now(),
+    };
+    const staged = { ...existing, pendingRecapture };
+    // The immediate cache closes the tiny click-then-send race before React's
+    // persisted state has rendered the staged policy back into this callback.
+    cacheChildAgentPolicy(staged);
+    persistChildAgentPolicies((current) => ({
+      ...current,
+      [existing.sessionId]: { ...(current[existing.sessionId] ?? existing), pendingRecapture },
+    }));
+    invalidateChildAgentLaunch(existing.sessionId);
+  };
   const persistActiveThreadSubagentPolicy = useCallback((next: ProjectSubagentSettings) => {
     if (effectiveSettings.subagentEngine === "native") {
       persistComposerSubagentPolicy(next);
@@ -2455,20 +2472,7 @@ export default function App() {
       setTransientStatus("Keep one ready sub-agent, or switch Sub-agents off");
       return;
     }
-    const pendingRecapture = {
-      maxConcurrent: crewSafeConcurrency(next.maxConcurrent, { enabled: true, targets }),
-      targets,
-      approvedAt: Date.now(),
-    };
-    const staged = { ...existing, pendingRecapture };
-    // The immediate cache closes the tiny click-then-send race before React's
-    // persisted state has rendered the staged policy back into this callback.
-    cacheChildAgentPolicy(staged);
-    persistChildAgentPolicies((current) => ({
-      ...current,
-      [existing.sessionId]: { ...(current[existing.sessionId] ?? existing), pendingRecapture },
-    }));
-    invalidateChildAgentLaunch(existing.sessionId);
+    stageDelegationCrew(existing, next.maxConcurrent, targets);
     setTransientStatus("Sub-agent setup updated for this thread · applies next message");
   }, [
     activeDelegationPolicy,
@@ -9039,7 +9043,7 @@ export default function App() {
     chatWorkspace, runtimeStatus, rememberThread, reconcileIdleClaudeNativeChildren, activeThreadId, activeProject, workspaceGitInfo, worktreeBusy,
     runtimeModels, claudeModels, cursorModels, openRouterModels, lmStudioModels, childAgentReadiness, skills, workflows, pinnedThreadIds,
     renameThread, archiveThreadRecord, unarchiveThread, deleteThreadRecord, forkThreadFor, setProjects, setPinnedThreadIds, persistThreadModel, persistThreadReasoning,
-    captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent,
+    captureChildStopFrontier, cancelChildAgentsFor, autoPublish, checkpoints, checkpointHeads, toggleCheckpointAccepted, stopChildAgent, stageDelegationCrew,
   };
   const remoteHostLive = useRef({ ...remoteHostValues, stopWorkflowRun: undefined as ((workflowId: string, runId: string, stopRoot?: () => Promise<void>) => Promise<boolean>) | undefined });
   Object.assign(remoteHostLive.current, remoteHostValues);
@@ -9109,6 +9113,19 @@ export default function App() {
         openai: Boolean(live.current.childAgentReadiness.openAiSignedIn), claude: Boolean(live.current.childAgentReadiness.claudeReady), cursor: Boolean(live.current.childAgentReadiness.cursorReady),
         openrouter: Boolean(live.current.childAgentReadiness.openRouterReady), lmstudio: Boolean(live.current.childAgentReadiness.lmStudioReady),
       } }),
+      getThreadCrew: (threadId) => {
+        const policy = childAgentPolicyForThread(childAgentPoliciesRef.current, threadId);
+        return policy ? { maxConcurrent: policy.pendingRecapture?.maxConcurrent ?? policy.maxConcurrent, targets: policy.pendingRecapture?.targets ?? policy.targets } : undefined;
+      },
+      stageThreadCrew: (threadId, next, dryRun) => {
+        const policy = childAgentPolicyForThread(childAgentPoliciesRef.current, threadId);
+        if (!policy) return "none";
+        const task = useTaskStore.getState().tasks[threadId];
+        if (task?.status === "starting" || task?.status === "running" || task?.queuedTurns.length || task?.agents.some((agent) => isActiveAgentRecord(agent.status))) return "busy";
+        if (next.targets.length && !readyChildAgentTargets({ enabled: true, targets: next.targets }, live.current.childAgentReadiness).length) return "not-ready";
+        if (!dryRun) live.current.stageDelegationCrew(policy, next.maxConcurrent, next.targets);
+        return "staged";
+      },
       getStudioReads: () => ({
         getCheckpoints: () => live.current.checkpoints,
         getCheckpointHead: (root) => live.current.checkpointHeads[normalizedProjectPath(root)],
@@ -9651,6 +9668,7 @@ export default function App() {
       <RendererLaunchCommitMarker />
       <MaxReasoningWarningContext.Provider value={maxReasoningWarning}>
       <FeedbackProvider enabled={!remoteActive && Boolean(activeThread) && !settingsOpen && !onboardingOpen} scopeKey={feedbackScope} onAdd={(anchor, comment) => Boolean(feedback.addNote(anchor, comment))}>
+      {remoteUi && <remoteUi.RemoteNotices />}
       {successToast && (
         <div ref={mountToast} popover={typeof HTMLElement.prototype.showPopover === "function" ? "manual" : undefined} className={`app-toast ${toastKind}`} role="status" aria-live="polite">
           <span className="app-toast-icon">{toastKind === "success" ? <Check size={14} strokeWidth={2.5} /> : <MessageSquare size={14} />}</span>

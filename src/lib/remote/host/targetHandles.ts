@@ -31,7 +31,7 @@ export class WorkTargets {
         && (!input.stop || entry.stop && sameStop(entry.stop, input.stop))) return { ...entry.wire };
     }
     // Do not evict live ownership handles behind another viewer's buttons.
-    if (this.entries.size >= 1024) throw new HostReadError("busy", "Too many outstanding host requests. Try again shortly.");
+    if (this.entries.size >= 1024) throw new HostReadError("busy", "Too many requests are waiting. Try again shortly.");
     const approval = input.approval;
     const params = approval?.params;
     const result = await invoke<{ handle: string }>("remote_work_target_register", {

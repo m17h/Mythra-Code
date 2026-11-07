@@ -48,7 +48,7 @@ fn stale() -> String {
     work::refused("stale_target")
 }
 fn uncertain() -> String {
-    "MYTHRA_DELIVERY_UNCERTAIN: The host could not confirm this terminal action.".into()
+    "MYTHRA_DELIVERY_UNCERTAIN: The other device couldn't confirm this terminal action.".into()
 }
 fn cancel(route: Arc<Route>) {
     if !route.alive.swap(false, Ordering::AcqRel) {

@@ -36,7 +36,7 @@ import { flushPendingStateWrites } from "../lib/storage";
 import type { RemoteStopSnapshot, RemoteTurnDelivery, RemoteTurnRunner } from "../lib/remote/host/workTypes";
 import type { RemoteWorkResult } from "../lib/remote/wire";
 import { HostReadError } from "../lib/remote/host/scope";
-import { rememberRemoteEngineOwner, remoteEngineOwner, forgetRemoteEngineOwner, type RemoteEngineOwner } from "../lib/remote/host/engineOwners";
+import { rememberRemoteEngineOwner, remoteEngineOwner, forgetRemoteEngineOwner, finishRemoteThreadOwner, hasRemoteEngineOwners, remoteEngineOwnerThreads, isLiveRemoteEngineOwner, openLocalEngineOwner, type RemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { claimParentRun, parentAuthKey, pausedParentRun, PARENT_EXECUTION_UNCONFIRMED, PARENT_NOTICE_PROVENANCE, PARENT_RUN_CHECKPOINT_LABEL, type ParentExecution, type ParentRun } from "../lib/parentRun";
 import { claudeSteerReadState } from "../lib/claudeEvents";
 import {
@@ -297,6 +297,18 @@ function threadWorktreeRecord(threadId: string, project: Project, worktree: Crea
   };
 }
 
+/** Tracking-only completion bookkeeping, never selection or provider dispatch. */
+function trackNativeStartOwner(ctx: TurnRunnerContext, threadId: string): void {
+  const store = useTaskStore.getState();
+  if (store.parentRuns[threadId]) return;
+  const ownerHandle = ctx.remoteDelivery?.ownerHandle ?? ctx.localOwnerHandle;
+  if (!ownerHandle) return;
+  rememberRemoteEngineOwner({ generation: ctx.remoteDelivery?.metadata().generation ?? 0, ...(ctx.remoteDelivery ? {} : { local: true }),
+    threadId, runId: ctx.remoteDelivery?.ownerRunId ?? ctx.localOwnerRunId!, ownerHandle, kind: "start" });
+  const task = store.tasks[threadId];
+  if (task?.status !== "starting" && task?.status !== "running") finishRemoteThreadOwner(threadId, false, store.workflowOwners[threadId]?.runId);
+}
+
 export interface ParentResumeRequest {
   threadId: string;
   notice: string;
@@ -304,12 +316,19 @@ export interface ParentResumeRequest {
   wokenQuestions: string[];
   /** The user pressed Continue in this conversation. */
   explicit?: boolean;
+  /** Explicit host-resolved remote target; never the selected-thread closure. */
+  deliveryContext?: TurnRunnerContext;
 }
 
 export interface TurnRunnerContext {
   /** Optional remote-only hooks; local calls retain their existing path. */
   remoteDelivery?: RemoteTurnDelivery;
   remoteEngineOwner?: RemoteEngineOwner;
+  remoteNextDelivery?: (stepId: string) => Promise<RemoteTurnDelivery>;
+  /** Tracking-only metadata; the native host strips it before provider input. */
+  trackNativeOwners?: boolean;
+  localOwnerHandle?: string;
+  localOwnerRunId?: string;
   remoteStop?: (args: Record<string, unknown>) => Promise<void>;
   resolveRemoteQueuedDelivery?: (entry: QueuedTurn) => Promise<TurnRunnerContext>;
   remoteQueuesReady?: () => boolean;
@@ -1077,17 +1096,22 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       const capture = (owner?: RemoteEngineOwner) => parentRunDeliveries.set(thread.id, { ...queuedDeliveryContext(ctx, thread.id, [], false), activeThread: thread,
         // Each continuation needs a fresh durable native step, never reuse the
         // accepted prompt's dispatch identity or silently fall back to local.
-        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined, remoteDelivery: undefined, remoteStop: undefined, remoteEngineOwner: owner });
+        firstPromptAttemptId: undefined, deliveryGuard: undefined, coordinationResume: undefined, remoteDelivery: undefined, remoteStop: undefined, remoteEngineOwner: owner,
+        remoteNextDelivery: owner && ctx.remoteDelivery?.childStep ? (stepId) => ctx.remoteDelivery!.childStep!(stepId, thread.id) : undefined });
       if (ctx.remoteDelivery) {
         const delivery = ctx.remoteDelivery;
         if (!delivery.openOwner) throw new HostReadError("unsupported", "Native parent ownership is not connected.");
         const runId = useTaskStore.getState().parentRuns[thread.id]!.id;
-        return delivery.openOwner("parent", runId, thread.id).then((ownerHandle) => {
-          const owner: RemoteEngineOwner = { generation: delivery.metadata().generation, threadId: thread.id, runId, kind: "parent", ownerHandle };
+        return (async () => {
+          const ownerHandle = delivery.ownerHandle ?? await delivery.openOwner!("parent", runId, thread.id);
+          await delivery.bindOwner?.(thread.id);
+          const owner: RemoteEngineOwner = { generation: delivery.metadata().generation, threadId: thread.id, runId: delivery.ownerRunId ?? runId, parentRunId: runId, stopEpoch: parentRunStopEpoch(thread.id), kind: "parent", ownerHandle };
           rememberRemoteEngineOwner(owner); capture(owner);
-        });
+        })();
       }
-      forgetRemoteEngineOwner(thread.id);
+      if (ctx.localOwnerHandle) {
+        rememberRemoteEngineOwner({ generation: 0, local: true, threadId: thread.id, kind: "parent", runId: ctx.localOwnerRunId!, parentRunId: useTaskStore.getState().parentRuns[thread.id]!.id, stopEpoch: parentRunStopEpoch(thread.id), ownerHandle: ctx.localOwnerHandle });
+      } else forgetRemoteEngineOwner(thread.id);
       capture();
     };
 
@@ -1210,7 +1234,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       }
       if (localStartRequestsRef.current.get(thread.id) === nativeStart) nativeStart.turnId = result.turnId;
       providerAccepted = true;
-      if (ctx.remoteDelivery) await ctx.remoteDelivery.accepted({ threadId: thread.id, turnId: result.turnId, messageId: sentMessageId });
+      if (ctx.remoteDelivery) {
+        await ctx.remoteDelivery.accepted({ threadId: thread.id, turnId: result.turnId, messageId: sentMessageId });
+      }
+      trackNativeStartOwner(ctx, thread.id);
       if (!activeThread) contextRef.current.onThreadTitleRequested?.(thread.id, text);
       recordAuthoredPrompt(thread.id, sentMessageId);
       // Provider events can race ahead of the start RPC response. If a very
@@ -1250,7 +1277,16 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     };
 
     try {
-      if (ctx.remoteDelivery) await ctx.remoteDelivery.beforeCreate();
+      if (!ctx.remoteDelivery && !ctx.localOwnerHandle && ctx.trackNativeOwners && effectiveSettings.subagentsEnabled && effectiveSettings.subagentEngine !== "native") {
+        const localOwnerRunId = crypto.randomUUID();
+        const localOwnerHandle = await openLocalEngineOwner(activeWorkspace.id, localOwnerRunId, "start", activeThread?.id);
+        if (localOwnerHandle) ctx = { ...ctx, localOwnerHandle, localOwnerRunId };
+      }
+      if (ctx.remoteDelivery) {
+        await ctx.remoteDelivery.beforeCreate();
+        // Ownership must precede ANY native thread/start/resume preparation.
+        if (!ctx.remoteDelivery.ownerHandle && ctx.remoteDelivery.openOwner) await ctx.remoteDelivery.openOwner("start", ctx.remoteDelivery.attemptId, activeThread?.id);
+      }
       if (sharedDraftStart) {
         // Reserve synchronously before any preparation await. The draft flag
         // alone is invisible to other background deliveries until a thread id
@@ -1407,7 +1443,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
             // Appending the optimistic user message cannot flip assistant
             // presence, so resume detection is unaffected by running after it.
             const canResumeClaude = Boolean(activeThread && useTaskStore.getState().tasks[thread.id]?.messages.some((message) => message.role === "assistant"));
-            const result = await startClaudeTurn({ ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : {}), threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
+            const result = await startClaudeTurn({ ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { localOwnerHandle: ctx.localOwnerHandle } : {}), threadId: thread.id, startRequestId: localStartRequestId, cwd: executionPath, prompt: providerText, model: effectiveSettings.model || DEFAULT_CLAUDE_MODEL, effort: effectiveSettings.ultra ? "ultra" : effectiveSettings.reasoningEffort, permission: effectiveSettings.permission, systemPrompt: withMythraCodeCompletionInstructions(resolvedSystemPrompt, Boolean(childBridge?.launch.toolNames.includes("spawn_mythra_agent")), Boolean(childBridge?.launch.toolNames.includes("propose_agent_settings")), runButton, checkButton, nativeDelegation, collaborationV2, parentRunReady), resume: canResumeClaude, attachments: sentAttachments.map((attachment) => ({ path: attachment.path, kind: attachment.kind === "image" ? "image" : "file" })), subagentMax: runtimeSubagentMax, nativeSubagents: nativeDelegation, nativeSubagentMax: sanitizeNativeSubagentMax(effectiveSettings.nativeSubagentMax), autoCompactTokens: effectiveSettings.autoCompactTokens, ...(nativeDelegation ? { nativeSubagentModel: effectiveSettings.nativeSubagentOptions?.claude?.model?.trim() || undefined, nativeAutoCompactTokens: effectiveSettings.nativeSubagentOptions?.claude?.autoCompactTokens } : {}), customAgents, skillsPluginPath: skillRuntimeRootRef.current || undefined, childAgentBridgeConfig: childBridge?.launch.configPath });
             if (typeof result?.turnId !== "string" || !result.turnId.trim()) {
               throw new Error("MYTHRA_DELIVERY_UNCERTAIN: Claude accepted the start without returning its turn identifier.");
             }
@@ -1446,7 +1482,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
           startTurn: async (thread) => {
             const priorSessionId = cursorSessionIdsRef.current[thread.id];
             const result = await startCursorTurn({
-              ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : {}),
+              ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { localOwnerHandle: ctx.localOwnerHandle } : {}),
               threadId: thread.id,
               startRequestId: cursorAttempt?.owner.startRequestId,
               cwd: executionPath,
@@ -1503,7 +1539,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       startedThreadId = threadId;
       if (!threadId) {
         const startParams = threadStartParams(runtimeSettings, executionPath, { serviceName: activeWorkspace.isChat ? "Mythra Code Chat" : "Mythra Code", customAgents, modelContextWindow, interactive: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
-        const result = await rpc<{ thread: Thread; model?: unknown; runtimeInstance: string }>("thread/start", ctx.remoteDelivery ? { ...startParams, remoteDelivery: ctx.remoteDelivery.metadata() } : startParams);
+        const result = await rpc<{ thread: Thread; model?: unknown; runtimeInstance: string }>("thread/start", ctx.remoteDelivery ? { ...startParams, remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { ...startParams, localOwnerHandle: ctx.localOwnerHandle } : startParams);
         runtimeInstance = result.runtimeInstance;
         const startedThread = optimisticStartedThread(result.thread, text);
         parentRunThread = startedThread;
@@ -1547,7 +1583,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         if (effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" || plan.resume) {
           const resume = threadResumeParams(runtimeSettings, threadId, executionPath, { customAgents, modelContextWindow, excludeTurns: true, perTurnSystemPrompt: true, additionalWorkspaceRoots, childAgentBridge: childBridge?.launch, refreshRuntimeConfig: true, projectRunCommand: runButton.run, projectCheckCommand: checkButton.check });
           const resumeParams = effectiveSettings.provider === "openrouter" || effectiveSettings.provider === "lmstudio" ? { ...resume, model: effectiveSettings.model } : resume;
-          const resumed = await rpc<{ model?: unknown; runtimeInstance: string }>("thread/resume", ctx.remoteDelivery ? { ...resumeParams, remoteDelivery: ctx.remoteDelivery.metadata() } : resumeParams);
+          const resumed = await rpc<{ model?: unknown; runtimeInstance: string }>("thread/resume", ctx.remoteDelivery ? { ...resumeParams, remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { ...resumeParams, localOwnerHandle: ctx.localOwnerHandle } : resumeParams);
           runtimeInstance = resumed.runtimeInstance;
           runtimeTurnModel = resumed?.model;
           recordSubagentCapabilities(threadId, runtimeInstance, capabilities);
@@ -1617,7 +1653,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
           collaborationV2,
           parentRunReady,
         ),
-      }), expectedRuntimeInstance: runtimeInstance, ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : {}) };
+      }), expectedRuntimeInstance: runtimeInstance, ...(ctx.remoteDelivery ? { remoteDelivery: ctx.remoteDelivery.metadata() } : ctx.localOwnerHandle ? { localOwnerHandle: ctx.localOwnerHandle } : {}) };
       const taskBeforeDispatch = useTaskStore.getState().tasks[threadId];
       activeTurnBeforeDispatch = taskBeforeDispatch?.activeTurnId;
       completedTurnBeforeDispatch = taskBeforeDispatch?.lastCompletedTurnId;
@@ -1634,7 +1670,10 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
         throw new Error("MYTHRA_DELIVERY_UNCERTAIN: The runtime accepted the start without returning its turn identifier.");
       }
       providerAccepted = true;
-      if (ctx.remoteDelivery) await ctx.remoteDelivery.accepted({ threadId, turnId: result.turn.id, messageId: sentMessageId });
+      if (ctx.remoteDelivery) {
+        await ctx.remoteDelivery.accepted({ threadId, turnId: result.turn.id, messageId: sentMessageId });
+      }
+      trackNativeStartOwner(ctx, threadId);
       // Retain the last confirmed receipt through rejected/cancelled starts.
       // An older response must not replace a newer turn's confirmed context.
       if (contextReceipt && explicitAttemptCurrent()
@@ -2006,7 +2045,9 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       if (entry.missedAt !== undefined || entry.editing || entry.status === "sending") continue;
       const decision = timedClockDecision(entry.deliverAt!, now, previousCheckAt, undefined, elapsedAwakeMs);
       if (decision === "wait") continue;
-      const deliverable = queuedDeliveries.get(entry.id)?.threadId === entry.threadId && Boolean(useTaskStore.getState().tasks[entry.threadId]);
+      const deliverable = (entry.remoteDelivery
+        ? entry.remoteDelivery.disposition === "queued" && !entry.remoteDelivery.needsRecovery && contextRef.current.remoteQueuesReady?.() === true
+        : queuedDeliveries.get(entry.id)?.threadId === entry.threadId) && Boolean(useTaskStore.getState().tasks[entry.threadId]);
       add(decision === "release" && deliverable ? releasable : missed, entry.threadId, entry.id);
     }
     for (const [threadId, ids] of missed) useTaskStore.getState().markTimedTurnsMissed(threadId, ids, now);
@@ -2094,7 +2135,7 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
    * first, and the turn's own end decides the run. It handles only refusal, and
    * only while this exact dispatch still owns the run.
    */
-  const resumeParentTurn = useCallback(async ({ threadId, notice, progress, wokenQuestions, explicit }: ParentResumeRequest): Promise<void> => {
+  const resumeParentTurn = useCallback(async ({ threadId, notice, progress, wokenQuestions, explicit, deliveryContext }: ParentResumeRequest): Promise<void> => {
     const store = useTaskStore.getState();
     const run = store.parentRuns[threadId];
     const task = store.tasks[threadId];
@@ -2104,11 +2145,11 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       || hasEligibleQueuedTurns(task.queuedTurns)
       || store.workflowOwners[threadId] || current.isThreadArchiving?.(threadId) || current.isThreadUnavailable?.(threadId)) return;
     const captured = explicit
-      ? current.activeThread?.id === threadId ? queuedDeliveryContext(current, threadId, [], false) : undefined
+      ? deliveryContext ?? (current.activeThread?.id === threadId ? queuedDeliveryContext(current, threadId, [], false) : undefined)
       : parentRunDeliveries.get(threadId);
     const liveThread = captured?.currentThread?.(threadId);
     const delivery = liveThread?.id === threadId && captured ? { ...captured, activeThread: liveThread } : captured;
-    if (!explicit && delivery?.remoteEngineOwner) {
+    if (!explicit && delivery?.remoteEngineOwner && !delivery.remoteNextDelivery) {
       // Until the engine owns per-step durable admissions, the accepted first
       // prompt is not authority to send another provider instruction locally.
       store.updateParentRun(threadId, (latest) => latest && pausedParentRun(latest, "execution_changed", "This remote parent needs a new confirmed execution step. Continue it on the host."));
@@ -2132,8 +2173,12 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
     let delivered = false;
     let deliveryError: string | null = null;
     try {
+      // Each automatic remote continuation is a NEW durable native child step.
+      // The accepted root identity never authorizes this extra provider input.
+      const remoteDelivery = !explicit && delivery.remoteNextDelivery ? await delivery.remoteNextDelivery(`continuation-${dispatchId}`) : undefined;
       delivered = await deliverMessage({
         ...withLiveDeliveryReadiness(delivery, contextRef.current),
+        ...(remoteDelivery ? { remoteDelivery } : {}),
         coordinationResume: { dispatchId, priorStatus, priorError: task.error, ...(!explicit ? { execution: run } : {}) },
         deliveryGuard: () => useTaskStore.getState().parentRuns[threadId]?.dispatchId === dispatchId,
         setError: (error) => { deliveryError = error; },
@@ -2175,7 +2220,25 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
   useEffect(() => {
     const unsubscribe = useTaskStore.subscribe((state, previous) => {
       if (state.parentRuns !== previous.parentRuns) {
-        for (const threadId of parentRunDeliveries.keys()) if (!state.parentRuns[threadId]) parentRunDeliveries.delete(threadId);
+        for (const threadId of parentRunDeliveries.keys()) if (!state.parentRuns[threadId]) {
+          parentRunDeliveries.delete(threadId);
+          const priorRun = previous.parentRuns[threadId];
+          const owner = remoteEngineOwner(threadId, priorRun?.id);
+          const epoch = parentRunStopEpoch(threadId);
+          const intentional = owner?.stopEpoch !== undefined && owner.stopEpoch !== epoch;
+          const finishing = finishRemoteThreadOwner(threadId, false, state.workflowOwners[threadId]?.runId);
+          if (finishing && priorRun && owner && !intentional) void finishing.then((confirmed) => {
+            const live = useTaskStore.getState(), task = live.tasks[threadId];
+            if (confirmed || epoch !== parentRunStopEpoch(threadId) || !isLiveRemoteEngineOwner(owner.ownerHandle) || live.parentRuns[threadId] || task?.status === "starting" || task?.status === "running") return;
+            live.updateParentRun(threadId, () => ({ ...priorRun, autoResume: undefined, phase: "paused", pause: { reason: "start_uncertain", detail: "The native engine has not confirmed completion. Inspect or Stop this run on the host." } }));
+          });
+        }
+      }
+      if (state.tasks !== previous.tasks && hasRemoteEngineOwners()) {
+        for (const threadId of remoteEngineOwnerThreads()) {
+          const task = state.tasks[threadId];
+          if (task !== previous.tasks[threadId] && task?.status !== "starting" && task?.status !== "running") finishRemoteThreadOwner(threadId, Boolean(state.parentRuns[threadId]), state.workflowOwners[threadId]?.runId);
+        }
       }
       if (state.workflowOwners !== previous.workflowOwners) {
         for (const threadId in previous.workflowOwners) {
@@ -2770,10 +2833,18 @@ export function useTurnRunner(context: TurnRunnerContext): RemoteTurnRunner & {
       parentRunId: store.parentRuns[threadId]?.id, workflowId: workflow?.workflowId, workflowRunId: workflow?.runId,
       ...(() => { const owner = remoteEngineOwner(threadId, store.parentRuns[threadId]?.id, workflow?.runId); return owner ? { ownerHandle: owner.ownerHandle, ownerRunId: owner.runId } : {}; })() };
   }, []);
+  const continueParentTo = useCallback(async (ctx: TurnRunnerContext, request: { parentRunId: string; notice: string; progress: string; wokenQuestions: string[] }): Promise<RemoteWorkResult> => {
+    const id = ctx.activeThread?.id, delivery = ctx.remoteDelivery;
+    if (!id || !delivery) throw new HostReadError("unsupported", "An explicit parent target is required.");
+    const run = useTaskStore.getState().parentRuns[id];
+    if (run?.id !== request.parentRunId || run.phase !== "paused") throw new HostReadError("stale_target", "This parent run is no longer paused.");
+    await resumeParentTurn({ threadId: id, notice: request.notice, progress: request.progress, wokenQuestions: request.wokenQuestions, explicit: true, deliveryContext: ctx });
+    return delivery.result();
+  }, [resumeParentTurn]);
   const pumpRemoteQueue = useCallback((threadId: string) => { void pumpQueuedThread(threadId); }, [pumpQueuedThread]);
 
   return {
-    sendPromptTo, steerThread, queuePromptTo, stopThreadTurn, getThreadStopTarget, pumpRemoteQueue,
+    sendPromptTo, steerThread, queuePromptTo, stopThreadTurn, getThreadStopTarget, pumpRemoteQueue, continueParentTo,
     pendingFirstPrompts, pendingThreadPrompts, beginFirstPrompt, finishFirstPrompt,
     sendMessage, answerQuestions, steerMessage, steerQueuedMessage, retryQueuedMessage, removeQueuedMessage, beginEditQueuedMessage, finishEditQueuedMessage,
     scheduleMessage, rescheduleQueuedMessage, queueTimedMessageNow,

@@ -147,13 +147,21 @@ export function resizeComposerTextarea(
   syncComposerHighlight(textarea, highlight);
 }
 
-function QueuedTurnEditor({ entry, index, onFinish, label = "queued message" }: {
+/** Ids from another machine can match local ones, so its edits carry a scope. */
+const queuedEditDraftKey = (id: string, scope?: string) => `${QUEUED_EDIT_PREFIX}${scope ? `${scope}:` : ""}${id}`;
+export function discardQueuedEditDraft(id: string, scope: string): void {
+  discardDraft(queuedEditDraftKey(id, scope));
+  flushDrafts();
+}
+
+function QueuedTurnEditor({ entry, index, onFinish, label = "queued message", draftScope }: {
   entry: QueuedTurn;
   index: number;
   onFinish: (id: string, text?: string) => boolean;
   label?: string;
+  draftScope?: string;
 }) {
-  const draftKey = `${QUEUED_EDIT_PREFIX}${entry.id}`;
+  const draftKey = queuedEditDraftKey(entry.id, draftScope);
   const [text, setText] = useState(() => drafts()[draftKey] ?? entry.text);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
@@ -273,6 +281,8 @@ export const Composer = forwardRef<ComposerHandle, {
   scheduleContextLabel?: string;
   /** Actions for timed prompts in this thread's own queue (`queuedTurns`). */
   timedActions?: TimedPromptActions;
+  /** Keeps edit drafts of another machine's queue apart from this device's. */
+  editDraftScope?: string;
   /**
    * Scheduled first prompts of new conversations in this workspace. Shown in
    * every composer of the workspace — including while an existing thread is
@@ -725,7 +735,7 @@ export const Composer = forwardRef<ComposerHandle, {
               if (queuedTurn.editing && props.onFinishEditQueued) return (
                 <div className="queued-turn editing" key={queuedTurn.id} role="listitem">
                   <span className="queued-turn-index">{index + 1}</span>
-                  <QueuedTurnEditor entry={queuedTurn} index={index} onFinish={props.onFinishEditQueued} />
+                  <QueuedTurnEditor entry={queuedTurn} index={index} onFinish={props.onFinishEditQueued} draftScope={props.editDraftScope} />
                 </div>
               );
               // Nothing is running once a turn is stopped or fails, so a still
@@ -778,7 +788,7 @@ export const Composer = forwardRef<ComposerHandle, {
           entries={scheduledTurns}
           scope="thread"
           actions={props.timedActions}
-          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} draftScope={props.editDraftScope} />}
         />
       )}
       {props.newThreadActions && (
@@ -787,7 +797,7 @@ export const Composer = forwardRef<ComposerHandle, {
           scope="new-thread"
           actions={props.newThreadActions}
           entryDetail={props.newThreadPromptDetail}
-          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} />}
+          renderEditor={(entry, index, onFinish, label) => <QueuedTurnEditor entry={entry} index={index} onFinish={onFinish} label={label} draftScope={props.editDraftScope} />}
         />
       )}
       {props.continuationNotice}

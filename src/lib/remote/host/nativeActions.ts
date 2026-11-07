@@ -10,13 +10,13 @@ const terminals = new Set(["terminal.open", "terminal.write", "terminal.resize",
 export const isTerminalMutation = (op: string): boolean => terminals.has(op);
 export function nativeRefusal(reason: unknown): HostReadError {
   const code = typeof reason === "string" ? /^MYTHRA_REMOTE_REJECTED:([a-z_]+)/.exec(reason)?.[1] : undefined;
-  return new HostReadError(code ?? "uncertain", code === "forbidden" ? "Access changed before the host could apply this action."
-    : code === "stale_target" ? "This host resource changed. Refresh before trying again."
-    : code === "unsupported" ? "This host cannot perform that action yet."
-    : "The host could not confirm this action. Check its original operation before retrying.");
+  return new HostReadError(code ?? "uncertain", code === "forbidden" ? "Access changed before the other device could apply this action."
+    : code === "stale_target" ? "This resource on the other device changed. Refresh before trying again."
+    : code === "unsupported" ? "The other device cannot perform that action yet."
+    : "The other device couldn't confirm this action. Check its original operation before retrying.");
 }
 export function strictNativeKeys(args: Record<string, unknown>, keys: readonly string[]): void {
-  if (Object.keys(args).some((key) => !["opId", "opSeq", ...keys].includes(key))) throw new HostReadError("unsupported", "This host action is not valid.");
+  if (Object.keys(args).some((key) => !["opId", "opSeq", ...keys].includes(key))) throw new HostReadError("unsupported", "This action is not valid.");
 }
 export interface NativeTarget {
   context: TurnRunnerContext; root: string;
@@ -33,13 +33,13 @@ export function nativeTarget(sources: HostContextSources, request: HostRequest, 
   if (args.workspaceId !== undefined && args.workspaceId !== workspace.id || workspace.isChat) throw new HostReadError("forbidden", "This action needs a shared project.");
   const root = sources.executionPathFor(context.activeThread?.id ?? "", workspace.path);
   const assertAllowed = () => {
-    if (!isCurrent()) throw new HostReadError("host_unavailable", "The host is recovering.");
+    if (!isCurrent()) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
     const grant = currentGrant(sources, request.device, request.grant);
     if (!grant.work || !grant.capabilities.terminal) throw new HostReadError("forbidden", "This action needs Work and Terminal access.");
     const now = resolve();
     if (now.activeWorkspace?.id !== workspace.id || now.activeWorkspace?.path !== workspace.path
       || sources.executionPathFor(now.activeThread?.id ?? "", workspace.path) !== root
-      || now.effectiveSettings.permission !== context.effectiveSettings.permission) throw new HostReadError("stale_target", "The host checkout or permission changed.");
+      || now.effectiveSettings.permission !== context.effectiveSettings.permission) throw new HostReadError("stale_target", "The other device's checkout or permission changed.");
     return grant;
   };
   assertAllowed();

@@ -175,7 +175,7 @@ export function MachineSwitcher({ onManageDevices, pairingBlocked = false }: { o
               <span className="machine-row-name">Find nearby devices</span>
             </button>
           ) : nearby.length === 0 && (
-            <p className="machine-menu-note">Looking for nearby devices. On your other device, turn on Allow access from nearby devices.</p>
+            <p className="machine-menu-note">Looking for nearby devices. On your other computer, turn on Allow access from nearby devices, then choose Pair a device.</p>
           ))}
 
           {network && <p className="machine-menu-note">{network.text}</p>}

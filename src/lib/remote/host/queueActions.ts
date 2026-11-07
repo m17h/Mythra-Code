@@ -1,4 +1,4 @@
-import { adoptRemoteQueuedTurns, releaseRemoteQueueAdmission, releaseRemoteQueueEdit, type QueuedTurn } from "../../taskStore";
+import { adoptRemoteQueuedTurns, releaseRemoteQueueAdmission, releaseRemoteQueueEdit, useTaskStore, type QueuedTurn } from "../../taskStore";
 import { invoke } from "@tauri-apps/api/core";
 import { subscribeRemoteStateAdoption } from "../../storage";
 import { HostReadError } from "./scope";
@@ -18,6 +18,9 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
   const execute: HostParityActions["execute"] = async (op, args, operation) => {
     const threadId = operation.context.activeThread?.id;
     if (!threadId) throw new HostReadError("unsupported", "A conversation is required for this queue action.");
+    // Queue ownership is resident even when the host has never selected it;
+    // actual delivery still performs isolated, preserve-unread hydration.
+    useTaskStore.getState().ensureTask(threadId, operation.context.activeWorkspace!.path);
     let editHandle: string | undefined, queuedTurnId: string | undefined;
     const newPrompt = op === "prompt.schedule" || op === "queue.edit.finish" && !args.cancel || op === "schedules.edit" || op === "queue.retry";
     if (newPrompt) {
@@ -42,6 +45,7 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
         }
       };
       if (op !== "prompt.schedule") editable();
+      if (entry?.editing && op !== "queue.edit.finish" && op !== "queue.edit.begin") throw new HostReadError("busy", "This instruction is currently being edited.");
       if (newPrompt) {
         const text = op === "queue.retry" ? entry.text : String(args.text);
         if (!text.trim()) throw new HostReadError("unsupported", "An instruction is required.");
@@ -64,7 +68,7 @@ export function createHostQueueActions(pump: (threadId: string) => void) {
         if (entry.remoteDelivery) reject.push(entry.remoteDelivery);
         entries.splice(index, 1);
       } else if (op === "queue.edit.begin") {
-        if (entry.editing && entry.remoteEdit && entry.remoteEdit.expiresAt > Date.now()) throw new HostReadError("busy", "Another editor is changing this instruction.");
+        if (entry.editing && (!entry.remoteEdit || entry.remoteEdit.expiresAt > Date.now())) throw new HostReadError("busy", "Another editor is changing this instruction.");
         editHandle = crypto.randomUUID();
         entries[index] = { ...entry, editing: true, remoteEdit: { handle: editHandle, device: operation.identity.device,
           generation: operation.generation, expiresAt: Date.now() + 120_000 } };

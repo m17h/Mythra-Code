@@ -18,10 +18,11 @@ use std::{
 };
 use tauri::{AppHandle, State, WebviewWindow};
 thread_local! {static ACTIVE:RefCell<Option<Arc<Fence>>>=const{RefCell::new(None)};}
-struct Fence {
+pub(crate) struct Fence {
     inner: Arc<Inner>,
     stamp: Stamp,
     operation: String,
+    read_only: bool,
     anchors: Vec<Anchor>,
     deadline: Instant,
 }
@@ -40,7 +41,7 @@ fn stale() -> String {
     work::refused("stale_target")
 }
 fn uncertain() -> String {
-    "MYTHRA_DELIVERY_UNCERTAIN: The host could not confirm this repository change. Inspect it before trying again.".into()
+    "MYTHRA_DELIVERY_UNCERTAIN: The other device couldn't confirm this repository change. Inspect it before trying again.".into()
 }
 /// The None path calls the exact original local spawn, with no changed flags.
 pub(crate) fn spawn_gate<T>(spawn: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -51,15 +52,19 @@ pub(crate) fn spawn_gate<T>(spawn: impl FnOnce() -> Result<T, String>) -> Result
         return Err(uncertain());
     }
     let core = fence.inner.lock();
-    fence.stamp.check(&core, &fence.operation)?;
-    let grant = work::authorize(
-        &core,
-        &fence.stamp.meta(),
-        fence.stamp.workspace_id.as_deref(),
-    )
-    .map_err(|_| stale())?;
-    if !grant.capabilities.terminal {
-        return Err(work::refused("forbidden"));
+    if fence.read_only {
+        super::github::authorize_read(&core, &fence.stamp, &fence.operation)?;
+    } else {
+        fence.stamp.check(&core, &fence.operation)?;
+        let grant = work::authorize(
+            &core,
+            &fence.stamp.meta(),
+            fence.stamp.workspace_id.as_deref(),
+        )
+        .map_err(|_| stale())?;
+        if !grant.capabilities.terminal {
+            return Err(work::refused("forbidden"));
+        }
     }
     for anchor in &fence.anchors {
         anchor.validate()?;
@@ -261,7 +266,7 @@ pub(crate) async fn remote_domain_execute(
         anchor.validate()?;
         let root = anchor.path.to_string_lossy().into_owned();
         let mut anchors = vec![anchor];
-        if let Some(path) = optional(&args, "worktreePath").filter(|_| action != "worktree.remove")
+        if let Some(path) = optional(&args, "worktreePath").filter(|_| !matches!(action.as_str(),"worktree.remove"|"worktree.returnShared"|"worktree.continueShared"))
         {
             anchors.push(Anchor::open(Path::new(path))?);
         }
@@ -269,14 +274,16 @@ pub(crate) async fn remote_domain_execute(
             inner: worker.clone(),
             stamp: stamp_worker.clone(),
             operation: op_worker.clone(),
+            read_only:false,
             anchors,
             deadline: Instant::now() + Duration::from_secs(120),
         });
+        let _worker_pins=pin_anchors(&fence.anchors)?;
         ACTIVE.with(|slot| slot.replace(Some(fence)));
         let _reset = Reset;
         // Refuse the local helpers' implicit expansion to a parent repository.
         // Initialize is the one action with no repository to check yet.
-        let repo = if action == "git.init" {
+        let repo = if matches!(action.as_str(),"git.init"|"worktree.continueShared") {
             std::fs::canonicalize(&root).map_err(|_| stale())?
         } else {
             crate::project_git::checkpoint_repo(&root)?
@@ -459,14 +466,15 @@ pub(crate) async fn remote_domain_execute(
                     Some(&reference),
                 )?)
             }
-            "worktree.remove" => {
+            "worktree.continueShared" => {if !flag(&args,"confirmed"){return Err(stale());}Ok(json!({"usesSharedProject":true}))},
+            "worktree.remove" | "worktree.returnShared" => {
                 if !flag(&args, "confirmed") {
                     return Err(stale());
                 }
                 let managed = crate::release_qa::app_data_dir(&app)
                     .map_err(|_| stale())?
                     .join("worktrees");
-                value(crate::project_git::remote_worktree_remove_sync(
+                let removed=value(crate::project_git::remote_worktree_remove_sync(
                     &managed,
                     owned_thread.as_deref(),
                     &root,
@@ -475,13 +483,19 @@ pub(crate) async fn remote_domain_execute(
                     flag(&args, "force"),
                     flag(&args, "deleteBranch"),
                     optional(&args, "expectedRetainedBranchOid"),
-                )?)
+                )?)?;
+                // Match local cleanup order: exact folder first, then invalidate
+                // isolated checkpoint refs before committing their metadata.
+                for id in super::bookkeeping::removed_checkpoint_ids(bookkeeping.as_ref().ok_or_else(stale)?,string(&args,"worktreePath")?)? {
+                    for phase in ["before","after"] {let reference=crate::project_git::checkpoint_ref(&id,phase)?;let _=crate::project_git::git_stdout(&repo,&["update-ref","-d",&reference],None);}
+                }
+                Ok(removed)
             }
             _ => Err(work::refused("unsupported")),
         }
         })()?;
-        let result=json!({"opId":stamp_worker.op_id,"state":"accepted","workspaceId":stamp_worker.workspace_id,"threadId":stamp_worker.thread_id});let saved_result=result.clone();let payload_save=payload.clone();let stamp_save=stamp_worker.clone();
-        let saved=worker.enqueue_write(false,move|db|{let tx=db.transaction().map_err(|_|uncertain())?;let rows=super::bookkeeping::finish(&tx,&stamp_save,&op_worker,&root_for_state,&args,&payload_save,bookkeeping.as_ref())?;commit::complete(&tx,&stamp_save,&op_worker,&saved_result,false)?;tx.commit().map_err(|_|uncertain())?;Ok(rows)});
+        let result=json!({"opId":stamp_worker.op_id,"state":"accepted","workspaceId":stamp_worker.workspace_id,"threadId":stamp_worker.thread_id});let saved_result=result.clone();let payload_save=payload.clone();let stamp_save=stamp_worker.clone();let final_authority=worker.clone();
+        let saved=worker.enqueue_write(false,move|db|{let tx=db.transaction().map_err(|_|uncertain())?;let core=final_authority.lock();stamp_save.check(&core,&op_worker)?;let rows=super::bookkeeping::finish(&tx,&stamp_save,&op_worker,&root_for_state,&args,&payload_save,bookkeeping.as_ref())?;commit::complete(&tx,&stamp_save,&op_worker,&saved_result,false)?;tx.commit().map_err(|_|uncertain())?;Ok(rows)});
         let rows=tauri::async_runtime::block_on(super::finish_write(saved))?;
         Ok::<_,String>(json!({"result":result,"payload":payload,"rows":rows,"replayed":false}))
     })
@@ -536,4 +550,87 @@ pub(crate) fn limit_timeout(timeout: Duration) -> Duration {
     current().map_or(timeout, |fence| {
         timeout.min(fence.deadline.saturating_duration_since(Instant::now()))
     })
+}
+
+/// Task-local GitHub context is reinstalled only on its own blocking workers.
+/// Local calls have no context and take the exact existing execution path.
+pub(crate) fn with_context<T>(
+    fence: Arc<Fence>,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _worker_pins = pin_anchors(&fence.anchors)?;
+    let previous = ACTIVE.with(|slot| slot.replace(Some(fence)));
+    struct Restore(Option<Arc<Fence>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(previous);
+    operation()
+}
+pub(super) fn make_context(
+    inner: Arc<Inner>,
+    stamp: Stamp,
+    operation: String,
+    anchor: Anchor,
+    read_only: bool,
+) -> Arc<Fence> {
+    Arc::new(Fence {
+        inner,
+        stamp,
+        operation,
+        read_only,
+        anchors: vec![anchor],
+        deadline: Instant::now() + Duration::from_secs(120),
+    })
+}
+
+// Anchors can cross blocking workers; Git's cwd fd registrations are thread-
+// local. Reopen no-follow and compare to the retained identity, then KEEP that
+// exact fd on this worker through the operation (never authorize a fresh path).
+fn pin_anchors(anchors: &[Anchor]) -> Result<Vec<Anchor>, String> {
+    anchors
+        .iter()
+        .map(|anchor| {
+            let pin = Anchor::open(&anchor.path)?;
+            if pin.identity()? != anchor.identity()? {
+                return Err(stale());
+            }
+            Ok(pin)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn moved_anchor_is_pinned_in_the_actual_blocking_worker() {
+        let path =
+            std::env::temp_dir().join(format!("mythra-domain-pin-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let output = crate::process_launch::background_std_command("git")
+            .current_dir(&path)
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let anchor = Anchor::open(&path).unwrap();
+        let cleanup = path.clone();
+        let worker = std::thread::spawn(move || {
+            let _pins = pin_anchors(&[anchor]).unwrap();
+            let _safe = super::super::safe_git::enter();
+            crate::project_git::GitReadOperation::new()
+                .output(&path, &["status", "--porcelain=v1"])
+                .unwrap()
+        });
+        let output = worker.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::remove_dir_all(cleanup).unwrap();
+    }
 }

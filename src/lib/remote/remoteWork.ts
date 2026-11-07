@@ -55,7 +55,35 @@ export function clearRemoteCapabilities(device: string): void {
 
 /** Once per session, resume above whatever the host has seen from this device. */
 const alignedDevices = new Set<string>();
-export const nextHostOperationSequence = (device: string) => operationSequence(device);
+const MAX_WAITING_ACTIONS = 256;
+const sequencing = new Map<string, { tail: Promise<unknown>; waiting: number }>();
+const nextTask = () => new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+/**
+ * The host refuses an opSeq at or below the highest it has seen, so a later
+ * action that overtakes an earlier one expires it for good. Each action for a
+ * device takes its number, saves what it must and hands its frame over before
+ * the next may start. Replies are not waited for. The task gap lets the native
+ * side take the frame before the next one follows it.
+ */
+export function sequenced<T>(device: string, prepare: (opSeq: number) => Promise<void> | void, send: (opSeq: number) => Promise<T>): Promise<T> {
+  const turn = sequencing.get(device) ?? { tail: Promise.resolve(), waiting: 0 };
+  if (turn.waiting >= MAX_WAITING_ACTIONS) return Promise.reject({ code: "busy" });
+  turn.waiting += 1;
+  sequencing.set(device, turn);
+  const admitted = turn.tail.then(async () => {
+    const opSeq = await operationSequence(device);
+    await prepare(opSeq);
+    const response = send(opSeq);
+    response.catch(() => undefined);
+    await nextTask();
+    return { response };
+  });
+  turn.tail = admitted.catch(() => undefined).finally(() => {
+    turn.waiting -= 1;
+    if (!turn.waiting && sequencing.get(device) === turn) sequencing.delete(device);
+  });
+  return admitted.then(({ response }) => response);
+}
 async function operationSequence(device: string): Promise<number> {
   let floor = 0;
   if (!alignedDevices.has(device)) {
@@ -131,22 +159,23 @@ export async function sendRemotePrompt(request: {
   if (unresolved) return { status: "rejected", message: "Wait until your last message is confirmed." };
   if (outboxIsFull()) return { status: "rejected", message: "Too many messages are waiting. Dismiss some first." };
   claimedDrafts.add(draftKey);
+  let entry: OutboxEntry | undefined;
   try {
-    let opSeq: number;
-    try { opSeq = await operationSequence(device); }
-    catch { return { status: "rejected", message: `Mythra Code can't reach ${name} right now. Your draft is saved.` }; }
-    const entry: OutboxEntry = {
-      opId: crypto.randomUUID(), opSeq, device, op: OPERATION_FOR_MODE[mode], draftKey, text,
-      state: "sending", createdAt: Date.now(),
-      ...(threadId ? { threadId } : {}), ...(workspaceId ? { workspaceId } : {}), ...(handle ? { handle } : {}),
-      ...(draftHandle ? { draftHandle } : {}), ...(attachmentIds?.length ? { attachmentIds } : {}),
-    };
-    try { await admitToOutbox(entry); }
-    catch {
+    return await sequenced(device, async (opSeq) => {
+      entry = {
+        opId: crypto.randomUUID(), opSeq, device, op: OPERATION_FOR_MODE[mode], draftKey, text,
+        state: "sending", createdAt: Date.now(),
+        ...(threadId ? { threadId } : {}), ...(workspaceId ? { workspaceId } : {}), ...(handle ? { handle } : {}),
+        ...(draftHandle ? { draftHandle } : {}), ...(attachmentIds?.length ? { attachmentIds } : {}),
+      };
+      await admitToOutbox(entry);
+    }, () => dispatchPrompt(entry!, name));
+  } catch {
+    if (entry) {
       removeOutboxEntry(entry.opId);
       return { status: "rejected", message: "Mythra Code couldn't save this message, so it wasn't sent." };
     }
-    return await dispatchPrompt(entry, name);
+    return { status: "rejected", message: `Mythra Code can't reach ${name} right now. Your draft is saved.` };
   } finally { claimedDrafts.delete(draftKey); }
 }
 
@@ -187,8 +216,7 @@ export async function reconcileRemoteOutbox(device: string, name: string): Promi
  * prompts, so a lost acknowledgement reports and leaves nothing to resend. */
 async function runAction(device: string, name: string, op: "turn.stop" | "approval.answer" | "question.answer" | "thread.settings.set" | RemoteRowOperation, args: object): Promise<string | null> {
   try {
-    const opSeq = await operationSequence(device);
-    const result = await viewerWork<RemoteWorkResult>(device, op, { opId: crypto.randomUUID(), opSeq, ...args });
+    const result = await sequenced(device, () => undefined, (opSeq) => viewerWork<RemoteWorkResult>(device, op, { opId: crypto.randomUUID(), opSeq, ...args }));
     if (result?.state === "accepted" || result?.state === "queued") return null;
     if (result?.state === "rejected") return refusalText(result.error?.code ?? "", name);
     return "We couldn't confirm that reached the other device. Check the conversation.";
@@ -252,8 +280,7 @@ export const browseRemoteFolders = (device: string, folderId?: string, cursor?: 
 /** `null` when the project was added, otherwise what to tell the user. */
 export async function addRemoteProject(device: string, name: string, folderId: string): Promise<string | null> {
   try {
-    const opSeq = await operationSequence(device);
-    const result = await viewerWork<ProjectsAddResult>(device, "projects.add", { opId: crypto.randomUUID(), opSeq, folderId });
+    const result = await sequenced(device, () => undefined, (opSeq) => viewerWork<ProjectsAddResult>(device, "projects.add", { opId: crypto.randomUUID(), opSeq, folderId }));
     return result?.state === "accepted" ? null : `We couldn't confirm that the project was added. Check the list on ${name}.`;
   } catch (reason) {
     const code = viewerErrorCode(reason);

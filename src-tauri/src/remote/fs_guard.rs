@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn denied() -> String {
-    "The host could not safely open that folder or file.".into()
+    "The other device couldn't safely open that folder or file.".into()
 }
 pub(super) fn leaf(name: &str) -> bool {
     !name.is_empty()
@@ -47,10 +47,93 @@ pub(super) struct Entry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) size: Option<u64>,
 }
+#[cfg(unix)]
+type AnchorFile = std::sync::Arc<File>;
+#[cfg(not(unix))]
+type AnchorFile = File;
+#[cfg(unix)]
+thread_local! {static GIT_PINS:std::cell::RefCell<Vec<(PathBuf,std::sync::Weak<File>)>>=const{std::cell::RefCell::new(Vec::new())};}
+/// Weak registrations cannot retain files beyond their owning read. Several
+/// live anchors may name one inode; conflicting identities fail closed.
+#[cfg(unix)]
+fn track_git_anchor(anchor: &Anchor) -> Result<(), String> {
+    GIT_PINS.with(|pins| {
+        let mut pins = pins.borrow_mut();
+        pins.retain(|(_, file)| file.strong_count() > 0);
+        if pins.len() >= 128 {
+            return Err(denied());
+        }
+        pins.push((anchor.path.clone(), std::sync::Arc::downgrade(&anchor.file)));
+        Ok(())
+    })
+}
+/// Last parent-side step before Git spawn. Command.current_dir is only a label;
+/// the child changes to the already-opened directory, not whatever occupies
+/// that pathname later. The closure owns the fd through fork/spawn/exec.
+pub(crate) fn prepare_git_cwd(command: &mut std::process::Command) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let Some(cwd) = command.get_current_dir() else {
+            return Ok(());
+        };
+        let pins = GIT_PINS.with(|pins| {
+            let mut pins = pins.borrow_mut();
+            pins.retain(|(_, file)| file.strong_count() > 0);
+            pins.iter()
+                .filter_map(|(path, file)| file.upgrade().map(|file| (path.clone(), file)))
+                .collect::<Vec<_>>()
+        });
+        let mut candidates: Vec<_> = pins
+            .iter()
+            .filter(|(path, _)| path == cwd)
+            .map(|(_, file)| file.clone())
+            .collect();
+        if candidates.is_empty() && super::safe_git::active() {
+            // Legacy helpers can canonicalize a renamed root into a new label.
+            // Match its inode to a live pin, never reopen that label as authority.
+            use std::os::unix::fs::MetadataExt;
+            let meta = fs::metadata(cwd).map_err(|_| denied())?;
+            for (_, file) in &pins {
+                let open = file.metadata().map_err(|_| denied())?;
+                if open.dev() == meta.dev() && open.ino() == meta.ino() {
+                    candidates.push(file.clone());
+                }
+            }
+            if candidates.is_empty() {
+                return Err(denied());
+            }
+        }
+        let Some(file) = candidates.first().cloned() else {
+            return Ok(());
+        };
+        let expected = identity(&file)?;
+        for other in &candidates {
+            if identity(other)? != expected {
+                return Err(denied());
+            }
+        }
+        // std performs its pathname chdir BEFORE pre_exec. Use a stable initial
+        // directory so removing/renaming the old name cannot select a new root.
+        command.current_dir("/");
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fchdir(file.as_raw_fd()) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+    Ok(())
+}
 pub(super) struct Anchor {
     pub(super) path: PathBuf,
     requested: PathBuf,
-    file: File,
+    file: AnchorFile,
     #[cfg(windows)]
     parents: Vec<File>,
 }
@@ -173,11 +256,13 @@ impl Anchor {
             if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
                 return Err(denied());
             }
-            return Ok(Self {
+            let anchor = Self {
                 path,
-                file,
+                file: std::sync::Arc::new(file),
                 requested: root.to_path_buf(),
-            });
+            };
+            track_git_anchor(&anchor)?;
+            return Ok(anchor);
         }
         #[cfg(windows)]
         {
@@ -245,7 +330,7 @@ impl Anchor {
                 current = Self {
                     path: current.path.join(part),
                     requested: current.requested.join(part),
-                    file,
+                    file: std::sync::Arc::new(file),
                 };
             }
             #[cfg(windows)]
@@ -266,6 +351,8 @@ impl Anchor {
             }
         }
         current.validate()?;
+        #[cfg(unix)]
+        track_git_anchor(&current)?;
         Ok(current)
     }
     pub(super) fn regular(&self, name: &str) -> Result<File, String> {
@@ -411,28 +498,11 @@ impl Anchor {
         Ok(entries)
     }
     pub(super) fn git_cwd(&self) -> PathBuf {
-        // macOS won't start a process inside /dev/fd/N. It can name what an open
-        // folder is right now, which keeps the same "this exact folder" promise.
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::fd::AsRawFd;
-            let mut name = [0u8; libc::PATH_MAX as usize];
-            if unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GETPATH, name.as_mut_ptr()) } == 0 {
-                if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&name).map(|name| name.to_string_lossy()) {
-                    return PathBuf::from(path.as_ref());
-                }
-            }
-            self.path.clone()
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            use std::os::fd::AsRawFd;
-            PathBuf::from(format!("/dev/fd/{}", self.file.as_raw_fd()))
-        }
-        #[cfg(not(unix))]
-        {
-            self.path.clone()
-        }
+        // Only a lookup key. prepare_git_cwd pins the Unix child to self.file;
+        // never turn a directory fd back into a racy F_GETPATH pathname.
+        // On Windows self.file and every ancestor stay open without DELETE
+        // sharing while this anchor lives, so replacement is prevented there.
+        self.path.clone()
     }
 }
 
@@ -449,4 +519,57 @@ pub(super) fn append_file(anchor:&Anchor,name:&str)->Result<File,String>{
     #[cfg(unix)] {use std::os::fd::{AsRawFd,FromRawFd};let name=std::ffi::CString::new(name).map_err(|_|denied())?;let fd=unsafe{libc::openat(anchor.file.as_raw_fd(),name.as_ptr(),libc::O_WRONLY|libc::O_APPEND|libc::O_NOFOLLOW|libc::O_CLOEXEC|libc::O_NONBLOCK)};if fd<0{return Err(denied());}let file=unsafe{File::from_raw_fd(fd)};if !file.metadata().map_err(|_|denied())?.is_file(){return Err(denied());}Ok(file)}
     #[cfg(windows)] {use std::os::windows::fs::{OpenOptionsExt,MetadataExt};let file=fs::OpenOptions::new().append(true).share_mode(3).custom_flags(0x00200000).open(anchor.path.join(name)).map_err(|_|denied())?;let meta=file.metadata().map_err(|_|denied())?;if !meta.is_file()||meta.file_attributes()&0x400!=0{return Err(denied());}Ok(file)}
     #[cfg(not(any(unix,windows)))] {Err(denied())}
+}
+
+#[cfg(all(test, unix))]
+mod spawn_tests {
+    use super::*;
+    #[test]
+    fn git_spawn_pins_cwd_across_an_aba_directory_swap() {
+        use std::process::{Command, Stdio};
+        let temp = std::env::temp_dir().join(format!("mythra-cwd-aba-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&temp).unwrap();
+        let temp = temp.canonicalize().unwrap();
+        let approved = temp.join("approved");
+        let outside = temp.join("outside");
+        let held = temp.join("held");
+        fs::create_dir(&approved).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(approved.join("marker"), "APPROVED").unwrap();
+        fs::write(outside.join("marker"), "OUTSIDE").unwrap();
+        let anchor = Anchor::open(&approved).unwrap();
+        let mut command = Command::new("/bin/cat");
+        command
+            .arg("marker")
+            .current_dir(anchor.git_cwd())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // The attacker swaps AFTER cwd is derived, then restores before the
+        // caller's identity check: this is exactly the failing ABA window.
+        fs::rename(&approved, &held).unwrap();
+        fs::rename(&outside, &approved).unwrap();
+        // Negative control: the old pathname-based spawn reads the replacement,
+        // despite the successful identity validation after restoration below.
+        let unpinned = Command::new("/bin/cat")
+            .arg("marker")
+            .current_dir(&approved)
+            .output()
+            .unwrap();
+        let (child, _scope) = crate::git_workspace::spawn_scoped_git(&mut command).unwrap();
+        let output = child.wait_with_output().unwrap();
+        fs::rename(&approved, &outside).unwrap();
+        fs::rename(&held, &approved).unwrap();
+        anchor.validate().unwrap();
+        assert!(output.status.success());
+        assert!(unpinned.status.success());
+        assert_eq!(unpinned.stdout, b"OUTSIDE");
+        let observed = String::from_utf8(output.stdout).unwrap();
+        drop(command);
+        drop(anchor);
+        fs::remove_dir_all(temp).unwrap();
+        assert_eq!(
+            observed, "APPROVED",
+            "post-validation alone allowed reading the replacement directory"
+        );
+    }
 }

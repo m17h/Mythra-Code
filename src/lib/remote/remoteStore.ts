@@ -97,7 +97,7 @@ function message(value: unknown): WireMessage {
     const secret = bool(q.secret);
     const answers = q.answers === undefined ? undefined : rows(q.answers, (answer) => text(answer, 16000), 100);
     return { id: id(q.id), title: text(q.title, 16000), secret, options: rows(q.options, (option) => text(option, 16000), 100),
-      answered: bool(q.answered), ...(answers === undefined ? {} : { answers: secret ? ["Private answer submitted on the host."] : answers }) };
+      answered: bool(q.answered), ...(answers === undefined ? {} : { answers: secret ? ["Private answer submitted on the other device."] : answers }) };
   }, 100);
   if (v.truncated === true) result.truncated = true;
   return result;
@@ -290,7 +290,7 @@ class ViewerSession {
       this.timer = undefined;
     }
     changeDevice(this.device, (current) => ({ ...current, state: removed ? "removed" : "stale", loading: false,
-      error: removed ? "Access is unavailable. Check this device's grant on the host." : "The host could not be reached. Work already started there may still be running." }));
+      error: removed ? "Your access changed. On the other device, open Settings → Connections → Devices and check this device's access." : "The other device couldn't be reached. Work already started there may still be running." }));
     if (this.desiredThread) changeTimeline(this.device, this.desiredThread, (current) => removed
       ? { ...emptyTimeline(), state: "removed" } : { ...current, state: "stale", reading: false });
     if (!removed) this.schedule();

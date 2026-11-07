@@ -1957,7 +1957,7 @@ export function SettingsModal({
             <PreferenceLearningSettings projects={projects} modelCatalogs={learningModelCatalogs} onLearnPastConversations={onLearnPastConversations} onCancelLearning={onCancelPreferenceLearning} historyProgress={preferenceHistoryProgress} onChanged={onPreferenceLearningChanged} />
           </section>}
 
-          {settingsSection === "devices" && <DevicesSettings />}
+          {settingsSection === "devices" && <DevicesSettings projects={projects} />}
 
           {settingsSection === "tools" && <LanguageToolsSettings />}
 

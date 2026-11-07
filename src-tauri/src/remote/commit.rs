@@ -41,7 +41,7 @@ impl Stamp {
     }
 }
 fn failed() -> String {
-    "MYTHRA_DELIVERY_UNCERTAIN: The host could not confirm this saved change.".into()
+    "MYTHRA_DELIVERY_UNCERTAIN: The other device couldn't confirm this saved change.".into()
 }
 fn stale() -> String {
     work::refused("stale_target")
@@ -260,7 +260,7 @@ fn reject(db: &Connection, items: &[Rejection]) -> Result<(), String> {
         }
         receipt["disposition"] = json!("rejected");
         receipt["errorCode"] = json!("cancelled");
-        let result = json!({"opId":item.op_id,"state":"rejected","error":{"code":"cancelled","message":"This queued instruction was cancelled on the host."}});
+        let result = json!({"opId":item.op_id,"state":"rejected","error":{"code":"cancelled","message":"This queued instruction was cancelled on the other device."}});
         db.execute("UPDATE remote_op_journal SET state='rejected',delivery_json=?4,result_json=?5,error_code='cancelled',updated_at=?6 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![item.device,item.op_id,item.op_seq as i64,receipt.to_string(),result.to_string(),crate::unix_timestamp_ms()]).map_err(|_|failed())?;
     }
     Ok(())

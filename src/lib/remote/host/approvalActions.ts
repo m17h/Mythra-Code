@@ -23,7 +23,7 @@ export function approvalPolicy(approval: PendingApproval): { canAllowOnce: boole
     case "applyPatchApproval": case "item/fileChange/requestApproval":
       return { canAllowOnce: true, canDeny: true, summary: "The agent requests permission to change files." };
     case "claude/can_use_tool": return { canAllowOnce: true, canDeny: true, summary: "Claude requests permission to use a tool." };
-    case "item/permissions/requestApproval": return { canAllowOnce: false, canDeny: true, summary: "Additional permissions can only be allowed on the host." };
+    case "item/permissions/requestApproval": return { canAllowOnce: false, canDeny: true, summary: "Additional permissions can only be allowed on the other device." };
     case "cursor/request_permission": return { canAllowOnce: cursorOption(approval, "allow_once") !== undefined,
       canDeny: cursorOption(approval, "reject_once") !== undefined, summary: "Cursor requests permission to continue." };
     default: return null;
@@ -33,7 +33,7 @@ export function approvalPolicy(approval: PendingApproval): { canAllowOnce: boole
 export function remoteApprovalResponse(approval: PendingApproval, decision: "allowOnce" | "deny"): JsonObject {
   const policy = approvalPolicy(approval);
   if (!policy || !(decision === "allowOnce" ? policy.canAllowOnce : policy.canDeny)) {
-    throw new HostReadError("unsupported", "This decision must be made on the host.");
+    throw new HostReadError("unsupported", "This decision must be made on the other device.");
   }
   if (approval.method === "cursor/request_permission") {
     return { outcome: { outcome: "selected", optionId: cursorOption(approval, decision === "allowOnce" ? "allow_once" : "reject_once") } };

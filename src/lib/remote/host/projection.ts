@@ -54,7 +54,7 @@ export function projectActivity(activity: Activity, order: number): WireActivity
   // Model/tool output has other kinds and keeps its original transcript text.
   if (activity.kind === "warning") return {
     id: boundedText(activity.id, 512), order, kind: "warning",
-    title: "Host diagnostic", detail: "This conversation reported an issue. Inspect it on the host.",
+    title: "Notice from the other device", detail: "This conversation reported an issue. Inspect it on the other device.",
     status: ["inProgress", "completed", "failed", "interrupted"].includes(activity.status ?? "") ? activity.status! : null,
     turnId: activity.turnId ? boundedText(activity.turnId, 256) : null, turnStatus: terminal(activity.turnStatus),
   };
@@ -82,15 +82,15 @@ export function projectActivity(activity: Activity, order: number): WireActivity
 /** Fixed method table: no raw params, JSON, tool input, or arbitrary reason. */
 function approvalSummary(approval: PendingApproval): Pick<WireApproval, "kind" | "summary"> {
   switch (approval.method) {
-    case "item/tool/requestUserInput": case "cursor/ask_question": return { kind: "question", summary: "The agent needs your input. Continue on the host to answer." };
+    case "item/tool/requestUserInput": case "cursor/ask_question": return { kind: "question", summary: "The agent needs your input. Continue on the other device to answer." };
     case "claude/can_use_tool": return approval.params.tool_name === "AskUserQuestion"
-      ? { kind: "question", summary: "Claude needs your input. Continue on the host to answer." }
-      : { kind: "permissions", summary: "Claude is waiting for tool permission on the host." };
-    case "execCommandApproval": case "item/commandExecution/requestApproval": return { kind: "command", summary: "A command needs approval on the host." };
-    case "applyPatchApproval": case "item/fileChange/requestApproval": return { kind: "file", summary: "File changes need approval on the host." };
-    case "item/permissions/requestApproval": case "cursor/request_permission": return { kind: "permissions", summary: "The agent is waiting for permission on the host." };
-    case "openkiwi/subagents/change": return { kind: "settings", summary: "A settings change needs approval on the host." };
-    default: return { kind: "other", summary: "Continue on the host to answer this request." };
+      ? { kind: "question", summary: "Claude needs your input. Continue on the other device to answer." }
+      : { kind: "permissions", summary: "Claude is waiting for tool permission on the other device." };
+    case "execCommandApproval": case "item/commandExecution/requestApproval": return { kind: "command", summary: "A command needs approval on the other device." };
+    case "applyPatchApproval": case "item/fileChange/requestApproval": return { kind: "file", summary: "File changes need approval on the other device." };
+    case "item/permissions/requestApproval": case "cursor/request_permission": return { kind: "permissions", summary: "The agent is waiting for permission on the other device." };
+    case "openkiwi/subagents/change": return { kind: "settings", summary: "A settings change needs approval on the other device." };
+    default: return { kind: "other", summary: "Continue on the other device to answer this request." };
   }
 }
 export function projectApprovals(task: ThreadTaskState | undefined): WireApproval[] {
@@ -114,6 +114,6 @@ export function projectState(task: ThreadTaskState | undefined, availability: Wi
     activeTurnId: task?.activeTurnId ? boundedText(task.activeTurnId, 256) : null,
     workingStartedAt: finite(startedAt) ? startedAt : null,
     // Exceptions can contain credentials or local paths. Do not forward them.
-    error: task?.error ? "This conversation reported an error. Inspect it on the host." : null,
+    error: task?.error ? "This conversation reported an error. Inspect it on the other device." : null,
   };
 }

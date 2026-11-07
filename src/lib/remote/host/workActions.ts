@@ -1,3 +1,4 @@
+import type { ChildAgentTarget } from "../../../types";
 import { invoke } from "@tauri-apps/api/core";
 import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import type { Thread } from "../../../types";
@@ -24,6 +25,7 @@ import { executeTerminal, isTerminalMutation } from "./nativeActions";
 import { HostDomains, isDomainMutation, isDomainRead } from "./domainActions";
 import { clearRemoteEngineOwners } from "./engineOwners";
 import { HostProjectNavigation, isProjectNavigationOperation } from "./projectNavigation";
+import { executeRowState } from "./rowStateActions";
 import { createHostProjectRegistration } from "./projectRegistration";
 
 const mutations = new Set(["draft.settings.set", "prompt.cancel", "prompt.send", "prompt.queue", "prompt.steer", "turn.stop", "approval.answer", "question.answer", "thread.settings.set",
@@ -39,6 +41,8 @@ export interface HostMutationContext {
 }
 export interface HostRowActions {
   /** Archived metadata is host-only; never trust a viewer to supply a binding. */
+  /** Only list operations whose actual native/provider commit is grant-fenced. */
+  nativeFenced?: readonly RemoteRowOperation[];
   archivedThread(threadId: string): { thread: Thread; workspaceId: string } | null;
   execute(op: RemoteRowOperation, args: Readonly<Record<string, unknown>>, operation: HostMutationContext): Promise<{ state: "accepted"; threadId?: string; workspaceId?: string }>;
 }
@@ -75,7 +79,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
   let disposed = false, active = 0, reconciling: Promise<void> | undefined;
   const releases = new Set<() => void>();
   const current = () => !disposed && options.isCurrent();
-  const assertCurrent = () => { if (!current()) throw new HostReadError("host_unavailable", "The host renderer is recovering."); };
+  const assertCurrent = () => { if (!current()) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly."); };
   // Source grants can be behind Rust's event snapshot. Both must still permit
   // work; the authoritative native check closes the final dispatch race.
   const sources: HostContextSources = { ...options.sources,
@@ -96,7 +100,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
             && (local.capabilities as { manageProjects?: boolean }).manageProjects === true } };
     },
   };
-  const engines = options.parity ? createHostEngineAdapters(sources, options.parity, (id) => options.getRunner().pumpRemoteQueue(id)) : undefined;
+  const engines = options.parity ? createHostEngineAdapters(sources, options.parity, (id) => options.getRunner().pumpRemoteQueue(id), current, options.getRunner) : undefined;
   const parity = engines?.adapter;
   const domains = new HostDomains(sources, options.generation, current, parity);
   const navigation = new HostProjectNavigation(sources, options.generation, current, createHostProjectRegistration());
@@ -133,7 +137,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     // Tightening a host policy mid-preparation never sends under an older,
     // stronger permission. No setting picker from the selected thread is used.
     const before = expected.effectiveSettings.permission, after = now.effectiveSettings.permission;
-    if (before === "full" && after !== "full" || before === "ask" && after === "read-only") throw new HostReadError("forbidden", "The host permission policy changed before delivery.");
+    if (before === "full" && after !== "full" || before === "ask" && after === "read-only") throw new HostReadError("forbidden", "The other device permission policy changed before delivery.");
   }
   function targetPath(ctx: TurnRunnerContext): string {
     return paths.get(ctx) ?? (ctx.activeWorkspace ? sources.executionPathFor(ctx.activeThread?.id ?? "", ctx.activeWorkspace.path) : "");
@@ -142,7 +146,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     queue?: QueuedTurn, targetHandle?: string, draft?: DraftToken): RemoteDeliveryJournal {
     return new RemoteDeliveryJournal({ generation: options.generation, identity: id, workspaceId: ctx.activeWorkspace!.id,
       threadId: ctx.activeThread?.id, queuedTurnId: queue?.id, attemptId: queue?.remoteDelivery?.attemptId ?? draft?.attemptId,
-      messageId: queue?.remoteDelivery?.messageId, targetHandle, isCurrent: current,
+      messageId: queue?.remoteDelivery?.messageId, targetHandle, permission: ctx.effectiveSettings.permission, provider: ctx.effectiveSettings.provider, isCurrent: current,
       assertAllowed: () => {
         if (draft?.cancelled) throw new HostReadError("cancelled", "Stopped before prompt delivery.");
         if (queue) {
@@ -228,7 +232,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           const patch = Object.fromEntries(Object.entries(args).filter(([key]) => ["provider", "model", "effort", "permission", "serviceTier", "subagents", "isolated"].includes(key)));
           const settings = validateExecutionSettings({ ...(previous ? drafts.get(previous, id.device, workspaceId).settings : {}), ...patch }, sources, ctx.effectiveSettings);
           if (settings.permission && remotePermission(settings.permission, currentWorkGrant(sources, id.device)) !== settings.permission
-            || settings.permission === "full" && ctx.effectiveSettings.permission !== "full") throw new HostReadError("forbidden", "The host policy does not grant Full access.");
+            || settings.permission === "full" && ctx.effectiveSettings.permission !== "full") throw new HostReadError("forbidden", "Full access isn't allowed for this device. To change it, open Settings → Connections → Devices on the other device.");
           await delivery.beforeCreate();
           const token = drafts.set(id.device, workspaceId, settings, previous);
           await delivery.accepted({});
@@ -240,7 +244,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         if (token.original) {
           const result = await invoke<{ confirmed: boolean }>("remote_work_cancel_attempt", { generation: options.generation, ...id,
             workspaceId, original: token.original, attemptId: token.attemptId });
-          if (!result?.confirmed) throw new HostReadError("uncertain", "The host could not confirm the starting prompt's cutoff.");
+          if (!result?.confirmed) throw new HostReadError("uncertain", "The other device couldn't confirm this prompt stopped. Check the conversation.");
         }
         await delivery.accepted({ threadId: token.threadId });
         return delivery.result();
@@ -249,7 +253,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     if (isParityOperation(request.op)) {
       validateParityArgs(request.op, args);
       const actions = parity;
-      if (!actions) throw new HostReadError("unsupported", "This host action is not connected yet.");
+      if (!actions) throw new HostReadError("unsupported", "This action is not connected yet.");
       const target = typeof args.threadId === "string" ? { threadId: args.threadId } : { workspaceId: idArg(args.workspaceId) };
       const ctx = context(target, id.device);
       if (ctx.activeWorkspace!.id !== args.workspaceId) throw stale();
@@ -340,7 +344,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
           turnId: owned.stop.turnId, startRequestId: owned.stop.startRequestId });
         await stopThreadAndChildren({ ...ctx, remoteStop: async (args) => {
           const cutoff = await delivery!.invokeSteer<{ confirmed: boolean }>("turn_stop", args);
-          if (cutoff?.confirmed !== true) throw new HostReadError("uncertain", "The host could not confirm this turn's cutoff.");
+          if (cutoff?.confirmed !== true) throw new HostReadError("uncertain", "The other device couldn't confirm this turn stopped. Check the conversation.");
         } }, owned.stop, options.getRunner(), options.stop,
           () => delivery!.assertAllowed());
         await delivery.accepted({ threadId: threadId!, turnId: owned.stop.turnId });
@@ -386,7 +390,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       if (request.op === "projects.remove") {
         const grant = currentWorkGrant(sources, id.device);
         if (grant.scope.kind !== "all" || (grant.capabilities as { manageProjects?: boolean }).manageProjects !== true) {
-          throw new HostReadError("forbidden", "Removing a project requires Manage projects and an all-project grant.");
+          throw new HostReadError("forbidden", "Removing a project needs Manage projects and access to all projects.");
         }
       }
     };
@@ -399,7 +403,11 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         if (!Object.keys(values).length) throw invalid();
         // As on this device: a crew can't change under a run that captured it.
         if (values.subagents?.crew && (ctx.running || ctx.activeThread && useTaskStore.getState().parentRuns[ctx.activeThread.id])) throw new HostReadError("busy", "Finish or stop the parent and every sub-agent before changing this setup.");
-        if (values.permission === "full" && remotePermission(sources.getSettings().permission, currentWorkGrant(sources, id.device)) !== "full") throw new HostReadError("forbidden", "Full access exceeds the current host policy.");
+        const nextCrew = values.subagents?.crew && values.subagents.engine === "mythra" ? { maxConcurrent: values.subagents.maxConcurrent, targets: values.subagents.crew as ChildAgentTarget[] } : undefined;
+        const crewCheck = nextCrew ? sources.stageThreadCrew?.(threadId!, nextCrew, true) : undefined;
+        if (crewCheck === "busy") throw new HostReadError("busy", "Finish or stop the parent and every sub-agent before changing this setup.");
+        if (crewCheck === "not-ready") throw new HostReadError("unsupported", "Keep one ready sub-agent, or switch Sub-agents off.");
+        if (values.permission === "full" && remotePermission(sources.getSettings().permission, currentWorkGrant(sources, id.device)) !== "full") throw new HostReadError("forbidden", "Full access isn't allowed for this device. To change it, open Settings → Connections → Devices on the other device.");
         const provider = args.provider ?? ctx.effectiveSettings.provider;
         // An existing thread's provider owns its transcript/runtime identity.
         // Like the local picker, switching providers requires a NEW thread.
@@ -411,13 +419,14 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         await delivery.beforeCreate();
         await delivery.beforeDispatch({ threadId: threadId!, messageId: delivery.messageId, provider: ctx.effectiveSettings.provider });
         assertAllowed();
-        const saved = await (values.permission !== undefined || values.serviceTier !== undefined || values.subagents !== undefined
-          ? createHostSettingsActions() : options.settings ?? createHostSettingsActions()).set(threadId!, values, operation);
-        if (saved?.state !== "accepted") throw new HostReadError("uncertain", "The host settings write could not be confirmed.");
+        const saved = await createHostSettingsActions().set(threadId!, values, operation);
+        if (saved?.state !== "accepted") throw new HostReadError("uncertain", "The other device's settings write couldn't be confirmed.");
+        if (nextCrew) sources.stageThreadCrew?.(threadId!, nextCrew, false);
         await flushPendingStateWrites();
         await delivery.accepted({ threadId });
       } else {
-        if (!options.rows) throw new HostReadError("unsupported", "This host has not enabled remote row actions yet.");
+        if (!options.rows) throw new HostReadError("unsupported", "The other device has not enabled remote row actions yet.");
+        if (!["thread.pin", "projects.pin", "projects.reorder"].includes(request.op) && !options.rows.nativeFenced?.includes(request.op as RemoteRowOperation)) throw new HostReadError("unsupported", "This action's native ownership boundary is not connected yet.");
         const extra = request.op === "thread.rename" ? ["name"] : request.op.endsWith(".pin") ? ["pinned"] : request.op === "projects.reorder" ? ["relativeTo", "position"] : [];
         strictKeys(args, [projectOp ? "workspaceId" : "threadId", ...extra, ...(request.op === "thread.delete" || request.op === "projects.remove" ? ["confirmed"] : [])]);
         if ((request.op === "thread.delete" || request.op === "projects.remove") && args.confirmed !== true) throw invalid();
@@ -435,10 +444,10 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         await delivery.beforeCreate();
         await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: ctx.effectiveSettings.provider });
         assertAllowed();
-        const result = await options.rows.execute(request.op as RemoteRowOperation, {
-          ...values, ...(threadId ? { threadId } : { workspaceId: ctx.activeWorkspace!.id }),
-        }, operation);
-        if (result?.state !== "accepted") throw new HostReadError("uncertain", "The host action could not be confirmed.");
+        const rowArgs = { ...values, ...(threadId ? { threadId } : { workspaceId: ctx.activeWorkspace!.id }) };
+        const pure = await executeRowState(request.op, rowArgs, operation);
+        const result = pure ?? await options.rows.execute(request.op as RemoteRowOperation, rowArgs, operation);
+        if (result?.state !== "accepted") throw new HostReadError("uncertain", "The other device's action couldn't be confirmed.");
         await flushPendingStateWrites();
         await delivery.accepted({ threadId: result?.threadId ?? threadId });
         return { ...delivery.result(), ...(result?.workspaceId ? { workspaceId: result.workspaceId } : {}) };
@@ -479,7 +488,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
     assertTarget(target, remote.device, before);
     ctx = context(target, remote.device);
     const resolved = await attachments(remote.attachmentIds, remote.device, remote.workspaceId);
-    if (entry.attachments.length && !remote.attachmentIds?.length) throw new HostReadError("stale_target", "This queued attachment has no host upload identity.");
+    if (entry.attachments.length && !remote.attachmentIds?.length) throw new HostReadError("stale_target", "This attachment is no longer on the other device. Attach it again.");
     const frozenPath = targetPath(ctx);
     ctx = { ...ctx, attachments: resolved.records, remoteAttachmentIds: resolved.ids };
     paths.set(ctx, frozenPath);
@@ -533,7 +542,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
       assertCurrent();
       if (request.generation !== options.generation || !isRemoteWorkOperation(request.op)) throw invalid();
       const args = objectArgs(request.args);
-      if (active >= 4) throw new HostReadError("busy", "The host is handling other work. Try again shortly.");
+      if (active >= 4) throw new HostReadError("busy", "The other device is handling other work. Try again shortly.");
       active += 1;
       try {
         if (isProjectNavigationOperation(request.op)) {
@@ -559,7 +568,7 @@ export function createRemoteWork(options: RemoteWorkOptions): RemoteWorkAdapter 
         if (request.op === "work.inspect") return await inspect(request, args);
         if (isParityOperation(request.op) && isParityRead(request.op)) {
           validateParityArgs(request.op, args);
-          if (!parity) throw new HostReadError("unsupported", "This host context is not connected yet.");
+          if (!parity) throw new HostReadError("unsupported", "This context is not connected yet.");
           const grant = currentGrant(options.sources, request.device, request.grant);
           if (typeof args.threadId === "string") remember(args.threadId);
           const target = typeof args.threadId === "string" ? { threadId: args.threadId } : { workspaceId: idArg(args.workspaceId) };

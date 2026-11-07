@@ -23,7 +23,7 @@ export async function reconcilePendingRequests(generation: number, isCurrent: ()
       if (!task) return state;
       const id = `expired-${crypto.randomUUID()}`;
       return { tasks: { ...state.tasks, [approval.threadId]: { ...task,
-        expiredApprovals: [...(task.expiredApprovals ?? []), { id, summary: "This request expired when the host reconnected. Continue on the host to recover the task." }].slice(-64) } } };
+        expiredApprovals: [...(task.expiredApprovals ?? []), { id, summary: "This request expired when the other device reconnected. Continue on the other device to recover the task." }].slice(-64) } } };
     });
     const task = useTaskStore.getState().tasks[approval.threadId];
     if (!task?.activeTurnId && (task?.status === "idle" || task?.status === "starting")) useTaskStore.getState().setTaskStatus(approval.threadId, "interrupted");

@@ -10,9 +10,9 @@ const encoder = new TextEncoder();
 const TTL = 5 * 60_000;
 const MAX_HANDLES = 2048;
 const MAX_PER_DEVICE = 512;
-const busy = () => new HostReadError("busy", "The host is browsing other folders. Try again shortly.");
+const busy = () => new HostReadError("busy", "The other device is browsing other folders. Try again shortly.");
 const invalid = () => new HostReadError("unsupported", "That folder request is not valid.");
-const unavailable = () => new HostReadError("host_unavailable", "The host could not open that folder. Inspect it on the host.");
+const unavailable = () => new HostReadError("host_unavailable", "The other device couldn't open that folder. Inspect it on the other device.");
 interface Handle { device: string; revision: number; expires: number; kind: "folder" | "cursor"; token: string; parentToken?: string | null; canAdd?: boolean }
 /** Host-only native selection. Never serialize this object into a response. */
 export interface HostFolderSelection { path: string; name: string; identity: string; token: string }
@@ -74,7 +74,7 @@ export class HostProjectNavigation {
     if (!/^[0-9a-f]{64}$/.test(request.device)) throw invalid();
     const current = currentGrant(this.sources, request.device, request.grant);
     if (!allowed(request.grant) || !allowed(current)) {
-      throw new HostReadError("forbidden", "Opening host folders requires Work, all projects, and Manage projects access.");
+      throw new HostReadError("forbidden", "Opening folders on the other device needs Work, all projects and Manage projects.");
     }
   }
   private sweep(): void {
@@ -162,10 +162,10 @@ export class HostProjectNavigation {
   }
   private async add(request: HostRequest, args: Record<string, unknown>): Promise<ProjectsAddResult> {
     const folder = this.handle(request, args.folderId, "folder");
-    if (!folder.canAdd) throw new HostReadError("forbidden", "This host folder cannot be added as a project.");
+    if (!folder.canAdd) throw new HostReadError("forbidden", "This folder on the other device cannot be added as a project.");
     const opId = idArg(args.opId);
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(opId) || typeof args.opSeq !== "number" || !Number.isSafeInteger(args.opSeq) || args.opSeq < 1) throw invalid();
-    if (!this.registration) throw new HostReadError("unsupported", "This host does not support adding projects remotely yet.");
+    if (!this.registration) throw new HostReadError("unsupported", "The other device does not support adding projects remotely yet.");
     const raw = await this.native(request, "remote_folders_select", { folderToken: folder.token });
     const path = text(raw.path, 32768);
     if (!(/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(path))) throw unavailable();

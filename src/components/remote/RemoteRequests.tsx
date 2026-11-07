@@ -2,6 +2,7 @@ import { createContext, useContext, useState } from "react";
 import type { ChatMessage } from "../../types";
 import { answerRemoteApproval, answerRemoteQuestion, refreshRemoteCapabilities, useRemoteWork } from "../../lib/remote/remoteWork";
 import type { WireApproval, WireQuestion, WireWorkApproval, WireWorkCapabilities } from "../../lib/remote/wire";
+import { namingDevice } from "../../lib/remote/devices";
 import { AgentQuestionForm, type FormQuestion, type QuestionAnswers } from "../AgentQuestionForm";
 
 export interface RemoteThreadScope { device: string; name: string; threadId: string; connected: boolean; workspaceId?: string }
@@ -67,7 +68,7 @@ function ApprovalRow({ scope, approval }: { scope: RemoteThreadScope; approval: 
     });
   };
   return <div className="remote-request">
-    <p>{approval.summary}</p>
+    <p>{namingDevice(approval.summary, scope.name)}</p>
     <div className="remote-row-actions">
       {approval.canDeny && <button type="button" className="secondary-button" disabled={busy || !scope.connected} onClick={() => answer("deny")}>Deny</button>}
       {approval.canAllowOnce && <button type="button" className="primary-button" disabled={busy || !scope.connected} onClick={() => answer("allowOnce")}>Allow once</button>}
@@ -94,6 +95,6 @@ export function RemoteRequests({ scope, summaries, capabilities, questionsInTime
     <strong>Waiting on you</strong>
     {decisions.map((approval) => <ApprovalRow key={approval.target.handle} scope={scope} approval={approval} />)}
     {looseQuestions.map((approval) => <QuestionAnswer key={approval.target.handle} scope={scope} approval={approval} />)}
-    {hostOnly.map((entry) => <p key={entry.id}>{entry.summary} Continue on {scope.name} to answer this request.</p>)}
+    {hostOnly.map((entry) => <p key={entry.id}>{namingDevice(entry.summary, scope.name)}{entry.summary.includes("Continue on") ? "" : ` Continue on ${scope.name} to answer this request.`}</p>)}
   </div>;
 }

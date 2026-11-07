@@ -210,6 +210,8 @@ pub(crate) fn init(connection: &Connection) -> rusqlite::Result<()> {
         ("delivery_json", "TEXT"),
         ("attachments_json", "TEXT"),
         ("result_json", "TEXT"),
+        ("engine_root", "TEXT"),
+        ("engine_step", "TEXT"),
     ] {
         let present: bool = connection.query_row(
             "SELECT EXISTS (SELECT 1 FROM pragma_table_info('remote_op_journal') WHERE name = ?1)",
@@ -226,6 +228,7 @@ pub(crate) fn init(connection: &Connection) -> rusqlite::Result<()> {
         "CREATE INDEX IF NOT EXISTS remote_op_journal_seq
            ON remote_op_journal(device_fingerprint, op_seq);",
     )?;
+    connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS remote_engine_step ON remote_op_journal(device_fingerprint,engine_root,engine_step) WHERE engine_root IS NOT NULL;")?;
     super::attachments::init(connection)?;
     // A row still pending after a restart has an unknown outcome. It is never
     // retried automatically; the viewer asks `op.status`.
@@ -510,6 +513,7 @@ pub(crate) fn op_status(
     op_id: &str,
     op_seq: Option<u64>,
 ) -> rusqlite::Result<OpStatus> {
+    if op_id.starts_with("engine:"){return Ok(OpStatus::without_row(op_id,"expired"));}
     if let Some((status, _)) = read_op_row(connection, fingerprint, op_id)? {
         return Ok(status);
     }
@@ -595,6 +599,7 @@ pub(crate) fn claim_operation(
     op: &str,
     digest: &str,
 ) -> rusqlite::Result<JournalClaim> {
+    if op_id.starts_with("engine:") { return Ok(JournalClaim::DigestMismatch); }
     let seq = match i64::try_from(op_seq) {
         Ok(seq) if seq > 0 => seq,
         _ => return Ok(JournalClaim::Expired),
@@ -613,7 +618,7 @@ pub(crate) fn claim_operation(
         return Ok(JournalClaim::Expired);
     }
     let rows: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM remote_op_journal WHERE device_fingerprint = ?1",
+        "SELECT COUNT(*) FROM remote_op_journal WHERE device_fingerprint = ?1 AND engine_root IS NULL",
         params![fingerprint],
         |row| row.get(0),
     )?;
@@ -622,7 +627,8 @@ pub(crate) fn claim_operation(
         let oldest: Vec<(String, i64)> = {
             let mut statement = transaction.prepare(
                 "SELECT op_id, op_seq FROM remote_op_journal
-                 WHERE device_fingerprint = ?1 AND state IN ('accepted', 'rejected')
+                 WHERE device_fingerprint = ?1 AND engine_root IS NULL AND state IN ('accepted', 'rejected')
+                   AND NOT EXISTS(SELECT 1 FROM remote_op_journal AS child WHERE child.device_fingerprint=remote_op_journal.device_fingerprint AND child.engine_root=remote_op_journal.op_id AND child.state IN ('pending','uncertain'))
                  ORDER BY op_seq ASC LIMIT ?2",
             )?;
             let found = statement
@@ -637,6 +643,7 @@ pub(crate) fn claim_operation(
         }
         for (old_id, old_seq) in oldest {
             evicted_through = evicted_through.max(old_seq);
+            transaction.execute("DELETE FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2",params![fingerprint,old_id])?;
             transaction.execute(
                 "DELETE FROM remote_op_journal WHERE device_fingerprint = ?1 AND op_id = ?2",
                 params![fingerprint, old_id],
@@ -749,7 +756,7 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
         if previous == "accepted" && next != "accepted" { return Ok(()); }
         if previous=="rejected"&&next!="rejected"&&!(native&&next=="accepted"){return Err("A rejected instruction cannot be reopened.".into());}
         if ["dispatched","uncertain","accepted","rejected"].contains(&previous) && ["preparing","queued"].contains(&next) { return Err("That delivery cannot be queued again.".into()); }
-        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
+        for key in ["queueAuthorized","queueAdmissionCommitted","permissionCeiling","ownerHandle","engineOwnerHandle","engineKind","grantRevision"]{if let Some(value)=old.get(key){receipt[key]=value.clone();}}
         // Native dispatch latches may only be added, never cleared by IPC.
         if let Some(steps) = old.get("nativeSteps") { receipt["nativeSteps"] = steps.clone(); }
     }
@@ -758,7 +765,7 @@ fn save_receipt_inner(connection: &mut Connection, device: &str, op_id: &str, op
     for key in ["workspaceId","threadId","turnId","queuedTurnId","messageId","attemptId","terminalId"] {
         if let Some(value) = receipt.get(key).filter(|value| !value.is_null()) { result[key] = value.clone(); }
     }
-    if next == "rejected" { result["error"] = serde_json::json!({"code":receipt.get("errorCode").and_then(Value::as_str).unwrap_or("internal"),"message":"The host did not deliver this instruction."}); }
+    if next == "rejected" { result["error"] = serde_json::json!({"code":receipt.get("errorCode").and_then(Value::as_str).unwrap_or("internal"),"message":"The other device did not deliver this instruction."}); }
     if native&&next=="accepted"{super::attachments::retain_instruction(&transaction,device,op_id,op_seq,&receipt)?;}
     save_result_inner(&transaction,device,op_id,op_seq,&result,true)?;
     transaction.execute("UPDATE remote_op_journal SET delivery_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64,receipt.to_string()])
@@ -776,12 +783,12 @@ pub(super) fn claim_native_step(connection: &mut Connection, device: &str, op_id
     // adapters before extending this explicit dispatch matrix.
     let operation:String=transaction.query_row("SELECT op FROM remote_op_journal WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,op_id,op_seq as i64],|row|row.get(0)).map_err(|_|"That delivery is no longer available.".to_string())?;
     let allowed=match step {
-        "thread/start"|"thread/resume"|"turn/start"|"claude_prompt"|"cursor_prompt"=>matches!(operation.as_str(),"prompt.send"|"prompt.queue")||(matches!(operation.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"schedules.edit")&&receipt.get("queueAuthorized").and_then(Value::as_bool)==Some(true)&&receipt.get("queueAdmissionCommitted").and_then(Value::as_bool)==Some(true)),
+        "thread/start"|"thread/resume"|"turn/start"|"claude_prompt"|"cursor_prompt"=>matches!(operation.as_str(),"prompt.send"|"prompt.queue"|"engine.prompt")||(matches!(operation.as_str(),"queue.edit.finish"|"queue.retry"|"prompt.schedule"|"schedules.edit")&&receipt.get("queueAuthorized").and_then(Value::as_bool)==Some(true)&&receipt.get("queueAdmissionCommitted").and_then(Value::as_bool)==Some(true)),
         "claude_turn_steer"|"cursor_turn_steer"|"codex_steer"=>operation=="prompt.steer",
         "approval_answer"=>operation=="approval.answer",
         "question_answer"=>operation=="question.answer",
         "turn_stop"=>operation=="turn.stop",
-        "command/exec"=>operation=="terminal.open",
+        "command/exec"=>matches!(operation.as_str(),"terminal.open"|"engine.command"),
         "command/exec/write"=>operation=="terminal.write",
         "command/exec/resize"=>operation=="terminal.resize",
         "command/exec/terminate"=>operation=="terminal.close",
@@ -807,9 +814,20 @@ fn reject_queued_for_grant(connection:&Connection,device:&str,grant:Option<&Devi
     for(id,seq,source)in rows{let Ok(mut receipt)=serde_json::from_str::<Value>(&source)else{continue;};
         let disposition=receipt.get("disposition").and_then(Value::as_str).unwrap_or("uncertain");
         if !["preparing","queued"].contains(&disposition){continue;}
-        let allowed=grant.is_some_and(|grant|grant.view&&grant.work&&receipt.get("op").and_then(Value::as_str).is_some_and(|op|super::manifest::access(op,grant).is_ok())&&(receipt.get("permission").and_then(Value::as_str)!=Some("full")||grant.capabilities.full_access)&&match &grant.scope{GrantScope::All=>true,GrantScope::Projects{project_ids}=>receipt.get("workspaceId").and_then(Value::as_str).is_some_and(|id|project_ids.iter().any(|project|project==id))});
+        let allowed=grant.is_some_and(|grant|grant.view&&grant.work&&receipt.get("grantRevision").and_then(Value::as_u64).is_none_or(|revision|revision==grant.revision)&&receipt.get("op").and_then(Value::as_str).is_some_and(|op|super::manifest::access(op,grant).is_ok())&&(receipt.get("permission").and_then(Value::as_str)!=Some("full")||grant.capabilities.full_access)&&match &grant.scope{GrantScope::All=>true,GrantScope::Projects{project_ids}=>receipt.get("workspaceId").and_then(Value::as_str).is_some_and(|id|project_ids.iter().any(|project|project==id))});
         if allowed{continue;}receipt["disposition"]=serde_json::json!("rejected");receipt["errorCode"]=serde_json::json!("forbidden");
         let result=serde_json::json!({"opId":id,"state":"rejected","threadId":receipt.get("threadId"),"queuedTurnId":receipt.get("queuedTurnId"),"error":{"code":"forbidden","message":"Remote access was removed before this instruction could run."}});
         connection.execute("UPDATE remote_op_journal SET state='rejected',error_code='forbidden',delivery_json=?4,result_json=?5,updated_at=?6 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,id,seq,receipt.to_string(),result.to_string(),crate::unix_timestamp_ms()]).map_err(|_|"The revoked instructions could not be saved.".to_string())?;
+    }Ok(())
+}
+
+/// Closing an engine can definitively reject an unused preparation receipt. A
+/// native latch or uncertain write remains untouched: it may already have run.
+pub(super) fn reject_unused_engine_steps(db:&Connection,device:&str,root:&str)->Result<(),String>{
+    let rows:Vec<(String,i64,String)>={let mut statement=db.prepare("SELECT op_id,op_seq,delivery_json FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2 AND state='pending'").map_err(|_|"The engine receipts could not be saved.".to_owned())?;let found=statement.query_map(params![device,root],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|_|"The engine receipts could not be saved.".to_owned())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|_|"The engine receipts could not be saved.".to_owned())?;found};
+    for(id,seq,source)in rows{let mut receipt:Value=serde_json::from_str(&source).map_err(|_|"The engine receipt could not be read.".to_owned())?;
+        if receipt.get("nativeSteps").and_then(Value::as_array).is_some_and(|a|!a.is_empty())||!matches!(receipt.get("disposition").and_then(Value::as_str),Some("preparing"|"dispatched")){continue;}
+        receipt["disposition"]=serde_json::json!("rejected");receipt["errorCode"]=serde_json::json!("stale_target");let result=serde_json::json!({"opId":id,"state":"rejected","error":{"code":"stale_target","message":"This engine ended before the instruction was delivered."}});
+        db.execute("UPDATE remote_op_journal SET state='rejected',delivery_json=?4,result_json=?5,updated_at=?6 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",params![device,id,seq,receipt.to_string(),result.to_string(),crate::unix_timestamp_ms()]).map_err(|_|"The engine receipts could not be saved.".to_owned())?;
     }Ok(())
 }

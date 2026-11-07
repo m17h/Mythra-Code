@@ -1,3 +1,4 @@
+import { openLocalEngineOwner, rememberRemoteEngineOwner, finishRemoteEngineOwner, isLiveRemoteEngineOwner } from "../lib/remote/host/engineOwners";
 import { useCallback, useEffect, useRef } from "react";
 import { appendCurrentLearnedPreferences } from "../lib/currentLearnedPreferences";
 import { appendProjectInstructionContext } from "../lib/projectInstructionContext";
@@ -28,6 +29,8 @@ import {
   type WorkflowRunSource,
   type WorkflowRunStepRecord,
 } from "../lib/workflows";
+import type { RemoteWorkflowExecution } from "../lib/remote/host/workflowExecution";
+import type { RemoteTurnDelivery } from "../lib/remote/host/workTypes";
 import type { CustomAgentProfile, Project, Provider, ScheduleRunSettings, Thread, Turn } from "../types";
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["completed", "interrupted", "error"]);
@@ -77,6 +80,8 @@ function isWorkflowTurnTimeoutError(reason: unknown): boolean {
 
 interface ActiveWorkflowRun {
   runId: string;
+  remote?: RemoteWorkflowExecution;
+  localOwnerHandle?: string;
   provider: Provider;
   stopRequested: boolean;
   threadId?: string;
@@ -207,6 +212,8 @@ export function waitForWorkflowTurn(
 }
 
 interface WorkflowEngineDeps {
+  /** Native tracking only. Off by default, so local-only starts stay unchanged. */
+  trackNativeOwners?: boolean;
   workflows: WorkflowDefinition[];
   projects: Project[];
   automaticGitInitialization?: boolean;
@@ -347,7 +354,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     }
     active.waitController?.abort();
     const requests: Array<Promise<unknown>> = [];
-    if (active.processId) {
+    if (active.processId && !(active.remote && stopRoot)) {
       const processId = active.processId;
       requests.push(rpc("command/exec/terminate", { processId }).catch((error) => {
         if (active.processId === processId) throw error;
@@ -355,6 +362,10 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     }
     requests.push(stopRoot ? stopRoot() : interruptActiveTurn(active));
     await Promise.all(requests);
+    if ((active.remote || active.localOwnerHandle) && stopRoot) {
+      runningRef.current.delete(workflowId);
+      if (active.threadId && useTaskStore.getState().workflowOwners[active.threadId]?.runId === runId) useTaskStore.getState().setWorkflowOwner(active.threadId, null);
+    }
     return true;
   }, []);
 
@@ -363,9 +374,12 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     source: WorkflowRunSource = "manual",
     variableOverrides: Record<string, string> = {},
     targetProjectId?: string,
-    invocation?: { userPrompt?: string; onStarted?: (threadId: string) => void },
+    invocation?: { userPrompt?: string; onStarted?: (threadId: string) => void; remote?: RemoteWorkflowExecution },
   ): Promise<string | undefined> => {
     const current = depsRef.current;
+    const remote = invocation?.remote;
+    let localOwnerHandle: string | undefined;
+    let remotePreparation: RemoteTurnDelivery | undefined;
     const storedWorkflow = current.workflows.find((item) => item.id === workflowId);
     if (!storedWorkflow || runningRef.current.has(workflowId)) return undefined;
     if (storedWorkflow.unconfirmedThreadId) {
@@ -423,7 +437,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       runState = { ...runState, ...patch };
       current.recordRun(runState);
     };
-    const active: ActiveWorkflowRun = { runId, provider: workflow.run.provider, stopRequested: false, publish };
+    const active: ActiveWorkflowRun = { runId, ...(remote ? { remote } : {}), provider: workflow.run.provider, stopRequested: false, publish };
     const localProvider = workflow.run.provider === "claude" || workflow.run.provider === "cursor";
     let localThread: Thread | undefined;
     let appServerModel: string | undefined;
@@ -442,6 +456,17 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
     runningRef.current.set(workflowId, active);
     publish({});
     try {
+      if (!remote && current.trackNativeOwners) {
+        localOwnerHandle = await openLocalEngineOwner(project.id, runId, "workflow");
+        active.localOwnerHandle = localOwnerHandle;
+      }
+      if (remote) {
+        const admission = await remote.begin(workflow, project, runId);
+        workflow.run = admission.run;
+        remotePreparation = admission.preparation;
+        publish({ ...(remote.provenance ? { remote: remote.provenance } : {}) });
+        await remote.admitted();
+      }
       const resolvedSystemPrompt = current.resolveSkillPrompts && workflow.steps.some((step) => step.type === "agent")
         ? (await current.resolveSkillPrompts("", workflow.run.systemPrompt)).systemPrompt
         : workflow.run.systemPrompt;
@@ -466,7 +491,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
           updatedAt: Math.floor(Date.now() / 1000), modelProvider: workflow.run.provider };
         threadId = localThread.id;
       } else {
-        const started = await rpc<{ thread: Thread; model?: string }>("thread/start", threadStartParams(providerRun, project.path, {
+        const startParams = threadStartParams(providerRun, project.path, {
           serviceName: `Mythra Code Workflow: ${workflow.name}`,
           perTurnSystemPrompt: true,
           customAgents: current.customAgents,
@@ -474,12 +499,16 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             ? current.lmStudioModels?.find((entry) => entry.id === workflow.run.model)?.maxContextLength
             : undefined,
           interactive: source === "manual",
-        }));
+        });
+        if (remotePreparation) await remotePreparation.beforeCreate();
+        const started = await rpc<{ thread: Thread; model?: string }>("thread/start", remotePreparation ? { ...startParams, remoteDelivery: remotePreparation.metadata() } : localOwnerHandle ? { ...startParams, localOwnerHandle } : startParams);
+        if (remotePreparation) await remotePreparation.accepted({ threadId: started.thread.id, provider: workflow.run.provider });
         threadId = started.thread.id;
         appServerModel = started.model;
       }
       current.onThreadCreated?.(threadId);
       active.threadId = threadId;
+      if (remote) await remote.bindThread(threadId);
       if (active.stopRequested) throw new WorkflowStoppedError();
       current.bindThreadToProject(threadId, project.path);
       useTaskStore.getState().ensureTask(threadId, project.path);
@@ -493,7 +522,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       current.onThreadStarted(project, threadId, source);
       publish({ threadId });
 
-      if (!project.isChat && current.automaticGitInitialization === true) {
+      // No un-stamped implicit repository initialization in a remote engine.
+      if (!remote && !project.isChat && current.automaticGitInitialization === true) {
         await current.prepareNewThreadGit?.(threadId, project, true);
         if (active.stopRequested) throw new WorkflowStoppedError();
       }
@@ -534,7 +564,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             error: undefined,
           });
           publish({ steps });
+          let remoteStep: RemoteTurnDelivery | undefined;
           try {
+            if (remote) remoteStep = await remote.step(`step-${index}-attempt-${attempt}`, step.type === "command" ? "command" : "prompt", threadId);
             if (step.type === "command") {
               const command = interpolateWorkflowText(step.command, stepInputVariables);
               variables.previousExitCode = "";
@@ -553,6 +585,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               let result: { exitCode: number; stdout: string; stderr: string };
               try {
                 if (active.stopRequested) throw new WorkflowStoppedError();
+                if (remoteStep) await remoteStep.beforeDispatch({ threadId, messageId: remoteStep.messageId, provider: workflow.run.provider, permission: workflow.run.permission });
+                if (active.stopRequested) throw new WorkflowStoppedError();
                 active.processId = processId;
                 result = await rpc<{ exitCode: number; stdout: string; stderr: string }>("command/exec", {
                   command: shellCommandWithWindowsQuotes(command),
@@ -560,7 +594,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   cwd: project.path,
                   timeoutMs: 30 * 60_000,
                   sandboxPolicy: commandSandbox(workflow.run.permission, project.path),
+                  ...(remoteStep ? { remoteDelivery: remoteStep.metadata() } : localOwnerHandle ? { localOwnerHandle } : {}),
                 });
+                if (remoteStep) await remoteStep.accepted({ threadId });
               } finally {
                 active.processId = undefined;
                 // Even a failed command may have modified files before it
@@ -602,7 +638,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
               const beforeMessages = useTaskStore.getState().tasks[threadId]?.messages.length ?? 0;
               active.completedTurnBeforeDispatch = useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId;
               const promptThreadId = threadId;
-              const promptMessageId = `workflow-${runId}-${step.id}-${attempt}`;
+              const promptMessageId = remoteStep?.messageId ?? `workflow-${runId}-${step.id}-${attempt}`;
               const appendPrompt = () => useTaskStore.getState().appendUserMessage(promptThreadId, {
                 id: promptMessageId,
                 role: "user",
@@ -630,6 +666,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   await persistLocalThread();
                   if (active.stopRequested) throw new WorkflowStoppedError();
                   const options = {
+                    ...(remoteStep ? { remoteDelivery: remoteStep.metadata() } : localOwnerHandle ? { localOwnerHandle } : {}),
                     threadId, cwd: project.path, prompt: providerPrompt,
                     model: workflow.run.model || (workflow.run.provider === "claude" ? DEFAULT_CLAUDE_MODEL : DEFAULT_CURSOR_MODEL),
                     effort: workflow.run.ultra ? "ultra" as const : workflow.run.reasoningEffort,
@@ -643,6 +680,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                       customAgents: workflow.run.subagentsEnabled ? current.customAgents : [],
                       skillsPluginPath: current.getSkillsPluginPath?.() };
                     if (active.stopRequested) throw new WorkflowStoppedError();
+                    if (remoteStep) await remoteStep.beforeDispatch({ threadId, messageId: promptMessageId, provider: workflow.run.provider, permission: workflow.run.permission });
+                    if (active.stopRequested) throw new WorkflowStoppedError();
                     appendPrompt();
                     turnDispatched = true;
                     const started = await startClaudeTurn(claudeOptions);
@@ -654,6 +693,8 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                     result = { turn: { id: started.turnId } };
                   } else {
                     const cursorOptions = { ...options, startRequestId: cursorAttempt?.owner.startRequestId, resumeSessionId: cursorSessionId };
+                    if (active.stopRequested) throw new WorkflowStoppedError();
+                    if (remoteStep) await remoteStep.beforeDispatch({ threadId, messageId: promptMessageId, provider: workflow.run.provider, permission: workflow.run.permission });
                     if (active.stopRequested) throw new WorkflowStoppedError();
                     appendPrompt();
                     turnDispatched = true;
@@ -692,9 +733,11 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                   if (active.stopRequested) throw new WorkflowStoppedError();
                   // Validate parameters before append; no await separates the
                   // last cancellation check, optimistic history and dispatch.
+                  if (remoteStep) await remoteStep.beforeDispatch({ threadId, messageId: promptMessageId, provider: workflow.run.provider, permission: workflow.run.permission });
+                  if (active.stopRequested) throw new WorkflowStoppedError();
                   appendPrompt();
                   turnDispatched = true;
-                  result = await rpc<{ turn: Turn }>("turn/start", params);
+                  result = await rpc<{ turn: Turn }>("turn/start", remoteStep ? { ...params, remoteDelivery: remoteStep.metadata() } : localOwnerHandle ? { ...params, localOwnerHandle } : params);
                   nativeTurnAcknowledged = true;
                 }
                 if (typeof result?.turn?.id !== "string" || !result.turn.id.trim()) {
@@ -727,6 +770,9 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
                 }
                 throw reason;
               }
+              if (remoteStep) await remoteStep.accepted({ threadId, turnId: result.turn.id, provider: workflow.run.provider });
+              remote?.stepAccepted?.(threadId);
+              if (localOwnerHandle) rememberRemoteEngineOwner({ generation: 0, local: true, kind: "workflow", threadId, runId, ownerHandle: localOwnerHandle });
               active.turnId = result.turn?.id;
               if (useTaskStore.getState().tasks[threadId]?.lastCompletedTurnId !== active.turnId) {
                 useTaskStore.getState().setActiveTurn(threadId, active.turnId);
@@ -764,6 +810,13 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
             stepError = undefined;
             break;
           } catch (reason) {
+            // A replayed/dispatched child may refuse before returning a new
+            // delivery object. Never reinterpret that as a retryable attempt.
+            if (remote && workflowErrorCode(reason) === "uncertain") active.deliveryUncertain = true;
+            if (remoteStep) {
+              await remoteStep.failure(reason);
+              if (remoteStep.result().state === "uncertain") active.deliveryUncertain = true;
+            }
             if (step.type === "command") {
               const activity = useTaskStore.getState().tasks[threadId]?.activities
                 .find((item) => item.id === `workflow-${runId}-${step.id}`);
@@ -877,6 +930,7 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       }, threadId).catch(() => {});
       return threadId;
     } catch (reason) {
+      remote?.failed(reason);
       const stopped = !active.stopError && !active.deliveryUncertain && (active.stopRequested || isWorkflowStoppedError(reason));
       const message = active.stopError ?? (stopped ? "Workflow was stopped." : friendlyError(reason));
       const finishedAt = Date.now();
@@ -936,8 +990,14 @@ export function useWorkflowEngine(deps: WorkflowEngineDeps) {
       return threadId;
     } finally {
       active.waitController?.abort();
-      runningRef.current.delete(workflowId);
-      if (threadId && useTaskStore.getState().workflowOwners[threadId]?.runId === runId) {
+      if (localOwnerHandle && !isLiveRemoteEngineOwner(localOwnerHandle)) rememberRemoteEngineOwner({ generation: 0, local: true, kind: "workflow", threadId: threadId ?? `preparing:${runId}`, runId, ownerHandle: localOwnerHandle });
+      const ownerFinished = remote ? await remote.finish() : localOwnerHandle ? await finishRemoteEngineOwner(localOwnerHandle) : true;
+      if ((remote || localOwnerHandle) && !ownerFinished && !active.stopRequested) {
+        active.deliveryUncertain = true;
+        publish({ status: "failed", error: "This workflow's native owners have not confirmed completion. Inspect or Stop it on the host.", finishedAt: Date.now() });
+      }
+      if ((!remote && !localOwnerHandle) || ownerFinished) runningRef.current.delete(workflowId);
+      if (threadId && ((!remote && !localOwnerHandle) || ownerFinished || active.stopRequested) && useTaskStore.getState().workflowOwners[threadId]?.runId === runId) {
         useTaskStore.getState().setWorkflowOwner(threadId, null);
       }
     }

@@ -613,3 +613,75 @@ test("versioned domain bookkeeping is fenced and adopted without leaking native 
   assert.equal(hasPendingStateWrites(), false);
   domains.dispose();
 });
+
+test("native checkpoint/worktree writes fence the complete installed safety-record key sets", async () => {
+  const { HostDomains } = await import("./domainActions.ts");
+  const device = "a".repeat(64), allowed = { ...grant, capabilities: { ...grant.capabilities, terminal: true, checkpointRestore: true } };
+  const cp = { id: "checkpoint", threadId: "t", workspacePath: project.path, label: "Checkpoint", createdAt: 1, beforeCommit: "before", afterCommit: "after", status: "ready" };
+  const worktree = { threadId: "t", projectId: "p", projectPath: project.path, path: "/host/worktree", branch: "private", baseCommit: "base", gitDir: "/host/git", createdAt: 1, status: "active" };
+  const cases = [
+    ["checkpoint.restore", ["kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.threadWorktrees"], { checkpointId: "checkpoint", target: "before" }],
+    ["worktree.apply", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
+    ["worktree.merge", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
+    ["worktree.remove", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
+    ["worktree.returnShared", ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"], {}],
+    ["worktree.continueShared", ["kiwi.threadWorktrees"], {}],
+  ];
+  resetTaskStore();
+  for (const [op, keys, extra] of cases) {
+    const calls = [], values = { "kiwi.checkpoints": [cp], "kiwi.checkpointHeads": {}, "kiwi.threadWorktrees": { t: worktree } };
+    const host = { ...sources(), getGrant: () => allowed, getBaseContext: () => ({ threadWorktreesRef: { current: { t: worktree } } }) };
+    const transport = { invoke: async (command, args) => {
+      calls.push({ command, args });
+      if (command === "remote_domain_snapshot") return { version: 1, rows: keys.map((key) => ({ key, value: values[key], revision: 1 })) };
+      if (command === "git_workspace_snapshot") return { branch: "main", headOid: "host-head", isRoot: true };
+      if (command === "remote_domain_execute") return { result: { opId: op, state: "accepted" }, rows: keys.map((key) => ({ key, value: values[key], revision: 2 })) };
+      throw new Error(command);
+    } };
+    const domains = new HostDomains(host, 1, () => true, { revision: () => "revision" }, transport);
+    try {
+      const result = await domains.mutate({ generation: 1, device, grant: allowed, op }, { workspaceId: "p", threadId: "t", revision: "revision", confirmed: true, ...extra }, { device, opId: op, opSeq: 1 });
+      assert.equal(result.state, "accepted");
+      const dispatched = calls.find((call) => call.command === "remote_domain_execute").args;
+      assert.deepEqual(dispatched.bookkeeping.rows.map((row) => row.key), keys);
+      assert.equal(dispatched.root, project.path);
+      if (op.startsWith("worktree.") && op !== "worktree.continueShared") assert.equal(dispatched.args.worktreePath, worktree.path);
+      assert.equal(JSON.stringify(result).includes("/host/"), false);
+    } finally { domains.dispose(); }
+  }
+});
+
+test("pure row pins use stamped state adoption and preserve unrelated host pins", async () => {
+  const { executeRowState } = await import("./rowStateActions.ts");
+  const previous = globalThis.window, calls = [];
+  globalThis.window = { __TAURI_INTERNALS__: { invoke: async (command, args) => {
+    calls.push({ command, args });
+    if (command === "remote_state_snapshot") return { rows: [{ key: "kiwi.pinnedThreads", value: ["other"], revision: 9 }] };
+    if (command === "remote_state_commit") return { result: { opId: "pin", state: "accepted" }, rows: args.writes.map((row) => ({ ...row, revision: 10 })), replayed: false };
+  } } };
+  try {
+    const result = await executeRowState("thread.pin", { pinned: true }, { generation: 1, grantRevision: 1, identity: { device: "d", opId: "pin", opSeq: 1 }, context: { activeThread: thread, activeWorkspace: project }, assertAllowed() {} });
+    assert.equal(result.state, "accepted");
+    assert.deepEqual(loadStored("kiwi.pinnedThreads", []), ["other", "t"]);
+    assert.equal(calls.find((call) => call.command === "remote_state_commit").args.writes[0].expectedRevision, 9);
+  } finally { globalThis.window = previous; }
+});
+
+test("an unfenced App fork adapter is rejected before marking dispatch or invoking its local RPC", async () => {
+  const previous = globalThis.window, receipts = [];
+  let forked = false;
+  globalThis.window = { __TAURI_INTERNALS__: { invoke: async (command, args) => {
+    if (command === "remote_work_grant") return grant;
+    if (command === "remote_work_receipt") receipts.push(args);
+  } } };
+  const work = createRemoteWork({ generation: 1, sources: sources(), isCurrent: () => true, findThread: () => thread, ensureHydrated: async () => {},
+    getRunner: () => ({}), stop: {}, rows: { archivedThread: () => null, execute: async () => { forked = true; return { state: "accepted" }; } } });
+  try {
+    const result = await work.dispatch({ requestId: "request", generation: 1, device: "d", grant, opId: "fork", opSeq: 1,
+      op: "thread.fork", args: { opId: "fork", opSeq: 1, threadId: "t" } });
+    assert.equal(result.state, "rejected");
+    assert.equal(result.error.code, "unsupported");
+    assert.equal(forked, false);
+    assert.equal(receipts.some((receipt) => receipt.disposition === "dispatched"), false);
+  } finally { work.dispose(); globalThis.window = previous; }
+});

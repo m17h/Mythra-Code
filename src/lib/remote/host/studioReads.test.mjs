@@ -11,6 +11,8 @@ import { projectMessage } from "./projection.ts";
 import { validateExecutionSettings, applyHostExecutionPreferences, publicCrew } from "./executionPreferences.ts";
 import { assertParityAuthority, isParityOperation, validateParityArgs } from "./parityActions.ts";
 import { createHostParity } from "../hostParity.ts";
+import { hostLocalPort, isPublicWebLink } from "../links.ts";
+import { sequenced } from "../remoteWork.ts";
 
 const grant = { revision: 1, scope: { kind: "all" }, view: true, work: false, capabilities: { fullAccess: false, terminal: false, gitWrite: false, checkpointRestore: false, manageProjects: false } };
 const DEVICE = "a".repeat(64);
@@ -44,9 +46,9 @@ function harness({ grantFor = () => grant, execution = (_id, path) => path, nati
   const catalog = { thread: (id) => id === "t" ? thread : undefined, eligible: () => true, ownership: () => ({}) };
   const bridge = new HostBridge(1, transport, () => true, () => assert.fail("lost"));
   const dispatcher = new HostDispatcher(sources, catalog, {}, {}, {}, bridge, () => true, undefined, transport);
-  const call = async (op, args) => {
+  const call = async (op, args, requestGrant = grant) => {
     let n = sent.length;
-    await dispatcher.dispatch({ generation: 1, requestId: `r${n}`, device: DEVICE, grant, op, args });
+    await dispatcher.dispatch({ generation: 1, requestId: `r${n}`, device: DEVICE, grant: requestGrant, op, args });
     await bridge.command("noop").catch(() => undefined);
     return sent[n];
   };
@@ -117,10 +119,12 @@ test("a revert preview keeps its token on the host and works once", async () => 
   const { call } = harness({ native: { remote_studio_git_status: { rows: [{ path: "a.txt", originalPath: null, area: "unstaged", status: " M" }], stagedFiles: 0, unstagedFiles: 1, untrackedFiles: 0, changedFiles: 1, truncated: false },
     remote_studio_revert_preview: { token: "t0k3n", paths: ["a.txt"], restorePaths: ["a.txt"], preservedPaths: [] } } });
   const changeId = (await call("git.status", { workspaceId: "p" })).result.changes[0].id;
-  const { result } = await call("git.revert.preview", { workspaceId: "p", changeId });
+  assert.equal((await call("git.revert.preview", { workspaceId: "p", changeId })).error.code, "forbidden", "View alone can't run Git over the checkout");
+  const writer = { ...grant, work: true, capabilities: { ...grant.capabilities, terminal: true, gitWrite: true } };
+  const { result } = await call("git.revert.preview", { workspaceId: "p", changeId }, writer);
   assert.deepEqual(result.restorePaths, ["a.txt"]);
   assert.ok(!wire(result).includes("t0k3n"));
-  const bad = await call("git.revert.preview", { workspaceId: "p", changeId: "made-up" });
+  const bad = await call("git.revert.preview", { workspaceId: "p", changeId: "made-up" }, writer);
   assert.equal(bad.error.code, "stale_target");
 });
 
@@ -190,4 +194,72 @@ test("accepting a checkpoint and stopping an agent need Work, and only act on wh
   await assert.rejects(parity.execute("agents.stop", { agentId: "fixed" }, operation));
   assert.equal((await parity.execute("checkpoint.accept", { checkpointId: "c1" }, operation)).state, "accepted");
   await assert.rejects(parity.execute("checkpoint.accept", { checkpointId: "nope" }, operation));
+});
+
+test("web previews come from what the agent wrote, for Work only, and never from the viewer", async () => {
+  resetTaskStore();
+  useTaskStore.getState().ensureTask("t", project.path);
+  useTaskStore.getState().appendUserMessage("t", { id: "u", role: "user", text: "open http://localhost:22 please" });
+  useTaskStore.setState((state) => ({ tasks: { ...state.tasks, t: { ...state.tasks.t, messages: [...state.tasks.t.messages,
+    { id: "a", role: "assistant", text: "Running at http://localhost:3000/app and http://127.0.0.1:3000 and http://[::1]:5173 and https://example.com:8080", streaming: false }] } } }));
+  const registered = [];
+  const { call } = harness({ grantFor: () => ({ ...grant, work: true }), native: { remote_preview_register: (args) => { registered.push(args); return { endpointId: `e${registered.length}` }; } } });
+  const work = { ...grant, work: true };
+  const reply = await call("preview.links", { workspaceId: "p", threadId: "t" }, work);
+  assert.equal(reply.error, undefined);
+  assert.deepEqual(reply.result.previews.map((entry) => entry.port).sort(), [3000, 5173]);
+  assert.deepEqual(registered.map((entry) => entry.address).sort(), ["127.0.0.1:3000", "[::1]:5173"]);
+  assert.equal(registered[0].workspaceId, "p"); assert.equal(registered[0].generation, 1);
+  await call("preview.links", { workspaceId: "p", threadId: "t" }, work);
+  assert.equal(registered.length, 2, "an endpoint is registered once");
+  assert.equal((await call("preview.links", { workspaceId: "p", threadId: "t", address: "127.0.0.1:22" }, work)).error.code, "unsupported");
+  const viewOnly = harness();
+  assert.equal((await viewOnly.call("preview.links", { workspaceId: "p", threadId: "t" })).error.code, "forbidden");
+});
+
+test("links that mean the other machine stay off this device's browser", () => {
+  for (const link of ["http://home.arpa/", "https://printer.home.arpa", "http://nas.HOME.ARPA:8080/", "http://localhost:3000", "http://router.lan", "http://10.0.0.1"]) assert.equal(isPublicWebLink(link), false, link);
+  assert.equal(isPublicWebLink("https://example.com"), true);
+  assert.equal(isPublicWebLink("https://home.arpa.example.com"), true);
+  assert.equal(hostLocalPort("http://localhost:3000/x"), 3000);
+  assert.equal(hostLocalPort("http://[::1]:5173"), 5173);
+  assert.equal(hostLocalPort("http://localhost"), null);
+  assert.equal(hostLocalPort("http://192.168.1.5:3000"), null);
+});
+
+test("a later action can't overtake an earlier one on the same device", async () => {
+  const device = "c".repeat(64), order = [];
+  globalThis.window ??= {};
+  window.__TAURI_INTERNALS__ = { invoke: async () => ({ highestOpSeq: 40 }) };
+  let saved;
+  const slowSave = new Promise((resolve) => { saved = resolve; });
+  const first = sequenced(device, async (opSeq) => { order.push(["save", opSeq]); await slowSave; }, async (opSeq) => { order.push(["send", opSeq]); return "one"; });
+  const second = sequenced(device, () => undefined, async (opSeq) => { order.push(["send", opSeq]); return "two"; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(order, [["save", 41]], "the second waits for the first frame");
+  saved();
+  assert.deepEqual(await Promise.all([first, second]), ["one", "two"]);
+  assert.deepEqual(order, [["save", 41], ["send", 41], ["send", 42]]);
+  // Waiting for a reply would stall everything behind one slow operation.
+  let finish;
+  const slowReply = sequenced(device, () => undefined, () => new Promise((resolve) => { finish = resolve; }));
+  assert.equal(await sequenced(device, () => undefined, async () => "next"), "next");
+  finish("late"); assert.equal(await slowReply, "late");
+  // A failed step must not block the queue.
+  await assert.rejects(sequenced(device, () => { throw new Error("no disk"); }, async () => "never"));
+  assert.equal(await sequenced(device, () => undefined, async () => "after"), "after");
+  delete window.__TAURI_INTERNALS__;
+});
+
+test("a started thread shows the crew it captured, including one waiting for the next message", () => {
+  const target = { id: "reviewer", provider: "claude", model: "", label: "Reviewer", description: "", enabled: true, reasoningMode: "inherit", reasoningEffort: "medium", reasoningMaxEffort: "high" };
+  const sources = { getWorkspaces: () => [project], getKnownThreads: () => ({ t: thread }), getBindings: () => ({ t: project.path }), getOwnershipLinks: () => ({}),
+    getArchivedThreadIds: () => new Set(), getUnavailableThreadIds: () => new Set(), getRuntime: () => ({ available: true }), getGrant: () => grant,
+    getSettings: () => DEFAULT_SETTINGS, getThreadModels: () => ({}), getThreadReasoning: () => ({}), getThreadSubagents: () => ({}), getRuntimeModels: () => [],
+    getBaseContext: () => ({}), getWorkspaceGitInfo: () => null, isWorktreeBusy: () => false, onRemoteCodexRuntimeOwned: () => {},
+    getProviderCatalog: () => [], getPublicSkills: () => [], getPublicWorkflows: () => [], executionPathFor: (_id, path) => path,
+    getThreadCrew: () => ({ maxConcurrent: 3, targets: [target] }) };
+  const context = hostContext(sources, { device: DEVICE, grant }, { workspaceId: "p", threadId: "t" });
+  assert.deepEqual(context.execution.subagents.crew.map((entry) => entry.id), ["reviewer"]);
+  assert.equal(context.execution.subagents.maxConcurrent, 3);
 });

@@ -18,6 +18,7 @@ Rust desktop host
   ├─ SQLite/WAL state + audit history
   ├─ JSON-RPC request correlation + timeouts
   ├─ Tauri updater signature verification + installation
+  ├─ opt-in LAN link: discovery, TLS, grants, operation journal, event rings
   └─ health-checked child-process recovery
           │ JSONL over stdio
           ▼
@@ -55,6 +56,11 @@ The control plane and execution plane remain separate. The React view never laun
 | Approval/lifecycle audit | Native host | SQLite; secret answers excluded |
 | Terminal processes | App Server | Connection-scoped memory |
 | Model catalog, usage, MCP and skill inventory | App Server | Refreshed runtime state |
+| Device identity key | Native host | OS credential store, with an account per app identifier |
+| Paired devices, grants, last-known addresses, hosting switch | Native host | SQLite; nothing secret |
+| Remote operation journal and delivery receipts | Native host | SQLite, per device |
+| Timeline event rings and live links | Native host | Memory only |
+| Another computer's projects, threads, and timelines | `useRemoteStore` (viewer) | Memory only, keyed by device; unsent drafts and the outbox persist |
 
 Mythra Code's private Codex home is under the platform Tauri app-data directory. The native host creates a controlled `config.toml` on first startup and preserves subsequent user-managed skills/MCP configuration. Provider and thread overrides remain explicit.
 
@@ -168,6 +174,20 @@ Restoring either side of a checkpoint:
 
 The UI's Accepted flag is metadata only and can always be reversed. Conversation rollback remains independent and never claims to change files.
 
+## Remote work contract
+
+One installation can work in the live threads of another on the same network. The full design is in [the remote LAN contract](features/remote-lan.md); these are the rules other code has to respect.
+
+- **Roles.** The host is the computer doing the work and the viewer only renders. The role is independent of which side dialed, because Windows may block inbound connections and a host can dial out instead.
+- **Off means off.** With hosting off there is no listener or announcement. Browsing starts only when hosting is on, a device is paired, or the user chooses **Find nearby devices**, so an upgrade can't trigger the macOS Local Network prompt on its own.
+- **Authorization is native.** Rust authorizes each operation from the TLS-proven key and the current grant. The renderer gets the verified device and grant with each request and rechecks project scope against host data, which only it holds. A viewer never supplies a path, credential, permission increase, or execution folder.
+- **The renderer stays the host.** Rust owns transport, authorization, the event log, and the journal. Thread logic stays in the renderer and is reached through a `remote-host-request` event with a generation-fenced lease. If the lease is lost, Rust refuses host work and tells viewers the host is recovering, instead of reporting a confident idle state.
+- **Explicit targets.** Remote actions address a thread directly through `resolveThreadExecutionContext`. They never select a thread, change a draft, or move the host's UI.
+- **Every mutation is journaled.** A viewer-generated `opId` and increasing `opSeq` are claimed before dispatch, a repeated `opId` never runs twice, and an unconfirmed outcome stays uncertain rather than being retried. The viewer allocates, saves, and sends each action in one per-device queue so a later action can't overtake an earlier one.
+- **Allowlisted wire shapes.** Timeline frames, Studio reads, and approvals are projected field by field. Nothing crossing the link is a copied store object.
+- **Same app, different machine.** Remote mode renders the real components through environment seams over a hidden, still-running local tree. Every stored key includes the machine, and an active-machine router sends global shortcuts, the palette, and file drops to the visible machine. A remote control never falls back to this device's settings.
+- **Git stays safe to read.** Remote Git reads run against a private metadata snapshot with fsmonitor, filter, and credential configuration removed. Remote Git writes, checkpoint restores, and worktree changes also need the Terminal capability, because hooks and helpers can run commands.
+
 ## Provider contract
 
 ### OpenAI
@@ -220,7 +240,7 @@ The webview handles streamed assistant deltas, completed items, command/file/sub
 
 ## Deliberate constraints
 
-- No remote App Server listener.
+- No remote App Server listener. App Server stays on stdio; the optional LAN listener belongs to the Rust host, is off by default, and speaks only the authenticated remote protocol.
 - Shell execution is available only through the allowlisted App Server terminal RPC and always carries the selected sandbox policy.
 - No raw HTML/Markdown execution from model content.
 - No automatic import of global Codex config, auth, skills, or project instructions.

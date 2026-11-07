@@ -6,7 +6,7 @@ export interface RemoteExecutionProvenance {
   executionId: string; admittedGeneration: number; permissionCeiling: PermissionMode;
   kind: "schedule" | "queue-edit" | "workflow"; stepId?: string;
 }
-export function remoteProvenance(operation: HostMutationContext, kind: RemoteExecutionProvenance["kind"], executionId = crypto.randomUUID()): RemoteExecutionProvenance {
+export function remoteProvenance(operation: HostMutationContext, kind: RemoteExecutionProvenance["kind"], executionId: string = crypto.randomUUID()): RemoteExecutionProvenance {
   return { device: operation.identity.device, rootOpId: operation.identity.opId, rootOpSeq: operation.identity.opSeq,
     workspaceId: operation.context.activeWorkspace!.id, executionId, admittedGeneration: operation.generation,
     permissionCeiling: operation.context.effectiveSettings.permission, kind };

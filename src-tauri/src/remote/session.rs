@@ -201,7 +201,7 @@ impl Link {
     }
 
     pub(super) fn close(&self, reason: CloseReason) {
-        self.closed.send_if_modified(|current| {
+        let changed=self.closed.send_if_modified(|current| {
             if current.is_none() {
                 *current = Some(reason);
                 true
@@ -209,6 +209,7 @@ impl Link {
                 false
             }
         });
+        if changed{super::diagnostics::record(super::diagnostics::Event::Closed,self.id,0,0,0,if self.role==Role::Host{"host"}else{"viewer"},match reason{CloseReason::Finished=>"finished",CloseReason::Revoked=>"revoked",CloseReason::Dead=>"dead",CloseReason::Protocol=>"protocol",CloseReason::Overloaded=>"overloaded",CloseReason::Replaced=>"replaced",CloseReason::HostingOff=>"hosting_off",CloseReason::Refused=>"refused"});}
     }
 
     /// Queues a close behind anything already queued, so a final response
@@ -243,6 +244,9 @@ impl Link {
     }
 
     pub(super) fn respond(&self, id: u64, result: Result<Value, WireError>) -> bool {
+        let seq=result.as_ref().ok().and_then(|v|v.get("seq")).and_then(Value::as_u64).unwrap_or(0);
+        let count=result.as_ref().ok().and_then(|v|v.get("frames")).and_then(Value::as_array).map_or(0,Vec::len);
+        super::diagnostics::record(super::diagnostics::Event::Reply,self.id,id,seq,count,if self.role==Role::Host{"host"}else{"viewer"},result.as_ref().err().map_or("ok",|e|e.code.as_str()));
         let frame = match result {
             Ok(result) => Frame::Res {
                 id,
@@ -280,6 +284,8 @@ impl Link {
             }
             pending.insert(id, sender);
         }
+        let seq=args.get("opSeq").and_then(Value::as_u64).unwrap_or(0);
+        super::diagnostics::record(super::diagnostics::Event::Request,self.id,id,seq,0,op,"out");
         let sent = self.send(&Frame::Req {
             id,
             op: op.to_string(),
@@ -289,14 +295,16 @@ impl Link {
             self.forget_request(id);
             return Err(lost());
         }
-        match timeout(wait, receiver).await {
+        let result=match timeout(wait, receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(lost()),
             Err(_) => {
                 self.forget_request(id);
                 Err(WireError::new("host_unavailable", "The device did not answer in time."))
             }
-        }
+        };
+        super::diagnostics::record(super::diagnostics::Event::Reply,self.id,id,seq,0,op,result.as_ref().err().map_or("ok",|e|e.code.as_str()));
+        result
     }
 
     fn forget_request(&self, id: u64) {
@@ -455,6 +463,7 @@ where
         link.set_paired();
     }
 
+    super::diagnostics::record(super::diagnostics::Event::Link,link.id,0,0,usize::from(link.dialed),if link.role==Role::Host{"host"}else{"viewer"},if setup.paired{"paired"}else{"unpaired"});
     let (reader, writer) = tokio::io::split(stream);
     let task_inner = inner.clone();
     let task_link = link.clone();
@@ -553,6 +562,7 @@ fn dispatch(inner: &Arc<Inner>, link: &Arc<Link>, frame: Frame) {
             link.resolve_request(id, outcome);
         }
         Frame::Req { id, op, args } => {
+            super::diagnostics::record(super::diagnostics::Event::Request,link.id,id,args.get("opSeq").and_then(Value::as_u64).unwrap_or(0),0,&op,"in");
             let Ok(slot) = link.request_slots.clone().try_acquire_owned() else {
                 link.respond(id, Err(WireError::new("busy", "Too many requests at once.")));
                 return;
@@ -787,6 +797,7 @@ pub(super) async fn accept(
     })
     .await;
     let Ok(Some((stream, spki, hello, role, paired, exporter, relationship))) = handshake else {
+        super::diagnostics::record(super::diagnostics::Event::Link,0,0,0,0,"tls.accept","failed");
         return;
     };
     let peer_name = read_peer_name(&hello);
@@ -879,10 +890,10 @@ pub(super) async fn dial(
     let config =
         tls::client_config(identity, policy, proven.clone()).map_err(|_| DialError::Failed)?;
     let name = tls::server_name().map_err(|_| DialError::Failed)?;
-    let tcp = timeout(CONNECT_LIMIT, TcpStream::connect(address))
-        .await
-        .map_err(|_| DialError::Unreachable)?
-        .map_err(|_| DialError::Unreachable)?;
+    let tcp=match timeout(CONNECT_LIMIT,TcpStream::connect(address)).await {
+        Ok(Ok(tcp))=>tcp,
+        other=>{super::diagnostics::record(super::diagnostics::Event::Link,0,0,0,0,"tcp.dial",if other.is_err(){"timeout"}else{"failed"});return Err(DialError::Unreachable);}
+    };
     let _ = tcp.set_nodelay(true);
     let handshake = timeout(HANDSHAKE_LIMIT, async {
         let mut stream = TlsConnector::from(config)
@@ -962,6 +973,7 @@ pub(super) async fn dial(
     })
     .await
     .map_err(|_| DialError::Unreachable)?;
+    if let Err(error)=&handshake{super::diagnostics::record(super::diagnostics::Event::Link,0,0,0,0,"tls.dial",if matches!(error,DialError::KeyRejected(_)){"key_rejected"}else{"failed"});}
     let (stream, spki, reply, role, exporter, relationship, _reservation) = handshake?;
 
     let peer_paired = reply.extras.paired == Some(true);
@@ -1109,7 +1121,7 @@ async fn host_info(inner: &Arc<Inner>, link: &Link) -> Result<Value, WireError> 
             store::highest_op_seq(connection, &fingerprint).map_err(|error| error.to_string())
         })
         .await
-        .map_err(|_| WireError::new("internal", "The host could not read that."))?;
+        .map_err(|_| WireError::new("internal", "The other device couldn't read that."))?;
     let core = inner.lock();
     Ok(json!({
         "name": super::device_name(&core),
@@ -1139,7 +1151,7 @@ async fn op_status(inner: &Arc<Inner>, link: &Link, args: Value) -> Result<Value
             Ok(result)
         })
         .await
-        .map_err(|_| WireError::new("internal", "The host could not read that."))?;
+        .map_err(|_| WireError::new("internal", "The other device couldn't read that."))?;
     Ok(status)
 }
 

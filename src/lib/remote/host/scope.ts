@@ -36,7 +36,7 @@ export class HostReadError extends Error {
 }
 export function wireError(reason: unknown): RemoteWireError {
   if (reason instanceof HostReadError) return { code: reason.code, message: reason.message };
-  return { code: "host_unavailable", message: "The host could not read this conversation. Try again." };
+  return { code: "host_unavailable", message: "The other device couldn't read this conversation. Try again." };
 }
 export function normalizedHostPath(path: string): string {
   const value = path.replace(/\\/g, "/").replace(/\/+$/, "") || "/";

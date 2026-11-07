@@ -38,7 +38,7 @@ export interface HostParityDeps {
 /** Reads and the writes this app can do against a supplied target. Anything that
  * needs an engine seam it doesn't have yet refuses, and never pretends. */
 export function createHostParity(deps: HostParityDeps): HostParityActions {
-  const unavailable = () => new HostReadError("unsupported", "This host action isn't available on this device yet.");
+  const unavailable = () => new HostReadError("unsupported", "This action isn't available on this device yet.");
   const projectFor = (context: TurnRunnerContext) => {
     const id = context.activeProject?.id;
     const project = id ? deps.getProject(id) : null;

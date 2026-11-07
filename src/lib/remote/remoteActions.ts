@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { viewerErrorCode, viewerHostOperation } from "./viewerBridge";
-import { nextHostOperationSequence, refusalText } from "./remoteWork";
+import { refusalText, sequenced } from "./remoteWork";
 import type { WireParityRow } from "./wire";
 
-export interface HostWriteResult<T = Record<string, unknown>> { ok: boolean; message: string; result?: T }
+export interface HostWriteResult<T = Record<string, unknown>> {
+  ok: boolean; message: string; result?: T;
+  /** The reply was lost, so the change may or may not have happened. */
+  unknown?: boolean;
+}
 
 /** A plain read from the host. Whatever it refuses is thrown to the caller. */
 export const hostRead = <T>(device: string, op: string, args: Record<string, unknown> = {}) => viewerHostOperation<T>(device, op, args);
@@ -18,14 +22,13 @@ const DEFINITE = new Set(["forbidden", "busy", "rate_limited", "stale_target", "
  * as a failure that is safe to repeat. */
 export async function hostWrite<T = Record<string, unknown>>(device: string, name: string, op: string, args: Record<string, unknown>): Promise<HostWriteResult<T>> {
   try {
-    const opSeq = await nextHostOperationSequence(device);
-    const result = await viewerHostOperation<T & { state?: string; error?: { code?: string } }>(device, op, { opId: crypto.randomUUID(), opSeq, ...args });
+    const result = await sequenced(device, () => undefined, (opSeq) => viewerHostOperation<T & { state?: string; error?: { code?: string } }>(device, op, { opId: crypto.randomUUID(), opSeq, ...args }));
     if (result?.state === "rejected") return { ok: false, message: refusalText(result.error?.code ?? "", name), result };
-    if (result?.state === "uncertain") return { ok: false, message: UNCONFIRMED, result };
+    if (result?.state === "uncertain") return { ok: false, message: UNCONFIRMED, result, unknown: true };
     return { ok: true, message: "", result };
   } catch (reason) {
     const code = viewerErrorCode(reason);
-    return { ok: false, message: DEFINITE.has(code) ? refusalText(code, name) : UNCONFIRMED };
+    return DEFINITE.has(code) ? { ok: false, message: refusalText(code, name) } : { ok: false, message: UNCONFIRMED, unknown: true };
   }
 }
 

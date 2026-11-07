@@ -104,6 +104,12 @@ export function deviceHelp(device: RemoteDevice, snapshot: RemoteSnapshot): stri
   }
 }
 
+/** A message written on the other machine, with that machine's real name in it. */
+export function namingDevice(text: string, name: string): string {
+  return text.replaceAll("the other device's", `${name}'s`).replaceAll("The other device's", `${name}'s`)
+    .replaceAll("the other device", name).replaceAll("The other device", name);
+}
+
 export interface NetworkNotice {
   text: string;
   /** The wording asks the user to choose Try again. */

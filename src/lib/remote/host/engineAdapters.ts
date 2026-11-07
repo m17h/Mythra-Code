@@ -1,3 +1,5 @@
+import { buildParentNotice, parentRunProgress, wokenParentQuestions } from "../../parentRun";
+import { storedQueuedTurnsForThread, useTaskStore, adoptRemoteParentDismissal } from "../../taskStore";
 import type { Project } from "../../../types";
 import { analyzeSkillPrompts, readLocalSkill, type LocalSkill } from "../../skills";
 import { sanitizeProjectRunCommand } from "../../projectRun";
@@ -5,28 +7,40 @@ import { sanitizeProjectCheckCommand } from "../../projectChecks";
 import { sanitizeProjectPromptProfileOverrides } from "../../projectPromptProfiles";
 import type { HostContextSources } from "./hostContext";
 import type { HostParityActions } from "./parityActions";
-import { commitHostState } from "./stateCommit";
+import { invoke } from "@tauri-apps/api/core";
+import { createWorkflowExecution } from "./workflowExecution";
+import { markRemoteEngineRetiring } from "./engineOwners";
+import { nativeRefusal } from "./nativeActions";
+import { commitHostState, operationStamp } from "./stateCommit";
 import { createHostQueueActions } from "./queueActions";
 import { HostReadError, idArg } from "./scope";
 import type { WireParityRow } from "../wire";
 import { getOpenRouterCredits, rpc } from "../../codex";
 
 /** Concrete shared-state adapters wrap App's domain/lifecycle extraction. */
-export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void) {
+export function createHostEngineAdapters(sources: HostContextSources, fallback: HostParityActions, pump: (id: string) => void, isCurrent: () => boolean = () => true, getRunner?: () => import("./workTypes").RemoteTurnRunner) {
   const queue = createHostQueueActions(pump);
+  const workflows = new Map<string, ReturnType<typeof createWorkflowExecution>>();
   const queueOps = new Set(["queue.edit.begin", "queue.edit.finish", "queue.remove", "queue.retry", "prompt.schedule", "schedules.edit", "schedules.reschedule", "schedules.release", "schedules.remove"]);
   const projectOps = new Set(["projects.settings.set", "projects.instructions.set", "projects.profiles.save", "projects.profiles.delete", "projects.profiles.select", "projects.run.set", "projects.check.set"]);
   const adapter: HostParityActions = {
     revision: fallback.revision,
     async read(op, args, context) {
       const result = (rows: WireParityRow[]) => ({ revision: fallback.revision(context), rows, truncated: rows.length > 200 });
+      if ((op === "queue.read" || op === "schedules.read") && context.activeThread) {
+        const entries = storedQueuedTurnsForThread(context.activeThread.id);
+        return result(entries.filter((entry) => op !== "schedules.read" || entry.deliverAt !== undefined).slice(0, 200).map((entry) => ({
+          id: entry.id, queueId: entry.id, text: entry.text, status: entry.status, createdAt: entry.createdAt,
+          ...(entry.editing ? { editing: true } : {}), ...(entry.deliverAt === undefined ? {} : { deliverAt: entry.deliverAt }),
+        })));
+      }
       if (op === "models.list" || op === "models.search") {
         const query = typeof args.query === "string" ? args.query.toLowerCase() : "";
         return result(sources.getProviderCatalog().flatMap((provider) => provider.models.filter((m) => !query || `${m.name} ${m.id}`.toLowerCase().includes(query))
           .map((model) => ({ id: `${provider.id}:${model.id}`, name: model.name, provider: provider.id, model: model.id, effort: model.defaultEffort }))).slice(0, 200));
       }
       if (op === "models.refresh") {
-        if (!sources.refreshProviderCatalog) throw new HostReadError("unsupported", "The host's model refresh source is not attached.");
+        if (!sources.refreshProviderCatalog) throw new HostReadError("unsupported", "The other device can't refresh its models right now.");
         await sources.refreshProviderCatalog(context.effectiveSettings.provider);
         return adapter.read("models.list", args, context);
       }
@@ -56,7 +70,7 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
         const folder = sources.getBaseContext().skillsFolder;
         if (op === "skills.read") {
           const skill = skills.find((entry) => entry.name === idArg(args.skillId));
-          if (!skill) throw new HostReadError("thread_unavailable", "This host skill is not available.");
+          if (!skill) throw new HostReadError("thread_unavailable", "This skill on the other device is not available.");
           return result([{ id: skill.name, name: skill.name, text: (await readLocalSkill(folder, skill.path)).slice(0, 65536), enabled: skill.enabled }]);
         }
         const report = await analyzeSkillPrompts(String(args.query ?? ""), context.effectiveSettings.systemPrompt, folder, [...skills]);
@@ -65,6 +79,58 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       return fallback.read(op, args, context);
     },
     async execute(op, args, operation) {
+      if (op === "parent.continue" || op === "parent.dismiss") {
+        const id = operation.context.activeThread?.id, run = id ? useTaskStore.getState().parentRuns[id] : undefined;
+        if (!id || !run || run.id !== args.parentRunId || run.phase !== "paused") throw new HostReadError("stale_target", "This parent run is no longer paused.");
+        if (op === "parent.dismiss") {
+          await commitHostState(operation, ["kiwi.parentRuns"], (rows) => {
+            const value = rows[0].value as Record<string, { id: string }> | null;
+            if (!value || value[id]?.id !== run.id) throw new HostReadError("stale_target", "This saved parent run changed.");
+            const next = { ...value }; delete next[id]; return { "kiwi.parentRuns": next };
+          }, { adopt: () => adoptRemoteParentDismissal(id, run.id) });
+          return { state: "accepted", threadId: id };
+        }
+        const runner = getRunner?.();
+        if (!runner?.continueParentTo || !sources.getParentObligations) throw new HostReadError("unsupported", "The other device's parent continuation source is not attached.");
+        const obligations = sources.getParentObligations(run);
+        const result = await runner.continueParentTo({ ...operation.context, remoteDelivery: operation.delivery }, {
+          parentRunId: run.id, notice: buildParentNotice(crypto.randomUUID(), obligations), progress: parentRunProgress(obligations), wokenQuestions: wokenParentQuestions(obligations),
+        });
+        if (result.state !== "accepted") throw new HostReadError(result.state === "uncertain" ? "uncertain" : "busy", "This parent continuation did not start.");
+        return { state: "accepted", threadId: id };
+      }
+      if (op === "workflows.start") {
+        const engine = sources.getWorkflowEngine?.();
+        if (!engine) throw new HostReadError("unsupported", "Workflows aren't ready on the other device yet.");
+        const id = idArg(args.workflowId);
+        if (workflows.has(id)) throw new HostReadError("busy", "This workflow already owns a run.");
+        const variables = args.variables as Record<string, string> | undefined;
+        const controller = createWorkflowExecution(sources, operation, isCurrent, variables);
+        workflows.set(id, controller);
+        const running = engine.runWorkflow(id, "manual", variables ?? {}, operation.context.activeWorkspace!.id, {
+          ...(typeof args.userPrompt === "string" ? { userPrompt: args.userPrompt } : {}), remote: controller.execution,
+        });
+        void running.then((threadId) => { if (!threadId) controller.execution.failed(new HostReadError("unsupported", "This workflow could not start.")); })
+          .catch((reason) => controller.execution.failed(reason)).finally(() => { if (workflows.get(id) === controller && controller.execution.finished) workflows.delete(id); });
+        const accepted = await controller.admission;
+        return { state: "accepted", workflowRunId: accepted.runId, ...(accepted.threadId ? { threadId: accepted.threadId } : {}) };
+      }
+      if (op === "workflows.stop") {
+        const id = idArg(args.workflowId), runId = idArg(args.runId), controller = workflows.get(id), engine = sources.getWorkflowEngine?.();
+        if (!engine || !controller?.execution.ownerHandle || controller.execution.ownerRunId !== runId) throw new HostReadError("stale_target", "This workflow has no matching native execution owner.");
+        operation.assertAllowed();
+        markRemoteEngineRetiring(controller.execution.ownerHandle);
+        controller.cancel();
+        const stopped = await engine.stopWorkflowRun(id, runId, async () => {
+          let cutoff: { confirmed: boolean };
+          try { cutoff = await invoke("remote_work_owner_retire", { stamp: operationStamp(operation), ownerHandle: controller.execution.ownerHandle }); }
+          catch (reason) { throw nativeRefusal(reason); }
+          if (cutoff.confirmed !== true) throw new HostReadError("uncertain", "The other device couldn't confirm the workflow stopped. Check the conversation.");
+        });
+        if (!stopped) throw new HostReadError("stale_target", "This workflow run ended before Stop.");
+        controller.retired(); workflows.delete(id);
+        return { state: "accepted", workflowRunId: runId };
+      }
       if (queueOps.has(op)) return queue.execute(op, args, operation);
       if (!projectOps.has(op)) return fallback.execute(op, args, operation);
       const workspaceId = operation.context.activeProject?.id;
@@ -101,5 +167,5 @@ export function createHostEngineAdapters(sources: HostContextSources, fallback: 
       return { state: "accepted" };
     },
   };
-  return { adapter, dispose: () => queue.dispose() };
+  return { adapter, dispose: () => { queue.dispose(); for (const controller of workflows.values()) controller.cancel(); workflows.clear(); } };
 }

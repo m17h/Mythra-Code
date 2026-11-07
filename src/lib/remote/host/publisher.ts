@@ -28,7 +28,7 @@ export class HostPublishers {
     if (existing) { clearTimeout(existing.timer); existing.timer = undefined; return existing; }
     const tasks = useTaskStore.getState().tasks;
     const bytes = [...this.publishers.keys(), threadId].reduce((total, id) => total + (tasks[id]?.estimatedTranscriptBytes ?? 0), 0);
-    if (this.publishers.size >= MAX_PUBLISHERS || bytes > MAX_PINNED_BYTES) throw new HostReadError("busy", "The host has too much history open. Close another remote conversation first.");
+    if (this.publishers.size >= MAX_PUBLISHERS || bytes > MAX_PINNED_BYTES) throw new HostReadError("busy", "The other device has too much history open. Close another remote conversation first.");
     const publisher: Publisher = { epoch: crypto.randomUUID(), seq: 0, baseline: null, count: 0,
       release: pinTaskTranscript(threadId), viewers: new Map() };
     this.publishers.set(threadId, publisher);

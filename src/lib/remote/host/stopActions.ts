@@ -2,6 +2,7 @@ import type { TurnRunnerContext } from "../../../hooks/useTurnRunner";
 import { captureRootCutoff, stopWithChildren, waitForRootCutoff } from "../../stopWithChildren";
 import { useTaskStore } from "../../taskStore";
 import { HostReadError } from "./scope";
+import { markRemoteEngineRetiring, remoteEngineStopped } from "./engineOwners";
 import { sameStop } from "./targetHandles";
 import type { RemoteStopSnapshot, RemoteTurnRunner } from "./workTypes";
 
@@ -23,16 +24,21 @@ export async function stopThreadAndChildren(context: TurnRunnerContext, expected
   }
   const id = expected.threadId;
   const store = useTaskStore.getState();
+  if (expected.ownerHandle) markRemoteEngineRetiring(expected.ownerHandle);
   store.stopParentRun(id, "stop");
   sources.bumpRootCutoffIntent(id);
   const frontier = sources.captureChildStopFrontier(id);
   const cutoff = captureRootCutoff(id);
   const failures = await stopWithChildren(
-    () => expected.workflowId && expected.workflowRunId
-      ? sources.stopWorkflow(expected.workflowId, expected.workflowRunId, () => runner.stopThreadTurn({ ...context, running: true }, expected))
-      : runner.stopThreadTurn({ ...context, running: true }, expected),
+    async () => {
+      if (expected.workflowId && expected.workflowRunId) {
+        const stopped = await sources.stopWorkflow(expected.workflowId, expected.workflowRunId, () => runner.stopThreadTurn({ ...context, running: true }, expected));
+        if (stopped === false) throw new HostReadError("uncertain", "Mythra Code couldn't confirm this workflow stopped. Check the conversation.");
+      } else await runner.stopThreadTurn({ ...context, running: true }, expected);
+    },
     () => sources.cancelChildAgentsFor(id, frontier),
     () => waitForRootCutoff(id, undefined, cutoff),
   );
-  if (failures.length) throw new HostReadError("uncertain", "Stop was requested, but the host could not confirm every cutoff. Check the conversation.");
+  if (!failures.length && expected.ownerHandle) remoteEngineStopped(expected.ownerHandle);
+  if (failures.length) throw new HostReadError("uncertain", "Stop was requested, but the other device couldn't confirm everything stopped. Check the conversation.");
 }

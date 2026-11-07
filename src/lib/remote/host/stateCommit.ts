@@ -22,7 +22,7 @@ export function commitHostState(operation: HostMutationContext, keys: readonly s
     const stamp = operationStamp(operation);
     const snapshot = await invoke<{ rows: StampedRow[] }>("remote_state_snapshot", { stamp, keys });
     operation.assertAllowed();
-    if (snapshot.rows.length !== keys.length || keys.some((key) => !snapshot.rows.some((row) => row.key === key))) throw new HostReadError("uncertain", "The host state snapshot could not be confirmed.");
+    if (snapshot.rows.length !== keys.length || keys.some((key) => !snapshot.rows.some((row) => row.key === key))) throw new HostReadError("uncertain", "The other device state snapshot couldn't be confirmed.");
     const values = transform(snapshot.rows);
     if (Object.keys(values).some((key) => !keys.includes(key))) throw new HostReadError("unsupported", "Unexpected state write.");
     operation.assertAllowed();
@@ -54,7 +54,7 @@ export function commitHostState(operation: HostMutationContext, keys: readonly s
         throw Object.assign(new HostReadError("uncertain", "The state commit needs recovery; its old local saves remain fenced."), { holdRemoteState: true });
       }
     }
-    if (!result?.rows) throw new HostReadError("uncertain", "The host state commit has no confirmed adoption rows.");
+    if (!result?.rows) throw new HostReadError("uncertain", "The other device couldn't confirm this change. Check it before trying again.");
     for (const row of result.rows) adopt(row.key, row.value);
     options.adopt?.(result.rows);
     return result;

@@ -50,7 +50,7 @@ export type ProjectNavigationResult = FoldersBrowseResult | ProjectsAddResult;
 
 /** Studio reads beyond files and status. Replies never carry a native path
  * except the worktree's own, which is what Copy path copies. */
-export type StudioReadOperation = "checkpoint.list" | "checkpoint.diff" | "worktree.status" | "git.log" | "git.revert.preview" | "agents.list" | "attachment.image";
+export type StudioReadOperation = "checkpoint.list" | "checkpoint.diff" | "worktree.status" | "git.log" | "git.revert.preview" | "agents.list" | "attachment.image" | "preview.links";
 export interface WireCheckpoint {
   id: string; threadId: string; label: string; createdAt: number; completedAt?: number;
   status?: string; accepted?: boolean; threadLabel?: string; provider?: string; model?: string; branch?: string; head?: string;
@@ -79,3 +79,6 @@ export interface WireAgent {
 }
 export interface AgentsListResult { agents: WireAgent[]; truncated: boolean }
 export interface AttachmentImageResult { tooLarge?: boolean; mime?: string; size?: number; data?: string; done?: boolean }
+/** Web apps a thread has named on the host. The port is what its links already show. */
+export interface WirePreviewLink { endpointId: string; name: string; port: number }
+export interface PreviewLinksResult { previews: WirePreviewLink[]; truncated: boolean }

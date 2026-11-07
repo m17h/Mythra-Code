@@ -324,6 +324,27 @@ mod tests {
         (dir, text)
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remote_revert_preview_never_executes_fsmonitor() {
+        use std::os::unix::fs::PermissionsExt;
+        let(dir,root)=repository();
+        let marker=dir.join("fsmonitor-ran");let hook=dir.join("fsmonitor-hook");
+        fs::write(&hook,format!("#!/bin/sh\ntouch '{}'\nprintf 'token\\000'\n",marker.display())).unwrap();
+        fs::set_permissions(&hook,fs::Permissions::from_mode(0o700)).unwrap();
+        git_in(&dir,&["config","core.fsmonitor",hook.to_str().unwrap()]);
+        fs::write(dir.join("a.txt"),"modified\n").unwrap();
+        // The command always enters via studio::blocking. Exercise that exact
+        // production guard, not the intentionally unrestricted LOCAL helper.
+        let result=super::super::studio::blocking(move||{
+            let anchor=Anchor::open(Path::new(&root))?;let read=GitReadOperation::new();git_root(&read,&anchor)?;
+            let preview=crate::git_workspace::revert_all_preview_sync(&root)?;anchor.validate()?;serde_json::to_value(preview).map_err(|_|failed())
+        }).await;
+        let ran=marker.exists();let _=fs::remove_dir_all(dir);
+        assert!(result.is_ok(),"guarded remote preview failed: {result:?}");
+        assert!(!ran,"a View-only remote revert preview executed a configured program");
+    }
+
     #[test]
     fn history_reads_pages_and_says_when_a_folder_has_no_git() {
         let (dir, root) = repository();
@@ -364,7 +385,7 @@ mod tests {
     fn worktree_status_counts_a_real_linked_worktree() {
         let (dir, root) = repository();
         let tree = dir.parent().expect("parent").join(format!("mythra-tree-{}", uuid::Uuid::new_v4()));
-        let path = tree.to_string_lossy().into_owned();
+        let path = crate::language_tools::child_path(&tree);
         git_in(&dir, &["worktree", "add", "-q", "-b", "side", &path]);
         fs::write(tree.join("new.txt"), "x").expect("write");
         let status = worktree_status(&root, &path, "side", "base").expect("status");

@@ -1520,6 +1520,7 @@ const CLAUDE_STEER_HOLD_GRACE: Duration = Duration::from_secs(20);
 const CLAUDE_RESULT_EXIT_GRACE: Duration = Duration::from_secs(10);
 
 struct ClaudeTurn {
+    thread_id: String,
     turn_id: String,
     start_request_id: Option<String>,
     stdin: Mutex<Option<ChildStdin>>,
@@ -1538,6 +1539,7 @@ struct ClaudeTurn {
     control_requests: Mutex<HashSet<String>>,
     remote_requests: Mutex<HashMap<String,Value>>,
     remote_start: Option<Mutex<Option<remote::work::NativePermit>>>,
+    local_owner: Option<Mutex<Option<remote::owners::LocalPermit>>>,
     remote_permission: String,
     /// Serializes replies without holding `control_requests` across pipe IO.
     /// That keeps duplicate renderer replies out while allowing the stdout
@@ -1715,6 +1717,8 @@ struct ClaudeAgentInput {
 struct ClaudeTurnOptions {
     #[serde(default)]
     remote_delivery: Option<remote::work::RemoteDelivery>,
+    #[serde(default)]
+    local_owner_handle: Option<String>,
     thread_id: String,
     #[serde(default)]
     start_request_id: Option<String>,
@@ -1838,6 +1842,7 @@ impl ClaudeTurn {
                 }
             }
         }
+        if message.get("type").and_then(Value::as_str)==Some("user"){if let Some(local)=self.local_owner.as_ref(){if let Some(owner)=local.lock().await.take(){let bytes=format!("{message}\n");owner.write(async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"Local input could not be written.".to_string())?;stdin.flush().await.map_err(|_|"Local input could not be flushed.".to_string())}).await?;owner.accepted("claude",&self.thread_id,&self.turn_id,None,self.start_request_id.as_deref())?;return Ok(());}}}
         stdin
             .write_all(format!("{message}\n").as_bytes())
             .await
@@ -2725,7 +2730,17 @@ impl AppServer {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {self.request_remote(method,params,None).await}
-    async fn request_remote(&self, method:&str,params:Value,remote_delivery:Option<remote::work::RemoteDelivery>)->Result<Value,String>{
+    async fn request_remote(&self, method:&str,params:Value,remote_delivery:Option<remote::work::RemoteDelivery>)->Result<Value,String>{self.request_with_owner(method,params,remote_delivery,None).await}
+    async fn request_with_owner(&self,method:&str,params:Value,remote_delivery:Option<remote::work::RemoteDelivery>,local_handle:Option<String>)->Result<Value,String>{
+        self.request_with_tracking(method,params,remote_delivery,local_handle,None).await
+    }
+    async fn request_command_stop(&self,command:Arc<remote::owners::EngineCommand>)->Result<Value,String>{
+        self.request_with_tracking("command/exec/terminate",json!({"processId":command.process}),None,None,Some(command)).await
+    }
+    async fn request_with_tracking(&self,method:&str,params:Value,remote_delivery:Option<remote::work::RemoteDelivery>,local_handle:Option<String>,native_command_stop:Option<Arc<remote::owners::EngineCommand>>)->Result<Value,String>{
+        let command_owner=local_handle.clone().or_else(||remote_delivery.as_ref().and_then(|m|m.owner_handle.clone()));
+        let local_owner=remote::owners::LocalPermit::prepare(&self.app,local_handle)?;
+        if local_owner.is_some()&&remote_delivery.is_some(){return Err(remote::work::refused("invalid"));}
         let mut remote_permit=if let Some(meta)=remote_delivery {
             let permission=if matches!(method,"turn/start"|"command/exec") {match params.pointer("/sandboxPolicy/type").and_then(Value::as_str){Some("readOnly")=>"read-only",Some("workspaceWrite")=>"ask",Some("dangerFullAccess")=>"full",_=>return Err(remote::work::refused("forbidden"))}}else{"ask"};
             Some(remote::work::prepare_native(&self.app,meta,method,if matches!(method,"turn/start"|"command/exec"){Some(permission)}else{None},None).await?)
@@ -2741,6 +2756,7 @@ impl AppServer {
         let mut dispatch_attempted = false;
         let mut replied = false;
         let mut remote_request_id=None;
+        let mut command_observation=None;
         let result = async {
             let (write_deadline, response_deadline) =
                 app_server_request_deadlines(method, &params, Instant::now())?;
@@ -2763,18 +2779,27 @@ impl AppServer {
                     self.loaded_threads.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(thread_id.clone());
                 }
             }
+            if method=="command/exec"{command_observation=remote::owners::observe_command(&self.app,&self.instance,id,params.get("processId").and_then(Value::as_str),command_owner.as_deref())?;}
             dispatch_attempted = true;
             let written=if let Some(permit)=remote_permit.as_mut(){
                 let mut stdin=timeout_at(write_deadline,self.stdin.lock()).await.map_err(|_|remote::work::refused("busy"))?;
                 if !self.is_alive(){return Err(remote::work::refused("stale_target"));}
                 let bytes=format!("{message}\n");
-                let write=async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input flush failed.".to_string())};tokio::pin!(write);
+                let write=async{if let Some(command)=command_observation.as_ref(){command.started.store(true,Ordering::Release);}stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input flush failed.".to_string())};tokio::pin!(write);
                 timeout_at(write_deadline,std::future::poll_fn(|cx|{
                     let owner=self.lifecycle.lock();
                     if !self.is_alive()||owner.instance.as_deref()!=Some(self.instance.as_str()){return std::task::Poll::Ready(Err(if permit.did_begin(){"MYTHRA_DELIVERY_UNCERTAIN: The provider changed while its input was being written.".into()}else{remote::work::refused("stale_target")}));}
                     permit.poll_write(cx,write.as_mut(),||Ok(()))
                 })).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Codex input timed out.".to_string())?
-            }else{write_server_message(&self.stdin,format!("{message}\n").as_bytes(),write_deadline).await};
+            }else if let Some(command)=native_command_stop.as_ref(){
+                let mut stdin=timeout_at(write_deadline,self.stdin.lock()).await.map_err(|_|remote::work::refused("busy"))?;
+                let bytes=format!("{message}\n");let write=async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Command Stop write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Command Stop flush failed.".to_string())};tokio::pin!(write);let mut begun=false;
+                timeout_at(write_deadline,std::future::poll_fn(|cx|{
+                    if begun{return write.as_mut().poll(cx);}
+                    let lifecycle=self.lifecycle.lock();if !self.is_alive()||lifecycle.instance.as_deref()!=Some(command.instance.as_str())||self.instance!=command.instance{return std::task::Poll::Ready(Err(remote::work::refused("stale_target")));}
+                    match remote::owners::command_stop_write(&self.app,command,||{begun=true;Ok(write.as_mut().poll(cx))}){Ok(poll)=>poll,Err(error)=>std::task::Poll::Ready(Err(error))}
+                })).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Command Stop timed out.".to_string())?
+            }else if let Some(owner)=local_owner.as_ref(){let mut stdin=timeout_at(write_deadline,self.stdin.lock()).await.map_err(|_|remote::work::refused("busy"))?;let bytes=format!("{message}\n");timeout_at(write_deadline,owner.write(async{if let Some(command)=command_observation.as_ref(){command.started.store(true,Ordering::Release);}stdin.write_all(bytes.as_bytes()).await.map_err(|_|"Local input could not be written.".to_string())?;stdin.flush().await.map_err(|_|"Local input could not be flushed.".to_string())})).await.map_err(|_|"Local input timed out.".to_string())?}else{if let Some(command)=command_observation.as_ref(){command.started.store(true,Ordering::Release);}write_server_message(&self.stdin,format!("{message}\n").as_bytes(),write_deadline).await};
             if let Err(error)=written {
                 if error.starts_with("MYTHRA_REMOTE_REJECTED:"){self.pending.lock().await.remove(&id);return Err(error);}
                 // A timed-out write may have sent a partial JSON line. Do not
@@ -2792,6 +2817,7 @@ impl AppServer {
             }
             if method=="command/exec/terminate"&&result.is_ok(){if let Some(permit)=remote_permit.as_ref(){let id=params.get("processId").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?;remote::terminal::confirm_finished(&self.app,id).await?;permit.accepted(json!({"terminalId":id})).await?;}}
             if let Ok(value) = &result {
+                if method=="turn/start"{if let Some(owner)=local_owner.as_ref(){let thread=params.get("threadId").and_then(Value::as_str).ok_or_else(||remote::work::refused("invalid"))?;let turn=value.pointer("/turn/id").and_then(Value::as_str).ok_or_else(||remote::work::refused("stale_target"))?;owner.accepted("openai",thread,turn,Some(&self.instance),None)?;}}
                 if let Some(permit)=remote_permit.as_ref().filter(|_|!method.starts_with("command/exec")){
                     let extra=json!({"threadId":value.pointer("/thread/id").or_else(||tracking_thread_id.as_ref().map(|_|&message["params"]["threadId"])),"turnId":value.pointer("/turn/id"),"runtimeInstance":self.instance});
                     if method=="turn/start"{permit.accepted(extra).await?;}else{permit.prepared(extra).await?;}
@@ -2806,6 +2832,7 @@ impl AppServer {
             })
         }
         .await;
+        if let Some(command)=command_observation.as_ref(){remote::owners::command_finished(&self.app,command,replied);}
         if let Some(id)=remote_request_id{self.pending.lock().await.remove(&id);}
         if let Some(activity_guard) = activity_guard {
             activity_guard.finish(result.is_ok(), dispatch_attempted && !replied);
@@ -7087,6 +7114,8 @@ async fn claude_turn_start(
     agent_state: State<'_, ChildAgentState>,
     mut options: ClaudeTurnOptions,
 ) -> Result<ClaudeTurnStarted, String> {
+    let mut local_owner=remote::owners::LocalPermit::prepare(&app,options.local_owner_handle.take())?;
+    if local_owner.is_some()&&options.remote_delivery.is_some(){return Err(remote::work::refused("invalid"));}
     let mut remote_permit=if let Some(meta)=options.remote_delivery.take(){Some(remote::work::prepare_native(&app,meta,"claude_prompt",Some(&options.permission),None).await?)}else{None};
     if let Some(permit)=remote_permit.as_ref(){permit.verify_thread(&options.thread_id)?;}
     let mut process_requested = false;
@@ -7096,6 +7125,7 @@ async fn claude_turn_start(
     let turn_id = uuid::Uuid::new_v4().to_string();
     let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
     if let Some(permit)=remote_permit.as_ref(){permit.track_start("claude",&options.thread_id,&turn_id,options.start_request_id.as_deref())?;}
+    if let Some(owner)=local_owner.as_ref(){owner.track_start("claude",&options.thread_id,&turn_id,options.start_request_id.as_deref())?;}
     let binary = resolve_claude_binary(&app).await?;
     start.assert_current()?;
     let authorized_generation = claude_auth_generation(&app);
@@ -7292,7 +7322,7 @@ async fn claude_turn_start(
     start.assert_current()?;
     process_requested = true;
     let mut spawn=||command.spawn().map_err(|error| { safe_not_dispatched=true; format!("Could not start Claude Code: {error}") });
-    let mut child=if let Some(permit)=remote_permit.as_ref(){permit.check_spawn(spawn)?}else{spawn()?};
+    let mut child=if let Some(permit)=remote_permit.as_ref(){permit.check_spawn(spawn)?}else if let Some(owner)=local_owner.as_ref(){owner.spawn(spawn)?}else{spawn()?};
     let pid = child.id();
     let stdin = child
         .stdin
@@ -7308,6 +7338,7 @@ async fn claude_turn_start(
         .ok_or_else(|| "Claude Code did not provide an error stream".to_string())?;
     let alive = Arc::new(AtomicBool::new(true));
     let turn = Arc::new(ClaudeTurn {
+        thread_id: options.thread_id.clone(),
         turn_id: turn_id.clone(),
         start_request_id: options.start_request_id.clone(),
         stdin: Mutex::new(Some(stdin)),
@@ -7320,6 +7351,7 @@ async fn claude_turn_start(
         control_requests: Mutex::new(HashSet::new()),
         remote_requests: Mutex::new(HashMap::new()),
         remote_start: remote_permit.take().map(|permit|Mutex::new(Some(permit))),
+        local_owner: local_owner.take().map(|owner|Mutex::new(Some(owner))),
         remote_permission: options.permission.clone(),
         control_response: Mutex::new(()),
         context_summary_supported: AtomicBool::new(false),
@@ -9622,7 +9654,9 @@ async fn codex_rpc(
     mut params: Value,
 ) -> Result<Value, String> {
     let remote_delivery=params.as_object_mut().and_then(|object|object.remove("remoteDelivery")).filter(|value|!value.is_null()).map(serde_json::from_value::<remote::work::RemoteDelivery>).transpose().map_err(|_|remote::work::refused("invalid"))?;
-    if remote_delivery.is_some()&&!matches!(method.as_str(),"thread/start"|"thread/resume"|"turn/start"){return Err(remote::work::refused("unsupported"));}
+    if remote_delivery.is_some()&&!matches!(method.as_str(),"thread/start"|"thread/resume"|"turn/start"|"command/exec"){return Err(remote::work::refused("unsupported"));}
+    let local_owner=params.as_object_mut().and_then(|p|p.remove("localOwnerHandle")).filter(|v|!v.is_null()).map(|v|v.as_str().map(str::to_owned).ok_or_else(||remote::work::refused("invalid"))).transpose()?;
+    if local_owner.is_some()&&!matches!(method.as_str(),"thread/start"|"thread/resume"|"turn/start"|"command/exec"){return Err(remote::work::refused("unsupported"));}
     let expected_instance = params.as_object_mut().and_then(|object| object.remove("expectedRuntimeInstance"))
         .filter(|value| !value.is_null()).map(|value| value.as_str().map(str::to_owned)
             .ok_or_else(|| "MYTHRA_NOT_DISPATCHED: Invalid expected runtime identity.".to_string())).transpose()?;
@@ -9778,7 +9812,7 @@ async fn codex_rpc(
     // config payloads can be large).
     let retryable = RETRYABLE_METHODS.contains(&method.as_str());
     let retry_params = retryable.then(|| params.clone());
-    let result = match server.request_remote(&method, params, remote_delivery).await {
+    let result = match server.request_with_owner(&method, params, remote_delivery,local_owner).await {
         Ok(result) => Ok(result),
         Err(error) if !server.is_alive() => {
             // ensure_server retains the old native slot until successful
@@ -10693,11 +10727,17 @@ pub fn run() {
                     remote::preview::remote_preview_list,
                     remote::preview::remote_preview_open,
                     remote::preview::remote_preview_close,
+                    remote::owners::remote_work_owner_bind,
+                    remote::owners::remote_work_engine_step,
+                    remote::owners::remote_local_owner_open,
+                    remote::owners::remote_local_owner_finish,
                     remote::owners::remote_work_owner_finish,
                     remote::owners::remote_work_owner_open,
                     remote::owners::remote_work_owner_retire,
                     remote::bookkeeping::remote_domain_snapshot,
                     remote::domain::remote_domain_execute,
+                    remote::github::remote_github_read,
+                    remote::github::remote_github_execute,
                     remote::terminal::remote_terminal_start,
                     remote::terminal::remote_terminal_action,
                     remote::upload_source::remote_upload_read_dropped,

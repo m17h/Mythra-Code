@@ -39,7 +39,7 @@ export class HostCatalog {
     if (cached && Date.now() - cached.at < 5000) return cached.rows.filter((thread) => this.eligible(thread));
     const existing = this.pending.get(workspace.id);
     if (existing) return existing;
-    if (this.activeReads >= 4) throw new HostReadError("busy", "The host is reading other workspaces. Try again shortly.");
+    if (this.activeReads >= 4) throw new HostReadError("busy", "The other device is reading other workspaces. Try again shortly.");
     this.activeReads += 1;
     const request = this.read(workspace);
     this.pending.set(workspace.id, request);
@@ -50,7 +50,7 @@ export class HostCatalog {
     const nameRead = this.sources.watchThreadNames?.();
     try {
     const serial = this.serial;
-    const check = () => { if (serial !== this.serial) throw new HostReadError("host_unavailable", "The host is recovering."); };
+    const check = () => { if (serial !== this.serial) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly."); };
     const namesAtStart = new Map(Object.values(this.sources.getKnownThreads()).map((thread) => [thread.id, thread.name]));
     const knownLocal = [...Object.values(this.sources.getKnownThreads()).filter(isLocalSubscriptionThread).map((thread) => thread.id), ...this.sources.getArchivedThreadIds()];
     const localPromise = listLocalTranscriptThreads([...new Set(knownLocal)]).catch(() => [] as Thread[]);

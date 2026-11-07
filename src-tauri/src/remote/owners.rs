@@ -19,10 +19,13 @@ use tokio::sync::Notify;
 pub(super) struct Registry {
     owners: HashMap<String, Owner>,
     bindings: HashMap<(String, String), String>,
+    commands: HashMap<(String, String), HashMap<i64, Arc<EngineCommand>>>,
 }
 struct Owner {
+    local: bool,
     stamp: Stamp,
     kind: String,
+    prepared_threads: HashSet<String>,
     thread: Option<String>,
     run: String,
     closed: bool,
@@ -34,6 +37,7 @@ struct Owner {
 enum Child {
     Native(Target),
     Terminal(Arc<super::terminal::Route>),
+    Command(Arc<EngineCommand>),
 }
 fn stale() -> String {
     work::refused("stale_target")
@@ -71,7 +75,7 @@ pub(crate) async fn remote_work_owner_open(
         if core.owners.owners.values().any(|o|o.stamp.generation==stamp.generation&&o.stamp.device==stamp.device&&o.kind==kind&&o.run==run_id){return Err(stale());}
         let handle=uuid::Uuid::new_v4().to_string();receipt["ownerHandle"]=json!(handle);receipt["engineOwnerHandle"]=json!(handle);
         db.execute("UPDATE remote_op_journal SET delivery_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",rusqlite::params![stamp.device,stamp.op_id,stamp.op_seq as i64,receipt.to_string()]).map_err(|_|stale())?;
-        core.owners.bindings.insert((stamp.device.clone(),stamp.op_id.clone()),handle.clone());let thread=stamp.thread_id.clone();core.owners.owners.insert(handle.clone(),Owner{stamp,kind,thread,run:run_id,closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});Ok(json!({"ownerHandle":handle}))
+        core.owners.bindings.insert((stamp.device.clone(),stamp.op_id.clone()),handle.clone());let thread=stamp.thread_id.clone();core.owners.owners.insert(handle.clone(),Owner{local:false,stamp,kind,prepared_threads:HashSet::new(),thread,run:run_id,closed:false,pending:HashSet::new(),children:HashMap::new(),signal:Arc::new(Notify::new())});Ok(json!({"ownerHandle":handle}))
     })).await
 }
 
@@ -170,11 +174,12 @@ pub(super) fn record_terminal(
     Ok(())
 }
 pub(super) fn invalidate(core: &mut Core) {
-    for owner in core.owners.owners.values_mut() {
+    for owner in core.owners.owners.values_mut().filter(|owner| !owner.local) {
+        cancel_owned_commands(owner);
         owner.closed = true;
         owner.signal.notify_waiters();
     }
-    core.owners.owners.clear();
+    core.owners.owners.retain(|_, owner| owner.local);
     core.owners.bindings.clear();
 }
 pub(super) fn prove_target(core: &Core, target: &Target) -> Result<String, String> {
@@ -183,7 +188,7 @@ pub(super) fn prove_target(core: &Core, target: &Target) -> Result<String, Strin
     if target.kind != "parent"
         || target.method.as_deref() != Some(format!("engine:{}:{}", owner.kind, owner.run).as_str())
         || owner.closed
-        || owner.stamp.generation != target.generation
+        || (!owner.local && owner.stamp.generation != target.generation)
         || owner.stamp.workspace_id != target.workspace_id
         || owner.thread != target.thread_id
     {
@@ -225,7 +230,7 @@ pub(super) async fn retire(
         let mut core = state.inner.lock();
         stamp.check(&core, "turn.stop")?;
         let owner = core.owners.owners.get_mut(&handle).ok_or_else(stale)?;
-        if owner.stamp.generation != stamp.generation
+        if (!owner.local && owner.stamp.generation != stamp.generation)
             || owner.stamp.workspace_id != stamp.workspace_id
             || owner.closed
         {
@@ -254,6 +259,7 @@ pub(super) async fn retire(
             for (id, child) in children {
                 match child {
                     Child::Terminal(route) => super::terminal::retire_exact(route).await?,
+                    Child::Command(command) => retire_command(app, &command).await?,
                     Child::Native(mut target) => {
                         if crate::remote_owned_child_ended(app, &mut target).await? {
                             done.insert(id);
@@ -319,8 +325,23 @@ pub(super) async fn retire(
         return Ok(json!({"confirmed":false}));
     }
     let copy = stamp.clone();
+    let root = {
+        let core = state.inner.lock();
+        core.owners
+            .owners
+            .get(&handle)
+            .filter(|o| !o.local)
+            .map(|o| o.stamp.clone())
+    };
+    let final_authority = state.inner.clone();
     super::finish_write(state.inner.enqueue_write(false, move |db| {
         let tx = db.transaction().map_err(|_| stale())?;
+        let core = final_authority.lock();
+        let operation = commit::operation(&tx, &copy)?;
+        copy.check(&core, &operation)?;
+        if let Some(root) = root {
+            super::store::reject_unused_engine_steps(&tx, &root.device, &root.op_id)?;
+        }
         let op = commit::operation(&tx, &copy)?;
         commit::complete(
             &tx,
@@ -354,15 +375,14 @@ pub(super) fn target_method(
         .owners
         .get(handle)
         .filter(|owner| run == Some(owner.run.as_str()))
-        .ok_or_else(|| {
-            super::wire::WireError::new("stale_target", "This engine owner has ended.")
-        })?;
+        .ok_or_else(|| super::wire::WireError::new("stale_target", "This task has ended."))?;
     Ok(format!("engine:{}:{}", owner.kind, owner.run))
 }
 
 pub(super) fn is_open(core: &Core, handle: &str) -> bool {
     core.owners.owners.get(handle).is_some_and(|owner| {
-        !owner.closed && hostbridge::check_generation(core, owner.stamp.generation).is_ok()
+        !owner.closed
+            && (owner.local || hostbridge::check_generation(core, owner.stamp.generation).is_ok())
     })
 }
 
@@ -371,8 +391,9 @@ pub(super) fn retire_device(core: &mut Core, device: &str) {
         .owners
         .owners
         .values_mut()
-        .filter(|owner| owner.stamp.device == device)
+        .filter(|owner| !owner.local && owner.stamp.device == device)
     {
+        cancel_owned_commands(owner);
         owner.closed = true;
         owner.signal.notify_waiters();
     }
@@ -389,14 +410,29 @@ pub(crate) async fn remote_work_owner_finish(
     owner_handle: String,
 ) -> Result<Value, String> {
     hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    finish_owner(&app, &state, generation, owner_handle).await
+}
+async fn finish_owner(
+    app: &AppHandle,
+    state: &RemoteState,
+    generation: u64,
+    owner_handle: String,
+) -> Result<Value, String> {
     let children = {
         let mut core = state.inner.lock();
-        hostbridge::check_generation(&core, generation).map_err(|_| stale())?;
+        let local = core
+            .owners
+            .owners
+            .get(&owner_handle)
+            .is_some_and(|o| o.local);
+        if !local {
+            hostbridge::check_generation(&core, generation).map_err(|_| stale())?;
+        }
         let owner = core
             .owners
             .owners
             .get_mut(&owner_handle)
-            .filter(|owner| owner.stamp.generation == generation)
+            .filter(|owner| owner.local || owner.stamp.generation == generation)
             .ok_or_else(stale)?;
         owner.closed = true;
         owner.signal.notify_waiters();
@@ -408,6 +444,7 @@ pub(crate) async fn remote_work_owner_finish(
     for child in &children {
         let ended = match child {
             Child::Terminal(route) => super::terminal::is_finished(route),
+            Child::Command(command) => command.finished.load(std::sync::atomic::Ordering::Acquire),
             Child::Native(target) => {
                 let mut target = target.clone();
                 crate::remote_owned_child_ended(&app, &mut target).await?
@@ -417,16 +454,891 @@ pub(crate) async fn remote_work_owner_finish(
             return Ok(json!({"confirmed":false}));
         }
     }
+    let root = {
+        let core = state.inner.lock();
+        let owner = core.owners.owners.get(&owner_handle).ok_or_else(stale)?;
+        if !owner.pending.is_empty() || owner.children.len() != children.len() {
+            return Ok(json!({"confirmed":false}));
+        }
+        (!owner.local).then(|| owner.stamp.clone())
+    };
+    if let Some(stamp) = root {
+        super::finish_write(state.inner.enqueue_write(false, move |db| {
+            super::store::reject_unused_engine_steps(db, &stamp.device, &stamp.op_id)
+        }))
+        .await?;
+    }
+    state.inner.lock().owners.owners.remove(&owner_handle);
+    Ok(json!({"confirmed":true}))
+}
+
+/// Tracking only: no device grant, journal claim, permission ceiling, billing,
+/// process arguments or policy of a local start is changed by this permit.
+pub(crate) struct LocalPermit {
+    inner: Arc<super::Inner>,
+    handle: String,
+    ticket: String,
+}
+impl Drop for LocalPermit {
+    fn drop(&mut self) {
+        let mut core = self.inner.lock();
+        if let Some(owner) = core.owners.owners.get_mut(&self.handle) {
+            owner.pending.remove(&self.ticket);
+            owner.signal.notify_waiters();
+        }
+    }
+}
+impl LocalPermit {
+    pub(crate) fn prepare(app: &AppHandle, handle: Option<String>) -> Result<Option<Self>, String> {
+        use tauri::Manager;
+        let Some(handle) = handle else {
+            return Ok(None);
+        };
+        let state = app.state::<RemoteState>();
+        let mut core = state.inner.lock();
+        let owner = core
+            .owners
+            .owners
+            .get_mut(&handle)
+            .filter(|o| o.local && !o.closed)
+            .ok_or_else(stale)?;
+        if owner.children.len() + owner.pending.len() * 2 + 2 > 512 {
+            return Err(work::refused("busy"));
+        }
+        let ticket = uuid::Uuid::new_v4().to_string();
+        owner.pending.insert(ticket.clone());
+        Ok(Some(Self {
+            inner: state.inner.clone(),
+            handle,
+            ticket,
+        }))
+    }
+    fn check(core: &Core, handle: &str) -> Result<(), String> {
+        if core
+            .owners
+            .owners
+            .get(handle)
+            .is_some_and(|o| o.local && !o.closed)
+        {
+            Ok(())
+        } else {
+            Err(stale())
+        }
+    }
+    pub(crate) fn spawn<T>(&self, spawn: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let core = self.inner.lock();
+        Self::check(&core, &self.handle)?;
+        spawn()
+    }
+    pub(crate) async fn write<T>(
+        &self,
+        future: impl std::future::Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        tokio::pin!(future);
+        let mut begun = false;
+        std::future::poll_fn(|cx| {
+            if begun {
+                return future.as_mut().poll(cx);
+            }
+            let core = self.inner.lock();
+            if let Err(error) = Self::check(&core, &self.handle) {
+                return std::task::Poll::Ready(Err(error));
+            }
+            begun = true;
+            future.as_mut().poll(cx)
+        })
+        .await
+    }
+    pub(crate) fn track_start(
+        &self,
+        provider: &str,
+        thread: &str,
+        turn: &str,
+        start: Option<&str>,
+    ) -> Result<(), String> {
+        let mut core = self.inner.lock();
+        Self::check(&core, &self.handle)?;
+        let owner = core.owners.owners.get_mut(&self.handle).ok_or_else(stale)?;
+        let target = local_target(
+            owner,
+            provider,
+            thread,
+            turn,
+            "start",
+            format!("{provider}-start:{turn}:{}", start.unwrap_or("")),
+            start,
+        );
+        owner.children.insert(key(&target), Child::Native(target));
+        owner.signal.notify_waiters();
+        Ok(())
+    }
+    pub(crate) fn accepted(
+        &self,
+        provider: &str,
+        thread: &str,
+        turn: &str,
+        instance: Option<&str>,
+        start: Option<&str>,
+    ) -> Result<(), String> {
+        let mut core = self.inner.lock();
+        let Some(owner) = core.owners.owners.get_mut(&self.handle) else {
+            return Err(stale());
+        };
+        if owner.thread.is_none() {
+            owner.thread = Some(thread.into());
+        }
+        let identity = if let Some(instance) = instance {
+            format!("codex:{instance}")
+        } else {
+            format!("{provider}:{turn}")
+        };
+        let target = local_target(owner, provider, thread, turn, "turn", identity, start);
+        owner.children.insert(key(&target), Child::Native(target));
+        owner.signal.notify_waiters();
+        Ok(())
+    }
+}
+fn local_target(
+    owner: &Owner,
+    provider: &str,
+    thread: &str,
+    turn: &str,
+    kind: &str,
+    identity: String,
+    start: Option<&str>,
+) -> Target {
+    Target {
+        owner_handle: None,
+        generation: 0,
+        device: String::new(),
+        kind: kind.into(),
+        thread_id: Some(thread.into()),
+        workspace_id: owner.stamp.workspace_id.clone(),
+        provider: Some(provider.into()),
+        request_id: None,
+        method: None,
+        turn_id: Some(turn.into()),
+        item_id: None,
+        start_request_id: start.map(str::to_owned),
+        agent_run_id: None,
+        attempt_id: None,
+        parent_run_id: None,
+        revision: 0,
+        owner: identity,
+        expires: None,
+        claimed: None,
+    }
+}
+#[tauri::command]
+pub(crate) fn remote_local_owner_open(
+    state: State<'_, RemoteState>,
+    window: WebviewWindow,
+    workspace_id: String,
+    thread_id: Option<String>,
+    kind: String,
+    run_id: String,
+) -> Result<Value, String> {
+    hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    if workspace_id.is_empty()
+        || workspace_id.len() > 512
+        || run_id.is_empty()
+        || run_id.len() > 256
+        || !matches!(kind.as_str(), "parent" | "workflow" | "start")
+    {
+        return Err(stale());
+    }
     let mut core = state.inner.lock();
+    if let Some((handle, owner)) = core
+        .owners
+        .owners
+        .iter()
+        .find(|(_, o)| o.local && o.kind == kind && o.run == run_id)
+    {
+        return if !owner.closed {
+            Ok(json!({"ownerHandle":handle}))
+        } else {
+            Err(stale())
+        };
+    }
+    if core.owners.owners.len() >= 256 {
+        return Err(work::refused("busy"));
+    }
+    let handle = uuid::Uuid::new_v4().to_string();
+    core.owners.owners.insert(
+        handle.clone(),
+        Owner {
+            local: true,
+            prepared_threads: HashSet::new(),
+            stamp: Stamp {
+                generation: 0,
+                device: String::new(),
+                grant_revision: 0,
+                op_id: String::new(),
+                op_seq: 0,
+                workspace_id: Some(workspace_id),
+                thread_id: thread_id.clone(),
+            },
+            kind,
+            thread: thread_id,
+            run: run_id,
+            closed: false,
+            pending: HashSet::new(),
+            children: HashMap::new(),
+            signal: Arc::new(Notify::new()),
+        },
+    );
+    Ok(json!({"ownerHandle":handle}))
+}
+#[tauri::command]
+pub(crate) async fn remote_local_owner_finish(
+    app: AppHandle,
+    state: State<'_, RemoteState>,
+    window: WebviewWindow,
+    owner_handle: String,
+) -> Result<Value, String> {
+    hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    let is_local = state
+        .inner
+        .lock()
+        .owners
+        .owners
+        .get(&owner_handle)
+        .is_some_and(|o| o.local);
+    if !is_local {
+        return Err(stale());
+    }
+    finish_owner(&app, &state, 0, owner_handle).await
+}
+
+/// Only called with actual native thread/start or thread/resume result, never a
+/// viewer ID. This proof survives only for the in-memory lifetime of its owner.
+pub(super) fn prepared_thread(
+    core: &mut Core,
+    meta: &RemoteDelivery,
+    thread: &str,
+) -> Result<(), String> {
+    if let Some(handle) = meta.owner_handle.as_ref() {
+        let owner = core.owners.owners.get_mut(handle).ok_or_else(stale)?;
+        if owner.prepared_threads.len() >= 256 {
+            return Err(work::refused("busy"));
+        }
+        owner.prepared_threads.insert(thread.to_owned());
+    }
+    Ok(())
+}
+#[tauri::command]
+pub(crate) fn remote_work_owner_bind(
+    state: State<'_, RemoteState>,
+    window: WebviewWindow,
+    generation: u64,
+    owner_handle: String,
+    thread_id: String,
+) -> Result<Value, String> {
+    hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    let mut core = state.inner.lock();
+    hostbridge::check_generation(&core, generation).map_err(|_| stale())?;
+    let owner = core.owners.owners.get(&owner_handle).ok_or_else(stale)?;
+    if owner.local || owner.closed || owner.stamp.generation != generation {
+        return Err(stale());
+    }
+    owner.stamp.check(&core, "prompt.send")?;
     let owner = core
         .owners
         .owners
         .get_mut(&owner_handle)
         .ok_or_else(stale)?;
-    if !owner.pending.is_empty() || owner.children.len() != children.len() {
-        return Ok(json!({"confirmed":false}));
+    if owner.thread.as_ref().is_some_and(|old| old != &thread_id)
+        || !owner.prepared_threads.contains(&thread_id)
+    {
+        return Err(stale());
     }
-    owner.children.clear();
-    core.owners.owners.remove(&owner_handle);
-    Ok(json!({"confirmed":true}))
+    owner.thread = Some(thread_id);
+    Ok(json!({"bound":true}))
+}
+#[tauri::command]
+pub(crate) async fn remote_work_engine_step(
+    state: State<'_, RemoteState>,
+    window: WebviewWindow,
+    generation: u64,
+    owner_handle: String,
+    step_id: String,
+    kind: String,
+    thread_id: Option<String>,
+    provider: String,
+    permission: String,
+) -> Result<Value, String> {
+    hostbridge::window_is_host(&window).map_err(|_| stale())?;
+    if step_id.is_empty()
+        || step_id.len() > 256
+        || step_id.chars().any(char::is_control)
+        || !matches!(kind.as_str(), "prompt" | "command")
+        || !matches!(
+            provider.as_str(),
+            "openai" | "openrouter" | "lmstudio" | "claude" | "cursor"
+        )
+        || !matches!(permission.as_str(), "read-only" | "ask" | "full")
+        || kind == "command" && !matches!(provider.as_str(), "openai" | "openrouter" | "lmstudio")
+    {
+        return Err(stale());
+    }
+    let inner = state.inner.clone();
+    super::finish_write(state.inner.enqueue_write(false, move |db| {
+        let tx = db.transaction().map_err(|_| stale())?;
+        let mut core = inner.lock();
+        hostbridge::check_generation(&core, generation).map_err(|_| stale())?;
+        let owner = core
+            .owners
+            .owners
+            .get(&owner_handle)
+            .filter(|o| !o.local && !o.closed && o.stamp.generation == generation)
+            .ok_or_else(stale)?;
+        let op = commit::operation(&tx, &owner.stamp)?;
+        owner.stamp.check(&core, &op)?;
+        let grant = work::authorize(
+            &core,
+            &owner.stamp.meta(),
+            owner.stamp.workspace_id.as_deref(),
+        )
+        .map_err(|_| work::refused("forbidden"))?;
+        if kind == "command" && !grant.capabilities.terminal
+            || permission == "full" && !grant.capabilities.full_access
+        {
+            return Err(work::refused("forbidden"));
+        }
+        if let Some(thread) = thread_id.as_deref() {
+            if owner.thread.as_deref() != Some(thread) && !owner.prepared_threads.contains(thread) {
+                return Err(stale());
+            }
+        }
+        let root = super::store::delivery_receipt(
+            &tx,
+            &owner.stamp.device,
+            &owner.stamp.op_id,
+            owner.stamp.op_seq,
+        )?
+        .ok_or_else(stale)?;
+        let ceiling = root
+            .get("permissionCeiling")
+            .or_else(|| root.get("permission"))
+            .and_then(Value::as_str)
+            .unwrap_or("ask");
+        let strength = |p: &str| match p {
+            "read-only" => 0,
+            "ask" => 1,
+            "full" => 2,
+            _ => 3,
+        };
+        if strength(&permission) > strength(ceiling) {
+            return Err(work::refused("forbidden"));
+        }
+        let root_id = owner.stamp.op_id.clone();
+        let device = owner.stamp.device.clone();
+        let workspace = owner.stamp.workspace_id.clone();
+        let revision = grant.revision;
+        let result = engine_step_record(
+            &tx,
+            &device,
+            &root_id,
+            &owner_handle,
+            &step_id,
+            &kind,
+            thread_id.as_deref(),
+            &provider,
+            &permission,
+            &workspace,
+            generation,
+            revision,
+        )?;
+        let id = result["delivery"]["opId"]
+            .as_str()
+            .ok_or_else(stale)?
+            .to_owned();
+        if core.owners.bindings.len() >= 4096
+            && !core
+                .owners
+                .bindings
+                .contains_key(&(device.clone(), id.clone()))
+        {
+            return Err(work::refused("busy"));
+        }
+        tx.commit().map_err(|_| stale())?;
+        core.owners.bindings.insert((device, id), owner_handle);
+        Ok(result)
+    }))
+    .await
+}
+
+fn engine_step_record(
+    db: &rusqlite::Connection,
+    device: &str,
+    root: &str,
+    owner: &str,
+    step: &str,
+    kind: &str,
+    thread: Option<&str>,
+    provider: &str,
+    permission: &str,
+    workspace: &Option<String>,
+    generation: u64,
+    revision: u64,
+) -> Result<Value, String> {
+    use rusqlite::{params, OptionalExtension};
+    let digest = super::store::request_digest(
+        "engine.step",
+        &json!({"owner":owner,"step":step,"kind":kind,"thread":thread,"provider":provider,"permission":permission}),
+    );
+    let old:Option<(String,String,String)>=db.query_row("SELECT op_id,request_digest,delivery_json FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2 AND engine_step=?3",params![device,root,step],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|_|stale())?;
+    let (id, receipt) = if let Some((id, previous, source)) = old {
+        if previous != digest {
+            return Err(stale());
+        }
+        let receipt: Value = serde_json::from_str(&source).map_err(|_| stale())?;
+        (id, receipt)
+    } else {
+        let count:i64=db.query_row("SELECT COUNT(*) FROM remote_op_journal WHERE device_fingerprint=?1 AND engine_root=?2",params![device,root],|r|r.get(0)).map_err(|_|stale())?;
+        if count >= 256 {
+            return Err(work::refused("busy"));
+        }
+        let id = format!("engine:{}", uuid::Uuid::new_v4());
+        let now = crate::unix_timestamp_ms();
+        // Internal child sequences are fixed at 1 in their own reserved ID
+        // namespace, never claim/increment/evict a viewer's monotonic sequence.
+        let receipt = json!({"generation":generation,"device":device,"opId":id,"opSeq":1,"op":if kind=="prompt"{"engine.prompt"}else{"engine.command"},"engineKind":kind,"ownerHandle":owner,"threadId":thread,"workspaceId":workspace,"provider":provider,"permission":permission,"permissionCeiling":permission,"grantRevision":revision,"attemptId":uuid::Uuid::new_v4().to_string(),"messageId":uuid::Uuid::new_v4().to_string(),"disposition":"preparing"});
+        db.execute("INSERT INTO remote_op_journal(device_fingerprint,op_id,op_seq,op,request_digest,state,created_at,updated_at,engine_root,engine_step,delivery_json)VALUES(?1,?2,1,?3,?4,'pending',?5,?5,?6,?7,?8)",params![device,id,receipt["op"].as_str(),digest,now,root,step,receipt.to_string()]).map_err(|_|stale())?;
+        (id, receipt)
+    };
+    Ok(
+        json!({"delivery":{"generation":generation,"device":device,"opId":id,"opSeq":1,"ownerHandle":owner,"attemptId":receipt["attemptId"],"messageId":receipt["messageId"]},"state":receipt.get("disposition").and_then(Value::as_str).unwrap_or("uncertain")}),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn engine_steps_are_distinct_durable_and_do_not_touch_viewer_sequence() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        super::super::store::init(&db).unwrap();
+        super::super::store::claim_operation(
+            &mut db,
+            "device",
+            "root",
+            41,
+            "workflows.start",
+            "root-digest",
+        )
+        .unwrap();
+        let record = |db: &rusqlite::Connection, step: &str, permission: &str| {
+            engine_step_record(
+                db,
+                "device",
+                "root",
+                "owner",
+                step,
+                "prompt",
+                Some("thread"),
+                "claude",
+                permission,
+                &Some("workspace".into()),
+                7,
+                1,
+            )
+            .unwrap()
+        };
+        let first = record(&db, "step-1", "ask");
+        assert_eq!(
+            super::super::store::highest_op_seq(&db, "device").unwrap(),
+            41
+        );
+        assert_eq!(first, record(&db, "step-1", "ask"));
+        let second = record(&db, "step-2", "ask");
+        assert_ne!(first["delivery"]["opId"], second["delivery"]["opId"]);
+        assert!(engine_step_record(
+            &db,
+            "device",
+            "root",
+            "owner",
+            "step-1",
+            "prompt",
+            Some("thread"),
+            "claude",
+            "full",
+            &Some("workspace".into()),
+            7,
+            1
+        )
+        .is_err());
+        let id = first["delivery"]["opId"].as_str().unwrap();
+        let receipt = json!({"disposition":"dispatched"});
+        super::super::store::save_delivery_receipt(&mut db, "device", id, 1, &receipt).unwrap();
+        super::super::store::claim_native_step(&mut db, "device", id, 1, "claude_prompt").unwrap();
+        assert!(
+            super::super::store::claim_native_step(&mut db, "device", id, 1, "claude_prompt")
+                .is_err()
+        );
+        assert!(matches!(
+            super::super::store::claim_operation(&mut db, "device", id, 42, "prompt.send", "evil")
+                .unwrap(),
+            super::super::store::JournalClaim::DigestMismatch
+        ));
+        assert_eq!(
+            super::super::store::op_status(&db, "device", id, Some(1))
+                .unwrap()
+                .state,
+            "expired"
+        );
+        assert_eq!(record(&db, "step-1", "ask")["state"], "dispatched");
+        super::super::store::reject_unused_engine_steps(&db, "device", "root").unwrap();
+        assert_eq!(record(&db, "step-1", "ask")["state"], "dispatched");
+        assert_eq!(record(&db, "step-2", "ask")["state"], "rejected");
+        assert!(matches!(
+            super::super::store::claim_operation(
+                &mut db,
+                "device",
+                "next-viewer-op",
+                42,
+                "prompt.send",
+                "digest"
+            )
+            .unwrap(),
+            super::super::store::JournalClaim::Claimed
+        ));
+    }
+    fn local_fixture() -> (Arc<super::super::Inner>, String) {
+        let inner = RemoteState::default().inner;
+        let handle = "local-owner".to_string();
+        let stamp = Stamp {
+            generation: 0,
+            device: String::new(),
+            grant_revision: 0,
+            op_id: String::new(),
+            op_seq: 0,
+            workspace_id: Some("workspace".into()),
+            thread_id: Some("thread".into()),
+        };
+        inner.lock().owners.owners.insert(
+            handle.clone(),
+            Owner {
+                local: true,
+                stamp,
+                kind: "workflow".into(),
+                prepared_threads: HashSet::new(),
+                thread: Some("thread".into()),
+                run: "run".into(),
+                closed: false,
+                pending: HashSet::new(),
+                children: HashMap::new(),
+                signal: Arc::new(Notify::new()),
+            },
+        );
+        (inner, handle)
+    }
+    #[tokio::test]
+    async fn local_tracking_needs_no_host_or_grant_and_retirement_fences_future_dispatch() {
+        let (inner, handle) = local_fixture();
+        let permit = LocalPermit {
+            inner: inner.clone(),
+            handle: handle.clone(),
+            ticket: "ticket".into(),
+        };
+        inner
+            .lock()
+            .owners
+            .owners
+            .get_mut(&handle)
+            .unwrap()
+            .pending
+            .insert("ticket".into());
+        assert_eq!(permit.spawn(|| Ok(7)).unwrap(), 7);
+        assert_eq!(permit.write(async { Ok(8) }).await.unwrap(), 8);
+        permit
+            .track_start("claude", "thread", "turn", Some("start"))
+            .unwrap();
+        {
+            let mut core = inner.lock();
+            invalidate(&mut core);
+            assert!(is_open(&core, &handle));
+            retire_device(&mut core, "viewer");
+            assert!(is_open(&core, &handle));
+            core.owners.owners.get_mut(&handle).unwrap().closed = true;
+        }
+        let executed = std::sync::atomic::AtomicBool::new(false);
+        assert!(permit
+            .spawn(|| {
+                executed.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            })
+            .is_err());
+        assert!(permit
+            .write(async {
+                executed.store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            })
+            .await
+            .is_err());
+        assert!(!executed.load(std::sync::atomic::Ordering::Acquire));
+        // An acknowledgement racing Stop is still recorded before pending drains.
+        permit
+            .accepted("claude", "thread", "turn", None, Some("start"))
+            .unwrap();
+        drop(permit);
+        assert!(inner.lock().owners.owners[&handle].pending.is_empty());
+        assert_eq!(inner.lock().owners.owners[&handle].children.len(), 2);
+    }
+    #[tokio::test]
+    async fn retirement_does_not_truncate_an_already_started_local_pipe_write() {
+        let (inner, handle) = local_fixture();
+        let permit = LocalPermit {
+            inner: inner.clone(),
+            handle: handle.clone(),
+            ticket: "ticket".into(),
+        };
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (resume, paused) = tokio::sync::oneshot::channel();
+        let writer = tokio::spawn(async move {
+            permit
+                .write(async move {
+                    started.send(()).unwrap();
+                    paused.await.unwrap();
+                    Ok(())
+                })
+                .await
+        });
+        ready.await.unwrap();
+        inner.lock().owners.owners.get_mut(&handle).unwrap().closed = true;
+        resume.send(()).unwrap();
+        assert!(writer.await.unwrap().is_ok(),"once a JSON line starts, finish it under the provider input lock; Stop retires its exact native child instead");
+    }
+}
+
+/// Native command owner proof. Every command/exec with a process ID is observed,
+/// including untagged local calls, so a colliding local ID invalidates ownership
+/// without changing whether that local request is dispatched.
+pub(crate) struct EngineCommand {
+    app: Option<AppHandle>,
+    pub(crate) instance: String,
+    pub(crate) process: String,
+    request: i64,
+    pub(crate) started: std::sync::atomic::AtomicBool,
+    finished: std::sync::atomic::AtomicBool,
+    ambiguous: std::sync::atomic::AtomicBool,
+    signal: Notify,
+}
+pub(crate) fn observe_command(
+    app: &AppHandle,
+    instance: &str,
+    request: i64,
+    process: Option<&str>,
+    owner: Option<&str>,
+) -> Result<Option<Arc<EngineCommand>>, String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    let Some(process) = process else {
+        return if owner.is_some() {
+            Err(stale())
+        } else {
+            Ok(None)
+        };
+    };
+    if process.is_empty() || process.len() > 512 || process.chars().any(char::is_control) {
+        return if owner.is_some() {
+            Err(stale())
+        } else {
+            Ok(None)
+        };
+    }
+    let state = app.state::<RemoteState>();
+    let mut core = state.inner.lock();
+    if let Some(handle) = owner {
+        if !core
+            .owners
+            .owners
+            .get(handle)
+            .is_some_and(|o| !o.closed && o.children.len() < 512)
+        {
+            return Err(stale());
+        }
+    }
+    core.owners
+        .commands
+        .retain(|(actual, _), _| actual == instance);
+    let entries = core
+        .owners
+        .commands
+        .entry((instance.into(), process.into()))
+        .or_default();
+    entries.retain(|_, c| !c.finished.load(Ordering::Acquire));
+    if owner.is_some() && !entries.is_empty() {
+        return Err(stale());
+    }
+    for c in entries.values() {
+        c.ambiguous.store(true, Ordering::Release);
+        c.signal.notify_waiters();
+    }
+    let command = Arc::new(EngineCommand {
+        app: Some(app.clone()),
+        instance: instance.into(),
+        process: process.into(),
+        request,
+        started: std::sync::atomic::AtomicBool::new(false),
+        finished: std::sync::atomic::AtomicBool::new(false),
+        ambiguous: std::sync::atomic::AtomicBool::new(!entries.is_empty()),
+        signal: Notify::new(),
+    });
+    entries.insert(request, command.clone());
+    if let Some(handle) = owner {
+        let o = core.owners.owners.get_mut(handle).ok_or_else(stale)?;
+        o.children.insert(
+            format!("command:{instance}:{request}"),
+            Child::Command(command.clone()),
+        );
+        o.signal.notify_waiters();
+    }
+    Ok(Some(command))
+}
+pub(crate) fn command_finished(app: &AppHandle, command: &EngineCommand, replied: bool) {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    if replied || !command.started.load(Ordering::Acquire) {
+        command.finished.store(true, Ordering::Release);
+        command.signal.notify_waiters();
+        let state = app.state::<RemoteState>();
+        let mut core = state.inner.lock();
+        let key = (command.instance.clone(), command.process.clone());
+        if let Some(entries) = core.owners.commands.get_mut(&key) {
+            entries.remove(&command.request);
+            if entries.is_empty() {
+                core.owners.commands.remove(&key);
+            }
+        }
+    }
+}
+pub(crate) fn command_stop_write<T>(
+    app: &AppHandle,
+    command: &EngineCommand,
+    write: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    use tauri::Manager;
+    let state = app.state::<RemoteState>();
+    let core = state.inner.lock();
+    if !command_owned(&core, command) {
+        return Err(stale());
+    }
+    write()
+}
+async fn retire_command(app: &AppHandle, command: &Arc<EngineCommand>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    if command.finished.load(Ordering::Acquire) || !command.started.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    if command.ambiguous.load(Ordering::Acquire) {
+        return Err(stale());
+    }
+    let state = app.state::<crate::RuntimeState>();
+    let server = state
+        .server
+        .lock()
+        .await
+        .as_ref()
+        .filter(|s| s.instance == command.instance && s.is_alive())
+        .cloned()
+        .ok_or_else(stale)?;
+    server.request_command_stop(command.clone()).await?;
+    loop {
+        let changed = command.signal.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if command.finished.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if command.ambiguous.load(Ordering::Acquire) {
+            return Err(stale());
+        }
+        changed.await;
+    }
+}
+
+fn cancel_owned_commands(owner: &Owner) {
+    use tauri::Emitter;
+    for child in owner.children.values() {
+        if let Child::Command(command) = child {
+            if let Some(app) = command.app.clone() {
+                let command = command.clone();
+                let device = owner.stamp.device.clone();
+                tauri::async_runtime::spawn(async move {
+                    if !matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(12),
+                            retire_command(&app, &command)
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        let _=app.emit("remote-runtime-warning",json!({"device":device,"message":"A remote workflow command may still be running. Open this workflow on this device and stop it before continuing."}));
+                    }
+                });
+            }
+        }
+    }
+}
+
+fn command_owned(core: &Core, command: &EngineCommand) -> bool {
+    use std::sync::atomic::Ordering;
+    !command.finished.load(Ordering::Acquire)
+        && !command.ambiguous.load(Ordering::Acquire)
+        && core
+            .owners
+            .commands
+            .get(&(command.instance.clone(), command.process.clone()))
+            .is_some_and(|entries| {
+                entries.len() == 1
+                    && entries
+                        .get(&command.request)
+                        .is_some_and(|actual| std::ptr::eq(actual.as_ref(), command))
+            })
+}
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    #[test]
+    fn command_cutoff_requires_exact_native_request_and_collision_never_proves_stop() {
+        let mut core = Core::default();
+        let command = Arc::new(EngineCommand {
+            app: None,
+            instance: "instance".into(),
+            process: "workflow-run-step".into(),
+            request: 1,
+            started: std::sync::atomic::AtomicBool::new(true),
+            finished: std::sync::atomic::AtomicBool::new(false),
+            ambiguous: std::sync::atomic::AtomicBool::new(false),
+            signal: Notify::new(),
+        });
+        let key = (command.instance.clone(), command.process.clone());
+        core.owners
+            .commands
+            .entry(key.clone())
+            .or_default()
+            .insert(1, command.clone());
+        assert!(command_owned(&core, &command));
+        core.owners
+            .commands
+            .get_mut(&key)
+            .unwrap()
+            .insert(2, command.clone());
+        assert!(!command_owned(&core, &command));
+        core.owners.commands.get_mut(&key).unwrap().remove(&2);
+        assert!(command_owned(&core, &command));
+        command
+            .ambiguous
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(!command_owned(&core, &command));
+        command
+            .ambiguous
+            .store(false, std::sync::atomic::Ordering::Release);
+        command
+            .finished
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(!command_owned(&core, &command));
+    }
 }

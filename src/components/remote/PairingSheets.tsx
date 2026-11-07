@@ -12,7 +12,7 @@ import {
 } from "../../lib/remote/devices";
 import type { PairingFlow, PairingRequest } from "../../lib/remote/types";
 
-const CONSENT = "View shares conversation contents, including anything models or tools printed. Work lets this device run tasks and approve commands on this computer; project access does not confine those commands.";
+const CONSENT = "View shows conversations on this computer, including anything models or tools printed. Work lets the other device run tasks here and approve their commands, and those commands aren't limited to one project.";
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])";
 type ReturnFocusRef = RefObject<HTMLButtonElement | null>;
 
@@ -189,12 +189,12 @@ function ApprovalSheet({ request, returnFocusRef }: { request: PairingRequest; r
         <button type="button" className="secondary-button" data-autofocus disabled={busy} onClick={() => answer(false)}>Deny</button>
         <button type="button" className="primary-button" disabled={busy} onClick={() => answer(true)}>Codes match, approve</button>
       </>}>
-      <p>Approve only if this code matches the one on the other device. If it doesn't match, deny the request.</p>
+      <p>Approve only if this code matches the one on the other device. If it doesn't match, or you didn't start this, choose Deny.</p>
       <PairingCode code={request.code} />
       <p className="pairing-note">{CONSENT}</p>
       <label className="pairing-grant">
         <input type="checkbox" checked={work} disabled={busy} onChange={(event) => setWork(event.target.checked)} />
-        <span>Also allow <strong>Work</strong>. Without this, the device has View access only.</span>
+        <span>Also allow <strong>Work</strong>. Without it, the other device can only look.</span>
       </label>
       <p className="pairing-note">You can change or remove this access at any time in Settings → Connections → Devices.</p>
       {error && <p className="confirm-dialog-footnote" role="alert">{error}</p>}

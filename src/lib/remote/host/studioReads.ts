@@ -1,12 +1,13 @@
 import type { HostRequest } from "../wire";
 import type {
-  AgentsListResult, AttachmentImageResult, CheckpointDiffResult, CheckpointListResult, GitLogResult, RevertPreviewResult,
+  AgentsListResult, AttachmentImageResult, CheckpointDiffResult, CheckpointListResult, GitLogResult, PreviewLinksResult, RevertPreviewResult,
   StudioReadOperation, WireAgent, WireCheckpoint, WireGitCommit, WireWorktreeStatus, WorktreeStatusResult,
 } from "../wire-studio";
 import { STUDIO_RESULT_BYTES } from "../wire-studio";
 import type { CheckpointHead, CheckpointRecord } from "../../checkpoints";
 import type { ThreadWorktreeRecord } from "../../worktrees";
 import { useTaskStore } from "../../taskStore";
+import { hostLocalPort } from "../links";
 import { nativeHostTransport, type HostTransport } from "./bridge";
 import type { HostCatalog } from "./catalog";
 import { boundText, relativeStudioPath, type HostStudio } from "./studio";
@@ -31,11 +32,16 @@ const keys: Record<StudioReadOperation, readonly string[]> = {
   "worktree.status": ["workspaceId", "threadId"], "git.log": ["workspaceId", "threadId", "offset", "limit", "headOid"],
   "git.revert.preview": ["workspaceId", "threadId", "changeId"], "agents.list": ["workspaceId", "threadId"],
   "attachment.image": ["workspaceId", "threadId", "messageId", "index", "offset"],
+  "preview.links": ["workspaceId", "threadId"],
 };
+const MAX_PREVIEW_LINKS = 8, MAX_SCANNED_MESSAGES = 200, MAX_SCANNED_CHARS = 64 * 1024;
+/** Half the host's idle limit, so a kept endpoint is always still registered. */
+const ENDPOINT_TTL = 5 * 60_000;
+const LOOPBACK_LINK = /\bhttps?:\/\/(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]|0\.0\.0\.0):\d{1,5}/gi;
 export function isStudioRead(op: string): op is StudioReadOperation { return Object.hasOwn(keys, op); }
 
 const invalid = () => new HostReadError("unsupported", "That Studio request is not valid.");
-const unavailable = () => new HostReadError("host_unavailable", "The host could not read this Studio item. Inspect it on the host.");
+const unavailable = () => new HostReadError("host_unavailable", "The other device couldn't read this Studio item. Inspect it on the other device.");
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();
   return value as Record<string, unknown>;
@@ -95,12 +101,13 @@ interface RevertPreview { device: string; revision: number; target: string; path
 export class HostStudioReads {
   private active = 0;
   private previews = new Map<string, RevertPreview>();
+  private endpoints = new Map<string, { endpointId: string; expires: number }>();
   constructor(private readonly sources: HostSources, private readonly catalog: Pick<HostCatalog, "thread" | "ownership">,
     private readonly studio: Pick<HostStudio, "changePath">, private readonly generation: number, private readonly isCurrent: () => boolean,
     private readonly extra: StudioReadSources | undefined, private readonly transport: HostTransport = nativeHostTransport) {}
-  dispose(): void { this.previews.clear(); }
+  dispose(): void { this.previews.clear(); this.endpoints.clear(); }
   private target(request: HostRequest, args: Record<string, unknown>): Target {
-    if (!this.isCurrent() || request.generation !== this.generation) throw new HostReadError("host_unavailable", "The host is recovering.");
+    if (!this.isCurrent() || request.generation !== this.generation) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
     currentGrant(this.sources, request.device, request.grant);
     const workspace = requireWorkspace(this.sources, idArg(args.workspaceId), request.grant);
     let root = workspace.path, threadId: string | undefined;
@@ -117,19 +124,19 @@ export class HostStudioReads {
     let result: unknown;
     try { result = await this.transport.invoke<unknown>(command, nativeArgs); }
     catch { throw unavailable(); } // No stderr or native path crosses the bridge.
-    if (this.target(request, args).key !== target.key) throw new HostReadError("stale_target", "The host checkout changed. Refresh Studio.");
+    if (this.target(request, args).key !== target.key) throw new HostReadError("stale_target", "The other device's checkout changed. Refresh Studio.");
     return record(result);
   }
   async execute(request: HostRequest): Promise<unknown> {
     if (!isStudioRead(request.op)) throw invalid();
     const args = objectArgs(request.args);
     if (Object.keys(args).some((key) => !keys[request.op as StudioReadOperation].includes(key))) throw invalid();
-    if (this.active >= MAX_PARALLEL) throw new HostReadError("busy", "The host is reading other Studio items. Try again shortly.");
+    if (this.active >= MAX_PARALLEL) throw new HostReadError("busy", "The other device is reading other Studio items. Try again shortly.");
     const target = this.target(request, args);
     this.active += 1;
     try {
       const result = await this.read(request, args, target);
-      if (this.target(request, args).key !== target.key) throw new HostReadError("stale_target", "The host checkout changed. Refresh Studio.");
+      if (this.target(request, args).key !== target.key) throw new HostReadError("stale_target", "The other device's checkout changed. Refresh Studio.");
       return result;
     } finally { this.active -= 1; }
   }
@@ -142,6 +149,7 @@ export class HostStudioReads {
       case "git.revert.preview": return this.revertPreview(request, args, target);
       case "agents.list": return this.agents(target);
       case "attachment.image": return this.image(request, args, target);
+      case "preview.links": return this.previewLinks(request, target);
       default: throw invalid();
     }
   }
@@ -213,6 +221,8 @@ export class HostStudioReads {
     while (this.previews.size >= MAX_PREVIEWS) this.previews.delete(this.previews.keys().next().value!);
   }
   private async revertPreview(request: HostRequest, args: Record<string, unknown>, target: Target): Promise<RevertPreviewResult> {
+    // The same access as the revert it prepares: it runs Git over the checkout.
+    if (!request.grant.work || !request.grant.capabilities.terminal || !request.grant.capabilities.gitWrite) throw new HostReadError("forbidden", "This action needs Work, Terminal and Git-write access.");
     const path = args.changeId === undefined ? null : this.studio.changePath(request, args, args.changeId);
     const raw = await this.native(request, args, target, "remote_studio_revert_preview", { root: target.root, path });
     const token = idArg(raw.token);
@@ -235,6 +245,39 @@ export class HostStudioReads {
     if (!preview || preview.device !== request.device || preview.revision !== request.grant.revision || preview.expires <= Date.now()
       || preview.target !== this.target(request, args).key) throw new HostReadError("stale_target", "This preview expired. Review the change again.");
     return { path: preview.path, token: preview.token };
+  }
+  /**
+   * Ports come only from what the agent wrote in this thread on this host, never
+   * from the viewer, so a viewer can't aim a preview at some other local service.
+   */
+  private async previewLinks(request: HostRequest, target: Target): Promise<PreviewLinksResult> {
+    if (!request.grant.work) throw new HostReadError("forbidden", "This action requires Work access.");
+    if (!target.threadId) return { previews: [], truncated: false };
+    const ports = new Map<number, string>();
+    let more = false;
+    for (const message of (useTaskStore.getState().tasks[target.threadId]?.messages ?? []).slice(-MAX_SCANNED_MESSAGES).reverse()) {
+      if (message.role === "user") continue;
+      for (const [link] of message.text.slice(0, MAX_SCANNED_CHARS).matchAll(LOOPBACK_LINK)) {
+        const port = hostLocalPort(link);
+        if (port === null || ports.has(port)) continue;
+        if (ports.size >= MAX_PREVIEW_LINKS) { more = true; break; }
+        ports.set(port, link.includes("[::1]") ? `[::1]:${port}` : `127.0.0.1:${port}`);
+      }
+    }
+    const result: PreviewLinksResult = { previews: [], truncated: more };
+    for (const [port, address] of ports) {
+      const key = `${target.workspace}\n${address}`;
+      let endpoint = this.endpoints.get(key);
+      if (!endpoint || endpoint.expires <= Date.now()) {
+        try {
+          const raw = await this.transport.invoke<{ endpointId?: unknown }>("remote_preview_register", { generation: this.generation, workspaceId: target.workspace, address });
+          endpoint = { endpointId: idArg(raw?.endpointId), expires: Date.now() + ENDPOINT_TTL };
+        } catch { result.truncated = true; continue; } // Hosting is off, or the host's limit is reached.
+        this.endpoints.set(key, endpoint);
+      }
+      result.previews.push({ endpointId: endpoint.endpointId, name: `localhost:${port}`, port });
+    }
+    return result;
   }
   private agents(target: Target): AgentsListResult {
     if (!target.threadId) return { agents: [], truncated: false };

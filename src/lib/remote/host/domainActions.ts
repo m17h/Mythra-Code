@@ -16,15 +16,15 @@ import { nativeRefusal, nativeTarget, strictNativeKeys } from "./nativeActions";
 import type { HostParityActions } from "./parityActions";
 import { registerRemoteStateRecovery, type StampedRow } from "./stateCommit";
 
-const writes = new Set(["git.write", "checkpoint.create", "checkpoint.complete", "checkpoint.delete", "checkpoint.restore", "worktree.create", "worktree.recreate", "worktree.baseline", "worktree.apply", "worktree.merge", "worktree.remove"]);
+const writes = new Set(["git.write", "checkpoint.create", "checkpoint.complete", "checkpoint.delete", "checkpoint.restore", "worktree.create", "worktree.recreate", "worktree.baseline", "worktree.apply", "worktree.merge", "worktree.remove", "worktree.continueShared", "worktree.returnShared"]);
 export const isDomainMutation = (op: string): boolean => writes.has(op);
 export const isDomainRead = (op: string): boolean => op === "git.status";
 interface GitBaseline {
   root: string; revision: string; expires: number; grantRevision: number;
   snapshot: GitWorkspaceSnapshot; remote?: GitHubRepoStatus;
 }
-const stale = () => new HostReadError("stale_target", "This host resource changed. Refresh before applying the action.");
-const invalid = () => new HostReadError("unsupported", "This host action is not valid.");
+const stale = () => new HostReadError("stale_target", "This resource on the other device changed. Refresh before applying the action.");
+const invalid = () => new HostReadError("unsupported", "This action is not valid.");
 function key(request: HostRequest, args: Record<string, unknown>): string { return JSON.stringify([request.device, args.workspaceId, args.threadId ?? null]); }
 function bounded(value: unknown, maximum: number): string {
   if (typeof value !== "string" || !value || value.includes("\0") || new TextEncoder().encode(value).length > maximum) throw invalid();
@@ -45,7 +45,7 @@ export class HostDomains {
   }
   dispose(): void { this.disposed = true; this.studio.dispose(); this.studioReads.dispose(); this.git.clear(); }
   private check(request: HostRequest): void {
-    if (this.disposed || !this.isCurrent()) throw new HostReadError("host_unavailable", "The host is recovering.");
+    if (this.disposed || !this.isCurrent()) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
     currentGrant(this.sources, request.device, request.grant);
   }
   private target(request: HostRequest, args: Record<string, unknown>) {
@@ -85,7 +85,7 @@ export class HostDomains {
     const target = nativeTarget(this.sources, request, args, identity, () => !this.disposed && this.isCurrent());
     const assertAllowed = () => {
       const grant = target.assertAllowed();
-      if (request.op === "git.write" && !grant.capabilities.gitWrite || request.op === "checkpoint.restore" && !grant.capabilities.checkpointRestore) throw new HostReadError("forbidden", "This action exceeds the current host grant.");
+      if (request.op === "git.write" && !grant.capabilities.gitWrite || request.op === "checkpoint.restore" && !grant.capabilities.checkpointRestore) throw new HostReadError("forbidden", "This device doesn't have that access anymore.");
       if (!this.parity || this.parity.revision(target.context) !== args.revision) throw stale();
       if (target.context.activeThread) {
         const id = target.context.activeThread.id, store = useTaskStore.getState(), task = store.tasks[id];
@@ -98,17 +98,19 @@ export class HostDomains {
     const checkpoint = request.op.startsWith("checkpoint.");
     strictNativeKeys(args, ["workspaceId", "threadId", "revision", ...(checkpoint ? ["checkpointId", "label", "target", "confirmed"]
       : request.op === "worktree.create" || request.op === "worktree.recreate" ? ["label"] : request.op === "worktree.baseline" ? [] : ["confirmed"])]);
-    if ((request.op === "checkpoint.restore" || request.op === "checkpoint.delete" || request.op === "worktree.apply" || request.op === "worktree.merge" || request.op === "worktree.remove") && args.confirmed !== true) throw invalid();
+    if ((request.op === "checkpoint.restore" || request.op === "checkpoint.delete" || request.op === "worktree.apply" || request.op === "worktree.merge" || (request.op === "worktree.remove" || request.op === "worktree.returnShared" || request.op === "worktree.continueShared")) && args.confirmed !== true) throw invalid();
     if (!target.context.activeThread) throw invalid();
-    const keys = checkpoint ? ["kiwi.checkpoints", "kiwi.checkpointHeads"] : ["kiwi.threadWorktrees"];
+    const keys = request.op === "checkpoint.restore" ? ["kiwi.checkpoints", "kiwi.checkpointHeads", "kiwi.threadWorktrees"]
+      : request.op === "worktree.apply" || request.op === "worktree.merge" || request.op === "worktree.remove" || request.op === "worktree.returnShared" ? ["kiwi.threadWorktrees", "kiwi.checkpoints", "kiwi.checkpointHeads"]
+        : checkpoint ? ["kiwi.checkpoints", "kiwi.checkpointHeads"] : ["kiwi.threadWorktrees"];
     // Missing versioned native bookkeeping support refuses BEFORE any helper runs.
     return withRemoteStateCommit(keys, async (adopt) => {
       let snapshot: { version: number; rows: StampedRow[] };
       try { snapshot = await this.transport.invoke("remote_domain_snapshot", { stamp: target.stamp }); } catch (reason) {
-        if (typeof reason === "string" && /(?:not found|unknown command)/i.test(reason)) throw new HostReadError("unsupported", "This host cannot durably record that checkout action yet.");
+        if (typeof reason === "string" && /(?:not found|unknown command)/i.test(reason)) throw new HostReadError("unsupported", "The other device cannot durably record that checkout action yet.");
         throw nativeRefusal(reason);
       }
-      if (snapshot.version !== 1 || snapshot.rows.length !== keys.length || keys.some((key) => !snapshot.rows.some((row) => row.key === key))) throw new HostReadError("unsupported", "This host cannot durably record that checkout action yet.");
+      if (snapshot.version !== 1 || snapshot.rows.length !== keys.length || keys.some((key) => !snapshot.rows.some((row) => row.key === key))) throw new HostReadError("unsupported", "The other device cannot durably record that checkout action yet.");
       assertAllowed();
       let root = target.root;
       let nativeArgs: Record<string, unknown>;
@@ -125,7 +127,7 @@ export class HostDomains {
           if (request.op === "checkpoint.restore" && (args.target !== "before" && args.target !== "after" || !record.beforeCommit || args.target === "after" && !record.afterCommit)) throw stale();
         }
       } else {
-        const records = snapshot.rows[0].value as Record<string, ThreadWorktreeRecord> | null;
+        const records = snapshot.rows.find((row) => row.key === "kiwi.threadWorktrees")!.value as Record<string, ThreadWorktreeRecord> | null;
         const record = records?.[target.context.activeThread!.id];
         root = target.context.activeWorkspace!.path;
         if (request.op === "worktree.create") {
@@ -136,11 +138,14 @@ export class HostDomains {
           if (request.op === "worktree.recreate") {
             if (record.status !== "missing" && record.status !== "removed") throw stale();
             nativeArgs = { branch: record.branch, label: args.label === undefined ? record.branch.slice(0, 256) : bounded(args.label, 256) };
+          } else if (request.op === "worktree.continueShared") {
+            if (record.status === "missing") throw stale();
+            nativeArgs = { confirmed: true };
           } else if (request.op === "worktree.baseline") nativeArgs = { baseline: record.baseCommit };
           else {
             if (record.status === "missing" || record.status === "removed") throw stale();
             nativeArgs = { worktreePath: record.path, baseCommit: record.baseCommit, branch: record.branch, confirmed: true };
-            if (request.op === "worktree.remove") Object.assign(nativeArgs, { force: false, deleteBranch: true, expectedRetainedBranchOid: record.retainedBranchOid ?? null });
+            if (request.op === "worktree.remove" || request.op === "worktree.returnShared") Object.assign(nativeArgs, { force: false, deleteBranch: true, expectedRetainedBranchOid: record.retainedBranchOid ?? null });
             if (request.op === "worktree.merge") {
               const source = await this.transport.invoke<GitWorkspaceSnapshot>("git_workspace_snapshot", { cwd: root });
               Object.assign(nativeArgs, { expectedSourceBranch: source.branch, expectedSourceHeadOid: source.headOid });
@@ -199,9 +204,9 @@ export class HostDomains {
     if (action === "commit") { nativeArgs.message = bounded(args.message, 16384); if (typeof args.stagedOnly !== "boolean") throw invalid(); nativeArgs.stagedOnly = args.stagedOnly; }
     if (action === "branch") { nativeArgs.name = bounded(args.name, 256); if (typeof args.create !== "boolean") throw invalid(); nativeArgs.create = args.create; }
     if (action === "push" || action === "pull" || action === "update") {
-      if (!baseline.remote?.repository || !baseline.remote.remoteUrl) throw new HostReadError("unsupported", "Refresh this project's configured Git remote on the host first.");
+      if (!baseline.remote?.repository || !baseline.remote.remoteUrl) throw new HostReadError("unsupported", "Refresh this project's configured Git remote on the other device first.");
       Object.assign(nativeArgs, { expectedRemoteUrl: baseline.remote.remoteUrl, expectedRepository: baseline.remote.repository });
-      if (action === "update") throw new HostReadError("unsupported", "The host has not selected a verified update base.");
+      if (action === "update") throw new HostReadError("unsupported", "The other device has not selected a verified update base.");
     }
     if (action === "revert" || action === "revertAll") {
       if (args.confirmed !== true) throw invalid();

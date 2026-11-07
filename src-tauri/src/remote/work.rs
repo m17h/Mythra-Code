@@ -36,14 +36,14 @@ fn invalid() -> WireError {
 fn unavailable() -> WireError {
     WireError::new(
         "host_unavailable",
-        "The host is recovering. Try again shortly.",
+        "The other device is recovering. Try again shortly.",
     )
 }
 pub(crate) fn refused(code: &str) -> String {
     format!("MYTHRA_REMOTE_REJECTED:{code}: This instruction was not delivered.")
 }
 fn internal() -> WireError {
-    WireError::new("internal", "The host could not save its delivery record.")
+    WireError::new("internal", "The other device couldn't save its delivery record.")
 }
 
 pub(super) struct Flight {
@@ -258,7 +258,7 @@ pub(super) async fn handle_request(
         if !grant.work {
             return Err(WireError::new(
                 "forbidden",
-                "Turn on Work for this device on the host.",
+                "Work is off for this device. To turn it on, open Settings → Connections → Devices on the other device.",
             ));
         }
         if let Some(flight) = core.work.flights.get(&key) {
@@ -337,6 +337,7 @@ async fn execute(
         );
         inner.enqueue_write(false, move |db| {
             let claim=store::claim_operation(db, &device, &id, seq, &op, &digest).map_err(|_| "The instruction could not be admitted.".to_string())?;
+            super::diagnostics::record(super::diagnostics::Event::Journal,0,0,seq,0,&op,match &claim{JournalClaim::Claimed=>"claimed",JournalClaim::Existing(_)=>"existing",JournalClaim::DigestMismatch=>"digest_mismatch",JournalClaim::Expired=>"expired",JournalClaim::Busy=>"busy"});
             if matches!(claim,JournalClaim::Claimed){if let Some(ids)=attachment_ids{db.execute("UPDATE remote_op_journal SET attachments_json=?4 WHERE device_fingerprint=?1 AND op_id=?2 AND op_seq=?3",rusqlite::params![device,id,seq as i64,ids.to_string()]).map_err(|_|"The attachment identity could not be saved.".to_string())?;}}
             Ok(claim)
         })
@@ -359,14 +360,14 @@ async fn execute(
         JournalClaim::Busy => {
             return Err(WireError::new(
                 "busy",
-                "The host's delivery history is full. Resolve unconfirmed instructions first.",
+                "The other device's delivery history is full. Resolve unconfirmed instructions first.",
             ))
         }
         JournalClaim::Claimed => {}
     }
     let response = if op=="attachment.put" {
         let stamp={let core=inner.lock();let grant=hostbridge::authorize(&core,link)?;super::commit::Stamp{generation:core.bridge.generation,device:link.peer_fingerprint.clone(),grant_revision:grant.revision,op_id:id.to_owned(),op_seq:seq,workspace_id:args.get("workspaceId").and_then(Value::as_str).map(str::to_owned),thread_id:None}};
-        super::attachments::put(inner,stamp,args).await.map_err(|_|WireError::new("internal","The host could not confirm this upload. Check the attachment before trying again."))
+        super::attachments::put(inner,stamp,args).await.map_err(|_|WireError::new("internal","The other device couldn't confirm this upload. Check the attachment before trying again."))
     }else{hostbridge::request_value(inner, link, op, args, Some((id, seq))).await};
     let result = match response {
         Ok(value) => value,
@@ -451,7 +452,7 @@ async fn execute(
         .and_then(Value::as_str)
         .filter(|text| text.len() <= 64)
     {
-        safe["error"] = json!({"code":code,"message":"The host could not confirm this instruction. Check the conversation."});
+        safe["error"] = json!({"code":code,"message":"The other device couldn't confirm this instruction. Check the conversation."});
     }
     let saved = {
         let _core = inner.lock();
@@ -633,7 +634,8 @@ impl NativePermit {
         .map_err(|error| refused(&error.code))?;
         if let Some(op)=self.receipt.get("op").and_then(Value::as_str){super::manifest::access(op,&grant).map_err(|_|refused("forbidden"))?;}
         if self.receipt.get("grantRevision").and_then(Value::as_u64).is_some_and(|revision|revision!=grant.revision){return Err(refused("forbidden"));}
-        if self.step.starts_with("command/exec")&&!self.receipt.get("terminalId").and_then(Value::as_str).is_some_and(|id|super::terminal::dispatch_allowed(&core,id)){return Err(refused("stale_target"));}
+        if self.step.starts_with("command/exec")&&self.receipt.get("op").and_then(Value::as_str)!=Some("engine.command")&&!self.receipt.get("terminalId").and_then(Value::as_str).is_some_and(|id|super::terminal::dispatch_allowed(&core,id)){return Err(refused("stale_target"));}
+        if self.receipt.get("op").and_then(Value::as_str)==Some("engine.command")&&!grant.capabilities.terminal{return Err(refused("forbidden"));}
         if self.receipt.get("permission").and_then(Value::as_str) == Some("full")
             && !grant.capabilities.full_access
         {
@@ -688,6 +690,7 @@ impl NativePermit {
         }
         core.work.tickets.remove(&self.ticket);
         self.begun = true;
+        super::diagnostics::record(super::diagnostics::Event::NativeBegin,0,0,self.meta.op_seq,0,&self.step,"ok");
         dispatch()
     }
     pub(crate) async fn write_claimed<T>(
@@ -741,7 +744,9 @@ impl NativePermit {
                 )
             })
         };
-        finish_write(saved).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: The provider accepted input but its receipt could not be saved.".into())
+        let saved=finish_write(saved).await;
+        super::diagnostics::record(super::diagnostics::Event::NativeAccepted,0,0,self.meta.op_seq,0,&self.step,if saved.is_ok(){"ok"}else{"uncertain"});
+        saved.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: The provider accepted input but its receipt could not be saved.".into())
     }
 }
 pub(crate) async fn prepare_native(
@@ -785,6 +790,7 @@ pub(crate) async fn prepare_native(
     {
         return Err(refused("stale_target"));
     }
+    if receipt.get("engineKind").is_some(){let expected=match step{"claude_prompt"=>Some("claude"),"cursor_prompt"=>Some("cursor"),"turn/start"|"thread/start"|"thread/resume"|"command/exec"=>Some("openai"),_=>None};let actual=receipt.get("provider").and_then(Value::as_str).map(|p|if matches!(p,"openrouter"|"lmstudio"){"openai"}else{p});if expected!=actual{return Err(refused("stale_target"));}}
     if let Some(permission) = permission {
         let saved = receipt
             .get("permission")
@@ -883,6 +889,7 @@ impl NativePermit {
         spawn()
     }
     pub(crate) async fn prepared(&self, extra: Value) -> Result<(), String> {
+        if let Some(thread)=extra.get("threadId").and_then(Value::as_str){super::owners::prepared_thread(&mut self.inner.lock(),&self.meta,thread)?;}
         let mut receipt = self.receipt.clone();
         if let Some(extra) = extra.as_object() {
             for (key, value) in extra {

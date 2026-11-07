@@ -54,13 +54,13 @@ export class HostHistory {
     if (useTaskStore.getState().tasks[target.thread.id]?.history.hasMore) await this.run(target, true);
   }
   private async run(target: HistoryTarget, older: boolean): Promise<void> {
-    if (this.activeReads >= 4) throw new HostReadError("busy", "The host is reading other conversations. Try again shortly.");
+    if (this.activeReads >= 4) throw new HostReadError("busy", "The other device is reading other conversations. Try again shortly.");
     this.activeReads += 1;
     const id = target.thread.id;
     const release = pinTaskTranscript(id);
     this.pins.add(release);
     const serial = this.serial;
-    const check = () => { if (serial !== this.serial) throw new HostReadError("host_unavailable", "The host is recovering."); target.assertCurrent(); };
+    const check = () => { if (serial !== this.serial) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly."); target.assertCurrent(); };
     const work = this.read(target, older, check);
     this.pending.set(id, work);
     try {
@@ -151,12 +151,12 @@ export class HostHistory {
       }
       return;
     }
-    if (!this.sources.getRuntime().available) throw new HostReadError("host_unavailable", "The host runtime is unavailable.");
+    if (!this.sources.getRuntime().available) throw new HostReadError("host_unavailable", "The other device's runtime is unavailable.");
     let history;
     try {
       const result = normalizeThreadTurnsPage(await rpc<unknown>("thread/turns/list", { threadId: id, ...(cursor ? { cursor } : {}), limit: older ? OLDER_THREAD_TURN_LIMIT : INITIAL_THREAD_TURN_LIMIT, sortDirection: "desc", itemsView: "summary" }));
       check();
-      if (!result) throw new HostReadError("unsupported", "The host returned an unsupported history page.");
+      if (!result) throw new HostReadError("unsupported", "The other device sent history this version can't read. Update Mythra Code on both devices.");
       const turns = turnsFromDescendingPage(result);
       history = timelineFromTurns(turns, { includeContextCompaction: provider === "openai" });
       install(history.messages, history.activities, { nextCursor: result.nextCursor, hasMore: Boolean(result.nextCursor), loading: false, paginated: true }, false);

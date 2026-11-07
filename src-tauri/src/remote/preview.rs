@@ -44,7 +44,7 @@ const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe
 fn denied() -> WireError {
     WireError::new(
         "forbidden",
-        "This preview is no longer available. Open it again from the host project.",
+        "This preview is no longer available. Open it again from the other device's project.",
     )
 }
 fn invalid() -> WireError {
@@ -54,7 +54,7 @@ fn busy() -> WireError {
     WireError::new("busy", "Too many preview connections are open.")
 }
 fn failure() -> WireError {
-    WireError::new("preview_unavailable", "The host preview could not be read.")
+    WireError::new("preview_unavailable", "The preview on the other device couldn't be read.")
 }
 #[derive(Clone)]
 struct Endpoint {
@@ -79,6 +79,7 @@ struct BrowserSession {
     owner: Weak<Inner>,
     link: Arc<Link>,
     host_id: String,
+    initial_path: String,
     touched: Mutex<Instant>,
     transferred: std::sync::atomic::AtomicU64,
     bootstrapped: std::sync::atomic::AtomicBool,
@@ -258,9 +259,11 @@ pub(crate) async fn remote_preview_open(
     window: WebviewWindow,
     device: String,
     endpoint_id: String,
+    path: Option<String>,
 ) -> Result<Value, WireError> {
     hostbridge::window_is_host(&window)?;
-    let mut opened = open_browser(&state.inner, &device, &endpoint_id).await?;
+    let path = path.unwrap_or_else(|| "/".into());
+    let mut opened = open_browser_at(&state.inner, &device, &endpoint_id, &path).await?;
     let url = opened["url"].as_str().ok_or_else(failure)?.to_owned();
     let result = tauri::async_runtime::spawn_blocking(move || browser::open(&url))
         .await
@@ -809,11 +812,23 @@ fn viewer_link(inner: &Inner, device: &str) -> Result<Arc<Link>, WireError> {
         hostbridge::current_link(&core, device, Role::Viewer).ok_or_else(denied)?
     })
 }
+#[cfg(test)]
 pub(super) async fn open_browser(
     inner: &Arc<Inner>,
     device: &str,
     endpoint_id: &str,
 ) -> Result<Value, WireError> {
+    open_browser_at(inner, device, endpoint_id, "/").await
+}
+pub(super) async fn open_browser_at(
+    inner: &Arc<Inner>,
+    device: &str,
+    endpoint_id: &str,
+    path: &str,
+) -> Result<Value, WireError> {
+    if !path_valid(path) {
+        return Err(invalid());
+    }
     let link = viewer_link(inner, device)?;
     if endpoint_id.is_empty() || endpoint_id.len() > 128 {
         return Err(invalid());
@@ -848,6 +863,7 @@ pub(super) async fn open_browser(
         owner: Arc::downgrade(inner),
         link: link.clone(),
         host_id,
+        initial_path: path.to_owned(),
         touched: Mutex::new(Instant::now()),
         transferred: std::sync::atomic::AtomicU64::new(0),
         bootstrapped: std::sync::atomic::AtomicBool::new(false),
@@ -1124,7 +1140,7 @@ async fn browser_http(
                 &mut stream,
                 303,
                 &[
-                    ("location".into(), "/".into()),
+                    ("location".into(), session.initial_path.clone()),
                     (
                         "set-cookie".into(),
                         format!("{cookie}={token}; HttpOnly; SameSite=Strict; Path=/"),

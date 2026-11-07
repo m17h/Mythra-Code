@@ -6,9 +6,13 @@ import { remotePermission, resolveThreadExecutionContext, type ExecutionSources 
 import { currentGrant, HostReadError, idArg, normalizedHostPath, requireThread, requireWorkspace } from "./scope";
 import { publicCrew } from "./executionPreferences";
 import type { LocalSkill } from "../../skills";
+import type { ChildAgentTarget } from "../../../types";
 
 export const wireEfforts = new Set<WireEffort>(["low", "medium", "high", "xhigh", "max"]);
 export interface HostContextSources extends ExecutionSources {
+  /** Host engine instance, with remote-only delivery hooks; never selected-UI actions. */
+  getParentObligations?(run: import("../../parentRun").ParentRun): readonly import("../../parentRun").ParentObligation[];
+  getWorkflowEngine?(): import("./workflowExecution").RemoteWorkflowEngine;
   /** Same live catalogs as the local pickers, including their readiness. No secrets. */
   getProviderCatalog(): readonly WireHostProvider[];
   getPublicSkills(): readonly { name: string; description?: string; enabled?: boolean }[];
@@ -18,6 +22,10 @@ export interface HostContextSources extends ExecutionSources {
   getAccountUsage?(): readonly { provider: WireProvider; label: string; usedPercent: number; resetsAt: number | null }[];
   refreshAccountUsage?(provider: WireProvider): Promise<void>;
   getPublicWorkflows(workspaceId: string): readonly { id: string; name: string; description?: string }[];
+  /** The crew a started thread captured, with any change waiting for its next message. */
+  getThreadCrew?(threadId: string): { maxConcurrent: number; targets: readonly ChildAgentTarget[] } | undefined;
+  /** Applies a crew change exactly as the local picker does. */
+  stageThreadCrew?(threadId: string, next: { maxConcurrent: number; targets: ChildAgentTarget[] }, dryRun: boolean): "none" | "staged" | "busy" | "not-ready";
 }
 const providers = new Set(["openai", "openrouter", "lmstudio", "claude", "cursor"]);
 function text(value: unknown, maximum: number): string { return typeof value === "string" ? value.slice(0, maximum) : ""; }
@@ -55,11 +63,13 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
   const rawSkills = sources.getPublicSkills(), rawWorkflows = sources.getPublicWorkflows(workspaceId);
   const run = workspace.overrides?.run, check = workspace.overrides?.check;
   const capability = grant.capabilities as typeof grant.capabilities & { manageProjects?: boolean };
+  const nativeEngine = ctx.effectiveSettings.subagentEngine === "native";
+  const capturedCrew = threadId && !nativeEngine ? sources.getThreadCrew?.(threadId) : undefined;
   const result: HostContextResult = { workspaceId, ...(threadId ? { threadId } : {}), providers: publicCatalog(sources),
     execution: { provider: ctx.effectiveSettings.provider, model: ctx.effectiveSettings.model, effort,
       permission: remotePermission(ctx.effectiveSettings.permission, grant), serviceTier: ctx.effectiveSettings.serviceTier === "fast" ? "fast" : "standard",
       subagents: { enabled: ctx.effectiveSettings.subagentsEnabled, engine: ctx.effectiveSettings.subagentEngine === "native" ? "native" : "mythra",
-        maxConcurrent: ctx.effectiveSettings.nativeSubagentMax ?? 6, crew: publicCrew(ctx.effectiveSettings.childAgents.targets) },
+        maxConcurrent: capturedCrew?.maxConcurrent ?? ctx.effectiveSettings.nativeSubagentMax ?? 6, crew: publicCrew(capturedCrew?.targets ?? ctx.effectiveSettings.childAgents.targets) },
       ...(threadId ? { isolated: normalizedHostPath(sources.executionPathFor(threadId, workspace.path)) !== normalizedHostPath(workspace.path) } : {}) },
     selected: { provider: ctx.effectiveSettings.provider, model: text(ctx.effectiveSettings.model, 256), effort },
     ...(threadId ? { saved: { ...(savedModel ? { model: text(savedModel, 256) } : {}), ...(savedEffort ? { effort: savedEffort === "ultra" ? "max" : savedEffort } : {}) } } : {}),
@@ -79,7 +89,7 @@ export function hostContext(sources: HostContextSources, request: HostRequest, a
     else if (result.skills.length) result.skills.pop();
     else if (result.workflows.length) result.workflows.pop();
     else if (result.projectPrompt) result.projectPrompt = result.projectPrompt.slice(0, Math.floor(result.projectPrompt.length / 2));
-    else throw new HostReadError("busy", "This host context is too large.");
+    else throw new HostReadError("busy", "That's too much to load at once.");
   }
   return result;
 }
@@ -105,11 +115,11 @@ export async function searchHostFiles(sources: HostContextSources, request: Host
   currentGrant(sources, request.device, request.grant);
   if (requireWorkspace(sources, workspace.id, grant).path !== workspace.path) throw new HostReadError("stale_target", "This workspace changed.");
   if (root() !== executionRoot) throw new HostReadError("stale_target", "This checkout changed during file search.");
-  if (!raw || !Array.isArray(raw.files) || raw.files.length > 100) throw new HostReadError("host_unavailable", "The host could not search files.");
+  if (!raw || !Array.isArray(raw.files) || raw.files.length > 100) throw new HostReadError("host_unavailable", "The other device couldn't search files.");
   const files = raw.files.map((file) => {
     const path = file.relativePath;
     if (typeof path !== "string" || path.length > 2048 || path.split("/").some((p) => !p || p === "." || p === ".." || p.toLowerCase() === ".git" || /[\\:\u0000-\u001f]/.test(p))) {
-      throw new HostReadError("host_unavailable", "The host returned an unavailable file.");
+      throw new HostReadError("host_unavailable", "The other device returned an unavailable file.");
     }
     return { id: idArg(file.id), name: text(file.name, 512), relativePath: path };
   });

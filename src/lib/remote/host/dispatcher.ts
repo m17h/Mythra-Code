@@ -34,7 +34,7 @@ export class HostDispatcher {
     this.pins.clear(); this.lists.clear();
   }
   private check(request: HostRequest): void {
-    if (!this.isCurrent() || request.generation !== this.bridge.generation) throw new HostReadError("host_unavailable", "The host is recovering.");
+    if (!this.isCurrent() || request.generation !== this.bridge.generation) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
     currentGrant(this.sources, request.device, request.grant);
   }
   async dispatch(request: HostRequest): Promise<void> {
@@ -47,7 +47,7 @@ export class HostDispatcher {
       let result: HostResponse["result"];
       const isWork = isRemoteWorkOperation(request.op) && (Boolean(this.work) || !isStudioOperation(request.op) && !isStudioRead(request.op));
       if (isWork) {
-        if (!this.work) throw new HostReadError("unsupported", "This host has not enabled remote work yet.");
+        if (!this.work) throw new HostReadError("unsupported", "The other device has not enabled remote work yet.");
         result = await this.work.dispatch(request);
       } else if (isStudioOperation(request.op)) {
         result = await this.studio.execute(request) as HostResponse["result"];
@@ -93,11 +93,11 @@ export class HostDispatcher {
             needSnapshot: args.needSnapshot !== false,
           });
         }
-      } else throw new HostReadError("unsupported", "This host supports live viewing only.");
+      } else throw new HostReadError("unsupported", "The other device supports live viewing only.");
       // A grant may be removed after a provider accepted work. Never turn that
       // accepted receipt into a rejected send; the journal remains authoritative.
       if (!isWork || request.op === "folders.browse" || isDomainRead(request.op) || isParityRead(request.op) || request.op === "work.inspect" || request.op === "host.context" || request.op === "files.search") this.check(request);
-      else if (!this.isCurrent()) throw new HostReadError("host_unavailable", "The host is recovering.");
+      else if (!this.isCurrent()) throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
       if (jsonBytes(result) > REMOTE_RESULT_BYTES) throw new HostReadError("busy", "This page is too large. Request fewer rows.");
       response = { generation: request.generation, requestId: request.requestId, result };
     } catch (reason) {

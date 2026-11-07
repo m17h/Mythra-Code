@@ -570,6 +570,8 @@ fn unstage_paths(repo: &Path, path: &str) -> Result<Vec<String>, String> {
     let (output, truncated) = bounded_git_output(
         repo,
         &[
+            "-c",
+            "core.fsmonitor=false",
             "diff",
             "--cached",
             "--name-status",
@@ -734,7 +736,7 @@ fn revert_state(cwd: &str, path: &str) -> Result<RevertState, String> {
         .canonicalize()
         .map_err(|error| format!("Could not resolve the Git common directory: {error}"))?;
     let paths = unstage_paths(&root, path)?;
-    let mut args = vec!["--literal-pathspecs", "ls-files", "--stage", "-z", "--"];
+    let mut args = vec!["-c", "core.fsmonitor=false", "--literal-pathspecs", "ls-files", "--stage", "-z", "--"];
     args.extend(paths.iter().map(String::as_str));
     let (index, truncated) = bounded_git_output(&root, &args, LOCAL_TIMEOUT, 64 * 1024, false)?;
     if !index.status.success() || truncated {
@@ -950,8 +952,9 @@ fn bulk_revert_state(cwd: &str) -> Result<BulkRevertState, String> {
     let common_dir = git_common_dir(&root)?
         .canonicalize()
         .map_err(|error| format!("Could not resolve the Git common directory: {error}"))?;
-    let status_args = ["status", "--porcelain=v1", "-z", "--untracked-files=all"];
-    let index_args = ["ls-files", "--stage", "-z"];
+    // A repository's fsmonitor setting names a program. A preview must not run it.
+    let status_args = ["-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"];
+    let index_args = ["-c", "core.fsmonitor=false", "ls-files", "--stage", "-z"];
     let status = bulk_revert_output(&root, &status_args, deadline)?;
     let index = bulk_revert_output(&root, &index_args, deadline)?;
     let mut indexed_paths = HashSet::new();
@@ -1681,6 +1684,7 @@ pub(super) fn spawn_scoped_git(
     crate::remote::domain::spawn_gate(||spawn_scoped_git_unfenced(command))
 }
 fn spawn_scoped_git_unfenced(command:&mut std::process::Command)->Result<(std::process::Child,GitProcessScope),String>{
+    crate::remote::fs_guard::prepare_git_cwd(command)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1898,6 +1902,7 @@ fn bounded_git_output_with_capture(
             command.env("GIT_ASKPASS", "");
         }
     }
+    crate::remote::safe_git::configure(&mut command,repo,args)?;
     let (mut child, scope) = spawn_scoped_git(&mut command)?;
     let stop = |child: &mut std::process::Child, reason: String| scope.stop(child, reason);
     let stdout = child

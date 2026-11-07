@@ -167,6 +167,17 @@ function loadQueuedTurns(): Record<string, QueuedTurn[]> {
 
 let queuedTurnsCache = loadQueuedTurns();
 
+/** Adopt one already-committed retirement without a blind whole-map write. */
+export function adoptRemoteParentDismissal(threadId: string, expectedRunId: string): void {
+  if (useTaskStore.getState().parentRuns[threadId]?.id !== expectedRunId) return;
+  parentRunStopEpochs.set(threadId, parentRunStopEpoch(threadId) + 1);
+  parentRunRetirements.set(threadId, "dismiss");
+  try { useTaskStore.setState((state) => {
+    if (state.parentRuns[threadId]?.id !== expectedRunId) return state;
+    const parentRuns = { ...state.parentRuns }; delete parentRuns[threadId]; return { parentRuns };
+  }); } finally { parentRunRetirements.delete(threadId); }
+}
+export function storedQueuedTurnsForThread(threadId: string): readonly QueuedTurn[] { return queuedTurnsCache[threadId] ?? []; }
 export function storedRemoteQueuedTurns(): QueuedTurn[] {
   return Object.values(queuedTurnsCache).flat().filter((entry) => Boolean(entry.remoteDelivery));
 }

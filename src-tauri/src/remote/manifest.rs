@@ -5,7 +5,7 @@ use super::{
 };
 use serde_json::Value;
 fn invalid() -> WireError {
-    WireError::new("invalid", "That remote action is not valid.")
+    WireError::new("invalid", "That action isn't valid.")
 }
 pub(super) const READS: &[&str] = &[
     "queue.read",
@@ -33,7 +33,7 @@ pub(super) const READS: &[&str] = &[
 pub(super) fn mutation(op: &str) -> bool {
     matches!(
         op,
-        "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
+        "github.pr.create" | "github.pr.merge" | "github.pr.ready" | "github.pr.comment" | "draft.settings.set" | "prompt.cancel" | "git.write" | "checkpoint.create" | "checkpoint.complete" | "checkpoint.delete" | "checkpoint.restore" | "checkpoint.accept" | "agents.stop" | "worktree.create" | "worktree.recreate" | "worktree.baseline" | "worktree.merge" | "worktree.apply" | "worktree.remove" | "worktree.continueShared" | "worktree.returnShared" | "terminal.open" | "terminal.write" | "terminal.resize" | "terminal.close" | "attachment.put"
             | "queue.edit.begin"
             | "queue.edit.finish"
             | "queue.retry"
@@ -88,8 +88,16 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
     Some(match op {
         "draft.settings.set" => (&["opId","opSeq","workspaceId","draftHandle","provider","model","effort","permission","serviceTier","subagents","isolated"],true),
         "prompt.cancel" => (&["opId","opSeq","workspaceId","startTarget"],true),
+        "github.pr.create" => (&["opId","opSeq","workspaceId","threadId","head","base","title","body","draft","commitMessage","commitAll","revision"],true),
+        "github.pr.merge" => (&["opId","opSeq","workspaceId","threadId","number","method","auto","revision","confirmed"],true),
+        "github.pr.ready" => (&["opId","opSeq","workspaceId","threadId","number","revision","confirmed"],true),
+        "github.pr.comment" => (&["opId","opSeq","workspaceId","threadId","number","body","revision"],true),
+        "github.comments.list"|"github.ci.status"|"github.pr.view" => (&["workspaceId","threadId","number"],false),
+        "github.pr.list" => (&["workspaceId","search","state","limit"],false),
+        "github.pr.find" => (&["workspaceId","threadId","branch"],false),
+        "github.pr.context" => (&["workspaceId","threadId"],false),
         "git.write" => (&["opId","opSeq","workspaceId","threadId","action","resourceId","revision","message","name","create","stagedOnly","confirmed"],true),
-        "checkpoint.list" | "worktree.status" | "agents.list" => (&["workspaceId","threadId"],false),
+        "checkpoint.list" | "worktree.status" | "agents.list" | "preview.links" => (&["workspaceId","threadId"],false),
         "checkpoint.diff" => (&["workspaceId","threadId","checkpointId"],false),
         "git.log" => (&["workspaceId","threadId","offset","limit","headOid"],false),
         "git.revert.preview" => (&["workspaceId","threadId","changeId"],false),
@@ -100,7 +108,7 @@ pub(super) fn fields(op: &str) -> Option<(&'static [&'static str], bool)> {
         "checkpoint.delete" => (&["opId","opSeq","workspaceId","threadId","checkpointId","revision","confirmed"],true),
         "checkpoint.restore" => (&["opId","opSeq","workspaceId","threadId","checkpointId","target","revision","confirmed"],true),
         "worktree.create" | "worktree.recreate" => (&["opId","opSeq","workspaceId","threadId","label","revision"],true),
-        "worktree.apply"|"worktree.remove"|"worktree.merge"|"worktree.baseline" => (&["opId","opSeq","workspaceId","threadId","revision","confirmed"],true),
+        "worktree.apply"|"worktree.remove"|"worktree.merge"|"worktree.baseline"|"worktree.continueShared"|"worktree.returnShared" => (&["opId","opSeq","workspaceId","threadId","revision","confirmed"],true),
         "terminal.open" => (&["opId","opSeq","workspaceId","threadId","command","columns","rows"],true),
         "terminal.write" => (&["opId","opSeq","workspaceId","terminalId","data"],true),
         "terminal.resize" => (&["opId","opSeq","workspaceId","terminalId","columns","rows"],true),
@@ -560,8 +568,9 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
             | "projects.run.set"
             | "projects.check.set"
     );
-    let domain=op=="git.write"||(op.starts_with("checkpoint.")&&!matches!(op,"checkpoint.list"|"checkpoint.diff"|"checkpoint.accept"))||(op.starts_with("worktree.")&&op!="worktree.status");
-    let shell = domain || op.starts_with("terminal.") || matches!(
+    let git_change=op=="git.write"||op=="git.revert.preview"||matches!(op,"github.pr.create"|"github.pr.merge"|"github.pr.ready"|"github.pr.comment");
+    let domain=git_change||(op.starts_with("checkpoint.")&&!matches!(op,"checkpoint.list"|"checkpoint.diff"|"checkpoint.accept"))||(op.starts_with("worktree.")&&op!="worktree.status");
+    let shell = domain || op=="engine.command" || op.starts_with("terminal.") || matches!(
         op,
         "projects.run.set"
             | "projects.check.set"
@@ -575,12 +584,13 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
             | "discovery.check.stop"
             | "discovery.settings.set"
     );
-    if (op=="git.write"&&!grant.capabilities.git_write)||(op=="checkpoint.restore"&&!grant.capabilities.checkpoint_restore){return Err(WireError::new("forbidden","This repository action needs its access switch on the host."));}
+    if (git_change&&!grant.capabilities.git_write)||(op=="checkpoint.restore"&&!grant.capabilities.checkpoint_restore){return Err(WireError::new("forbidden","This device doesn't have that access. To change it, open Settings → Connections → Devices on the other device."));}
     if !grant.view
         || (mutation(op)
             || manage
             || shell
             || op == "work.inspect"
+            || op == "preview.links"
             || super::work::MUTATIONS.contains(&op))
             && !grant.work
         || manage
@@ -589,7 +599,7 @@ pub(super) fn access(op: &str, grant: &DeviceGrant) -> Result<(), WireError> {
     {
         return Err(WireError::new(
             "forbidden",
-            "This device does not have the required access switch on the host.",
+            "This device doesn't have that access. To change it, open Settings → Connections → Devices on the other device.",
         ));
     }
     Ok(())
@@ -767,6 +777,16 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
             true,
         )?;
     }
+    if op.starts_with("github.") {
+        if matches!(op,"github.pr.merge"|"github.pr.ready"|"github.pr.comment"|"github.comments.list"|"github.ci.status"|"github.pr.view")&&!args.get("number").and_then(Value::as_u64).is_some_and(|n|n>0&&n<=super::timeline::MAX_SAFE_SEQ){return Err(invalid());}
+        for key in ["head","base","title","body","commitMessage","search","branch"] {if let Some(value)=args.get(key){if !value.as_str().is_some_and(|s|s.len()<=65536&&!s.contains('\0')){return Err(invalid());}}}
+        for key in ["draft","commitAll","auto","confirmed"]{if args.get(key).is_some_and(|v|!v.is_boolean()){return Err(invalid());}}
+        if op=="github.pr.merge"&&!matches!(args.get("method").and_then(Value::as_str),Some("squash"|"merge"|"rebase")){return Err(invalid());}
+        if matches!(op,"github.pr.merge"|"github.pr.ready")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}
+        if matches!(op,"github.pr.create"|"github.pr.comment")&&!args.get(if op=="github.pr.create"{"title"}else{"body"}).and_then(Value::as_str).is_some_and(|s|!s.trim().is_empty()){return Err(invalid());}
+        if args.get("limit").is_some_and(|v|!v.as_u64().is_some_and(|n|n>0&&n<=50)){return Err(invalid());}
+        if args.get("state").is_some_and(|v|!matches!(v.as_str(),Some("open"|"closed"|"merged"|"all"))){return Err(invalid());}
+    }
     if op=="attachment.put"{super::attachments::validate(args).map_err(|_|invalid())?;}
     if matches!(op,"draft.settings.set"|"thread.settings.set"){
         if args.get("permission").is_some_and(|p|!matches!(p.as_str(),Some("read-only"|"ask"|"full")))||args.get("serviceTier").is_some_and(|tier|!tier.is_null()&&!matches!(tier.as_str(),Some("standard"|"fast"))){return Err(invalid());}
@@ -775,7 +795,7 @@ pub(super) fn validate(op: &str, args: &Value) -> Result<bool, WireError> {
     }
     if op=="prompt.cancel"{id(args,"startTarget",true)?;}
     if op=="git.write"&&!matches!(args.get("action").and_then(Value::as_str),Some("init"|"stage"|"unstage"|"commit"|"branch"|"push"|"pull"|"fetch"|"update"|"revert"|"revertAll")){return Err(invalid());}
-    if matches!(op,"checkpoint.restore"|"checkpoint.delete"|"worktree.apply"|"worktree.remove")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}
+    if matches!(op,"checkpoint.restore"|"checkpoint.delete"|"worktree.apply"|"worktree.remove"|"worktree.continueShared"|"worktree.returnShared")&&args.get("confirmed")!=Some(&Value::Bool(true)){return Err(invalid());}
     if op.starts_with("checkpoint.")&&op!="checkpoint.list"{id(args,"checkpointId",true)?;}
     if op.starts_with("terminal.") {
         if op!="terminal.open"{id(args,"terminalId",true)?;}

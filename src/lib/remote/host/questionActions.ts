@@ -4,7 +4,7 @@ import type { WireQuestion } from "../wire";
 import { isQuestion } from "./approvalActions";
 import { HostReadError } from "./scope";
 
-const invalid = () => new HostReadError("unsupported", "These questions cannot be answered remotely. Continue on the host.");
+const invalid = () => new HostReadError("unsupported", "These questions cannot be answered remotely. Continue on the other device.");
 /** Only live pending-request forms. Timeline records never authorize an answer. */
 export function requestQuestions(approval: PendingApproval): WireQuestion[] {
   if (!isQuestion(approval)) throw invalid();

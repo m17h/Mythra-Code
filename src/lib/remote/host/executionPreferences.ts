@@ -66,7 +66,7 @@ export function validateExecutionSettings(value: unknown, sources?: HostContextS
   }
   return result;
 }
-function invalid() { return new HostReadError("unsupported", "The host does not offer these execution settings."); }
+function invalid() { return new HostReadError("unsupported", "The other device does not offer these execution settings."); }
 export function applyHostExecutionPreferences(settings: AppSettings, prefs?: WireExecutionSettings): AppSettings {
   if (!prefs) return settings;
   const rank = { "read-only": 0, ask: 1, full: 2 };

@@ -111,7 +111,7 @@ fn invalid() -> WireError {
 fn stale() -> WireError {
     WireError::new(
         "stale_generation",
-        "The host renderer connection expired. Attach again.",
+        "The other device renderer connection expired. Attach again.",
     )
 }
 
@@ -249,6 +249,7 @@ fn viewer_state(inner: &Inner, device: &str, thread: &str, state: &str) {
 /// Called under the same core lock that changes a grant or relationship. No
 /// old projection survives the scope check that authorized it.
 pub(super) fn retire_device_locked(inner: &Inner, core: &mut Core, device: &str) {
+    super::diagnostics::record(super::diagnostics::Event::Grant,0,0,core.devices.get(device).and_then(|d|d.grant.as_ref()).map_or(0,|g|g.revision),0,"host",if core.devices.get(device).is_some_and(|d|d.grant.is_some()){"changed"}else{"revoked"});
     super::owners::retire_device(core,device);
     super::preview::retire(inner,Some(device));
     super::terminal::invalidate(core,Some(device));
@@ -308,6 +309,7 @@ pub(super) fn forget_viewer_locked(inner: &Inner, core: &mut Core, device: &str)
 }
 
 fn end_generation(inner: &Inner, core: &mut Core) {
+    super::diagnostics::record(super::diagnostics::Event::Lease,0,0,core.bridge.generation,0,"host","expired");
     super::preview::retire(inner,None);
     super::terminal::invalidate(core,None);
     super::owners::invalidate(core);
@@ -1000,6 +1002,7 @@ pub(crate) fn remote_host_renew(
     check_generation(&core, generation)?;
     core.bridge.lease_waiting = false;
     core.bridge.lease_misses = 0;
+    super::diagnostics::record(super::diagnostics::Event::Lease,0,0,generation,0,"host","ok");
     Ok(())
 }
 
@@ -1085,6 +1088,7 @@ pub(super) fn renderer_publish(inner: &Inner, generation: u64, thread_id: String
     }
     let delivery = frames.clone();
     core.bridge.timelines.publish(&thread_id, &epoch, frames)?;
+    super::diagnostics::record(super::diagnostics::Event::Publish,0,0,delivery.last().map_or(0,|f|f.seq),delivery.len(),"host","ok");
     let devices: Vec<String> = core
         .bridge
         .timelines
@@ -1414,7 +1418,7 @@ pub(super) async fn request_value(inner:&Arc<Inner>,link:&Arc<Link>,op:&str,args
     let args=validate_args(op,args)?;
     let (id,generation,receiver)={let mut core=inner.lock();let grant=authorize(&core,link)?;super::manifest::access(op,&grant)?;
         if !core.bridge.ready || !core.bridge.attached {return Err(unavailable());}
-        if (super::work::is_mutation(op)||op=="work.inspect")&&!grant.work {return Err(WireError::new("forbidden","Turn on Work for this device on the host."));}
+        if (super::work::is_mutation(op)||op=="work.inspect")&&!grant.work {return Err(WireError::new("forbidden","Work is off for this device. To turn it on, open Settings → Connections → Devices on the other device."));}
         if core.bridge.pending.len()>=MAX_HOST_REQUESTS{return Err(WireError::new("busy","Too many requests are waiting."));}
         let id=uuid::Uuid::new_v4().to_string();let generation=core.bridge.generation;let(sender,receiver)=oneshot::channel();
         core.bridge.pending.insert(id.clone(),PendingRequest{link_id:link.id,device:link.peer_fingerprint.clone(),grant:grant.clone(),op:op.to_owned(),args:args.clone(),reply:Some(sender)});

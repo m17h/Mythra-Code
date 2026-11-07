@@ -1883,3 +1883,64 @@ async fn preview_revocation_cuts_an_active_sse_response_and_its_listener() {
     .unwrap();
     backend.await.unwrap();
 }
+
+#[tokio::test]
+async fn preview_deep_path_preserves_path_and_query_but_refuses_url_or_fragment() {
+    let (host, viewer, _link) = paired_nodes().await;
+    let _renderer = renderer(&host.inner);
+    let (address, received, backend) = preview_backend("deep preview").await;
+    let endpoint = super::preview::register(&host.inner, 1, "project".into(), address).unwrap();
+    for path in [
+        "https://attacker.invalid/",
+        "//attacker.invalid/",
+        "/\\attacker.invalid/",
+        "/nested#fragment",
+        "/bad\r\nheader",
+        "?query-only",
+    ] {
+        assert_eq!(
+            super::preview::open_browser_at(
+                &viewer.inner,
+                &host.identity.fingerprint,
+                &endpoint,
+                path
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "invalid"
+        );
+    }
+    let path = "/nested/page?reload=1&name=two%20words";
+    let opened =
+        super::preview::open_browser_at(&viewer.inner, &host.identity.fingerprint, &endpoint, path)
+            .await
+            .unwrap();
+    let url = opened["url"].as_str().unwrap();
+    let parsed = reqwest::Url::parse(url).unwrap();
+    let bootstrap = browser_client(url).get(url).send().await.unwrap();
+    assert_eq!(bootstrap.status(), 303);
+    assert_eq!(bootstrap.headers()["location"], path);
+    let cookie = bootstrap.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let target = format!("{}{path}", parsed.origin().ascii_serialization());
+    let result = browser_client(&target)
+        .get(&target)
+        .header("cookie", cookie)
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(result.status(), 200);
+    assert_eq!(result.text().await.unwrap(), "deep preview");
+    assert!(received
+        .await
+        .unwrap()
+        .starts_with(&format!("GET {path} HTTP/1.1\r\n")));
+    backend.await.unwrap();
+}

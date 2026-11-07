@@ -120,6 +120,7 @@ struct CursorProcess {
     server_requests: Mutex<HashSet<String>>,
     remote_requests: Mutex<HashMap<String,Value>>,
     remote_start: Mutex<Option<crate::remote::work::NativePermit>>,
+    local_owner: Mutex<Option<crate::remote::owners::LocalPermit>>,
     remote_permission: Option<String>,
     emit: CursorEmit,
 }
@@ -376,6 +377,8 @@ pub struct CursorAttachment {
 pub struct CursorTurnOptions {
     #[serde(default)]
     remote_delivery: Option<crate::remote::work::RemoteDelivery>,
+    #[serde(default)]
+    local_owner_handle: Option<String>,
     thread_id: String,
     /// Renderer-owned start intent, echoed only on Mythra event envelopes.
     /// Never sent to ACP or used as a permission/authorization credential.
@@ -453,6 +456,7 @@ impl CursorProcess {
             let bytes=format!("{message}\n");
             timeout_at(deadline,permit.write_claimed(||{if !self.alive.load(Ordering::Acquire){return Err(crate::remote::work::refused("stale_target"));}Ok(())},async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input write failed.".to_string())?;stdin.flush().await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input flush failed.".to_string())})).await.map_err(|_|"MYTHRA_DELIVERY_UNCERTAIN: Cursor input timed out.".to_string())??;
             permit.accepted(json!({"threadId":self.thread_id,"turnId":self.turn_id})).await
+        }else if let Some(owner)=if message.get("method").and_then(Value::as_str)==Some("session/prompt"){self.local_owner.lock().await.take()}else{None}{let deadline=Instant::now()+self.input_timeout;let mut stdin=timeout_at(deadline,self.stdin.lock()).await.map_err(|_|"Cursor input timed out.".to_string())?;let bytes=format!("{message}\n");timeout_at(deadline,owner.write(async{stdin.write_all(bytes.as_bytes()).await.map_err(|_|"Local input could not be written.".to_string())?;stdin.flush().await.map_err(|_|"Local input could not be flushed.".to_string())})).await.map_err(|_|"Cursor input timed out.".to_string())??;owner.accepted("cursor",self.thread_id.as_deref().unwrap_or(""),self.turn_id.as_deref().unwrap_or(""),None,None)
         }else{write_json(&self.stdin,message,Instant::now()+self.input_timeout).await};
         self.stage(if result.is_ok() {
             "write: done"
@@ -1394,9 +1398,9 @@ async fn spawn_cursor_process(
     event_context: Option<(String, String, String, bool)>,
     start_request_id: Option<&str>,
 ) -> Result<Arc<CursorProcess>, String> {
-    spawn_cursor_process_remote(app,cwd,event_context,start_request_id,None).await
+    spawn_cursor_process_remote(app,cwd,event_context,start_request_id,None,None).await
 }
-async fn spawn_cursor_process_remote(app:&AppHandle,cwd:&Path,event_context:Option<(String,String,String,bool)>,start_request_id:Option<&str>,remote:Option<&crate::remote::work::NativePermit>)->Result<Arc<CursorProcess>,String>{
+async fn spawn_cursor_process_remote(app:&AppHandle,cwd:&Path,event_context:Option<(String,String,String,bool)>,start_request_id:Option<&str>,remote:Option<&crate::remote::work::NativePermit>,local:Option<&crate::remote::owners::LocalPermit>)->Result<Arc<CursorProcess>,String>{
     let runtime = resolve_cursor_runtime(app).await?;
     let mut command = runtime.background(Some(cwd));
     command
@@ -1411,7 +1415,7 @@ async fn spawn_cursor_process_remote(app:&AppHandle,cwd:&Path,event_context:Opti
     #[cfg(unix)]
     command.process_group(0);
     let mut spawn=||command.spawn().map_err(|error|format!("Could not start Cursor Agent at `{}`: {error}",runtime.display_path()));
-    let child=if let Some(remote)=remote{remote.check_spawn(spawn)?}else{spawn()?};
+    let child=if let Some(remote)=remote{remote.check_spawn(spawn)?}else if let Some(local)=local{local.spawn(spawn)?}else{spawn()?};
     let app = app.clone();
     let emit: CursorEmit = Arc::new(move |event: &str, payload: Value| {
         let _ = app.emit(event, payload);
@@ -1492,6 +1496,7 @@ fn attach_cursor_process(
         server_requests: Mutex::new(HashSet::new()),
         remote_requests: Mutex::new(HashMap::new()),
         remote_start: Mutex::new(None),
+        local_owner: Mutex::new(None),
         remote_permission: event_context.as_ref().map(|(_,_,permission,_)|permission.clone()),
         emit,
     });
@@ -1892,6 +1897,8 @@ pub async fn cursor_turn_start(
     agent_state: State<'_, ChildAgentState>,
     mut options: CursorTurnOptions,
 ) -> Result<CursorTurnStarted, String> {
+    let local_owner=crate::remote::owners::LocalPermit::prepare(&app,options.local_owner_handle.take())?;
+    if local_owner.is_some()&&options.remote_delivery.is_some(){return Err(crate::remote::work::refused("invalid"));}
     let remote_permit=if let Some(meta)=options.remote_delivery.take(){Some(crate::remote::work::prepare_native(&app,meta,"cursor_prompt",Some(&options.permission),None).await?)}else{None};
     if let Some(permit)=remote_permit.as_ref(){permit.verify_thread(&options.thread_id)?;}
     let mut process_requested = false;
@@ -1900,6 +1907,7 @@ pub async fn cursor_turn_start(
     let turn_id = uuid::Uuid::new_v4().to_string();
     let start = state.starts.begin(&options.thread_id, &turn_id, options.start_request_id.as_deref())?;
     if let Some(permit)=remote_permit.as_ref(){permit.track_start("cursor",&options.thread_id,&turn_id,options.start_request_id.as_deref())?;}
+    if let Some(owner)=local_owner.as_ref(){owner.track_start("cursor",&options.thread_id,&turn_id,options.start_request_id.as_deref())?;}
     if options
         .start_request_id
         .as_ref()
@@ -1959,9 +1967,11 @@ pub async fn cursor_turn_start(
         )),
         options.start_request_id.as_deref(),
         remote_permit.as_ref(),
+        local_owner.as_ref(),
     )
     .await?;
     *process.remote_start.lock().await=remote_permit;
+    *process.local_owner.lock().await=local_owner;
     if !super::claim_turn_slot(&state.turns, &options.thread_id, &process, |existing| {
         existing.alive.load(Ordering::Acquire) || existing.cutoff_uncertain.load(Ordering::Acquire)
     })

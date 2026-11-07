@@ -29,7 +29,7 @@ interface Handle {
   area?: StudioGitArea; after?: string;
 }
 const invalid = () => new HostReadError("unsupported", "That Studio request is not valid.");
-const unavailable = () => new HostReadError("host_unavailable", "The host could not read this Studio item. Inspect it on the host.");
+const unavailable = () => new HostReadError("host_unavailable", "The other device couldn't read this Studio item. Inspect it on the other device.");
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();
   return value as Record<string, unknown>;
@@ -106,7 +106,7 @@ export class HostStudio {
   dispose(): void { this.disposed = true; this.handles.clear(); }
   private check(request: HostRequest): void {
     if (this.disposed || !this.isCurrent() || request.generation !== this.generation) {
-      throw new HostReadError("host_unavailable", "The host is recovering.");
+      throw new HostReadError("host_unavailable", "The other device is recovering. Try again shortly.");
     }
     if (!/^[0-9a-f]{64}$/.test(request.device)) throw invalid();
     currentGrant(this.sources, request.device, request.grant);
@@ -127,7 +127,7 @@ export class HostStudio {
     return { root, key: JSON.stringify([workspace.id, workspace.path, threadId ?? null, root]) };
   }
   private assertTarget(request: HostRequest, args: Record<string, unknown>, expected: Target): void {
-    if (this.target(request, args).key !== expected.key) throw new HostReadError("stale_target", "The host checkout changed. Refresh Studio.");
+    if (this.target(request, args).key !== expected.key) throw new HostReadError("stale_target", "The other device's checkout changed. Refresh Studio.");
   }
   private sweep(): void {
     for (const [key, handle] of this.handles) if (handle.expires <= Date.now()) this.handles.delete(key);
@@ -175,7 +175,7 @@ export class HostStudio {
     const args = objectArgs(request.args);
     if (Object.keys(args).some((key) => !keys[request.op as StudioOperation].includes(key))) throw invalid();
     this.sweep();
-    if (this.active >= MAX_PARALLEL_READS) throw new HostReadError("busy", "The host is reading other Studio items. Try again shortly.");
+    if (this.active >= MAX_PARALLEL_READS) throw new HostReadError("busy", "The other device is reading other Studio items. Try again shortly.");
     const target = this.target(request, args);
     this.active += 1;
     try {

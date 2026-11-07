@@ -132,18 +132,18 @@ export function switchMachine(machine: ActiveMachine, name: string | null = null
   return true;
 }
 
-/** A notification names one machine and thread. Clicking one brings the window
- * forward, so the next focus shortly after takes the user there. */
-const NOTIFICATION_CLICK_MS = 30_000;
-let pendingOpen: { at: number; machine: ActiveMachine; name: string | null; open: () => void } | null = null;
-export function noteNotificationTarget(machine: ActiveMachine, name: string | null, open: () => void): void {
-  pendingOpen = { at: Date.now(), machine, name, open };
+/** Desktop notifications report no click, so each also appears in the app with
+ * an Open action. Only that action switches machines: focus alone never does. */
+export interface RemoteNotice { id: string; machine: ActiveMachine; name: string | null; title: string; body: string; open: () => void }
+const MAX_NOTICES = 4;
+export const useRemoteNotices = create<{ notices: RemoteNotice[] }>(() => ({ notices: [] }));
+export function addRemoteNotice(notice: RemoteNotice): void {
+  useRemoteNotices.setState(({ notices }) => ({ notices: [...notices.filter((entry) => entry.id !== notice.id), notice].slice(-MAX_NOTICES) }));
 }
-if (typeof window !== "undefined") {
-  window.addEventListener("focus", () => {
-    const target = pendingOpen;
-    pendingOpen = null;
-    if (!target || Date.now() - target.at > NOTIFICATION_CLICK_MS) return;
-    if (switchMachine(target.machine, target.name)) target.open();
-  });
+export function dismissRemoteNotice(id: string): void {
+  useRemoteNotices.setState(({ notices }) => ({ notices: notices.filter((entry) => entry.id !== id) }));
+}
+export function openRemoteNotice(notice: RemoteNotice): void {
+  dismissRemoteNotice(notice.id);
+  if (switchMachine(notice.machine, notice.name)) notice.open();
 }

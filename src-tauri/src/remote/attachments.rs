@@ -15,7 +15,7 @@ use std::{
 };
 const MAX: u64 = 50 * 1024 * 1024;
 fn failed() -> String {
-    "MYTHRA_DELIVERY_UNCERTAIN: The host could not confirm this upload. Check the attachment before trying again.".into()
+    "MYTHRA_DELIVERY_UNCERTAIN: The other device couldn't confirm this upload. Check the attachment before trying again.".into()
 }
 fn invalid() -> String {
     work::refused("invalid")

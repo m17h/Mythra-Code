@@ -8,8 +8,9 @@
 pub(crate) mod discovery;
 pub(crate) mod hostbridge;
 mod identity;
+mod diagnostics;
 mod manifest;
-mod fs_guard;
+pub(crate) mod fs_guard;
 pub(crate) mod studio;
 pub(crate) mod studio_extra;
 pub(crate) mod folders;
@@ -30,6 +31,8 @@ pub(crate) mod upload_source;
 pub(crate) mod domain;
 pub(crate) mod owners;
 pub(crate) mod bookkeeping;
+pub(crate) mod safe_git;
+pub(crate) mod github;
 #[cfg(test)]
 mod tests;
 
@@ -897,6 +900,7 @@ impl Inner {
             if generation != current {
                 return;
             }
+            diagnostics::record(diagnostics::Event::Discovery,0,0,generation,0,if advertising{"advertise"}else{"browse"},match &event{DiscoveryEvent::Found(_)=>"found",DiscoveryEvent::Lost(_)=>"lost",DiscoveryEvent::Failed(DiscoveryFailure::Denied)=>"denied",DiscoveryEvent::Failed(DiscoveryFailure::NameConflict)=>"name_conflict",DiscoveryEvent::Failed(DiscoveryFailure::Unavailable(_))=>"failed",DiscoveryEvent::Narrowed=>"narrowed"});
             match event {
                 DiscoveryEvent::Found(instance) => {
                     core.denied_since = None;
@@ -1963,6 +1967,7 @@ pub(crate) fn start(app: &AppHandle) {
     if state.inner.app.set(app.clone()).is_err() {
         return;
     }
+    diagnostics::start(app);
     tauri::async_runtime::spawn(supervise(state.inner.clone()));
 }
 

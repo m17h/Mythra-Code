@@ -32,7 +32,7 @@ export const isParityOperation = (op: string): op is HostParityOperation => read
 export const isParityRead = (op: string): boolean => reads.has(op);
 const providers = new Set(["openai", "openrouter", "lmstudio", "claude", "cursor"]);
 const efforts = new Set(["low", "medium", "high", "xhigh", "max"]);
-const invalid = () => new HostReadError("unsupported", "This host action is not valid.");
+const invalid = () => new HostReadError("unsupported", "This action is not valid.");
 export interface HostParityActions {
   /** One resource revision for this workspace/thread; changes with its state. */
   revision(context: TurnRunnerContext): string;
@@ -51,7 +51,7 @@ export function assertParityAuthority(op: string, grant: DeviceGrant): void {
   if (!grant.view || !isParityRead(op) && !grant.work) throw new HostReadError("forbidden", "This action requires Work access.");
   const managing = op === "projects.settings.set" || op === "projects.instructions.set" || op.startsWith("projects.profiles.") || op === "projects.run.set" || op === "projects.check.set";
   if (managing && (grant.scope.kind !== "all" || (grant.capabilities as { manageProjects?: boolean }).manageProjects !== true)) {
-    throw new HostReadError("forbidden", "This action requires Manage projects and an all-project grant.");
+    throw new HostReadError("forbidden", "This needs Manage projects and access to all projects.");
   }
   const shell = op.startsWith("run.") || op.startsWith("checks.") && !isParityRead(op)
     || op.startsWith("discovery.") && !isParityRead(op) || op === "projects.run.set" || op === "projects.check.set";
@@ -142,7 +142,7 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
   assertAllowed: () => void, grantRevision = 0): Promise<RemoteWorkResult> {
   const assertRevision = () => {
     assertAllowed();
-    if (actions.revision(context) !== args.revision) throw new HostReadError("stale_target", "This host state changed. Refresh before applying the action.");
+    if (actions.revision(context) !== args.revision) throw new HostReadError("stale_target", "This state on the other device changed. Refresh before applying the action.");
   };
   try {
     assertRevision();
@@ -152,14 +152,16 @@ export async function executeParityMutation(op: HostParityOperation, args: Recor
     if (op.startsWith("parent.") && threadId && useTaskStore.getState().parentRuns[threadId]?.id !== args.parentRunId) throw new HostReadError("stale_target", "This parent run has ended.");
     await delivery.beforeCreate();
     assertRevision();
-    await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
+    // A workflow must establish native ownership before ANY preparation latch.
+    // Its remote engine owns admission/child dispatch, not the generic state adapter.
+    if (op !== "workflows.start" && op !== "parent.continue") await delivery.beforeDispatch({ threadId: threadId ?? "", messageId: delivery.messageId, provider: context.effectiveSettings.provider });
     assertRevision();
     const result = await actions.execute(op, args, { context, identity, generation, grantRevision, delivery, assertAllowed: assertRevision });
     if (result?.state === "queued" && result.threadId && result.queuedTurnId) {
       if (delivery.result().state !== "queued") await delivery.queued(result.threadId, result.queuedTurnId);
       return delivery.result();
     }
-    if (result?.state !== "accepted") throw new HostReadError("uncertain", "The host action could not be confirmed.");
+    if (result?.state !== "accepted") throw new HostReadError("uncertain", "The other device's action couldn't be confirmed.");
     await flushPendingStateWrites();
     await delivery.accepted({ threadId: result?.threadId ?? threadId });
     return { ...delivery.result(), ...(result?.workflowRunId ? { workflowRunId: idArg(result.workflowRunId) } : {}), ...(result?.editHandle ? { editHandle: idArg(result.editHandle) } : {}) };

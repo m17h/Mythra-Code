@@ -32,7 +32,10 @@ pub(super) fn keys(op: &str) -> Vec<&'static str> {
         ]
     } else if op.starts_with("checkpoint.") {
         vec!["kiwi.checkpoints", "kiwi.checkpointHeads"]
-    } else if matches!(op, "worktree.apply" | "worktree.merge") {
+    } else if matches!(
+        op,
+        "worktree.apply" | "worktree.merge" | "worktree.remove" | "worktree.returnShared"
+    ) {
         vec![
             "kiwi.threadWorktrees",
             "kiwi.checkpoints",
@@ -159,6 +162,17 @@ pub(super) fn preflight(
             }
         } else {
             let r = record.ok_or_else(stale)?;
+            if op == "worktree.continueShared"
+                && r.get("status").and_then(Value::as_str) == Some("missing")
+            {
+                return Err(stale());
+            }
+            if matches!(op, "worktree.remove" | "worktree.returnShared")
+                && (r.get("path") != args.get("worktreePath")
+                    || r.get("branch") != args.get("branch"))
+            {
+                return Err(stale());
+            }
             if r.get("projectId").and_then(Value::as_str) != stamp.workspace_id.as_deref()
                 || r.get("projectPath").and_then(Value::as_str) != Some(root)
             {
@@ -331,6 +345,13 @@ pub(super) fn finish(
                 record["recreatedFromMissing"] = json!(true);
             }
             map.insert(thread.into(), record);
+        } else if matches!(op, "worktree.continueShared" | "worktree.returnShared") {
+            if op == "worktree.returnShared"
+                && payload.get("folderRemoved").and_then(Value::as_bool) != Some(true)
+            {
+                return Err(stale());
+            }
+            map.remove(thread).ok_or_else(stale)?;
         } else {
             let record = map.get_mut(thread).ok_or_else(stale)?;
             match op {
@@ -362,6 +383,35 @@ pub(super) fn finish(
                 }
                 _ => return Err(stale()),
             }
+        }
+        if matches!(op, "worktree.remove" | "worktree.returnShared") {
+            let path = text(args, "worktreePath")?;
+            let mut checkpoints = checkpoint_rows(book)?;
+            let mut invalid = std::collections::HashSet::new();
+            for row in &mut checkpoints {
+                if row
+                    .get("workspacePath")
+                    .and_then(Value::as_str)
+                    .is_some_and(|p| path_key(p) == path_key(path))
+                {
+                    if let Some(id) = row.get("id").and_then(Value::as_str) {
+                        invalid.insert(id.to_owned());
+                    }
+                    row["status"] = json!("failed");
+                    row["beforeCommit"] = Value::Null;
+                    row["afterCommit"] = Value::Null;
+                    row["error"]=json!("The isolated worktree was removed; this historical checkpoint is no longer restorable.");
+                }
+            }
+            let mut heads = object(read(book, "kiwi.checkpointHeads")?)?;
+            heads.retain(|_, head| {
+                !head
+                    .get("checkpointId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| invalid.contains(id))
+            });
+            commit::write_value(db, "kiwi.checkpoints", &json!(checkpoints))?;
+            commit::write_value(db, "kiwi.checkpointHeads", &json!(heads))?;
         }
         commit::write_value(db, "kiwi.threadWorktrees", &json!(map))?;
     }
@@ -422,4 +472,170 @@ pub(super) fn restore_baseline(
         text(row, "projectPath")?.into(),
         baseline.into(),
     )))
+}
+
+pub(super) fn removed_checkpoint_ids(
+    book: &Bookkeeping,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    Ok(checkpoint_rows(book)?
+        .iter()
+        .filter(|row| {
+            row.get("workspacePath")
+                .and_then(Value::as_str)
+                .is_some_and(|p| path_key(p) == path_key(path))
+        })
+        .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture(op: &str) -> (Connection, Stamp, Bookkeeping) {
+        let mut db = Connection::open_in_memory().unwrap();
+        super::super::store::init(&db).unwrap();
+        db.execute_batch("CREATE TABLE app_state(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at INTEGER NOT NULL);").unwrap();
+        super::super::store::claim_operation(&mut db, "device", "op", 1, op, "digest").unwrap();
+        commit::write_value(&db,"kiwi.threadWorktrees",&json!({"thread":{"threadId":"thread","projectId":"project","projectPath":"/project","path":"/isolated","branch":"isolated","status":"removed"}})).unwrap();
+        commit::write_value(&db,"kiwi.checkpoints",&json!([{"id":"historical","threadId":"thread","workspacePath":"/isolated","status":"ready","beforeCommit":"before","afterCommit":"after"}])).unwrap();
+        commit::write_value(
+            &db,
+            "kiwi.checkpointHeads",
+            &json!({"/isolated":{"checkpointId":"historical","position":"after"}}),
+        )
+        .unwrap();
+        let stamp = Stamp {
+            generation: 1,
+            device: "device".into(),
+            op_id: "op".into(),
+            op_seq: 1,
+            grant_revision: 1,
+            workspace_id: Some("project".into()),
+            thread_id: Some("thread".into()),
+        };
+        let book = refresh(&db, op).unwrap();
+        (db, stamp, book)
+    }
+    #[test]
+    fn destructive_actions_require_expanded_rows_and_cas() {
+        for op in [
+            "checkpoint.restore",
+            "worktree.apply",
+            "worktree.merge",
+            "worktree.remove",
+            "worktree.returnShared",
+        ] {
+            let (db, _, mut book) = fixture(op);
+            assert_eq!(book.rows.len(), 3);
+            assert!(verify(&db, op, Some(&book)).is_ok());
+            book.rows.pop();
+            assert!(verify(&db, op, Some(&book)).is_err());
+            let book = refresh(&db, op).unwrap();
+            commit::write_value(&db, "kiwi.checkpoints", &json!([])).unwrap();
+            assert!(verify(&db, op, Some(&book)).is_err());
+        }
+    }
+    #[test]
+    fn shared_mode_does_not_remove_files_and_bookkeeping_and_receipt_are_atomic() {
+        let (mut db, stamp, book) = fixture("worktree.continueShared");
+        let args = json!({"confirmed":true});
+        {
+            let tx = db.transaction().unwrap();
+            finish(
+                &tx,
+                &stamp,
+                "worktree.continueShared",
+                "/project",
+                &args,
+                &json!({}),
+                Some(&book),
+            )
+            .unwrap();
+            commit::complete(
+                &tx,
+                &stamp,
+                "worktree.continueShared",
+                &json!({"opId":"op","state":"accepted"}),
+                false,
+            )
+            .unwrap(); /* drop simulates a failing final commit */
+        }
+        assert!(
+            commit::state_row(&db, "kiwi.threadWorktrees").unwrap()["value"]
+                .get("thread")
+                .is_some()
+        );
+        assert!(commit::prior(&db, &stamp).unwrap().is_none());
+        {
+            let tx = db.transaction().unwrap();
+            finish(
+                &tx,
+                &stamp,
+                "worktree.continueShared",
+                "/project",
+                &args,
+                &json!({}),
+                Some(&book),
+            )
+            .unwrap();
+            commit::complete(
+                &tx,
+                &stamp,
+                "worktree.continueShared",
+                &json!({"opId":"op","state":"accepted"}),
+                false,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        assert!(
+            commit::state_row(&db, "kiwi.threadWorktrees").unwrap()["value"]
+                .get("thread")
+                .is_none()
+        );
+        assert!(commit::prior(&db, &stamp).unwrap().is_some());
+        assert_eq!(
+            commit::state_row(&db, "kiwi.checkpoints").unwrap()["value"][0]["status"],
+            "ready"
+        );
+    }
+    #[test]
+    fn return_shared_invalidates_isolated_checkpoints_but_requires_folder_proof() {
+        let (db, stamp, book) = fixture("worktree.returnShared");
+        let args = json!({"worktreePath":"/isolated"});
+        assert!(finish(
+            &db,
+            &stamp,
+            "worktree.returnShared",
+            "/project",
+            &args,
+            &json!({"folderRemoved":false}),
+            Some(&book)
+        )
+        .is_err());
+        finish(
+            &db,
+            &stamp,
+            "worktree.returnShared",
+            "/project",
+            &args,
+            &json!({"folderRemoved":true}),
+            Some(&book),
+        )
+        .unwrap();
+        assert!(
+            commit::state_row(&db, "kiwi.threadWorktrees").unwrap()["value"]
+                .get("thread")
+                .is_none()
+        );
+        assert_eq!(
+            commit::state_row(&db, "kiwi.checkpoints").unwrap()["value"][0]["status"],
+            "failed"
+        );
+        assert_eq!(
+            commit::state_row(&db, "kiwi.checkpointHeads").unwrap()["value"],
+            json!({})
+        );
+    }
 }
